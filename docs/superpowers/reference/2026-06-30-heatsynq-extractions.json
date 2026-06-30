@@ -1,0 +1,2883 @@
+{
+  "tokens": {
+    "colors": [
+      {
+        "role": "canvas/background",
+        "hex": "#f6f7f9",
+        "usage": "App body background in Visual Shop.dc.html (main file). Redesign uses #eef0f4 for body."
+      },
+      {
+        "role": "canvas/background (redesign + nested panels)",
+        "hex": "#eef0f4",
+        "usage": "Redesign body bg; also used as muted track/progress-bar background and empty bar fills in both files."
+      },
+      {
+        "role": "card/surface",
+        "hex": "#ffffff",
+        "usage": "Cards, panels, search input, modal surfaces, KPI tiles, header bar (most frequent color, 137 uses)"
+      },
+      {
+        "role": "sidebar surface",
+        "hex": "#fbfbfd",
+        "usage": "Sidebar <aside> background (slightly off-white vs cards)"
+      },
+      {
+        "role": "subtle surface / inactive chip",
+        "hex": "#f0f1f5",
+        "usage": "Neutral pill background (Scheduled/Received/Received status), kbd hint bg, inactive toggle"
+      },
+      {
+        "role": "subtle surface alt",
+        "hex": "#f3f4f7",
+        "usage": "Topbar search box background"
+      },
+      {
+        "role": "subtle surface alt2",
+        "hex": "#f1f2f5",
+        "usage": "Faint dividers/section row backgrounds"
+      },
+      {
+        "role": "primary/accent (brand blue)",
+        "hex": "#3d63dd",
+        "usage": "Brand/primary: logo tile bg, active nav text, links, progress fill, primary action accents, 'Sent'/'In Process' pill text"
+      },
+      {
+        "role": "primary tint (active nav bg)",
+        "hex": "#eef1fd",
+        "usage": "Active/selected nav item background, info pill background ('Sent','In Process')"
+      },
+      {
+        "role": "primary tint alt (avatar bg)",
+        "hex": "#dfe4f6",
+        "usage": "Round avatar/icon chip background paired with #3d63dd"
+      },
+      {
+        "role": "primary tint alt2",
+        "hex": "#d3dcfa",
+        "usage": "Light blue accents/borders"
+      },
+      {
+        "role": "primary dark",
+        "hex": "#2c4db0",
+        "usage": "Darker blue (hover/pressed accent)"
+      },
+      {
+        "role": "text primary",
+        "hex": "#1d2330",
+        "usage": "Body text color (set on body), headings"
+      },
+      {
+        "role": "text heading alt",
+        "hex": "#3a4151",
+        "usage": "Secondary heading / strong label text"
+      },
+      {
+        "role": "text secondary",
+        "hex": "#5b637a",
+        "usage": "Secondary body text, sub-labels"
+      },
+      {
+        "role": "text muted",
+        "hex": "#8a92a3",
+        "usage": "Muted/caption text, placeholders, timestamps (2nd most frequent, 135 uses)"
+      },
+      {
+        "role": "text muted alt",
+        "hex": "#9aa1b0",
+        "usage": "More muted text, search placeholder, kbd hint text, micro-labels"
+      },
+      {
+        "role": "text muted/icon faint",
+        "hex": "#aab0bd",
+        "usage": "Faint section group labels (uppercase nav headers)"
+      },
+      {
+        "role": "text on neutral pill / nav idle",
+        "hex": "#6b7280",
+        "usage": "Idle nav item text, neutral status pill text (Scheduled/Received/rev C)"
+      },
+      {
+        "role": "border default",
+        "hex": "#e7e9ee",
+        "usage": "Primary border/divider (cards, header bottom-border, sidebar right-border)"
+      },
+      {
+        "role": "border default alt",
+        "hex": "#e2e5ec",
+        "usage": "Input borders, pill borders, secondary dividers"
+      },
+      {
+        "role": "border faint",
+        "hex": "#f5f6f8",
+        "usage": "Very faint internal row dividers"
+      },
+      {
+        "role": "border medium",
+        "hex": "#cbd0db",
+        "usage": "Stronger border/outline"
+      },
+      {
+        "role": "border medium alt",
+        "hex": "#d9dde5",
+        "usage": "Timeline node ring / medium border"
+      },
+      {
+        "role": "success",
+        "hex": "#1f9d6b",
+        "usage": "Success green: status pill text (Active/Won/Shipped/Released/Ready to ship), positive deltas, status dots"
+      },
+      {
+        "role": "success tint (pill bg)",
+        "hex": "#e8f5ef",
+        "usage": "Success status pill background"
+      },
+      {
+        "role": "success tint alt",
+        "hex": "#cfeadd",
+        "usage": "Completed timeline connector / success accent line"
+      },
+      {
+        "role": "success dark",
+        "hex": "#1b7a55",
+        "usage": "Darker success (hover/strong)"
+      },
+      {
+        "role": "warn/amber",
+        "hex": "#c98a16",
+        "usage": "Warning amber: status pill text (On Hold/Draft/Approve), past-due text"
+      },
+      {
+        "role": "warn tint (pill bg)",
+        "hex": "#fbf2e0",
+        "usage": "Warning status pill background"
+      },
+      {
+        "role": "warn tint alt",
+        "hex": "#f1e3c7",
+        "usage": "Warning accent line/border"
+      },
+      {
+        "role": "warn tint faint",
+        "hex": "#fdfaf2",
+        "usage": "Very faint warn surface"
+      },
+      {
+        "role": "warn dark",
+        "hex": "#946312",
+        "usage": "Darker amber text"
+      },
+      {
+        "role": "danger/red",
+        "hex": "#d4503e",
+        "usage": "Danger red: status pill text (Late), error counts (Late '5'), error focus ring rgba(212,80,62,.12)"
+      },
+      {
+        "role": "danger tint (pill bg)",
+        "hex": "#fcebe8",
+        "usage": "Danger status pill background"
+      },
+      {
+        "role": "danger tint alt (border)",
+        "hex": "#f1d9d4",
+        "usage": "Danger accent border/line"
+      },
+      {
+        "role": "danger dark",
+        "hex": "#a33524",
+        "usage": "Darker red text/hover"
+      },
+      {
+        "role": "scrollbar thumb",
+        "hex": "#d6dae2",
+        "usage": "Custom webkit scrollbar thumb (main file)"
+      }
+    ],
+    "typography": [
+      {
+        "role": "font family - sans (UI base)",
+        "fontFamily": "'IBM Plex Sans', system-ui, sans-serif",
+        "weight": "400/500/600/700",
+        "size": "base 13px",
+        "usage": "All UI text. Loaded via Google Fonts IBM Plex Sans wght 400;500;600;700. Set on body."
+      },
+      {
+        "role": "font family - mono (IDs/numbers/labels)",
+        "fontFamily": "'IBM Plex Mono', monospace",
+        "weight": "400/500/600",
+        "size": "varies 10.5-26px",
+        "usage": "Monospace for work-order/part IDs, KPI numbers, timestamps, status pills, uppercase section labels, logo glyph. Loaded wght 400;500;600."
+      },
+      {
+        "role": "page title / greeting (H1)",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "600",
+        "size": "22px",
+        "usage": "Dashboard greeting 'Good morning, Dana', letter-spacing -0.02em"
+      },
+      {
+        "role": "section title (H2)",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "600",
+        "size": "20px",
+        "usage": "List/screen titles (Schedule, Tracking, Shop Floor), letter-spacing -0.01em"
+      },
+      {
+        "role": "hero title (redesign)",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "600",
+        "size": "34px",
+        "usage": "Redesign landing hero, letter-spacing -0.02em, line-height 1.15"
+      },
+      {
+        "role": "KPI number",
+        "fontFamily": "IBM Plex Mono",
+        "weight": "600",
+        "size": "26px",
+        "usage": "KPI tile big numbers (86, 94.2, $418K). Smaller unit suffix at 13px."
+      },
+      {
+        "role": "card/section heading",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "600",
+        "size": "14-19px",
+        "usage": "Card headers (Shop Floor, Needs attention); redesign section heads 19px -0.01em"
+      },
+      {
+        "role": "body default",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "400/500",
+        "size": "13px",
+        "usage": "Default body / nav item / input text"
+      },
+      {
+        "role": "secondary body",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "400",
+        "size": "12.5px",
+        "usage": "Secondary descriptions, status labels, sub-text (color #5b637a/#8a92a3)"
+      },
+      {
+        "role": "caption / meta",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "400",
+        "size": "11px",
+        "usage": "Captions, sub-labels under KPIs, badge counts, avatar role"
+      },
+      {
+        "role": "status pill text",
+        "fontFamily": "IBM Plex Mono",
+        "weight": "400",
+        "size": "11px",
+        "usage": "All status pills use mono 11px"
+      },
+      {
+        "role": "uppercase group label",
+        "fontFamily": "IBM Plex Mono",
+        "weight": "400",
+        "size": "10.5px",
+        "usage": "Sidebar nav group headers (SALES/PRODUCTION) and section labels, letter-spacing .1em (nav) / .06em (table headers), color #aab0bd/#9aa1b0, uppercase"
+      },
+      {
+        "role": "kbd hint",
+        "fontFamily": "IBM Plex Mono",
+        "weight": "400",
+        "size": "11px",
+        "usage": "Keyboard shortcut chips (\u2318K) bg #f0f1f5 border #e2e5ec radius 5px"
+      },
+      {
+        "role": "eyebrow label (redesign)",
+        "fontFamily": "IBM Plex Sans",
+        "weight": "600",
+        "size": "12px",
+        "usage": "Redesign eyebrow chip: letter-spacing .14em, color #3d63dd, bg #eef1fd, uppercase"
+      }
+    ],
+    "statusPills": [
+      {
+        "label": "Active",
+        "textColor": "#1f9d6b",
+        "bgColor": "#e8f5ef"
+      },
+      {
+        "label": "Won",
+        "textColor": "#1f9d6b",
+        "bgColor": "#e8f5ef"
+      },
+      {
+        "label": "Shipped",
+        "textColor": "#1f9d6b",
+        "bgColor": "#e8f5ef"
+      },
+      {
+        "label": "Released",
+        "textColor": "#1f9d6b",
+        "bgColor": "#e8f5ef"
+      },
+      {
+        "label": "Ready to ship",
+        "textColor": "#1f9d6b",
+        "bgColor": "#e8f5ef"
+      },
+      {
+        "label": "Sent",
+        "textColor": "#3d63dd",
+        "bgColor": "#eef1fd"
+      },
+      {
+        "label": "In Process",
+        "textColor": "#3d63dd",
+        "bgColor": "#eef1fd"
+      },
+      {
+        "label": "Draft",
+        "textColor": "#c98a16",
+        "bgColor": "#fbf2e0"
+      },
+      {
+        "label": "On Hold",
+        "textColor": "#c98a16",
+        "bgColor": "#fbf2e0"
+      },
+      {
+        "label": "Approve",
+        "textColor": "#c98a16",
+        "bgColor": "#fbf2e0"
+      },
+      {
+        "label": "Late",
+        "textColor": "#d4503e",
+        "bgColor": "#fcebe8"
+      },
+      {
+        "label": "Scheduled",
+        "textColor": "#6b7280",
+        "bgColor": "#f0f1f5"
+      },
+      {
+        "label": "Received",
+        "textColor": "#6b7280",
+        "bgColor": "#f0f1f5"
+      },
+      {
+        "label": "rev C (revision/neutral tag)",
+        "textColor": "#6b7280",
+        "bgColor": "#f0f1f5"
+      }
+    ],
+    "cssVariables": [],
+    "radii": [
+      "5px (kbd hint chips, small badges)",
+      "6px (status pills, scrollbar thumb)",
+      "7px (toggle segment, small icon tiles)",
+      "8px (logo tile, nav avatars)",
+      "9px (nav items, search input, buttons)",
+      "10px (topbar search box, cards small)",
+      "13px (redesign cards)",
+      "16px (modals, large redesign cards)",
+      "50% (circular avatars/status dots)"
+    ],
+    "shadows": [
+      "0 1px 2px rgba(0,0,0,.08) (active toggle/segmented-control button, subtle raise)",
+      "0 0 0 3px rgba(212,80,62,.12) (error/danger input focus ring; primary equivalent would use blue)",
+      "0 40px 90px -30px rgba(20,24,33,.6) (modal/dialog elevation - main file)",
+      "0 24px 60px ... (redesign large card elevation)"
+    ],
+    "spacingScale": [
+      "3px",
+      "4px",
+      "6px",
+      "8px",
+      "9px",
+      "10px",
+      "11px",
+      "12px",
+      "14px",
+      "16px",
+      "18px",
+      "24px",
+      "30px"
+    ],
+    "radiiNote": "N/A",
+    "layout": {
+      "sidebarWidth": "252px (main Visual Shop.dc.html, fixed via width:252px flex-shrink:0). Redesign sidebar has no fixed px width (auto, padding:18px 14px).",
+      "topbarHeight": "60px (header height:60px, border-bottom 1px #e7e9ee, both files)",
+      "contentMaxWidth": "1060px (main dashboard content column max-width:1060px). Redesign hero/content max-width up to 1360px. Modals: 560px and 420px (max-width:90vw). Viewport preview 1320x860.",
+      "notes": "Root app shell: height:100vh; display:flex; overflow:hidden; bg #f6f7f9 (main). Layout = fixed sidebar (252px) + flex main column with sticky 60px header and scrollable content. Empty-state copy blocks max-width:240px. Card grids use grid-template-columns repeat(6,1fr) for KPI row, 1.55fr 1fr for two-column dashboard."
+    },
+    "notes": "IMPORTANT: Neither file uses CSS custom properties (--vars); the inline <style> blocks contain ONLY resets, scrollbar styling, and keyframes (vsPulse opacity pulse, vsShimmer, vsGrow). ALL design tokens are hardcoded as inline style attributes inside the <x-dc> templates. Fonts loaded from Google Fonts: IBM Plex Sans (400;500;600;700) + IBM Plex Mono (400;500;600). Mono face is the signature treatment for IDs (WO-48211), KPI numbers, timestamps, status pills, and uppercase nav/section labels. Two body-bg variants: main file #f6f7f9, redesign #eef0f4. Status-pill system is a 4-tone semantic set: green/#e8f5ef+#1f9d6b (positive: Active/Won/Shipped/Released/Ready to ship), blue/#eef1fd+#3d63dd (in-progress/info: Sent/In Process), amber/#fbf2e0+#c98a16 (attention/draft: Draft/On Hold/Approve), red/#fcebe8+#d4503e (error/overdue: Late), neutral/#f0f1f5+#6b7280 (Scheduled/Received/tags). Pills: mono 11px, border-radius 6px, padding 3px 9-10px. Active nav item: bg #eef1fd + text #3d63dd. Keyframe animations present: vsPulse (live status dots), vsShimmer (loading skeletons), vsGrow (bar charts, redesign). Screenshot 01 confirms: primary blue logo/active-nav, white cards on light-grey canvas, green positive deltas, red Late count, amber past-due. Source files: '/home/cojoa13/Documents/claude projects/HeatSynQ/Visual Shop.dc.html' and '/home/cojoa13/Documents/claude projects/HeatSynQ/Visual Shop Redesign.dc.html'."
+  },
+  "entities": {
+    "entities": [
+      {
+        "name": "Customer",
+        "description": "A customer account (the heat-treat shop's client). Source: customers list, customerDetail screen (overview/contacts/parts/orders/documents/pricing tabs), AR rows, dashboard.",
+        "fields": [
+          {
+            "name": "id / customerNumber",
+            "type": "string",
+            "example": "Customer #1042",
+            "notes": "Shown on customer detail header"
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "initials",
+            "type": "string",
+            "example": "AA",
+            "notes": "2-letter avatar badge (e.g. AA, CA, VF, IT)"
+          },
+          {
+            "name": "city",
+            "type": "string",
+            "example": "Wichita, KS",
+            "notes": "used as sub-line under name"
+          },
+          {
+            "name": "billingAddress",
+            "type": "string",
+            "example": "4120 Industrial Pkwy, Wichita, KS 67226"
+          },
+          {
+            "name": "phone",
+            "type": "string",
+            "example": "(316) 555-0142"
+          },
+          {
+            "name": "terms",
+            "type": "enum string",
+            "example": "Net 30",
+            "notes": "Net 30 / Net 45 / Net 60"
+          },
+          {
+            "name": "openOrders",
+            "type": "int",
+            "example": "6",
+            "notes": "count; column 'OPEN'"
+          },
+          {
+            "name": "ytdSales",
+            "type": "currency string",
+            "example": "$214K"
+          },
+          {
+            "name": "arBalance",
+            "type": "currency string",
+            "example": "$58,400",
+            "notes": "shown on detail header and AR screen"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Active",
+            "notes": "Active / Hold / Dormant"
+          },
+          {
+            "name": "defaultCert",
+            "type": "string (Specification ref)",
+            "example": "AMS 2759/3 \u00b7 2 copies",
+            "notes": "default certification format + copy count"
+          },
+          {
+            "name": "priceKey",
+            "type": "string (PriceKey ref)",
+            "example": "AERO-1"
+          },
+          {
+            "name": "taxExempt",
+            "type": "bool/string",
+            "example": "Yes \u00b7 cert on file"
+          },
+          {
+            "name": "primaryContact",
+            "type": "string (Contact ref)",
+            "example": "Sara Lin \u00b7 Buyer"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Contact",
+            "kind": "one-to-many",
+            "notes": "Contacts tab: NAME/ROLE/EMAIL/PHONE"
+          },
+          {
+            "to": "Part",
+            "kind": "one-to-many",
+            "notes": "Parts tab lists customer's parts"
+          },
+          {
+            "to": "WorkOrder",
+            "kind": "one-to-many",
+            "notes": "Orders tab"
+          },
+          {
+            "to": "Quote",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Invoice",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Document",
+            "kind": "one-to-many",
+            "notes": "Documents tab"
+          },
+          {
+            "to": "PriceKey",
+            "kind": "many-to-one",
+            "notes": "default price key"
+          },
+          {
+            "to": "PricingRule",
+            "kind": "one-to-many",
+            "notes": "Pricing tab: step pricing overrides per price key"
+          },
+          {
+            "to": "ARBalance",
+            "kind": "one-to-one",
+            "notes": "aging summary"
+          },
+          {
+            "to": "Specification",
+            "kind": "many-to-one",
+            "notes": "default cert spec"
+          }
+        ],
+        "statuses": [
+          "Active",
+          "Hold",
+          "Dormant"
+        ]
+      },
+      {
+        "name": "Contact",
+        "description": "A person at a customer. Source: customerDetail Contacts tab and Overview primaryContact.",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "example": "Sara Lin"
+          },
+          {
+            "name": "role",
+            "type": "enum string",
+            "example": "Buyer",
+            "notes": "Buyer / Quality Mgr / A/P (accounts payable)"
+          },
+          {
+            "name": "email",
+            "type": "string",
+            "example": "sara.lin@apexaero.com"
+          },
+          {
+            "name": "phone",
+            "type": "string",
+            "example": "(316) 555-0142"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          }
+        ]
+      },
+      {
+        "name": "Part",
+        "description": "A customer part record with specs and an assigned process master. Source: parts list, partEditor screen, customerDetail Parts tab, order line items.",
+        "fields": [
+          {
+            "name": "partNumber",
+            "type": "string",
+            "example": "TS-4471",
+            "notes": "also CS-88, BR-12, RG-440, RC-200, DB-7, SP-119, HS-22, PG-88"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "example": "Turbine shaft"
+          },
+          {
+            "name": "material",
+            "type": "string",
+            "example": "4140 steel",
+            "notes": "also 8620, 4340"
+          },
+          {
+            "name": "drawingRev / rev",
+            "type": "string",
+            "example": "C",
+            "notes": "single-letter revision A/B/C/D"
+          },
+          {
+            "name": "hardness",
+            "type": "string",
+            "example": "Rc 58\u201362",
+            "notes": "also Rc 40\u201345, HV 650+, Rc 60\u201364, '\u2014'"
+          },
+          {
+            "name": "caseDepth",
+            "type": "string",
+            "example": ".020\u2013.030 in"
+          },
+          {
+            "name": "specification",
+            "type": "string (Specification ref)",
+            "example": "AMS 2759/3"
+          },
+          {
+            "name": "assignedProcessMaster",
+            "type": "string (ProcessMaster ref)",
+            "example": "PM-CARB-58 rev C",
+            "notes": "label 'Carburize' shown; '6 standard steps'"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "defaultProcess",
+            "type": "string",
+            "example": "Carburize"
+          },
+          {
+            "name": "priceKey",
+            "type": "string (PriceKey ref)",
+            "example": "AERO-1"
+          },
+          {
+            "name": "stdLotQty",
+            "type": "int",
+            "example": "480"
+          },
+          {
+            "name": "lastUsed",
+            "type": "date",
+            "example": "Jun 26, 2026"
+          },
+          {
+            "name": "lastQuote",
+            "type": "currency string",
+            "example": "$8,420"
+          },
+          {
+            "name": "inspection.scale",
+            "type": "string",
+            "example": "Rockwell C"
+          },
+          {
+            "name": "inspection.sample",
+            "type": "string",
+            "example": "3 pc / lot"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "ProcessMaster",
+            "kind": "many-to-one",
+            "notes": "assigned process master shared by all parts using it"
+          },
+          {
+            "to": "Specification",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "PriceKey",
+            "kind": "many-to-one"
+          }
+        ]
+      },
+      {
+        "name": "ProcessMaster",
+        "description": "A process recipe = standard ordered steps + instructions, shared by parts. Source: recipes (Process Master) list, recipeEditor screen.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "PM-CARB-58",
+            "notes": "also PM-VAC-44, PM-NIT-09, PM-CN-21, PM-NH-15, PM-ANN-03"
+          },
+          {
+            "name": "name / process",
+            "type": "string",
+            "example": "Carburize & temper"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "example": "Case hardened, Rc 58\u201362"
+          },
+          {
+            "name": "stepCount",
+            "type": "int",
+            "example": "6"
+          },
+          {
+            "name": "rev / revision",
+            "type": "string",
+            "example": "C"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Active"
+          },
+          {
+            "name": "usedByCount",
+            "type": "int",
+            "example": "14",
+            "notes": "'14 parts'"
+          },
+          {
+            "name": "lastUpdated",
+            "type": "date",
+            "example": "May 2, 2026"
+          },
+          {
+            "name": "createdBy",
+            "type": "string (Operator ref)",
+            "example": "T. Brand \u00b7 Eng"
+          },
+          {
+            "name": "inspection.surfaceHardness",
+            "type": "string",
+            "example": "Rc 58\u201362"
+          },
+          {
+            "name": "inspection.caseDepth",
+            "type": "string",
+            "example": ".020\u2013.030 in"
+          },
+          {
+            "name": "inspection.scale",
+            "type": "string",
+            "example": "Rockwell C"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "ProcessStep",
+            "kind": "one-to-many",
+            "notes": "ordered standard steps in run order"
+          },
+          {
+            "to": "Part",
+            "kind": "one-to-many",
+            "notes": "used by parts; e.g. TS-4471, SP-119, PG-88"
+          }
+        ],
+        "statuses": [
+          "Active"
+        ]
+      },
+      {
+        "name": "ProcessStep",
+        "description": "One step of a ProcessMaster recipe (run order). Source: recipeSteps array (rstep) + order process steps.",
+        "fields": [
+          {
+            "name": "n",
+            "type": "int (string)",
+            "example": "3",
+            "notes": "run order sequence number"
+          },
+          {
+            "name": "op",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "e.g. Receive & verify, Wash & rack, Carburize, Temper, Final inspect, Certify & ship"
+          },
+          {
+            "name": "equip",
+            "type": "string (Equipment/Area ref)",
+            "example": "Batch IQ #3",
+            "notes": "Receiving, Wash station, Temper Oven #4, Inspection, Shipping"
+          },
+          {
+            "name": "instr",
+            "type": "string",
+            "example": "Carburize to specified case depth, then oil quench."
+          },
+          {
+            "name": "params",
+            "type": "string[]",
+            "example": "['1700\u00b0F','8.0 hr','0.90% C','Oil quench']",
+            "notes": "recipe table-key params; temper ['350\u00b0F','2.0 hr']; inspect ['Rc 58\u201362','Case .020\u2013.030 in']"
+          },
+          {
+            "name": "hasParams",
+            "type": "bool",
+            "example": "true"
+          },
+          {
+            "name": "track",
+            "type": "enum string",
+            "example": "Track in / out",
+            "notes": "Track in / Track in / out / Inspect / Track out"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "ProcessMaster",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Equipment",
+            "kind": "many-to-one",
+            "notes": "step runs on equipment/area"
+          }
+        ],
+        "statuses": [
+          "Track in",
+          "Track in / out",
+          "Track out",
+          "Inspect"
+        ]
+      },
+      {
+        "name": "Quote",
+        "description": "A sales quote. Source: quotes list, quoteBuilder screen, dashboard 'My Open Quotes'.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "Q-2841",
+            "notes": "Q-2840, Q-2838, Q-2835, Q-2831, Q-2828"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "processSummary",
+            "type": "string",
+            "example": "Vacuum harden \u00b7 AMS 2759/3",
+            "notes": "process + spec, e.g. 'Carbonitride + temper', 'Anneal \u00b7 large lot', 'Stress relieve'"
+          },
+          {
+            "name": "value / total",
+            "type": "currency string",
+            "example": "$8,420"
+          },
+          {
+            "name": "subtotal",
+            "type": "currency string",
+            "example": "$8,420"
+          },
+          {
+            "name": "discount",
+            "type": "currency string",
+            "example": "$0"
+          },
+          {
+            "name": "estMargin",
+            "type": "percent",
+            "example": "42%"
+          },
+          {
+            "name": "age",
+            "type": "string",
+            "example": "2d",
+            "notes": "days since created"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Approve",
+            "notes": "Draft / Sent / Approve (awaiting approval) / Won (and implied Lost for win/loss)"
+          },
+          {
+            "name": "date",
+            "type": "date",
+            "example": "Jun 30, 2026"
+          },
+          {
+            "name": "validUntil",
+            "type": "date",
+            "example": "Jul 30, 2026",
+            "notes": "valid 30 days"
+          },
+          {
+            "name": "salesperson",
+            "type": "string (Operator ref)",
+            "example": "S. Vance"
+          },
+          {
+            "name": "customerPO",
+            "type": "string",
+            "example": "PO field on quote builder"
+          },
+          {
+            "name": "part",
+            "type": "string (Part ref)",
+            "example": "TS-4471"
+          },
+          {
+            "name": "material",
+            "type": "string",
+            "example": "4140"
+          },
+          {
+            "name": "quantity",
+            "type": "int",
+            "example": "600 lb / 480"
+          },
+          {
+            "name": "requiredBy",
+            "type": "date",
+            "example": "quote builder field"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "QuoteLine",
+            "kind": "one-to-many",
+            "notes": "pricing lines"
+          },
+          {
+            "to": "Part",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "WorkOrder",
+            "kind": "one-to-one",
+            "notes": "'Order created from Q-2841' \u2014 quote converts to order"
+          },
+          {
+            "to": "Operator",
+            "kind": "many-to-one",
+            "notes": "salesperson; quote vs auth limit $25,000"
+          }
+        ],
+        "statuses": [
+          "Draft",
+          "Sent",
+          "Approve (awaiting approval)",
+          "Won",
+          "Lost"
+        ]
+      },
+      {
+        "name": "QuoteLine",
+        "description": "A pricing line on a quote/order (process priced by basis). Source: quoteBuilder pricing lines & orderDetail pricing.",
+        "fields": [
+          {
+            "name": "process",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "Carburize / Temper / Certification"
+          },
+          {
+            "name": "basis",
+            "type": "enum string",
+            "example": "per lb",
+            "notes": "per lb / per lot / flat"
+          },
+          {
+            "name": "qtyOrWt",
+            "type": "string",
+            "example": "600 lb",
+            "notes": "e.g. '1' for per-lot/flat"
+          },
+          {
+            "name": "rate",
+            "type": "currency",
+            "example": "$10.30",
+            "notes": "from price key step pricing"
+          },
+          {
+            "name": "amount",
+            "type": "currency",
+            "example": "$6,180",
+            "notes": "Temper $1,440; Certification $800"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Quote",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "PricingRule",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "per lb",
+          "per lot",
+          "flat"
+        ]
+      },
+      {
+        "name": "WorkOrder",
+        "description": "Production work order (Order). Source: orders list, orderDetail screen, tracking/floor/schedule references, invoicing.",
+        "fields": [
+          {
+            "name": "id / wo",
+            "type": "string",
+            "example": "WO-48211",
+            "notes": "WO-48205, WO-48190, WO-48177, WO-48142, WO-48120, WO-48098, WO-48066, WO-48041, WO-48201, WO-47980"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "part",
+            "type": "string (Part ref)",
+            "example": "Turbine shaft \u00b7 TS-4471"
+          },
+          {
+            "name": "customerPO",
+            "type": "string",
+            "example": "PO 7741-A"
+          },
+          {
+            "name": "process",
+            "type": "string",
+            "example": "Carburize + Temper",
+            "notes": "Carburize / Vacuum harden / Nitride / Carbonitride / Temper / Neutral harden / Anneal"
+          },
+          {
+            "name": "qty",
+            "type": "int",
+            "example": "480",
+            "notes": "5,200 / 96 / 310 / 220 / 1,440 / 40"
+          },
+          {
+            "name": "due",
+            "type": "date",
+            "example": "Jul 2",
+            "notes": "Due Jul 2, 2026"
+          },
+          {
+            "name": "orderedDate",
+            "type": "date",
+            "example": "Jun 26, 2026"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "In Process",
+            "notes": "Received/Scheduled/In Process/On Hold/Late/Ready to ship/Released"
+          },
+          {
+            "name": "certifyRequired",
+            "type": "string",
+            "example": "Yes \u00b7 AMS 2759/3"
+          },
+          {
+            "name": "orderValue",
+            "type": "currency string",
+            "example": "$8,420"
+          },
+          {
+            "name": "recipe",
+            "type": "string (ProcessMaster ref)",
+            "example": "PM-CARB-58 \u00b7 rev C"
+          },
+          {
+            "name": "progressPct",
+            "type": "int",
+            "example": "68",
+            "notes": "current step % e.g. '68% \u00b7 est. fin 10:25a'"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "OrderLine",
+            "kind": "one-to-many",
+            "notes": "Parts table: PART/DESCRIPTION/QTY/SPEC"
+          },
+          {
+            "to": "ProcessMaster",
+            "kind": "many-to-one",
+            "notes": "recipe drives process steps"
+          },
+          {
+            "to": "OrderStep",
+            "kind": "one-to-many",
+            "notes": "per-order step progress with operator/timestamp"
+          },
+          {
+            "to": "Quote",
+            "kind": "many-to-one",
+            "notes": "created from quote"
+          },
+          {
+            "to": "Certification",
+            "kind": "one-to-one"
+          },
+          {
+            "to": "Invoice",
+            "kind": "one-to-one"
+          },
+          {
+            "to": "Equipment",
+            "kind": "many-to-one",
+            "notes": "currently on Batch IQ #3 etc"
+          },
+          {
+            "to": "TrackingEvent",
+            "kind": "one-to-many",
+            "notes": "Activity log / scans"
+          }
+        ],
+        "statuses": [
+          "Received",
+          "Scheduled",
+          "In Process",
+          "On Hold",
+          "Late",
+          "Ready to ship",
+          "Released",
+          "Shipped"
+        ]
+      },
+      {
+        "name": "OrderLine",
+        "description": "A part line on a work order (one WO can have multiple parts). Source: orderDetail Parts table.",
+        "fields": [
+          {
+            "name": "part",
+            "type": "string (Part ref)",
+            "example": "TS-4471",
+            "notes": "also SP-119"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "example": "Turbine shaft, 4140 steel",
+            "notes": "'Spacer ring, 8620'"
+          },
+          {
+            "name": "qty",
+            "type": "int",
+            "example": "480",
+            "notes": "SP-119 = 120"
+          },
+          {
+            "name": "spec",
+            "type": "string",
+            "example": "Rc 58\u201362",
+            "notes": "hardness spec per line"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Part",
+            "kind": "many-to-one"
+          }
+        ]
+      },
+      {
+        "name": "OrderStep",
+        "description": "Per-order instance of a process step with live status, operator and timestamp. Source: orderDetail 'Process steps' list.",
+        "fields": [
+          {
+            "name": "op",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "Receive & verify, Wash & rack, Carburize, Temper, Final inspect, Cert & ship"
+          },
+          {
+            "name": "area / equip",
+            "type": "string",
+            "example": "Batch IQ #3",
+            "notes": "Receiving, Wash, Temper Oven #4, Inspect, Shipping"
+          },
+          {
+            "name": "operator",
+            "type": "string (Operator ref)",
+            "example": "J. Ruiz",
+            "notes": "M. Patel, K. Obi"
+          },
+          {
+            "name": "timestamp",
+            "type": "datetime",
+            "example": "Jun 26 \u00b7 2:10p",
+            "notes": "'Jun 30 \u00b7 6:42a', 'Today 7:14a'"
+          },
+          {
+            "name": "state",
+            "type": "enum",
+            "example": "in process",
+            "notes": "done(\u2713) / in process(\u25c9) / scheduled / pending"
+          },
+          {
+            "name": "progress",
+            "type": "string",
+            "example": "68% \u00b7 est. fin 10:25a",
+            "notes": "for in-process step"
+          },
+          {
+            "name": "tracked",
+            "type": "string",
+            "example": "tracked in"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "ProcessStep",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Operator",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Equipment",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "done",
+          "in process",
+          "scheduled",
+          "pending"
+        ]
+      },
+      {
+        "name": "Equipment",
+        "description": "Furnaces/ovens/equipment with live run status (Shop Floor / Schedule). Source: floorCards, scheduleRows, shop floor dashboard, redesign SCADA furnace floor.",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "example": "Batch IQ #3",
+            "notes": "Pit Furnace #1, Vacuum #1, Continuous Belt #2, Temper Oven #4, Endo Gen #1"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Running",
+            "notes": "Running / On hold / Idle"
+          },
+          {
+            "name": "idle",
+            "type": "bool",
+            "example": "false",
+            "notes": "'No load \u00b7 available'"
+          },
+          {
+            "name": "process",
+            "type": "string",
+            "example": "Carburize"
+          },
+          {
+            "name": "wo",
+            "type": "string (WorkOrder ref)",
+            "example": "WO-48211"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "qty",
+            "type": "string",
+            "example": "480 pc",
+            "notes": "5,200 pc, 96 pc"
+          },
+          {
+            "name": "progressPct",
+            "type": "int",
+            "example": "68"
+          },
+          {
+            "name": "operator",
+            "type": "string (Operator ref)",
+            "example": "K. Obi",
+            "notes": "L. Day, R. Cole, M. Patel, J. Ruiz"
+          },
+          {
+            "name": "scan",
+            "type": "string",
+            "example": "in 7:14a",
+            "notes": "last scan; 'held 8:30a'"
+          },
+          {
+            "name": "finishTime",
+            "type": "time",
+            "example": "fin 10:25",
+            "notes": "estimated finish (dashboard)"
+          },
+          {
+            "name": "temperature",
+            "type": "string",
+            "example": "1700 \u00b0F",
+            "notes": "REDESIGN SCADA: 975\u00b0F, 1850\u00b0F, 1550\u00b0F; '+18 \u00b0F' deviation"
+          },
+          {
+            "name": "timeRemaining",
+            "type": "string",
+            "example": "2h12m",
+            "notes": "REDESIGN: 6h40m, 22m, 3h05m"
+          },
+          {
+            "name": "alarm",
+            "type": "string",
+            "example": "Setpoint deviation \u00b7 alarm",
+            "notes": "REDESIGN SCADA alarm state"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "one-to-one",
+            "notes": "current load"
+          },
+          {
+            "to": "Area",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "ScheduleBlock",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Maintenance",
+            "kind": "one-to-many",
+            "notes": "AMS 2750 pyrometry/TUS due"
+          }
+        ],
+        "statuses": [
+          "Running",
+          "On hold",
+          "Idle (No load \u00b7 available)",
+          "Alarm/Setpoint deviation"
+        ]
+      },
+      {
+        "name": "Area",
+        "description": "Tracking area / department / kanban stage on shop floor (scan-driven). Source: trackingCols, process step equip values like Receiving/Wash/Inspect/Shipping.",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "example": "In Process",
+            "notes": "Received, Wash & Rack, In Process, Final Inspect, Available to Ship; also Receiving/Wash station/Inspection/Shipping as step areas"
+          },
+          {
+            "name": "count",
+            "type": "int",
+            "example": "5",
+            "notes": "WIP loads in the stage"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "TrackingEvent",
+            "kind": "one-to-many",
+            "notes": "cards in the column"
+          },
+          {
+            "to": "Equipment",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": [
+          "Received",
+          "Wash & Rack",
+          "In Process",
+          "Final Inspect",
+          "Available to Ship"
+        ]
+      },
+      {
+        "name": "TrackingEvent",
+        "description": "A live job card / scan event on the tracking board, plus order Activity log entries. Source: trackingCols cards (card()), orderDetail Activity.",
+        "fields": [
+          {
+            "name": "wo",
+            "type": "string (WorkOrder ref)",
+            "example": "WO-48098"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Vulcan Forge"
+          },
+          {
+            "name": "detail",
+            "type": "string",
+            "example": "Die block \u00b7 40 pc",
+            "notes": "'Carburize \u00b7 Batch IQ #3', 'Race \u00b7 1,440 pc \u00b7 cert \u2713'"
+          },
+          {
+            "name": "scan",
+            "type": "string",
+            "example": "in 6:02a",
+            "notes": "timestamp/progress: '68% \u00b7 2h12m', 'late', 'ready', 'cert \u2713'"
+          },
+          {
+            "name": "flag",
+            "type": "enum string",
+            "example": "LATE",
+            "notes": "optional flag badge"
+          },
+          {
+            "name": "kind",
+            "type": "enum",
+            "example": "blue",
+            "notes": "blue/red(late)/amber \u2014 color severity"
+          },
+          {
+            "name": "activityAction",
+            "type": "string",
+            "example": "Tracked in to Batch IQ #3",
+            "notes": "Activity log: 'Scheduled on Batch IQ #3','Order created from Q-2841'"
+          },
+          {
+            "name": "activityActor",
+            "type": "string (Operator ref)",
+            "example": "K. Obi",
+            "notes": "D. Mercer, S. Vance"
+          },
+          {
+            "name": "activityTime",
+            "type": "datetime",
+            "example": "Today 7:14a",
+            "notes": "'Jun 27', 'Jun 26'"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Area",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Operator",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Equipment",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "LATE",
+          "ready",
+          "cert \u2713",
+          "in process"
+        ]
+      },
+      {
+        "name": "ScheduleBlock",
+        "description": "A scheduled job on an equipment row in the weekly equipment-load calendar. Source: scheduleRows / sb().",
+        "fields": [
+          {
+            "name": "equipment",
+            "type": "string (Equipment ref)",
+            "example": "Batch IQ #3"
+          },
+          {
+            "name": "day",
+            "type": "enum",
+            "example": "tue",
+            "notes": "mon/tue/wed/thu/fri columns; week of Jun 29 (Mon 29..Fri 3)"
+          },
+          {
+            "name": "label",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "process name"
+          },
+          {
+            "name": "sub",
+            "type": "string",
+            "example": "WO-48211",
+            "notes": "customer name or WO ref (Apex, Summit, Delta...)"
+          },
+          {
+            "name": "kind",
+            "type": "enum",
+            "example": "blue",
+            "notes": "blue(scheduled/active)/green/amber/gray(tentative)"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Equipment",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "blue",
+          "green",
+          "amber",
+          "gray"
+        ]
+      },
+      {
+        "name": "Certification",
+        "description": "A quality certification document tied to a WO/spec. Source: certs list, orderDetail Certification, dashboard 'certs to release'.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "C-9921",
+            "notes": "C-9920, C-9918, C-9915, C-9910"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Apex Aerospace"
+          },
+          {
+            "name": "wo",
+            "type": "string (WorkOrder ref)",
+            "example": "WO-48211"
+          },
+          {
+            "name": "specification",
+            "type": "string (Specification ref)",
+            "example": "AMS 2759/3",
+            "notes": "AMS 2759/2, AMS 2759/10, AMS 2759/7, 'Customer spec SB-4'"
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "Vacuum / Nitride / Carbonitride / Neutral"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Pending",
+            "notes": "Pending / Released; auto-releases on hardness pass"
+          },
+          {
+            "name": "copies",
+            "type": "int",
+            "example": "2",
+            "notes": "from customer default cert"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "one-to-one"
+          },
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Specification",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "Pending",
+          "Released"
+        ]
+      },
+      {
+        "name": "Specification",
+        "description": "Customer or industry specification. Source: specs list, used by parts/certs.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "AMS 2759/3",
+            "notes": "AMS 2759/2, AMS 2750, MIL-S-6090, SB-4"
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "example": "Carburizing & hardening of steel parts"
+          },
+          {
+            "name": "rev",
+            "type": "string",
+            "example": "K",
+            "notes": "M, F, A, 2"
+          },
+          {
+            "name": "owner",
+            "type": "enum string",
+            "example": "SAE",
+            "notes": "SAE / DoD / Customer"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Part",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Certification",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Customer",
+            "kind": "many-to-one",
+            "notes": "for customer-owned specs like SB-4"
+          }
+        ],
+        "statuses": [
+          "SAE",
+          "DoD",
+          "Customer"
+        ]
+      },
+      {
+        "name": "Standard",
+        "description": "Approved quality/process standard in the library. Source: standards list.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "AS9100D",
+            "notes": "Nadcap HT, ISO 9001, CQI-9"
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "example": "Aerospace quality management system"
+          },
+          {
+            "name": "category",
+            "type": "enum string",
+            "example": "Quality",
+            "notes": "Quality / Process"
+          },
+          {
+            "name": "reviewed / nextReview",
+            "type": "date",
+            "example": "Mar 2026",
+            "notes": "Jan/Feb/Apr 2026"
+          }
+        ],
+        "relationships": [],
+        "statuses": [
+          "Quality",
+          "Process"
+        ]
+      },
+      {
+        "name": "Invoice",
+        "description": "A customer invoice / billing queue item. Source: invoicing list, customerDetail recent activity, dashboard finance.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "INV-30412",
+            "notes": "INV-30408, INV-30401; '\u2014' when not yet billed"
+          },
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Delta Turbine"
+          },
+          {
+            "name": "wo",
+            "type": "string (WorkOrder ref)",
+            "example": "WO-48190",
+            "notes": "'WO-48120 \u00b7 shipped'"
+          },
+          {
+            "name": "amount",
+            "type": "currency string",
+            "example": "$6,740",
+            "notes": "$4,180, $2,910, $11,200, $1,560"
+          },
+          {
+            "name": "date",
+            "type": "date",
+            "example": "Jun 28",
+            "notes": "Jun 30, Jun 26, Jun 24"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "Sent",
+            "notes": "To bill / Sent / Paid"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "WorkOrder",
+            "kind": "one-to-one"
+          }
+        ],
+        "statuses": [
+          "To bill",
+          "Sent",
+          "Paid"
+        ]
+      },
+      {
+        "name": "ARBalance",
+        "description": "Accounts-receivable aging per customer + period totals. Source: arRows, AR screen, dashboard A/R aging buckets.",
+        "fields": [
+          {
+            "name": "customer",
+            "type": "string (Customer ref)",
+            "example": "Vulcan Forge"
+          },
+          {
+            "name": "balance",
+            "type": "currency string",
+            "example": "$24,600",
+            "notes": "Apex $58,400; Titan $41,200; Midwest $36,900; Delta $28,100; Crane $18,300"
+          },
+          {
+            "name": "current",
+            "type": "currency string",
+            "example": "$11,200"
+          },
+          {
+            "name": "pastDue",
+            "type": "currency string",
+            "example": "$13,400",
+            "notes": "$0 / $8,200 / $4,100"
+          },
+          {
+            "name": "oldest",
+            "type": "string",
+            "example": "47 d",
+            "notes": "days past due; '\u2014' when none; 38 d, 34 d"
+          },
+          {
+            "name": "riskKind",
+            "type": "enum",
+            "example": "bad",
+            "notes": "ok / warn / bad (drives color)"
+          },
+          {
+            "name": "aging buckets (period)",
+            "type": "currency",
+            "example": "Current $181K / 1\u201330 $50K / 31\u201360 $18K / 61\u201390 $8K / 90+ $5K",
+            "notes": "period totals; total open $262K, past due $31K"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "one-to-one"
+          },
+          {
+            "to": "Invoice",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": [
+          "ok",
+          "warn",
+          "bad"
+        ]
+      },
+      {
+        "name": "Operator",
+        "description": "User/operator/employee with role and authorization. Source: floor operators, activity actors, salespeople, recipe createdBy, Setup 'Operators & Security', patterns Operator-ID form.",
+        "fields": [
+          {
+            "name": "id / operatorId",
+            "type": "string/int",
+            "example": "Operator ID (validation: must be > 1000)"
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "example": "Dana Mercer",
+            "notes": "abbreviated forms: D. Mercer, S. Vance, K. Obi, L. Day, R. Cole, M. Patel, J. Ruiz, T. Brand"
+          },
+          {
+            "name": "initials",
+            "type": "string",
+            "example": "DM"
+          },
+          {
+            "name": "title / role",
+            "type": "string",
+            "example": "Plant Manager",
+            "notes": "Buyer, Eng, etc"
+          },
+          {
+            "name": "viewAsRole",
+            "type": "enum",
+            "example": "manager",
+            "notes": "manager / sales / office (dashboard role switch)"
+          },
+          {
+            "name": "dept",
+            "type": "string",
+            "example": "Assigned dept \u00b7 Set by master format"
+          },
+          {
+            "name": "quoteAuthLimit",
+            "type": "currency",
+            "example": "$25,000",
+            "notes": "'Your quote limit' / authorization threshold"
+          },
+          {
+            "name": "permissions",
+            "type": "string",
+            "example": "module permissions and signatures",
+            "notes": "Setup: roles, module permissions, signatures"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Role",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Quote",
+            "kind": "one-to-many",
+            "notes": "as salesperson"
+          },
+          {
+            "to": "TrackingEvent",
+            "kind": "one-to-many",
+            "notes": "as scan actor"
+          },
+          {
+            "to": "ProcessMaster",
+            "kind": "one-to-many",
+            "notes": "createdBy"
+          }
+        ],
+        "statuses": [
+          "manager",
+          "sales",
+          "office"
+        ]
+      },
+      {
+        "name": "Role",
+        "description": "Permission/view role. Source: role segmented control + Setup security.",
+        "fields": [
+          {
+            "name": "key",
+            "type": "enum",
+            "example": "manager",
+            "notes": "manager / sales / office"
+          },
+          {
+            "name": "label",
+            "type": "string",
+            "example": "Manager"
+          },
+          {
+            "name": "permissions",
+            "type": "string[]",
+            "example": "module permissions",
+            "notes": "controls dashboard variant and module access"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Operator",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": [
+          "manager",
+          "sales",
+          "office"
+        ]
+      },
+      {
+        "name": "PriceKey",
+        "description": "A named pricing scheme assigned to customers/parts. Source: customer/part priceKey, Setup 'Pricing & Price Keys', customerDetail Pricing tab.",
+        "fields": [
+          {
+            "name": "id / name",
+            "type": "string",
+            "example": "AERO-1"
+          },
+          {
+            "name": "description",
+            "type": "string",
+            "example": "Step pricing, customer overrides and dimensional pricing"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Part",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "PricingRule",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": []
+      },
+      {
+        "name": "PricingRule",
+        "description": "Step-pricing override row under a price key (per-process rate/min charge). Source: customerDetail Pricing tab 'Step pricing overrides \u00b7 price key AERO-1'.",
+        "fields": [
+          {
+            "name": "process",
+            "type": "string",
+            "example": "Carburize",
+            "notes": "Neutral harden, Temper"
+          },
+          {
+            "name": "basis",
+            "type": "enum string",
+            "example": "per lb",
+            "notes": "per lb / per lot"
+          },
+          {
+            "name": "rate",
+            "type": "currency",
+            "example": "$10.30",
+            "notes": "Neutral harden $6.80; Temper per lot $1,440"
+          },
+          {
+            "name": "minCharge",
+            "type": "currency",
+            "example": "$250",
+            "notes": "$180; '\u2014' when none"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "PriceKey",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "QuoteLine",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": [
+          "per lb",
+          "per lot",
+          "flat"
+        ]
+      },
+      {
+        "name": "Document",
+        "description": "A file attached to a customer/order. Source: customerDetail Documents tab.",
+        "fields": [
+          {
+            "name": "fileType",
+            "type": "enum",
+            "example": "PDF",
+            "notes": "PDF / DWG"
+          },
+          {
+            "name": "name",
+            "type": "string",
+            "example": "PO 7741-A.pdf",
+            "notes": "'Quality agreement.pdf', 'TS-4471 rev C.dwg'"
+          },
+          {
+            "name": "date",
+            "type": "date",
+            "example": "Jun 26"
+          },
+          {
+            "name": "size",
+            "type": "string",
+            "example": "240 KB",
+            "notes": "1.1 MB, 820 KB"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Customer",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Part",
+            "kind": "many-to-one",
+            "notes": "drawing files reference part rev"
+          }
+        ],
+        "statuses": [
+          "PDF",
+          "DWG"
+        ]
+      },
+      {
+        "name": "CAR",
+        "description": "Corrective Action Request (quality). NEW in REDESIGN file (Quality / CARs module). Source: redesign nav 'CARs 3', dashboard 'Open CARs', 'CAR-0312 overdue'.",
+        "fields": [
+          {
+            "name": "id",
+            "type": "string",
+            "example": "CAR-0312"
+          },
+          {
+            "name": "reason",
+            "type": "string",
+            "example": "Hardness out of spec \u00b7 root cause due"
+          },
+          {
+            "name": "status",
+            "type": "enum string",
+            "example": "overdue",
+            "notes": "open / overdue"
+          },
+          {
+            "name": "openCount",
+            "type": "int",
+            "example": "3",
+            "notes": "'1 overdue'"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "WorkOrder",
+            "kind": "many-to-one",
+            "notes": "raised against an order"
+          },
+          {
+            "to": "Operator",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "open",
+          "overdue"
+        ]
+      },
+      {
+        "name": "Maintenance",
+        "description": "Pyrometry / equipment maintenance event (AMS 2750 TUS/SAT). NEW in REDESIGN (Maintenance module). Source: redesign 'AMS 2750 pyrometry due', 'TUS in 3 days'.",
+        "fields": [
+          {
+            "name": "standard",
+            "type": "string (Standard/Spec ref)",
+            "example": "AMS 2750",
+            "notes": "pyrometry standard"
+          },
+          {
+            "name": "type",
+            "type": "string",
+            "example": "TUS",
+            "notes": "Temperature Uniformity Survey; SAT implied"
+          },
+          {
+            "name": "equipment",
+            "type": "string (Equipment ref)",
+            "example": "Temper Oven #4"
+          },
+          {
+            "name": "due",
+            "type": "string/date",
+            "example": "in 3 days",
+            "notes": "'1 due'"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Equipment",
+            "kind": "many-to-one"
+          },
+          {
+            "to": "Standard",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": [
+          "due",
+          "overdue"
+        ]
+      },
+      {
+        "name": "ReportGroup",
+        "description": "Grouped report catalog. Source: reportGroups, Reports screen.",
+        "fields": [
+          {
+            "name": "title",
+            "type": "enum string",
+            "example": "Sales",
+            "notes": "Sales / Accounts Receivable / Production & Tracking / Quotes"
+          },
+          {
+            "name": "icon",
+            "type": "string",
+            "example": "\u2637"
+          },
+          {
+            "name": "items",
+            "type": "string[]",
+            "example": "['Sales by Customer','Sales by Process','Sales Summary','Bookings vs. Shipments']",
+            "notes": "A/R: ['A/R Aging','Customer Statements','Cash Receipts','Past-Due Detail']; Production: ['Equipment Utilization','On-Time Delivery','Reject Report','Work-in-Process']; Quotes: ['Quotes Dashboard','Win / Loss','Quote Aging','Quoted vs. Won']"
+          }
+        ],
+        "relationships": [],
+        "statuses": []
+      },
+      {
+        "name": "DashboardKPI",
+        "description": "Metric tiles on role dashboards. Source: today screen, redesign dashboards.",
+        "fields": [
+          {
+            "name": "label",
+            "type": "string",
+            "example": "On-Time %"
+          },
+          {
+            "name": "value",
+            "type": "string",
+            "example": "94.2 %",
+            "notes": "Open Orders 86; Revenue MTD $418K; Open A/R $262K; Late Orders 5; Open Quotes 12"
+          },
+          {
+            "name": "delta",
+            "type": "string",
+            "example": "\u25b2 1.1 pts",
+            "notes": "'\u25b2 4 today', '82% to goal', '$31K past due', '2 ship today', '4 to approve'"
+          },
+          {
+            "name": "role",
+            "type": "enum",
+            "example": "manager",
+            "notes": "manager/sales/office variants; sales KPIs: Win Rate 61%, Quoted MTD $142K, Won MTD $86K, Avg Quote Age 2.8d; office KPIs: Invoiced MTD $396K, Cash MTD $310K"
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Role",
+            "kind": "many-to-one"
+          }
+        ],
+        "statuses": []
+      },
+      {
+        "name": "SetupModule",
+        "description": "Configuration area tiles. Source: setupCards, Setup screen.",
+        "fields": [
+          {
+            "name": "title",
+            "type": "string",
+            "example": "Operators & Security",
+            "notes": "Plant Setup, Process Masters, Equipment & Areas, Pricing & Price Keys, Certifications & Forms"
+          },
+          {
+            "name": "desc",
+            "type": "string",
+            "example": "Operator IDs, roles, module permissions and signatures."
+          }
+        ],
+        "relationships": [
+          {
+            "to": "Operator",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "Equipment",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "ProcessMaster",
+            "kind": "one-to-many"
+          },
+          {
+            "to": "PriceKey",
+            "kind": "one-to-many"
+          }
+        ],
+        "statuses": []
+      },
+      {
+        "name": "CommandPaletteItem / NavItem",
+        "description": "Navigation + command palette entries (\u2318K). Source: navData, palAll.",
+        "fields": [
+          {
+            "name": "label",
+            "type": "string",
+            "example": "Release certifications"
+          },
+          {
+            "name": "group",
+            "type": "enum string",
+            "example": "Action",
+            "notes": "Go to / Sales / Production / Quality / Finance / Config / Reference / Create / Action"
+          },
+          {
+            "name": "key",
+            "type": "string (route)",
+            "example": "certs"
+          },
+          {
+            "name": "icon",
+            "type": "string",
+            "example": "\u25b8"
+          },
+          {
+            "name": "badge",
+            "type": "string",
+            "example": "12",
+            "notes": "nav counts: Quotes 12, Orders 86, Certs 7"
+          }
+        ]
+      }
+    ],
+    "sampleData": "CUSTOMERS: Apex Aerospace (Wichita KS, Net 30, #1042, YTD $214K, A/R $58,400, priceKey AERO-1, default cert AMS 2759/3); Midwest Gear & Axle (Toledo OH); Titan Fasteners (Cleveland OH, Net 45); Delta Turbine (Indianapolis IN); Crane Aero Components (Dayton OH); Vulcan Forge (Pittsburgh PA, Net 60, status Hold); Summit Bearings; Ironclad Tooling (Erie PA, Dormant). CONTACTS: Sara Lin/Buyer/sara.lin@apexaero.com/(316)555-0142, Marcus Reed/Quality Mgr/m.reed@apexaero.com, Ava Cho/A/P/ap@apexaero.com. PARTS: TS-4471 Turbine shaft 4140 Rc58-62 case .020-.030in; CS-88 Cap screw Rc40-45; BR-12 Blade root HV650+; RG-440 Ring gear; RC-200 Bearing race; DB-7 Die block; SP-119 Spacer ring 8620; HS-22 Hub shaft 4340; PG-88 Planet gear. PROCESS MASTERS: PM-CARB-58 (Carburize&temper rev C, 6 steps, used by 14 parts, created by T.Brand\u00b7Eng, updated May 2 2026), PM-VAC-44, PM-NIT-09, PM-CN-21, PM-NH-15, PM-ANN-03. RECIPE STEPS (PM-CARB-58): 1 Receive&verify/Receiving, 2 Wash&rack/Wash station, 3 Carburize/Batch IQ#3 [1700\u00b0F,8.0hr,0.90%C,Oil quench], 4 Temper/Temper Oven#4 [350\u00b0F,2.0hr], 5 Final inspect [Rc58-62,Case .020-.030in], 6 Certify&ship/Shipping. QUOTES: Q-2841 Apex $8,420 (Approve, salesperson S.Vance, valid Jul30, margin 42%), Q-2840 Midwest $3,150 Sent, Q-2838 Titan $1,890 Won, Q-2835 Crane $640, Q-2831 Vulcan $12,300, Q-2828 Summit $2,040 Won. QUOTE LINES Q-2841: Carburize per lb 600lb $6,180 + Temper per lot $1,440 + Certification flat $800 = $8,420. WORK ORDERS: WO-48211 Apex/TS-4471 Carburize+Temper 480pc due Jul2 In Process (PO 7741-A, ordered Jun26, recipe PM-CARB-58 rev C, 68% on Batch IQ#3), WO-48205 Titan 5,200 Vac harden, WO-48190 Delta Nitride 96, WO-48177 Midwest Carbonitride 310, WO-48142 Crane Temper 220 LATE, WO-48120 Summit Neutral 1,440 Ready to ship, WO-48098 Vulcan Anneal 40 Received, WO-48066/48041/48201/47980. EQUIPMENT/FLOOR: Batch IQ#3 (Carburize WO-48211 Apex 480pc 68% op K.Obi 1700\u00b0F 2h12m), Pit Furnace#1 (Nitride WO-48190 Delta 96pc 41% L.Day 975\u00b0F), Vacuum#1 (Vac harden WO-48205 Titan 5,200 88% R.Cole 1850\u00b0F 22m), Continuous Belt#2 (Carbonitride WO-48177 Midwest 310 55% M.Patel 1550\u00b0F), Temper Oven#4 (On hold/alarm +18\u00b0F WO-48142 Crane J.Ruiz), Endo Gen#1 (Idle). CERTS: C-9921 Apex WO-48211 AMS2759/3 Pending, C-9920 Titan AMS2759/2, C-9918 Delta AMS2759/10 Released, C-9915 Midwest AMS2759/7 Released, C-9910 Summit 'Customer spec SB-4'. SPECS: AMS2759/3 revK (SAE), AMS2759/2 revM, AMS2750 revF Pyrometry, MIL-S-6090 revA (DoD), SB-4 rev2 (Customer). STANDARDS: AS9100D (Quality, Mar2026), Nadcap HT (Process, Jan2026), ISO9001 (Feb2026), CQI-9 (Apr2026). INVOICES: INV-30412 Delta $6,740 Sent, INV-30408 Apex $11,200 Paid, INV-30401 Titan $1,560 Paid; uninvoiced: Summit WO-48120 $4,180 To bill, Midwest WO-48177 $2,910 To bill. A/R AGING: total $262K open / $31K past due; buckets Current $181K, 1-30 $50K, 31-60 $18K, 61-90 $8K, 90+ $5K. Per-customer: Apex $58,400 (ok), Titan $41,200 ($8,200 past 38d warn), Midwest $36,900, Delta $28,100 ($4,100 34d), Vulcan $24,600 ($13,400 past 47d bad), Crane $18,300. OPERATORS: Dana Mercer (DM, Plant Manager), S.Vance (sales, quote limit $25,000), T.Brand (Eng), K.Obi, L.Day, R.Cole, M.Patel, J.Ruiz. ROLES: manager/sales/office. PRICE KEY AERO-1 overrides: Carburize per lb $10.30 min $250, Neutral harden per lb $6.80 min $180, Temper per lot $1,440. DOCUMENTS: PO 7741-A.pdf (240KB), Quality agreement.pdf (1.1MB), TS-4471 rev C.dwg (820KB). REDESIGN-ONLY: CARs (CAR-0312 overdue 'Hardness out of spec'), Maintenance/Pyrometry (AMS 2750 TUS due Temper Oven#4 in 3 days), live SSI/SCADA furnace temps. Pipeline stages: Quote\u2192Order\u2192Schedule\u2192Track\u2192Cert\u2192Ship\u2192Invoice. Date context: Tue Jun 30 2026."
+  },
+  "slice": {
+    "invoice": {
+      "statuses": [
+        "To bill (amber) \u2014 order shipped but not yet invoiced; invoice number shows as '\u2014'",
+        "Sent (blue) \u2014 invoice generated and sent to customer",
+        "Paid (green) \u2014 payment received",
+        "(subtitle counter: '9 shipped & uninvoiced' is the To-bill queue size)"
+      ],
+      "fields": [
+        "Invoice # (e.g. INV-30412; blank/'\u2014' while in To-bill state)",
+        "Customer",
+        "Source WO reference (e.g. 'WO-48120 \u00b7 shipped')",
+        "Amount (e.g. $4,180)",
+        "Date (invoice/ship date, e.g. Jun 30)",
+        "Status pill"
+      ],
+      "fromOrder": "Invoice is created per Work Order. Once a WO ships it appears in the Invoicing list as a 'To bill' row keyed to that WO with amount carried from the order, invoice # = '\u2014'. Billing the row assigns an INV-##### number and moves it to 'Sent'. Strongly implies invoice-on-ship (the To-bill trigger is the shipped state), not invoice-on-completion. Amount = order value (which = quote total). No separate invoice line editing screen is shown.",
+      "arHandling": "Sent/unpaid invoices roll into Accounts Receivable. A/R screen ages balances into buckets: Current, 1\u201330, 31\u201360, 61\u201390, 90+ days. A/R table columns: Customer, Balance, Current, Past Due, Oldest (days). Dashboard tiles: Open A/R $262K, Past Due $31K, Invoiced MTD $396K. A 'Close [month] period' action exists (period-close accounting). Past-due example: Vulcan Forge 47 days, customer flagged 'Hold'. Paid invoices drop out of open A/R."
+    },
+    "order": {
+      "statuses": [
+        "Received (gray)",
+        "Scheduled (gray)",
+        "In Process (blue)",
+        "Ready to ship (green)",
+        "Late (red)"
+      ],
+      "fields": [
+        "Work Order # (WO-48211)",
+        "Status pill",
+        "Customer",
+        "Customer PO (PO 7741-A)",
+        "Process summary (e.g. 'Carburize + Temper')",
+        "Ordered date",
+        "Due date",
+        "Certify flag (Yes \u00b7 AMS 2759/3)",
+        "Order value ($8,420)",
+        "Parts list (each: part #, description incl. material, qty, spec/hardness Rc) \u2014 order can hold MULTIPLE parts: TS-4471 x480 + SP-119 x120",
+        "Process steps / traveler",
+        "Pricing breakdown",
+        "Activity log"
+      ],
+      "statuses_note": "",
+      "fromQuote": "Order is created from a won quote. Order-detail Activity log literally records 'Order created from Q-2841'. Order value ($8,420) and the pricing breakdown are carried over verbatim from the quote's pricing lines.",
+      "pricingBreakdown": "Pricing card mirrors the quote lines as a read-only breakdown: 'Carburize \u00b7 600 lb' = $6,180, 'Temper' = $1,440, 'Certification' = $800, Total = $8,420. Same numbers/labels as the quote pricing lines.",
+      "certHandling": "Certification is flagged at the order header (Certify: Yes \u00b7 AMS 2759/3). A dedicated cert card states: 'Cert AMS 2759/3 will generate after final inspect. Releases automatically on hardness pass.' Certs are their own entity (Certifications screen: C-9921 etc., status Pending\u2192Released, linked to customer+WO+spec+type). An unreleased cert BLOCKS shipment ('Cert AMS 2759/3 required before ship'; dashboard 'X certs awaiting release \u00b7 Blocking X shipments'). Certification also appears as a priced line ($800).",
+      "travelerModel": "Process steps form the traveler and are instantiated from the part's assigned Process Master recipe (header: 'Recipe: PM-CARB-58 \u00b7 rev C'). The Process Master defines standard ordered steps; each step has: number, operation, equipment/work-center, instructions, parameters (e.g. 1700\u00b0F / 8.0 hr / 0.90% C / Oil quench), and a track-in/track-out point. On the order, each step gains live state: done (\u2713 with operator + timestamp), in-process (\u25c9 with % complete + est. finish), or scheduled/not-started. Step sequence on WO-48211 matches the PM-CARB-58 recipe steps: Receive & verify \u2192 Wash & rack \u2192 Carburize \u2192 Temper \u2192 Final inspect \u2192 Cert & ship."
+    },
+    "quote": {
+      "statuses": [
+        "Draft (amber) \u2014 shown on quote builder header",
+        "Sent (blue)",
+        "Approve / Awaiting approval (amber) \u2014 needs manager approval",
+        "Won (green)"
+      ],
+      "fields": [
+        "Quote # (Q-2841)",
+        "Status",
+        "Customer",
+        "Customer PO",
+        "Part (id + name, e.g. TS-4471 \u2014 Turbine shaft)",
+        "Material (4140 steel)",
+        "Quantity (480 pieces)",
+        "Required by date",
+        "Quote date",
+        "Valid until (date, +30 days)",
+        "Salesperson (S. Vance)",
+        "Your quote limit ($25,000 \u2014 per-user approval ceiling)",
+        "Notes & terms (free text: lead time, validity, cert language)",
+        "Value, Age (days), Status (in list view)",
+        "Customer snapshot: Terms, YTD sales, Default cert, Open orders"
+      ],
+      "pricingModel": "Line-item based. Each pricing line has a PROCESS, a BASIS, a QTY/WT, an editable RATE, and a computed AMOUNT (rate \u00d7 qty-or-weight). Three basis types observed: 'per lb' (Carburize: 600 lb \u00d7 $10.30 = $6,180), 'per lot' (Temper: 1 \u00d7 $1,440 = $1,440), and 'flat' (Certification: 1 \u00d7 $800 = $800). Per-piece is implied/likely but not shown. Note weight basis (600 lb) is distinct from piece quantity (480) \u2014 weight is entered/derived separately. Summary block: Subtotal $8,420, Discount $0 (discount field exists), Total $8,420, Est. margin 42% (margin shown but cost source not exposed).",
+      "lineStructure": "Columns: PROCESS | BASIS | QTY/WT | RATE (editable input) | AMOUNT. '+ Add line' button to add lines. Lines typically map 1:1 to processes/steps plus a certification line. The same lines flow through to the order's pricing breakdown.",
+      "transitions": "Draft \u2192 (Send quote) \u2192 Sent \u2192 Won. 'Save draft' and 'Send quote' are the two header actions. Quotes over the salesperson's quote limit ($25,000) route to 'Approve' (awaiting manager approval) before Sent. A Won quote spawns an Order (Activity: 'Order created from Q-2841'). Win/Loss and Quote Aging reporting implied."
+    },
+    "openQuestions": [
+      "Exact pricing formula: where do RATEs come from (part record, Process Master, customer pricing tab, or manual)? The customer detail has a 'Pricing' tab but its contract/price-list logic is not shown.",
+      "How is the per-lb WEIGHT (600 lb) derived from the piece quantity (480)? Is weight entered manually, computed from a part unit weight, or both?",
+      "Is a 'per piece' basis supported in addition to per-lb / per-lot / flat? Only three bases are demonstrated.",
+      "How is 'Est. margin' (42%) computed \u2014 what cost model feeds it, and is cost captured per process/lb? Cost data is not in this slice.",
+      "Discount handling: line-level vs quote-level, percentage vs amount, and who may apply it (field exists but is $0).",
+      "Approval rules: the $25,000 'quote limit' implies an approval workflow, but who approves, what happens above limit, and whether limits are per-user/per-role is undefined.",
+      "Who can send a quote vs. who must get approval first, and whether Sent quotes can be revised/re-sent (versioning).",
+      "Quote\u2192Order conversion trigger: does marking a quote 'Won' auto-create the order, or is it a manual 'Create order' action? Does customer PO receipt drive it?",
+      "Invoice timing: confirm invoice-on-ship vs invoice-on-completion. The 'To bill' state is tied to 'shipped', but completion vs ship is not disambiguated.",
+      "Partial shipments / partial invoicing: orders hold multiple parts (480 + 120) \u2014 can parts ship and invoice separately, or only the whole WO at once?",
+      "Tax and freight: no tax, freight, or surcharge lines appear anywhere in quote/order/invoice \u2014 is the shop tax-exempt or is this simply out of scope?",
+      "Multi-part quoting: the quote builder shows a single part block while orders carry multiple parts \u2014 can a quote contain multiple parts/lines per part?",
+      "Credit hold enforcement: customers have a 'Hold' status (Vulcan Forge) \u2014 does hold block new quotes/orders/shipments, and at which step?",
+      "Certification auto-release rule specifics: 'releases automatically on hardness pass' \u2014 what defines a pass, and what happens on fail (rework loop, re-quote)?",
+      "Numbering schemes and currency/rounding rules for Q-, WO-, INV-, and C- identifiers are assumed but not specified.",
+      "A/R period close semantics: what 'Close June period' actually locks (invoices, cash receipts) is unspecified, and cash-receipt/application flow is not shown."
+    ]
+  },
+  "glossary": {
+    "statuses": [
+      {
+        "value": "Received",
+        "appliesTo": "Order / Work order (also a Tracking column)",
+        "meaning": "Parts/lot have physically arrived and been counted/verified at receiving, but no processing has started yet. Gray (neutral/queued) pill."
+      },
+      {
+        "value": "Scheduled",
+        "appliesTo": "Order / Work order",
+        "meaning": "Work order has been assigned to a piece of equipment and a date on the load schedule, but the run has not begun. Gray pill."
+      },
+      {
+        "value": "In Process",
+        "appliesTo": "Order / Work order (also a Tracking column and order-detail header)",
+        "meaning": "Work order is actively moving through its heat-treat process steps on the floor. Blue (active/in-progress) pill."
+      },
+      {
+        "value": "On Hold",
+        "appliesTo": "Order / Work order",
+        "meaning": "Work is paused \u2014 typically due to a quality problem (e.g. failed final inspection) or a credit/hold issue; cannot proceed until cleared. Amber/red pill. Rendered as 'On hold' for equipment.",
+        "value_variants": "On Hold, On hold, Hold"
+      },
+      {
+        "value": "Late",
+        "appliesTo": "Order / Work order",
+        "meaning": "Work order is past its promised due/ship date. Red (error/urgent) pill; also surfaced as a 'LATE' flag on tracking cards."
+      },
+      {
+        "value": "Ready to ship",
+        "appliesTo": "Order / Work order",
+        "meaning": "All processing and certification are complete; the lot is finished and awaiting shipment. Green (done/good) pill. Equivalent tracking column: 'Available to Ship'."
+      },
+      {
+        "value": "Released",
+        "appliesTo": "Certification",
+        "meaning": "The certification (e.g. AMS 2759/3 cert) has been released/approved, which unblocks the order so it can ship. Green pill. Auto-releases on a hardness pass."
+      },
+      {
+        "value": "Pending",
+        "appliesTo": "Certification",
+        "meaning": "Certification has been generated but is still awaiting release/sign-off; it blocks shipment until released. Amber pill."
+      },
+      {
+        "value": "Draft",
+        "appliesTo": "Quote",
+        "meaning": "Quote is being built and has not yet been sent to the customer. Used as the quote-builder header state."
+      },
+      {
+        "value": "Sent",
+        "appliesTo": "Quote (also Invoice)",
+        "meaning": "Quote/invoice has been sent to the customer and is awaiting a response/payment. Blue pill."
+      },
+      {
+        "value": "Approve",
+        "appliesTo": "Quote",
+        "meaning": "Quote requires internal approval before it can be sent \u2014 e.g. it exceeds the salesperson's authorization limit ($25,000). Amber (action-needed) pill.",
+        "value_variants": "Approve, Awaiting Approval"
+      },
+      {
+        "value": "Won",
+        "appliesTo": "Quote",
+        "meaning": "Quote was accepted by the customer and converted into an order. Green pill."
+      },
+      {
+        "value": "To bill",
+        "appliesTo": "Invoice",
+        "meaning": "Order has shipped but has not yet been invoiced (shipped & uninvoiced). Amber (action-needed) pill.",
+        "value_variants": "To bill, Uninvoiced, Shipped uninvoiced"
+      },
+      {
+        "value": "Paid",
+        "appliesTo": "Invoice",
+        "meaning": "Invoice has been paid in full by the customer. Green pill."
+      },
+      {
+        "value": "Invoiced",
+        "appliesTo": "Invoice / Order",
+        "meaning": "An invoice has been generated for a shipped order (used in finance metrics like 'Invoiced MTD')."
+      },
+      {
+        "value": "Active",
+        "appliesTo": "Customer (also Process Master)",
+        "meaning": "Account/recipe is in active use and in good standing. Green pill. For a Process Master, 'Active' means the revision is the current one in use."
+      },
+      {
+        "value": "Hold",
+        "appliesTo": "Customer",
+        "meaning": "Customer account is on hold (e.g. credit/AR hold, such as a past-due balance); new work may be restricted. Amber pill."
+      },
+      {
+        "value": "Dormant",
+        "appliesTo": "Customer",
+        "meaning": "Account is inactive \u2014 no recent orders (e.g. no orders in 60 days). Gray pill."
+      },
+      {
+        "value": "Running",
+        "appliesTo": "Shop-floor equipment (furnace/oven)",
+        "meaning": "Equipment is actively processing a load right now. Green pill on the Shop Floor screen."
+      },
+      {
+        "value": "Idle",
+        "appliesTo": "Shop-floor equipment",
+        "meaning": "Equipment has no load and is available ('No load \u00b7 available'). Gray pill."
+      },
+      {
+        "value": "Shipped",
+        "appliesTo": "Order / Work order",
+        "meaning": "The finished lot has been shipped to the customer (seen in customer order history)."
+      },
+      {
+        "value": "Quoted",
+        "appliesTo": "Quote (metric)",
+        "meaning": "Dollar value of quotes issued in the period ('Quoted MTD'); denotes a quote has been priced/issued."
+      },
+      {
+        "value": "Wash & Rack",
+        "appliesTo": "Tracking lifecycle column",
+        "meaning": "Stage where parts are degreased/washed and loaded onto fixtures/racks before the thermal process."
+      },
+      {
+        "value": "Final Inspect",
+        "appliesTo": "Tracking lifecycle column",
+        "meaning": "Stage where surface hardness and case depth are verified on sample pieces before certification."
+      },
+      {
+        "value": "Available to Ship",
+        "appliesTo": "Tracking lifecycle column",
+        "meaning": "Finished, certified lots ready to be shipped (kanban equivalent of the 'Ready to ship' order status)."
+      },
+      {
+        "value": "Pass / Fail",
+        "appliesTo": "Inspection / Certification",
+        "meaning": "Result of final hardness inspection; a hardness pass auto-releases the certification, a fail puts the order on hold."
+      }
+    ],
+    "glossary": [
+      {
+        "term": "Carburize",
+        "definition": "Case-hardening process that diffuses carbon into the surface of low-carbon steel at high temperature (e.g. ~1700\u00b0F, controlled carbon atmosphere) then quenches, producing a hard, wear-resistant case over a tough core. Recipe example PM-CARB-58."
+      },
+      {
+        "term": "Carbonitride",
+        "definition": "Case-hardening process similar to carburizing but adds nitrogen along with carbon to the surface, giving a hard case at lower temperatures; often followed by temper. Recipe example PM-CN-21."
+      },
+      {
+        "term": "Nitride",
+        "definition": "Surface-hardening process that diffuses nitrogen into the steel surface at relatively low temperature, producing a very hard wear/fatigue-resistant case with minimal distortion (measured in Vickers, e.g. HV 650+). Recipe example PM-NIT-09."
+      },
+      {
+        "term": "Neutral harden",
+        "definition": "Through-hardening in a neutral (carbon-balanced) atmosphere that hardens the part without adding or removing surface carbon; austenitize then quench. Recipe example PM-NH-15."
+      },
+      {
+        "term": "Vacuum harden",
+        "definition": "Hardening performed in a vacuum furnace to prevent surface oxidation/decarburization, giving clean, bright through-hardened parts. Recipe example PM-VAC-44."
+      },
+      {
+        "term": "Temper",
+        "definition": "Low-temperature reheat after hardening (e.g. 350\u00b0F, 2 hr, air cool) that reduces brittleness and relieves stress to reach final target hardness. Often a second step after carburize/carbonitride."
+      },
+      {
+        "term": "Anneal",
+        "definition": "Slow heat-and-cool process that softens steel to improve machinability or relieve internal stress. Recipe example PM-ANN-03 ('soften for machining')."
+      },
+      {
+        "term": "Stress relieve",
+        "definition": "Sub-critical heat treatment that removes residual internal stresses from prior machining/forming without significantly changing hardness."
+      },
+      {
+        "term": "Through harden",
+        "definition": "Hardening that develops the target hardness throughout the full cross-section of the part (vs. only the surface case)."
+      },
+      {
+        "term": "Case depth",
+        "definition": "Depth of the hardened surface layer produced by carburize/carbonitride/nitride processes, specified as a range (e.g. .020\u2013.030 in) and verified at final inspection."
+      },
+      {
+        "term": "Hardness Rc (Rockwell C)",
+        "definition": "Hardness measured on the Rockwell C scale, the standard for hardened steel; specified as a range (e.g. Rc 58\u201362). Reported in the cert and checked on sample pieces per lot."
+      },
+      {
+        "term": "Hardness HV (Vickers)",
+        "definition": "Vickers hardness scale used for thin/nitrided cases where Rockwell is unsuitable (e.g. HV 650+ for nitrided surfaces)."
+      },
+      {
+        "term": "Work order (WO)",
+        "definition": "The shop production order for a job (e.g. WO-48211) created from a quote/order; carries the part, quantity, process, due date and travels the floor through track-in/track-out steps."
+      },
+      {
+        "term": "Traveler",
+        "definition": "Printed routing/instruction sheet that accompanies a job (lot) through the shop, listing the process steps, equipment and operator sign-offs ('Print traveler')."
+      },
+      {
+        "term": "Lot",
+        "definition": "A grouped batch of parts processed together under one work order; sampling for inspection is per lot (e.g. 3 pc/lot), and pricing/quantities are tracked by lot."
+      },
+      {
+        "term": "Rack / Fixture",
+        "definition": "The fixture/basket parts are loaded onto for furnace processing (e.g. '2 racks of 240'); done during the Wash & Rack step."
+      },
+      {
+        "term": "Track-in / Track-out",
+        "definition": "Barcode/scan events that record when a job enters ('track in') and leaves ('track out') a process step or piece of equipment, driving live shop-floor status."
+      },
+      {
+        "term": "Process Master (recipe / PM)",
+        "definition": "The master recipe (e.g. PM-CARB-58 rev C) defining the standard ordered steps, equipment, parameters (temp/time/%C/quench) and instructions; shared by every part assigned to it and revision-controlled."
+      },
+      {
+        "term": "Recipe",
+        "definition": "Synonym used in the prototype for a Process Master \u2014 the defined sequence of steps and parameters for producing a required metallurgical result."
+      },
+      {
+        "term": "Batch IQ furnace",
+        "definition": "Integral-Quench batch furnace \u2014 a sealed atmosphere furnace with an internal oil quench tank, used for carburizing/hardening a batch then quenching without exposure to air (e.g. 'Batch IQ #3')."
+      },
+      {
+        "term": "Pit furnace",
+        "definition": "Deep vertical (pit-style) furnace loaded from the top, commonly used for nitriding and long parts (e.g. 'Pit Furnace #1')."
+      },
+      {
+        "term": "Continuous belt furnace",
+        "definition": "Conveyor/mesh-belt furnace that moves parts continuously through heat and quench zones for high-volume processing such as carbonitriding (e.g. 'Continuous Belt #2')."
+      },
+      {
+        "term": "Temper oven",
+        "definition": "Lower-temperature oven dedicated to the tempering step after hardening (e.g. 'Temper Oven #4')."
+      },
+      {
+        "term": "Vacuum furnace",
+        "definition": "Furnace that processes parts under vacuum to prevent oxidation/decarburization; used for vacuum hardening ('Vacuum #1')."
+      },
+      {
+        "term": "Endo generator (Endo Gen)",
+        "definition": "Endothermic gas generator that supplies the controlled carbon-bearing atmosphere to atmosphere furnaces (e.g. 'Endo Gen #1')."
+      },
+      {
+        "term": "Quench (oil quench)",
+        "definition": "Rapid cooling step (e.g. in oil) immediately after austenitizing/carburizing that transforms the steel to a hard martensitic structure."
+      },
+      {
+        "term": "AMS 2759/3",
+        "definition": "SAE Aerospace Material Specification for carburizing and hardening of steel parts; a common customer-required cert spec in the prototype."
+      },
+      {
+        "term": "AMS 2759/2",
+        "definition": "SAE AMS spec for heat treatment of low-alloy steel parts (used for vacuum/through-hardened jobs)."
+      },
+      {
+        "term": "AMS 2759/7 / 2759/10",
+        "definition": "Additional AMS 2759-series sub-specs referenced for specific processes (e.g. carbonitriding, nitriding) on certifications."
+      },
+      {
+        "term": "AMS 2750 (Pyrometry)",
+        "definition": "SAE AMS specification governing pyrometry \u2014 temperature-measurement accuracy, furnace surveys and instrument calibration required for compliant heat treating."
+      },
+      {
+        "term": "MIL-S-6090",
+        "definition": "U.S. military specification for the heat-treat process of steels used in aircraft."
+      },
+      {
+        "term": "Specification (spec)",
+        "definition": "A customer or industry document (e.g. AMS 2759/3, customer spec SB-4) that defines the required process, hardness, case depth and certification for a part."
+      },
+      {
+        "term": "Standard",
+        "definition": "An approved quality/process standard the shop is accredited to (e.g. AS9100D, ISO 9001, Nadcap HT, CQI-9), maintained in the standards library."
+      },
+      {
+        "term": "Nadcap (HT)",
+        "definition": "Industry accreditation program (National Aerospace and Defense Contractors Accreditation Program) for special processes such as heat treating."
+      },
+      {
+        "term": "AS9100D",
+        "definition": "Aerospace quality management system standard built on ISO 9001, required by aerospace customers."
+      },
+      {
+        "term": "CQI-9",
+        "definition": "AIAG Special Process: Heat Treat System Assessment \u2014 an automotive-industry self-assessment standard for heat-treat process control."
+      },
+      {
+        "term": "Certification (cert)",
+        "definition": "The quality document (e.g. C-9921) generated after final inspection certifying the lot met the specified process/hardness/case depth; must be released before the order can ship."
+      },
+      {
+        "term": "Process master step",
+        "definition": "An individual ordered operation within a Process Master (Receive & verify, Wash & rack, Carburize, Temper, Final inspect, Certify & ship), each with equipment, instructions, parameters and a track-in/out scan point."
+      },
+      {
+        "term": "Price key",
+        "definition": "A pricing profile (e.g. AERO-1) tied to a customer/part that drives step pricing rates, minimum charges and overrides."
+      },
+      {
+        "term": "Step pricing",
+        "definition": "Pricing model where each process step is priced by a basis \u2014 per lb, per lot, or flat \u2014 with optional customer rate overrides and minimum charges."
+      },
+      {
+        "term": "Pyrometry",
+        "definition": "The discipline of accurate temperature measurement and furnace temperature-uniformity control in heat treating, governed by AMS 2750."
+      },
+      {
+        "term": "Shop floor / Tracking",
+        "definition": "Live, scan-driven view of jobs by equipment/area, organized into lifecycle columns (Received, Wash & Rack, In Process, Final Inspect, Available to Ship) showing real-time progress."
+      },
+      {
+        "term": "Schedule (equipment load)",
+        "definition": "The weekly equipment-load plan assigning work orders to furnaces/ovens by day (e.g. Batch IQ #3, Pit Furnace #1 across Mon\u2013Fri)."
+      },
+      {
+        "term": "Material grade",
+        "definition": "The steel alloy designation of the part (e.g. 4140, 8620, 4340), which determines the appropriate heat-treat process and achievable hardness."
+      }
+    ]
+  },
+  "nav": {
+    "screens": [
+      {
+        "name": "Today",
+        "group": "(top, ungrouped)",
+        "kind": "dashboard",
+        "summary": "Morning command center: KPI tiles (open orders, on-time %, revenue MTD, A/R, late orders), live furnace/floor status, needs-attention list, today's flow counts; Cmd+K command palette."
+      },
+      {
+        "name": "Quotes",
+        "group": "Sales",
+        "kind": "list",
+        "summary": "Open quotes table (Q-#, customer/process, value, age, status pill Approve/Sent/Won); rows click into Quote Builder."
+      },
+      {
+        "name": "Customers",
+        "group": "Sales",
+        "kind": "list",
+        "summary": "Active accounts table (name/city, terms, open count, YTD, status pill Active/Hold/Dormant); rows click into Customer Detail."
+      },
+      {
+        "name": "Part Maintenance",
+        "group": "Sales",
+        "kind": "list",
+        "summary": "Part records table (part #, description/customer, assigned process master, rev, hardness spec); rows click into Part Editor."
+      },
+      {
+        "name": "Process Master",
+        "group": "Production",
+        "kind": "list",
+        "summary": "Process recipe library table (PM-#, description, step count, rev, parts-used-by); rows click into Recipe/Process Master Editor."
+      },
+      {
+        "name": "Orders",
+        "group": "Production",
+        "kind": "list",
+        "summary": "Open work orders table (WO-#, customer/part, process, qty, due, status pill In Process/Scheduled/Late/Ready/Received); rows click into Order Detail."
+      },
+      {
+        "name": "Schedule",
+        "group": "Production",
+        "kind": "board",
+        "summary": "Weekly equipment scheduling grid: rows are furnaces/ovens (Batch IQ, Pit, Vacuum, Belt, Temper), columns Mon-Fri with colored process blocks."
+      },
+      {
+        "name": "Tracking",
+        "group": "Production",
+        "kind": "board",
+        "summary": "Kanban of WO travelers across stages: Received, Wash & Rack, In Process, Final Inspect, Available to Ship; cards show WO, customer, detail, scan time, LATE flag."
+      },
+      {
+        "name": "Shop Floor",
+        "group": "Production",
+        "kind": "grid",
+        "summary": "Equipment status card grid (Running/On hold/Idle) with process, WO, customer, qty, operator, progress bar, last scan."
+      },
+      {
+        "name": "Certifications",
+        "group": "Quality",
+        "kind": "list",
+        "summary": "Certs awaiting release table (C-#, customer/WO, specification AMS, process type, status pill Pending/Released)."
+      },
+      {
+        "name": "Specifications",
+        "group": "Quality",
+        "kind": "list",
+        "summary": "Customer & industry specs table (spec id e.g. AMS 2759/3, title, rev, owner SAE/DoD/Customer)."
+      },
+      {
+        "name": "Standards",
+        "group": "Quality",
+        "kind": "list",
+        "summary": "Approved standards library table (AS9100D, Nadcap HT, ISO 9001, CQI-9; title, category, last reviewed)."
+      },
+      {
+        "name": "Invoicing",
+        "group": "Finance",
+        "kind": "list",
+        "summary": "Shipped & uninvoiced / invoices table (invoice #, customer, amount, date, status pill To bill/Sent/Paid)."
+      },
+      {
+        "name": "A/R",
+        "group": "Finance",
+        "kind": "list",
+        "summary": "Accounts-receivable aging table by customer (balance, current, past-due, oldest age) with color-coded past-due."
+      },
+      {
+        "name": "Reports",
+        "group": "Finance",
+        "kind": "dashboard",
+        "summary": "Report catalog grouped into Sales, Accounts Receivable, Production & Tracking, Quotes; each group lists named reports."
+      },
+      {
+        "name": "Setup",
+        "group": "(footer)",
+        "kind": "grid",
+        "summary": "Configuration card grid: Operators & Security, Plant Setup, Process Masters, Equipment & Areas, Pricing & Price Keys, Certifications & Forms."
+      },
+      {
+        "name": "Patterns",
+        "group": "(footer)",
+        "kind": "grid",
+        "summary": "Design-patterns / component reference screen (reachable from sidebar footer and command palette)."
+      },
+      {
+        "name": "Order Detail",
+        "group": "Production",
+        "kind": "detail",
+        "summary": "Work-order detail view opened from the Orders list (route orderDetail); WO header, traveler/process steps and status."
+      },
+      {
+        "name": "Quote Builder",
+        "group": "Sales",
+        "kind": "editor",
+        "summary": "Quote editor opened from a Quotes row (route quoteBuilder); build/price a quote, includes a dialog modal."
+      },
+      {
+        "name": "Customer Detail",
+        "group": "Sales",
+        "kind": "detail",
+        "summary": "Tabbed customer record (Overview, Contacts, Parts, Orders, Documents, Pricing) opened from a Customers row."
+      },
+      {
+        "name": "Part Editor",
+        "group": "Sales",
+        "kind": "editor",
+        "summary": "Part record editor opened from a Part Maintenance row (route partEditor)."
+      },
+      {
+        "name": "Process Master Editor",
+        "group": "Production",
+        "kind": "editor",
+        "summary": "Recipe editor opened from a Process Master row (route recipeEditor); ordered process steps with equipment, instructions, params, tracking points."
+      },
+      {
+        "name": "Redesign Option 1A \u2014 Workspace",
+        "group": "(redesign iteration)",
+        "kind": "dashboard",
+        "summary": "Alt Today layout in Visual Shop Redesign.dc.html: sidebar (Today; Sales: Quotes/Customers/Parts & Recipes; Production: Orders/Schedule/Tracking/Furnace Floor; Quality: CARs/Maintenance/Certifications) + KPI row, live SCADA furnace floor, needs-attention, today's flow, command palette overlay."
+      },
+      {
+        "name": "Redesign Option 1B \u2014 Pipeline",
+        "group": "(redesign iteration)",
+        "kind": "dashboard",
+        "summary": "Alt Today concept with a top lifecycle/pipeline bar across order stages (static design exploration, no new module)."
+      },
+      {
+        "name": "Redesign Option 1C \u2014 Hub",
+        "group": "(redesign iteration)",
+        "kind": "dashboard",
+        "summary": "Alt Today 'hub' concept (static design exploration, no new module)."
+      }
+    ],
+    "sidebar": [
+      {
+        "group": "(top, ungrouped)",
+        "items": [
+          "Today"
+        ]
+      },
+      {
+        "group": "Sales",
+        "items": [
+          "Quotes (badge 12)",
+          "Customers",
+          "Part Maintenance"
+        ]
+      },
+      {
+        "group": "Production",
+        "items": [
+          "Orders (badge 86)",
+          "Process Master",
+          "Schedule",
+          "Tracking",
+          "Shop Floor"
+        ]
+      },
+      {
+        "group": "Quality",
+        "items": [
+          "Certifications (badge 7)",
+          "Specifications",
+          "Standards"
+        ]
+      },
+      {
+        "group": "Finance",
+        "items": [
+          "Invoicing",
+          "A/R",
+          "Reports"
+        ]
+      },
+      {
+        "group": "(footer / standalone links)",
+        "items": [
+          "Patterns",
+          "Setup"
+        ]
+      }
+    ],
+    "coverageGaps": [],
+    "notes": "Main prototype = /home/cojoa13/Documents/claude projects/HeatSynQ/Visual Shop.dc.html. It is a single x-dc template (lines 9-786) driven by one DCLogic script (lines 787-1174); there is no per-screen data-props JSON \u2014 all mock data is inline in JS (buildLists() lines 843-962 for list screens; renderVals() lines 980+ for schedule/tracking/floor/ar/reports/setup; recipe steps lines 991-998; navData() lines 821-841 for the sidebar). Screens are switched via state.route, not separate components. Sidebar groups come from navData() (5 groups) plus two standalone footer links Patterns + Setup (template lines 51-52). The command palette (palAll, lines 1001-1025) enumerates the same destinations and adds Create/Action quick commands.\n\nCOVERAGE: The handoff's intended sidebar maps 1:1 onto the prototype with NO gaps. Every module is present \u2014 Today; Sales: Quotes/Customers/Part Maintenance; Production: Orders/Process Master/Schedule/Tracking/Shop Floor; Quality: Certifications/Specifications/Standards; Finance: Invoicing/A-R/Reports; Setup; Patterns. The prototype also exceeds the handoff with 5 detail/editor screens (Order Detail, Quote Builder, Customer Detail with 6 tabs, Part Editor, Process Master Editor) reachable by clicking list rows.\n\nREDESIGN FILE = /home/cojoa13/Documents/claude projects/HeatSynQ/Visual Shop Redesign.dc.html is a smaller, SCRIPT-LESS static iteration (~323 lines) containing three side-by-side art-direction explorations of the Today dashboard only: Option 1A Workspace (line 38), 1B Pipeline (line 168), 1C Hub (line 245). It introduces alternate nav naming worth noting for the handoff: 'Parts & Recipes' (merged Sales item), 'Furnace Floor' (vs 'Shop Floor'), and a Quality group of CARs / Maintenance / Certifications (introduces CARs/corrective-actions and equipment Maintenance concepts not in the main prototype's sidebar), and it drops the Finance group from the visible nav. These are design variants, not additional modules."
+  }
+}

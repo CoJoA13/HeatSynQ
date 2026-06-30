@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: #f6f7f9; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #1d2330; -webkit-font-smoothing: antialiased; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #d6dae2; border-radius: 6px; border: 2px solid #f6f7f9; }
+  @keyframes vsPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @keyframes vsShimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+</style>
+</helmet>
+
+<div style="height:100vh; display:flex; overflow:hidden; background:#f6f7f9;">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside style="width:252px; flex-shrink:0; background:#fbfbfd; border-right:1px solid #e7e9ee; display:flex; flex-direction:column; padding:18px 14px;">
+    <div style="display:flex; align-items:center; gap:10px; padding:4px 8px 16px;">
+      <div style="width:30px; height:30px; border-radius:8px; background:#3d63dd; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; font-family:'IBM Plex Mono',monospace;">V</div>
+      <div style="line-height:1.1;"><div style="font-weight:600; font-size:14px;">Visual Shop</div><div style="font-size:11px; color:#9aa1b0;">Heritage Heat Treat</div></div>
+    </div>
+
+    <button onClick="{{ openPalette }}" style="display:flex; align-items:center; gap:8px; width:100%; background:#fff; border:1px solid #e2e5ec; border-radius:9px; padding:8px 10px; font-family:inherit; font-size:13px; color:#8a92a3; cursor:pointer; margin-bottom:8px;">
+      <span style="font-size:14px;">⌕</span> Search or jump to…
+      <span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; background:#f0f1f5; border:1px solid #e2e5ec; border-radius:5px; padding:1px 6px; color:#9aa1b0;">⌘K</span>
+    </button>
+
+    <nav style="flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:2px; margin:0 -4px; padding:0 4px;">
+      <sc-for list="{{ navGroups }}" as="group" hint-placeholder-count="5">
+        <sc-if value="{{ group.label }}" hint-placeholder-val="{{ false }}"><div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:14px 11px 6px;">{{ group.label }}</div></sc-if>
+        <sc-for list="{{ group.items }}" as="item" hint-placeholder-count="3">
+          <a onClick="{{ item.onClick }}" style="{{ item.rowStyle }}">
+            <span>{{ item.label }}</span>
+            <sc-if value="{{ item.badge }}" hint-placeholder-val="{{ false }}"><span style="{{ item.badgeStyle }}">{{ item.badge }}</span></sc-if>
+          </a>
+        </sc-for>
+      </sc-for>
+    </nav>
+
+    <a onClick="{{ goPatterns }}" style="{{ patternsNavStyle }}"><span style="font-size:14px;">❖</span>Patterns</a>
+    <a onClick="{{ goSetup }}" style="display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:9px; color:#6b7280; font-size:13px; text-decoration:none; cursor:pointer;"><span style="font-size:14px;">⛭</span>Setup</a>
+    <div style="display:flex; align-items:center; gap:10px; padding:10px; border-top:1px solid #eef0f4; margin-top:6px;">
+      <div style="width:30px;height:30px;border-radius:50%; background:#dfe4f6; color:#3d63dd; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:12px; font-family:'IBM Plex Mono',monospace;">DM</div>
+      <div style="line-height:1.15;"><div style="font-size:12.5px; font-weight:600;">Dana Mercer</div><div style="font-size:11px; color:#9aa1b0;">Plant Manager</div></div>
+    </div>
+  </aside>
+
+  <!-- ================= MAIN ================= -->
+  <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+    <header style="height:60px; flex-shrink:0; border-bottom:1px solid #e7e9ee; background:#fff; display:flex; align-items:center; padding:0 24px 0 26px; gap:16px;">
+      <button onClick="{{ openPalette }}" style="display:flex; align-items:center; gap:10px; background:#f3f4f7; border:1px solid #e7e9ee; border-radius:10px; padding:8px 14px; width:340px; color:#9aa1b0; font-family:inherit; font-size:13px; cursor:pointer;">
+        <span style="font-size:14px;">⌕</span> Search work orders, customers, parts…
+        <span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; background:#fff; border:1px solid #e2e5ec; border-radius:5px; padding:1px 6px; color:#9aa1b0;">⌘K</span>
+      </button>
+      <div style="margin-left:auto; display:flex; align-items:center; gap:14px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3;">Tue · Jun 30, 2026</span>
+        <span style="width:1px; height:22px; background:#e7e9ee;"></span>
+        <button style="position:relative; width:34px;height:34px;border-radius:9px; border:1px solid #e7e9ee; background:#fff; cursor:pointer; font-size:14px; color:#6b7280;">⌖<span style="position:absolute; top:-3px; right:-3px; width:8px;height:8px;border-radius:50%;background:#d4503e; border:2px solid #fff;"></span></button>
+        <div style="width:32px;height:32px;border-radius:50%; background:#dfe4f6; color:#3d63dd; display:flex;align-items:center;justify-content:center; font-weight:600; font-size:12px; font-family:'IBM Plex Mono',monospace;">DM</div>
+      </div>
+    </header>
+
+    <div style="flex:1; overflow-y:auto; padding:26px 30px 60px;">
+
+      <!-- ============ TODAY / DASHBOARDS ============ -->
+      <sc-if value="{{ isToday }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex; align-items:center; margin-bottom:22px;">
+          <div><div style="font-size:22px; font-weight:600; letter-spacing:-0.02em;">Good morning, Dana</div><div style="font-size:13px; color:#8a92a3; margin-top:3px;">Tuesday, June 30, 2026</div></div>
+          <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+            <span style="font-size:12px; color:#9aa1b0;">Viewing as</span>
+            <div style="display:flex; gap:3px; background:#eef0f4; border:1px solid #e7e9ee; border-radius:9px; padding:3px;">
+              <button onClick="{{ setManager }}" style="{{ segManager }}">Manager</button>
+              <button onClick="{{ setSales }}" style="{{ segSales }}">Sales</button>
+              <button onClick="{{ setOffice }}" style="{{ segOffice }}">Office</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- MANAGER ---- -->
+        <sc-if value="{{ roleManager }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Open Orders</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">86</div><div style="font-size:11px;color:#1f9d6b;margin-top:2px;">▲ 4 today</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">On-Time %</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">94.2<span style="font-size:13px;color:#9aa1b0;">%</span></div><div style="font-size:11px;color:#1f9d6b;margin-top:2px;">▲ 1.1 pts</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Revenue MTD</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">$418K</div><div style="font-size:11px;color:#8a92a3;margin-top:2px;">82% to goal</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Open A/R</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">$262K</div><div style="font-size:11px;color:#c98a16;margin-top:2px;">$31K past due</div></div>
+            <div style="background:#fff;border:1px solid #f1d9d4;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Late Orders</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#d4503e;">5</div><div style="font-size:11px;color:#d4503e;margin-top:2px;">2 ship today</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Open Quotes</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">12</div><div style="font-size:11px;color:#8a92a3;margin-top:2px;">4 to approve</div></div>
+          </div>
+          <div style="display:grid; grid-template-columns:1.55fr 1fr; gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-size:14px;font-weight:600;">Shop Floor</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">by equipment · from tracking</span><a onClick="{{ goFloor }}" style="margin-left:auto;font-size:12px;color:#3d63dd;cursor:pointer;text-decoration:none;">Open →</a></div>
+              <div style="display:flex;flex-direction:column;gap:9px;">
+                <div style="display:grid;grid-template-columns:140px 1fr 86px;gap:12px;align-items:center;padding:11px 13px;border:1px solid #eef0f4;border-radius:11px;"><div style="font-weight:600;font-size:13px;">Batch IQ #3</div><div><div style="font-size:12px;color:#5b637a;">Carburize · WO-48211 · Apex</div><div style="height:5px;background:#eef0f4;border-radius:3px;margin-top:6px;overflow:hidden;"><div style="width:68%;height:100%;background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a92a3;text-align:right;">fin 10:25</div></div>
+                <div style="display:grid;grid-template-columns:140px 1fr 86px;gap:12px;align-items:center;padding:11px 13px;border:1px solid #eef0f4;border-radius:11px;"><div style="font-weight:600;font-size:13px;">Pit Furnace #1</div><div><div style="font-size:12px;color:#5b637a;">Nitride · WO-48190 · Delta</div><div style="height:5px;background:#eef0f4;border-radius:3px;margin-top:6px;overflow:hidden;"><div style="width:41%;height:100%;background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a92a3;text-align:right;">fin 3:10p</div></div>
+                <div style="display:grid;grid-template-columns:140px 1fr 86px;gap:12px;align-items:center;padding:11px 13px;border:1px solid #eef0f4;border-radius:11px;"><div style="font-weight:600;font-size:13px;">Vacuum #1</div><div><div style="font-size:12px;color:#5b637a;">Vac Harden · WO-48205 · Titan</div><div style="height:5px;background:#eef0f4;border-radius:3px;margin-top:6px;overflow:hidden;"><div style="width:88%;height:100%;background:#1f9d6b;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#1f9d6b;text-align:right;">fin 8:36</div></div>
+                <div style="display:grid;grid-template-columns:140px 1fr 86px;gap:12px;align-items:center;padding:11px 13px;border:1px solid #eef0f4;border-radius:11px;"><div style="font-weight:600;font-size:13px;">Continuous Belt #2</div><div><div style="font-size:12px;color:#5b637a;">Carbonitride · WO-48177 · Midwest</div><div style="height:5px;background:#eef0f4;border-radius:3px;margin-top:6px;overflow:hidden;"><div style="width:55%;height:100%;background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a92a3;text-align:right;">fin 11:50</div></div>
+                <div style="display:grid;grid-template-columns:140px 1fr 86px;gap:12px;align-items:center;padding:11px 13px;border:1px solid #f1e3c7;border-radius:11px;background:#fdfaf2;"><div style="font-weight:600;font-size:13px;">Temper Oven #4</div><div><div style="font-size:12px;color:#5b637a;">Temper · WO-48142 · Crane — late</div><div style="height:5px;background:#f1e3c7;border-radius:3px;margin-top:6px;overflow:hidden;"><div style="width:30%;height:100%;background:#c98a16;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#c98a16;text-align:right;">fin 9:40</div></div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;"><span style="font-size:14px;font-weight:600;">Needs attention</span><span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">3</span></div>
+                <div style="display:flex;gap:10px;align-items:flex-start;padding-bottom:11px;border-bottom:1px solid #f1f2f5;"><span style="width:7px;height:7px;border-radius:50%;background:#d4503e;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:13px;font-weight:500;">WO-48142 late · Crane Aero</div><div style="font-size:11.5px;color:#8a92a3;">Due yesterday · in temper</div></div></div>
+                <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #f1f2f5;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:13px;font-weight:500;">7 certs awaiting release</div><div style="font-size:11.5px;color:#8a92a3;">Blocking 7 shipments</div></div></div>
+                <div style="display:flex;gap:10px;align-items:flex-start;padding-top:11px;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:13px;font-weight:500;">$31K A/R past due</div><div style="font-size:11.5px;color:#8a92a3;">Vulcan Forge · 47 days</div></div></div>
+              </div>
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;">
+                <span style="font-size:14px;font-weight:600;">Today’s flow</span>
+                <div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12.5px;color:#5b637a;">Quotes to approve</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">4</span></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12.5px;color:#5b637a;">Orders to schedule</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">11</span></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12.5px;color:#5b637a;">Certs to release</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">7</span></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;"><span style="font-size:12.5px;color:#5b637a;">Ready to ship</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:#1f9d6b;">9</span></div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ---- SALES ---- -->
+        <sc-if value="{{ roleSales }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">My Open Quotes</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">7</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Win Rate 30d</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">61<span style="font-size:13px;color:#9aa1b0;">%</span></div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Quoted MTD</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">$142K</div></div>
+            <div style="background:#fff;border:1px solid #f1e3c7;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Awaiting Approval</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#c98a16;">4</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Avg Quote Age</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">2.8<span style="font-size:13px;color:#9aa1b0;">d</span></div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Won MTD</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#1f9d6b;">$86K</div></div>
+          </div>
+          <div style="display:grid; grid-template-columns:1.55fr 1fr; gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="font-size:14px;font-weight:600;">My quotes</span><a onClick="{{ goQuotes }}" style="margin-left:auto;font-size:12px;color:#3d63dd;cursor:pointer;text-decoration:none;">All quotes →</a></div>
+              <div style="display:flex;flex-direction:column;">
+                <div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f3f4f7;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;width:64px;">Q-2841</span><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Apex Aerospace</div><div style="font-size:11.5px;color:#8a92a3;">Vacuum harden · AMS 2759/3</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$8,420</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fbf2e0;color:#c98a16;border-radius:6px;padding:3px 9px;">Approve</span></div>
+                <div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f3f4f7;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;width:64px;">Q-2840</span><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Midwest Gear &amp; Axle</div><div style="font-size:11.5px;color:#8a92a3;">Carbonitride + temper</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$3,150</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#eef1fd;color:#3d63dd;border-radius:6px;padding:3px 9px;">Sent</span></div>
+                <div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f3f4f7;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;width:64px;">Q-2831</span><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Vulcan Forge</div><div style="font-size:11.5px;color:#8a92a3;">Anneal · large lot</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$12,300</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#eef1fd;color:#3d63dd;border-radius:6px;padding:3px 9px;">Sent</span></div>
+                <div style="display:flex;align-items:center;gap:12px;padding:11px 0;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;width:64px;">Q-2828</span><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Summit Bearings</div><div style="font-size:11.5px;color:#8a92a3;">Neutral harden</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$2,040</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Won</span></div>
+              </div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:13px;">
+              <span style="font-size:14px;font-weight:600;">Customers to follow up</span>
+              <div style="display:flex;gap:11px;align-items:center;"><div style="width:30px;height:30px;border-radius:8px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:12px;font-family:'IBM Plex Mono',monospace;">CA</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Crane Aero Components</div><div style="font-size:11.5px;color:#8a92a3;">Quote sent 5d ago · no reply</div></div></div>
+              <div style="display:flex;gap:11px;align-items:center;"><div style="width:30px;height:30px;border-radius:8px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:12px;font-family:'IBM Plex Mono',monospace;">VF</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Vulcan Forge</div><div style="font-size:11.5px;color:#8a92a3;">$12.3K quote open 6d</div></div></div>
+              <div style="display:flex;gap:11px;align-items:center;"><div style="width:30px;height:30px;border-radius:8px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:12px;font-family:'IBM Plex Mono',monospace;">IT</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">Ironclad Tooling</div><div style="font-size:11.5px;color:#8a92a3;">No orders in 60 days</div></div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- ---- OFFICE ---- -->
+        <sc-if value="{{ roleOffice }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Open A/R</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">$262K</div></div>
+            <div style="background:#fff;border:1px solid #f1d9d4;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Past Due</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#d4503e;">$31K</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Invoiced MTD</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">$396K</div></div>
+            <div style="background:#fff;border:1px solid #f1e3c7;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Certs to Release</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#c98a16;">7</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Uninvoiced Ships</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;">9</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Cash MTD</div><div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;margin-top:6px;color:#1f9d6b;">$310K</div></div>
+          </div>
+          <div style="display:grid; grid-template-columns:1.55fr 1fr; gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;"><span style="font-size:14px;font-weight:600;">A/R aging</span><a onClick="{{ goAr }}" style="margin-left:auto;font-size:12px;color:#3d63dd;cursor:pointer;text-decoration:none;">Open A/R →</a></div>
+              <div style="display:flex;flex-direction:column;gap:13px;">
+                <div><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:#5b637a;">Current</span><span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">$181K</span></div><div style="height:8px;background:#eef0f4;border-radius:4px;overflow:hidden;"><div style="width:69%;height:100%;background:#1f9d6b;"></div></div></div>
+                <div><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:#5b637a;">1–30 days</span><span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">$50K</span></div><div style="height:8px;background:#eef0f4;border-radius:4px;overflow:hidden;"><div style="width:19%;height:100%;background:#3d63dd;"></div></div></div>
+                <div><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:#5b637a;">31–60 days</span><span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">$18K</span></div><div style="height:8px;background:#eef0f4;border-radius:4px;overflow:hidden;"><div style="width:7%;height:100%;background:#c98a16;"></div></div></div>
+                <div><div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px;"><span style="color:#5b637a;">60+ days</span><span style="font-family:'IBM Plex Mono',monospace;font-weight:600;color:#d4503e;">$13K</span></div><div style="height:8px;background:#eef0f4;border-radius:4px;overflow:hidden;"><div style="width:5%;height:100%;background:#d4503e;"></div></div></div>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Billing queue</span>
+                <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Shipped, uninvoiced</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">9</span></div>
+                <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Certs to release</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;color:#c98a16;">7</span></div>
+                <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Invoices to mail</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">14</span></div>
+              </div>
+              <div style="background:#1d2330;border-radius:14px;padding:18px;color:#fff;"><div style="font-size:13px;font-weight:600;margin-bottom:5px;">A/R period close</div><div style="font-size:12px;color:#aab2c4;line-height:1.5;">June closes in 1 day. 23 invoices pending review.</div><button onClick="{{ goAr }}" style="margin-top:12px;background:#3d63dd;color:#fff;border:none;border-radius:8px;padding:8px 14px;font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;">Review &amp; close</button></div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ============ GENERIC LIST SCREENS ============ -->
+      <sc-if value="{{ isList }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex; align-items:center; margin-bottom:18px;">
+          <div><div style="font-size:20px; font-weight:600; letter-spacing:-0.01em;">{{ list.title }}</div><div style="font-size:13px; color:#8a92a3; margin-top:3px;">{{ list.subtitle }}</div></div>
+          <div style="margin-left:auto; display:flex; gap:10px;">
+            <button style="display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">⛃ Filter</button>
+            <button style="display:flex;align-items:center;gap:6px;background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">＋ {{ list.action }}</button>
+          </div>
+        </div>
+        <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; overflow:hidden;">
+          <div style="{{ list.headStyle }}">
+            <sc-for list="{{ list.headers }}" as="h" hint-placeholder-count="5"><div style="{{ h.s }}">{{ h.l }}</div></sc-for>
+          </div>
+          <sc-for list="{{ list.rows }}" as="row" hint-placeholder-count="7">
+            <div onClick="{{ row.onClick }}" style="{{ list.rowStyle }}">
+              <sc-for list="{{ row.cells }}" as="cell" hint-placeholder-count="5">
+                <div style="{{ cell.s }}">
+                  <sc-if value="{{ cell.p }}" hint-placeholder-val="{{ false }}"><span style="{{ cell.p }}">{{ cell.v }}</span></sc-if>
+                  <sc-if value="{{ cell.np }}" hint-placeholder-val="{{ true }}">{{ cell.v }}</sc-if>
+                  <sc-if value="{{ cell.sub }}" hint-placeholder-val="{{ false }}"><div style="font-size:11.5px; color:#8a92a3; margin-top:2px; font-weight:400;">{{ cell.sub }}</div></sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ ORDER DETAIL ============ -->
+      <sc-if value="{{ isOrderDetail }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;"><a onClick="{{ goOrders }}" style="font-size:12.5px;color:#3d63dd;cursor:pointer;text-decoration:none;">← Orders</a></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:20px;">
+          <div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:22px;font-weight:600;font-family:'IBM Plex Mono',monospace;">WO-48211</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#eef1fd;color:#3d63dd;border-radius:6px;padding:3px 10px;">In Process</span></div><div style="font-size:13px;color:#8a92a3;margin-top:5px;">Apex Aerospace · PO 7741-A · Carburize + Temper</div></div>
+          <div style="margin-left:auto;display:flex;gap:9px;"><button style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">Print traveler</button><button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Edit order</button></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11px;color:#8a92a3;">Ordered</div><div style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;margin-top:4px;">Jun 26, 2026</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11px;color:#8a92a3;">Due</div><div style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;margin-top:4px;">Jul 2, 2026</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11px;color:#8a92a3;">Certify</div><div style="font-size:14px;font-weight:600;margin-top:4px;">Yes · AMS 2759/3</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11px;color:#8a92a3;">Order value</div><div style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;margin-top:4px;">$8,420</div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;">
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+              <div style="padding:15px 18px;border-bottom:1px solid #eef0f4;font-size:14px;font-weight:600;">Parts</div>
+              <div style="display:grid;grid-template-columns:120px 1fr 80px 90px;gap:12px;padding:10px 18px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;border-bottom:1px solid #f1f2f5;"><span>PART</span><span>DESCRIPTION</span><span style="text-align:right;">QTY</span><span style="text-align:right;">SPEC</span></div>
+              <div style="display:grid;grid-template-columns:120px 1fr 80px 90px;gap:12px;padding:13px 18px;align-items:center;border-bottom:1px solid #f5f6f8;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">TS-4471</span><span style="font-size:13px;">Turbine shaft, 4140 steel</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;">480</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right;color:#8a92a3;">Rc 58–62</span></div>
+              <div style="display:grid;grid-template-columns:120px 1fr 80px 90px;gap:12px;padding:13px 18px;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">SP-119</span><span style="font-size:13px;">Spacer ring, 8620</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;">120</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;text-align:right;color:#8a92a3;">Rc 58–62</span></div>
+            </div>
+
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;"><span style="font-size:14px;font-weight:600;">Process steps</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">Recipe: PM-CARB-58 · rev C</span></div>
+              <div style="display:flex;flex-direction:column;">
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;padding-bottom:16px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#1f9d6b;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;">✓</span><span style="width:2px;flex:1;background:#cfeadd;margin-top:4px;"></span></div><div><div style="font-size:13px;font-weight:600;">Receive &amp; verify</div><div style="font-size:11.5px;color:#8a92a3;">Receiving · J. Ruiz</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a92a3;">Jun 26 · 2:10p</span></div>
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;padding-bottom:16px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#1f9d6b;color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;">✓</span><span style="width:2px;flex:1;background:#cfeadd;margin-top:4px;"></span></div><div><div style="font-size:13px;font-weight:600;">Wash &amp; rack</div><div style="font-size:11.5px;color:#8a92a3;">Wash · M. Patel</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8a92a3;">Jun 30 · 6:42a</span></div>
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;padding-bottom:16px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#3d63dd;color:#fff;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:'IBM Plex Mono',monospace;">◉</span><span style="width:2px;flex:1;background:#eef0f4;margin-top:4px;"></span></div><div><div style="font-size:13px;font-weight:600;color:#3d63dd;">Carburize <span style="font-weight:400;color:#8a92a3;">— in process</span></div><div style="font-size:11.5px;color:#8a92a3;">Batch IQ #3 · 68% · est. fin 10:25a</div></div><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#3d63dd;">tracked in</span></div>
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;padding-bottom:16px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #d9dde5;"></span><span style="width:2px;flex:1;background:#eef0f4;margin-top:4px;"></span></div><div><div style="font-size:13px;font-weight:500;color:#6b7280;">Temper</div><div style="font-size:11.5px;color:#aab0bd;">Temper Oven #4 · scheduled</div></div></div>
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;padding-bottom:16px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #d9dde5;"></span><span style="width:2px;flex:1;background:#eef0f4;margin-top:4px;"></span></div><div><div style="font-size:13px;font-weight:500;color:#6b7280;">Final inspect</div><div style="font-size:11.5px;color:#aab0bd;">Inspect · hardness + case depth</div></div></div>
+                <div style="display:grid;grid-template-columns:24px 1fr auto;gap:14px;"><div style="display:flex;flex-direction:column;align-items:center;"><span style="width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #d9dde5;"></span></div><div><div style="font-size:13px;font-weight:500;color:#6b7280;">Cert &amp; ship</div><div style="font-size:11.5px;color:#aab0bd;">Cert AMS 2759/3 required before ship</div></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Pricing</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Carburize · 600 lb</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$6,180</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Temper</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$1,440</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Certification</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$800</span></div>
+              <div style="display:flex;justify-content:space-between;border-top:1px solid #eef0f4;padding-top:11px;"><span style="font-size:13px;font-weight:600;">Total</span><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;">$8,420</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #f1e3c7;border-radius:14px;padding:18px;"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16;"></span><span style="font-size:13px;font-weight:600;">Certification</span></div><div style="font-size:12.5px;color:#5b637a;line-height:1.5;">Cert <strong style="color:#1d2330;">AMS 2759/3</strong> will generate after final inspect. Releases automatically on hardness pass.</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:13px;"><span style="font-size:14px;font-weight:600;">Activity</span>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#3d63dd;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Tracked in to Batch IQ #3</div><div style="font-size:11px;color:#aab0bd;">Today 7:14a · K. Obi</div></div></div>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#cbd0db;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Scheduled on Batch IQ #3</div><div style="font-size:11px;color:#aab0bd;">Jun 27 · D. Mercer</div></div></div>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#cbd0db;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Order created from Q-2841</div><div style="font-size:11px;color:#aab0bd;">Jun 26 · S. Vance</div></div></div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ SCHEDULE ============ -->
+      <sc-if value="{{ isSchedule }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;margin-bottom:18px;"><div><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Schedule</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Equipment load · week of Jun 29</div></div><div style="margin-left:auto;display:flex;gap:3px;background:#eef0f4;border:1px solid #e7e9ee;border-radius:9px;padding:3px;"><button style="border:none;background:#fff;border-radius:7px;padding:6px 14px;font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.08);">Week</button><button style="border:none;background:transparent;border-radius:7px;padding:6px 14px;font-family:inherit;font-size:12.5px;color:#6b7280;cursor:pointer;">Day</button></div></div>
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+          <div style="display:grid;grid-template-columns:160px repeat(5,1fr);border-bottom:1px solid #eef0f4;">
+            <div style="padding:13px 16px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;">EQUIPMENT</div>
+            <div style="padding:13px 10px;font-size:12px;font-weight:600;border-left:1px solid #f1f2f5;">Mon 29</div>
+            <div style="padding:13px 10px;font-size:12px;font-weight:600;border-left:1px solid #f1f2f5;background:#fafbff;">Tue 30</div>
+            <div style="padding:13px 10px;font-size:12px;font-weight:600;border-left:1px solid #f1f2f5;">Wed 1</div>
+            <div style="padding:13px 10px;font-size:12px;font-weight:600;border-left:1px solid #f1f2f5;">Thu 2</div>
+            <div style="padding:13px 10px;font-size:12px;font-weight:600;border-left:1px solid #f1f2f5;">Fri 3</div>
+          </div>
+          <sc-for list="{{ scheduleRows }}" as="r" hint-placeholder-count="5">
+            <div style="display:grid;grid-template-columns:160px repeat(5,1fr);border-bottom:1px solid #f5f6f8;min-height:64px;">
+              <div style="padding:13px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;">{{ r.name }}</div>
+              <div style="border-left:1px solid #f1f2f5;padding:8px 6px;">{{ r.mon }}</div>
+              <div style="border-left:1px solid #f1f2f5;padding:8px 6px;background:#fafbff;">{{ r.tue }}</div>
+              <div style="border-left:1px solid #f1f2f5;padding:8px 6px;">{{ r.wed }}</div>
+              <div style="border-left:1px solid #f1f2f5;padding:8px 6px;">{{ r.thu }}</div>
+              <div style="border-left:1px solid #f1f2f5;padding:8px 6px;">{{ r.fri }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ TRACKING (kanban) ============ -->
+      <sc-if value="{{ isTracking }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;margin-bottom:18px;"><div><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Tracking</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Live shop-floor status by area · scan-driven</div></div><div style="margin-left:auto;display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#1f9d6b;background:#e8f5ef;border:1px solid #cfeadd;border-radius:999px;padding:4px 11px;"><span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b;animation:vsPulse 2s infinite;"></span>live</div></div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;align-items:start;">
+          <sc-for list="{{ trackingCols }}" as="col" hint-placeholder-count="5">
+            <div style="background:#f0f2f6;border:1px solid #e7e9ee;border-radius:13px;padding:12px;display:flex;flex-direction:column;gap:9px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:2px 4px;"><span style="font-size:12.5px;font-weight:600;">{{ col.name }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">{{ col.count }}</span></div>
+              <sc-for list="{{ col.cards }}" as="c" hint-placeholder-count="3">
+                <div style="{{ c.style }}">
+                  <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;">{{ c.wo }}</span><sc-if value="{{ c.flag }}" hint-placeholder-val="{{ false }}"><span style="{{ c.flagStyle }}">{{ c.flag }}</span></sc-if></div>
+                  <div style="font-size:12px;color:#3a4151;margin-top:5px;">{{ c.customer }}</div>
+                  <div style="font-size:11px;color:#8a92a3;margin-top:2px;">{{ c.detail }}</div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#aab0bd;margin-top:7px;">{{ c.scan }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ SHOP FLOOR ============ -->
+      <sc-if value="{{ isFloor }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;margin-bottom:18px;"><div><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Shop Floor</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Status by equipment · 6 of 8 running</div></div></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+          <sc-for list="{{ floorCards }}" as="f" hint-placeholder-count="6">
+            <div style="{{ f.style }}">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><span style="font-size:14px;font-weight:600;">{{ f.name }}</span><span style="{{ f.pill }}">{{ f.status }}</span></div>
+              <sc-if value="{{ f.wo }}" hint-placeholder-val="{{ false }}">
+                <div style="font-size:12.5px;color:#3a4151;">{{ f.process }} · <span style="font-family:'IBM Plex Mono',monospace;">{{ f.wo }}</span></div>
+                <div style="font-size:12px;color:#8a92a3;margin-top:2px;">{{ f.customer }} · {{ f.qty }}</div>
+                <div style="height:6px;background:#eef0f4;border-radius:3px;margin-top:11px;overflow:hidden;"><div style="{{ f.barStyle }}"></div></div>
+                <div style="display:flex;justify-content:space-between;margin-top:9px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#aab0bd;"><span>{{ f.operator }}</span><span>{{ f.scan }}</span></div>
+              </sc-if>
+              <sc-if value="{{ f.idle }}" hint-placeholder-val="{{ false }}"><div style="font-size:12.5px;color:#aab0bd;padding:8px 0;">No load · available</div></sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ A/R ============ -->
+      <sc-if value="{{ isAr }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;margin-bottom:18px;"><div><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Accounts Receivable</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">$262K open · $31K past due</div></div><button onClick="{{ goAr }}" style="margin-left:auto;background:#1d2330;color:#fff;border:none;border-radius:9px;padding:9px 15px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Close June period</button></div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">Current</div><div style="font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;margin-top:5px;color:#1f9d6b;">$181K</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">1–30 days</div><div style="font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;margin-top:5px;">$50K</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">31–60 days</div><div style="font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;margin-top:5px;color:#c98a16;">$18K</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">61–90 days</div><div style="font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;margin-top:5px;color:#c98a16;">$8K</div></div>
+          <div style="background:#fff;border:1px solid #f1d9d4;border-radius:12px;padding:15px;"><div style="font-size:11.5px;color:#8a92a3;">90+ days</div><div style="font-family:'IBM Plex Mono',monospace;font-size:21px;font-weight:600;margin-top:5px;color:#d4503e;">$5K</div></div>
+        </div>
+        <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+          <div style="display:grid;grid-template-columns:1.5fr 110px 110px 110px 120px;gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>CUSTOMER</span><span style="text-align:right;">BALANCE</span><span style="text-align:right;">CURRENT</span><span style="text-align:right;">PAST DUE</span><span style="text-align:right;">OLDEST</span></div>
+          <sc-for list="{{ arRows }}" as="r" hint-placeholder-count="6">
+            <div style="display:grid;grid-template-columns:1.5fr 110px 110px 110px 120px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">{{ r.name }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;">{{ r.bal }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;color:#8a92a3;">{{ r.cur }}</span><span style="{{ r.pastStyle }}">{{ r.past }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">{{ r.oldest }}</span></div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ REPORTS ============ -->
+      <sc-if value="{{ isReports }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:18px;"><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Reports</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Every report, grouped — no menu hunting</div></div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:16px;">
+          <sc-for list="{{ reportGroups }}" as="g" hint-placeholder-count="4">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;"><span style="width:32px;height:32px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:14px;">{{ g.icon }}</span><span style="font-size:14px;font-weight:600;">{{ g.title }}</span></div>
+              <div style="display:flex;flex-direction:column;">
+                <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="4">
+                  <a style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-top:1px solid #f3f4f7;font-size:13px;color:#3a4151;text-decoration:none;cursor:pointer;">{{ it }}<span style="color:#c5cad4;">→</span></a>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ SETUP ============ -->
+      <sc-if value="{{ isSetup }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:18px;"><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Setup</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Configuration once buried under Maintain ▸ … ▸ …, now flat</div></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;">
+          <sc-for list="{{ setupCards }}" as="s" hint-placeholder-count="6">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:13px;padding:17px;"><div style="font-size:13.5px;font-weight:600;margin-bottom:4px;">{{ s.title }}</div><div style="font-size:12px;color:#8a92a3;line-height:1.5;">{{ s.desc }}</div></div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- ============ QUOTE BUILDER ============ -->
+      <sc-if value="{{ isQuoteBuilder }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:6px;"><a onClick="{{ goQuotes }}" style="font-size:12.5px;color:#3d63dd;cursor:pointer;text-decoration:none;">← Quotes</a></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:20px;">
+          <div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:22px;font-weight:600;font-family:'IBM Plex Mono',monospace;">Q-2841</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fbf2e0;color:#c98a16;border-radius:6px;padding:3px 10px;">Draft</span></div><div style="font-size:13px;color:#8a92a3;margin-top:5px;">Apex Aerospace · carburize + temper</div></div>
+          <div style="margin-left:auto;display:flex;gap:9px;"><button style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">Save draft</button><button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Send quote</button></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;">
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:15px;">Customer &amp; part</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Customer</span><input defaultValue="Apex Aerospace" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Customer PO</span><input defaultValue="7741-A" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Part</span><input defaultValue="TS-4471 — Turbine shaft" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Material</span><input defaultValue="4140 steel" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Quantity</span><input defaultValue="480" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Required by</span><input type="date" defaultValue="2026-07-08" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;color:#1d2330;outline:none;background:#fff;" /></label>
+              </div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+              <div style="display:flex;align-items:center;padding:15px 18px;border-bottom:1px solid #eef0f4;"><span style="font-size:14px;font-weight:600;">Pricing lines</span><button style="margin-left:auto;background:#eef1fd;color:#3d63dd;border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;">＋ Add line</button></div>
+              <div style="display:grid;grid-template-columns:1.5fr 0.8fr 0.8fr 0.9fr 0.8fr;gap:12px;padding:10px 18px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>PROCESS</span><span>BASIS</span><span>QTY / WT</span><span style="text-align:right;">RATE</span><span style="text-align:right;">AMOUNT</span></div>
+              <div style="display:grid;grid-template-columns:1.5fr 0.8fr 0.8fr 0.9fr 0.8fr;gap:12px;padding:12px 18px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Carburize</span><span style="font-size:12.5px;color:#8a92a3;">per lb</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">600 lb</span><input defaultValue="10.30" style="border:1px solid #e2e5ec;border-radius:7px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;outline:none;width:100%;" /><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;">$6,180</span></div>
+              <div style="display:grid;grid-template-columns:1.5fr 0.8fr 0.8fr 0.9fr 0.8fr;gap:12px;padding:12px 18px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Temper</span><span style="font-size:12.5px;color:#8a92a3;">per lot</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">1</span><input defaultValue="1,440.00" style="border:1px solid #e2e5ec;border-radius:7px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;outline:none;width:100%;" /><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;">$1,440</span></div>
+              <div style="display:grid;grid-template-columns:1.5fr 0.8fr 0.8fr 0.9fr 0.8fr;gap:12px;padding:12px 18px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Certification</span><span style="font-size:12.5px;color:#8a92a3;">flat</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">1</span><input defaultValue="800.00" style="border:1px solid #e2e5ec;border-radius:7px;padding:5px 8px;font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;outline:none;width:100%;" /><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;">$800</span></div>
+              <div style="display:flex;justify-content:flex-end;gap:32px;padding:14px 18px;background:#fafbfc;"><span style="font-size:13px;color:#5b637a;">Subtotal</span><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;width:84px;text-align:right;">$8,420</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:12px;">Notes &amp; terms</div>
+              <textarea defaultValue="Lead time 5–7 working days. Pricing valid 30 days. Certification per AMS 2759/3 included." style="width:100%;min-height:74px;border:1px solid #e2e5ec;border-radius:9px;padding:11px;font-family:inherit;font-size:13px;color:#3a4151;outline:none;resize:vertical;line-height:1.5;"></textarea>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Quote summary</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Subtotal</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$8,420</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Discount</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;">$0</span></div>
+              <div style="display:flex;justify-content:space-between;border-top:1px solid #eef0f4;padding-top:11px;"><span style="font-size:13px;font-weight:600;">Total</span><span style="font-family:'IBM Plex Mono',monospace;font-size:15px;font-weight:600;">$8,420</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:#8a92a3;">Est. margin</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#1f9d6b;">42%</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;"><span style="font-size:14px;font-weight:600;">Quote details</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Quote #</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Q-2841</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Date</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Jun 30, 2026</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Valid until</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Jul 30, 2026</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Salesperson</span><span style="font-size:12.5px;">S. Vance</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Your quote limit</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">$25,000</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;"><span style="font-size:14px;font-weight:600;">Customer snapshot</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Terms</span><span style="font-size:12.5px;">Net 30</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">YTD sales</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">$214K</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Default cert</span><span style="font-size:12.5px;">AMS 2759/3</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Open orders</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">6</span></div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ CUSTOMER DETAIL ============ -->
+      <sc-if value="{{ isCustomerDetail }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:6px;"><a onClick="{{ goCustomers }}" style="font-size:12.5px;color:#3d63dd;cursor:pointer;text-decoration:none;">← Customers</a></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:18px;">
+          <div style="display:flex;align-items:center;gap:13px;"><div style="width:42px;height:42px;border-radius:11px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:15px;">AA</div><div><div style="display:flex;align-items:center;gap:11px;"><span style="font-size:21px;font-weight:600;letter-spacing:-0.01em;">Apex Aerospace</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Active</span></div><div style="font-size:12.5px;color:#8a92a3;margin-top:3px;">Wichita, KS · Customer #1042</div></div></div>
+          <div style="margin-left:auto;display:flex;gap:9px;"><button onClick="{{ goQuoteBuilder }}" style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">New quote</button><button onClick="{{ goOrders }}" style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">New order</button><button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Edit</button></div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:8px;">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11.5px;color:#8a92a3;">Open orders</div><div style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;margin-top:5px;">6</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11.5px;color:#8a92a3;">YTD sales</div><div style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;margin-top:5px;">$214K</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11.5px;color:#8a92a3;">A/R balance</div><div style="font-family:'IBM Plex Mono',monospace;font-size:22px;font-weight:600;margin-top:5px;">$58,400</div></div>
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:14px;"><div style="font-size:11.5px;color:#8a92a3;">Terms</div><div style="font-size:16px;font-weight:600;margin-top:9px;">Net 30</div></div>
+        </div>
+        <div style="display:flex;gap:24px;border-bottom:1px solid #e7e9ee;margin:10px 0 20px;">
+          <div onClick="{{ ctOverview.onClick }}" style="{{ ctOverview.style }}">Overview</div>
+          <div onClick="{{ ctContacts.onClick }}" style="{{ ctContacts.style }}">Contacts</div>
+          <div onClick="{{ ctParts.onClick }}" style="{{ ctParts.style }}">Parts</div>
+          <div onClick="{{ ctOrders.onClick }}" style="{{ ctOrders.style }}">Orders</div>
+          <div onClick="{{ ctDocuments.onClick }}" style="{{ ctDocuments.style }}">Documents</div>
+          <div onClick="{{ ctPricing.onClick }}" style="{{ ctPricing.style }}">Pricing</div>
+        </div>
+
+        <sc-if value="{{ showOverview }}" hint-placeholder-val="{{ true }}">
+          <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:16px;">
+            <div style="display:flex;flex-direction:column;gap:16px;">
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Account information</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;">
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Billing address</div><div style="font-size:13px;margin-top:4px;line-height:1.5;">4120 Industrial Pkwy<br>Wichita, KS 67226</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Phone</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px;margin-top:4px;">(316) 555-0142</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Primary contact</div><div style="font-size:13px;margin-top:4px;">Sara Lin · Buyer</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Email</div><div style="font-size:13px;margin-top:4px;">sara.lin@apexaero.com</div></div>
+                </div>
+              </div>
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Default settings</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;">
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Default cert</div><div style="font-size:13px;margin-top:4px;">AMS 2759/3 · 2 copies</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Price key</div><div style="font-family:'IBM Plex Mono',monospace;font-size:13px;margin-top:4px;">AERO-1</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Terms</div><div style="font-size:13px;margin-top:4px;">Net 30</div></div>
+                  <div><div style="font-size:11.5px;color:#8a92a3;">Tax exempt</div><div style="font-size:13px;margin-top:4px;">Yes · cert on file</div></div>
+                </div>
+              </div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:13px;">
+              <span style="font-size:14px;font-weight:600;">Recent activity</span>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#3d63dd;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Order WO-48211 tracked in</div><div style="font-size:11px;color:#aab0bd;">Today 7:14a</div></div></div>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#cbd0db;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Quote Q-2841 created</div><div style="font-size:11px;color:#aab0bd;">Jun 30 · S. Vance</div></div></div>
+              <div style="display:flex;gap:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#cbd0db;margin-top:5px;flex-shrink:0;"></span><div><div style="font-size:12.5px;">Invoice INV-30408 paid</div><div style="font-size:11px;color:#aab0bd;">Jun 26 · $11,200</div></div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showContacts }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+            <div style="display:grid;grid-template-columns:1.2fr 1fr 1.4fr 1fr;gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>NAME</span><span>ROLE</span><span>EMAIL</span><span>PHONE</span></div>
+            <div style="display:grid;grid-template-columns:1.2fr 1fr 1.4fr 1fr;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Sara Lin</span><span style="font-size:13px;color:#5b637a;">Buyer</span><span style="font-size:12.5px;color:#5b637a;">sara.lin@apexaero.com</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">(316) 555-0142</span></div>
+            <div style="display:grid;grid-template-columns:1.2fr 1fr 1.4fr 1fr;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Marcus Reed</span><span style="font-size:13px;color:#5b637a;">Quality Mgr</span><span style="font-size:12.5px;color:#5b637a;">m.reed@apexaero.com</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">(316) 555-0188</span></div>
+            <div style="display:grid;grid-template-columns:1.2fr 1fr 1.4fr 1fr;gap:14px;padding:14px 20px;align-items:center;"><span style="font-size:13px;font-weight:500;">Ava Cho</span><span style="font-size:13px;color:#5b637a;">A/P</span><span style="font-size:12.5px;color:#5b637a;">ap@apexaero.com</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">(316) 555-0190</span></div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showCParts }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+            <div style="display:grid;grid-template-columns:130px 1.5fr 1fr 120px;gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>PART</span><span>DESCRIPTION</span><span>PROCESS</span><span style="text-align:right;">HARDNESS</span></div>
+            <div style="display:grid;grid-template-columns:130px 1.5fr 1fr 120px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">TS-4471</span><span style="font-size:13px;">Turbine shaft, 4140</span><span style="font-size:13px;color:#5b637a;">Carburize</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Rc 58–62</span></div>
+            <div style="display:grid;grid-template-columns:130px 1.5fr 1fr 120px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">SP-119</span><span style="font-size:13px;">Spacer ring, 8620</span><span style="font-size:13px;color:#5b637a;">Carburize</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Rc 58–62</span></div>
+            <div style="display:grid;grid-template-columns:130px 1.5fr 1fr 120px;gap:14px;padding:14px 20px;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">HS-22</span><span style="font-size:13px;">Hub shaft, 4340</span><span style="font-size:13px;color:#5b637a;">Neutral harden</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Rc 40–45</span></div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showCOrders }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+            <div style="display:grid;grid-template-columns:120px 1fr 100px 110px;gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>WORK ORDER</span><span>PROCESS</span><span style="text-align:right;">DUE</span><span style="text-align:right;">STATUS</span></div>
+            <div style="display:grid;grid-template-columns:120px 1fr 100px 110px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">WO-48211</span><span style="font-size:13px;">Carburize + Temper</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Jul 2</span><span style="text-align:right;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#eef1fd;color:#3d63dd;border-radius:6px;padding:3px 9px;">In Process</span></span></div>
+            <div style="display:grid;grid-template-columns:120px 1fr 100px 110px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">WO-48066</span><span style="font-size:13px;">Carburize</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Jun 26</span><span style="text-align:right;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Shipped</span></span></div>
+            <div style="display:grid;grid-template-columns:120px 1fr 100px 110px;gap:14px;padding:14px 20px;align-items:center;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">WO-47980</span><span style="font-size:13px;">Neutral harden</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12px;text-align:right;color:#8a92a3;">Jun 18</span><span style="text-align:right;"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Shipped</span></span></div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showDocuments }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px;"><span style="width:34px;height:34px;border-radius:8px;background:#fcebe8;color:#d4503e;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;">PDF</span><div><div style="font-size:13px;font-weight:500;">PO 7741-A.pdf</div><div style="font-size:11px;color:#8a92a3;">Jun 26 · 240 KB</div></div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px;"><span style="width:34px;height:34px;border-radius:8px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;">PDF</span><div><div style="font-size:13px;font-weight:500;">Quality agreement.pdf</div><div style="font-size:11px;color:#8a92a3;">Mar 12 · 1.1 MB</div></div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px;"><span style="width:34px;height:34px;border-radius:8px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;">DWG</span><div><div style="font-size:13px;font-weight:500;">TS-4471 rev C.dwg</div><div style="font-size:11px;color:#8a92a3;">May 02 · 820 KB</div></div></div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showPricing }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;overflow:hidden;">
+            <div style="padding:14px 20px;border-bottom:1px solid #eef0f4;font-size:13.5px;font-weight:600;">Step pricing overrides <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;font-weight:400;">· price key AERO-1</span></div>
+            <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 120px;gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;"><span>PROCESS</span><span>BASIS</span><span style="text-align:right;">RATE</span><span style="text-align:right;">MIN CHG</span></div>
+            <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 120px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Carburize</span><span style="font-size:12.5px;color:#5b637a;">per lb</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;">$10.30</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;color:#8a92a3;">$250</span></div>
+            <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 120px;gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;"><span style="font-size:13px;font-weight:500;">Neutral harden</span><span style="font-size:12.5px;color:#5b637a;">per lb</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;">$6.80</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;color:#8a92a3;">$180</span></div>
+            <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 120px;gap:14px;padding:14px 20px;align-items:center;"><span style="font-size:13px;font-weight:500;">Temper</span><span style="font-size:12.5px;color:#5b637a;">per lot</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;">$1,440</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;text-align:right;color:#8a92a3;">—</span></div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- ============ PART / RECIPE EDITOR ============ -->
+      <sc-if value="{{ isPartEditor }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:6px;"><a onClick="{{ goParts }}" style="font-size:12.5px;color:#3d63dd;cursor:pointer;text-decoration:none;">← Part Maintenance</a></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:20px;">
+          <div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:22px;font-weight:600;font-family:'IBM Plex Mono',monospace;">TS-4471</span><span style="font-size:18px;font-weight:500;color:#3a4151;">Turbine shaft</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:3px 9px;">rev C</span></div><div style="font-size:13px;color:#8a92a3;margin-top:5px;">Apex Aerospace · 4140 steel</div></div>
+          <div style="margin-left:auto;display:flex;gap:9px;"><button onClick="{{ goQuoteBuilder }}" style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">Quote part</button><button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Save</button></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;">
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:15px;">Part details</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Part number</span><input defaultValue="TS-4471" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Material</span><input defaultValue="4140 steel" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Drawing rev</span><input defaultValue="C" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;grid-column:span 3;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Description</span><input defaultValue="Turbine shaft, 4140 steel, carburized & tempered" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Hardness</span><input defaultValue="Rc 58–62" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Case depth</span><input defaultValue=".020–.030 in" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;outline:none;background:#fff;" /></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Specification</span><input defaultValue="AMS 2759/3" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;outline:none;background:#fff;" /></label>
+              </div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Assigned process master</div>
+              <div onClick="{{ goRecipeEditor }}" style="display:flex;align-items:center;gap:14px;padding:14px;border:1px solid #eef0f4;border-radius:11px;cursor:pointer;">
+                <span style="width:38px;height:38px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:16px;">⌬</span>
+                <div style="flex:1;"><div style="display:flex;align-items:center;gap:9px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:600;">PM-CARB-58</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:2px 8px;">rev C</span></div><div style="font-size:12px;color:#8a92a3;margin-top:3px;">Carburize &amp; temper · 6 standard steps</div></div>
+                <span style="color:#3d63dd;font-size:12.5px;font-weight:500;">Open →</span>
+              </div>
+              <div style="font-size:12px;color:#8a92a3;margin-top:12px;line-height:1.5;">Steps, equipment and instructions are maintained on the process master and shared by every part assigned to it.</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;"><span style="font-size:14px;font-weight:600;">Part snapshot</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Revision</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">C</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Last used</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Jun 26, 2026</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Last quote</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">$8,420</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Std lot qty</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">480</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Inspection requirements</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Surface hardness</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Rc 58–62</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Case depth</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">.020–.030 in</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Scale</span><span style="font-size:12.5px;">Rockwell C</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Sample</span><span style="font-size:12.5px;">3 pc / lot</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Pricing</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Price key</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">AERO-1</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Default process</span><span style="font-size:12.5px;">Carburize</span></div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ PROCESS MASTER EDITOR ============ -->
+      <sc-if value="{{ isRecipeEditor }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:6px;"><a onClick="{{ goRecipes }}" style="font-size:12.5px;color:#3d63dd;cursor:pointer;text-decoration:none;">← Process Master</a></div>
+        <div style="display:flex;align-items:flex-start;margin-bottom:20px;">
+          <div><div style="display:flex;align-items:center;gap:12px;"><span style="font-size:22px;font-weight:600;font-family:'IBM Plex Mono',monospace;">PM-CARB-58</span><span style="font-size:18px;font-weight:500;color:#3a4151;">Carburize &amp; temper</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:3px 9px;">rev C</span></div><div style="font-size:13px;color:#8a92a3;margin-top:5px;">6 standard steps · case hardened Rc 58–62</div></div>
+          <div style="margin-left:auto;display:flex;gap:9px;"><button style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:8px 13px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">New revision</button><button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Save</button></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:16px;">
+          <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;"><span style="font-size:14px;font-weight:600;">Standard steps</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">in run order</span><button style="margin-left:auto;background:#eef1fd;color:#3d63dd;border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;">＋ Add step</button></div>
+            <div style="display:flex;flex-direction:column;gap:9px;">
+              <sc-for list="{{ recipeSteps }}" as="st" hint-placeholder-count="6">
+                <div style="display:grid;grid-template-columns:18px 26px 1fr;gap:12px;align-items:start;padding:14px;border:1px solid #eef0f4;border-radius:11px;">
+                  <span style="color:#cbd0db;font-size:15px;cursor:grab;line-height:1.3;">⠿</span>
+                  <span style="width:24px;height:24px;border-radius:7px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;">{{ st.n }}</span>
+                  <div>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><span style="font-size:13.5px;font-weight:600;">{{ st.op }}</span><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:2px 8px;">{{ st.equip }}</span><span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#9aa1b0;">{{ st.track }}</span></div>
+                    <div style="font-size:12.5px;color:#5b637a;margin-top:6px;line-height:1.5;">{{ st.instr }}</div>
+                    <sc-if value="{{ st.hasParams }}" hint-placeholder-val="{{ false }}">
+                      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">
+                        <sc-for list="{{ st.params }}" as="p" hint-placeholder-count="3"><span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fff;border:1px solid #e2e5ec;color:#3a4151;border-radius:6px;padding:3px 8px;">{{ p }}</span></sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:10px;"><span style="font-size:14px;font-weight:600;">Recipe details</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Process master</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">PM-CARB-58</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Revision</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">C</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Status</span><span style="font-size:12.5px;color:#1f9d6b;">Active</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Last updated</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">May 2, 2026</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Created by</span><span style="font-size:12.5px;">T. Brand · Eng</span></div>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <div style="display:flex;align-items:center;"><span style="font-size:14px;font-weight:600;">Used by</span><span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9aa1b0;">14 parts</span></div>
+              <div style="display:flex;align-items:center;gap:11px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">TS-4471</span><span style="font-size:12px;color:#8a92a3;">Turbine shaft · Apex</span></div>
+              <div style="display:flex;align-items:center;gap:11px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">SP-119</span><span style="font-size:12px;color:#8a92a3;">Spacer ring · Apex</span></div>
+              <div style="display:flex;align-items:center;gap:11px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;">PG-88</span><span style="font-size:12px;color:#8a92a3;">Planet gear · Midwest</span></div>
+              <a onClick="{{ goParts }}" style="font-size:12px;color:#3d63dd;cursor:pointer;text-decoration:none;">View all 14 parts →</a>
+            </div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:11px;"><span style="font-size:14px;font-weight:600;">Inspection requirements</span>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Surface hardness</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">Rc 58–62</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Case depth</span><span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;">.020–.030 in</span></div>
+              <div style="display:flex;justify-content:space-between;"><span style="font-size:12.5px;color:#5b637a;">Scale</span><span style="font-size:12.5px;">Rockwell C</span></div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- ============ PATTERNS (reference) ============ -->
+      <sc-if value="{{ isPatterns }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:24px;"><div style="font-size:20px;font-weight:600;letter-spacing:-0.01em;">Design patterns</div><div style="font-size:13px;color:#8a92a3;margin-top:3px;">Reference states for the build handoff — validation, empty, loading, error, dialogs &amp; alerts</div></div>
+        <div style="max-width:1060px;display:flex;flex-direction:column;gap:30px;">
+
+          <!-- Buttons -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Buttons</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Primary · Secondary · Ghost · Destructive · Disabled</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+              <button style="background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Primary</button>
+              <button style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;color:#3a4151;cursor:pointer;">Secondary</button>
+              <button style="background:transparent;border:none;border-radius:9px;padding:9px 14px;font-family:inherit;font-size:13px;font-weight:500;color:#3d63dd;cursor:pointer;">Ghost</button>
+              <button style="background:#fff;border:1px solid #f1d9d4;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;color:#d4503e;cursor:pointer;">Delete</button>
+              <button disabled="true" style="background:#f0f1f5;border:1px solid #eef0f4;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;color:#b3b9c5;cursor:not-allowed;">Disabled</button>
+              <button style="background:#eef1fd;color:#3d63dd;border:none;border-radius:8px;padding:6px 12px;font-family:inherit;font-size:12.5px;font-weight:500;cursor:pointer;">＋ Small</button>
+            </div>
+          </div>
+
+          <!-- Status pills -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Status</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Shared status vocabulary across orders, quotes, certs &amp; invoices</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:20px;display:flex;gap:9px;flex-wrap:wrap;align-items:center;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:3px 9px;">Received</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;color:#6b7280;border-radius:6px;padding:3px 9px;">Scheduled</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#eef1fd;color:#3d63dd;border-radius:6px;padding:3px 9px;">In Process</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fbf2e0;color:#c98a16;border-radius:6px;padding:3px 9px;">On Hold</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fcebe8;color:#d4503e;border-radius:6px;padding:3px 9px;">Late</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Ready to ship</span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#e8f5ef;color:#1f9d6b;border-radius:6px;padding:3px 9px;">Released</span>
+            </div>
+          </div>
+
+          <!-- Form fields & validation -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Form fields &amp; validation</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Default · Error · Success · Disabled, with inline messages</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:20px;">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Operator ID</span><input defaultValue="1042" style="border:1px solid #e2e5ec;border-radius:9px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;" /><span style="font-size:11.5px;color:#9aa1b0;">Must be greater than 1000.</span></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#d4503e;font-weight:500;">Operator ID</span><input defaultValue="980" style="border:1px solid #d4503e;border-radius:9px;padding:9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;box-shadow:0 0 0 3px rgba(212,80,62,.12);" /><span style="font-size:11.5px;color:#d4503e;">Must be greater than 1000.</span></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#1f9d6b;font-weight:500;">Operator ID</span><div style="position:relative;"><input defaultValue="1043" style="width:100%;border:1px solid #1f9d6b;border-radius:9px;padding:9px 32px 9px 11px;font-family:'IBM Plex Mono',monospace;font-size:13px;outline:none;" /><span style="position:absolute;right:11px;top:50%;transform:translateY(-50%);color:#1f9d6b;font-size:13px;">✓</span></div><span style="font-size:11.5px;color:#1f9d6b;">Available.</span></label>
+                <label style="display:flex;flex-direction:column;gap:6px;"><span style="font-size:11.5px;color:#8a92a3;font-weight:500;">Assigned dept.</span><input defaultValue="Heat Treat" disabled="true" style="border:1px solid #eef0f4;border-radius:9px;padding:9px 11px;font-family:inherit;font-size:13px;background:#f3f4f7;color:#9aa1b0;outline:none;" /><span style="font-size:11.5px;color:#9aa1b0;">Set by master format.</span></label>
+              </div>
+              <div style="display:flex;align-items:center;gap:12px;margin-top:18px;padding:12px 14px;background:#fcebe8;border:1px solid #f1d9d4;border-radius:10px;"><span style="color:#d4503e;font-size:14px;">⚠</span><span style="font-size:12.5px;color:#a33524;">2 fields need attention before this operator can be saved.</span></div>
+              <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;"><button style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:9px 15px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">Cancel</button><button disabled="true" style="background:#f0f1f5;border:1px solid #eef0f4;border-radius:9px;padding:9px 15px;font-family:inherit;font-size:13px;font-weight:500;color:#b3b9c5;cursor:not-allowed;">Save operator</button></div>
+            </div>
+          </div>
+
+          <!-- Alerts -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Inline alerts</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Success · Info · Warning · Error</div></div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;align-items:center;gap:11px;padding:13px 15px;background:#e8f5ef;border:1px solid #cfeadd;border-radius:11px;"><span style="color:#1f9d6b;font-size:14px;">✓</span><span style="font-size:13px;color:#1b7a55;">Certification C-9921 released. Order is now available to ship.</span></div>
+              <div style="display:flex;align-items:center;gap:11px;padding:13px 15px;background:#eef1fd;border:1px solid #d3dcfa;border-radius:11px;"><span style="color:#3d63dd;font-size:14px;">ℹ</span><span style="font-size:13px;color:#2c4db0;">Order WO-48205 was auto-tracked out of Vacuum #1.</span></div>
+              <div style="display:flex;align-items:center;gap:11px;padding:13px 15px;background:#fbf2e0;border:1px solid #f1e3c7;border-radius:11px;"><span style="color:#c98a16;font-size:14px;">⚠</span><span style="font-size:13px;color:#946312;">Quote Q-2841 exceeds your $25,000 authorization and needs approval.</span></div>
+              <div style="display:flex;align-items:center;gap:11px;padding:13px 15px;background:#fcebe8;border:1px solid #f1d9d4;border-radius:11px;"><span style="color:#d4503e;font-size:14px;">⚠</span><span style="font-size:13px;color:#a33524;">WO-48142 is past due and on hold — final inspection failed.</span></div>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+            <!-- Empty state -->
+            <div>
+              <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Empty state</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">No records yet</div></div>
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:40px 24px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;">
+                <div style="width:52px;height:52px;border-radius:13px;background:#f0f1f5;color:#aab0bd;display:flex;align-items:center;justify-content:center;font-size:22px;">☷</div>
+                <div style="font-size:14px;font-weight:600;">No quotes yet</div>
+                <div style="font-size:12.5px;color:#8a92a3;max-width:240px;line-height:1.5;">Create a quote to start the order lifecycle for this customer.</div>
+                <button style="margin-top:6px;background:#3d63dd;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">＋ New quote</button>
+              </div>
+            </div>
+            <!-- Error state -->
+            <div>
+              <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Error state</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Failed to load — recoverable</div></div>
+              <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:40px 24px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;">
+                <div style="width:52px;height:52px;border-radius:13px;background:#fcebe8;color:#d4503e;display:flex;align-items:center;justify-content:center;font-size:22px;">⚠</div>
+                <div style="font-size:14px;font-weight:600;">Couldn’t load orders</div>
+                <div style="font-size:12.5px;color:#8a92a3;max-width:240px;line-height:1.5;">The connection to Visual Shop timed out. Your work is safe.</div>
+                <button style="margin-top:6px;background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;color:#3a4151;cursor:pointer;">↻ Retry</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Loading skeleton -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Loading</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Skeleton rows while data streams in</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:6px 20px;">
+              <sc-for list="{{ skeletonRows }}" as="s" hint-placeholder-count="4">
+                <div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid #f3f4f7;">
+                  <div style="width:36px;height:36px;border-radius:9px;background:linear-gradient(90deg,#eef0f4 25%,#f6f7f9 37%,#eef0f4 63%);background-size:400% 100%;animation:vsShimmer 1.4s ease infinite;"></div>
+                  <div style="flex:1;display:flex;flex-direction:column;gap:8px;"><div style="height:10px;width:38%;border-radius:5px;background:linear-gradient(90deg,#eef0f4 25%,#f6f7f9 37%,#eef0f4 63%);background-size:400% 100%;animation:vsShimmer 1.4s ease infinite;"></div><div style="height:9px;width:62%;border-radius:5px;background:linear-gradient(90deg,#eef0f4 25%,#f6f7f9 37%,#eef0f4 63%);background-size:400% 100%;animation:vsShimmer 1.4s ease infinite;"></div></div>
+                  <div style="width:70px;height:10px;border-radius:5px;background:linear-gradient(90deg,#eef0f4 25%,#f6f7f9 37%,#eef0f4 63%);background-size:400% 100%;animation:vsShimmer 1.4s ease infinite;"></div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- Confirm dialog -->
+          <div>
+            <div style="margin-bottom:12px;"><div style="font-size:15px;font-weight:600;">Confirm dialog</div><div style="font-size:12.5px;color:#8a92a3;margin-top:2px;">Destructive / irreversible actions — click to try it</div></div>
+            <div style="background:#fff;border:1px solid #e7e9ee;border-radius:14px;padding:20px;display:flex;align-items:center;gap:16px;">
+              <button onClick="{{ openDialog }}" style="background:#fff;border:1px solid #f1d9d4;border-radius:9px;padding:9px 16px;font-family:inherit;font-size:13px;font-weight:500;color:#d4503e;cursor:pointer;">Close A/R period…</button>
+              <span style="font-size:12.5px;color:#8a92a3;">Opens a centered modal with a clear title, consequence, and a destructive confirm.</span>
+            </div>
+          </div>
+
+        </div>
+      </sc-if>
+
+    </div>
+  </div>
+
+  <!-- ================= COMMAND PALETTE ================= -->
+  <sc-if value="{{ paletteOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closePalette }}" style="position:fixed;inset:0;background:rgba(20,24,33,.34);backdrop-filter:blur(2px);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;z-index:50;">
+      <div onClick="{{ stop }}" style="width:560px;max-width:90vw;background:#fff;border:1px solid #e2e5ec;border-radius:16px;box-shadow:0 40px 90px -30px rgba(20,24,33,.6);overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:11px;padding:15px 18px;border-bottom:1px solid #eef0f4;">
+          <span style="font-size:17px;color:#9aa1b0;">⌕</span>
+          <input value="{{ q }}" onInput="{{ setQ }}" placeholder="Search or jump to…" autofocus="true" style="flex:1;border:none;outline:none;font-family:inherit;font-size:15px;color:#1d2330;background:transparent;" />
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#f0f1f5;border:1px solid #e2e5ec;border-radius:5px;padding:1px 6px;color:#9aa1b0;">esc</span>
+        </div>
+        <div style="padding:8px;max-height:52vh;overflow-y:auto;">
+          <sc-for list="{{ palette }}" as="p" hint-placeholder-count="6">
+            <div onClick="{{ p.onClick }}" style="display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:9px;cursor:pointer;">
+              <span style="width:26px;height:26px;border-radius:7px;background:#f0f1f5;color:#6b7280;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;">{{ p.icon }}</span>
+              <span style="font-size:13.5px;font-weight:500;">{{ p.label }}</span>
+              <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#aab0bd;">{{ p.group }}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{ paletteEmpty }}" hint-placeholder-val="{{ false }}"><div style="padding:24px;text-align:center;font-size:13px;color:#9aa1b0;">No matches</div></sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ================= CONFIRM DIALOG ================= -->
+  <sc-if value="{{ dialogOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeDialog }}" style="position:fixed;inset:0;background:rgba(20,24,33,.34);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;z-index:60;">
+      <div onClick="{{ stop }}" style="width:420px;max-width:90vw;background:#fff;border-radius:16px;box-shadow:0 40px 90px -30px rgba(20,24,33,.6);padding:24px;">
+        <div style="width:40px;height:40px;border-radius:11px;background:#fcebe8;color:#d4503e;display:flex;align-items:center;justify-content:center;font-size:18px;margin-bottom:14px;">⚠</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:6px;">Close June A/R period?</div>
+        <div style="font-size:13px;color:#5b637a;line-height:1.55;">This locks all June invoices from edits — 23 invoices will be finalized. This can’t be undone.</div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:22px;"><button onClick="{{ closeDialog }}" style="background:#fff;border:1px solid #e2e5ec;border-radius:9px;padding:9px 15px;font-family:inherit;font-size:13px;color:#3a4151;cursor:pointer;">Cancel</button><button onClick="{{ closeDialog }}" style="background:#d4503e;color:#fff;border:none;border-radius:9px;padding:9px 15px;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;">Close period</button></div>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1320,&quot;height&quot;:860}}">
+class Component extends DCLogic {
+  state = { route: 'today', role: 'manager', paletteOpen: false, q: '', custTab: 'overview', dialogOpen: false };
+
+  componentDidMount() {
+    this._key = (e) => {
+      const k = (e.key || '').toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && k === 'k') { e.preventDefault(); this.setState({ paletteOpen: !this.state.paletteOpen, q: '' }); }
+      else if (k === 'escape' && this.state.paletteOpen) { this.setState({ paletteOpen: false }); }
+    };
+    window.addEventListener('keydown', this._key);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this._key); }
+
+  go(key) { this.setState({ route: key, paletteOpen: false }); }
+
+  headCss(a) { return `font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;color:#9aa1b0;display:flex;align-items:center;${a === 'right' ? 'justify-content:flex-end;' : ''}`; }
+  pillCss(kind) {
+    const m = { amber: '#fbf2e0|#c98a16', blue: '#eef1fd|#3d63dd', green: '#e8f5ef|#1f9d6b', red: '#fcebe8|#d4503e', gray: '#f0f1f5|#6b7280' };
+    const [bg, c] = m[kind].split('|');
+    return `display:inline-flex;font-family:'IBM Plex Mono',monospace;font-size:11px;background:${bg};color:${c};border-radius:6px;padding:3px 9px;`;
+  }
+  txt(v, sub) { return { v, np: true, sub: sub || '', s: 'font-size:13px;font-weight:500;display:flex;flex-direction:column;justify-content:center;color:#1d2330;' }; }
+  plain(v, a, muted) { return { v, np: true, s: `font-size:13px;display:flex;align-items:center;${a === 'right' ? 'justify-content:flex-end;' : ''}${muted ? 'color:#8a92a3;' : 'color:#3a4151;'}` }; }
+  mono(v, a, extra) { return { v, np: true, s: `font-family:'IBM Plex Mono',monospace;font-size:12.5px;display:flex;align-items:center;${a === 'right' ? 'justify-content:flex-end;' : ''}${extra || ''}` }; }
+  pill(v, kind, a) { return { v, p: this.pillCss(kind), s: `display:flex;align-items:center;${a === 'right' ? 'justify-content:flex-end;' : ''}` }; }
+
+  list(cfg) {
+    return Object.assign({}, cfg, {
+      headStyle: `display:grid;grid-template-columns:${cfg.gridCols};gap:14px;padding:11px 20px;border-bottom:1px solid #f1f2f5;`,
+      rowStyle: `display:grid;grid-template-columns:${cfg.gridCols};gap:14px;padding:14px 20px;border-bottom:1px solid #f5f6f8;align-items:center;${cfg.clickable ? 'cursor:pointer;' : ''}`
+    });
+  }
+
+  navData() {
+    const r = this.state.route;
+    const detailParent = { orderDetail: 'orders', quoteBuilder: 'quotes', customerDetail: 'customers', partEditor: 'parts', recipeEditor: 'recipes' };
+    const it = (key, label, badge, bk) => {
+      const a = r === key || detailParent[r] === key;
+      return {
+        label, badge: badge || '', onClick: () => this.go(key),
+        rowStyle: `display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border-radius:9px;cursor:pointer;text-decoration:none;font-size:13.5px;background:${a ? '#eef1fd' : 'transparent'};color:${a ? '#3d63dd' : '#3a4151'};font-weight:${a ? '600' : '500'};`,
+        badgeStyle: badge ? (bk === 'red'
+          ? `font-family:'IBM Plex Mono',monospace;font-size:11px;background:#fcebe8;color:#d4503e;border-radius:6px;padding:0 7px;`
+          : `font-family:'IBM Plex Mono',monospace;font-size:11px;color:${a ? '#3d63dd' : '#9aa1b0'};`) : ''
+      };
+    };
+    return [
+      { label: '', items: [it('today', 'Today')] },
+      { label: 'SALES', items: [it('quotes', 'Quotes', '12'), it('customers', 'Customers'), it('parts', 'Part Maintenance')] },
+      { label: 'PRODUCTION', items: [it('orders', 'Orders', '86'), it('recipes', 'Process Master'), it('schedule', 'Schedule'), it('tracking', 'Tracking'), it('floor', 'Shop Floor')] },
+      { label: 'QUALITY', items: [it('certs', 'Certifications', '7'), it('specs', 'Specifications'), it('standards', 'Standards')] },
+      { label: 'FINANCE', items: [it('invoicing', 'Invoicing'), it('ar', 'A/R'), it('reports', 'Reports')] },
+    ];
+  }
+
+  buildLists() {
+    const H = (a) => this.headCss(a);
+    const open = () => () => this.go('orderDetail');
+    return {
+      quotes: this.list({
+        title: 'Quotes', subtitle: '12 open · 4 awaiting approval', action: 'New quote',
+        gridCols: '96px 1.4fr 120px 80px 110px',
+        headers: [{ l: 'QUOTE', s: H() }, { l: 'CUSTOMER · PROCESS', s: H() }, { l: 'VALUE', s: H('right') }, { l: 'AGE', s: H('right') }, { l: 'STATUS', s: H('right') }],
+        rows: [
+          { cells: [this.mono('Q-2841'), this.txt('Apex Aerospace', 'Vacuum harden · AMS 2759/3'), this.mono('$8,420', 'right'), this.plain('2d', 'right', true), this.pill('Approve', 'amber', 'right')] },
+          { cells: [this.mono('Q-2840'), this.txt('Midwest Gear & Axle', 'Carbonitride + temper'), this.mono('$3,150', 'right'), this.plain('1d', 'right', true), this.pill('Sent', 'blue', 'right')] },
+          { cells: [this.mono('Q-2838'), this.txt('Titan Fasteners', 'Neutral harden · Rc 58–62'), this.mono('$1,890', 'right'), this.plain('3d', 'right', true), this.pill('Won', 'green', 'right')] },
+          { cells: [this.mono('Q-2835'), this.txt('Crane Aero Components', 'Stress relieve'), this.mono('$640', 'right'), this.plain('5d', 'right', true), this.pill('Approve', 'amber', 'right')] },
+          { cells: [this.mono('Q-2831'), this.txt('Vulcan Forge', 'Anneal · large lot'), this.mono('$12,300', 'right'), this.plain('6d', 'right', true), this.pill('Sent', 'blue', 'right')] },
+          { cells: [this.mono('Q-2828'), this.txt('Summit Bearings', 'Neutral harden'), this.mono('$2,040', 'right'), this.plain('7d', 'right', true), this.pill('Won', 'green', 'right')] },
+        ]
+      }),
+      orders: this.list({
+        clickable: true, title: 'Orders', subtitle: '86 open work orders', action: 'New order',
+        gridCols: '108px 1.5fr 0.9fr 70px 90px 110px',
+        headers: [{ l: 'WORK ORDER', s: H() }, { l: 'CUSTOMER · PART', s: H() }, { l: 'PROCESS', s: H() }, { l: 'QTY', s: H('right') }, { l: 'DUE', s: H('right') }, { l: 'STATUS', s: H('right') }],
+        rows: [
+          { cells: [this.mono('WO-48211'), this.txt('Apex Aerospace', 'Turbine shaft · TS-4471'), this.plain('Carburize'), this.mono('480', 'right'), this.plain('Jul 2', 'right', true), this.pill('In Process', 'blue', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48205'), this.txt('Titan Fasteners', 'Cap screw · CS-88'), this.plain('Vacuum harden'), this.mono('5,200', 'right'), this.plain('Jul 1', 'right', true), this.pill('In Process', 'blue', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48190'), this.txt('Delta Turbine', 'Blade root · BR-12'), this.plain('Nitride'), this.mono('96', 'right'), this.plain('Jul 4', 'right', true), this.pill('Scheduled', 'gray', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48177'), this.txt('Midwest Gear & Axle', 'Ring gear · RG-440'), this.plain('Carbonitride'), this.mono('310', 'right'), this.plain('Jul 3', 'right', true), this.pill('In Process', 'blue', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48142'), this.txt('Crane Aero Components', 'Bracket · BK-9'), this.plain('Temper'), this.mono('220', 'right'), this.plain('Jun 29', 'right', true), this.pill('Late', 'red', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48120'), this.txt('Summit Bearings', 'Race · RC-200'), this.plain('Neutral harden'), this.mono('1,440', 'right'), this.plain('Jul 5', 'right', true), this.pill('Ready to ship', 'green', 'right')], onClick: open() },
+          { cells: [this.mono('WO-48098'), this.txt('Vulcan Forge', 'Die block · DB-7'), this.plain('Anneal'), this.mono('40', 'right'), this.plain('Jul 8', 'right', true), this.pill('Received', 'gray', 'right')], onClick: open() },
+        ]
+      }),
+      customers: this.list({
+        title: 'Customers', subtitle: '418 active accounts', action: 'New customer',
+        gridCols: '1.5fr 120px 90px 110px 110px',
+        headers: [{ l: 'NAME · CITY', s: H() }, { l: 'TERMS', s: H() }, { l: 'OPEN', s: H('right') }, { l: 'YTD', s: H('right') }, { l: 'STATUS', s: H('right') }],
+        rows: [
+          { cells: [this.txt('Apex Aerospace', 'Wichita, KS'), this.plain('Net 30'), this.mono('6', 'right'), this.mono('$214K', 'right'), this.pill('Active', 'green', 'right')] },
+          { cells: [this.txt('Midwest Gear & Axle', 'Toledo, OH'), this.plain('Net 30'), this.mono('4', 'right'), this.mono('$148K', 'right'), this.pill('Active', 'green', 'right')] },
+          { cells: [this.txt('Titan Fasteners', 'Cleveland, OH'), this.plain('Net 45'), this.mono('9', 'right'), this.mono('$96K', 'right'), this.pill('Active', 'green', 'right')] },
+          { cells: [this.txt('Delta Turbine', 'Indianapolis, IN'), this.plain('Net 30'), this.mono('3', 'right'), this.mono('$82K', 'right'), this.pill('Active', 'green', 'right')] },
+          { cells: [this.txt('Crane Aero Components', 'Dayton, OH'), this.plain('Net 30'), this.mono('2', 'right'), this.mono('$61K', 'right'), this.pill('Active', 'green', 'right')] },
+          { cells: [this.txt('Vulcan Forge', 'Pittsburgh, PA'), this.plain('Net 60'), this.mono('1', 'right'), this.mono('$44K', 'right'), this.pill('Hold', 'amber', 'right')] },
+          { cells: [this.txt('Ironclad Tooling', 'Erie, PA'), this.plain('Net 30'), this.mono('0', 'right'), this.mono('$9K', 'right'), this.pill('Dormant', 'gray', 'right')] },
+        ]
+      }),
+      parts: this.list({
+        title: 'Part Maintenance', subtitle: 'Part records, specifications & assigned process masters', action: 'New part',
+        gridCols: '120px 1.5fr 1fr 80px 110px',
+        headers: [{ l: 'PART', s: H() }, { l: 'DESCRIPTION · CUSTOMER', s: H() }, { l: 'PROCESS MASTER', s: H() }, { l: 'REV', s: H('right') }, { l: 'HARDNESS', s: H('right') }],
+        rows: [
+          { cells: [this.mono('TS-4471'), this.txt('Turbine shaft', 'Apex Aerospace'), this.txt('Carburize', 'PM-CARB-58'), this.mono('C', 'right'), this.plain('Rc 58–62', 'right', true)] },
+          { cells: [this.mono('CS-88'), this.txt('Cap screw', 'Titan Fasteners'), this.txt('Vacuum harden', 'PM-VAC-44'), this.mono('B', 'right'), this.plain('Rc 40–45', 'right', true)] },
+          { cells: [this.mono('BR-12'), this.txt('Blade root', 'Delta Turbine'), this.txt('Nitride', 'PM-NIT-09'), this.mono('A', 'right'), this.plain('HV 650+', 'right', true)] },
+          { cells: [this.mono('RG-440'), this.txt('Ring gear', 'Midwest Gear & Axle'), this.txt('Carbonitride', 'PM-CN-21'), this.mono('D', 'right'), this.plain('Rc 58–63', 'right', true)] },
+          { cells: [this.mono('RC-200'), this.txt('Bearing race', 'Summit Bearings'), this.txt('Neutral harden', 'PM-NH-15'), this.mono('B', 'right'), this.plain('Rc 60–64', 'right', true)] },
+          { cells: [this.mono('DB-7'), this.txt('Die block', 'Vulcan Forge'), this.txt('Anneal', 'PM-ANN-03'), this.mono('A', 'right'), this.plain('—', 'right', true)] },
+        ]
+      }),
+      recipes: this.list({
+        title: 'Process Master', subtitle: 'Process recipes — standard steps & instructions', action: 'New process master',
+        gridCols: '130px 1.6fr 90px 80px 110px',
+        headers: [{ l: 'PROCESS MASTER', s: H() }, { l: 'DESCRIPTION', s: H() }, { l: 'STEPS', s: H('right') }, { l: 'REV', s: H('right') }, { l: 'USED BY', s: H('right') }],
+        rows: [
+          { cells: [this.mono('PM-CARB-58'), this.txt('Carburize & temper', 'Case hardened, Rc 58–62'), this.mono('6', 'right'), this.mono('C', 'right'), this.plain('14 parts', 'right', true)] },
+          { cells: [this.mono('PM-VAC-44'), this.txt('Vacuum harden', 'Through hardened, Rc 40–45'), this.mono('5', 'right'), this.mono('B', 'right'), this.plain('8 parts', 'right', true)] },
+          { cells: [this.mono('PM-NIT-09'), this.txt('Nitride', 'Surface HV 650+'), this.mono('4', 'right'), this.mono('A', 'right'), this.plain('5 parts', 'right', true)] },
+          { cells: [this.mono('PM-CN-21'), this.txt('Carbonitride & temper', 'Rc 58–63'), this.mono('6', 'right'), this.mono('D', 'right'), this.plain('11 parts', 'right', true)] },
+          { cells: [this.mono('PM-NH-15'), this.txt('Neutral harden', 'Through hardened, Rc 60–64'), this.mono('5', 'right'), this.mono('B', 'right'), this.plain('9 parts', 'right', true)] },
+          { cells: [this.mono('PM-ANN-03'), this.txt('Anneal', 'Soften for machining'), this.mono('3', 'right'), this.mono('A', 'right'), this.plain('4 parts', 'right', true)] },
+        ]
+      }),
+      certs: this.list({
+        title: 'Certifications', subtitle: '7 awaiting release', action: 'New cert format',
+        gridCols: '110px 1.4fr 1fr 110px 120px',
+        headers: [{ l: 'CERT', s: H() }, { l: 'CUSTOMER · WO', s: H() }, { l: 'SPECIFICATION', s: H() }, { l: 'TYPE', s: H() }, { l: 'STATUS', s: H('right') }],
+        rows: [
+          { cells: [this.mono('C-9921'), this.txt('Apex Aerospace', 'WO-48211'), this.plain('AMS 2759/3'), this.plain('Carburize', null, true), this.pill('Pending', 'amber', 'right')] },
+          { cells: [this.mono('C-9920'), this.txt('Titan Fasteners', 'WO-48205'), this.plain('AMS 2759/2'), this.plain('Vacuum', null, true), this.pill('Pending', 'amber', 'right')] },
+          { cells: [this.mono('C-9918'), this.txt('Delta Turbine', 'WO-48190'), this.plain('AMS 2759/10'), this.plain('Nitride', null, true), this.pill('Released', 'green', 'right')] },
+          { cells: [this.mono('C-9915'), this.txt('Midwest Gear & Axle', 'WO-48177'), this.plain('AMS 2759/7'), this.plain('Carbonitride', null, true), this.pill('Released', 'green', 'right')] },
+          { cells: [this.mono('C-9910'), this.txt('Summit Bearings', 'WO-48120'), this.plain('Customer spec SB-4'), this.plain('Neutral', null, true), this.pill('Pending', 'amber', 'right')] },
+        ]
+      }),
+      specs: this.list({
+        title: 'Specifications', subtitle: 'Customer & industry specifications', action: 'New spec',
+        gridCols: '150px 1.6fr 100px 130px',
+        headers: [{ l: 'SPEC', s: H() }, { l: 'TITLE', s: H() }, { l: 'REV', s: H('right') }, { l: 'OWNER', s: H('right') }],
+        rows: [
+          { cells: [this.mono('AMS 2759/3'), this.plain('Carburizing & hardening of steel parts'), this.mono('K', 'right'), this.plain('SAE', 'right', true)] },
+          { cells: [this.mono('AMS 2759/2'), this.plain('Heat treatment of low-alloy steel parts'), this.mono('M', 'right'), this.plain('SAE', 'right', true)] },
+          { cells: [this.mono('AMS 2750'), this.plain('Pyrometry'), this.mono('F', 'right'), this.plain('SAE', 'right', true)] },
+          { cells: [this.mono('MIL-S-6090'), this.plain('Process for steels used in aircraft'), this.mono('A', 'right'), this.plain('DoD', 'right', true)] },
+          { cells: [this.mono('SB-4'), this.plain('Summit Bearings bearing race spec'), this.mono('2', 'right'), this.plain('Customer', 'right', true)] },
+        ]
+      }),
+      standards: this.list({
+        title: 'Standards', subtitle: 'Approved standards library', action: 'New standard',
+        gridCols: '160px 1.6fr 120px 120px',
+        headers: [{ l: 'STANDARD', s: H() }, { l: 'TITLE', s: H() }, { l: 'CATEGORY', s: H() }, { l: 'REVIEWED', s: H('right') }],
+        rows: [
+          { cells: [this.mono('AS9100D'), this.plain('Aerospace quality management system'), this.plain('Quality', null, true), this.plain('Mar 2026', 'right', true)] },
+          { cells: [this.mono('Nadcap HT'), this.plain('Heat treating accreditation'), this.plain('Process', null, true), this.plain('Jan 2026', 'right', true)] },
+          { cells: [this.mono('ISO 9001'), this.plain('Quality management systems'), this.plain('Quality', null, true), this.plain('Feb 2026', 'right', true)] },
+          { cells: [this.mono('CQI-9'), this.plain('Heat treat system assessment'), this.plain('Process', null, true), this.plain('Apr 2026', 'right', true)] },
+        ]
+      }),
+      invoicing: this.list({
+        title: 'Invoicing', subtitle: '9 shipped & uninvoiced', action: 'New invoice',
+        gridCols: '110px 1.4fr 120px 100px 110px',
+        headers: [{ l: 'INVOICE', s: H() }, { l: 'CUSTOMER', s: H() }, { l: 'AMOUNT', s: H('right') }, { l: 'DATE', s: H('right') }, { l: 'STATUS', s: H('right') }],
+        rows: [
+          { cells: [this.mono('—'), this.txt('Summit Bearings', 'WO-48120 · shipped'), this.mono('$4,180', 'right'), this.plain('Jun 30', 'right', true), this.pill('To bill', 'amber', 'right')] },
+          { cells: [this.mono('—'), this.txt('Midwest Gear & Axle', 'WO-48177 · shipped'), this.mono('$2,910', 'right'), this.plain('Jun 30', 'right', true), this.pill('To bill', 'amber', 'right')] },
+          { cells: [this.mono('INV-30412'), this.txt('Delta Turbine', 'WO-48190'), this.mono('$6,740', 'right'), this.plain('Jun 28', 'right', true), this.pill('Sent', 'blue', 'right')] },
+          { cells: [this.mono('INV-30408'), this.txt('Apex Aerospace', 'WO-48066'), this.mono('$11,200', 'right'), this.plain('Jun 26', 'right', true), this.pill('Paid', 'green', 'right')] },
+          { cells: [this.mono('INV-30401'), this.txt('Titan Fasteners', 'WO-48041'), this.mono('$1,560', 'right'), this.plain('Jun 24', 'right', true), this.pill('Paid', 'green', 'right')] },
+        ]
+      }),
+    };
+  }
+
+  seg(role) {
+    const a = this.state.role === role;
+    return `border:none;background:${a ? '#fff' : 'transparent'};color:${a ? '#1d2330' : '#6b7280'};font-weight:${a ? '600' : '500'};box-shadow:${a ? '0 1px 2px rgba(0,0,0,.08)' : 'none'};border-radius:7px;padding:6px 15px;font-family:inherit;font-size:12.5px;cursor:pointer;`;
+  }
+
+  scheduleData() {
+    const blk = (text, color) => `<div></div>`; // placeholder unused
+    const block = (label, sub, kind) => {
+      const m = { blue: '#eef1fd|#3d63dd|#d3dcfa', green: '#e8f5ef|#1f9d6b|#cfeadd', amber: '#fdfaf2|#c98a16|#f1e3c7', gray: '#f3f4f7|#6b7280|#e7e9ee' };
+      const [bg, c, br] = m[kind].split('|');
+      return { label, sub, style: `background:${bg};border:1px solid ${br};border-left:3px solid ${c};border-radius:7px;padding:6px 8px;height:100%;` };
+    };
+    // We render blocks as raw markup via helper strings below
+    return null;
+  }
+
+  renderVals() {
+    const r = this.state.route;
+    const screens = this.buildLists();
+    [['quotes', 'quoteBuilder'], ['customers', 'customerDetail'], ['parts', 'partEditor'], ['recipes', 'recipeEditor']].forEach(([k, target]) => {
+      if (!screens[k]) return;
+      screens[k].rowStyle += 'cursor:pointer;';
+      screens[k].rows.forEach(row => { row.onClick = () => this.go(target); });
+    });
+    const ct = this.state.custTab || 'overview';
+    const ctab = (key) => ({ onClick: () => this.setState({ custTab: key }), style: `padding:11px 2px;font-size:13.5px;font-weight:${ct === key ? '600' : '500'};color:${ct === key ? '#1d2330' : '#8a92a3'};border-bottom:2px solid ${ct === key ? '#3d63dd' : 'transparent'};cursor:pointer;` });
+    const rstep = (n, op, equip, instr, params, track) => ({ n: String(n), op, equip, instr, params: params || [], hasParams: (params || []).length > 0, track: track || '' });
+    const recipeSteps = [
+      rstep(1, 'Receive & verify', 'Receiving', 'Count pieces, verify PO and part number, visual inspection for damage.', [], 'Track in'),
+      rstep(2, 'Wash & rack', 'Wash station', 'Degrease and load onto fixtures — 2 racks of 240.', [], 'Track in / out'),
+      rstep(3, 'Carburize', 'Batch IQ #3', 'Carburize to specified case depth, then oil quench.', ['1700°F', '8.0 hr', '0.90% C', 'Oil quench'], 'Track in / out'),
+      rstep(4, 'Temper', 'Temper Oven #4', 'Temper to final hardness, air cool.', ['350°F', '2.0 hr'], 'Track in / out'),
+      rstep(5, 'Final inspect', 'Inspection', 'Verify surface hardness and case depth on 3 pieces per lot.', ['Rc 58–62', 'Case .020–.030 in'], 'Inspect'),
+      rstep(6, 'Certify & ship', 'Shipping', 'Generate AMS 2759/3 certification, package and ship.', [], 'Track out'),
+    ];
+    const q = (this.state.q || '').trim().toLowerCase();
+
+    const palAll = [
+      { label: 'Today', group: 'Go to', icon: '◳', key: 'today' },
+      { label: 'Quotes', group: 'Sales', icon: '☷', key: 'quotes' },
+      { label: 'Customers', group: 'Sales', icon: '☺', key: 'customers' },
+      { label: 'Part Maintenance', group: 'Sales', icon: '⌬', key: 'parts' },
+      { label: 'Process Master', group: 'Production', icon: '⌬', key: 'recipes' },
+      { label: 'Orders', group: 'Production', icon: '▤', key: 'orders' },
+      { label: 'Schedule', group: 'Production', icon: '▦', key: 'schedule' },
+      { label: 'Tracking', group: 'Production', icon: '⊞', key: 'tracking' },
+      { label: 'Shop Floor', group: 'Production', icon: '◉', key: 'floor' },
+      { label: 'Certifications', group: 'Quality', icon: '▤', key: 'certs' },
+      { label: 'Specifications', group: 'Quality', icon: '▤', key: 'specs' },
+      { label: 'Standards', group: 'Quality', icon: '▤', key: 'standards' },
+      { label: 'Invoicing', group: 'Finance', icon: '$', key: 'invoicing' },
+      { label: 'A/R', group: 'Finance', icon: '$', key: 'ar' },
+      { label: 'Reports', group: 'Finance', icon: '◷', key: 'reports' },
+      { label: 'Setup', group: 'Config', icon: '⛭', key: 'setup' },
+      { label: 'Design patterns', group: 'Reference', icon: '❖', key: 'patterns' },
+      { label: 'New quote', group: 'Create', icon: '＋', key: 'quotes' },
+      { label: 'New order', group: 'Create', icon: '＋', key: 'orders' },
+      { label: 'New customer', group: 'Create', icon: '＋', key: 'customers' },
+      { label: 'New process master', group: 'Create', icon: '＋', key: 'recipes' },
+      { label: 'Release certifications', group: 'Action', icon: '▸', key: 'certs' },
+      { label: 'Close A/R period', group: 'Action', icon: '▸', key: 'ar' },
+    ];
+    const palette = (q ? palAll.filter(p => (p.label + ' ' + p.group).toLowerCase().includes(q)) : palAll)
+      .map(p => Object.assign({}, p, { onClick: () => this.go(p.key) }));
+
+    // schedule blocks as small objects rendered by helper -> build markup strings via React? keep simple: precompute innerHTML-free objects
+    const sb = (label, sub, kind) => {
+      const m = { blue: '#eef1fd|#3d63dd|#d3dcfa', green: '#e8f5ef|#1f9d6b|#cfeadd', amber: '#fdfaf2|#c98a16|#f1e3c7', gray: '#f3f4f7|#6b7280|#e7e9ee' };
+      const [bg, c, br] = m[kind].split('|');
+      return React.createElement('div', { style: { background: bg, border: '1px solid ' + br, borderLeft: '3px solid ' + c, borderRadius: '7px', padding: '6px 8px', height: '100%' } },
+        React.createElement('div', { style: { fontSize: '11.5px', fontWeight: 600, color: '#1d2330' } }, label),
+        React.createElement('div', { style: { fontSize: '10.5px', color: '#8a92a3', marginTop: '2px', fontFamily: "'IBM Plex Mono',monospace" } }, sub));
+    };
+    const blank = React.createElement('div');
+    const scheduleRows = [
+      { name: 'Batch IQ #3', mon: sb('Carburize', 'Apex', 'blue'), tue: sb('Carburize', 'WO-48211', 'blue'), wed: sb('Neutral', 'Summit', 'gray'), thu: blank, fri: sb('Carburize', 'Delta', 'blue') },
+      { name: 'Pit Furnace #1', mon: blank, tue: sb('Nitride', 'WO-48190', 'blue'), wed: sb('Nitride', 'Delta', 'blue'), thu: sb('Nitride', 'Delta', 'blue'), fri: blank },
+      { name: 'Vacuum #1', mon: sb('Vac harden', 'Titan', 'green'), tue: sb('Vac harden', 'WO-48205', 'green'), wed: blank, thu: sb('Vac harden', 'Apex', 'gray'), fri: sb('Vac harden', 'Apex', 'gray') },
+      { name: 'Continuous Belt #2', mon: sb('Carbonitride', 'Midwest', 'blue'), tue: sb('Carbonitride', 'WO-48177', 'blue'), wed: sb('Carbonitride', 'Midwest', 'gray'), thu: blank, fri: blank },
+      { name: 'Temper Oven #4', mon: sb('Temper', 'Crane', 'amber'), tue: sb('Temper', 'WO-48142', 'amber'), wed: sb('Temper', 'Apex', 'gray'), thu: sb('Temper', 'Summit', 'gray'), fri: sb('Temper', 'Midwest', 'gray') },
+    ];
+
+    const card = (wo, customer, detail, scan, kind, flag) => {
+      const fk = { red: '#fcebe8|#d4503e', amber: '#fbf2e0|#c98a16', blue: '#eef1fd|#3d63dd' };
+      const base = `background:#fff;border:1px solid #e7e9ee;border-radius:10px;padding:11px 12px;`;
+      let flagStyle = '';
+      if (flag) { const [bg, c] = fk[kind || 'blue'].split('|'); flagStyle = `font-family:'IBM Plex Mono',monospace;font-size:10px;background:${bg};color:${c};border-radius:5px;padding:1px 6px;`; }
+      return { wo, customer, detail, scan, flag: flag || '', flagStyle, style: base + (kind === 'red' ? 'border-color:#f1d9d4;' : '') };
+    };
+    const trackingCols = [
+      { name: 'Received', count: '3', cards: [card('WO-48098', 'Vulcan Forge', 'Die block · 40 pc', 'in 6:02a', 'blue'), card('WO-48201', 'Titan Fasteners', 'Pin · 8,800 pc', 'in 7:31a', 'blue')] },
+      { name: 'Wash & Rack', count: '2', cards: [card('WO-48190', 'Delta Turbine', 'Blade root · 96 pc', 'in 8:14a', 'blue')] },
+      { name: 'In Process', count: '5', cards: [card('WO-48211', 'Apex Aerospace', 'Carburize · Batch IQ #3', '68% · 2h12m', 'blue'), card('WO-48205', 'Titan', 'Vac harden · Vacuum #1', '88% · 22m', 'blue'), card('WO-48177', 'Midwest', 'Carbonitride · Belt #2', '55%', 'blue')] },
+      { name: 'Final Inspect', count: '2', cards: [card('WO-48142', 'Crane Aero', 'Bracket · 220 pc', 'late', 'red', 'LATE'), card('WO-48066', 'Apex', 'Hardness check', 'in 9:05a', 'blue')] },
+      { name: 'Available to Ship', count: '4', cards: [card('WO-48120', 'Summit Bearings', 'Race · 1,440 pc', 'cert ✓', 'blue'), card('WO-48041', 'Titan', 'Cert released', 'ready', 'blue')] },
+    ];
+
+    const floor = (name, status, kind, process, wo, customer, qty, pct, operator, scan) => {
+      const pk = { run: '#e8f5ef|#1f9d6b', hold: '#fbf2e0|#c98a16', idle: '#f0f1f5|#6b7280' };
+      const [bg, c] = pk[kind].split('|');
+      const barColor = kind === 'hold' ? '#c98a16' : '#3d63dd';
+      return {
+        name, status, idle: kind === 'idle', wo: wo || '', process, customer, qty,
+        operator: operator || '', scan: scan || '',
+        pill: `font-family:'IBM Plex Mono',monospace;font-size:10.5px;background:${bg};color:${c};border-radius:6px;padding:2px 8px;`,
+        style: `background:#fff;border:1px solid ${kind === 'hold' ? '#f1e3c7' : '#e7e9ee'};border-radius:13px;padding:16px;`,
+        barStyle: `width:${pct}%;height:100%;background:${barColor};`
+      };
+    };
+    const floorCards = [
+      floor('Batch IQ #3', 'Running', 'run', 'Carburize', 'WO-48211', 'Apex Aerospace', '480 pc', 68, 'K. Obi', 'in 7:14a'),
+      floor('Pit Furnace #1', 'Running', 'run', 'Nitride', 'WO-48190', 'Delta Turbine', '96 pc', 41, 'L. Day', 'in 8:14a'),
+      floor('Vacuum #1', 'Running', 'run', 'Vacuum harden', 'WO-48205', 'Titan Fasteners', '5,200 pc', 88, 'R. Cole', 'in 5:40a'),
+      floor('Continuous Belt #2', 'Running', 'run', 'Carbonitride', 'WO-48177', 'Midwest Gear', '310 pc', 55, 'M. Patel', 'in 6:50a'),
+      floor('Temper Oven #4', 'On hold', 'hold', 'Temper', 'WO-48142', 'Crane Aero', '220 pc', 30, 'J. Ruiz', 'held 8:30a'),
+      floor('Endo Gen #1', 'Idle', 'idle'),
+    ];
+
+    const arRow = (name, bal, cur, past, oldest, kind) => ({
+      name, bal, cur, past, oldest,
+      pastStyle: `font-family:'IBM Plex Mono',monospace;font-size:13px;text-align:right;${kind === 'bad' ? 'color:#d4503e;font-weight:600;' : kind === 'warn' ? 'color:#c98a16;' : 'color:#8a92a3;'}`
+    });
+    const arRows = [
+      arRow('Apex Aerospace', '$58,400', '$58,400', '$0', '—', 'ok'),
+      arRow('Titan Fasteners', '$41,200', '$33,000', '$8,200', '38 d', 'warn'),
+      arRow('Midwest Gear & Axle', '$36,900', '$36,900', '$0', '—', 'ok'),
+      arRow('Delta Turbine', '$28,100', '$24,000', '$4,100', '34 d', 'warn'),
+      arRow('Vulcan Forge', '$24,600', '$11,200', '$13,400', '47 d', 'bad'),
+      arRow('Crane Aero Components', '$18,300', '$18,300', '$0', '—', 'ok'),
+    ];
+
+    const reportGroups = [
+      { icon: '☷', title: 'Sales', items: ['Sales by Customer', 'Sales by Process', 'Sales Summary', 'Bookings vs. Shipments'] },
+      { icon: '$', title: 'Accounts Receivable', items: ['A/R Aging', 'Customer Statements', 'Cash Receipts', 'Past-Due Detail'] },
+      { icon: '◉', title: 'Production & Tracking', items: ['Equipment Utilization', 'On-Time Delivery', 'Reject Report', 'Work-in-Process'] },
+      { icon: '☷', title: 'Quotes', items: ['Quotes Dashboard', 'Win / Loss', 'Quote Aging', 'Quoted vs. Won'] },
+    ];
+
+    const setupCards = [
+      { title: 'Operators & Security', desc: 'Operator IDs, roles, module permissions and signatures.' },
+      { title: 'Plant Setup', desc: 'Company info that prints on travelers, certs and invoices.' },
+      { title: 'Process Masters', desc: 'Recipes: standard steps, table keys and equipment.' },
+      { title: 'Equipment & Areas', desc: 'Furnaces, ovens, areas and tracking templates.' },
+      { title: 'Pricing & Price Keys', desc: 'Step pricing, customer overrides and dimensional pricing.' },
+      { title: 'Certifications & Forms', desc: 'Cert formats, defaults and form / message inserts.' },
+    ];
+
+    const listRoutes = ['quotes', 'orders', 'customers', 'parts', 'recipes', 'certs', 'specs', 'standards', 'invoicing'];
+
+    return {
+      navGroups: this.navData(),
+      route: r,
+      isToday: r === 'today',
+      isList: listRoutes.includes(r),
+      list: screens[r] || null,
+      isOrderDetail: r === 'orderDetail',
+      isSchedule: r === 'schedule',
+      isTracking: r === 'tracking',
+      isFloor: r === 'floor',
+      isAr: r === 'ar',
+      isReports: r === 'reports',
+      isSetup: r === 'setup',
+      isPatterns: r === 'patterns',
+      goPatterns: () => this.go('patterns'),
+      patternsNavStyle: `display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:9px;font-size:13px;text-decoration:none;cursor:pointer;margin-top:6px;background:${r === 'patterns' ? '#eef1fd' : 'transparent'};color:${r === 'patterns' ? '#3d63dd' : '#6b7280'};font-weight:${r === 'patterns' ? '600' : '500'};`,
+      dialogOpen: this.state.dialogOpen,
+      openDialog: () => this.setState({ dialogOpen: true }),
+      closeDialog: () => this.setState({ dialogOpen: false }),
+      isQuoteBuilder: r === 'quoteBuilder',
+      isCustomerDetail: r === 'customerDetail',
+      isPartEditor: r === 'partEditor',
+      isRecipeEditor: r === 'recipeEditor',
+      ctOverview: ctab('overview'), ctContacts: ctab('contacts'), ctParts: ctab('parts'), ctOrders: ctab('orders'), ctDocuments: ctab('documents'), ctPricing: ctab('pricing'),
+      showOverview: ct === 'overview', showContacts: ct === 'contacts', showCParts: ct === 'parts', showCOrders: ct === 'orders', showDocuments: ct === 'documents', showPricing: ct === 'pricing',
+      recipeSteps,
+      roleManager: this.state.role === 'manager',
+      roleSales: this.state.role === 'sales',
+      roleOffice: this.state.role === 'office',
+      segManager: this.seg('manager'),
+      segSales: this.seg('sales'),
+      segOffice: this.seg('office'),
+      setManager: () => this.setState({ role: 'manager' }),
+      setSales: () => this.setState({ role: 'sales' }),
+      setOffice: () => this.setState({ role: 'office' }),
+      openPalette: () => this.setState({ paletteOpen: true, q: '' }),
+      closePalette: () => this.setState({ paletteOpen: false }),
+      stop: (e) => e.stopPropagation(),
+      paletteOpen: this.state.paletteOpen,
+      q: this.state.q,
+      setQ: (e) => this.setState({ q: e.target.value }),
+      palette,
+      paletteEmpty: palette.length === 0,
+      goToday: () => this.go('today'),
+      goQuotes: () => this.go('quotes'),
+      goQuoteBuilder: () => this.go('quoteBuilder'),
+      goCustomers: () => this.go('customers'),
+      goParts: () => this.go('parts'),
+      goRecipes: () => this.go('recipes'),
+      goRecipeEditor: () => this.go('recipeEditor'),
+      goOrders: () => this.go('orders'),
+      goFloor: () => this.go('floor'),
+      goAr: () => this.go('ar'),
+      goSetup: () => this.go('setup'),
+      scheduleRows, trackingCols, floorCards, arRows, reportGroups, setupCards,
+      skeletonRows: [1, 2, 3, 4],
+    };
+  }
+}
+</script>
+</body>
+</html>

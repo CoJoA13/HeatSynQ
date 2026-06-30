@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #eef0f4; font-family: 'IBM Plex Sans', system-ui, sans-serif; color: #1d2330; -webkit-font-smoothing: antialiased; }
+  @keyframes vsPulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  @keyframes vsGrow { from { transform: scaleY(.4); opacity:.5 } to { transform: scaleY(1); opacity:1 } }
+</style>
+</helmet>
+
+<div style="padding: 56px 64px 120px; min-width: 4360px;">
+
+  <!-- ===================== TURN 1 ===================== -->
+  <section style="display:flex; flex-direction:column; gap:40px;">
+    <header style="max-width: 920px; display:flex; flex-direction:column; gap:14px;">
+      <div style="display:inline-flex; align-items:center; gap:10px;">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; letter-spacing:.14em; color:#3d63dd; background:#eef1fd; border:1px solid #dce2fb; padding:5px 10px; border-radius:999px;">TURN 1 · NAVIGATION DIRECTIONS</span>
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3;">Manager dashboard · same visual system, three nav architectures</span>
+      </div>
+      <h1 style="margin:0; font-size:34px; font-weight:600; letter-spacing:-0.02em; line-height:1.15;">Visual Shop, reimagined — three ways to kill the menu maze</h1>
+      <p style="margin:0; font-size:16px; line-height:1.6; color:#5b637a; max-width:780px;">Each direction shows the <strong style="font-weight:600; color:#1d2330;">Plant Manager</strong> dashboard for a heat-treat shop, built on one calm cool-neutral system (IBM Plex, single cobalt accent). They differ only in <strong style="font-weight:600; color:#1d2330;">how you navigate</strong> — the answer to “menus everywhere with sub-menus.” Pick one and I’ll build it out front-to-end across every module. Reference an option by its badge (e.g. <a href="#1a" style="color:#3d63dd; font-weight:600; text-decoration:none;">1a</a>).</p>
+    </header>
+
+    <div style="display:flex; flex-wrap:wrap; gap:48px; align-items:flex-start;">
+
+      <!-- ============ OPTION 1A — WORKSPACE (sidebar + command palette) ============ -->
+      <div id="1a" style="display:flex; flex-direction:column; gap:18px;">
+        <div style="display:flex; align-items:baseline; gap:14px; max-width:1360px;">
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:#fff; background:#3d63dd; padding:6px 12px; border-radius:8px;">1A</span>
+          <div>
+            <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em;">Workspace — grouped sidebar + ⌘K command palette</div>
+            <div style="font-size:14px; color:#6b7280; margin-top:2px;">One flat sidebar organized by workflow stage. Every deep menu item is reachable instantly by typing in the command palette — no sub-menus.</div>
+          </div>
+        </div>
+
+        <div data-screen-label="1A Manager Dashboard — Workspace" style="position:relative; width:1360px; height:880px; background:#f6f7f9; border:1px solid #dfe2e9; border-radius:16px; overflow:hidden; box-shadow:0 24px 60px -28px rgba(29,35,48,.32); display:grid; grid-template-columns:252px 1fr;">
+
+          <!-- Sidebar -->
+          <aside style="background:#fbfbfd; border-right:1px solid #e7e9ee; display:flex; flex-direction:column; padding:18px 14px; gap:4px; overflow:hidden;">
+            <div style="display:flex; align-items:center; gap:10px; padding:4px 8px 16px;">
+              <div style="width:30px; height:30px; border-radius:8px; background:#3d63dd; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; font-family:'IBM Plex Mono',monospace;">V</div>
+              <div style="line-height:1.1;"><div style="font-weight:600; font-size:14px;">Visual Shop</div><div style="font-size:11px; color:#9aa1b0;">Heritage Heat Treat</div></div>
+            </div>
+
+            <button style="display:flex; align-items:center; gap:8px; width:100%; background:#fff; border:1px solid #e2e5ec; border-radius:9px; padding:8px 10px; font-family:inherit; font-size:13px; color:#8a92a3; cursor:pointer; margin-bottom:10px;">
+              <span style="font-size:14px;">⌕</span> Search or jump to…
+              <span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; background:#f0f1f5; border:1px solid #e2e5ec; border-radius:5px; padding:1px 6px; color:#9aa1b0;">⌘K</span>
+            </button>
+
+            <a style="display:flex; align-items:center; gap:11px; padding:8px 10px; border-radius:8px; background:#eef1fd; color:#3d63dd; font-weight:600; font-size:13.5px; text-decoration:none;"><span style="width:7px; height:7px; border-radius:2px; background:#3d63dd;"></span>Today</a>
+
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:14px 10px 6px;">SALES</div>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Quotes <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0;">12</span></a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Customers</a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Parts &amp; Recipes</a>
+
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:14px 10px 6px;">PRODUCTION</div>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Orders <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0;">86</span></a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Schedule</a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Tracking</a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Furnace Floor <span style="display:flex; align-items:center; gap:5px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b;"><span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b; animation:vsPulse 2s infinite;"></span>live</span></a>
+
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:14px 10px 6px;">QUALITY</div>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">CARs <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; background:#fcebe8; color:#d4503e; border-radius:5px; padding:0 6px;">3</span></a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Maintenance</a>
+            <a style="display:flex; align-items:center; justify-content:space-between; padding:7px 10px; border-radius:8px; color:#3a4151; font-size:13.5px; text-decoration:none;">Certifications</a>
+
+            <div style="margin-top:auto; display:flex; align-items:center; gap:10px; padding:10px; border-top:1px solid #eef0f4;">
+              <div style="width:30px;height:30px;border-radius:50%; background:#dfe4f6; color:#3d63dd; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:12px; font-family:'IBM Plex Mono',monospace;">DM</div>
+              <div style="line-height:1.15;"><div style="font-size:12.5px; font-weight:600;">D. Mercer</div><div style="font-size:11px; color:#9aa1b0;">Plant Manager</div></div>
+            </div>
+          </aside>
+
+          <!-- Main -->
+          <div style="display:flex; flex-direction:column; overflow:hidden;">
+            <header style="height:60px; border-bottom:1px solid #e7e9ee; background:#fff; display:flex; align-items:center; padding:0 26px; gap:16px; flex-shrink:0;">
+              <div><div style="font-size:16px; font-weight:600; letter-spacing:-0.01em;">Good morning, Dana</div></div>
+              <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
+                <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3;">Tue · Jun 30, 2026 · 8:14 AM</span>
+                <span style="width:1px; height:22px; background:#e7e9ee;"></span>
+                <button style="position:relative; width:34px;height:34px;border-radius:9px; border:1px solid #e7e9ee; background:#fff; cursor:pointer; font-size:15px;">⌖<span style="position:absolute; top:-3px; right:-3px; width:8px;height:8px;border-radius:50%;background:#d4503e; border:2px solid #fff;"></span></button>
+                <button style="display:flex; align-items:center; gap:7px; border:1px solid #e7e9ee; background:#fff; border-radius:9px; padding:7px 12px; font-family:inherit; font-size:13px; font-weight:500; cursor:pointer;">Plant Manager <span style="color:#9aa1b0; font-size:11px;">▾</span></button>
+              </div>
+            </header>
+
+            <div style="padding:24px 26px; overflow:hidden; display:flex; flex-direction:column; gap:18px;">
+              <!-- KPI row -->
+              <div style="display:grid; grid-template-columns:repeat(6,1fr); gap:12px;">
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">Open Orders</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px;">86</div><div style="font-size:11px; color:#1f9d6b; margin-top:2px;">▲ 4 vs yesterday</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">On-Time %</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px;">94.2<span style="font-size:14px; color:#9aa1b0;">%</span></div><div style="font-size:11px; color:#1f9d6b; margin-top:2px;">▲ 1.1 pts</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">Revenue MTD</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px;">$418K</div><div style="font-size:11px; color:#8a92a3; margin-top:2px;">82% to goal</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">Open A/R</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px;">$262K</div><div style="font-size:11px; color:#c98a16; margin-top:2px;">$31K past due</div></div>
+                <div style="background:#fff; border:1px solid #f1d9d4; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">Late Orders</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px; color:#d4503e;">5</div><div style="font-size:11px; color:#d4503e; margin-top:2px;">2 ship today</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:14px 15px;"><div style="font-size:11.5px; color:#8a92a3; font-weight:500;">Open CARs</div><div style="font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:600; margin-top:6px;">3</div><div style="font-size:11px; color:#8a92a3; margin-top:2px;">1 overdue</div></div>
+              </div>
+
+              <div style="display:grid; grid-template-columns:1.55fr 1fr; gap:16px; min-height:0;">
+                <!-- Furnace floor (SSI / SCADA) -->
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:14px; font-weight:600;">Furnace Floor</span>
+                    <span style="display:flex; align-items:center; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b; background:#e8f5ef; border:1px solid #cfeadd; border-radius:999px; padding:2px 9px;"><span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b; animation:vsPulse 2s infinite;"></span>SSI · live SCADA</span>
+                    <span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0;">6 of 8 running</span>
+                  </div>
+                  <!-- furnace rows -->
+                  <div style="display:flex; flex-direction:column; gap:9px;">
+                    <div style="display:grid; grid-template-columns:130px 1fr 92px 70px; gap:12px; align-items:center; padding:11px 13px; border:1px solid #eef0f4; border-radius:11px;"><div style="font-weight:600; font-size:13px;">Batch IQ #3</div><div><div style="font-size:12px; color:#5b637a;">Carburize · WO-48211 · Apex Aero</div><div style="height:5px; background:#eef0f4; border-radius:3px; margin-top:6px; overflow:hidden;"><div style="width:68%; height:100%; background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600;">1700<span style="font-size:10px;">°F</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b; text-align:right;">2h12m</div></div>
+                    <div style="display:grid; grid-template-columns:130px 1fr 92px 70px; gap:12px; align-items:center; padding:11px 13px; border:1px solid #eef0f4; border-radius:11px;"><div style="font-weight:600; font-size:13px;">Pit Furnace #1</div><div><div style="font-size:12px; color:#5b637a;">Nitride · WO-48190 · Delta Turbine</div><div style="height:5px; background:#eef0f4; border-radius:3px; margin-top:6px; overflow:hidden;"><div style="width:41%; height:100%; background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600;">975<span style="font-size:10px;">°F</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b; text-align:right;">6h40m</div></div>
+                    <div style="display:grid; grid-template-columns:130px 1fr 92px 70px; gap:12px; align-items:center; padding:11px 13px; border:1px solid #eef0f4; border-radius:11px;"><div style="font-weight:600; font-size:13px;">Vacuum #1</div><div><div style="font-size:12px; color:#5b637a;">Vacuum Harden · WO-48205 · Titan</div><div style="height:5px; background:#eef0f4; border-radius:3px; margin-top:6px; overflow:hidden;"><div style="width:88%; height:100%; background:#1f9d6b;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600;">1850<span style="font-size:10px;">°F</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b; text-align:right;">22m</div></div>
+                    <div style="display:grid; grid-template-columns:130px 1fr 92px 70px; gap:12px; align-items:center; padding:11px 13px; border:1px solid #f1e3c7; border-radius:11px; background:#fdfaf2;"><div style="font-weight:600; font-size:13px;">Temper Oven #4</div><div><div style="font-size:12px; color:#5b637a;">Setpoint deviation · alarm</div><div style="height:5px; background:#f1e3c7; border-radius:3px; margin-top:6px; overflow:hidden;"><div style="width:30%; height:100%; background:#c98a16;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600; color:#c98a16;">+18<span style="font-size:10px;">°F</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#c98a16; text-align:right;">hold</div></div>
+                    <div style="display:grid; grid-template-columns:130px 1fr 92px 70px; gap:12px; align-items:center; padding:11px 13px; border:1px solid #eef0f4; border-radius:11px;"><div style="font-weight:600; font-size:13px;">Continuous Belt #2</div><div><div style="font-size:12px; color:#5b637a;">Carbonitride · WO-48177 · Midwest</div><div style="height:5px; background:#eef0f4; border-radius:3px; margin-top:6px; overflow:hidden;"><div style="width:55%; height:100%; background:#3d63dd;"></div></div></div><div style="font-family:'IBM Plex Mono',monospace; font-size:15px; font-weight:600;">1550<span style="font-size:10px;">°F</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#1f9d6b; text-align:right;">3h05m</div></div>
+                  </div>
+                </div>
+
+                <!-- Right column -->
+                <div style="display:flex; flex-direction:column; gap:16px;">
+                  <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px;">
+                    <div style="display:flex; align-items:center; gap:8px;"><span style="font-size:14px; font-weight:600;">Needs attention</span><span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0;">8</span></div>
+                    <div style="display:flex; gap:10px; align-items:flex-start; padding-bottom:11px; border-bottom:1px solid #f1f2f5;"><span style="width:7px;height:7px;border-radius:50%;background:#d4503e; margin-top:5px; flex-shrink:0;"></span><div><div style="font-size:13px; font-weight:500;">WO-48142 late · Crane Aero</div><div style="font-size:11.5px; color:#8a92a3;">Due yesterday · awaiting final inspect</div></div></div>
+                    <div style="display:flex; gap:10px; align-items:flex-start; padding-bottom:11px; border-bottom:1px solid #f1f2f5;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16; margin-top:5px; flex-shrink:0;"></span><div><div style="font-size:13px; font-weight:500;">CAR-0312 overdue</div><div style="font-size:11.5px; color:#8a92a3;">Hardness out of spec · root cause due</div></div></div>
+                    <div style="display:flex; gap:10px; align-items:flex-start;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16; margin-top:5px; flex-shrink:0;"></span><div><div style="font-size:13px; font-weight:500;">AMS 2750 pyrometry due</div><div style="font-size:11.5px; color:#8a92a3;">Temper Oven #4 · TUS in 3 days</div></div></div>
+                  </div>
+                  <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:12px;">
+                    <span style="font-size:14px; font-weight:600;">Today’s flow</span>
+                    <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-size:12.5px; color:#5b637a;">Quotes to approve</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600;">4</span></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-size:12.5px; color:#5b637a;">Orders to schedule</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600;">11</span></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-size:12.5px; color:#5b637a;">Certs to release</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600;">7</span></div>
+                    <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-size:12.5px; color:#5b637a;">Ready to ship</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:#1f9d6b;">9</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Command palette overlay (the hero of 1A) -->
+          <div style="position:absolute; inset:0; background:rgba(20,24,33,.34); backdrop-filter:blur(2px); display:flex; align-items:flex-start; justify-content:center; padding-top:122px;">
+            <div style="width:560px; background:#fff; border:1px solid #e2e5ec; border-radius:16px; box-shadow:0 40px 90px -30px rgba(20,24,33,.6); overflow:hidden;">
+              <div style="display:flex; align-items:center; gap:11px; padding:16px 18px; border-bottom:1px solid #eef0f4;">
+                <span style="font-size:17px; color:#9aa1b0;">⌕</span>
+                <span style="font-size:16px; color:#1d2330;">cert<span style="opacity:.4;">|</span></span>
+                <span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; background:#f0f1f5; border:1px solid #e2e5ec; border-radius:5px; padding:1px 6px; color:#9aa1b0;">esc</span>
+              </div>
+              <div style="padding:8px;">
+                <div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:8px 10px 4px;">JUMP TO</div>
+                <div style="display:flex; align-items:center; gap:11px; padding:10px 11px; border-radius:9px; background:#eef1fd;"><span style="width:26px;height:26px;border-radius:7px; background:#dfe4f6; color:#3d63dd; display:flex;align-items:center;justify-content:center; font-size:13px;">▤</span><span style="font-size:13.5px; font-weight:500;">Certifications</span><span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0; margin-left:auto;">↵</span></div>
+                <div style="display:flex; align-items:center; gap:11px; padding:10px 11px; border-radius:9px;"><span style="width:26px;height:26px;border-radius:7px; background:#f0f1f5; color:#6b7280; display:flex;align-items:center;justify-content:center; font-size:13px;">＋</span><span style="font-size:13.5px;">New certification format</span></div>
+                <div style="font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.1em; color:#aab0bd; padding:12px 10px 4px;">RESULTS</div>
+                <div style="display:flex; align-items:center; gap:11px; padding:10px 11px; border-radius:9px;"><span style="width:26px;height:26px;border-radius:7px; background:#f0f1f5; color:#6b7280; display:flex;align-items:center;justify-content:center; font-size:12px; font-family:'IBM Plex Mono',monospace;">▦</span><span style="font-size:13.5px;">Certs to release</span><span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0; margin-left:auto;">7 pending</span></div>
+                <div style="display:flex; align-items:center; gap:11px; padding:10px 11px; border-radius:9px;"><span style="width:26px;height:26px;border-radius:7px; background:#f0f1f5; color:#6b7280; display:flex;align-items:center;justify-content:center; font-size:12px; font-family:'IBM Plex Mono',monospace;">⛭</span><span style="font-size:13.5px;">Cert defaults &amp; AMS specs</span><span style="font-size:11px; color:#9aa1b0; margin-left:auto;">Setup</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ OPTION 1B — PIPELINE (top lifecycle bar) ============ -->
+      <div id="1b" style="display:flex; flex-direction:column; gap:18px;">
+        <div style="display:flex; align-items:baseline; gap:14px; max-width:1360px;">
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:#fff; background:#1d2330; padding:6px 12px; border-radius:8px;">1B</span>
+          <div>
+            <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em;">Pipeline — top lifecycle bar</div>
+            <div style="font-size:14px; color:#6b7280; margin-top:2px;">Navigation follows the job’s journey left-to-right: Quote → Order → Schedule → Track → Cert → Ship → Invoice. A slim icon rail holds everything else.</div>
+          </div>
+        </div>
+
+        <div data-screen-label="1B Manager Dashboard — Pipeline" style="position:relative; width:1360px; height:880px; background:#f6f7f9; border:1px solid #dfe2e9; border-radius:16px; overflow:hidden; box-shadow:0 24px 60px -28px rgba(29,35,48,.32); display:grid; grid-template-columns:64px 1fr;">
+
+          <!-- icon rail -->
+          <nav style="background:#1d2330; display:flex; flex-direction:column; align-items:center; padding:16px 0; gap:6px;">
+            <div style="width:34px; height:34px; border-radius:9px; background:#3d63dd; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-family:'IBM Plex Mono',monospace; margin-bottom:14px;">V</div>
+            <a style="width:40px;height:40px;border-radius:10px; background:#2c3343; color:#fff; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">▦</a>
+            <a style="width:40px;height:40px;border-radius:10px; color:#8b93a6; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">☷</a>
+            <a style="width:40px;height:40px;border-radius:10px; color:#8b93a6; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">▤</a>
+            <a style="position:relative; width:40px;height:40px;border-radius:10px; color:#8b93a6; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">⚑<span style="position:absolute; top:6px; right:7px; width:7px;height:7px;border-radius:50%;background:#d4503e;"></span></a>
+            <a style="width:40px;height:40px;border-radius:10px; color:#8b93a6; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">$</a>
+            <a style="width:40px;height:40px;border-radius:10px; color:#8b93a6; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none; margin-top:auto;">⛭</a>
+          </nav>
+
+          <div style="display:flex; flex-direction:column; overflow:hidden;">
+            <!-- top header -->
+            <header style="height:56px; background:#fff; border-bottom:1px solid #e7e9ee; display:flex; align-items:center; padding:0 24px; gap:16px;">
+              <span style="font-size:15px; font-weight:600;">Production Pipeline</span>
+              <div style="flex:1; display:flex; justify-content:center;">
+                <div style="display:flex; align-items:center; gap:8px; background:#f3f4f7; border:1px solid #e7e9ee; border-radius:9px; padding:7px 14px; width:380px; color:#9aa1b0; font-size:13px;">⌕ Search orders, customers, parts…</div>
+              </div>
+              <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3;">Jun 30, 2026</span>
+              <div style="width:32px;height:32px;border-radius:50%; background:#dfe4f6; color:#3d63dd; display:flex;align-items:center;justify-content:center; font-weight:600; font-size:12px; font-family:'IBM Plex Mono',monospace;">DM</div>
+            </header>
+
+            <!-- pipeline stage bar -->
+            <div style="background:#fff; border-bottom:1px solid #e7e9ee; padding:14px 24px; display:flex; gap:8px; align-items:stretch;">
+              <div style="flex:1; background:#eef1fd; border:1px solid #d3dcfa; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#3d63dd;">01</span><span style="font-size:12.5px; font-weight:600; color:#3d63dd;">Quotes</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px; color:#3d63dd;">12</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">02</span><span style="font-size:12.5px; font-weight:600;">Orders</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px;">24</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">03</span><span style="font-size:12.5px; font-weight:600;">Schedule</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px;">18</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">04</span><span style="font-size:12.5px; font-weight:600;">Tracking</span><span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b; animation:vsPulse 2s infinite;"></span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px;">31</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">05</span><span style="font-size:12.5px; font-weight:600;">Cert</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px;">7</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">06</span><span style="font-size:12.5px; font-weight:600;">Ship</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px; color:#1f9d6b;">9</div></div>
+              <div style="display:flex; align-items:center; color:#cbd0db;">→</div>
+              <div style="flex:1; background:#fafbfc; border:1px solid #eef0f4; border-radius:11px; padding:11px 14px;"><div style="display:flex; align-items:center; gap:7px;"><span style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#9aa1b0;">07</span><span style="font-size:12.5px; font-weight:600;">Invoice</span></div><div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; margin-top:5px;">14</div></div>
+            </div>
+
+            <!-- content: contextual to selected stage (Quotes) -->
+            <div style="padding:20px 24px; overflow:hidden; display:grid; grid-template-columns:1fr 320px; gap:16px;">
+              <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; overflow:hidden; display:flex; flex-direction:column;">
+                <div style="display:flex; align-items:center; padding:15px 18px; border-bottom:1px solid #eef0f4; gap:10px;"><span style="font-size:14px; font-weight:600;">Quotes · awaiting action</span><span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#9aa1b0;">12 open</span><button style="margin-left:auto; background:#3d63dd; color:#fff; border:none; border-radius:8px; padding:7px 13px; font-family:inherit; font-size:12.5px; font-weight:500; cursor:pointer;">＋ New quote</button></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:9px 18px; font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:.06em; color:#9aa1b0; border-bottom:1px solid #f1f2f5;"><span>QUOTE</span><span>CUSTOMER · PROCESS</span><span style="text-align:right;">VALUE</span><span style="text-align:right;">AGE</span><span style="text-align:right;">STATUS</span></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:13px 18px; border-bottom:1px solid #f5f6f8; align-items:center;"><span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:600;">Q-2841</span><div><div style="font-size:13px; font-weight:500;">Apex Aerospace</div><div style="font-size:11.5px; color:#8a92a3;">Vacuum harden · AMS 2759/3</div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; text-align:right;">$8,420</span><span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3; text-align:right;">2d</span><span style="text-align:right;"><span style="font-size:11px; background:#fbf2e0; color:#c98a16; border-radius:6px; padding:3px 8px;">Approve</span></span></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:13px 18px; border-bottom:1px solid #f5f6f8; align-items:center;"><span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:600;">Q-2840</span><div><div style="font-size:13px; font-weight:500;">Midwest Gear &amp; Axle</div><div style="font-size:11.5px; color:#8a92a3;">Carbonitride + temper</div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; text-align:right;">$3,150</span><span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3; text-align:right;">1d</span><span style="text-align:right;"><span style="font-size:11px; background:#eef1fd; color:#3d63dd; border-radius:6px; padding:3px 8px;">Sent</span></span></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:13px 18px; border-bottom:1px solid #f5f6f8; align-items:center;"><span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:600;">Q-2838</span><div><div style="font-size:13px; font-weight:500;">Titan Fasteners</div><div style="font-size:11.5px; color:#8a92a3;">Neutral harden · Rc 58–62</div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; text-align:right;">$1,890</span><span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3; text-align:right;">3d</span><span style="text-align:right;"><span style="font-size:11px; background:#e8f5ef; color:#1f9d6b; border-radius:6px; padding:3px 8px;">Won</span></span></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:13px 18px; border-bottom:1px solid #f5f6f8; align-items:center;"><span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:600;">Q-2835</span><div><div style="font-size:13px; font-weight:500;">Crane Aero Components</div><div style="font-size:11.5px; color:#8a92a3;">Stress relieve</div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; text-align:right;">$640</span><span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3; text-align:right;">5d</span><span style="text-align:right;"><span style="font-size:11px; background:#fbf2e0; color:#c98a16; border-radius:6px; padding:3px 8px;">Approve</span></span></div>
+                <div style="display:grid; grid-template-columns:96px 1fr 110px 90px 88px; padding:13px 18px; align-items:center;"><span style="font-family:'IBM Plex Mono',monospace; font-size:12.5px; font-weight:600;">Q-2831</span><div><div style="font-size:13px; font-weight:500;">Vulcan Forge</div><div style="font-size:11.5px; color:#8a92a3;">Anneal · large lot</div></div><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; text-align:right;">$12,300</span><span style="font-family:'IBM Plex Mono',monospace; font-size:12px; color:#8a92a3; text-align:right;">6d</span><span style="text-align:right;"><span style="font-size:11px; background:#eef1fd; color:#3d63dd; border-radius:6px; padding:3px 8px;">Sent</span></span></div>
+              </div>
+
+              <div style="display:flex; flex-direction:column; gap:14px;">
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:14px; padding:16px;"><div style="font-size:13px; font-weight:600; margin-bottom:12px;">Stage health</div>
+                  <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b637a; padding:5px 0;">Win rate (30d)<span style="font-family:'IBM Plex Mono',monospace; font-weight:600; color:#1d2330;">61%</span></div>
+                  <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b637a; padding:5px 0;">Avg. quote age<span style="font-family:'IBM Plex Mono',monospace; font-weight:600; color:#1d2330;">2.8d</span></div>
+                  <div style="display:flex; justify-content:space-between; font-size:12.5px; color:#5b637a; padding:5px 0;">Pipeline value<span style="font-family:'IBM Plex Mono',monospace; font-weight:600; color:#1d2330;">$38K</span></div>
+                </div>
+                <div style="background:#fff; border:1px solid #f1e3c7; border-radius:14px; padding:16px;"><div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;"><span style="width:7px;height:7px;border-radius:50%;background:#c98a16;"></span><span style="font-size:13px; font-weight:600;">Bottleneck</span></div><div style="font-size:12.5px; color:#5b637a; line-height:1.5;">Tracking holds <strong style="color:#1d2330;">31 loads</strong> — 6 over 2 days. Temper Oven #4 alarm is the constraint.</div></div>
+                <div style="background:#1d2330; border-radius:14px; padding:16px; color:#fff;"><div style="font-size:13px; font-weight:600; margin-bottom:6px;">SSI Furnace Link</div><div style="font-size:12px; color:#aab2c4; line-height:1.5;">6 of 8 furnaces running · live SCADA feed healthy</div><div style="display:flex; align-items:center; gap:6px; margin-top:10px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:#7fe3b4;"><span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b; animation:vsPulse 2s infinite;"></span>connected</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ OPTION 1C — HUB (launcher + slim rail) ============ -->
+      <div id="1c" style="display:flex; flex-direction:column; gap:18px;">
+        <div style="display:flex; align-items:baseline; gap:14px; max-width:1360px;">
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; font-weight:600; color:#1d2330; background:#fff; border:1px solid #cbd0db; padding:6px 12px; border-radius:8px;">1C</span>
+          <div>
+            <div style="font-size:19px; font-weight:600; letter-spacing:-0.01em;">Hub — calm launcher home</div>
+            <div style="font-size:14px; color:#6b7280; margin-top:2px;">A quiet home screen: one big search, your day’s priorities, and role-grouped module tiles. Everything lives one click deep — nothing is buried.</div>
+          </div>
+        </div>
+
+        <div data-screen-label="1C Manager Dashboard — Hub" style="position:relative; width:1360px; height:880px; background:#f0f2f6; border:1px solid #dfe2e9; border-radius:16px; overflow:hidden; box-shadow:0 24px 60px -28px rgba(29,35,48,.32); display:grid; grid-template-columns:60px 1fr;">
+
+          <nav style="background:#fbfbfd; border-right:1px solid #e7e9ee; display:flex; flex-direction:column; align-items:center; padding:16px 0; gap:8px;">
+            <div style="width:32px; height:32px; border-radius:9px; background:#3d63dd; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-family:'IBM Plex Mono',monospace; margin-bottom:12px;">V</div>
+            <a style="width:38px;height:38px;border-radius:10px; background:#eef1fd; color:#3d63dd; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">⌂</a>
+            <a style="width:38px;height:38px;border-radius:10px; color:#8a92a3; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">☷</a>
+            <a style="width:38px;height:38px;border-radius:10px; color:#8a92a3; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">▤</a>
+            <a style="width:38px;height:38px;border-radius:10px; color:#8a92a3; display:flex;align-items:center;justify-content:center; font-size:16px; text-decoration:none;">$</a>
+            <div style="width:32px;height:32px;border-radius:50%; background:#dfe4f6; color:#3d63dd; display:flex;align-items:center;justify-content:center; font-weight:600; font-size:11px; font-family:'IBM Plex Mono',monospace; margin-top:auto;">DM</div>
+          </nav>
+
+          <div style="overflow:hidden; display:flex; flex-direction:column; align-items:center; padding:46px 56px;">
+            <div style="width:100%; max-width:980px; display:flex; flex-direction:column; gap:30px;">
+              <!-- greeting + search -->
+              <div style="display:flex; flex-direction:column; align-items:center; gap:18px; text-align:center;">
+                <div><div style="font-size:24px; font-weight:600; letter-spacing:-0.02em;">Good morning, Dana</div><div style="font-size:14px; color:#8a92a3; margin-top:4px;">Tuesday, June 30 · 6 furnaces running · 5 orders need you</div></div>
+                <div style="width:560px; display:flex; align-items:center; gap:12px; background:#fff; border:1px solid #e2e5ec; border-radius:13px; padding:14px 18px; box-shadow:0 12px 30px -18px rgba(29,35,48,.25);">
+                  <span style="font-size:18px; color:#9aa1b0;">⌕</span><span style="font-size:15px; color:#9aa1b0;">Search a work order, customer, part, or recipe…</span><span style="margin-left:auto; font-family:'IBM Plex Mono',monospace; font-size:11px; background:#f0f1f5; border:1px solid #e2e5ec; border-radius:5px; padding:2px 7px; color:#9aa1b0;">⌘K</span>
+                </div>
+              </div>
+
+              <!-- priorities strip -->
+              <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px;">
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:15px;"><div style="font-size:11.5px; color:#8a92a3;">Late orders</div><div style="font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; color:#d4503e; margin-top:5px;">5</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:15px;"><div style="font-size:11.5px; color:#8a92a3;">Quotes to approve</div><div style="font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; margin-top:5px;">4</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:15px;"><div style="font-size:11.5px; color:#8a92a3;">Ready to ship</div><div style="font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; color:#1f9d6b; margin-top:5px;">9</div></div>
+                <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:15px;"><div style="font-size:11.5px; color:#8a92a3;">Open CARs</div><div style="font-family:'IBM Plex Mono',monospace; font-size:24px; font-weight:600; margin-top:5px;">3</div></div>
+              </div>
+
+              <!-- module tiles, role-grouped -->
+              <div style="display:flex; flex-direction:column; gap:18px;">
+                <div>
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.1em; color:#9aa1b0; margin-bottom:10px;">SALES</div>
+                  <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px;">
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">☷</span><div style="font-size:14px; font-weight:600;">Quotes</div><div style="font-size:12px; color:#8a92a3;">12 open · 4 to approve</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">☺</span><div style="font-size:14px; font-weight:600;">Customers</div><div style="font-size:12px; color:#8a92a3;">418 accounts</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">⌬</span><div style="font-size:14px; font-weight:600;">Parts &amp; Recipes</div><div style="font-size:12px; color:#8a92a3;">Process masters</div></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.1em; color:#9aa1b0; margin-bottom:10px;">PRODUCTION</div>
+                  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px;">
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">▤</span><div style="font-size:14px; font-weight:600;">Orders</div><div style="font-size:12px; color:#8a92a3;">86 open</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">▦</span><div style="font-size:14px; font-weight:600;">Schedule</div><div style="font-size:12px; color:#8a92a3;">Equipment load</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">⊞</span><div style="font-size:14px; font-weight:600;">Tracking</div><div style="font-size:12px; color:#8a92a3;">31 in process</div></div>
+                    <div style="background:#1d2330; border:1px solid #1d2330; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px; color:#fff;"><span style="width:34px;height:34px;border-radius:9px;background:#2c3343;color:#7fe3b4;display:flex;align-items:center;justify-content:center;font-size:15px;">◉</span><div style="font-size:14px; font-weight:600; display:flex; align-items:center; gap:7px;">Furnace Floor <span style="width:6px;height:6px;border-radius:50%;background:#1f9d6b; animation:vsPulse 2s infinite;"></span></div><div style="font-size:12px; color:#aab2c4;">SSI live · 6 running</div></div>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:.1em; color:#9aa1b0; margin-bottom:10px;">QUALITY &amp; FINANCE</div>
+                  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px;">
+                    <div style="background:#fff; border:1px solid #f1d9d4; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#fcebe8;color:#d4503e;display:flex;align-items:center;justify-content:center;font-size:15px;">⚑</span><div style="font-size:14px; font-weight:600;">Quality / CARs</div><div style="font-size:12px; color:#d4503e;">3 open · 1 overdue</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">▤</span><div style="font-size:14px; font-weight:600;">Certifications</div><div style="font-size:12px; color:#8a92a3;">7 to release</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">$</span><div style="font-size:14px; font-weight:600;">Invoicing &amp; A/R</div><div style="font-size:12px; color:#8a92a3;">$262K open</div></div>
+                    <div style="background:#fff; border:1px solid #e7e9ee; border-radius:13px; padding:16px; display:flex; flex-direction:column; gap:9px;"><span style="width:34px;height:34px;border-radius:9px;background:#eef1fd;color:#3d63dd;display:flex;align-items:center;justify-content:center;font-size:15px;">◷</span><div style="font-size:14px; font-weight:600;">Maintenance</div><div style="font-size:12px; color:#8a92a3;">AMS 2750 · 1 due</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+</div>
+</x-dc>
+</body>
+</html>
