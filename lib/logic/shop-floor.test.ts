@@ -131,6 +131,50 @@ describe("equipmentLoads", () => {
     });
     expect(find(equipmentLoads([o], AS_OF), "eq-pit-1").state).toBe("idle");
   });
+
+  it("on_hold load with a duration param yields estFinishIso === null (no false forecast)", () => {
+    const o = wo({
+      id: "wo-hold-dur", number: "WO-HOLD-DUR", status: "on_hold",
+      steps: [step({
+        n: 2, op: "Carbonitride", equip: "Continuous Belt #1", state: "in_process",
+        params: ["1550°F", "2.0 hr"],
+        trackedInAt: "2026-07-01T06:00:00.000Z",
+      })],
+    });
+    const load = find(equipmentLoads([o], AS_OF), "eq-belt-1");
+    expect(load.state).toBe("on_hold");
+    expect(load.load?.setpoint).toBe("1550°F");
+    expect(load.load?.estFinishIso).toBeNull();
+  });
+
+  it("null trackedInAt sorts last — non-null candidate wins current slot, null goes to queued", () => {
+    const withTime = wo({
+      id: "wo-timed", number: "WO-TIMED", status: "in_process",
+      steps: [step({ n: 2, op: "Nitride", equip: "Pit Furnace #1", state: "in_process", trackedInAt: "2026-07-01T03:00:00.000Z" })],
+    });
+    const noTime = wo({
+      id: "wo-notime", number: "WO-NOTIME", status: "in_process",
+      steps: [step({ n: 2, op: "Nitride", equip: "Pit Furnace #1", state: "in_process", trackedInAt: null })],
+    });
+    const pit = find(equipmentLoads([noTime, withTime], AS_OF), "eq-pit-1");
+    expect(pit.load?.workOrderNumber).toBe("WO-TIMED");
+    expect(pit.queued).toBe(1);
+  });
+
+  it("identical trackedInAt — lower WO number wins current slot", () => {
+    const shared = "2026-07-01T04:00:00.000Z";
+    const lower = wo({
+      id: "wo-lower", number: "WO-100", status: "in_process",
+      steps: [step({ n: 2, op: "Nitride", equip: "Pit Furnace #1", state: "in_process", trackedInAt: shared })],
+    });
+    const higher = wo({
+      id: "wo-higher", number: "WO-200", status: "in_process",
+      steps: [step({ n: 2, op: "Nitride", equip: "Pit Furnace #1", state: "in_process", trackedInAt: shared })],
+    });
+    const pit = find(equipmentLoads([higher, lower], AS_OF), "eq-pit-1");
+    expect(pit.load?.workOrderNumber).toBe("WO-100");
+    expect(pit.queued).toBe(1);
+  });
 });
 
 describe("shopFloorSummary", () => {

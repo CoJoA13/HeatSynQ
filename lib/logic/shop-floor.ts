@@ -84,7 +84,7 @@ export function equipmentLoads(orders: WorkOrder[], asOf: string): EquipmentLoad
     const cur = [...cands].sort(byTrackedInThenNumber)[0];
     const state: EquipmentState = cur.order.status === "on_hold" ? "on_hold" : "running";
     const mins = parseDurationMinutes(cur.step.params);
-    const estFinishIso = cur.step.trackedInAt && mins != null
+    const estFinishIso = state === "running" && cur.step.trackedInAt && mins != null
       ? new Date(new Date(cur.step.trackedInAt).getTime() + mins * 60_000).toISOString()
       : null;
     return {
