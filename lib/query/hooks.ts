@@ -133,9 +133,11 @@ export function useWinQuote() {
       if (!customer) throw new Error("Customer not found: " + quote.customerId);
       const partsById = Object.fromEntries(parts.map((p) => [p.id, p]));
       const processMastersById = Object.fromEntries(pms.map((m) => [m.id, m]));
+      // Version-check BEFORE any side effect: a stale quote throws here, leaving no orphan order/cert.
+      const won = await r.quotes.update(quote.id, { status: "won" }, quote.version);
       const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer }));
       if (order.certifyRequired) await r.certifications.create(createCertForOrder(order, customer));
-      return r.quotes.update(quote.id, { status: "won", wonOrderId: order.id }, quote.version);
+      return r.quotes.update(quote.id, { wonOrderId: order.id }, won.version);
     },
     onSuccess: (u) => {
       invalidateQuote(qc, u.id);
@@ -176,8 +178,15 @@ export function useShipOrder() {
     mutationFn: async (vars: { order: WorkOrder; cert: Certification | null; actor: string; at: string }) => {
       const gate = canShipOrder(vars.order, vars.cert);
       if (!gate.ok) throw new Error(gate.reason ?? "Cannot ship");
-      await r.invoices.create(toBillInvoiceFromOrder(vars.order, vars.at));
-      const activity = [...vars.order.activity, activityEntry(vars.actor, "Shipped — to-bill invoice created", vars.at)];
+      // Idempotent invoice creation: only create a to-bill invoice if the order has none yet.
+      const existing = await r.invoices.list();
+      let created = false;
+      if (!existing.some((i) => i.workOrderId === vars.order.id)) {
+        await r.invoices.create(toBillInvoiceFromOrder(vars.order, vars.at));
+        created = true;
+      }
+      const message = created ? "Shipped — to-bill invoice created" : "Shipped";
+      const activity = [...vars.order.activity, activityEntry(vars.actor, message, vars.at)];
       return r.workOrders.update(vars.order.id, { status: "shipped", progressPct: 100, activity }, vars.order.version);
     },
     onSuccess: (u) => {

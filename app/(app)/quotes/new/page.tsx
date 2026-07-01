@@ -17,7 +17,7 @@ export default function QuoteBuilderPage() {
   const createDraft = useCreateQuoteDraft();
   const send = useSendQuote();
 
-  if (customers.isLoading || parts.isLoading) return <SkeletonRows />;
+  if (customers.isLoading || parts.isLoading || !operator) return <SkeletonRows />;
 
   return (
     <QuoteBuilder

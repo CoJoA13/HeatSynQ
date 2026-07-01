@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CreateInput } from "@/lib/data/repositories";
 import type { Customer, Part, PricingRule, PricingBasis, Discount, Quote } from "@/lib/domain";
 import { PRICING_BASES, basisLabel } from "@/lib/domain/enums";
@@ -17,6 +17,22 @@ export type BuilderState = { customerPO: string; requiredBy: string; notes: stri
 const PROCESS_OPTIONS = ["Carburize", "Carbonitride", "Nitride", "Neutral harden", "Vacuum harden", "Temper", "Anneal", "Certification"];
 const selectCls = "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm";
 
+// Largest numeric suffix across a draft's part + line ids (e.g. qp-1, ql-3 → 3),
+// so a reopened draft keeps generating fresh ids instead of colliding on qp-1/ql-1.
+function maxIdSeq(initial: BuilderState | null | undefined): number {
+  if (!initial) return 0;
+  let max = 0;
+  const scan = (id: string) => {
+    const m = /(\d+)$/.exec(id);
+    if (m) max = Math.max(max, Number(m[1]));
+  };
+  for (const p of initial.parts) {
+    scan(p.id);
+    for (const l of p.lines) scan(l.id);
+  }
+  return max;
+}
+
 export function QuoteBuilder({
   customers, parts, pricingRules, salespersonId, canDiscount, todayIso, initial,
   initialCustomerId, submitting, onSaveDraft, onSend, onCustomerChange,
@@ -27,8 +43,9 @@ export function QuoteBuilder({
   onSaveDraft: (input: CreateInput<Quote>) => void; onSend: (input: CreateInput<Quote>) => void;
   onCustomerChange?: (customerId: string) => void;
 }) {
-  const seq = useRef(0);
-  const nid = (p: string) => `${p}-${(seq.current += 1)}`;
+  const seq = useRef<number | null>(null);
+  if (seq.current === null) seq.current = maxIdSeq(initial); // lazy init once, beyond any id in `initial`
+  const nid = (p: string) => `${p}-${(seq.current! += 1)}`;
   const [customerId, setCustomerId] = useState(initialCustomerId ?? "");
   const [state, setState] = useState<BuilderState>(initial ?? { customerPO: "", requiredBy: "", notes: "", discount: null, parts: [] });
 
@@ -75,13 +92,35 @@ export function QuoteBuilder({
     }));
   }
 
+  // If rules arrive after a process/basis was picked, backfill any line still at rate 0
+  // (untouched — manual non-zero rates are preserved). Keyed on pricingRules identity.
+  useEffect(() => {
+    if (pricingRules.length === 0) return;
+    setState((s) => {
+      let changed = false;
+      const parts = s.parts.map((p) => ({
+        ...p,
+        lines: p.lines.map((l) => {
+          if (l.process === "" || l.rateCents !== 0) return l;
+          const r = rateForLine(pricingRules, l.process, l.basis);
+          if (r.rateCents === 0 && r.minChargeCents === l.minChargeCents) return l;
+          changed = true;
+          return { ...l, rateCents: r.rateCents, minChargeCents: r.minChargeCents };
+        }),
+      }));
+      return changed ? { ...s, parts } : s;
+    });
+  }, [pricingRules]);
+
   const pricingParts = state.parts.map((p) => ({ id: p.id, partId: p.partId, material: p.material, quantity: p.quantity, lines: p.lines }));
   const subtotal = quoteSubtotalCents(pricingParts);
   const total = quoteTotalCents({ parts: pricingParts, discount: state.discount });
   const margin = marginPct(total, Math.round(total * STUB_COST_RATIO));
 
-  const valid = customerId !== "" && state.parts.length > 0 &&
-    state.parts.every((p) => p.partId !== "" && p.lines.length > 0 && p.lines.every((l) => l.process !== ""));
+  const discountValid = !(state.discount?.kind === "percent" && (state.discount.value < 0 || state.discount.value > 100));
+  const valid = customerId !== "" && state.parts.length > 0 && discountValid &&
+    state.parts.every((p) => p.partId !== "" && p.quantity >= 0 && p.lines.length > 0 &&
+      p.lines.every((l) => l.process !== "" && l.qtyOrWeight >= 0 && l.rateCents >= 0));
 
   function assemble(): CreateInput<Quote> {
     return buildQuoteDraft({
@@ -97,7 +136,7 @@ export function QuoteBuilder({
         <PageHeader title="New quote" subtitle="Build a multi-part estimate. Rates default from the customer's price key." />
         <div className="space-y-4 rounded-card border border-border bg-surface p-4">
           <FormField label="Customer" htmlFor="cust">
-            <select id="cust" aria-label="Customer" className={selectCls} value={customerId} onChange={(e) => { setCustomerId(e.target.value); onCustomerChange?.(e.target.value); }}>
+            <select id="cust" aria-label="Customer" className={selectCls} value={customerId} onChange={(e) => { const v = e.target.value; setCustomerId(v); setState((s) => ({ ...s, parts: [] })); onCustomerChange?.(v); }}>
               <option value="">Select customer…</option>
               {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
@@ -125,7 +164,7 @@ export function QuoteBuilder({
                 </select>
               </FormField>
               <FormField label="Quantity" htmlFor={`qty-${pi}`}>
-                <Input id={`qty-${pi}`} aria-label="Quantity" type="number" value={p.quantity || ""} onChange={(e) => patchPart(pi, { quantity: Number(e.target.value) })} />
+                <Input id={`qty-${pi}`} aria-label="Quantity" type="number" min={0} value={p.quantity || ""} onChange={(e) => patchPart(pi, { quantity: Number(e.target.value) })} />
               </FormField>
             </div>
 
@@ -147,8 +186,8 @@ export function QuoteBuilder({
                         {PRICING_BASES.map((b) => <option key={b} value={b}>{basisLabel[b]}</option>)}
                       </select>
                     </td>
-                    <td className="pr-2"><Input aria-label="Qty / weight" type="number" value={l.qtyOrWeight || ""} onChange={(e) => patchLine(pi, li, { qtyOrWeight: Number(e.target.value) })} /></td>
-                    <td className="pr-2"><Input aria-label="Rate (cents)" type="number" value={l.rateCents || ""} onChange={(e) => patchLine(pi, li, { rateCents: Number(e.target.value) })} /></td>
+                    <td className="pr-2"><Input aria-label="Qty / weight" type="number" min={0} value={l.qtyOrWeight || ""} onChange={(e) => patchLine(pi, li, { qtyOrWeight: Number(e.target.value) })} /></td>
+                    <td className="pr-2"><Input aria-label="Rate (cents)" type="number" min={0} value={l.rateCents || ""} onChange={(e) => patchLine(pi, li, { rateCents: Number(e.target.value) })} /></td>
                     <td className="text-right font-mono">{formatMoney(lineAmountCents(l))}</td>
                     <td><Button size="sm" variant="ghost" onClick={() => removeLine(pi, li)}>×</Button></td>
                   </tr>
@@ -167,7 +206,7 @@ export function QuoteBuilder({
           <div className="flex justify-between"><dt className="text-text-muted">Subtotal</dt><dd className="font-mono">{formatMoney(subtotal)}</dd></div>
           <div className="flex justify-between"><dt className="text-text-muted">Discount</dt>
             <dd className="font-mono">{canDiscount ? (
-              <Input aria-label="Discount %" type="number" className="h-6 w-16 text-right"
+              <Input aria-label="Discount %" type="number" min={0} max={100} className="h-6 w-16 text-right"
                 value={state.discount?.kind === "percent" ? state.discount.value : ""}
                 onChange={(e) => setState((s) => ({ ...s, discount: e.target.value ? { kind: "percent", value: Number(e.target.value) } : null }))} />
             ) : "—"}</dd>

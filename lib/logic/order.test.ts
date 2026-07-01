@@ -49,6 +49,25 @@ describe("order creation", () => {
   });
 });
 
+describe("discounted quote pricing", () => {
+  const discountedQuote: Quote = {
+    ...quote,
+    discount: { kind: "percent", value: 10 },
+  };
+  const order = createOrderFromQuote(discountedQuote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer });
+  it("appends a Discount pricing line so pricing lines sum to orderValue", () => {
+    const sum = order.pricing.reduce((s, p) => s + p.amountCents, 0);
+    expect(sum).toBe(order.orderValueCents);
+    const discountLine = order.pricing.find((p) => p.process === "Discount");
+    expect(discountLine).toBeTruthy();
+    expect(discountLine!.amountCents).toBeLessThan(0);
+  });
+  it("omits the Discount line when the quote has no discount", () => {
+    const undiscounted = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer });
+    expect(undiscounted.pricing.some((p) => p.process === "Discount")).toBe(false);
+  });
+});
+
 describe("ship gate", () => {
   it("blocks ship when a required cert is not released", () => {
     const o = { certifyRequired:true } as WorkOrder;

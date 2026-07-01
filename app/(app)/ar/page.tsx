@@ -12,7 +12,7 @@ export default function ArPage() {
   const [closedNote, setClosedNote] = useState<string | null>(null);
 
   if (invoices.isLoading || customers.isLoading) return <SkeletonRows />;
-  if (invoices.isError) return <ErrorPanel message="Failed to load A/R." onRetry={() => invoices.refetch()} />;
+  if (invoices.isError || customers.isError) return <ErrorPanel message="Failed to load A/R." onRetry={() => { invoices.refetch(); customers.refetch(); }} />;
 
   return (
     <ARView

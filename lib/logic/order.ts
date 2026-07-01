@@ -2,7 +2,7 @@ import type {
   Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry,
 } from "@/lib/domain";
 import type { CreateInput } from "@/lib/data/repositories";
-import { quoteTotalCents, lineAmountCents } from "./pricing";
+import { quoteTotalCents, quoteSubtotalCents, lineAmountCents } from "./pricing";
 
 export type NewWorkOrder = CreateInput<WorkOrder>;
 
@@ -15,6 +15,14 @@ export function createOrderFromQuote(
   const processNames = Array.from(new Set(quote.parts.flatMap((p) => p.lines.map((l) => l.process))))
     .filter((p) => p.toLowerCase() !== "certification");
 
+  const total = quoteTotalCents(quote);
+  const subtotal = quoteSubtotalCents(quote.parts);
+  const pricing = quote.parts.flatMap((qp) =>
+    qp.lines.map((l) => ({ process: l.process, detail: detailFor(l.basis, l.qtyOrWeight), amountCents: lineAmountCents(l) })),
+  );
+  // If the quote is discounted, add a negative Discount row so pricing lines sum to orderValue.
+  if (total !== subtotal) pricing.push({ process: "Discount", detail: "", amountCents: total - subtotal });
+
   return {
     customerId: quote.customerId,
     customerPO: quote.customerPO,
@@ -26,15 +34,13 @@ export function createOrderFromQuote(
     due: quote.requiredBy ?? quote.date,
     certifyRequired: ctx.customer.defaultCertSpecId != null,
     certSpecId: ctx.customer.defaultCertSpecId,
-    orderValueCents: quoteTotalCents(quote),
+    orderValueCents: total,
     progressPct: 0,
     lines: quote.parts.map((qp) => {
       const part = ctx.partsById[qp.partId];
       return { id: qp.id, partId: qp.partId, description: part?.description ?? "", quantity: qp.quantity, spec: part?.hardness ?? "" };
     }),
-    pricing: quote.parts.flatMap((qp) =>
-      qp.lines.map((l) => ({ process: l.process, detail: detailFor(l.basis, l.qtyOrWeight), amountCents: lineAmountCents(l) })),
-    ),
+    pricing,
     steps: pm?.steps ?? [],
     activity: [{ at: quote.date, actor: "System", message: `Order created from ${quote.number}` }],
   };

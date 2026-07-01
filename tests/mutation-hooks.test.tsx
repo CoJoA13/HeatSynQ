@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
+import { useState } from "react";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
+import { useRepositories } from "@/lib/data/provider";
 import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices, useBillInvoice, usePayInvoice } from "@/lib/query/hooks";
 
 // ---------------------------------------------------------------------------
@@ -109,6 +111,26 @@ describe("mutation hooks — write + version + invalidation", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Probe C2: useWinQuote with a STALE version — must throw before any side effect
+// ---------------------------------------------------------------------------
+function WinStaleQuoteProbe() {
+  const quotes = useQuotes();
+  const orders = useWorkOrders();
+  const win = useWinQuote();
+  const q = quotes.data?.find((x) => x.id === "q-2840");
+  const orderCount = orders.data?.length ?? 0;
+  return (
+    <div>
+      <div data-testid="win-error">{win.isError ? "error" : "ok"}</div>
+      <div data-testid="status">{q?.status ?? "loading"}</div>
+      <div data-testid="orders">{orderCount}</div>
+      {/* pass a deliberately stale version → optimistic-concurrency conflict */}
+      <button onClick={() => q && win.mutate({ ...q, version: q.version - 1 })} disabled={!q}>WinStale</button>
+    </div>
+  );
+}
+
 describe("quote mutations", () => {
   it("useWinQuote: creates an order and marks the quote won", async () => {
     const user = userEvent.setup();
@@ -119,36 +141,91 @@ describe("quote mutations", () => {
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("won"));
     await waitFor(() => expect(Number(screen.getByTestId("orders").textContent)).toBe(before + 1));
   });
+
+  it("useWinQuote: a stale version throws and creates NO work order (version-check first)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<WinStaleQuoteProbe />);
+    await screen.findByText("sent");
+    const before = Number(screen.getByTestId("orders").textContent);
+    await user.click(screen.getByRole("button", { name: "WinStale" }));
+    await waitFor(() => expect(screen.getByTestId("win-error").textContent).toBe("error"));
+    // quote stays sent and no orphan order was created
+    expect(screen.getByTestId("status").textContent).toBe("sent");
+    expect(Number(screen.getByTestId("orders").textContent)).toBe(before);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Probe D: useShipOrder
+// Probe D: useShipOrder — idempotent invoice on an order that already has one
+// wo-48120 is ready_to_ship and already has inv-summit-48120 (to_bill).
 // ---------------------------------------------------------------------------
-function ShipProbe() {
+function ShipExistingInvoiceProbe() {
   const orders = useWorkOrders();
   const certs = useCertifications();
   const invoices = useInvoices();
   const ship = useShipOrder();
   const order = orders.data?.find((o) => o.id === "wo-48120");
   const cert = certs.data?.find((c) => c.workOrderId === "wo-48120") ?? null;
+  const invForOrder = invoices.data?.filter((i) => i.workOrderId === "wo-48120").length ?? 0;
   return (
     <div>
       <div data-testid="status">{order?.status ?? "loading"}</div>
-      <div data-testid="invoices">{invoices.data?.length ?? 0}</div>
+      <div data-testid="inv-for-order">{invForOrder}</div>
       <button disabled={!order} onClick={() => order && ship.mutate({ order, cert, actor: "Test", at: "2026-07-01T00:00:00.000Z" })}>Ship</button>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Probe D2: useShipOrder — a freshly created ready_to_ship, non-cert order with
+// no invoice yet gets exactly one to-bill invoice on ship.
+// ---------------------------------------------------------------------------
+function ShipFreshOrderProbe() {
+  const repos = useRepositories();
+  const invoices = useInvoices();
+  const ship = useShipOrder();
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const invForOrder = orderId ? (invoices.data?.filter((i) => i.workOrderId === orderId).length ?? 0) : 0;
+
+  async function createAndShip() {
+    const order = await repos.workOrders.create({
+      customerId: "cust-vulcan", customerPO: "PO-FRESH", quoteId: null,
+      processSummary: "Anneal", processMasterId: null, status: "ready_to_ship",
+      orderedDate: "2026-06-30T00:00:00.000Z", due: "2026-07-10T00:00:00.000Z",
+      certifyRequired: false, certSpecId: null, orderValueCents: 5000, progressPct: 90,
+      lines: [], pricing: [], steps: [], activity: [],
+    });
+    setOrderId(order.id);
+    await ship.mutateAsync({ order, cert: null, actor: "Test", at: "2026-07-01T00:00:00.000Z" });
+  }
+
+  return (
+    <div>
+      <div data-testid="order-id">{orderId ?? "none"}</div>
+      <div data-testid="inv-for-order">{invForOrder}</div>
+      <button onClick={createAndShip}>CreateAndShip</button>
+    </div>
+  );
+}
+
 describe("order mutations", () => {
-  it("useShipOrder: sets status to shipped and creates to-bill invoice", async () => {
+  it("useShipOrder: shipping an order that already has an invoice does NOT create a duplicate", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<ShipProbe />);
+    renderWithProviders(<ShipExistingInvoiceProbe />);
     await screen.findByText("ready_to_ship");
-    const before = Number(screen.getByTestId("invoices").textContent);
+    await waitFor(() => expect(screen.getByTestId("inv-for-order").textContent).toBe("1"));
     await user.click(screen.getByRole("button", { name: "Ship" }));
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("shipped"));
-    await waitFor(() => expect(Number(screen.getByTestId("invoices").textContent)).toBe(before + 1));
+    // still exactly one invoice for wo-48120 — no duplicate created
+    await waitFor(() => expect(screen.getByTestId("inv-for-order").textContent).toBe("1"));
+  });
+
+  it("useShipOrder: shipping a fresh order with no invoice creates exactly one", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ShipFreshOrderProbe />);
+    await user.click(screen.getByRole("button", { name: "CreateAndShip" }));
+    await waitFor(() => expect(screen.getByTestId("order-id").textContent).not.toBe("none"));
+    await waitFor(() => expect(screen.getByTestId("inv-for-order").textContent).toBe("1"));
   });
 });
 
