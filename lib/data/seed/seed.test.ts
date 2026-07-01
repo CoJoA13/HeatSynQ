@@ -43,6 +43,23 @@ describe("seed", () => {
     s.workOrders.forEach((w) => expect(customerIds.has(w.customerId)).toBe(true));
   });
 
+  it("populates live traveler steps on every work order", () => {
+    s.workOrders.forEach((w) => {
+      expect(w.steps.length).toBeGreaterThan(0);
+      w.steps.forEach((st) => {
+        expect(["pending", "in_process", "done"]).toContain(st.state);
+        expect(st.areaId).toBeTruthy();
+      });
+    });
+  });
+  it("has a credit-hold order that is ready to ship (Vulcan)", () => {
+    const held = s.workOrders.find((w) => w.customerId === "cust-vulcan" && w.status === "ready_to_ship");
+    expect(held).toBeTruthy();
+    expect(held!.steps.every((st) => st.state === "done")).toBe(true);
+    const heldCustomer = s.customers.find((c) => c.id === held!.customerId);
+    expect(heldCustomer!.status).toBe("hold");
+  });
+
   it("resolves cross-entity foreign keys within the seed", () => {
     const has = <T extends { id: string }>(arr: T[], id: string) => arr.some((r) => r.id === id);
     const nullOr = <T extends { id: string }>(arr: T[], id: string | null) => id === null || has(arr, id);

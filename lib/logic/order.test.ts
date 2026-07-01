@@ -35,6 +35,15 @@ describe("order creation", () => {
   it("instantiates traveler steps from the part's process master", () => {
     expect(order.steps[0].op).toBe("Receive & verify");
   });
+  it("initializes every step to pending with an area and null stamps", () => {
+    expect(order.steps[0].state).toBe("pending");
+    expect(order.steps[0].areaId).toBe("received"); // "Receive & verify"
+    expect(order.steps[0].trackedInAt).toBeNull();
+    expect(order.steps[0].operatorId).toBeNull();
+    expect(order.steps[0].operatorInitials).toBeNull();
+    expect(order.steps[0].trackedOutAt).toBeNull();
+    expect(order.steps[0].inspectResult).toBeNull();
+  });
   it("sets cert flag from the customer default cert spec", () => {
     expect(order.certifyRequired).toBe(true);
     expect(order.certSpecId).toBe("s1");
@@ -141,12 +150,26 @@ describe("ship gate", () => {
   it("allows ship when no cert required", () => {
     expect(canShipOrder({ certifyRequired:false } as WorkOrder, null).ok).toBe(true);
   });
+  it("blocks ship when the customer is on credit hold", () => {
+    const o = { certifyRequired: false } as WorkOrder;
+    const held = { status: "hold" } as Customer;
+    const gate = canShipOrder(o, null, held);
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toMatch(/credit hold/i);
+  });
+  it("allows ship for an active customer with no cert required", () => {
+    const o = { certifyRequired: false } as WorkOrder;
+    expect(canShipOrder(o, null, { status: "active" } as Customer).ok).toBe(true);
+  });
 });
 
 describe("order transitions", () => {
   it("permits received -> scheduled but not received -> shipped", () => {
     expect(canTransitionOrder("received","scheduled")).toBe(true);
     expect(canTransitionOrder("received","shipped")).toBe(false);
+  });
+  it("permits on_hold -> ready_to_ship (resume when all steps done)", () => {
+    expect(canTransitionOrder("on_hold", "ready_to_ship")).toBe(true);
   });
 });
 
@@ -164,5 +187,21 @@ describe("activityEntry", () => {
   it("builds an activity entry", () => {
     expect(activityEntry("Dana", "Shipped", "2026-07-01T00:00:00.000Z"))
       .toEqual({ actor: "Dana", message: "Shipped", at: "2026-07-01T00:00:00.000Z" });
+  });
+});
+
+describe("zero-trackable-step order", () => {
+  it("produces status=ready_to_ship and progressPct=100 when the part has no process master", () => {
+    const nopmPart: Part = { ...part, processMasterId: null };
+    const o = createOrderFromQuote(quote, { partsById: { pt1: nopmPart }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
+    expect(o.steps).toHaveLength(0);
+    expect(o.status).toBe("ready_to_ship");
+    expect(o.progressPct).toBe(100);
+  });
+  it("keeps status=received and progressPct=0 for an order with trackable steps", () => {
+    const o = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
+    expect(o.steps.length).toBeGreaterThan(0);
+    expect(o.status).toBe("received");
+    expect(o.progressPct).toBe(0);
   });
 });

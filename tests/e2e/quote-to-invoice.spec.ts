@@ -49,25 +49,36 @@ test("multi-part quote → send → won → order → release cert → ship → 
   await page.getByRole("link", { name: "Orders" }).click();
   await page.getByText("WO-48212").click();
 
-  // Drive the order: received → Scheduled → In Process → Ready to ship
-  // (each click refetches; next transition buttons appear after re-render)
-  await page.getByRole("button", { name: "Scheduled" }).click();
-  await page.getByRole("button", { name: "In Process" }).click();
-  await page.getByRole("button", { name: "Ready to ship" }).click();
+  // Drive the traveler. Only the active step exposes its buttons; complete each in order.
+  // 1 Receive & verify (track_in) — single Track In completes it
+  await page.getByTestId("traveler-step-1").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-1")).toContainText("Done");
+  // 2 Wash & rack (track_in_out)
+  await page.getByTestId("traveler-step-2").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-2")).toContainText("In process");
+  await page.getByTestId("traveler-step-2").getByRole("button", { name: "Track Out" }).click();
+  await expect(page.getByTestId("traveler-step-2")).toContainText("Done");
+  // 3 Carburize (track_in_out)
+  await page.getByTestId("traveler-step-3").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-3")).toContainText("In process");
+  await page.getByTestId("traveler-step-3").getByRole("button", { name: "Track Out" }).click();
+  await expect(page.getByTestId("traveler-step-3")).toContainText("Done");
+  // 4 Temper (track_in_out)
+  await page.getByTestId("traveler-step-4").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-4")).toContainText("In process");
+  await page.getByTestId("traveler-step-4").getByRole("button", { name: "Track Out" }).click();
+  await expect(page.getByTestId("traveler-step-4")).toContainText("Done");
+  // 5 Final inspect (inspect) — Pass auto-releases the cert
+  await page.getByTestId("traveler-step-5").getByRole("button", { name: "Pass" }).click();
+  await expect(page.getByTestId("traveler-step-5")).toContainText("Done");
+  await expect(page.getByText("Released", { exact: true })).toBeVisible();
+  // 6 Certify & ship (track_out) — completes → Ready to ship
+  await page.getByTestId("traveler-step-6").getByRole("button", { name: "Track Out" }).click();
+  await expect(page.getByTestId("traveler-step-6")).toContainText("Done");
 
-  // Now at ready_to_ship: the cert-blocked banner and disabled Ship button are visible
-  await expect(
-    page.getByText(/certification must be released before ship/i),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Ship$/ })).toBeDisabled();
-
-  // Release the pending cert — manager has release_cert permission
-  await page.getByRole("button", { name: "Release" }).click();
-  await expect(page.getByText("Released")).toBeVisible();
-
-  // Ship → creates the to-bill invoice; order becomes Shipped
+  // Now Ready to ship, cert Released, Apex is active → Ship is enabled
+  await expect(page.getByRole("button", { name: /^Ship$/ })).toBeEnabled();
   await page.getByRole("button", { name: /^Ship$/ }).click();
-  // Use exact match — activity log also emits "Shipped — to-bill invoice"
   await expect(page.getByText("Shipped", { exact: true }).first()).toBeVisible();
 
   // Navigate to Invoicing; bill the Apex Aerospace invoice (3rd in to-bill list, after seed entries)

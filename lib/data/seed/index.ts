@@ -11,7 +11,9 @@ import type {
   Certification,
   Invoice,
   Operator,
+  OrderStep,
 } from "@/lib/domain";
+import { areaForOp, orderProgressPct } from "@/lib/logic/tracking";
 
 const T = "2026-06-01T00:00:00.000Z";
 const meta = { createdAt: T, updatedAt: T, version: 0 };
@@ -643,6 +645,23 @@ export function buildSeed() {
     },
   ];
 
+  // Build live OrderStep[] for a work order from its process master's steps + a per-step state list.
+  function liveSteps(pmId: string, states: OrderStep["state"][]): OrderStep[] {
+    const pmSteps = processMasters.find((m) => m.id === pmId)?.steps ?? [];
+    return pmSteps.map((s, i) => {
+      const state = states[i] ?? "pending";
+      const acted = state !== "pending";
+      return {
+        ...s, areaId: areaForOp(s.op), state,
+        operatorId: acted ? "op-dana" : null,
+        operatorInitials: acted ? "DM" : null,
+        trackedInAt: acted ? "2026-06-30T00:00:00.000Z" : null,
+        trackedOutAt: state === "done" ? "2026-06-30T00:00:00.000Z" : null,
+        inspectResult: null,
+      };
+    });
+  }
+
   const workOrders: WorkOrder[] = [
     {
       ...meta,
@@ -659,7 +678,7 @@ export function buildSeed() {
       certifyRequired: true,
       certSpecId: "spec-ams2759-3",
       orderValueCents: 842000,
-      progressPct: 68,
+      progressPct: orderProgressPct(liveSteps("pm-carb58", ["done","in_process","pending","pending","pending","pending"])),
       lines: [
         { id: "ol-1", partId: "part-ts4471", description: "Turbine shaft, 4140 steel", quantity: 480, spec: "Rc 58-62" },
         { id: "ol-2", partId: "part-sp119", description: "Spacer ring, 8620", quantity: 120, spec: "Rc 58-62" },
@@ -669,7 +688,7 @@ export function buildSeed() {
         { process: "Temper", detail: "", amountCents: 144000 },
         { process: "Certification", detail: "", amountCents: 80000 },
       ],
-      steps: [],
+      steps: liveSteps("pm-carb58", ["done","in_process","pending","pending","pending","pending"]),
       activity: [{ at: "2026-06-26T00:00:00.000Z", actor: "System", message: "Order received" }],
     },
     {
@@ -687,10 +706,10 @@ export function buildSeed() {
       certifyRequired: true,
       certSpecId: "spec-ams2759-2",
       orderValueCents: 312000,
-      progressPct: 88,
+      progressPct: orderProgressPct(liveSteps("pm-vac44", ["done","done","pending","pending"])),
       lines: [{ id: "ol-48205-1", partId: "part-cs88", description: "Cap screw, 4140 steel", quantity: 5200, spec: "Rc 40-45" }],
       pricing: [{ process: "Vacuum harden", detail: "5,200 pc", amountCents: 312000 }],
-      steps: [],
+      steps: liveSteps("pm-vac44", ["done","done","pending","pending"]),
       activity: [{ at: "2026-06-22T00:00:00.000Z", actor: "System", message: "Order received" }],
     },
     {
@@ -708,10 +727,10 @@ export function buildSeed() {
       certifyRequired: true,
       certSpecId: "spec-mils6090",
       orderValueCents: 288000,
-      progressPct: 41,
+      progressPct: orderProgressPct(liveSteps("pm-nit09", ["done","in_process","pending"])),
       lines: [{ id: "ol-48190-1", partId: "part-br12", description: "Blade root, Inconel 718", quantity: 96, spec: "HV 650+" }],
       pricing: [{ process: "Nitride", detail: "96 pc", amountCents: 288000 }],
-      steps: [],
+      steps: liveSteps("pm-nit09", ["done","in_process","pending"]),
       activity: [{ at: "2026-06-19T00:00:00.000Z", actor: "System", message: "Order received" }],
     },
     {
@@ -729,10 +748,10 @@ export function buildSeed() {
       certifyRequired: true,
       certSpecId: "spec-ams2759-2",
       orderValueCents: 291000,
-      progressPct: 55,
+      progressPct: orderProgressPct(liveSteps("pm-cn21", ["done","done","pending"])),
       lines: [{ id: "ol-48177-1", partId: "part-rg440", description: "Ring gear, 8620 steel", quantity: 310, spec: "Rc 55-60" }],
       pricing: [{ process: "Carbonitride", detail: "310 pc", amountCents: 291000 }],
-      steps: [],
+      steps: liveSteps("pm-cn21", ["done","done","pending"]),
       activity: [{ at: "2026-06-16T00:00:00.000Z", actor: "System", message: "Order received" }],
     },
     {
@@ -750,10 +769,10 @@ export function buildSeed() {
       certifyRequired: false,
       certSpecId: null,
       orderValueCents: 64000,
-      progressPct: 30,
+      progressPct: orderProgressPct(liveSteps("pm-nh15", ["done","in_process","pending","pending"])),
       lines: [{ id: "ol-48142-1", partId: "part-hs22", description: "Hub shaft, 4340 steel", quantity: 220, spec: "Rc 36-42" }],
       pricing: [{ process: "Temper", detail: "1 lot", amountCents: 64000 }],
-      steps: [],
+      steps: liveSteps("pm-nh15", ["done","in_process","pending","pending"]),
       activity: [
         { at: "2026-06-10T00:00:00.000Z", actor: "System", message: "Order received" },
         { at: "2026-06-27T00:00:00.000Z", actor: "System", message: "On hold — Temper Oven #4 alarm (+18°F)" },
@@ -777,7 +796,7 @@ export function buildSeed() {
       progressPct: 100,
       lines: [{ id: "ol-48120-1", partId: "part-rc200", description: "Bearing race, 52100 steel", quantity: 1440, spec: "Rc 60-64" }],
       pricing: [{ process: "Neutral harden", detail: "1,440 pc", amountCents: 418000 }],
-      steps: [],
+      steps: liveSteps("pm-nh15", ["done","done","done","done"]),
       activity: [
         { at: "2026-06-05T00:00:00.000Z", actor: "System", message: "Order received" },
         { at: "2026-06-25T00:00:00.000Z", actor: "System", message: "Ready to ship" },
@@ -792,17 +811,20 @@ export function buildSeed() {
       quoteId: null,
       processSummary: "Anneal",
       processMasterId: "pm-ann03",
-      status: "received",
+      status: "ready_to_ship",
       orderedDate: "2026-06-28T00:00:00.000Z",
       due: "2026-07-10T00:00:00.000Z",
       certifyRequired: false,
       certSpecId: null,
       orderValueCents: 24000,
-      progressPct: 0,
+      progressPct: 100,
       lines: [{ id: "ol-48098-1", partId: "part-cs88", description: "Anneal lot, 4140 steel", quantity: 40, spec: "Annealed" }],
       pricing: [{ process: "Anneal", detail: "40 pc", amountCents: 24000 }],
-      steps: [],
-      activity: [{ at: "2026-06-28T00:00:00.000Z", actor: "System", message: "Order received" }],
+      steps: liveSteps("pm-ann03", ["done","done","done"]),
+      activity: [
+        { at: "2026-06-28T00:00:00.000Z", actor: "System", message: "Order received" },
+        { at: "2026-06-30T00:00:00.000Z", actor: "System", message: "Ready to ship" },
+      ],
     },
   ];
 

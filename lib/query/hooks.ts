@@ -1,6 +1,6 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice } from "@/lib/domain";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer } from "@/lib/domain";
 import { orderStatusMeta } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
@@ -8,6 +8,7 @@ import { queryKeys } from "./keys";
 import { navBadgeCounts } from "@/lib/logic/dashboard";
 import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/lib/logic/quote-state";
 import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOrder, activityEntry } from "@/lib/logic/order";
+import { trackInStep, trackOutStep, rollUpOrderStatus, orderProgressPct } from "@/lib/logic/tracking";
 import { toBillInvoiceFromOrder, billInvoice, payInvoice } from "@/lib/logic/invoice";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
@@ -131,6 +132,7 @@ export function useWinQuote() {
         r.parts.list(), r.processMasters.list(), r.customers.get(quote.customerId),
       ]);
       if (!customer) throw new Error("Customer not found: " + quote.customerId);
+      if (customer.status === "hold") throw new Error("Customer on credit hold — cannot create order");
       const partsById = Object.fromEntries(parts.map((p) => [p.id, p]));
       const processMastersById = Object.fromEntries(pms.map((m) => [m.id, m]));
       // Version-check BEFORE any side effect: a stale quote throws here, leaving no orphan order/cert.
@@ -175,8 +177,8 @@ export function useTransitionOrder() {
 export function useShipOrder() {
   const r = useRepositories(); const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: { order: WorkOrder; cert: Certification | null; actor: string; at: string }) => {
-      const gate = canShipOrder(vars.order, vars.cert);
+    mutationFn: async (vars: { order: WorkOrder; cert: Certification | null; actor: string; at: string; customer?: Customer | null }) => {
+      const gate = canShipOrder(vars.order, vars.cert, vars.customer);
       if (!gate.ok) throw new Error(gate.reason ?? "Cannot ship");
       // Read-only first: decide whether a to-bill invoice is still needed (idempotent).
       const existing = await r.invoices.list();
@@ -193,6 +195,57 @@ export function useShipOrder() {
       qc.invalidateQueries({ queryKey: queryKeys.workOrders });
       qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
       qc.invalidateQueries({ queryKey: queryKeys.invoices });
+    },
+  });
+}
+
+export function useTrackInStep() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { order: WorkOrder; stepN: number; operator: Operator }) => {
+      const at = new Date().toISOString();
+      const step = vars.order.steps.find((s) => s.n === vars.stepN);
+      const steps = trackInStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at);
+      const status = rollUpOrderStatus(steps, vars.order.status);
+      const message = step?.equip ? `Tracked in ${step.op} · ${step.equip}` : `Tracked in ${step?.op ?? "step"}`;
+      const activity = [...vars.order.activity, activityEntry(vars.operator.name, message, at)];
+      return r.workOrders.update(vars.order.id, { steps, status, progressPct: orderProgressPct(steps), activity }, vars.order.version);
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+    },
+  });
+}
+
+export function useTrackOutStep() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { order: WorkOrder; stepN: number; operator: Operator; cert: Certification | null; inspectResult?: "pass" | "fail" }) => {
+      const at = new Date().toISOString();
+      const step = vars.order.steps.find((s) => s.n === vars.stepN);
+      const steps = trackOutStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at, vars.inspectResult);
+      const failed = vars.inspectResult === "fail";
+      const willRelease = vars.inspectResult === "pass" && vars.cert != null && vars.cert.status === "pending";
+      const status = failed ? "on_hold" : rollUpOrderStatus(steps, vars.order.status);
+      const message = failed
+        ? `Final inspect failed — order on hold`
+        : vars.inspectResult === "pass"
+          ? willRelease ? `Final inspect passed — cert ${vars.cert!.number} released` : "Final inspect passed"
+          : `Tracked out ${step?.op ?? "step"}`;
+      const activity = [...vars.order.activity, activityEntry(vars.operator.name, message, at)];
+      // Version-check the order update FIRST; a stale order throws before the cert write.
+      const updated = await r.workOrders.update(vars.order.id, { steps, status, progressPct: orderProgressPct(steps), activity }, vars.order.version);
+      // Inspect pass auto-releases a required pending cert (dependent write, WO-first ordering).
+      if (willRelease) {
+        await r.certifications.update(vars.cert!.id, { status: "released" }, vars.cert!.version);
+      }
+      return updated;
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.certifications });
     },
   });
 }

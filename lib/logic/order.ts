@@ -1,8 +1,9 @@
 import type {
-  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry,
+  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry, OrderStep,
 } from "@/lib/domain";
 import type { CreateInput } from "@/lib/data/repositories";
 import { quoteTotalCents, quoteSubtotalCents, lineAmountCents } from "./pricing";
+import { areaForOp } from "./tracking";
 
 export type NewWorkOrder = CreateInput<WorkOrder>;
 
@@ -23,7 +24,14 @@ export function createOrderFromQuote(
 
   // Carry EVERY quoted part's traveler: dedupe process masters (preserve order), concat steps, renumber 1..N.
   const pmIds = [...new Set(quote.parts.map((qp) => ctx.partsById[qp.partId]?.processMasterId).filter((id): id is string => id != null))];
-  const steps = pmIds.flatMap((id) => ctx.processMastersById[id]?.steps ?? []).map((s, i) => ({ ...s, n: i + 1 }));
+  const steps: OrderStep[] = pmIds
+    .flatMap((id) => ctx.processMastersById[id]?.steps ?? [])
+    .map((s, i) => ({
+      ...s, n: i + 1, areaId: areaForOp(s.op), state: "pending",
+      operatorId: null, operatorInitials: null, trackedInAt: null, trackedOutAt: null, inspectResult: null,
+    }));
+
+  const trackableCount = steps.filter((s) => s.track !== "none").length;
 
   const total = quoteTotalCents(quote);
   const subtotal = quoteSubtotalCents(quote.parts);
@@ -39,13 +47,13 @@ export function createOrderFromQuote(
     quoteId: quote.id,
     processSummary: processNames.join(" + "),
     processMasterId: pm?.id ?? null,
-    status: "received",
+    status: trackableCount === 0 ? "ready_to_ship" : "received",
     orderedDate: quote.date,
     due: quote.requiredBy ?? ctx.nowIso,
     certifyRequired: certSpecId != null || hasCertLine,
     certSpecId,
     orderValueCents: total,
-    progressPct: 0,
+    progressPct: trackableCount === 0 ? 100 : 0,
     lines: quote.parts.map((qp) => {
       const part = ctx.partsById[qp.partId];
       return { id: qp.id, partId: qp.partId, description: part?.description ?? "", quantity: qp.quantity, spec: part?.hardness ?? "" };
@@ -66,7 +74,7 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   received: ["scheduled", "on_hold"],
   scheduled: ["in_process", "on_hold"],
   in_process: ["ready_to_ship", "on_hold"],
-  on_hold: ["received", "scheduled", "in_process"],
+  on_hold: ["received", "scheduled", "in_process", "ready_to_ship"],
   ready_to_ship: ["shipped", "on_hold"],
   shipped: [],
 };
@@ -90,7 +98,8 @@ export function activityEntry(actor: string, message: string, at: string): Activ
   return { actor, message, at };
 }
 
-export function canShipOrder(order: WorkOrder, cert: Certification | null): { ok: boolean; reason?: string } {
+export function canShipOrder(order: WorkOrder, cert: Certification | null, customer?: Customer | null): { ok: boolean; reason?: string } {
+  if (customer?.status === "hold") return { ok: false, reason: "Customer on credit hold — shipment blocked" };
   if (!order.certifyRequired) return { ok: true };
   if (cert?.status === "released") return { ok: true };
   return { ok: false, reason: "Certification must be released before ship" };

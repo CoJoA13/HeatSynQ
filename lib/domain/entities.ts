@@ -2,7 +2,7 @@ import { z } from "zod";
 import { baseEntitySchema, discountSchema } from "./base";
 import {
   QUOTE_STATUSES, ORDER_STATUSES, INVOICE_STATUSES, CERT_STATUSES,
-  CUSTOMER_STATUSES, PRICING_BASES, ROLE_KEYS,
+  CUSTOMER_STATUSES, PRICING_BASES, ROLE_KEYS, AREAS, ORDER_STEP_STATES,
 } from "./enums";
 
 export const operatorSchema = baseEntitySchema.extend({
@@ -72,6 +72,17 @@ export const processStepSchema = z.object({
   track: z.enum(["track_in","track_in_out","track_out","inspect","none"]),
 });
 export type ProcessStep = z.infer<typeof processStepSchema>;
+
+export const orderStepSchema = processStepSchema.extend({
+  areaId: z.enum(AREAS),
+  state: z.enum(ORDER_STEP_STATES),
+  operatorId: z.string().nullable(),
+  operatorInitials: z.string().nullable(),
+  trackedInAt: z.string().nullable(),
+  trackedOutAt: z.string().nullable(),
+  inspectResult: z.enum(["pass", "fail"]).nullable(),
+});
+export type OrderStep = z.infer<typeof orderStepSchema>;
 
 export const processMasterSchema = baseEntitySchema.extend({
   code: z.string(),                 // "PM-CARB-58"
@@ -178,7 +189,7 @@ export const workOrderSchema = baseEntitySchema.extend({
   progressPct: z.number().int().min(0).max(100),
   lines: z.array(orderLineSchema),
   pricing: z.array(orderPricingLineSchema),
-  steps: z.array(processStepSchema),
+  steps: z.array(orderStepSchema),
   activity: z.array(activityEntrySchema),
 });
 export type WorkOrder = z.infer<typeof workOrderSchema>;
