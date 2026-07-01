@@ -11,6 +11,6 @@ function BadgeProbe() {
 describe("useNavBadges", () => {
   it("computes live counts from the seed", async () => {
     renderWithProviders(<BadgeProbe />);
-    expect(await screen.findByText("q3-o9-c2")).toBeInTheDocument();
+    expect(await screen.findByText("q3-o9-c3")).toBeInTheDocument();
   });
 });

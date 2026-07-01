@@ -44,6 +44,10 @@ export function wonQuotesCount(quotes: Quote[]): number {
 export function certsAwaitingRelease(certs: Certification[]): number {
   return certs.filter((c) => c.status === "pending").length;
 }
+export function certsBlockingShipments(certs: Certification[], orders: WorkOrder[]): number {
+  const readyToShip = new Set(orders.filter((o) => o.status === "ready_to_ship").map((o) => o.id));
+  return certs.filter((c) => c.status === "pending" && readyToShip.has(c.workOrderId)).length;
+}
 
 // --- finance ---
 export function openArCents(invoices: Invoice[]): number {
@@ -97,11 +101,12 @@ export function dashboardKpis(role: RoleKey, data: DashboardData, asOf: string):
   }
   // manager (default)
   const late = lateOrders(orders, asOf).length;
+  const blocking = certsBlockingShipments(certifications, orders);
   return [
     { label: "Open Orders", value: String(openOrders(orders).length), sub: `${late} late` },
     { label: "Late Orders", value: String(late), tone: "danger" },
     { label: "On-Time %", value: String(onSchedulePct(orders, asOf)), sub: "of open orders" },
-    { label: "Certs Awaiting Release", value: String(certsAwaitingRelease(certifications)), sub: "blocking ship" },
+    { label: "Certs Awaiting Release", value: String(certsAwaitingRelease(certifications)), sub: `blocking ${blocking} shipment${blocking === 1 ? "" : "s"}` },
     { label: "Open A/R", value: formatMoney(openArCents(invoices)) },
     { label: "Invoiced MTD", value: formatMoney(invoicedMtdCents(invoices, asOf)) },
   ];

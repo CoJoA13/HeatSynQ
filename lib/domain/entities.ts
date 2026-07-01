@@ -3,7 +3,7 @@ import { baseEntitySchema, discountSchema } from "./base";
 import {
   QUOTE_STATUSES, ORDER_STATUSES, INVOICE_STATUSES, CERT_STATUSES,
   CUSTOMER_STATUSES, PRICING_BASES, ROLE_KEYS, AREAS, ORDER_STEP_STATES,
-  SCHEDULE_BLOCK_STATES,
+  SCHEDULE_BLOCK_STATES, STANDARD_CATEGORIES,
 } from "./enums";
 
 export const operatorSchema = baseEntitySchema.extend({
@@ -225,3 +225,12 @@ export const scheduleBlockSchema = baseEntitySchema.extend({
   state: z.enum(SCHEDULE_BLOCK_STATES),
 });
 export type ScheduleBlock = z.infer<typeof scheduleBlockSchema>;
+
+export const standardSchema = baseEntitySchema.extend({
+  code: z.string(),                 // "AS9100D" — display id (Specification `code` precedent)
+  title: z.string(),
+  category: z.enum(STANDARD_CATEGORIES),
+  reviewedAt: z.string(),           // ISO midnight-UTC — last internal review
+  nextReviewAt: z.string(),         // ISO midnight-UTC — next review due
+});
+export type Standard = z.infer<typeof standardSchema>;

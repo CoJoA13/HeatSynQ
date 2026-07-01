@@ -1,5 +1,5 @@
 import type {
-  Customer, Contact, Part, ProcessMaster, Specification, PriceKey, PricingRule,
+  Customer, Contact, Part, ProcessMaster, Specification, Standard, PriceKey, PricingRule,
   Quote, WorkOrder, Certification, Invoice, Operator, ScheduleBlock,
 } from "@/lib/domain";
 
@@ -32,6 +32,7 @@ export interface Repositories {
   parts: WriteRepo<Part> & { byCustomer(customerId: string): Promise<Part[]> };
   processMasters: ReadRepo<ProcessMaster>;
   specifications: ReadRepo<Specification>;
+  standards: ReadRepo<Standard>;
   priceKeys: ReadRepo<PriceKey>;
   pricingRules: ReadRepo<PricingRule> & { byPriceKey(priceKeyId: string): Promise<PricingRule[]> };
   quotes: WriteRepo<Quote>;

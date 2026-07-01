@@ -14,8 +14,11 @@ import {
   certificationSchema,
   invoiceSchema,
   scheduleBlockSchema,
+  standardSchema,
 } from "@/lib/domain";
 import { EQUIPMENT } from "@/lib/domain/enums";
+import { isReviewDue } from "@/lib/logic/standards";
+import { DEMO_NOW } from "@/lib/clock";
 
 describe("seed", () => {
   const s = buildSeed();
@@ -23,6 +26,7 @@ describe("seed", () => {
   it("validates every array against its schema", () => {
     s.operators.forEach((r) => expect(() => operatorSchema.parse(r)).not.toThrow());
     s.specifications.forEach((r) => expect(() => specificationSchema.parse(r)).not.toThrow());
+    s.standards.forEach((r) => expect(() => standardSchema.parse(r)).not.toThrow());
     s.priceKeys.forEach((r) => expect(() => priceKeySchema.parse(r)).not.toThrow());
     s.pricingRules.forEach((r) => expect(() => pricingRuleSchema.parse(r)).not.toThrow());
     s.customers.forEach((r) => expect(() => customerSchema.parse(r)).not.toThrow());
@@ -61,6 +65,22 @@ describe("seed", () => {
     expect(held!.steps.every((st) => st.state === "done")).toBe(true);
     const heldCustomer = s.customers.find((c) => c.id === held!.customerId);
     expect(heldCustomer!.status).toBe("hold");
+  });
+
+  it("seeds the standards library with exactly one review-overdue row", () => {
+    expect(s.standards).toHaveLength(4);
+    expect(s.standards.filter((st) => isReviewDue(st, DEMO_NOW)).map((st) => st.code)).toEqual(["CQI-9"]);
+  });
+
+  it("has a ready-to-ship order blocked by a pending cert (manual-release story)", () => {
+    const cert = s.certifications.find((c) => c.number === "C-9910")!;
+    expect(cert.status).toBe("pending");
+    const wo = s.workOrders.find((w) => w.id === cert.workOrderId)!;
+    expect(wo.status).toBe("ready_to_ship");
+    // Coherence with Plan-4 auto-release: this WO's process has NO inspect step,
+    // so a pending cert on a done-steps order is exactly the manual-release case.
+    const pm = s.processMasters.find((m) => m.id === wo.processMasterId)!;
+    expect(pm.steps.some((st) => st.track === "inspect")).toBe(false);
   });
 
   it("resolves cross-entity foreign keys within the seed", () => {
