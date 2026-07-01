@@ -135,7 +135,7 @@ export function useWinQuote() {
       const processMastersById = Object.fromEntries(pms.map((m) => [m.id, m]));
       // Version-check BEFORE any side effect: a stale quote throws here, leaving no orphan order/cert.
       const won = await r.quotes.update(quote.id, { status: "won" }, quote.version);
-      const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer }));
+      const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer, nowIso: new Date().toISOString() }));
       if (order.certifyRequired) await r.certifications.create(createCertForOrder(order, customer));
       return r.quotes.update(quote.id, { wonOrderId: order.id }, won.version);
     },

@@ -24,7 +24,7 @@ const quote: Quote = { id:"q1", createdAt:"", updatedAt:"", version:0, number:"Q
     { id:"l2", process:"Temper", basis:"per_lot", qtyOrWeight:1, rateCents:144000, minChargeCents:null }]}] };
 
 describe("order creation", () => {
-  const order = createOrderFromQuote(quote, { partsById:{ pt1: part }, processMastersById:{ pm1: pm }, customer });
+  const order = createOrderFromQuote(quote, { partsById:{ pt1: part }, processMastersById:{ pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
   it("carries the quote total into orderValue", () => {
     expect(order.orderValueCents).toBe(618000 + 144000);
   });
@@ -42,14 +42,14 @@ describe("order creation", () => {
   it("falls back to a quoted part's spec when the customer has no default cert spec", () => {
     const noDefaultCustomer: Customer = { ...customer, defaultCertSpecId: null };
     // part has specificationId "s1"
-    const o = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    const o = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer: noDefaultCustomer, nowIso: "2026-07-01T00:00:00.000Z" });
     expect(o.certifyRequired).toBe(true);
     expect(o.certSpecId).toBe("s1");
   });
   it("requires no cert when neither the customer nor any part carries a spec", () => {
     const noDefaultCustomer: Customer = { ...customer, defaultCertSpecId: null };
     const partNoSpec: Part = { ...part, specificationId: null };
-    const o = createOrderFromQuote(quote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    const o = createOrderFromQuote(quote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer, nowIso: "2026-07-01T00:00:00.000Z" });
     expect(o.certifyRequired).toBe(false);
     expect(o.certSpecId).toBe(null);
   });
@@ -60,7 +60,7 @@ describe("order creation", () => {
       { id: "qp1", partId: "pt1", material: "4140 steel", quantity: 480, lines: [
         { id: "l1", process: "Carburize", basis: "per_lb", qtyOrWeight: 600, rateCents: 1030, minChargeCents: null },
         { id: "lc", process: "Certification", basis: "flat", qtyOrWeight: 1, rateCents: 80000, minChargeCents: null }] }] };
-    const o = createOrderFromQuote(certLineQuote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    const o = createOrderFromQuote(certLineQuote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer, nowIso: "2026-07-01T00:00:00.000Z" });
     expect(o.certifyRequired).toBe(true);
     expect(o.certSpecId).toBe(null); // null spec is allowed by the Certification schema
   });
@@ -72,6 +72,12 @@ describe("order creation", () => {
     expect(order.lines).toHaveLength(1);
     expect(order.lines[0].quantity).toBe(480);
   });
+  it("uses nowIso as due when requiredBy is null (no stale quote date)", () => {
+    const nowIso = "2026-07-01T12:00:00.000Z";
+    const undatedQuote: Quote = { ...quote, requiredBy: null, date: "2025-01-10T00:00:00.000Z" };
+    const o = createOrderFromQuote(undatedQuote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer, nowIso });
+    expect(o.due).toBe(nowIso);
+  });
 });
 
 describe("discounted quote pricing", () => {
@@ -79,7 +85,7 @@ describe("discounted quote pricing", () => {
     ...quote,
     discount: { kind: "percent", value: 10 },
   };
-  const order = createOrderFromQuote(discountedQuote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer });
+  const order = createOrderFromQuote(discountedQuote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
   it("appends a Discount pricing line so pricing lines sum to orderValue", () => {
     const sum = order.pricing.reduce((s, p) => s + p.amountCents, 0);
     expect(sum).toBe(order.orderValueCents);
@@ -88,7 +94,7 @@ describe("discounted quote pricing", () => {
     expect(discountLine!.amountCents).toBeLessThan(0);
   });
   it("omits the Discount line when the quote has no discount", () => {
-    const undiscounted = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer });
+    const undiscounted = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
     expect(undiscounted.pricing.some((p) => p.process === "Discount")).toBe(false);
   });
 });
@@ -109,7 +115,7 @@ describe("multi-part traveler carry", () => {
   ] };
   const order = createOrderFromQuote(twoPartQuote, {
     partsById: { ptA: partA, ptB: partB }, processMastersById: { pmA, pmB },
-    customer: { ...customer, defaultCertSpecId: null },
+    customer: { ...customer, defaultCertSpecId: null }, nowIso: "2026-07-01T00:00:00.000Z",
   });
   it("carries operations from BOTH process masters", () => {
     const ops = order.steps.map((s) => s.op);

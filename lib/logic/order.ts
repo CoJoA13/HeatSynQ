@@ -8,7 +8,7 @@ export type NewWorkOrder = CreateInput<WorkOrder>;
 
 export function createOrderFromQuote(
   quote: Quote,
-  ctx: { partsById: Record<string, Part>; processMastersById: Record<string, ProcessMaster>; customer: Customer },
+  ctx: { partsById: Record<string, Part>; processMastersById: Record<string, ProcessMaster>; customer: Customer; nowIso: string },
 ): NewWorkOrder {
   const firstPart = ctx.partsById[quote.parts[0]?.partId];
   const pm = firstPart?.processMasterId ? ctx.processMastersById[firstPart.processMasterId] : undefined;
@@ -41,7 +41,7 @@ export function createOrderFromQuote(
     processMasterId: pm?.id ?? null,
     status: "received",
     orderedDate: quote.date,
-    due: quote.requiredBy ?? quote.date,
+    due: quote.requiredBy ?? ctx.nowIso,
     certifyRequired: certSpecId != null || hasCertLine,
     certSpecId,
     orderValueCents: total,

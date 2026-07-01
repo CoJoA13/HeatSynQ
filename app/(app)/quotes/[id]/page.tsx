@@ -40,7 +40,7 @@ export default function QuoteDetailPage({ params }: { params: Promise<{ id: stri
   const lose = useLoseQuote();
   const revise = useReviseQuote();
 
-  if (quote.isLoading) return <SkeletonRows />;
+  if (quote.isLoading || !operator) return <SkeletonRows />;
   if (quote.isError) return <ErrorPanel message="Failed to load quote." onRetry={() => quote.refetch()} />;
   if (!quote.data) return <EmptyState title="Quote not found" />;
   const q = quote.data;

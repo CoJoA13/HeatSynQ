@@ -21,7 +21,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const transition = useTransitionOrder();
   const ship = useShipOrder();
 
-  if (order.isLoading) return <SkeletonRows />;
+  if (order.isLoading || !operator) return <SkeletonRows />;
   if (order.isError) return <ErrorPanel message="Failed to load order." onRetry={() => order.refetch()} />;
   if (!order.data) return <EmptyState title="Order not found" />;
   const o = order.data;
