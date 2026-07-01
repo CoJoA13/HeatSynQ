@@ -13,6 +13,7 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
 
   const numberPrefix: Record<string, string> = { quotes: "Q-", workOrders: "WO-", invoices: "INV-", certifications: "C-" };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- approved: mock generic plumbing only (enforced everywhere else)
   function read<T extends { id: string }>(col: Collection<any>): ReadRepo<T> {
     return {
       async list() { await delay(latency, fail); return col.all() as T[]; },
@@ -20,6 +21,7 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
     };
   }
   function write<T extends { id: string; version: number; createdAt: string; updatedAt: string; number?: string | null }>(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- approved: mock generic plumbing only (enforced everywhere else)
     col: Collection<any>, key?: keyof typeof numberPrefix & string,
   ): WriteRepo<T> {
     return {

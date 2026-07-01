@@ -19,7 +19,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [viewAs, setViewAs] = useState<RoleKey>("manager");
 
   // auto-login the demo manager on mount (mocked auth)
-  useEffect(() => { void login("op-dana"); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    void login("op-dana");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount; login is stable in this mock
+  }, []);
 
   async function login(operatorId: string) {
     const op = await repos.operators.get(operatorId);
