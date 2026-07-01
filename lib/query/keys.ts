@@ -17,4 +17,5 @@ export const queryKeys = {
   partsByCustomer: (customerId: string) => ["parts", "byCustomer", customerId] as const,
   priceKeys: ["priceKeys"] as const,
   pricingRulesByPriceKey: (priceKeyId: string) => ["pricingRules", "byPriceKey", priceKeyId] as const,
+  scheduleBlocks: ["scheduleBlocks"] as const,
 };
