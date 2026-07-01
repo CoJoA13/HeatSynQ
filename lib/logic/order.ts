@@ -1,5 +1,5 @@
 import type {
-  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification,
+  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry,
 } from "@/lib/domain";
 import type { CreateInput } from "@/lib/data/repositories";
 import { quoteTotalCents, lineAmountCents } from "./pricing";
@@ -57,6 +57,21 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 
 export function canTransitionOrder(from: OrderStatus, to: OrderStatus): boolean {
   return ORDER_TRANSITIONS[from].includes(to);
+}
+
+export function createCertForOrder(order: WorkOrder, customer: Customer): CreateInput<Certification> {
+  return {
+    customerId: order.customerId,
+    workOrderId: order.id,
+    specificationId: order.certSpecId,
+    type: order.processSummary,
+    status: "pending",
+    copies: customer.defaultCertCopies,
+  };
+}
+
+export function activityEntry(actor: string, message: string, at: string): ActivityEntry {
+  return { actor, message, at };
 }
 
 export function canShipOrder(order: WorkOrder, cert: Certification | null): { ok: boolean; reason?: string } {

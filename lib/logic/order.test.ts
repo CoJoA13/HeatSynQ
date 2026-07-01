@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createOrderFromQuote, canShipOrder, canTransitionOrder } from "@/lib/logic/order";
+import { createOrderFromQuote, canShipOrder, canTransitionOrder, createCertForOrder, activityEntry } from "@/lib/logic/order";
 import type { Quote, Part, ProcessMaster, Customer, WorkOrder, Certification } from "@/lib/domain";
 
 const part: Part = { id:"pt1", createdAt:"", updatedAt:"", version:0, partNumber:"TS-4471",
@@ -67,5 +67,22 @@ describe("order transitions", () => {
   it("permits received -> scheduled but not received -> shipped", () => {
     expect(canTransitionOrder("received","scheduled")).toBe(true);
     expect(canTransitionOrder("received","shipped")).toBe(false);
+  });
+});
+
+describe("createCertForOrder", () => {
+  it("builds a pending cert from the order + customer default copies", () => {
+    const order = { id: "wo-x", customerId: "cust-apex", processSummary: "Carburize + Temper", certSpecId: "spec-ams2759-3", certifyRequired: true } as unknown as WorkOrder;
+    const cust = { defaultCertCopies: 2 } as unknown as Customer;
+    const cert = createCertForOrder(order, cust);
+    expect(cert).toMatchObject({ customerId: "cust-apex", workOrderId: "wo-x", specificationId: "spec-ams2759-3", status: "pending", copies: 2, type: "Carburize + Temper" });
+    expect("number" in cert).toBe(false); // create() assigns C-#
+  });
+});
+
+describe("activityEntry", () => {
+  it("builds an activity entry", () => {
+    expect(activityEntry("Dana", "Shipped", "2026-07-01T00:00:00.000Z"))
+      .toEqual({ actor: "Dana", message: "Shipped", at: "2026-07-01T00:00:00.000Z" });
   });
 });
