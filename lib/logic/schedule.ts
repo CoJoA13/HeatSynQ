@@ -62,7 +62,7 @@ export function scheduleCells(blocks: ScheduleBlock[], orders: WorkOrder[], asOf
       blockId: b.id, equipmentId: b.equipmentId, day: b.day,
       workOrderId: order.id, workOrderNumber: order.number, customerId: order.customerId,
       op: step?.op ?? null, status: order.status, progressPct: order.progressPct,
-      late: isLate(order, asOf), actionable: order.status === "scheduled",
+      late: isLate(order, asOf), actionable: order.status === "scheduled" || order.status === "received",
     });
   }
   return cells.sort((a, b) => a.workOrderNumber.localeCompare(b.workOrderNumber));

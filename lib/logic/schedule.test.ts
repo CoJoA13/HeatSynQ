@@ -90,6 +90,24 @@ describe("scheduleCells", () => {
     expect(cells[0].late).toBe(true);
     expect(cells[0].actionable).toBe(false);
   });
+  it("received WO with in-week planned block yields actionable:true (stale planned block recovery)", () => {
+    const order = wo({ id: "a", number: "WO-A", status: "received", due: "2026-07-03T00:00:00.000Z" });
+    const cells = scheduleCells([block({ id: "sb-a", workOrderId: "a" })], [order], ASOF);
+    expect(cells).toHaveLength(1);
+    expect(cells[0].actionable).toBe(true);
+  });
+  it("in_process WO with planned block yields actionable:false", () => {
+    const order = wo({ id: "a", number: "WO-A", status: "in_process", due: "2026-07-03T00:00:00.000Z" });
+    const cells = scheduleCells([block({ id: "sb-a", workOrderId: "a" })], [order], ASOF);
+    expect(cells).toHaveLength(1);
+    expect(cells[0].actionable).toBe(false);
+  });
+  it("ready_to_ship WO with planned block yields actionable:false", () => {
+    const order = wo({ id: "a", number: "WO-A", status: "ready_to_ship", due: "2026-07-03T00:00:00.000Z" });
+    const cells = scheduleCells([block({ id: "sb-a", workOrderId: "a" })], [order], ASOF);
+    expect(cells).toHaveLength(1);
+    expect(cells[0].actionable).toBe(false);
+  });
   it("orders same-cell collisions deterministically by WO number", () => {
     const o1 = wo({ id: "1", number: "WO-100", status: "scheduled" });
     const o2 = wo({ id: "2", number: "WO-050", status: "scheduled" });

@@ -84,6 +84,7 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
           canSchedule={canSchedule}
           busy={busy}
           onAssign={(o) => setAssignFor(o)}
+          asOf={asOf}
         />
       </div>
 

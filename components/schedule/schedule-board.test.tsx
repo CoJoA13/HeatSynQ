@@ -43,6 +43,7 @@ describe("ScheduleBoard", () => {
     const cell = screen.getByTestId("schedule-cell-sb-1");
     expect(cell).toHaveTextContent("WO-48230");
     expect(cell).toHaveTextContent("Scheduled");
+    expect(cell.querySelector("[data-testid='cell-progress']")).toBeInTheDocument();
   });
 
   it("lists the received order in the unscheduled queue", () => {

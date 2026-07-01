@@ -13,7 +13,9 @@ import {
   workOrderSchema,
   certificationSchema,
   invoiceSchema,
+  scheduleBlockSchema,
 } from "@/lib/domain";
+import { EQUIPMENT } from "@/lib/domain/enums";
 
 describe("seed", () => {
   const s = buildSeed();
@@ -31,6 +33,7 @@ describe("seed", () => {
     s.workOrders.forEach((r) => expect(() => workOrderSchema.parse(r)).not.toThrow());
     s.certifications.forEach((r) => expect(() => certificationSchema.parse(r)).not.toThrow());
     s.invoices.forEach((r) => expect(() => invoiceSchema.parse(r)).not.toThrow());
+    s.scheduleBlocks.forEach((r) => expect(() => scheduleBlockSchema.parse(r)).not.toThrow());
   });
 
   it("has the Apex multi-part order", () => {
@@ -105,6 +108,11 @@ describe("seed", () => {
     s.invoices.forEach((inv) => {
       expect(has(s.customers, inv.customerId)).toBe(true);
       expect(has(s.workOrders, inv.workOrderId)).toBe(true);
+    });
+    // scheduleBlocks -> workOrder / equipment roster
+    s.scheduleBlocks.forEach((b) => {
+      expect(has(s.workOrders, b.workOrderId)).toBe(true);
+      expect(EQUIPMENT.some((e) => e.id === b.equipmentId)).toBe(true);
     });
   });
 });
