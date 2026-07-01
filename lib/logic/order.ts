@@ -31,6 +31,8 @@ export function createOrderFromQuote(
       operatorId: null, operatorInitials: null, trackedInAt: null, trackedOutAt: null, inspectResult: null,
     }));
 
+  const trackableCount = steps.filter((s) => s.track !== "none").length;
+
   const total = quoteTotalCents(quote);
   const subtotal = quoteSubtotalCents(quote.parts);
   const pricing = quote.parts.flatMap((qp) =>
@@ -45,13 +47,13 @@ export function createOrderFromQuote(
     quoteId: quote.id,
     processSummary: processNames.join(" + "),
     processMasterId: pm?.id ?? null,
-    status: "received",
+    status: trackableCount === 0 ? "ready_to_ship" : "received",
     orderedDate: quote.date,
     due: quote.requiredBy ?? ctx.nowIso,
     certifyRequired: certSpecId != null || hasCertLine,
     certSpecId,
     orderValueCents: total,
-    progressPct: 0,
+    progressPct: trackableCount === 0 ? 100 : 0,
     lines: quote.parts.map((qp) => {
       const part = ctx.partsById[qp.partId];
       return { id: qp.id, partId: qp.partId, description: part?.description ?? "", quantity: qp.quantity, spec: part?.hardness ?? "" };

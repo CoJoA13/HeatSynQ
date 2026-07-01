@@ -28,9 +28,15 @@ const op = { id: "op-dana", initials: "DM" };
 const AT = "2026-07-01T00:00:00.000Z";
 
 describe("trackInStep", () => {
-  it("moves a pending step to in_process with stamps", () => {
+  it("moves a pending track_in_out step to in_process with stamps", () => {
     const s = trackInStep([step({ n: 1, op: "Carburize", track: "track_in_out" })], 1, op, AT);
     expect(s[0].state).toBe("in_process");
+    expect(s[0].trackedInAt).toBe(AT);
+    expect(s[0].operatorInitials).toBe("DM");
+  });
+  it("moves a pending track_in step directly to done (single-scan completion)", () => {
+    const s = trackInStep([step({ n: 1, op: "Receive & verify", track: "track_in" })], 1, op, AT);
+    expect(s[0].state).toBe("done");
     expect(s[0].trackedInAt).toBe(AT);
     expect(s[0].operatorInitials).toBe("DM");
   });
@@ -68,7 +74,7 @@ describe("stepActions", () => {
     expect(stepActions(step({ n: 1, op: "Carburize", track: "track_in_out", state: "in_process" }))).toEqual([{ label: "Track Out", action: "out" }]);
   });
   it("offers a single scan for track_in and track_out", () => {
-    expect(stepActions(step({ n: 1, op: "Receive & verify", track: "track_in" }))).toEqual([{ label: "Track In", action: "out" }]);
+    expect(stepActions(step({ n: 1, op: "Receive & verify", track: "track_in" }))).toEqual([{ label: "Track In", action: "in" }]);
     expect(stepActions(step({ n: 1, op: "Certify & ship", track: "track_out" }))).toEqual([{ label: "Track Out", action: "out" }]);
   });
   it("offers Pass/Fail for an inspect step", () => {

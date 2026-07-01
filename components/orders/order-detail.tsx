@@ -81,14 +81,14 @@ export function OrderDetail({
                         <div className="text-xs text-text-muted">
                           {areaMeta[s.areaId].label}
                           {s.operatorInitials && <span className="font-mono"> · {s.operatorInitials}</span>}
-                          {s.state === "done" && s.trackedOutAt && <span className="font-mono"> · {formatDate(s.trackedOutAt)}</span>}
+                          {s.state === "done" && (s.trackedOutAt ?? s.trackedInAt) && <span className="font-mono"> · {formatDate((s.trackedOutAt ?? s.trackedInAt) as string)}</span>}
                         </div>
                         {s.params.length > 0 && <div className="font-mono text-xs text-text-muted">{s.params.join(" · ")}</div>}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <StatusPill tone={sm.tone}>{sm.label}</StatusPill>
-                      {isActive && stepActions(s).map((a) => (
+                      {isActive && order.status !== "on_hold" && stepActions(s).map((a) => (
                         <Button key={a.label} size="sm" variant="outline" disabled={busy}
                           onClick={() => (a.action === "in" ? onTrackIn(s.n) : onTrackOut(s.n, a.inspectResult))}>
                           {a.label}

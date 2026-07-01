@@ -94,4 +94,15 @@ describe("OrderDetail traveler", () => {
     render(<OrderDetail order={readyOrder} customer={cust} processMaster={pm} cert={pendingCert} canRelease busy={false} {...handlers} />);
     expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument();
   });
+
+  it("shows no Track In/Out buttons on an on_hold order even with an active step", () => {
+    const onHoldOrder: WorkOrder = {
+      ...baseOrder, status: "on_hold",
+      steps: [ostep({ n: 1, op: "Carburize", track: "track_in_out", state: "in_process" })],
+    };
+    render(<OrderDetail order={onHoldOrder} customer={cust} processMaster={pm} cert={pendingCert} canRelease={false} busy={false} {...handlers} />);
+    expect(screen.queryByRole("button", { name: /track in/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /track out/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /resume/i })).toBeInTheDocument();
+  });
 });

@@ -15,11 +15,11 @@ export function areaForOp(op: string): AreaId {
 type Op = { id: string; initials: string };
 
 export function trackInStep(steps: OrderStep[], n: number, op: Op, at: string): OrderStep[] {
-  return steps.map((s) =>
-    s.n === n && s.state === "pending"
-      ? { ...s, state: "in_process", trackedInAt: at, operatorId: op.id, operatorInitials: op.initials }
-      : s,
-  );
+  return steps.map((s) => {
+    if (s.n !== n || s.state !== "pending") return s;
+    const state = s.track === "track_in" ? "done" : "in_process";
+    return { ...s, state, trackedInAt: at, operatorId: op.id, operatorInitials: op.initials };
+  });
 }
 
 export function trackOutStep(steps: OrderStep[], n: number, op: Op, at: string, inspectResult?: "pass" | "fail"): OrderStep[] {
@@ -40,7 +40,7 @@ export function stepActions(step: OrderStep): StepAction[] {
   if (step.track === "track_in_out") {
     return step.state === "in_process" ? [{ label: "Track Out", action: "out" }] : [{ label: "Track In", action: "in" }];
   }
-  if (step.track === "track_in") return [{ label: "Track In", action: "out" }];
+  if (step.track === "track_in") return [{ label: "Track In", action: "in" }];
   return [{ label: "Track Out", action: "out" }]; // track_out
 }
 

@@ -189,3 +189,19 @@ describe("activityEntry", () => {
       .toEqual({ actor: "Dana", message: "Shipped", at: "2026-07-01T00:00:00.000Z" });
   });
 });
+
+describe("zero-trackable-step order", () => {
+  it("produces status=ready_to_ship and progressPct=100 when the part has no process master", () => {
+    const nopmPart: Part = { ...part, processMasterId: null };
+    const o = createOrderFromQuote(quote, { partsById: { pt1: nopmPart }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
+    expect(o.steps).toHaveLength(0);
+    expect(o.status).toBe("ready_to_ship");
+    expect(o.progressPct).toBe(100);
+  });
+  it("keeps status=received and progressPct=0 for an order with trackable steps", () => {
+    const o = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer, nowIso: "2026-07-01T00:00:00.000Z" });
+    expect(o.steps.length).toBeGreaterThan(0);
+    expect(o.status).toBe("received");
+    expect(o.progressPct).toBe(0);
+  });
+});

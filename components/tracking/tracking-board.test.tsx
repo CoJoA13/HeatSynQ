@@ -59,4 +59,13 @@ describe("TrackingBoard", () => {
     await userEvent.click(within(card).getByRole("button", { name: "Pass" }));
     expect(onTrackOut).toHaveBeenCalledWith(o, 1, "pass");
   });
+
+  it("shows no quick-action buttons on an on_hold card even with an active step", () => {
+    const o = order("wo-held", [
+      ostep({ n: 1, op: "Carburize", track: "track_in_out", state: "in_process", areaId: "in_process" }),
+    ], "on_hold");
+    render(<TrackingBoard orders={[o]} customers={[cust]} asOf={AS_OF} busy={false} {...handlers} />);
+    const card = screen.getByTestId("board-card-WO-HELD");
+    expect(within(card).queryByRole("button")).not.toBeInTheDocument();
+  });
 });

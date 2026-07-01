@@ -41,7 +41,7 @@ export function TrackingBoard({ orders, customers, asOf, busy, onTrackIn, onTrac
                       <StatusPill tone={sm.tone}>{sm.label}</StatusPill>
                       <span className="text-xs text-text-muted">{active ? active.op : "—"}</span>
                     </div>
-                    {active && (
+                    {active && o.status !== "on_hold" && (
                       <div className="mt-2 flex flex-wrap gap-2">
                         {stepActions(active).map((a) => (
                           <Button key={a.label} size="sm" variant="outline" disabled={busy}
