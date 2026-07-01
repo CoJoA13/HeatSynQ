@@ -78,4 +78,16 @@ describe("ScheduleBoard", () => {
     expect(screen.queryByRole("button", { name: "Move" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Unassign" })).not.toBeInTheDocument();
   });
+
+  it("renders both cards when two scheduled WOs share the same equipment/day cell", () => {
+    const wo2 = wo({ id: "wo-s2", number: "WO-48999", status: "scheduled" });
+    const block2: ScheduleBlock = { id: "sb-2", createdAt: "t", updatedAt: "t", version: 0,
+      workOrderId: "wo-s2", equipmentId: "eq-iq-2", day: "2026-07-01T00:00:00.000Z", state: "planned" };
+    render(<ScheduleBoard orders={[scheduledWo, wo2, receivedWo]} customers={customers} blocks={[block, block2]}
+      asOf={ASOF} canSchedule={true} busy={false}
+      onAssign={() => {}} onMove={() => {}} onUnassign={() => {}} />);
+    // Both cards must appear in the same cell
+    expect(screen.getByTestId("schedule-cell-sb-1")).toBeInTheDocument();
+    expect(screen.getByTestId("schedule-cell-sb-2")).toBeInTheDocument();
+  });
 });

@@ -45,9 +45,9 @@ test("multi-part quote → send → won → order → release cert → ship → 
   await page.getByRole("button", { name: /mark won/i }).click();
   await expect(page.getByText("Won")).toBeVisible();
 
-  // Navigate to Orders via sidebar link, then open the new order WO-48212
+  // Navigate to Orders via sidebar link, then open the new order WO-48232
   await page.getByRole("link", { name: "Orders" }).click();
-  await page.getByText("WO-48212").click();
+  await page.getByText("WO-48232").click();
 
   // Drive the traveler. Only the active step exposes its buttons; complete each in order.
   // 1 Receive & verify (track_in) — single Track In completes it

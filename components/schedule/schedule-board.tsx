@@ -24,7 +24,12 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
   const queue = unscheduledOrders(orders, blocks);
   const summary = scheduleSummary(cells, queue);
   const custById = new Map(customers.map((c) => [c.id, c]));
-  const cellAt = new Map(cells.map((c) => [`${c.equipmentId}|${c.day}`, c]));
+  const cellsAt = new Map<string, ScheduleCell[]>();
+  for (const c of cells) {
+    const k = `${c.equipmentId}|${c.day}`;
+    const arr = cellsAt.get(k);
+    if (arr) arr.push(c); else cellsAt.set(k, [c]);
+  }
 
   const [assignFor, setAssignFor] = useState<WorkOrder | null>(null);
   const [moveFor, setMoveFor] = useState<ScheduleCell | null>(null);
@@ -55,18 +60,23 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
                   <div className="text-text-muted text-[10.5px]">{equipmentKindMeta[eq.kind].label}</div>
                 </div>
                 {days.map((d) => {
-                  const cell = cellAt.get(`${eq.id}|${d.iso}`);
+                  const slotCells = cellsAt.get(`${eq.id}|${d.iso}`) ?? [];
                   return (
                     <div key={d.iso} data-testid={`grid-cell-${eq.id}-${d.iso}`} className="border-border border-t border-l p-1">
-                      {cell ? (
-                        <ScheduleCellCard
-                          cell={cell}
-                          customerName={custById.get(cell.customerId)?.name ?? null}
-                          canSchedule={canSchedule}
-                          busy={busy}
-                          onMove={(c) => setMoveFor(c)}
-                          onUnassign={(c) => setUnassignFor(c)}
-                        />
+                      {slotCells.length > 0 ? (
+                        <div className="space-y-1">
+                          {slotCells.map((cell) => (
+                            <ScheduleCellCard
+                              key={cell.blockId}
+                              cell={cell}
+                              customerName={custById.get(cell.customerId)?.name ?? null}
+                              canSchedule={canSchedule}
+                              busy={busy}
+                              onMove={(c) => setMoveFor(c)}
+                              onUnassign={(c) => setUnassignFor(c)}
+                            />
+                          ))}
+                        </div>
                       ) : (
                         <div className="text-text-faint p-2 text-center text-xs">—</div>
                       )}

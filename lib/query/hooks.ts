@@ -314,8 +314,10 @@ export function useUnschedule() {
   return useMutation({
     mutationFn: async (vars: { order: WorkOrder; block: ScheduleBlock; operator: Operator; at: string }) => {
       const patch = unschedulePatch(vars.order, vars.operator.name, vars.at);
-      await r.scheduleBlocks.update(vars.block.id, patch.block, vars.block.version);
+      // Version-check the WO revert FIRST — a stale order (e.g. already tracked in) throws
+      // before the block is cancelled, so no orphaned cancelled block on a non-received order.
       const updated = await r.workOrders.update(vars.order.id, patch.workOrder, vars.order.version);
+      await r.scheduleBlocks.update(vars.block.id, patch.block, vars.block.version);
       return updated;
     },
     onSuccess: (u) => {

@@ -894,7 +894,7 @@ export function buildSeed() {
     { ...meta, id: "sb-1", workOrderId: "wo-48230", equipmentId: "eq-iq-2", day: "2026-07-01T00:00:00.000Z", state: "planned" },
   ];
 
-  const counters: Record<string, number> = { "Q-": 2841, "WO-": 48211, "INV-": 30412, "C-": 9921 };
+  const counters: Record<string, number> = { "Q-": 2841, "WO-": 48231, "INV-": 30412, "C-": 9921 };
 
   return {
     operators,
