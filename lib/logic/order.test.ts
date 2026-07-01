@@ -35,6 +35,12 @@ describe("order creation", () => {
   it("instantiates traveler steps from the part's process master", () => {
     expect(order.steps[0].op).toBe("Receive & verify");
   });
+  it("initializes every step to pending with an area and null stamps", () => {
+    expect(order.steps[0].state).toBe("pending");
+    expect(order.steps[0].areaId).toBe("received"); // "Receive & verify"
+    expect(order.steps[0].trackedInAt).toBeNull();
+    expect(order.steps[0].operatorId).toBeNull();
+  });
   it("sets cert flag from the customer default cert spec", () => {
     expect(order.certifyRequired).toBe(true);
     expect(order.certSpecId).toBe("s1");

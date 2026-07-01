@@ -1,8 +1,9 @@
 import type {
-  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry,
+  Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification, ActivityEntry, OrderStep,
 } from "@/lib/domain";
 import type { CreateInput } from "@/lib/data/repositories";
 import { quoteTotalCents, quoteSubtotalCents, lineAmountCents } from "./pricing";
+import { areaForOp } from "./tracking";
 
 export type NewWorkOrder = CreateInput<WorkOrder>;
 
@@ -23,7 +24,12 @@ export function createOrderFromQuote(
 
   // Carry EVERY quoted part's traveler: dedupe process masters (preserve order), concat steps, renumber 1..N.
   const pmIds = [...new Set(quote.parts.map((qp) => ctx.partsById[qp.partId]?.processMasterId).filter((id): id is string => id != null))];
-  const steps = pmIds.flatMap((id) => ctx.processMastersById[id]?.steps ?? []).map((s, i) => ({ ...s, n: i + 1 }));
+  const steps: OrderStep[] = pmIds
+    .flatMap((id) => ctx.processMastersById[id]?.steps ?? [])
+    .map((s, i) => ({
+      ...s, n: i + 1, areaId: areaForOp(s.op), state: "pending",
+      operatorId: null, operatorInitials: null, trackedInAt: null, trackedOutAt: null, inspectResult: null,
+    }));
 
   const total = quoteTotalCents(quote);
   const subtotal = quoteSubtotalCents(quote.parts);
