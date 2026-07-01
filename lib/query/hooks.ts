@@ -1,12 +1,14 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator } from "@/lib/domain";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification } from "@/lib/domain";
+import { orderStatusMeta } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
 import { queryKeys } from "./keys";
 import { navBadgeCounts } from "@/lib/logic/dashboard";
 import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/lib/logic/quote-state";
-import { createOrderFromQuote, createCertForOrder } from "@/lib/logic/order";
+import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOrder, activityEntry } from "@/lib/logic/order";
+import { toBillInvoiceFromOrder } from "@/lib/logic/invoice";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -148,5 +150,40 @@ export function useReviseQuote() {
   return useMutation({
     mutationFn: (quote: Quote) => r.quotes.create(reviseQuote(quote)),
     onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.quotes }); },
+  });
+}
+
+export function useTransitionOrder() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { order: WorkOrder; to: OrderStatus; actor: string; at: string }) => {
+      if (!canTransitionOrder(vars.order.status, vars.to)) {
+        throw new Error(`Illegal transition ${vars.order.status} → ${vars.to}`);
+      }
+      const activity = [...vars.order.activity, activityEntry(vars.actor, `Status → ${orderStatusMeta[vars.to].label}`, vars.at)];
+      return r.workOrders.update(vars.order.id, { status: vars.to, activity }, vars.order.version);
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+    },
+  });
+}
+
+export function useShipOrder() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { order: WorkOrder; cert: Certification | null; actor: string; at: string }) => {
+      const gate = canShipOrder(vars.order, vars.cert);
+      if (!gate.ok) throw new Error(gate.reason ?? "Cannot ship");
+      await r.invoices.create(toBillInvoiceFromOrder(vars.order, vars.at));
+      const activity = [...vars.order.activity, activityEntry(vars.actor, "Shipped — to-bill invoice created", vars.at)];
+      return r.workOrders.update(vars.order.id, { status: "shipped", progressPct: 100, activity }, vars.order.version);
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.invoices });
+    },
   });
 }

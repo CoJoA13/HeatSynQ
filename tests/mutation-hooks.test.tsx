@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
-import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote } from "@/lib/query/hooks";
+import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices } from "@/lib/query/hooks";
 
 // ---------------------------------------------------------------------------
 // Probe A: useUpdatePart
@@ -118,5 +118,36 @@ describe("quote mutations", () => {
     await user.click(screen.getByRole("button", { name: "Win" }));
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("won"));
     await waitFor(() => expect(Number(screen.getByTestId("orders").textContent)).toBe(before + 1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Probe D: useShipOrder
+// ---------------------------------------------------------------------------
+function ShipProbe() {
+  const orders = useWorkOrders();
+  const certs = useCertifications();
+  const invoices = useInvoices();
+  const ship = useShipOrder();
+  const order = orders.data?.find((o) => o.id === "wo-48120");
+  const cert = certs.data?.find((c) => c.workOrderId === "wo-48120") ?? null;
+  return (
+    <div>
+      <div data-testid="status">{order?.status ?? "loading"}</div>
+      <div data-testid="invoices">{invoices.data?.length ?? 0}</div>
+      <button disabled={!order} onClick={() => order && ship.mutate({ order, cert, actor: "Test", at: "2026-07-01T00:00:00.000Z" })}>Ship</button>
+    </div>
+  );
+}
+
+describe("order mutations", () => {
+  it("useShipOrder: sets status to shipped and creates to-bill invoice", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ShipProbe />);
+    await screen.findByText("ready_to_ship");
+    const before = Number(screen.getByTestId("invoices").textContent);
+    await user.click(screen.getByRole("button", { name: "Ship" }));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("shipped"));
+    await waitFor(() => expect(Number(screen.getByTestId("invoices").textContent)).toBe(before + 1));
   });
 });
