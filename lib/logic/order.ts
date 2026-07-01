@@ -17,7 +17,9 @@ export function createOrderFromQuote(
 
   // Cert requirement: customer default cert spec, else fall back to any quoted part's spec.
   const partSpecId = quote.parts.map((qp) => ctx.partsById[qp.partId]?.specificationId).find((s) => s != null) ?? null;
-  const certSpecId = ctx.customer.defaultCertSpecId ?? partSpecId;
+  const certSpecId = ctx.customer.defaultCertSpecId ?? partSpecId; // may be null
+  // An explicit Certification process line forces cert requirement even when no spec is on file.
+  const hasCertLine = quote.parts.some((p) => p.lines.some((l) => l.process.toLowerCase() === "certification"));
 
   // Carry EVERY quoted part's traveler: dedupe process masters (preserve order), concat steps, renumber 1..N.
   const pmIds = [...new Set(quote.parts.map((qp) => ctx.partsById[qp.partId]?.processMasterId).filter((id): id is string => id != null))];
@@ -40,7 +42,7 @@ export function createOrderFromQuote(
     status: "received",
     orderedDate: quote.date,
     due: quote.requiredBy ?? quote.date,
-    certifyRequired: certSpecId != null,
+    certifyRequired: certSpecId != null || hasCertLine,
     certSpecId,
     orderValueCents: total,
     progressPct: 0,

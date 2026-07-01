@@ -53,6 +53,17 @@ describe("order creation", () => {
     expect(o.certifyRequired).toBe(false);
     expect(o.certSpecId).toBe(null);
   });
+  it("requires cert from an explicit Certification line even with no customer or part spec", () => {
+    const noDefaultCustomer: Customer = { ...customer, defaultCertSpecId: null };
+    const partNoSpec: Part = { ...part, specificationId: null };
+    const certLineQuote: Quote = { ...quote, parts: [
+      { id: "qp1", partId: "pt1", material: "4140 steel", quantity: 480, lines: [
+        { id: "l1", process: "Carburize", basis: "per_lb", qtyOrWeight: 600, rateCents: 1030, minChargeCents: null },
+        { id: "lc", process: "Certification", basis: "flat", qtyOrWeight: 1, rateCents: 80000, minChargeCents: null }] }] };
+    const o = createOrderFromQuote(certLineQuote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    expect(o.certifyRequired).toBe(true);
+    expect(o.certSpecId).toBe(null); // null spec is allowed by the Certification schema
+  });
   it("starts at received with an activity entry", () => {
     expect(order.status).toBe("received");
     expect(order.activity[0].message).toContain("Q-2841");

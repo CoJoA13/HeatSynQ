@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, useCan } from "@/lib/auth/provider";
 import { useCustomers, useParts, usePricingRulesByPriceKey, useCreateQuoteDraft, useSendQuote } from "@/lib/query/hooks";
-import { SkeletonRows } from "@/components/patterns";
+import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { QuoteBuilder } from "@/components/quotes/quote-builder";
 
 export default function QuoteBuilderPage() {
@@ -18,6 +18,7 @@ export default function QuoteBuilderPage() {
   const send = useSendQuote();
 
   if (customers.isLoading || parts.isLoading || !operator) return <SkeletonRows />;
+  if (customers.isError || parts.isError) return <ErrorPanel message="Failed to load quote setup." onRetry={() => { customers.refetch(); parts.refetch(); }} />;
 
   return (
     <QuoteBuilder
@@ -31,8 +32,8 @@ export default function QuoteBuilderPage() {
       onSaveDraft={async (input) => { const q = await createDraft.mutateAsync(input); router.push(`/quotes/${q.id}`); }}
       onSend={async (input) => {
         const q = await createDraft.mutateAsync(input);
-        if (operator) await send.mutateAsync({ quote: q, operator });
-        router.push(`/quotes/${q.id}`);
+        try { if (operator) await send.mutateAsync({ quote: q, operator }); }
+        finally { router.push(`/quotes/${q.id}`); }
       }}
       onCustomerChange={(cid) => { const c = (customers.data ?? []).find((x) => x.id === cid); setPriceKeyId(c?.priceKeyId ?? ""); }}
     />

@@ -25,6 +25,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   if (order.isError) return <ErrorPanel message="Failed to load order." onRetry={() => order.refetch()} />;
   if (!order.data) return <EmptyState title="Order not found" />;
   const o = order.data;
+
+  // Dependent-query guards (need o.certifyRequired / o.steps / o.processMasterId).
+  // Cert (EOV): a released cert must not look absent while certs load/fail, or Release/Ship mis-gate.
+  if (o.certifyRequired && certs.isLoading) return <SkeletonRows />;
+  if (o.certifyRequired && certs.isError)
+    return <ErrorPanel message="Failed to load certification." onRetry={() => { order.refetch(); certs.refetch(); }} />;
+  // Process master (EOo): traveler depends on pm.data when steps are unresolved; don't render actions on stale data.
+  if (o.steps.length === 0 && o.processMasterId && pm.isLoading) return <SkeletonRows />;
+  if (o.steps.length === 0 && o.processMasterId && pm.isError)
+    return <ErrorPanel message="Failed to load process master." onRetry={() => { order.refetch(); pm.refetch(); }} />;
+
   const cert = (certs.data ?? []).find((c) => c.workOrderId === o.id) ?? null;
   const now = () => new Date().toISOString();
   const actor = operator?.name ?? "System";
