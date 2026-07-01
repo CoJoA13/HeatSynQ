@@ -54,7 +54,7 @@ describe("ageInvoices + customerAging", () => {
   it("per-customer balance + oldest days past due", () => {
     const a = customerAging(invoices, "c1", 30, "2026-06-05T00:00:00.000Z");
     expect(a.balanceCents).toBe(30000);
-    expect(a.pastDueCents).toBeGreaterThan(0);
-    expect(a.oldestDaysPastDue).toBeGreaterThan(90);
+    expect(a.pastDueCents).toBe(30000);      // both sent invoices past due: a (125d, 10000) + b (5d, 20000)
+    expect(a.oldestDaysPastDue).toBe(125);   // invoice a: due 2026-01-31, asOf 2026-06-05 → 125 days
   });
 });
