@@ -39,6 +39,20 @@ describe("order creation", () => {
     expect(order.certifyRequired).toBe(true);
     expect(order.certSpecId).toBe("s1");
   });
+  it("falls back to a quoted part's spec when the customer has no default cert spec", () => {
+    const noDefaultCustomer: Customer = { ...customer, defaultCertSpecId: null };
+    // part has specificationId "s1"
+    const o = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    expect(o.certifyRequired).toBe(true);
+    expect(o.certSpecId).toBe("s1");
+  });
+  it("requires no cert when neither the customer nor any part carries a spec", () => {
+    const noDefaultCustomer: Customer = { ...customer, defaultCertSpecId: null };
+    const partNoSpec: Part = { ...part, specificationId: null };
+    const o = createOrderFromQuote(quote, { partsById: { pt1: partNoSpec }, processMastersById: { pm1: pm }, customer: noDefaultCustomer });
+    expect(o.certifyRequired).toBe(false);
+    expect(o.certSpecId).toBe(null);
+  });
   it("starts at received with an activity entry", () => {
     expect(order.status).toBe("received");
     expect(order.activity[0].message).toContain("Q-2841");
@@ -65,6 +79,36 @@ describe("discounted quote pricing", () => {
   it("omits the Discount line when the quote has no discount", () => {
     const undiscounted = createOrderFromQuote(quote, { partsById: { pt1: part }, processMastersById: { pm1: pm }, customer });
     expect(undiscounted.pricing.some((p) => p.process === "Discount")).toBe(false);
+  });
+});
+
+describe("multi-part traveler carry", () => {
+  const pmA: ProcessMaster = { ...pm, id: "pmA", code: "PM-A", steps: [
+    { n: 1, op: "Op A1", equip: "Furnace A", instr: "", params: [], track: "track_in" },
+    { n: 2, op: "Op A2", equip: "Furnace A", instr: "", params: [], track: "track_out" }] };
+  const pmB: ProcessMaster = { ...pm, id: "pmB", code: "PM-B", steps: [
+    { n: 1, op: "Op B1", equip: "Furnace B", instr: "", params: [], track: "track_in" }] };
+  const partA: Part = { ...part, id: "ptA", processMasterId: "pmA", specificationId: null };
+  const partB: Part = { ...part, id: "ptB", processMasterId: "pmB", specificationId: null };
+  const twoPartQuote: Quote = { ...quote, parts: [
+    { id: "qpA", partId: "ptA", material: "4140 steel", quantity: 100, lines: [
+      { id: "la", process: "Anneal", basis: "per_lb", qtyOrWeight: 100, rateCents: 100, minChargeCents: null }] },
+    { id: "qpB", partId: "ptB", material: "4140 steel", quantity: 200, lines: [
+      { id: "lb", process: "Harden", basis: "per_lb", qtyOrWeight: 200, rateCents: 100, minChargeCents: null }] },
+  ] };
+  const order = createOrderFromQuote(twoPartQuote, {
+    partsById: { ptA: partA, ptB: partB }, processMastersById: { pmA, pmB },
+    customer: { ...customer, defaultCertSpecId: null },
+  });
+  it("carries operations from BOTH process masters", () => {
+    const ops = order.steps.map((s) => s.op);
+    expect(ops).toEqual(["Op A1", "Op A2", "Op B1"]);
+  });
+  it("renumbers steps 1..N with no gaps or dupes", () => {
+    expect(order.steps.map((s) => s.n)).toEqual([1, 2, 3]);
+  });
+  it("keeps processMasterId as the first part's PM (recipe header ref)", () => {
+    expect(order.processMasterId).toBe("pmA");
   });
 });
 

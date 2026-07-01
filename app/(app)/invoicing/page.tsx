@@ -22,12 +22,18 @@ export default function InvoicingPage() {
   const pay = usePayInvoice();
   const now = () => new Date().toISOString();
 
-  if (invoices.isLoading) return <SkeletonRows />;
-  if (invoices.isError)
+  // Row labels come from customers + work orders; don't enable billing until they load.
+  if (invoices.isLoading || customers.isLoading || orders.isLoading)
+    return <SkeletonRows />;
+  if (invoices.isError || customers.isError || orders.isError)
     return (
       <ErrorPanel
         message="Failed to load invoices."
-        onRetry={() => invoices.refetch()}
+        onRetry={() => {
+          invoices.refetch();
+          customers.refetch();
+          orders.refetch();
+        }}
       />
     );
   const data = invoices.data ?? [];

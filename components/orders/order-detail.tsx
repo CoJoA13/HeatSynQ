@@ -10,6 +10,8 @@ export function OrderDetail({ order, customer, processMaster, cert, canRelease, 
   canRelease: boolean; busy: boolean; onRelease: () => void; onTransition: (to: OrderStatus) => void; onShip: () => void;
 }) {
   const meta = orderStatusMeta[order.status];
+  // Prefer the order's own carried traveler snapshot; fall back to the process master's steps.
+  const steps = order.steps.length > 0 ? order.steps : (processMaster?.steps ?? []);
   const gate = canShipOrder(order, cert);
   const targets = ORDER_TRANSITIONS[order.status].filter((t) => t !== "shipped");
   const canShipStatus = order.status === "ready_to_ship"; // ship is offered from ready_to_ship
@@ -52,9 +54,9 @@ export function OrderDetail({ order, customer, processMaster, cert, canRelease, 
 
         <div className="mb-4 rounded-card border border-border bg-surface p-4">
           <div className="mb-2 font-semibold">Traveler {processMaster && <span className="font-mono text-xs text-text-muted">· {processMaster.code} rev {processMaster.rev}</span>}</div>
-          {processMaster ? (
+          {steps.length > 0 ? (
             <ol className="space-y-2 text-[13px]">
-              {processMaster.steps.map((s) => (
+              {steps.map((s) => (
                 <li key={s.n} className="flex gap-3 border-t border-border-faint pt-2 first:border-0 first:pt-0">
                   <span className="font-mono text-text-muted">{s.n}</span>
                   <div>

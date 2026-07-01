@@ -208,7 +208,52 @@ function ShipFreshOrderProbe() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Probe D3: useShipOrder — a STALE order (wrong version) throws and creates NO invoice.
+// Uses a fresh, non-cert ready_to_ship order that has no invoice yet, then ships it
+// with a deliberately stale version → version-check must fire BEFORE the invoice write.
+// ---------------------------------------------------------------------------
+function ShipStaleOrderProbe() {
+  const repos = useRepositories();
+  const invoices = useInvoices();
+  const ship = useShipOrder();
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const invForOrder = orderId ? (invoices.data?.filter((i) => i.workOrderId === orderId).length ?? 0) : 0;
+
+  async function createAndShipStale() {
+    const order = await repos.workOrders.create({
+      customerId: "cust-vulcan", customerPO: "PO-STALE", quoteId: null,
+      processSummary: "Anneal", processMasterId: null, status: "ready_to_ship",
+      orderedDate: "2026-06-30T00:00:00.000Z", due: "2026-07-10T00:00:00.000Z",
+      certifyRequired: false, certSpecId: null, orderValueCents: 5000, progressPct: 90,
+      lines: [], pricing: [], steps: [], activity: [],
+    });
+    setOrderId(order.id);
+    // Deliberately stale version → optimistic-concurrency conflict in the WO update.
+    await ship.mutateAsync({ order: { ...order, version: order.version - 1 }, cert: null, actor: "Test", at: "2026-07-01T00:00:00.000Z" });
+  }
+
+  return (
+    <div>
+      <div data-testid="ship-error">{ship.isError ? "error" : "ok"}</div>
+      <div data-testid="order-id">{orderId ?? "none"}</div>
+      <div data-testid="inv-for-order">{invForOrder}</div>
+      <button onClick={() => { createAndShipStale().catch(() => {}); }}>CreateAndShipStale</button>
+    </div>
+  );
+}
+
 describe("order mutations", () => {
+  it("useShipOrder: a stale order (wrong version) throws and creates NO invoice", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ShipStaleOrderProbe />);
+    await user.click(screen.getByRole("button", { name: "CreateAndShipStale" }));
+    await waitFor(() => expect(screen.getByTestId("order-id").textContent).not.toBe("none"));
+    await waitFor(() => expect(screen.getByTestId("ship-error").textContent).toBe("error"));
+    // version-check fired before the invoice write → no orphan invoice for this order
+    await waitFor(() => expect(screen.getByTestId("inv-for-order").textContent).toBe("0"));
+  });
+
   it("useShipOrder: shipping an order that already has an invoice does NOT create a duplicate", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ShipExistingInvoiceProbe />);

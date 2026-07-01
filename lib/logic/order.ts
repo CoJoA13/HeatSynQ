@@ -15,6 +15,14 @@ export function createOrderFromQuote(
   const processNames = Array.from(new Set(quote.parts.flatMap((p) => p.lines.map((l) => l.process))))
     .filter((p) => p.toLowerCase() !== "certification");
 
+  // Cert requirement: customer default cert spec, else fall back to any quoted part's spec.
+  const partSpecId = quote.parts.map((qp) => ctx.partsById[qp.partId]?.specificationId).find((s) => s != null) ?? null;
+  const certSpecId = ctx.customer.defaultCertSpecId ?? partSpecId;
+
+  // Carry EVERY quoted part's traveler: dedupe process masters (preserve order), concat steps, renumber 1..N.
+  const pmIds = [...new Set(quote.parts.map((qp) => ctx.partsById[qp.partId]?.processMasterId).filter((id): id is string => id != null))];
+  const steps = pmIds.flatMap((id) => ctx.processMastersById[id]?.steps ?? []).map((s, i) => ({ ...s, n: i + 1 }));
+
   const total = quoteTotalCents(quote);
   const subtotal = quoteSubtotalCents(quote.parts);
   const pricing = quote.parts.flatMap((qp) =>
@@ -32,8 +40,8 @@ export function createOrderFromQuote(
     status: "received",
     orderedDate: quote.date,
     due: quote.requiredBy ?? quote.date,
-    certifyRequired: ctx.customer.defaultCertSpecId != null,
-    certSpecId: ctx.customer.defaultCertSpecId,
+    certifyRequired: certSpecId != null,
+    certSpecId,
     orderValueCents: total,
     progressPct: 0,
     lines: quote.parts.map((qp) => {
@@ -41,7 +49,7 @@ export function createOrderFromQuote(
       return { id: qp.id, partId: qp.partId, description: part?.description ?? "", quantity: qp.quantity, spec: part?.hardness ?? "" };
     }),
     pricing,
-    steps: pm?.steps ?? [],
+    steps,
     activity: [{ at: quote.date, actor: "System", message: `Order created from ${quote.number}` }],
   };
 }

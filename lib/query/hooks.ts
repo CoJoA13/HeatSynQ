@@ -178,16 +178,16 @@ export function useShipOrder() {
     mutationFn: async (vars: { order: WorkOrder; cert: Certification | null; actor: string; at: string }) => {
       const gate = canShipOrder(vars.order, vars.cert);
       if (!gate.ok) throw new Error(gate.reason ?? "Cannot ship");
-      // Idempotent invoice creation: only create a to-bill invoice if the order has none yet.
+      // Read-only first: decide whether a to-bill invoice is still needed (idempotent).
       const existing = await r.invoices.list();
-      let created = false;
-      if (!existing.some((i) => i.workOrderId === vars.order.id)) {
-        await r.invoices.create(toBillInvoiceFromOrder(vars.order, vars.at));
-        created = true;
-      }
-      const message = created ? "Shipped — to-bill invoice created" : "Shipped";
+      const willCreate = !existing.some((i) => i.workOrderId === vars.order.id);
+      const message = willCreate ? "Shipped — to-bill invoice created" : "Shipped";
       const activity = [...vars.order.activity, activityEntry(vars.actor, message, vars.at)];
-      return r.workOrders.update(vars.order.id, { status: "shipped", progressPct: 100, activity }, vars.order.version);
+      // Version-check the order BEFORE the invoice write: a stale order throws here,
+      // so no orphan invoice is ever persisted.
+      const shipped = await r.workOrders.update(vars.order.id, { status: "shipped", progressPct: 100, activity }, vars.order.version);
+      if (willCreate) await r.invoices.create(toBillInvoiceFromOrder(vars.order, vars.at));
+      return shipped;
     },
     onSuccess: (u) => {
       qc.invalidateQueries({ queryKey: queryKeys.workOrders });
