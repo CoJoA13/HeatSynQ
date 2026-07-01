@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { lineAmountCents, quoteSubtotalCents, applyDiscountCents, quoteTotalCents, marginPct } from "@/lib/logic/pricing";
+import { lineAmountCents, quoteSubtotalCents, applyDiscountCents, marginPct } from "@/lib/logic/pricing";
 import type { QuotePart } from "@/lib/domain";
 
 describe("pricing", () => {
