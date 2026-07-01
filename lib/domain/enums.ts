@@ -114,3 +114,10 @@ export const equipmentStateMeta: Record<EquipmentState, { label: string; tone: S
   idle:    { label: "Idle",    tone: "neutral" },
   on_hold: { label: "On hold", tone: "warn" },
 };
+
+export const SCHEDULE_BLOCK_STATES = ["planned","cancelled"] as const;
+export type ScheduleBlockState = (typeof SCHEDULE_BLOCK_STATES)[number];
+export const scheduleBlockStateMeta: Record<ScheduleBlockState, { label: string; tone: StatusTone }> = {
+  planned:   { label: "Planned",   tone: "info" },
+  cancelled: { label: "Cancelled", tone: "neutral" },
+};
