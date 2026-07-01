@@ -12,6 +12,7 @@ export const queryKeys = {
   workOrder: (id: string) => ["workOrders", id] as const,
   invoices: ["invoices"] as const,
   certifications: ["certifications"] as const,
+  certification: (id: string) => ["certifications", id] as const,
   operators: ["operators"] as const,
   processMaster: (id: string) => ["processMasters", id] as const,
   contactsByCustomer: (customerId: string) => ["contacts", "byCustomer", customerId] as const,
