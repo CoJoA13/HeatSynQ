@@ -38,6 +38,14 @@ describe("dashboard finance + cert metrics", () => {
     expect(toBillCents(s.invoices)).toBe(709_000);
     expect(invoicedMtdCents(s.invoices, asOf)).toBe(1_950_000);
   });
+
+  it("past-due branch: inv-30412 (invoicedDate 2026-06-27) is ~80 days old at Sep-15 → past due", () => {
+    // At 2026-09-15, inv-30412 is ~80 days past its June 27 invoiced date → not "current"
+    const laterAsOf = "2026-09-15T00:00:00.000Z";
+    expect(pastDueCents(s.invoices, laterAsOf)).toBe(674_000);
+    // No invoice has an invoicedDate in September → sameMonth check excludes all
+    expect(invoicedMtdCents(s.invoices, laterAsOf)).toBe(0);
+  });
 });
 
 describe("dashboardKpis by role", () => {

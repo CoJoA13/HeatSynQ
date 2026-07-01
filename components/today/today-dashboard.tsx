@@ -30,13 +30,13 @@ export function TodayDashboard({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-text-muted text-xs">Viewing as</span>
-          <div className="inline-flex rounded-[9px] border border-border bg-surface p-0.5">
+          <div className="inline-flex rounded-md border border-border bg-surface p-0.5">
             {ROLES.map((r) => (
               <button
                 key={r.key}
                 onClick={() => onViewAs(r.key)}
                 className={cn(
-                  "rounded-[7px] px-2.5 py-1 text-xs",
+                  "rounded-md px-2.5 py-1 text-xs",
                   r.key === viewAs ? "bg-primary-tint text-primary font-medium" : "text-text-muted",
                 )}
               >
