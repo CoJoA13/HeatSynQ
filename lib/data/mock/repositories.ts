@@ -36,7 +36,7 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
         const cur = col.byId(id);
         if (!cur) throw new Error("Not found: " + id);
         if (cur.version !== expectedVersion) throw new Error("Version conflict");
-        const next = { ...cur, ...patch, version: cur.version + 1, updatedAt: NOW } as T;
+        const next = { ...cur, ...patch, id: cur.id, createdAt: cur.createdAt, version: cur.version + 1, updatedAt: NOW } as T;
         return col.replace(next);
       },
     };

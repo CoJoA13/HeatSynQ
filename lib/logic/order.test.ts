@@ -50,7 +50,6 @@ describe("order creation", () => {
 });
 
 describe("ship gate", () => {
-  const base = { ...(quote as unknown as WorkOrder) };
   it("blocks ship when a required cert is not released", () => {
     const o = { certifyRequired:true } as WorkOrder;
     expect(canShipOrder(o, { status:"pending" } as Certification).ok).toBe(false);

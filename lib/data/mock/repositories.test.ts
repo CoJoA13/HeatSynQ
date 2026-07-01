@@ -16,6 +16,7 @@ describe("mock repositories", () => {
     });
     expect(q.id).toBeTruthy();
     expect(q.version).toBe(0);
+    expect(q.number).toMatch(/^Q-/);
   });
   it("enforces optimistic concurrency on update", async () => {
     const repos = createMockRepositories({ latencyMs: 0 });

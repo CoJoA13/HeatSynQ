@@ -3,7 +3,7 @@ import type {
 } from "@/lib/domain";
 import { quoteTotalCents, lineAmountCents } from "./pricing";
 
-export type NewWorkOrder = Omit<WorkOrder, "id" | "createdAt" | "updatedAt" | "version" | "number">;
+export type NewWorkOrder = Omit<WorkOrder, "id" | "createdAt" | "updatedAt" | "version">;
 
 export function createOrderFromQuote(
   quote: Quote,
@@ -15,6 +15,7 @@ export function createOrderFromQuote(
     .filter((p) => p.toLowerCase() !== "certification");
 
   return {
+    number: "",
     customerId: quote.customerId,
     customerPO: quote.customerPO,
     quoteId: quote.id,

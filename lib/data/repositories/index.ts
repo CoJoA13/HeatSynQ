@@ -10,7 +10,7 @@ export interface ReadRepo<T> {
 
 export interface WriteRepo<T extends { id: string }> extends ReadRepo<T> {
   create(input: Omit<T, "id" | "createdAt" | "updatedAt" | "version">): Promise<T>;
-  update(id: string, patch: Partial<T>, expectedVersion: number): Promise<T>;
+  update(id: string, patch: Partial<Omit<T, "id" | "createdAt" | "updatedAt" | "version">>, expectedVersion: number): Promise<T>;
 }
 
 export interface Repositories {
