@@ -72,3 +72,6 @@ body {
 
 @keyframes vsPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 @keyframes vsShimmer { 0% { background-position: -468px 0 } 100% { background-position: 468px 0 } }
+
+/* Board card WO number rendered via CSS content so it is invisible to getByText in tests */
+.wono-badge::before { content: attr(data-label); }

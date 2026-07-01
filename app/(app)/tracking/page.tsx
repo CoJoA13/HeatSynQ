@@ -1,5 +1,41 @@
-import { PlaceholderPage } from "@/components/patterns";
+"use client";
+import { useAuth } from "@/lib/auth/provider";
+import { useWorkOrders, useCustomers, useTrackInStep, useTrackOutStep, useCertifications } from "@/lib/query/hooks";
+import { PageHeader, SkeletonRows, ErrorPanel, EmptyState } from "@/components/patterns";
+import { TrackingBoard } from "@/components/tracking/tracking-board";
+import { openOrders } from "@/lib/logic/dashboard";
 
 export default function TrackingPage() {
-  return <PlaceholderPage title="Tracking" note="Scan-driven shop-floor tracking arrives in a later phase." />;
+  const { operator } = useAuth();
+  const orders = useWorkOrders();
+  const customers = useCustomers();
+  const certs = useCertifications();
+  const trackIn = useTrackInStep();
+  const trackOut = useTrackOutStep();
+
+  if (orders.isLoading || customers.isLoading || !operator) return <SkeletonRows />;
+  if (orders.isError) return <ErrorPanel message="Failed to load orders." onRetry={() => orders.refetch()} />;
+  if (customers.isError) return <ErrorPanel message="Failed to load customers." onRetry={() => customers.refetch()} />;
+
+  const open = openOrders(orders.data ?? []);
+  const busy = trackIn.isPending || trackOut.isPending;
+  const now = new Date().toISOString();
+
+  return (
+    <div>
+      <PageHeader title="Tracking" subtitle="Live shop-floor status by area — scan orders through their traveler." />
+      {open.length === 0 ? (
+        <EmptyState title="No open orders" />
+      ) : (
+        <TrackingBoard
+          orders={open} customers={customers.data ?? []} asOf={now} busy={busy}
+          onTrackIn={(o, stepN) => trackIn.mutate({ order: o, stepN, operator })}
+          onTrackOut={(o, stepN, inspectResult) => {
+            const cert = (certs.data ?? []).find((c) => c.workOrderId === o.id) ?? null;
+            trackOut.mutate({ order: o, stepN, operator, cert, inspectResult });
+          }}
+        />
+      )}
+    </div>
+  );
 }
