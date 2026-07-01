@@ -105,4 +105,9 @@ describe("OrderDetail traveler", () => {
     expect(screen.queryByRole("button", { name: /track out/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /resume/i })).toBeInTheDocument();
   });
+
+  it("links the cert number to the certification detail page", () => {
+    render(<OrderDetail order={readyOrder} customer={cust} processMaster={pm} cert={pendingCert} canRelease={false} busy={false} {...handlers} />);
+    expect(screen.getByRole("link", { name: "C-9921" })).toHaveAttribute("href", "/certifications/cert-1");
+  });
 });

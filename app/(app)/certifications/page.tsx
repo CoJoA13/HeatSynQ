@@ -1,10 +1,12 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useCertifications, useCustomers, useWorkOrders, useSpecifications, useReleaseCertification } from "@/lib/query/hooks";
 import { useCan } from "@/lib/auth/provider";
 import { PageHeader, SkeletonRows, ErrorPanel, EmptyState } from "@/components/patterns";
 import { CertificationsList } from "@/components/certifications/certifications-list";
 
 export default function CertificationsPage() {
+  const router = useRouter();
   const certs = useCertifications();
   const customers = useCustomers();
   const workOrders = useWorkOrders();
@@ -32,6 +34,7 @@ export default function CertificationsPage() {
             const c = data.find((x) => x.id === id);
             if (c) release.mutate({ id, version: c.version });
           }}
+          onSelect={(id) => router.push(`/certifications/${id}`)}
         />
       )}
     </div>

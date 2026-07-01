@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { DetailHeader, StatusPill, MonoId, SummaryRail } from "@/components/patterns";
 import { Button } from "@/lib/ui/button";
 import { orderStatusMeta, certStatusMeta, orderStepStateMeta, areaMeta } from "@/lib/domain/enums";
@@ -126,7 +127,7 @@ export function OrderDetail({
           {order.certifyRequired && cert ? (
             <div className="space-y-2 text-[13px]">
               <div className="flex items-center justify-between">
-                <MonoId>{cert.number}</MonoId>
+                <Link href={`/certifications/${cert.id}`} className="text-primary"><MonoId>{cert.number}</MonoId></Link>
                 <StatusPill tone={certStatusMeta[cert.status].tone}>{certStatusMeta[cert.status].label}</StatusPill>
               </div>
               {cert.status === "pending" && canRelease && (

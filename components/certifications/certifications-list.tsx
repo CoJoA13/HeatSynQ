@@ -10,6 +10,7 @@ export function CertificationsList({
   specifications,
   canRelease,
   onRelease,
+  onSelect,
 }: {
   certifications: Certification[];
   customers: Customer[];
@@ -17,6 +18,7 @@ export function CertificationsList({
   specifications: Specification[];
   canRelease: boolean;
   onRelease: (id: string) => void;
+  onSelect?: (id: string) => void;
 }) {
   const custById = new Map(customers.map((c) => [c.id, c]));
   const woById = new Map(workOrders.map((w) => [w.id, w]));
@@ -24,6 +26,7 @@ export function CertificationsList({
   return (
     <ListCard
       headers={["CERT", "CUSTOMER", "WORK ORDER", "SPEC", "TYPE", "COPIES", "STATUS", ""]}
+      onRowClick={onSelect ? (i) => onSelect(certifications[i].id) : undefined}
       rows={certifications.map((c) => {
         const meta = certStatusMeta[c.status];
         return [
@@ -35,7 +38,7 @@ export function CertificationsList({
           <span key="cp" className="font-mono">{c.copies}</span>,
           <StatusPill key="s" tone={meta.tone}>{meta.label}</StatusPill>,
           canRelease && c.status === "pending"
-            ? <Button key="r" size="sm" variant="outline" onClick={() => onRelease(c.id)}>Release</Button>
+            ? <Button key="r" size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); onRelease(c.id); }}>Release</Button>
             : null,
         ];
       })}

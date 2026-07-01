@@ -37,4 +37,18 @@ describe("CertificationsList", () => {
     );
     expect(screen.queryByRole("button", { name: /release/i })).not.toBeInTheDocument();
   });
+
+  it("navigates on row click but NOT when Release is clicked", async () => {
+    const onSelect = vi.fn();
+    const onRelease = vi.fn();
+    render(
+      <CertificationsList certifications={certs} customers={customers} workOrders={workOrders}
+        specifications={specs} canRelease onRelease={onRelease} onSelect={onSelect} />,
+    );
+    await userEvent.click(screen.getByText("C-9918"));
+    expect(onSelect).toHaveBeenCalledWith("cert-9918");
+    await userEvent.click(screen.getByRole("button", { name: /release/i }));
+    expect(onRelease).toHaveBeenCalledWith("cert-9921");
+    expect(onSelect).toHaveBeenCalledTimes(1); // Release click must not bubble into row navigation
+  });
 });
