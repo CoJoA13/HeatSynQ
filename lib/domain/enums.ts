@@ -121,3 +121,10 @@ export const scheduleBlockStateMeta: Record<ScheduleBlockState, { label: string;
   planned:   { label: "Planned",   tone: "info" },
   cancelled: { label: "Cancelled", tone: "neutral" },
 };
+
+export const STANDARD_CATEGORIES = ["quality","process"] as const;
+export type StandardCategory = (typeof STANDARD_CATEGORIES)[number];
+export const standardCategoryMeta: Meta<StandardCategory> = {
+  quality: { label: "Quality", tone: "neutral" },
+  process: { label: "Process", tone: "neutral" },
+};
