@@ -60,10 +60,12 @@ test("multi-part quote → send → won → order → release cert → ship → 
   await expect(page.getByTestId("traveler-step-2")).toContainText("Done");
   // 3 Carburize (track_in_out)
   await page.getByTestId("traveler-step-3").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-3")).toContainText("In process");
   await page.getByTestId("traveler-step-3").getByRole("button", { name: "Track Out" }).click();
   await expect(page.getByTestId("traveler-step-3")).toContainText("Done");
   // 4 Temper (track_in_out)
   await page.getByTestId("traveler-step-4").getByRole("button", { name: "Track In" }).click();
+  await expect(page.getByTestId("traveler-step-4")).toContainText("In process");
   await page.getByTestId("traveler-step-4").getByRole("button", { name: "Track Out" }).click();
   await expect(page.getByTestId("traveler-step-4")).toContainText("Done");
   // 5 Final inspect (inspect) — Pass auto-releases the cert
