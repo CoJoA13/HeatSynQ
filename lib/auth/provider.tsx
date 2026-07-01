@@ -18,9 +18,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [operator, setOperator] = useState<Operator | null>(null);
   const [viewAs, setViewAs] = useState<RoleKey>("manager");
 
-  // auto-login the demo manager on mount (mocked auth)
+  // auto-login the demo manager on mount (mocked auth). Best-effort: a failed
+  // operator fetch just leaves the session logged out — never an unhandled rejection.
   useEffect(() => {
-    void login("op-dana");
+    login("op-dana").catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount; login is stable in this mock
   }, []);
 
@@ -38,7 +39,10 @@ export function useAuth(): AuthCtx {
   if (!c) throw new Error("useAuth must be used within AuthProvider");
   return c;
 }
+// Permissions follow the authenticated operator's real role, NOT `viewAs`.
+// `viewAs` is a display-only "Viewing as" preview for the Today dashboard;
+// it must never grant or revoke actions elsewhere in the app.
 export function useCan(perm: Permission): boolean {
-  const { viewAs } = useAuth();
-  return can(viewAs, perm);
+  const { operator } = useAuth();
+  return operator ? can(operator.role, perm) : false;
 }

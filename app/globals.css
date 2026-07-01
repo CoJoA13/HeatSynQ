@@ -58,6 +58,7 @@
   --radius-pill: 6px;
   --radius-card: 10px;
   --radius-modal: 16px;
+  --radius-md: 9px;   /* Plan 1 follow-up: sizes button xs/sm/icon + select sm off square corners */
 }
 
 html, body { height: 100%; }
