@@ -2,6 +2,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRepositories } from "@/lib/data/provider";
 import { queryKeys } from "./keys";
+import { navBadgeCounts } from "@/lib/logic/dashboard";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -21,3 +22,11 @@ export function useContactsByCustomer(customerId: string) { const r = useReposit
 export function usePartsByCustomer(customerId: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.partsByCustomer(customerId), queryFn: () => r.parts.byCustomer(customerId) }); }
 export function usePriceKeys() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.priceKeys, queryFn: () => r.priceKeys.list() }); }
 export function usePricingRulesByPriceKey(priceKeyId: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.pricingRulesByPriceKey(priceKeyId), queryFn: () => r.pricingRules.byPriceKey(priceKeyId), enabled: priceKeyId !== "" }); }
+
+export function useNavBadges(): Record<string, number> {
+  const quotes = useQuotes();
+  const orders = useWorkOrders();
+  const certs = useCertifications();
+  if (!quotes.data || !orders.data || !certs.data) return {};
+  return navBadgeCounts(quotes.data, orders.data, certs.data);
+}
