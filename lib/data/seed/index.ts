@@ -4,6 +4,7 @@ import type {
   Part,
   ProcessMaster,
   Specification,
+  Standard,
   PriceKey,
   PricingRule,
   Quote,
@@ -56,6 +57,13 @@ export function buildSeed() {
     { ...meta, id: "spec-ams2750", code: "AMS 2750", title: "Pyrometry", rev: "F", owner: "SAE" },
     { ...meta, id: "spec-mils6090", code: "MIL-S-6090", title: "Process for steels used in bearing applications", rev: "A", owner: "DoD" },
     { ...meta, id: "spec-sb4", code: "SB-4", title: "Customer specification", rev: "2", owner: "Customer" },
+  ];
+
+  const standards: Standard[] = [
+    { ...meta, id: "std-as9100d", code: "AS9100D", title: "Aerospace quality management system", category: "quality", reviewedAt: "2025-11-15T00:00:00.000Z", nextReviewAt: "2026-11-15T00:00:00.000Z" },
+    { ...meta, id: "std-iso9001", code: "ISO 9001", title: "Quality management systems", category: "quality", reviewedAt: "2026-02-01T00:00:00.000Z", nextReviewAt: "2027-02-01T00:00:00.000Z" },
+    { ...meta, id: "std-nadcap-ht", code: "Nadcap HT", title: "Heat treating special-process accreditation", category: "process", reviewedAt: "2026-03-10T00:00:00.000Z", nextReviewAt: "2026-09-10T00:00:00.000Z" },
+    { ...meta, id: "std-cqi9", code: "CQI-9", title: "AIAG heat-treat system assessment", category: "process", reviewedAt: "2025-06-15T00:00:00.000Z", nextReviewAt: "2026-06-15T00:00:00.000Z" },
   ];
 
   const priceKeys: PriceKey[] = [
@@ -899,6 +907,7 @@ export function buildSeed() {
   return {
     operators,
     specifications,
+    standards,
     priceKeys,
     pricingRules,
     customers,
