@@ -2,7 +2,7 @@
 import { useAuth } from "@/lib/auth/provider";
 import { useWorkOrders, useQuotes, useInvoices, useCertifications } from "@/lib/query/hooks";
 import { dashboardKpis } from "@/lib/logic/dashboard";
-import { SkeletonRows } from "@/components/patterns";
+import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { TodayDashboard } from "@/components/today/today-dashboard";
 
 export default function TodayPage() {
@@ -13,6 +13,20 @@ export default function TodayPage() {
   const certs = useCertifications();
 
   if (orders.isLoading || quotes.isLoading || invoices.isLoading || certs.isLoading) return <SkeletonRows />;
+
+  if (orders.isError || quotes.isError || invoices.isError || certs.isError) {
+    return (
+      <ErrorPanel
+        message="Failed to load dashboard data."
+        onRetry={() => {
+          orders.refetch();
+          quotes.refetch();
+          invoices.refetch();
+          certs.refetch();
+        }}
+      />
+    );
+  }
 
   const asOf = new Date().toISOString();
   const tiles = dashboardKpis(

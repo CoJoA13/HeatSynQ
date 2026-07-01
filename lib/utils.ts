@@ -17,9 +17,12 @@ export function formatMoney(cents: number): string {
 }
 
 export function formatDate(iso: string): string {
+  // Domain dates are midnight-UTC date-only fields (e.g. due/ordered dates).
+  // Format in UTC so they don't shift a day earlier in time zones west of UTC.
   return new Intl.DateTimeFormat("en-US", {
     year: "numeric",
     month: "short",
     day: "numeric",
+    timeZone: "UTC",
   }).format(new Date(iso));
 }
