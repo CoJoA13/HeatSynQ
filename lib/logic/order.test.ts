@@ -150,6 +150,17 @@ describe("ship gate", () => {
   it("allows ship when no cert required", () => {
     expect(canShipOrder({ certifyRequired:false } as WorkOrder, null).ok).toBe(true);
   });
+  it("blocks ship when the customer is on credit hold", () => {
+    const o = { certifyRequired: false } as WorkOrder;
+    const held = { status: "hold" } as Customer;
+    const gate = canShipOrder(o, null, held);
+    expect(gate.ok).toBe(false);
+    expect(gate.reason).toMatch(/credit hold/i);
+  });
+  it("allows ship for an active customer with no cert required", () => {
+    const o = { certifyRequired: false } as WorkOrder;
+    expect(canShipOrder(o, null, { status: "active" } as Customer).ok).toBe(true);
+  });
 });
 
 describe("order transitions", () => {

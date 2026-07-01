@@ -96,7 +96,8 @@ export function activityEntry(actor: string, message: string, at: string): Activ
   return { actor, message, at };
 }
 
-export function canShipOrder(order: WorkOrder, cert: Certification | null): { ok: boolean; reason?: string } {
+export function canShipOrder(order: WorkOrder, cert: Certification | null, customer?: Customer | null): { ok: boolean; reason?: string } {
+  if (customer?.status === "hold") return { ok: false, reason: "Customer on credit hold — shipment blocked" };
   if (!order.certifyRequired) return { ok: true };
   if (cert?.status === "released") return { ok: true };
   return { ok: false, reason: "Certification must be released before ship" };
