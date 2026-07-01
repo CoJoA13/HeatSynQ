@@ -59,3 +59,23 @@ export const customerStatusMeta: Meta<CustomerStatus> = {
 export const basisLabel: Record<PricingBasis, string> = {
   per_lb: "per lb", per_lot: "per lot", per_piece: "per piece", flat: "flat",
 };
+
+export const AREAS = ["received","rack","in_process","wash","final_inspect","available_to_ship","shipped"] as const;
+export type AreaId = (typeof AREAS)[number];
+export const areaMeta: Record<AreaId, { label: string; tone: StatusTone }> = {
+  received: { label: "Received", tone: "neutral" },
+  rack: { label: "Rack", tone: "neutral" },
+  in_process: { label: "In Process", tone: "info" },
+  wash: { label: "Wash", tone: "info" },
+  final_inspect: { label: "Final Inspect", tone: "warn" },
+  available_to_ship: { label: "Available to Ship", tone: "success" },
+  shipped: { label: "Shipped", tone: "success" },
+};
+
+export const ORDER_STEP_STATES = ["pending","in_process","done"] as const;
+export type OrderStepState = (typeof ORDER_STEP_STATES)[number];
+export const orderStepStateMeta: Record<OrderStepState, { label: string; tone: StatusTone }> = {
+  pending: { label: "Pending", tone: "neutral" },
+  in_process: { label: "In process", tone: "info" },
+  done: { label: "Done", tone: "success" },
+};
