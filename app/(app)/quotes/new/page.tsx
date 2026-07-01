@@ -19,9 +19,6 @@ export default function QuoteBuilderPage() {
 
   if (customers.isLoading || parts.isLoading) return <SkeletonRows />;
 
-  // The builder owns customer selection; we mirror the chosen customer's priceKey into `priceKeyId`
-  // via onCustomerChange is not exposed, so the page passes ALL parts + rules for the current key.
-  // Simpler: pass rules for whichever customer the builder currently shows by lifting price-key here.
   return (
     <QuoteBuilder
       customers={customers.data ?? []}

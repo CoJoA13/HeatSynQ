@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import type { CreateInput } from "@/lib/data/repositories";
 import type { Customer, Part, PricingRule, PricingBasis, Discount, Quote } from "@/lib/domain";
 import { PRICING_BASES, basisLabel } from "@/lib/domain/enums";
-import { rateForLine, buildQuoteDraft } from "@/lib/logic/quote-builder";
+import { rateForLine, buildQuoteDraft, STUB_COST_RATIO } from "@/lib/logic/quote-builder";
 import { quoteSubtotalCents, quoteTotalCents, lineAmountCents, marginPct } from "@/lib/logic/pricing";
 import { PageHeader, SummaryRail, FormField } from "@/components/patterns";
 import { Button } from "@/lib/ui/button";
@@ -44,26 +44,41 @@ export function QuoteBuilder({
     setState((s) => ({ ...s, parts: s.parts.map((p, i) => (i === pi ? { ...p, ...patch } : p)) }));
   }
   function addLine(pi: number) {
-    patchPart(pi, { lines: [...state.parts[pi].lines, { id: nid("ql"), process: "", basis: "per_lb", qtyOrWeight: 0, rateCents: 0, minChargeCents: null }] });
+    setState((s) => ({
+      ...s,
+      parts: s.parts.map((p, i) =>
+        i === pi
+          ? { ...p, lines: [...p.lines, { id: nid("ql"), process: "", basis: "per_lb" as PricingBasis, qtyOrWeight: 0, rateCents: 0, minChargeCents: null }] }
+          : p),
+    }));
   }
   function patchLine(pi: number, li: number, patch: Partial<LineState>) {
-    const lines = state.parts[pi].lines.map((l, i) => (i === li ? { ...l, ...patch } : l));
-    // when process/basis change, prefill rate + min-charge from the price key rules
-    if ("process" in patch || "basis" in patch) {
-      const l = lines[li];
-      const r = rateForLine(pricingRules, l.process, l.basis);
-      lines[li] = { ...l, rateCents: r.rateCents, minChargeCents: r.minChargeCents };
-    }
-    patchPart(pi, { lines });
+    setState((s) => ({
+      ...s,
+      parts: s.parts.map((p, i) => {
+        if (i !== pi) return p;
+        const lines = p.lines.map((l, j) => (j === li ? { ...l, ...patch } : l));
+        // when process/basis change, prefill rate + min-charge from the price key rules
+        if ("process" in patch || "basis" in patch) {
+          const l = lines[li];
+          const r = rateForLine(pricingRules, l.process, l.basis);
+          lines[li] = { ...l, rateCents: r.rateCents, minChargeCents: r.minChargeCents };
+        }
+        return { ...p, lines };
+      }),
+    }));
   }
   function removeLine(pi: number, li: number) {
-    patchPart(pi, { lines: state.parts[pi].lines.filter((_, i) => i !== li) });
+    setState((s) => ({
+      ...s,
+      parts: s.parts.map((p, i) => (i === pi ? { ...p, lines: p.lines.filter((_, j) => j !== li) } : p)),
+    }));
   }
 
   const pricingParts = state.parts.map((p) => ({ id: p.id, partId: p.partId, material: p.material, quantity: p.quantity, lines: p.lines }));
   const subtotal = quoteSubtotalCents(pricingParts);
   const total = quoteTotalCents({ parts: pricingParts, discount: state.discount });
-  const margin = marginPct(total, Math.round(total * 0.58));
+  const margin = marginPct(total, Math.round(total * STUB_COST_RATIO));
 
   const valid = customerId !== "" && state.parts.length > 0 &&
     state.parts.every((p) => p.partId !== "" && p.lines.length > 0 && p.lines.every((l) => l.process !== ""));
