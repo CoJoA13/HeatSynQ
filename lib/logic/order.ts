@@ -1,9 +1,10 @@
 import type {
   Quote, Part, ProcessMaster, Customer, WorkOrder, OrderStatus, Certification,
 } from "@/lib/domain";
+import type { CreateInput } from "@/lib/data/repositories";
 import { quoteTotalCents, lineAmountCents } from "./pricing";
 
-export type NewWorkOrder = Omit<WorkOrder, "id" | "createdAt" | "updatedAt" | "version">;
+export type NewWorkOrder = CreateInput<WorkOrder>;
 
 export function createOrderFromQuote(
   quote: Quote,
@@ -15,7 +16,6 @@ export function createOrderFromQuote(
     .filter((p) => p.toLowerCase() !== "certification");
 
   return {
-    number: "",
     customerId: quote.customerId,
     customerPO: quote.customerPO,
     quoteId: quote.id,

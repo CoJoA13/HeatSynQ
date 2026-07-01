@@ -35,5 +35,7 @@ describe("quote lifecycle", () => {
     const r = reviseQuote({ ...draft(1), status:"sent", rev:0 });
     expect(r.status).toBe("draft");
     expect(r.rev).toBe(1);
+    expect("number" in r).toBe(false);
+    expect(r.wonOrderId).toBeNull();
   });
 });

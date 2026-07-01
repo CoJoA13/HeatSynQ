@@ -1,6 +1,7 @@
 import type { WorkOrder, Invoice } from "@/lib/domain";
+import type { CreateInput } from "@/lib/data/repositories";
 
-export type NewInvoice = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "version">;
+export type NewInvoice = CreateInput<Invoice>;
 
 export function toBillInvoiceFromOrder(order: WorkOrder, shippedDate: string): NewInvoice {
   return {

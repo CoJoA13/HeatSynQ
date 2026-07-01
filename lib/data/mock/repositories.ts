@@ -29,7 +29,10 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
       async create(input) {
         await delay(latency, fail);
         const id = genId(key ?? "id");
-        const numbered = key && numberPrefix[key] ? { number: counter.next(numberPrefix[key]) } : {};
+        const explicitNumber = "number" in (input as object);
+        const numbered = key && numberPrefix[key] && !explicitNumber
+          ? { number: counter.next(numberPrefix[key]) }
+          : {};
         const item = { ...(input as object), ...numbered, id, createdAt: NOW, updatedAt: NOW, version: 0 } as T;
         return col.insert(item);
       },
@@ -72,5 +75,8 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
     certifications: { ...write(cols.certifications, "certifications"), async byWorkOrder(woId) { await delay(latency, fail); return cols.certifications.all().find((c) => c.workOrderId === woId) ?? null; } },
     invoices: write(cols.invoices, "invoices"),
     operators: read(cols.operators),
+    numbers: {
+      async next(entity) { await delay(latency, fail); return counter.next(numberPrefix[entity]); },
+    },
   } as Repositories;
 }
