@@ -1,0 +1,73 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-canvas: #f6f7f9;
+  --color-canvas-alt: #eef0f4;
+  --color-surface: #ffffff;
+  --color-surface-sidebar: #fbfbfd;
+  --color-surface-subtle: #f0f1f5;
+
+  --color-text: #1d2330;
+  --color-text-secondary: #5b637a;
+  --color-text-muted: #8a92a3;
+  --color-text-faint: #aab0bd;
+  --color-text-nav-idle: #6b7280;
+
+  --color-border: #e7e9ee;
+  --color-border-alt: #e2e5ec;
+  --color-border-faint: #f5f6f8;
+
+  --color-primary: #3d63dd;
+  --color-primary-tint: #eef1fd;
+  --color-primary-dark: #2c4db0;
+
+  --color-status-success: #1f9d6b;
+  --color-status-success-tint: #e8f5ef;
+  --color-status-info: #3d63dd;
+  --color-status-info-tint: #eef1fd;
+  --color-status-warn: #c98a16;
+  --color-status-warn-tint: #fbf2e0;
+  --color-status-danger: #d4503e;
+  --color-status-danger-tint: #fcebe8;
+  --color-status-neutral: #6b7280;
+  --color-status-neutral-tint: #f0f1f5;
+
+  /* shadcn/ui semantic tokens mapped to our palette (light-mode only) */
+  --color-background: #f6f7f9;          /* canvas */
+  --color-foreground: #1d2330;          /* text */
+  --color-card: #ffffff;                /* surface */
+  --color-card-foreground: #1d2330;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #1d2330;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f0f1f5;           /* surface-subtle */
+  --color-secondary-foreground: #1d2330;
+  --color-muted: #f0f1f5;
+  --color-muted-foreground: #8a92a3;    /* text-muted */
+  --color-accent: #eef1fd;              /* primary-tint */
+  --color-accent-foreground: #2c4db0;   /* primary-dark */
+  --color-destructive: #d4503e;         /* status-danger */
+  --color-destructive-foreground: #ffffff;
+  --color-input: #e7e9ee;               /* border */
+  --color-ring: #3d63dd;                /* primary */
+
+  --font-sans: var(--font-plex-sans), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+
+  --radius-pill: 6px;
+  --radius-card: 10px;
+  --radius-modal: 16px;
+}
+
+html, body { height: 100%; }
+body {
+  background: var(--color-canvas);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes vsPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes vsShimmer { 0% { background-position: -468px 0 } 100% { background-position: 468px 0 } }

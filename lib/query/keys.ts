@@ -1,0 +1,15 @@
+export const queryKeys = {
+  customers: ["customers"] as const,
+  customer: (id: string) => ["customers", id] as const,
+  parts: ["parts"] as const,
+  part: (id: string) => ["parts", id] as const,
+  processMasters: ["processMasters"] as const,
+  specifications: ["specifications"] as const,
+  quotes: ["quotes"] as const,
+  quote: (id: string) => ["quotes", id] as const,
+  workOrders: ["workOrders"] as const,
+  workOrder: (id: string) => ["workOrders", id] as const,
+  invoices: ["invoices"] as const,
+  certifications: ["certifications"] as const,
+  operators: ["operators"] as const,
+};
