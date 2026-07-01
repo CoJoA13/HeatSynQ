@@ -3,6 +3,7 @@ import { baseEntitySchema, discountSchema } from "./base";
 import {
   QUOTE_STATUSES, ORDER_STATUSES, INVOICE_STATUSES, CERT_STATUSES,
   CUSTOMER_STATUSES, PRICING_BASES, ROLE_KEYS, AREAS, ORDER_STEP_STATES,
+  SCHEDULE_BLOCK_STATES,
 } from "./enums";
 
 export const operatorSchema = baseEntitySchema.extend({
@@ -216,3 +217,11 @@ export const invoiceSchema = baseEntitySchema.extend({
   paidDate: z.string().nullable(),
 });
 export type Invoice = z.infer<typeof invoiceSchema>;
+
+export const scheduleBlockSchema = baseEntitySchema.extend({
+  workOrderId: z.string(),
+  equipmentId: z.string(), // one of EQUIPMENT[].id (foreign keys are z.string(), like customerId)
+  day: z.string(),         // ISO midnight-UTC date
+  state: z.enum(SCHEDULE_BLOCK_STATES),
+});
+export type ScheduleBlock = z.infer<typeof scheduleBlockSchema>;

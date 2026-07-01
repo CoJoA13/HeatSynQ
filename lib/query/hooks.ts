@@ -1,6 +1,6 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer } from "@/lib/domain";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer, ScheduleBlock } from "@/lib/domain";
 import { orderStatusMeta } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
@@ -10,6 +10,7 @@ import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/
 import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOrder, activityEntry } from "@/lib/logic/order";
 import { trackInStep, trackOutStep, rollUpOrderStatus, orderProgressPct } from "@/lib/logic/tracking";
 import { toBillInvoiceFromOrder, billInvoice, payInvoice } from "@/lib/logic/invoice";
+import { assignPatch, unschedulePatch, movePatch } from "@/lib/logic/schedule";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -270,5 +271,59 @@ export function usePayInvoice() {
       return r.invoices.update(vars.invoice.id, { status: paid.status, paidDate: paid.paidDate }, vars.invoice.version);
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.invoices }); },
+  });
+}
+
+export function useScheduleBlocks() {
+  const r = useRepositories();
+  return useQuery({ queryKey: queryKeys.scheduleBlocks, queryFn: () => r.scheduleBlocks.list() });
+}
+
+export function useAssignSchedule() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { order: WorkOrder; equipmentId: string; day: string; operator: Operator; at: string }) => {
+      const patch = assignPatch(vars.order, vars.equipmentId, vars.day, vars.operator.name, vars.at);
+      // Version-check the WO update FIRST — a stale order throws before any orphan block is created.
+      const updated = await r.workOrders.update(vars.order.id, patch.workOrder, vars.order.version);
+      await r.scheduleBlocks.create(patch.block);
+      return updated;
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.scheduleBlocks });
+    },
+  });
+}
+
+export function useMoveSchedule() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { block: ScheduleBlock; equipmentId: string; day: string }) =>
+      r.scheduleBlocks.update(vars.block.id, movePatch(vars.equipmentId, vars.day), vars.block.version),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.scheduleBlocks }); },
+  });
+}
+
+export function useUnschedule() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { order: WorkOrder; block: ScheduleBlock; operator: Operator; at: string }) => {
+      const patch = unschedulePatch(vars.order, vars.operator.name, vars.at);
+      // Version-check the WO revert FIRST — a stale order (e.g. already tracked in) throws
+      // before the block is cancelled, so no orphaned cancelled block on a non-received order.
+      const updated = await r.workOrders.update(vars.order.id, patch.workOrder, vars.order.version);
+      await r.scheduleBlocks.update(vars.block.id, patch.block, vars.block.version);
+      return updated;
+    },
+    onSuccess: (u) => {
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.scheduleBlocks });
+    },
   });
 }

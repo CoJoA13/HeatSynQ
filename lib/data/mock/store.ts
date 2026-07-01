@@ -1,3 +1,5 @@
+import { DEMO_NOW } from "@/lib/clock";
+
 export class Collection<T extends { id: string; version: number; createdAt: string; updatedAt: string }> {
   private items: Map<string, T>;
   constructor(seed: T[]) { this.items = new Map(seed.map((i) => [i.id, i])); }
@@ -13,7 +15,7 @@ export function genId(prefix: string): string {
   return `${prefix}_${counter.toString(36)}`;
 }
 
-export const NOW = "2026-06-30T12:00:00.000Z"; // fixed mock clock (no Date.now in deterministic tests)
+export const NOW = DEMO_NOW; // single source of truth for the demo's frozen "now"
 export async function delay(ms: number, failRate = 0): Promise<void> {
   if (failRate > 0 && hashFail(counter, failRate)) throw new Error("Simulated network error");
   if (ms > 0) await new Promise((r) => setTimeout(r, ms));

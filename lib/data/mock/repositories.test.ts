@@ -37,7 +37,7 @@ describe("create()/number seam", () => {
       certifyRequired: false, certSpecId: null, orderValueCents: 1000, progressPct: 0,
       lines: [], pricing: [], steps: [], activity: [],
     });
-    expect(wo.number).toBe("WO-48212"); // seed counter WO- = 48211 → next 48212
+    expect(wo.number).toBe("WO-48232"); // seed counter WO- = 48231 → next 48232
   });
 
   it("preserves number:null on a to-bill invoice create (does NOT auto-assign INV-)", async () => {
