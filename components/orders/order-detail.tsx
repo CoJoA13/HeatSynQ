@@ -1,30 +1,33 @@
 import { DetailHeader, StatusPill, MonoId, SummaryRail } from "@/components/patterns";
 import { Button } from "@/lib/ui/button";
-import { orderStatusMeta, certStatusMeta } from "@/lib/domain/enums";
-import { ORDER_TRANSITIONS, canShipOrder } from "@/lib/logic/order";
+import { orderStatusMeta, certStatusMeta, orderStepStateMeta, areaMeta } from "@/lib/domain/enums";
+import { canShipOrder } from "@/lib/logic/order";
+import { stepActions, activeStep } from "@/lib/logic/tracking";
 import { formatMoney, formatDate } from "@/lib/utils";
-import type { WorkOrder, Customer, ProcessMaster, Certification, OrderStatus } from "@/lib/domain";
+import type { WorkOrder, Customer, ProcessMaster, Certification } from "@/lib/domain";
 
-export function OrderDetail({ order, customer, processMaster, cert, canRelease, busy, onRelease, onTransition, onShip }: {
+export function OrderDetail({
+  order, customer, processMaster, cert, canRelease, busy,
+  onRelease, onShip, onTrackIn, onTrackOut, onHold, onResume,
+}: {
   order: WorkOrder; customer: Customer | null; processMaster: ProcessMaster | null; cert: Certification | null;
-  canRelease: boolean; busy: boolean; onRelease: () => void; onTransition: (to: OrderStatus) => void; onShip: () => void;
+  canRelease: boolean; busy: boolean;
+  onRelease: () => void; onShip: () => void;
+  onTrackIn: (stepN: number) => void; onTrackOut: (stepN: number, inspectResult?: "pass" | "fail") => void;
+  onHold: () => void; onResume: () => void;
 }) {
   const meta = orderStatusMeta[order.status];
-  // Prefer the order's own carried traveler snapshot; fall back to the process master's steps.
-  const steps = order.steps.length > 0 ? order.steps : (processMaster?.steps ?? []);
-  const gate = canShipOrder(order, cert);
-  const targets = ORDER_TRANSITIONS[order.status].filter((t) => t !== "shipped");
-  const canShipStatus = order.status === "ready_to_ship"; // ship is offered from ready_to_ship
+  const gate = canShipOrder(order, cert, customer);
+  const active = activeStep(order.steps);
+  const canHold = order.status !== "shipped" && order.status !== "on_hold";
   const actions = (
     <>
-      {targets.map((t) => (
-        <Button key={t} size="sm" variant="outline" disabled={busy} onClick={() => onTransition(t)}>
-          {orderStatusMeta[t].label}
-        </Button>
-      ))}
-      {canShipStatus && <Button size="sm" disabled={busy || !gate.ok} onClick={onShip}>Ship</Button>}
+      {order.status === "on_hold" && <Button size="sm" variant="outline" disabled={busy} onClick={onResume}>Resume</Button>}
+      {canHold && <Button size="sm" variant="outline" disabled={busy} onClick={onHold}>On Hold</Button>}
+      {order.status === "ready_to_ship" && <Button size="sm" disabled={busy || !gate.ok} onClick={onShip}>Ship</Button>}
     </>
   );
+
   return (
     <div className="grid grid-cols-[1fr_300px] gap-6">
       <div>
@@ -32,9 +35,19 @@ export function OrderDetail({ order, customer, processMaster, cert, canRelease, 
           subtitle={`${customer?.name ?? ""} · PO ${order.customerPO || "—"} · ${order.processSummary}`}
           statusPill={<StatusPill tone={meta.tone}>{meta.label}</StatusPill>} actions={actions} />
 
-        {canShipStatus && !gate.ok && (
+        {order.status === "ready_to_ship" && !gate.ok && (
           <p className="mb-4 rounded-card border border-status-warn-tint bg-status-warn-tint px-3 py-2 text-xs text-status-warn">{gate.reason}</p>
         )}
+
+        <div className="mb-4 rounded-card border border-border bg-surface p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-semibold">Progress</span>
+            <span className="font-mono text-xs text-text-muted" data-testid="order-progress">{order.progressPct}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-canvas-alt">
+            <div className="h-2 rounded-full bg-primary" style={{ width: `${order.progressPct}%` }} />
+          </div>
+        </div>
 
         <div className="mb-4 rounded-card border border-border bg-surface p-4">
           <div className="mb-2 font-semibold">Pricing</div>
@@ -54,19 +67,39 @@ export function OrderDetail({ order, customer, processMaster, cert, canRelease, 
 
         <div className="mb-4 rounded-card border border-border bg-surface p-4">
           <div className="mb-2 font-semibold">Traveler {processMaster && <span className="font-mono text-xs text-text-muted">· {processMaster.code} rev {processMaster.rev}</span>}</div>
-          {steps.length > 0 ? (
+          {order.steps.length > 0 ? (
             <ol className="space-y-2 text-[13px]">
-              {steps.map((s) => (
-                <li key={s.n} className="flex gap-3 border-t border-border-faint pt-2 first:border-0 first:pt-0">
-                  <span className="font-mono text-text-muted">{s.n}</span>
-                  <div>
-                    <div className="font-medium">{s.op} <span className="text-text-muted">· {s.equip}</span></div>
-                    {s.params.length > 0 && <div className="font-mono text-xs text-text-muted">{s.params.join(" · ")}</div>}
-                  </div>
-                </li>
-              ))}
+              {order.steps.map((s) => {
+                const sm = orderStepStateMeta[s.state];
+                const isActive = active?.n === s.n;
+                return (
+                  <li key={s.n} data-testid={`traveler-step-${s.n}`} className="flex items-start justify-between gap-3 border-t border-border-faint pt-2 first:border-0 first:pt-0">
+                    <div className="flex gap-3">
+                      <span className="font-mono text-text-muted">{s.n}</span>
+                      <div>
+                        <div className="font-medium">{s.op} <span className="text-text-muted">· {s.equip}</span></div>
+                        <div className="text-xs text-text-muted">
+                          {areaMeta[s.areaId].label}
+                          {s.operatorInitials && <span className="font-mono"> · {s.operatorInitials}</span>}
+                          {s.trackedOutAt && <span className="font-mono"> · {formatDate(s.trackedOutAt)}</span>}
+                        </div>
+                        {s.params.length > 0 && <div className="font-mono text-xs text-text-muted">{s.params.join(" · ")}</div>}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <StatusPill tone={sm.tone}>{sm.label}</StatusPill>
+                      {isActive && stepActions(s).map((a) => (
+                        <Button key={a.label} size="sm" variant="outline" disabled={busy}
+                          onClick={() => (a.action === "in" ? onTrackIn(s.n) : onTrackOut(s.n, a.inspectResult))}>
+                          {a.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </li>
+                );
+              })}
             </ol>
-          ) : <p className="text-text-muted text-xs">No process master assigned.</p>}
+          ) : <p className="text-text-muted text-xs">No traveler steps.</p>}
         </div>
 
         <div className="rounded-card border border-border bg-surface p-4">
