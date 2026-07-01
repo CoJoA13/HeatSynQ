@@ -35,9 +35,9 @@ describe("TrackingBoard", () => {
   });
 
   it("flags a late, unshipped order", () => {
-    const o = order("wo-late", [ostep({ n: 1, op: "Carburize", track: "track_in_out", state: "in_process", areaId: "in_process" })], "in_process", "2026-06-01T00:00:00.000Z");
+    const o = order("wo-overdue", [ostep({ n: 1, op: "Carburize", track: "track_in_out", state: "in_process", areaId: "in_process" })], "in_process", "2026-06-01T00:00:00.000Z");
     render(<TrackingBoard orders={[o]} customers={[cust]} asOf={AS_OF} busy={false} {...handlers} />);
-    expect(within(screen.getByTestId("board-card-WO-LATE")).getByText(/late/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId("board-card-WO-OVERDUE")).getByText(/late/i)).toBeInTheDocument();
   });
 
   it("fires onTrackOut from the card quick action", async () => {

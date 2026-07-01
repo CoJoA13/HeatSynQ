@@ -1,4 +1,4 @@
-import { StatusPill } from "@/components/patterns";
+import { StatusPill, MonoId } from "@/components/patterns";
 import { Button } from "@/lib/ui/button";
 import { AREAS, areaMeta, orderStatusMeta } from "@/lib/domain/enums";
 import { boardAreaForOrder, activeStep, stepActions } from "@/lib/logic/tracking";
@@ -32,7 +32,7 @@ export function TrackingBoard({ orders, customers, asOf, busy, onTrackIn, onTrac
                 return (
                   <div key={o.id} data-testid={`board-card-WO-${o.number.replace(/^WO-/, "")}`} className="rounded-card border border-border bg-surface p-3">
                     <div className="mb-1 flex items-center justify-between">
-                      <span data-label={o.number} className="wono-badge font-mono text-[11px] text-text-muted" />
+                      <MonoId>{o.number}</MonoId>
                       {late && <StatusPill tone="danger">LATE</StatusPill>}
                     </div>
                     <div className="text-[13px] font-medium">{custById.get(o.customerId)?.name ?? "—"}</div>
