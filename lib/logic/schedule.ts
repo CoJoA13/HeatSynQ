@@ -1,12 +1,12 @@
 import type { WorkOrder, ScheduleBlock, OrderStatus, ActivityEntry } from "@/lib/domain";
-import { EQUIPMENT, type EquipmentId } from "@/lib/domain/enums";
+import { EQUIPMENT } from "@/lib/domain/enums";
 import { activeStep } from "./tracking";
 import { isLate } from "./dashboard";
 import { activityEntry } from "./order";
 
 const DAY_MS = 86_400_000;
 const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-const EQUIP_BY_ID = new Map(EQUIPMENT.map((e) => [e.id, e]));
+const EQUIP_BY_ID = new Map<string, (typeof EQUIPMENT)[number]>(EQUIPMENT.map((e) => [e.id, e]));
 
 export type WeekDay = { iso: string; label: string; weekdayShort: string };
 
@@ -76,9 +76,9 @@ export function scheduleSummary(
 
 export type AssignPatch = {
   workOrder: { status: OrderStatus; activity: ActivityEntry[] };
-  block: { workOrderId: string; equipmentId: EquipmentId; day: string; state: "planned" };
+  block: { workOrderId: string; equipmentId: string; day: string; state: "planned" };
 };
-export function assignPatch(order: WorkOrder, equipmentId: EquipmentId, day: string, actor: string, at: string): AssignPatch {
+export function assignPatch(order: WorkOrder, equipmentId: string, day: string, actor: string, at: string): AssignPatch {
   const equip = EQUIP_BY_ID.get(equipmentId);
   const message = `Scheduled — ${equip?.name ?? equipmentId} · ${weekDayLabel(day)}`;
   return {
@@ -98,6 +98,6 @@ export function unschedulePatch(order: WorkOrder, actor: string, at: string): Un
   };
 }
 
-export function movePatch(equipmentId: EquipmentId, day: string): { equipmentId: EquipmentId; day: string } {
+export function movePatch(equipmentId: string, day: string): { equipmentId: string; day: string } {
   return { equipmentId, day };
 }
