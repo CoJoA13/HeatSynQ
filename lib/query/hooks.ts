@@ -41,6 +41,18 @@ export function useUpdatePart() {
   });
 }
 
+export function useReleaseCertification() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; version: number }) =>
+      r.certifications.update(vars.id, { status: "released" }, vars.version),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.certifications });
+    },
+  });
+}
+
 export function useNavBadges(): Record<string, number> {
   const quotes = useQuotes();
   const orders = useWorkOrders();
