@@ -40,6 +40,9 @@ describe("order creation", () => {
     expect(order.steps[0].areaId).toBe("received"); // "Receive & verify"
     expect(order.steps[0].trackedInAt).toBeNull();
     expect(order.steps[0].operatorId).toBeNull();
+    expect(order.steps[0].operatorInitials).toBeNull();
+    expect(order.steps[0].trackedOutAt).toBeNull();
+    expect(order.steps[0].inspectResult).toBeNull();
   });
   it("sets cert flag from the customer default cert spec", () => {
     expect(order.certifyRequired).toBe(true);
