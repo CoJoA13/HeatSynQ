@@ -71,7 +71,7 @@ test("multi-part quote → send → won → order → release cert → ship → 
   // 5 Final inspect (inspect) — Pass auto-releases the cert
   await page.getByTestId("traveler-step-5").getByRole("button", { name: "Pass" }).click();
   await expect(page.getByTestId("traveler-step-5")).toContainText("Done");
-  await expect(page.getByText("Released")).toBeVisible();
+  await expect(page.getByText("Released", { exact: true })).toBeVisible();
   // 6 Certify & ship (track_out) — completes → Ready to ship
   await page.getByTestId("traveler-step-6").getByRole("button", { name: "Track Out" }).click();
   await expect(page.getByTestId("traveler-step-6")).toContainText("Done");

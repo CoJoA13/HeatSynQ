@@ -16,6 +16,7 @@ export default function TrackingPage() {
   if (orders.isLoading || customers.isLoading || certs.isLoading || !operator) return <SkeletonRows />;
   if (orders.isError) return <ErrorPanel message="Failed to load orders." onRetry={() => orders.refetch()} />;
   if (customers.isError) return <ErrorPanel message="Failed to load customers." onRetry={() => customers.refetch()} />;
+  if (certs.isError) return <ErrorPanel message="Failed to load certifications." onRetry={() => certs.refetch()} />;
 
   const open = openOrders(orders.data ?? []);
   const busy = trackIn.isPending || trackOut.isPending;

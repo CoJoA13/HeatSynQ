@@ -81,7 +81,7 @@ export function OrderDetail({
                         <div className="text-xs text-text-muted">
                           {areaMeta[s.areaId].label}
                           {s.operatorInitials && <span className="font-mono"> · {s.operatorInitials}</span>}
-                          {s.trackedOutAt && <span className="font-mono"> · {formatDate(s.trackedOutAt)}</span>}
+                          {s.state === "done" && s.trackedOutAt && <span className="font-mono"> · {formatDate(s.trackedOutAt)}</span>}
                         </div>
                         {s.params.length > 0 && <div className="font-mono text-xs text-text-muted">{s.params.join(" · ")}</div>}
                       </div>

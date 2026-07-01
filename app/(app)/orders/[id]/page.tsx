@@ -32,6 +32,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   if (o.certifyRequired && certs.isError)
     return <ErrorPanel message="Failed to load certification." onRetry={() => { order.refetch(); certs.refetch(); }} />;
 
+  if (customer.isLoading) return <SkeletonRows />;
+  if (customer.isError)
+    return <ErrorPanel message="Failed to load customer." onRetry={() => { order.refetch(); customer.refetch(); }} />;
+
   const cert = (certs.data ?? []).find((c) => c.workOrderId === o.id) ?? null;
   const now = () => new Date().toISOString();
   const actor = operator.name;

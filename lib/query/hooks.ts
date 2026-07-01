@@ -226,18 +226,19 @@ export function useTrackOutStep() {
       const step = vars.order.steps.find((s) => s.n === vars.stepN);
       const steps = trackOutStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at, vars.inspectResult);
       const failed = vars.inspectResult === "fail";
+      const willRelease = vars.inspectResult === "pass" && vars.cert != null && vars.cert.status === "pending";
       const status = failed ? "on_hold" : rollUpOrderStatus(steps, vars.order.status);
       const message = failed
         ? `Final inspect failed — order on hold`
         : vars.inspectResult === "pass"
-          ? `Final inspect passed`
+          ? willRelease ? `Final inspect passed — cert ${vars.cert!.number} released` : "Final inspect passed"
           : `Tracked out ${step?.op ?? "step"}`;
       const activity = [...vars.order.activity, activityEntry(vars.operator.name, message, at)];
       // Version-check the order update FIRST; a stale order throws before the cert write.
       const updated = await r.workOrders.update(vars.order.id, { steps, status, progressPct: orderProgressPct(steps), activity }, vars.order.version);
       // Inspect pass auto-releases a required pending cert (dependent write, WO-first ordering).
-      if (vars.inspectResult === "pass" && vars.cert && vars.cert.status === "pending") {
-        await r.certifications.update(vars.cert.id, { status: "released" }, vars.cert.version);
+      if (willRelease) {
+        await r.certifications.update(vars.cert!.id, { status: "released" }, vars.cert!.version);
       }
       return updated;
     },

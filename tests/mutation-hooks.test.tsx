@@ -357,6 +357,25 @@ function TrackProbe() {
   );
 }
 
+// Probe G2: inspect fail → order on_hold
+// wo-48211 (Apex, in_process), step n=5 is Final inspect, pending.
+function InspectFailProbe() {
+  const orders = useWorkOrders();
+  const ops = useOperators();
+  const trackOut = useTrackOutStep();
+  const order = orders.data?.find((o) => o.id === "wo-48211");
+  const operator = ops.data?.find((o) => o.id === "op-dana");
+  return (
+    <div>
+      <div data-testid="status">{order?.status ?? "loading"}</div>
+      <button
+        disabled={!order || !operator}
+        onClick={() => order && operator && trackOut.mutate({ order, stepN: 5, operator, cert: null, inspectResult: "fail" })}
+      >InspectFail</button>
+    </div>
+  );
+}
+
 // Probe H: inspect pass auto-releases the pending cert.
 // wo-48211 has cert-9921 (pending). Track out its Final inspect (step 5) with pass.
 function InspectPassProbe() {
@@ -413,6 +432,14 @@ describe("tracking mutations", () => {
     await user.click(screen.getByRole("button", { name: "TrackOut2" }));
     await waitFor(() => expect(screen.getByTestId("step2").textContent).toBe("done"));
     await waitFor(() => expect(Number(screen.getByTestId("progress").textContent)).toBe(33)); // 2 of 6 trackable
+  });
+
+  it("useTrackOutStep: inspect fail sends the order to on_hold", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InspectFailProbe />);
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("in_process"));
+    await user.click(screen.getByRole("button", { name: "InspectFail" }));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("on_hold"));
   });
 
   it("useTrackOutStep: inspect pass auto-releases the pending cert", async () => {

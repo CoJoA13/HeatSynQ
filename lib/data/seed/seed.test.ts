@@ -56,6 +56,8 @@ describe("seed", () => {
     const held = s.workOrders.find((w) => w.customerId === "cust-vulcan" && w.status === "ready_to_ship");
     expect(held).toBeTruthy();
     expect(held!.steps.every((st) => st.state === "done")).toBe(true);
+    const heldCustomer = s.customers.find((c) => c.id === held!.customerId);
+    expect(heldCustomer!.status).toBe("hold");
   });
 
   it("resolves cross-entity foreign keys within the seed", () => {
