@@ -14,9 +14,9 @@ const byLabel = (tiles: { label: string; value: string }[]) =>
 
 describe("dashboard order metrics", () => {
   it("counts open and late orders and on-schedule %", () => {
-    expect(openOrders(s.workOrders).length).toBe(7);
+    expect(openOrders(s.workOrders).length).toBe(9);
     expect(lateOrders(s.workOrders, asOf).length).toBe(3);
-    expect(onSchedulePct(s.workOrders, asOf)).toBe(57.1);
+    expect(onSchedulePct(s.workOrders, asOf)).toBe(66.7);
   });
 
   it("isLate end-of-day boundary: order due same day as asOf is NOT late", () => {
@@ -62,9 +62,9 @@ describe("dashboardKpis by role", () => {
   const data = { orders: s.workOrders, quotes: s.quotes, invoices: s.invoices, certifications: s.certifications, customers: s.customers };
   it("manager tiles", () => {
     const t = byLabel(dashboardKpis("manager", data, asOf));
-    expect(t["Open Orders"]).toBe("7");
+    expect(t["Open Orders"]).toBe("9");
     expect(t["Late Orders"]).toBe("3");
-    expect(t["On-Time %"]).toBe("57.1");
+    expect(t["On-Time %"]).toBe("66.7");
     expect(t["Certs Awaiting Release"]).toBe("2");
     expect(t["Open A/R"]).toBe("$6,740");
     expect(t["Invoiced MTD"]).toBe("$19,500");
@@ -88,7 +88,7 @@ describe("dashboardKpis by role", () => {
 describe("navBadgeCounts", () => {
   it("computes live sidebar counts", () => {
     expect(navBadgeCounts(s.quotes, s.workOrders, s.certifications)).toEqual({
-      quotes: 3, orders: 7, certifications: 2,
+      quotes: 3, orders: 9, certifications: 2,
     });
   });
 });

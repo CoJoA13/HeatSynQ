@@ -28,8 +28,7 @@ function AssignProbe() {
   );
 }
 
-// TODO(Task 6): un-skip once wo-48231 is seeded
-describe.skip("schedule mutation hooks", () => {
+describe("schedule mutation hooks", () => {
   it("assign drives received→scheduled and creates a planned block; unschedule reverts", async () => {
     const user = userEvent.setup();
     renderWithProviders(<AssignProbe />);

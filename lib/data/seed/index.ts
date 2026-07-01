@@ -827,6 +827,51 @@ export function buildSeed() {
         { at: "2026-06-30T00:00:00.000Z", actor: "System", message: "Ready to ship" },
       ],
     },
+    {
+      ...meta,
+      id: "wo-48230",
+      number: "WO-48230",
+      customerId: "cust-apex",
+      customerPO: "7742-A",
+      quoteId: null,
+      processSummary: "Carburize + Temper",
+      processMasterId: "pm-carb58",
+      status: "scheduled",
+      orderedDate: "2026-06-29T00:00:00.000Z",
+      due: "2026-07-02T00:00:00.000Z",
+      certifyRequired: false,
+      certSpecId: null,
+      orderValueCents: 320000,
+      progressPct: orderProgressPct(liveSteps("pm-carb58", [])),
+      lines: [{ id: "ol-48230-1", partId: "part-ts4471", description: "Turbine shaft, 4140 steel", quantity: 200, spec: "Rc 58-62" }],
+      pricing: [{ process: "Carburize", detail: "200 lb", amountCents: 320000 }],
+      steps: liveSteps("pm-carb58", []),
+      activity: [
+        { at: "2026-06-29T00:00:00.000Z", actor: "System", message: "Order received" },
+        { at: "2026-06-29T00:00:00.000Z", actor: "Dana Mercer", message: "Scheduled — Batch IQ #2 · Wed 7/1" },
+      ],
+    },
+    {
+      ...meta,
+      id: "wo-48231",
+      number: "WO-48231",
+      customerId: "cust-apex",
+      customerPO: "7742-B",
+      quoteId: null,
+      processSummary: "Carburize + Temper",
+      processMasterId: "pm-carb58",
+      status: "received",
+      orderedDate: "2026-06-30T00:00:00.000Z",
+      due: "2026-07-03T00:00:00.000Z",
+      certifyRequired: false,
+      certSpecId: null,
+      orderValueCents: 180000,
+      progressPct: orderProgressPct(liveSteps("pm-carb58", [])),
+      lines: [{ id: "ol-48231-1", partId: "part-sp119", description: "Spacer ring, 8620", quantity: 120, spec: "Rc 58-62" }],
+      pricing: [{ process: "Carburize", detail: "120 lb", amountCents: 180000 }],
+      steps: liveSteps("pm-carb58", []),
+      activity: [{ at: "2026-06-30T00:00:00.000Z", actor: "System", message: "Order received" }],
+    },
   ];
 
   const certifications: Certification[] = [
@@ -845,7 +890,9 @@ export function buildSeed() {
     { ...meta, id: "inv-midwest-48177", number: null, customerId: "cust-midwest", workOrderId: "wo-48177", amountCents: 291000, status: "to_bill", shippedDate: "2026-06-25T00:00:00.000Z", invoicedDate: null, paidDate: null },
   ];
 
-  const scheduleBlocks: ScheduleBlock[] = [];
+  const scheduleBlocks: ScheduleBlock[] = [
+    { ...meta, id: "sb-1", workOrderId: "wo-48230", equipmentId: "eq-iq-2", day: "2026-07-01T00:00:00.000Z", state: "planned" },
+  ];
 
   const counters: Record<string, number> = { "Q-": 2841, "WO-": 48211, "INV-": 30412, "C-": 9921 };
 
