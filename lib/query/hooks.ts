@@ -1,5 +1,6 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Part } from "@/lib/domain";
 import { useRepositories } from "@/lib/data/provider";
 import { queryKeys } from "./keys";
 import { navBadgeCounts } from "@/lib/logic/dashboard";
@@ -22,6 +23,23 @@ export function useContactsByCustomer(customerId: string) { const r = useReposit
 export function usePartsByCustomer(customerId: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.partsByCustomer(customerId), queryFn: () => r.parts.byCustomer(customerId) }); }
 export function usePriceKeys() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.priceKeys, queryFn: () => r.priceKeys.list() }); }
 export function usePricingRulesByPriceKey(priceKeyId: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.pricingRulesByPriceKey(priceKeyId), queryFn: () => r.pricingRules.byPriceKey(priceKeyId), enabled: priceKeyId !== "" }); }
+
+export function useUpdatePart() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: {
+      id: string;
+      patch: Partial<Omit<Part, "id" | "createdAt" | "updatedAt" | "version">>;
+      version: number;
+    }) => r.parts.update(vars.id, vars.patch, vars.version),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: queryKeys.parts });
+      qc.invalidateQueries({ queryKey: queryKeys.part(updated.id) });
+      qc.invalidateQueries({ queryKey: queryKeys.partsByCustomer(updated.customerId) });
+    },
+  });
+}
 
 export function useNavBadges(): Record<string, number> {
   const quotes = useQuotes();
