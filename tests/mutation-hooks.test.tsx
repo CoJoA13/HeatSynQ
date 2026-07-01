@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
-import { usePart, useUpdatePart, useCertifications, useReleaseCertification } from "@/lib/query/hooks";
+import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote } from "@/lib/query/hooks";
 
 // ---------------------------------------------------------------------------
 // Probe A: useUpdatePart
@@ -59,6 +59,24 @@ function ReleaseCertProbe() {
 }
 
 // ---------------------------------------------------------------------------
+// Probe C: useWinQuote
+// ---------------------------------------------------------------------------
+function WinQuoteProbe() {
+  const quotes = useQuotes();
+  const orders = useWorkOrders();
+  const win = useWinQuote();
+  const q = quotes.data?.find((x) => x.id === "q-2840"); // sent, Midwest, certifyRequired via customer? Midwest defaultCertSpecId null → cert not required
+  const orderCount = orders.data?.length ?? 0;
+  return (
+    <div>
+      <div data-testid="status">{q?.status ?? "loading"}</div>
+      <div data-testid="orders">{orderCount}</div>
+      <button onClick={() => q && win.mutate(q)} disabled={!q}>Win</button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 describe("mutation hooks — write + version + invalidation", () => {
@@ -88,5 +106,17 @@ describe("mutation hooks — write + version + invalidation", () => {
 
     // After invalidation + refetch, C-9921 is no longer pending so it drops from the display
     await waitFor(() => expect(screen.queryByText(/C-9921/)).not.toBeInTheDocument());
+  });
+});
+
+describe("quote mutations", () => {
+  it("useWinQuote: creates an order and marks the quote won", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<WinQuoteProbe />);
+    await screen.findByText("sent");
+    const before = Number(screen.getByTestId("orders").textContent);
+    await user.click(screen.getByRole("button", { name: "Win" }));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("won"));
+    await waitFor(() => expect(Number(screen.getByTestId("orders").textContent)).toBe(before + 1));
   });
 });

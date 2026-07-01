@@ -1,9 +1,12 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part } from "@/lib/domain";
+import type { Part, Quote, Operator } from "@/lib/domain";
+import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
 import { queryKeys } from "./keys";
 import { navBadgeCounts } from "@/lib/logic/dashboard";
+import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/lib/logic/quote-state";
+import { createOrderFromQuote, createCertForOrder } from "@/lib/logic/order";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -59,4 +62,91 @@ export function useNavBadges(): Record<string, number> {
   const certs = useCertifications();
   if (!quotes.data || !orders.data || !certs.data) return {};
   return navBadgeCounts(quotes.data, orders.data, certs.data);
+}
+
+export function useCreateQuoteDraft() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateInput<Quote>) => r.quotes.create(input),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.quotes }); },
+  });
+}
+
+export function useUpdateQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; patch: Partial<Omit<Quote, "id" | "createdAt" | "updatedAt" | "version">>; version: number }) =>
+      r.quotes.update(vars.id, vars.patch, vars.version),
+    onSuccess: (u) => { qc.invalidateQueries({ queryKey: queryKeys.quotes }); qc.invalidateQueries({ queryKey: queryKeys.quote(u.id) }); },
+  });
+}
+
+function invalidateQuote(qc: ReturnType<typeof useQueryClient>, id: string) {
+  qc.invalidateQueries({ queryKey: queryKeys.quotes });
+  qc.invalidateQueries({ queryKey: queryKeys.quote(id) });
+}
+
+export function useSendQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { quote: Quote; operator: Operator }) => {
+      const { status } = sendQuote(vars.quote, vars.operator);
+      return r.quotes.update(vars.quote.id, { status }, vars.quote.version);
+    },
+    onSuccess: (u) => invalidateQuote(qc, u.id),
+  });
+}
+
+export function useApproveQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { quote: Quote }) => r.quotes.update(vars.quote.id, { status: approveQuote(vars.quote).status }, vars.quote.version),
+    onSuccess: (u) => invalidateQuote(qc, u.id),
+  });
+}
+
+export function useRejectQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { quote: Quote }) => r.quotes.update(vars.quote.id, { status: rejectQuote(vars.quote).status }, vars.quote.version),
+    onSuccess: (u) => invalidateQuote(qc, u.id),
+  });
+}
+
+export function useLoseQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { quote: Quote }) => r.quotes.update(vars.quote.id, { status: loseQuote(vars.quote).status }, vars.quote.version),
+    onSuccess: (u) => invalidateQuote(qc, u.id),
+  });
+}
+
+export function useWinQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (quote: Quote) => {
+      const [parts, pms, customer] = await Promise.all([
+        r.parts.list(), r.processMasters.list(), r.customers.get(quote.customerId),
+      ]);
+      if (!customer) throw new Error("Customer not found: " + quote.customerId);
+      const partsById = Object.fromEntries(parts.map((p) => [p.id, p]));
+      const processMastersById = Object.fromEntries(pms.map((m) => [m.id, m]));
+      const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer }));
+      if (order.certifyRequired) await r.certifications.create(createCertForOrder(order, customer));
+      return r.quotes.update(quote.id, { status: "won", wonOrderId: order.id }, quote.version);
+    },
+    onSuccess: (u) => {
+      invalidateQuote(qc, u.id);
+      qc.invalidateQueries({ queryKey: queryKeys.workOrders });
+      qc.invalidateQueries({ queryKey: queryKeys.certifications });
+    },
+  });
+}
+
+export function useReviseQuote() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (quote: Quote) => r.quotes.create(reviseQuote(quote)),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.quotes }); },
+  });
 }
