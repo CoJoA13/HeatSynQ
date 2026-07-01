@@ -18,7 +18,7 @@ export function QuotesList({ quotes, customers, onSelect }: {
         return [
           <MonoId key="q">{label}</MonoId>,
           custById.get(q.customerId)?.name ?? "—",
-          <span key="d" className="text-text-muted">{formatDate(q.date)}</span>,
+          <span key="d" className="font-mono text-text-muted">{formatDate(q.date)}</span>,
           <span key="p" className="font-mono">{q.parts.length}</span>,
           <span key="t" className="font-mono">{formatMoney(quoteTotalCents(q))}</span>,
           <StatusPill key="s" tone={meta.tone}>{meta.label}</StatusPill>,

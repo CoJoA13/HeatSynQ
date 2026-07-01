@@ -17,7 +17,7 @@ export function OrdersList({ orders, customers, onSelect }: {
           <MonoId key="w">{o.number}</MonoId>,
           custById.get(o.customerId)?.name ?? "—",
           o.processSummary,
-          <span key="d" className="text-text-muted">{formatDate(o.due)}</span>,
+          <span key="d" className="font-mono text-text-muted">{formatDate(o.due)}</span>,
           <span key="v" className="font-mono">{formatMoney(o.orderValueCents)}</span>,
           <StatusPill key="s" tone={meta.tone}>{meta.label}</StatusPill>,
         ];

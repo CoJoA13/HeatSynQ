@@ -77,7 +77,7 @@ export function QuoteView({
         {quote.parts.map((p) => (
           <div key={p.id} className="mb-4 rounded-card border border-border bg-surface p-4">
             <div className="mb-2 font-semibold">
-              {partById.get(p.partId)?.partNumber ?? p.partId} · {p.material} · qty {p.quantity}
+              {partById.get(p.partId)?.partNumber ?? p.partId} · {p.material} · qty <span className="font-mono">{p.quantity}</span>
             </div>
             <table className="w-full text-[13px]">
               <thead>
