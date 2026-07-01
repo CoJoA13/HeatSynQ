@@ -1,0 +1,50 @@
+import { describe, it, expect, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { EquipmentTile } from "./equipment-tile";
+import { EQUIPMENT, type EquipmentDef } from "@/lib/domain/enums";
+import type { EquipmentLoad } from "@/lib/logic/shop-floor";
+
+const iq3 = EQUIPMENT.find((e) => e.id === "eq-iq-3")! as EquipmentDef;
+
+function loaded(over: Partial<NonNullable<EquipmentLoad["load"]>> = {}): EquipmentLoad {
+  return {
+    equipmentId: "eq-iq-3", state: "running", queued: 0,
+    load: {
+      workOrderId: "wo-1", workOrderNumber: "WO-1", customerId: "c1", op: "Carburize",
+      progressPct: 40, operatorInitials: "DM", setpoint: "1700°F",
+      estFinishIso: "2026-07-01T14:00:00.000Z", late: false, trackedInAt: "2026-07-01T06:00:00.000Z", ...over,
+    },
+  };
+}
+
+describe("EquipmentTile", () => {
+  it("shows the load and drills in on click", async () => {
+    const onSelect = vi.fn();
+    render(<EquipmentTile equipment={iq3} entry={loaded()} customerName="Apex Aerospace" onSelect={onSelect} />);
+    expect(screen.getByText("WO-1")).toBeInTheDocument();
+    expect(screen.getByText("Apex Aerospace")).toBeInTheDocument();
+    expect(screen.getByText("Carburize")).toBeInTheDocument();
+    expect(screen.getByText(/Setpoint 1700°F/)).toBeInTheDocument();
+    expect(screen.getByText(/Est\. finish/)).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("equipment-tile-eq-iq-3"));
+    expect(onSelect).toHaveBeenCalledWith("wo-1");
+  });
+
+  it("shows a LATE pill and queued count", () => {
+    render(<EquipmentTile equipment={iq3} entry={{ ...loaded({ late: true }), queued: 2 }} customerName="Apex Aerospace" onSelect={() => {}} />);
+    expect(screen.getByText(/late/i)).toBeInTheDocument();
+    expect(screen.getByText(/\+2 queued/)).toBeInTheDocument();
+  });
+
+  it("renders an idle tile that is not a button", () => {
+    render(<EquipmentTile equipment={iq3} entry={{ equipmentId: "eq-iq-3", state: "idle", load: null, queued: 0 }} customerName={null} onSelect={() => {}} />);
+    expect(screen.getByText(/no load · available/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("shows the on-hold state pill", () => {
+    render(<EquipmentTile equipment={iq3} entry={{ ...loaded(), state: "on_hold" }} customerName="Apex Aerospace" onSelect={() => {}} />);
+    expect(screen.getByText("On hold")).toBeInTheDocument();
+  });
+});
