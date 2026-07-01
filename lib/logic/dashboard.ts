@@ -1,9 +1,9 @@
 import type {
-  WorkOrder, Quote, Invoice, Certification, RoleKey, QuoteStatus,
+  WorkOrder, Quote, Invoice, Certification, RoleKey, QuoteStatus, Customer,
 } from "@/lib/domain";
 import type { StatusTone } from "@/lib/domain/enums";
 import { quoteTotalCents } from "./pricing";
-import { agingBucket } from "./ar";
+import { agingBucket, netDaysByCustomer, endOfDayUtcMs } from "./ar";
 import { formatMoney } from "@/lib/utils";
 
 const OPEN_QUOTE_STATUSES: QuoteStatus[] = ["draft", "sent", "approve"];
@@ -13,7 +13,8 @@ export function openOrders(orders: WorkOrder[]): WorkOrder[] {
   return orders.filter((o) => o.status !== "shipped");
 }
 export function isLate(order: WorkOrder, asOf: string): boolean {
-  return order.status !== "shipped" && new Date(order.due).getTime() < new Date(asOf).getTime();
+  if (order.status === "shipped") return false;
+  return endOfDayUtcMs(order.due) < new Date(asOf).getTime();
 }
 export function lateOrders(orders: WorkOrder[], asOf: string): WorkOrder[] {
   return orders.filter((o) => isLate(o, asOf));
@@ -48,9 +49,10 @@ export function certsAwaitingRelease(certs: Certification[]): number {
 export function openArCents(invoices: Invoice[]): number {
   return invoices.filter((i) => i.status === "sent").reduce((s, i) => s + i.amountCents, 0);
 }
-export function pastDueCents(invoices: Invoice[], asOf: string): number {
+export function pastDueCents(invoices: Invoice[], customers: Customer[], asOf: string): number {
+  const nd = netDaysByCustomer(customers);
   return invoices
-    .filter((i) => i.status === "sent" && agingBucket(i, asOf) !== "current")
+    .filter((i) => i.status === "sent" && agingBucket(i, nd[i.customerId] ?? 30, asOf) !== "current")
     .reduce((s, i) => s + i.amountCents, 0);
 }
 export function toBillCount(invoices: Invoice[]): number {
@@ -72,11 +74,11 @@ export function invoicedMtdCents(invoices: Invoice[], asOf: string): number {
 // --- assembly ---
 export type KpiDescriptor = { label: string; value: string; sub?: string; tone?: StatusTone };
 export type DashboardData = {
-  orders: WorkOrder[]; quotes: Quote[]; invoices: Invoice[]; certifications: Certification[];
+  orders: WorkOrder[]; quotes: Quote[]; invoices: Invoice[]; certifications: Certification[]; customers: Customer[];
 };
 
 export function dashboardKpis(role: RoleKey, data: DashboardData, asOf: string): KpiDescriptor[] {
-  const { orders, quotes, invoices, certifications } = data;
+  const { orders, quotes, invoices, certifications, customers } = data;
   if (role === "sales") {
     return [
       { label: "Open Quotes", value: String(openQuotes(quotes).length) },
@@ -88,7 +90,7 @@ export function dashboardKpis(role: RoleKey, data: DashboardData, asOf: string):
   if (role === "office") {
     return [
       { label: "Open A/R", value: formatMoney(openArCents(invoices)) },
-      { label: "Past Due", value: formatMoney(pastDueCents(invoices, asOf)), tone: "danger" },
+      { label: "Past Due", value: formatMoney(pastDueCents(invoices, customers, asOf)), tone: "danger" },
       { label: "To-bill", value: String(toBillCount(invoices)), sub: formatMoney(toBillCents(invoices)) },
       { label: "Invoiced MTD", value: formatMoney(invoicedMtdCents(invoices, asOf)) },
     ];

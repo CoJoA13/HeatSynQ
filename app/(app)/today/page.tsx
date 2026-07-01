@@ -1,6 +1,6 @@
 "use client";
 import { useAuth } from "@/lib/auth/provider";
-import { useWorkOrders, useQuotes, useInvoices, useCertifications } from "@/lib/query/hooks";
+import { useWorkOrders, useQuotes, useInvoices, useCertifications, useCustomers } from "@/lib/query/hooks";
 import { dashboardKpis } from "@/lib/logic/dashboard";
 import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { TodayDashboard } from "@/components/today/today-dashboard";
@@ -11,10 +11,11 @@ export default function TodayPage() {
   const quotes = useQuotes();
   const invoices = useInvoices();
   const certs = useCertifications();
+  const customers = useCustomers();
 
-  if (orders.isLoading || quotes.isLoading || invoices.isLoading || certs.isLoading) return <SkeletonRows />;
+  if (orders.isLoading || quotes.isLoading || invoices.isLoading || certs.isLoading || customers.isLoading) return <SkeletonRows />;
 
-  if (orders.isError || quotes.isError || invoices.isError || certs.isError) {
+  if (orders.isError || quotes.isError || invoices.isError || certs.isError || customers.isError) {
     return (
       <ErrorPanel
         message="Failed to load dashboard data."
@@ -23,6 +24,7 @@ export default function TodayPage() {
           quotes.refetch();
           invoices.refetch();
           certs.refetch();
+          customers.refetch();
         }}
       />
     );
@@ -36,6 +38,7 @@ export default function TodayPage() {
       quotes: quotes.data ?? [],
       invoices: invoices.data ?? [],
       certifications: certs.data ?? [],
+      customers: customers.data ?? [],
     },
     asOf,
   );

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildSeed } from "@/lib/data/seed";
 import {
-  openOrders, lateOrders, onSchedulePct,
+  openOrders, lateOrders, onSchedulePct, isLate,
   openQuotes, awaitingApprovalCount, openQuoteValueCents, wonQuotesCount,
   certsAwaitingRelease, openArCents, pastDueCents, toBillCount, toBillCents, invoicedMtdCents,
   dashboardKpis, navBadgeCounts,
@@ -18,6 +18,15 @@ describe("dashboard order metrics", () => {
     expect(lateOrders(s.workOrders, asOf).length).toBe(2);
     expect(onSchedulePct(s.workOrders, asOf)).toBe(71.4);
   });
+
+  it("isLate end-of-day boundary: order due same day as asOf is NOT late", () => {
+    // Order due 2026-06-30 00:00:00 UTC; asOf = 2026-06-30 12:00:00 UTC.
+    // end-of-day of due = 2026-06-30 23:59:59.999 > asOf → not late.
+    const orderDueToday = s.workOrders.find((o) => o.id === "wo-48205")!;
+    // wo-48205 has due "2026-07-01" — use a synthetic order for the exact boundary
+    const syntheticOrder = { ...orderDueToday, due: "2026-06-30T00:00:00.000Z", status: "in_process" as const };
+    expect(isLate(syntheticOrder, asOf)).toBe(false);
+  });
 });
 
 describe("dashboard quote metrics", () => {
@@ -33,23 +42,24 @@ describe("dashboard finance + cert metrics", () => {
   it("computes AR, to-bill, invoiced MTD and pending certs", () => {
     expect(certsAwaitingRelease(s.certifications)).toBe(2);
     expect(openArCents(s.invoices)).toBe(674_000);
-    expect(pastDueCents(s.invoices, asOf)).toBe(0);
+    // inv-30412 (cust-delta, Net 30, invoicedDate 2026-06-27) → due 2026-07-27; not past due at 2026-06-30
+    expect(pastDueCents(s.invoices, s.customers, asOf)).toBe(0);
     expect(toBillCount(s.invoices)).toBe(2);
     expect(toBillCents(s.invoices)).toBe(709_000);
     expect(invoicedMtdCents(s.invoices, asOf)).toBe(1_950_000);
   });
 
-  it("past-due branch: inv-30412 (invoicedDate 2026-06-27) is ~80 days old at Sep-15 → past due", () => {
-    // At 2026-09-15, inv-30412 is ~80 days past its June 27 invoiced date → not "current"
+  it("past-due branch: inv-30412 (due 2026-07-27) is 50 days past-due at Sep-15 → d31_60 → past due", () => {
+    // At 2026-09-15, inv-30412 (Net 30 cust-delta, invoicedDate 2026-06-27 → due 2026-07-27) is ~50 days past due
     const laterAsOf = "2026-09-15T00:00:00.000Z";
-    expect(pastDueCents(s.invoices, laterAsOf)).toBe(674_000);
+    expect(pastDueCents(s.invoices, s.customers, laterAsOf)).toBe(674_000);
     // No invoice has an invoicedDate in September → sameMonth check excludes all
     expect(invoicedMtdCents(s.invoices, laterAsOf)).toBe(0);
   });
 });
 
 describe("dashboardKpis by role", () => {
-  const data = { orders: s.workOrders, quotes: s.quotes, invoices: s.invoices, certifications: s.certifications };
+  const data = { orders: s.workOrders, quotes: s.quotes, invoices: s.invoices, certifications: s.certifications, customers: s.customers };
   it("manager tiles", () => {
     const t = byLabel(dashboardKpis("manager", data, asOf));
     expect(t["Open Orders"]).toBe("7");
