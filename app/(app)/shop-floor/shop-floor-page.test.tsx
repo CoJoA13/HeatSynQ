@@ -27,10 +27,17 @@ beforeEach(() => {
 });
 
 describe("ShopFloorPage guards", () => {
-  it("renders the skeleton when either query is loading", () => {
+  it("renders the skeleton when orders is loading", () => {
     mockOrders.mockReturnValue({ isLoading: true, isError: false, data: undefined, refetch: vi.fn() });
     render(<ShopFloorPage />);
     // SkeletonRows renders skeleton placeholder rows; the grid must NOT render
+    expect(screen.queryByTestId("shop-floor-grid")).not.toBeInTheDocument();
+  });
+
+  it("renders the skeleton when only customers is loading (second-query loading guard)", () => {
+    // orders succeeds; only customers is still loading
+    mockCustomers.mockReturnValue({ isLoading: true, isError: false, data: undefined, refetch: vi.fn() });
+    render(<ShopFloorPage />);
     expect(screen.queryByTestId("shop-floor-grid")).not.toBeInTheDocument();
   });
 
