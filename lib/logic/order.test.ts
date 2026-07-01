@@ -157,6 +157,9 @@ describe("order transitions", () => {
     expect(canTransitionOrder("received","scheduled")).toBe(true);
     expect(canTransitionOrder("received","shipped")).toBe(false);
   });
+  it("permits on_hold -> ready_to_ship (resume when all steps done)", () => {
+    expect(canTransitionOrder("on_hold", "ready_to_ship")).toBe(true);
+  });
 });
 
 describe("createCertForOrder", () => {

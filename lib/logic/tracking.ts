@@ -1,5 +1,5 @@
 import type { AreaId } from "@/lib/domain/enums";
-import type { OrderStep } from "@/lib/domain";
+import type { OrderStep, OrderStatus, WorkOrder } from "@/lib/domain";
 
 /** Map a process-step op name to its shop area. Order matters: rack before wash. */
 export function areaForOp(op: string): AreaId {
@@ -46,4 +46,29 @@ export function stepActions(step: OrderStep): StepAction[] {
 
 export function activeStep(steps: OrderStep[]): OrderStep | null {
   return steps.find((s) => s.track !== "none" && s.state !== "done") ?? null;
+}
+
+const trackableSteps = (steps: OrderStep[]) => steps.filter((s) => s.track !== "none");
+
+export function rollUpOrderStatus(steps: OrderStep[], current: OrderStatus): OrderStatus {
+  if (current === "on_hold" || current === "shipped") return current;
+  const t = trackableSteps(steps);
+  if (t.length > 0 && t.every((s) => s.state === "done")) return "ready_to_ship";
+  if (t.some((s) => s.state !== "pending") && (current === "received" || current === "scheduled")) return "in_process";
+  return current;
+}
+
+export function orderProgressPct(steps: OrderStep[]): number {
+  const t = trackableSteps(steps);
+  if (t.length === 0) return 0;
+  return Math.round((t.filter((s) => s.state === "done").length / t.length) * 100);
+}
+
+export function boardAreaForOrder(order: WorkOrder): AreaId {
+  if (order.status === "shipped") return "shipped";
+  const active = activeStep(order.steps);
+  if (!active) {
+    return trackableSteps(order.steps).length > 0 ? "available_to_ship" : "received";
+  }
+  return active.areaId;
 }

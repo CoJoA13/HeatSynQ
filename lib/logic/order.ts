@@ -72,7 +72,7 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   received: ["scheduled", "on_hold"],
   scheduled: ["in_process", "on_hold"],
   in_process: ["ready_to_ship", "on_hold"],
-  on_hold: ["received", "scheduled", "in_process"],
+  on_hold: ["received", "scheduled", "in_process", "ready_to_ship"],
   ready_to_ship: ["shipped", "on_hold"],
   shipped: [],
 };
