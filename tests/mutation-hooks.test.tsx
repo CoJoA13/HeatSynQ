@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
-import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices } from "@/lib/query/hooks";
+import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices, useBillInvoice, usePayInvoice } from "@/lib/query/hooks";
 
 // ---------------------------------------------------------------------------
 // Probe A: useUpdatePart
@@ -149,5 +149,59 @@ describe("order mutations", () => {
     await user.click(screen.getByRole("button", { name: "Ship" }));
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("shipped"));
     await waitFor(() => expect(Number(screen.getByTestId("invoices").textContent)).toBe(before + 1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Probe E: useBillInvoice
+// ---------------------------------------------------------------------------
+function BillProbe() {
+  const invoices = useInvoices();
+  const bill = useBillInvoice();
+  const inv = invoices.data?.find((i) => i.id === "inv-summit-48120");
+  return (
+    <div>
+      <div data-testid="num">{inv?.number ?? "null"}</div>
+      <div data-testid="status">{inv?.status ?? "loading"}</div>
+      <button disabled={!inv} onClick={() => inv && bill.mutate({ invoice: inv, at: "2026-07-01T00:00:00.000Z" })}>Bill</button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Probe F: usePayInvoice
+// ---------------------------------------------------------------------------
+function PayProbe() {
+  const invoices = useInvoices();
+  const pay = usePayInvoice();
+  const inv = invoices.data?.find((i) => i.id === "inv-30412");
+  return (
+    <div>
+      <div data-testid="pay-status">{inv?.status ?? "loading"}</div>
+      <div data-testid="paid-date">{inv?.paidDate ?? "null"}</div>
+      <button disabled={!inv} onClick={() => inv && pay.mutate({ invoice: inv, at: "2026-07-01T00:00:00.000Z" })}>Pay</button>
+    </div>
+  );
+}
+
+describe("invoice mutations", () => {
+  it("useBillInvoice: assigns INV-30413 and sets status to sent", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<BillProbe />);
+    await waitFor(() => expect(screen.getByTestId("num").textContent).toBe("null"));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("to_bill"));
+    await user.click(screen.getByRole("button", { name: "Bill" }));
+    await waitFor(() => expect(screen.getByTestId("num").textContent).toBe("INV-30413"));
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("sent"));
+  });
+
+  it("usePayInvoice: sets status to paid and records paidDate", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<PayProbe />);
+    await waitFor(() => expect(screen.getByTestId("pay-status").textContent).toBe("sent"));
+    await waitFor(() => expect(screen.getByTestId("paid-date").textContent).toBe("null"));
+    await user.click(screen.getByRole("button", { name: "Pay" }));
+    await waitFor(() => expect(screen.getByTestId("pay-status").textContent).toBe("paid"));
+    await waitFor(() => expect(screen.getByTestId("paid-date").textContent).toBe("2026-07-01T00:00:00.000Z"));
   });
 });

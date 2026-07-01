@@ -1,6 +1,6 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification } from "@/lib/domain";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice } from "@/lib/domain";
 import { orderStatusMeta } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
@@ -8,7 +8,7 @@ import { queryKeys } from "./keys";
 import { navBadgeCounts } from "@/lib/logic/dashboard";
 import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/lib/logic/quote-state";
 import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOrder, activityEntry } from "@/lib/logic/order";
-import { toBillInvoiceFromOrder } from "@/lib/logic/invoice";
+import { toBillInvoiceFromOrder, billInvoice, payInvoice } from "@/lib/logic/invoice";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -185,5 +185,28 @@ export function useShipOrder() {
       qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
       qc.invalidateQueries({ queryKey: queryKeys.invoices });
     },
+  });
+}
+
+export function useBillInvoice() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (vars: { invoice: Invoice; at: string }) => {
+      const number = await r.numbers.next("invoices");
+      const billed = billInvoice(vars.invoice, number, vars.at);
+      return r.invoices.update(vars.invoice.id, { status: billed.status, number: billed.number, invoicedDate: billed.invoicedDate }, vars.invoice.version);
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.invoices }); },
+  });
+}
+
+export function usePayInvoice() {
+  const r = useRepositories(); const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { invoice: Invoice; at: string }) => {
+      const paid = payInvoice(vars.invoice, vars.at);
+      return r.invoices.update(vars.invoice.id, { status: paid.status, paidDate: paid.paidDate }, vars.invoice.version);
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: queryKeys.invoices }); },
   });
 }
