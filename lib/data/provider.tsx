@@ -5,8 +5,14 @@ import { createMockRepositories } from "@/lib/data/mock/repositories";
 
 const Ctx = createContext<Repositories | null>(null);
 
-export function RepositoriesProvider({ children }: { children: React.ReactNode }) {
-  const repos = useMemo(() => createMockRepositories(), []);
+export function RepositoriesProvider({
+  children,
+  repositories,
+}: {
+  children: React.ReactNode;
+  repositories?: Repositories;
+}) {
+  const repos = useMemo(() => repositories ?? createMockRepositories(), [repositories]);
   return <Ctx.Provider value={repos}>{children}</Ctx.Provider>;
 }
 
