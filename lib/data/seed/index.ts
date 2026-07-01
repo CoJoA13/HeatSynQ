@@ -887,7 +887,7 @@ export function buildSeed() {
     { ...meta, id: "cert-9920", number: "C-9920", customerId: "cust-titan", workOrderId: "wo-48205", specificationId: "spec-ams2759-2", type: "Vacuum harden", status: "pending", copies: 1 },
     { ...meta, id: "cert-9918", number: "C-9918", customerId: "cust-delta", workOrderId: "wo-48190", specificationId: "spec-mils6090", type: "Nitride", status: "released", copies: 1 },
     { ...meta, id: "cert-9915", number: "C-9915", customerId: "cust-midwest", workOrderId: "wo-48177", specificationId: "spec-ams2759-2", type: "Carbonitride", status: "released", copies: 1 },
-    { ...meta, id: "cert-9910", number: "C-9910", customerId: "cust-summit", workOrderId: "wo-48120", specificationId: "spec-sb4", type: "Customer spec SB-4", status: "released", copies: 1 },
+    { ...meta, id: "cert-9910", number: "C-9910", customerId: "cust-summit", workOrderId: "wo-48120", specificationId: "spec-sb4", type: "Customer spec SB-4", status: "pending", copies: 1 },
   ];
 
   const invoices: Invoice[] = [

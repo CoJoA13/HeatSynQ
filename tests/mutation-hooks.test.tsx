@@ -158,20 +158,32 @@ describe("quote mutations", () => {
 // ---------------------------------------------------------------------------
 // Probe D: useShipOrder — idempotent invoice on an order that already has one
 // wo-48120 is ready_to_ship and already has inv-summit-48120 (to_bill).
+// Its cert (C-9910) seeds as pending (manual-release story), so this probe
+// releases the cert first — mirroring the real manual-release flow — then ships.
 // ---------------------------------------------------------------------------
 function ShipExistingInvoiceProbe() {
   const orders = useWorkOrders();
   const certs = useCertifications();
   const invoices = useInvoices();
+  const release = useReleaseCertification();
   const ship = useShipOrder();
   const order = orders.data?.find((o) => o.id === "wo-48120");
   const cert = certs.data?.find((c) => c.workOrderId === "wo-48120") ?? null;
   const invForOrder = invoices.data?.filter((i) => i.workOrderId === "wo-48120").length ?? 0;
+  async function handleShip() {
+    if (!order) return;
+    let readyCert = cert;
+    if (readyCert && readyCert.status !== "released") {
+      readyCert = await release.mutateAsync({ id: readyCert.id, version: readyCert.version });
+    }
+    ship.mutate({ order, cert: readyCert, actor: "Test", at: "2026-07-01T00:00:00.000Z" });
+  }
   return (
     <div>
       <div data-testid="status">{order?.status ?? "loading"}</div>
+      <div data-testid="cert-status">{cert?.status ?? "none"}</div>
       <div data-testid="inv-for-order">{invForOrder}</div>
-      <button disabled={!order} onClick={() => order && ship.mutate({ order, cert, actor: "Test", at: "2026-07-01T00:00:00.000Z" })}>Ship</button>
+      <button disabled={!order} onClick={handleShip}>Ship</button>
     </div>
   );
 }
@@ -258,6 +270,8 @@ describe("order mutations", () => {
     const user = userEvent.setup();
     renderWithProviders(<ShipExistingInvoiceProbe />);
     await screen.findByText("ready_to_ship");
+    // C-9910 seeds pending (manual-release story) — probe releases it before shipping.
+    await waitFor(() => expect(screen.getByTestId("cert-status").textContent).toBe("pending"));
     await waitFor(() => expect(screen.getByTestId("inv-for-order").textContent).toBe("1"));
     await user.click(screen.getByRole("button", { name: "Ship" }));
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("shipped"));

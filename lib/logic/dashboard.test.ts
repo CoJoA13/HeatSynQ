@@ -3,7 +3,7 @@ import { buildSeed } from "@/lib/data/seed";
 import {
   openOrders, lateOrders, onSchedulePct, isLate,
   openQuotes, awaitingApprovalCount, openQuoteValueCents, wonQuotesCount,
-  certsAwaitingRelease, openArCents, pastDueCents, toBillCount, toBillCents, invoicedMtdCents,
+  certsAwaitingRelease, certsBlockingShipments, openArCents, pastDueCents, toBillCount, toBillCents, invoicedMtdCents,
   dashboardKpis, navBadgeCounts,
 } from "./dashboard";
 
@@ -40,7 +40,7 @@ describe("dashboard quote metrics", () => {
 
 describe("dashboard finance + cert metrics", () => {
   it("computes AR, to-bill, invoiced MTD and pending certs", () => {
-    expect(certsAwaitingRelease(s.certifications)).toBe(2);
+    expect(certsAwaitingRelease(s.certifications)).toBe(3);
     expect(openArCents(s.invoices)).toBe(674_000);
     // inv-30412 (cust-delta, Net 30, invoicedDate 2026-06-27) → due 2026-07-27; not past due at 2026-06-30
     expect(pastDueCents(s.invoices, s.customers, asOf)).toBe(0);
@@ -65,7 +65,7 @@ describe("dashboardKpis by role", () => {
     expect(t["Open Orders"]).toBe("9");
     expect(t["Late Orders"]).toBe("3");
     expect(t["On-Time %"]).toBe("66.7");
-    expect(t["Certs Awaiting Release"]).toBe("2");
+    expect(t["Certs Awaiting Release"]).toBe("3");
     expect(t["Open A/R"]).toBe("$6,740");
     expect(t["Invoiced MTD"]).toBe("$19,500");
   });
@@ -88,7 +88,28 @@ describe("dashboardKpis by role", () => {
 describe("navBadgeCounts", () => {
   it("computes live sidebar counts", () => {
     expect(navBadgeCounts(s.quotes, s.workOrders, s.certifications)).toEqual({
-      quotes: 3, orders: 9, certifications: 2,
+      quotes: 3, orders: 9, certifications: 3,
     });
+  });
+});
+
+describe("certsBlockingShipments", () => {
+  it("counts only pending certs whose order is ready_to_ship (seed: C-9910/WO-48120)", () => {
+    expect(certsBlockingShipments(s.certifications, s.workOrders)).toBe(1);
+  });
+  it("ignores pending certs on non-ready orders, released certs, and orphans", () => {
+    const wo = s.workOrders.find((w) => w.id === "wo-48120")!;
+    const cert = s.certifications.find((c) => c.number === "C-9910")!;
+    expect(certsBlockingShipments([{ ...cert, status: "released" }], [wo])).toBe(0);
+    expect(certsBlockingShipments([cert], [{ ...wo, status: "in_process" }])).toBe(0);
+    expect(certsBlockingShipments([{ ...cert, workOrderId: "wo-nope" }], [wo])).toBe(0);
+  });
+  it("feeds the manager tile sub with pluralization", () => {
+    const data = { orders: s.workOrders, quotes: s.quotes, invoices: s.invoices, certifications: s.certifications, customers: s.customers };
+    const tile = dashboardKpis("manager", data, "2026-06-30T12:00:00.000Z").find((t) => t.label === "Certs Awaiting Release")!;
+    expect(tile.sub).toBe("blocking 1 shipment");
+    const noneBlocking = { ...data, certifications: data.certifications.map((c) => ({ ...c, status: "released" as const })) };
+    const tile0 = dashboardKpis("manager", noneBlocking, "2026-06-30T12:00:00.000Z").find((t) => t.label === "Certs Awaiting Release")!;
+    expect(tile0.sub).toBe("blocking 0 shipments");
   });
 });

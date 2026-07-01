@@ -72,6 +72,17 @@ describe("seed", () => {
     expect(s.standards.filter((st) => isReviewDue(st, DEMO_NOW)).map((st) => st.code)).toEqual(["CQI-9"]);
   });
 
+  it("has a ready-to-ship order blocked by a pending cert (manual-release story)", () => {
+    const cert = s.certifications.find((c) => c.number === "C-9910")!;
+    expect(cert.status).toBe("pending");
+    const wo = s.workOrders.find((w) => w.id === cert.workOrderId)!;
+    expect(wo.status).toBe("ready_to_ship");
+    // Coherence with Plan-4 auto-release: this WO's process has NO inspect step,
+    // so a pending cert on a done-steps order is exactly the manual-release case.
+    const pm = s.processMasters.find((m) => m.id === wo.processMasterId)!;
+    expect(pm.steps.some((st) => st.track === "inspect")).toBe(false);
+  });
+
   it("resolves cross-entity foreign keys within the seed", () => {
     const has = <T extends { id: string }>(arr: T[], id: string) => arr.some((r) => r.id === id);
     const nullOr = <T extends { id: string }>(arr: T[], id: string | null) => id === null || has(arr, id);
