@@ -4,7 +4,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
 import { useRepositories } from "@/lib/data/provider";
-import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices, useBillInvoice, usePayInvoice } from "@/lib/query/hooks";
+import { usePart, useUpdatePart, useCertifications, useReleaseCertification, useQuotes, useWorkOrders, useWinQuote, useShipOrder, useInvoices, useBillInvoice, usePayInvoice, useTrackInStep, useTrackOutStep, useOperators, useCustomers } from "@/lib/query/hooks";
 
 // ---------------------------------------------------------------------------
 // Probe A: useUpdatePart
@@ -325,5 +325,96 @@ describe("invoice mutations", () => {
     await user.click(screen.getByRole("button", { name: "Pay" }));
     await waitFor(() => expect(screen.getByTestId("pay-status").textContent).toBe("paid"));
     await waitFor(() => expect(screen.getByTestId("paid-date").textContent).toBe("2026-07-01T00:00:00.000Z"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Probe G: useTrackInStep / useTrackOutStep drive status + progress
+// wo-48098 (Vulcan) is ready_to_ship in seed; use wo-48211 (Apex, in_process) which
+// starts with step 1 done, step 2 in_process (Wash & rack), rest pending.
+// ---------------------------------------------------------------------------
+function TrackProbe() {
+  const orders = useWorkOrders();
+  const ops = useOperators();
+  const trackOut = useTrackOutStep();
+  const order = orders.data?.find((o) => o.id === "wo-48211");
+  const operator = ops.data?.find((o) => o.id === "op-dana");
+  return (
+    <div>
+      <div data-testid="progress">{order?.progressPct ?? "loading"}</div>
+      <div data-testid="step2">{order?.steps.find((s) => s.n === 2)?.state ?? "loading"}</div>
+      <button
+        disabled={!order || !operator}
+        onClick={() => order && operator && trackOut.mutate({ order, stepN: 2, operator, cert: null })}
+      >TrackOut2</button>
+    </div>
+  );
+}
+
+// Probe H: inspect pass auto-releases the pending cert.
+// wo-48211 has cert-9921 (pending). Track out its Final inspect (step 5) with pass.
+function InspectPassProbe() {
+  const orders = useWorkOrders();
+  const certs = useCertifications();
+  const ops = useOperators();
+  const trackOut = useTrackOutStep();
+  const order = orders.data?.find((o) => o.id === "wo-48211");
+  const operator = ops.data?.find((o) => o.id === "op-dana");
+  const cert = certs.data?.find((c) => c.workOrderId === "wo-48211") ?? null;
+  return (
+    <div>
+      <div data-testid="cert-status">{cert?.status ?? "loading"}</div>
+      <button
+        disabled={!order || !operator}
+        onClick={() => order && operator && trackOut.mutate({ order, stepN: 5, operator, cert, inspectResult: "pass" })}
+      >InspectPass</button>
+    </div>
+  );
+}
+
+// Probe I: shipping a credit-hold customer's order is blocked.
+function ShipHeldProbe() {
+  const orders = useWorkOrders();
+  const customers = useCustomers();
+  const ship = useShipOrder();
+  const order = orders.data?.find((o) => o.id === "wo-48098"); // Vulcan, ready_to_ship
+  const customer = customers.data?.find((c) => c.id === "cust-vulcan") ?? null;
+  return (
+    <div>
+      <div data-testid="ship-error">{ship.isError ? "error" : "ok"}</div>
+      <div data-testid="status">{order?.status ?? "loading"}</div>
+      <button
+        disabled={!order}
+        onClick={() => order && ship.mutate({ order, cert: null, customer, actor: "Test", at: "2026-07-01T00:00:00.000Z" })}
+      >ShipHeld</button>
+    </div>
+  );
+}
+
+describe("tracking mutations", () => {
+  it("useTrackOutStep: completes a step and advances progress", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<TrackProbe />);
+    await waitFor(() => expect(screen.getByTestId("step2").textContent).toBe("in_process"));
+    await user.click(screen.getByRole("button", { name: "TrackOut2" }));
+    await waitFor(() => expect(screen.getByTestId("step2").textContent).toBe("done"));
+    await waitFor(() => expect(Number(screen.getByTestId("progress").textContent)).toBe(33)); // 2 of 6 trackable
+  });
+
+  it("useTrackOutStep: inspect pass auto-releases the pending cert", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<InspectPassProbe />);
+    await waitFor(() => expect(screen.getByTestId("cert-status").textContent).toBe("pending"));
+    await user.click(screen.getByRole("button", { name: "InspectPass" }));
+    await waitFor(() => expect(screen.getByTestId("cert-status").textContent).toBe("released"));
+  });
+
+  it("useShipOrder: a credit-hold customer's order cannot ship", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ShipHeldProbe />);
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("ready_to_ship"));
+    await user.click(screen.getByRole("button", { name: "ShipHeld" }));
+    await waitFor(() => expect(screen.getByTestId("ship-error").textContent).toBe("error"));
+    expect(screen.getByTestId("status").textContent).toBe("ready_to_ship"); // not shipped
   });
 });
