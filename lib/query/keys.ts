@@ -5,6 +5,7 @@ export const queryKeys = {
   part: (id: string) => ["parts", id] as const,
   processMasters: ["processMasters"] as const,
   specifications: ["specifications"] as const,
+  standards: ["standards"] as const,
   quotes: ["quotes"] as const,
   quote: (id: string) => ["quotes", id] as const,
   workOrders: ["workOrders"] as const,
