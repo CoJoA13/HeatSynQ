@@ -1,6 +1,6 @@
 import type {
   Customer, Contact, Part, ProcessMaster, Specification, PriceKey, PricingRule,
-  Quote, WorkOrder, Certification, Invoice, Operator,
+  Quote, WorkOrder, Certification, Invoice, Operator, ScheduleBlock,
 } from "@/lib/domain";
 
 /** Base fields are server-assigned; `number` (if the entity has one) is optional —
@@ -38,6 +38,7 @@ export interface Repositories {
   workOrders: WriteRepo<WorkOrder>;
   certifications: WriteRepo<Certification> & { byWorkOrder(workOrderId: string): Promise<Certification | null> };
   invoices: WriteRepo<Invoice>;
+  scheduleBlocks: WriteRepo<ScheduleBlock>;
   operators: ReadRepo<Operator>;
   numbers: NumberService;
 }

@@ -12,6 +12,7 @@ import type {
   Invoice,
   Operator,
   OrderStep,
+  ScheduleBlock,
 } from "@/lib/domain";
 import { areaForOp, orderProgressPct } from "@/lib/logic/tracking";
 
@@ -844,6 +845,8 @@ export function buildSeed() {
     { ...meta, id: "inv-midwest-48177", number: null, customerId: "cust-midwest", workOrderId: "wo-48177", amountCents: 291000, status: "to_bill", shippedDate: "2026-06-25T00:00:00.000Z", invoicedDate: null, paidDate: null },
   ];
 
+  const scheduleBlocks: ScheduleBlock[] = [];
+
   const counters: Record<string, number> = { "Q-": 2841, "WO-": 48211, "INV-": 30412, "C-": 9921 };
 
   return {
@@ -859,6 +862,7 @@ export function buildSeed() {
     workOrders,
     certifications,
     invoices,
+    scheduleBlocks,
     counters,
   };
 }
