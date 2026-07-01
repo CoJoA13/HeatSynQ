@@ -48,4 +48,15 @@ describe("TrackingBoard", () => {
     await userEvent.click(within(card).getByRole("button", { name: "Track Out" }));
     expect(onTrackOut).toHaveBeenCalledWith(o, 1, undefined);
   });
+
+  it("fires onTrackOut with the inspect result from a Pass action", async () => {
+    const onTrackOut = vi.fn();
+    const o = order("wo-insp", [
+      ostep({ n: 1, op: "Final inspect", track: "inspect", state: "in_process", areaId: "final_inspect" }),
+    ]);
+    render(<TrackingBoard orders={[o]} customers={[cust]} asOf={AS_OF} busy={false} onTrackIn={() => {}} onTrackOut={onTrackOut} />);
+    const card = screen.getByTestId("board-card-WO-INSP");
+    await userEvent.click(within(card).getByRole("button", { name: "Pass" }));
+    expect(onTrackOut).toHaveBeenCalledWith(o, 1, "pass");
+  });
 });

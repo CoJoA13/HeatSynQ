@@ -13,7 +13,7 @@ export default function TrackingPage() {
   const trackIn = useTrackInStep();
   const trackOut = useTrackOutStep();
 
-  if (orders.isLoading || customers.isLoading || !operator) return <SkeletonRows />;
+  if (orders.isLoading || customers.isLoading || certs.isLoading || !operator) return <SkeletonRows />;
   if (orders.isError) return <ErrorPanel message="Failed to load orders." onRetry={() => orders.refetch()} />;
   if (customers.isError) return <ErrorPanel message="Failed to load customers." onRetry={() => customers.refetch()} />;
 
