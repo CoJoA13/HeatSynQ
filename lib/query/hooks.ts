@@ -207,7 +207,8 @@ export function useTrackInStep() {
       const step = vars.order.steps.find((s) => s.n === vars.stepN);
       const steps = trackInStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at);
       const status = rollUpOrderStatus(steps, vars.order.status);
-      const activity = [...vars.order.activity, activityEntry(vars.operator.name, `Tracked in ${step?.op ?? "step"} · ${step?.equip ?? ""}`.trim(), at)];
+      const message = step?.equip ? `Tracked in ${step.op} · ${step.equip}` : `Tracked in ${step?.op ?? "step"}`;
+      const activity = [...vars.order.activity, activityEntry(vars.operator.name, message, at)];
       return r.workOrders.update(vars.order.id, { steps, status, progressPct: orderProgressPct(steps), activity }, vars.order.version);
     },
     onSuccess: (u) => {

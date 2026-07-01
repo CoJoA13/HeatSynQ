@@ -336,6 +336,7 @@ describe("invoice mutations", () => {
 function TrackProbe() {
   const orders = useWorkOrders();
   const ops = useOperators();
+  const trackIn = useTrackInStep();
   const trackOut = useTrackOutStep();
   const order = orders.data?.find((o) => o.id === "wo-48211");
   const operator = ops.data?.find((o) => o.id === "op-dana");
@@ -343,6 +344,11 @@ function TrackProbe() {
     <div>
       <div data-testid="progress">{order?.progressPct ?? "loading"}</div>
       <div data-testid="step2">{order?.steps.find((s) => s.n === 2)?.state ?? "loading"}</div>
+      <div data-testid="step3">{order?.steps.find((s) => s.n === 3)?.state ?? "loading"}</div>
+      <button
+        disabled={!order || !operator}
+        onClick={() => order && operator && trackIn.mutate({ order, stepN: 3, operator })}
+      >TrackIn3</button>
       <button
         disabled={!order || !operator}
         onClick={() => order && operator && trackOut.mutate({ order, stepN: 2, operator, cert: null })}
@@ -392,6 +398,14 @@ function ShipHeldProbe() {
 }
 
 describe("tracking mutations", () => {
+  it("useTrackInStep: moves a pending step to in_process", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<TrackProbe />);
+    await waitFor(() => expect(screen.getByTestId("step3").textContent).toBe("pending"));
+    await user.click(screen.getByRole("button", { name: "TrackIn3" }));
+    await waitFor(() => expect(screen.getByTestId("step3").textContent).toBe("in_process"));
+  });
+
   it("useTrackOutStep: completes a step and advances progress", async () => {
     const user = userEvent.setup();
     renderWithProviders(<TrackProbe />);
