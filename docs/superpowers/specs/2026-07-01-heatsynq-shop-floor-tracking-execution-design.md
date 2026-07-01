@@ -84,15 +84,15 @@ Unchanged from the foundation spec: Next.js (App Router) + TypeScript; Tailwind 
 ## 5. Data model changes (`lib/domain`)
 
 ### 5.1 `OrderStep` (replaces `ProcessStep` on `WorkOrder.steps`)
-`ProcessStep` today: `n, op, equip, instr, params[], track`. Two additions and one new schema:
+`ProcessStep` today: `n, op, equip, instr, params[], track`. **`ProcessStep` is unchanged** — `areaId` lives on `OrderStep` only and is derived via `areaForOp(op)` at order creation, so `ProcessMaster` and the process-master screens stay untouched.
 
-- **`ProcessStep` gains `areaId: AreaId`** — so a recipe's carried traveler already knows each step's area. Seed assigns it (default via `areaForOp`, override per recipe).
-- **`OrderStep` = `ProcessStep` + live state:**
+- **`OrderStep` = `ProcessStep` + `areaId` + live state:**
+  - `areaId: AreaId` — which kanban lane (derived via `areaForOp`).
   - `state: OrderStepState` — `"pending" | "in_process" | "done"`.
   - `operatorId: string | null`, `operatorInitials: string | null` — who last acted.
   - `trackedInAt: string | null`, `trackedOutAt: string | null` — ISO stamps.
   - `inspectResult: "pass" | "fail" | null` — only set on `track:"inspect"` steps.
-- `WorkOrder.steps` type changes `ProcessStep[]` → `OrderStep[]`. `createOrderFromQuote` initializes each to `{ state:"pending", operatorId:null, operatorInitials:null, trackedInAt:null, trackedOutAt:null, inspectResult:null }` with `areaId` carried from the process master step.
+- `WorkOrder.steps` type changes `ProcessStep[]` → `OrderStep[]`. `createOrderFromQuote` initializes each to `{ areaId: areaForOp(op), state:"pending", operatorId:null, operatorInitials:null, trackedInAt:null, trackedOutAt:null, inspectResult:null }`.
 
 ### 5.2 `Area` (static config, not a repo)
 In `lib/domain/enums.ts` (alongside the status metas):
