@@ -227,9 +227,9 @@ export function buildSeed() {
       hardnessScale: "Rockwell C",
       steps: [
         { n: 1, op: "Receive & verify", equip: "Receiving", instr: "Count pieces, verify PO and part number, visual inspection for damage.", params: [], track: "track_in" },
-        { n: 2, op: "Wash & rack", equip: "Wash station", instr: "Degrease and load onto fixtures — 2 racks of 240.", params: [], track: "track_in_out" },
+        { n: 2, op: "Wash & rack", equip: "Wash Station", instr: "Degrease and load onto fixtures — 2 racks of 240.", params: [], track: "track_in_out" },
         { n: 3, op: "Carburize", equip: "Batch IQ #3", instr: "", params: ["1700°F", "8.0 hr", "0.90% C", "Oil quench"], track: "track_in_out" },
-        { n: 4, op: "Temper", equip: "Temper Oven #4", instr: "", params: ["350°F", "2.0 hr"], track: "track_in_out" },
+        { n: 4, op: "Temper", equip: "Temper Oven #2", instr: "", params: ["350°F", "2.0 hr"], track: "track_in_out" },
         { n: 5, op: "Final inspect", equip: "Inspection", instr: "Hardness + case depth check.", params: ["Rc 58-62", "Case .020-.030 in"], track: "inspect" },
         { n: 6, op: "Certify & ship", equip: "Shipping", instr: "", params: [], track: "track_out" },
       ],
@@ -247,8 +247,8 @@ export function buildSeed() {
       hardnessScale: "Rockwell C",
       steps: [
         { n: 1, op: "Receive & verify", equip: "Receiving", instr: "Count pieces, verify PO.", params: [], track: "track_in" },
-        { n: 2, op: "Vacuum harden", equip: "Vacuum #1", instr: "", params: ["1850°F", "Gas quench"], track: "track_in_out" },
-        { n: 3, op: "Temper", equip: "Temper Oven #4", instr: "", params: ["400°F", "2.0 hr"], track: "track_in_out" },
+        { n: 2, op: "Vacuum harden", equip: "Vacuum Furnace #1", instr: "", params: ["1850°F", "Gas quench"], track: "track_in_out" },
+        { n: 3, op: "Temper", equip: "Temper Oven #2", instr: "", params: ["400°F", "2.0 hr"], track: "track_in_out" },
         { n: 4, op: "Certify & ship", equip: "Shipping", instr: "", params: [], track: "track_out" },
       ],
     },
@@ -282,7 +282,7 @@ export function buildSeed() {
       hardnessScale: "Rockwell C",
       steps: [
         { n: 1, op: "Receive & verify", equip: "Receiving", instr: "Count pieces, verify PO.", params: [], track: "track_in" },
-        { n: 2, op: "Carbonitride", equip: "Continuous Belt #2", instr: "", params: ["1550°F", "Oil quench"], track: "track_in_out" },
+        { n: 2, op: "Carbonitride", equip: "Continuous Belt #1", instr: "", params: ["1550°F", "Oil quench"], track: "track_in_out" },
         { n: 3, op: "Certify & ship", equip: "Shipping", instr: "", params: [], track: "track_out" },
       ],
     },
@@ -300,7 +300,7 @@ export function buildSeed() {
       steps: [
         { n: 1, op: "Receive & verify", equip: "Receiving", instr: "Count pieces, verify PO.", params: [], track: "track_in" },
         { n: 2, op: "Neutral harden", equip: "Batch IQ #3", instr: "", params: ["1550°F", "Oil quench"], track: "track_in_out" },
-        { n: 3, op: "Temper", equip: "Temper Oven #4", instr: "", params: ["400°F", "2.0 hr"], track: "track_in_out" },
+        { n: 3, op: "Temper", equip: "Temper Oven #2", instr: "", params: ["400°F", "2.0 hr"], track: "track_in_out" },
         { n: 4, op: "Certify & ship", equip: "Shipping", instr: "", params: [], track: "track_out" },
       ],
     },
@@ -723,7 +723,7 @@ export function buildSeed() {
       processMasterId: "pm-nit09",
       status: "in_process",
       orderedDate: "2026-06-19T00:00:00.000Z",
-      due: "2026-07-03T00:00:00.000Z",
+      due: "2026-06-27T00:00:00.000Z",
       certifyRequired: true,
       certSpecId: "spec-mils6090",
       orderValueCents: 288000,
@@ -775,7 +775,7 @@ export function buildSeed() {
       steps: liveSteps("pm-nh15", ["done","in_process","pending","pending"]),
       activity: [
         { at: "2026-06-10T00:00:00.000Z", actor: "System", message: "Order received" },
-        { at: "2026-06-27T00:00:00.000Z", actor: "System", message: "On hold — Temper Oven #4 alarm (+18°F)" },
+        { at: "2026-06-27T00:00:00.000Z", actor: "System", message: "On hold — Temper Oven #2 alarm (+18°F)" },
       ],
     },
     {

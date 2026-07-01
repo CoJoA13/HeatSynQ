@@ -15,8 +15,8 @@ const byLabel = (tiles: { label: string; value: string }[]) =>
 describe("dashboard order metrics", () => {
   it("counts open and late orders and on-schedule %", () => {
     expect(openOrders(s.workOrders).length).toBe(7);
-    expect(lateOrders(s.workOrders, asOf).length).toBe(2);
-    expect(onSchedulePct(s.workOrders, asOf)).toBe(71.4);
+    expect(lateOrders(s.workOrders, asOf).length).toBe(3);
+    expect(onSchedulePct(s.workOrders, asOf)).toBe(57.1);
   });
 
   it("isLate end-of-day boundary: order due same day as asOf is NOT late", () => {
@@ -63,8 +63,8 @@ describe("dashboardKpis by role", () => {
   it("manager tiles", () => {
     const t = byLabel(dashboardKpis("manager", data, asOf));
     expect(t["Open Orders"]).toBe("7");
-    expect(t["Late Orders"]).toBe("2");
-    expect(t["On-Time %"]).toBe("71.4");
+    expect(t["Late Orders"]).toBe("3");
+    expect(t["On-Time %"]).toBe("57.1");
     expect(t["Certs Awaiting Release"]).toBe("2");
     expect(t["Open A/R"]).toBe("$6,740");
     expect(t["Invoiced MTD"]).toBe("$19,500");
