@@ -116,7 +116,7 @@ New/changed files (each new logic file with sibling `.test.ts`):
 - `components/setup/operators-security.tsx` — Operators `ListCard` (OPERATOR = name + `MonoId` id /
   TITLE / ROLE via `roleMeta` / QUOTE LIMIT via `formatMoney`) with per-row **Edit limit** button when
   `useCan("edit_setup")`; edit dialog (Plan-8 equipment-detail dialog convention): dollar input,
-  non-negative validation, Save disabled while invalid/unchanged/pending, mutation error surfaced.
+  non-negative validation, Save disabled while invalid/unchanged/pending.
   Permissions section: matrix table (PERMISSION / Manager / Sales / Office; ✓/— cells, mono uppercase
   headers) + framing note *"Signatures aren't modeled yet."* Testids: `operator-row-<id>`,
   `operator-limit-<id>`, `edit-limit-<id>`, `permission-row-<perm>`.
@@ -136,8 +136,9 @@ New/changed files (each new logic file with sibling `.test.ts`):
 - **Deleted:** `components/patterns/placeholder-page.tsx`, its test, its barrel export.
 - **Hygiene:** remove the stray empty untracked dir `app/\(app\)/` (escaped-parens shell accident, Jul 1).
 
-Error handling follows house pattern: per-query `isLoading → SkeletonRows`, `isError → ErrorPanel`;
-version conflict on the limit write surfaces the mutation error (optimistic-concurrency convention).
+Error handling follows house pattern: per-query `isLoading → SkeletonRows`, `isError → ErrorPanel`.
+The limit write is version-checked; version-conflict behavior is pinned at the hook level (no inline
+mutation-error UI exists anywhere in the app — busy-state disabling is the house convention).
 
 ## 6. Testing
 
@@ -155,8 +156,9 @@ tsc, eslint --max-warnings 0, build, e2e 8 specs / 10 tests → grows to **9 spe
   "Version conflict".
 - Component tests (fixture props, no providers): setup-grid (6 cards, 5 links, inert Plant Setup caption),
   operators-security (rows, matrix ✓/— cells, Edit hidden when `canEdit=false`, dialog validation),
-  pricing-keys (AERO-1 4 rules: Carburize per lb $10.30 min $250 / Temper per lot $1,440 / Certification
-  flat $800 / Neutral harden per lb $6.80 min $180; "Used by 1 customer"), cert-defaults (8 rows;
+  pricing-keys (AERO-1 4 rules rendered with house whole-dollar `formatMoney`, same as the customer
+  Pricing tab: Carburize per lb $10 min $250 / Temper per lot $1,440 / Certification flat $800 /
+  Neutral harden per lb $7 min $180; "Used by 1 customer"), cert-defaults (8 rows;
   apex AMS 2759/3 · 2; titan AMS 2759/2 · 1; summit SB-4 · 1; vulcan/ironclad — · 0; delta/midwest/crane
   — · 1 — raw seed truth, verify-at-implementation).
 - Page-guard tests per new route (`vi.mock` hooks + next/navigation convention).
@@ -164,12 +166,14 @@ tsc, eslint --max-warnings 0, build, e2e 8 specs / 10 tests → grows to **9 spe
 - **E2E `tests/e2e/setup.spec.ts`** (happy path): `/setup` → 6 `setup-card-*` visible, exactly 5 links →
   click Operators & Security → URL `/setup/operators` → 3 operator rows + permission matrix visible →
   Edit limit on op-vance: $25,000 → set 30000 → row shows $30,000 (auto-login op-dana = manager, so
-  `edit_setup` passes). Second test: `/setup` → Pricing card → AERO-1 rules table visible ($10.30 pin).
+  `edit_setup` passes). Second test: `/setup` → Pricing card → AERO-1 rules table visible ($1,440 pin —
+  exact under whole-dollar `formatMoney`).
 
 ## 7. Verification notes
 
-- The Plan-8 dialog convention, exact `formatMoney` output for $6.80 rates ("$6.80"), and the
-  delta/midwest/crane copies=1 rendering are **verify-at-implementation** clauses — the implementer
+- `formatMoney` is whole-dollar (`maximumFractionDigits: 0`) — 1030¢ renders "$10", 680¢ renders "$7";
+  the pricing view matches the customer Pricing tab exactly (verified). The Plan-8 dialog convention and
+  the delta/midwest/crane copies=1 rendering are **verify-at-implementation** clauses — the implementer
   confirms against code, and task reviewers recompute pins from `buildSeed()`.
 - Grep invariants that must still hold after the plan: `new Date()` in app/components/lib (tests
   excluded) hits only `components/shell/topbar.tsx`; `PlaceholderPage` hits nothing; `edit_setup`
