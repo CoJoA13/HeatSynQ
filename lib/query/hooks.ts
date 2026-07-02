@@ -359,3 +359,15 @@ export function useCompleteMaintenance() {
     },
   });
 }
+
+export function useSetOperatorQuoteLimit() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { operator: Operator; quoteAuthLimitCents: number }) =>
+      r.operators.update(vars.operator.id, { quoteAuthLimitCents: vars.quoteAuthLimitCents }, vars.operator.version),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.operators });
+    },
+  });
+}

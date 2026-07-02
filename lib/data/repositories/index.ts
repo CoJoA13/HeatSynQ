@@ -42,6 +42,6 @@ export interface Repositories {
   scheduleBlocks: WriteRepo<ScheduleBlock>;
   equipment: WriteRepo<Equipment>;
   maintenance: WriteRepo<Maintenance>;
-  operators: ReadRepo<Operator>;
+  operators: WriteRepo<Operator>;
   numbers: NumberService;
 }

@@ -1,5 +1,12 @@
-import { PlaceholderPage } from "@/components/patterns";
+"use client";
+import { PageHeader } from "@/components/patterns";
+import { SetupGrid } from "@/components/setup/setup-grid";
 
 export default function SetupPage() {
-  return <PlaceholderPage title="Setup" note="Configuration & administration arrive in a later phase." />;
+  return (
+    <div>
+      <PageHeader title="Setup" subtitle="Configuration once buried under Maintain ▸ … ▸ …, now flat" />
+      <SetupGrid />
+    </div>
+  );
 }
