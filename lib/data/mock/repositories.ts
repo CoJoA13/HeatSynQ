@@ -62,6 +62,8 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
     invoices: new Collection(seed.invoices),
     operators: new Collection(seed.operators),
     scheduleBlocks: new Collection(seed.scheduleBlocks),
+    equipment: new Collection(seed.equipment),
+    maintenance: new Collection(seed.maintenance),
   };
 
   return {
@@ -78,6 +80,8 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
     certifications: { ...write(cols.certifications, "certifications"), async byWorkOrder(woId) { await delay(latency, fail); return cols.certifications.all().find((c) => c.workOrderId === woId) ?? null; } },
     invoices: write(cols.invoices, "invoices"),
     scheduleBlocks: write(cols.scheduleBlocks),
+    equipment: write(cols.equipment),
+    maintenance: write(cols.maintenance),
     operators: read(cols.operators),
     numbers: {
       async next(entity) { await delay(latency, fail); return counter.next(numberPrefix[entity]); },
