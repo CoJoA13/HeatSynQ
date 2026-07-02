@@ -113,3 +113,12 @@ describe("certsBlockingShipments", () => {
     expect(tile0.sub).toBe("blocking 0 shipments");
   });
 });
+
+describe("sameMonth (exported for report MTD windows)", () => {
+  it("matches same UTC month+year only", async () => {
+    const { sameMonth } = await import("./dashboard");
+    expect(sameMonth("2026-06-01T00:00:00.000Z", "2026-06-30T12:00:00.000Z")).toBe(true);
+    expect(sameMonth("2026-05-28T00:00:00.000Z", "2026-06-30T12:00:00.000Z")).toBe(false);
+    expect(sameMonth("2025-06-15T00:00:00.000Z", "2026-06-30T12:00:00.000Z")).toBe(false);
+  });
+});
