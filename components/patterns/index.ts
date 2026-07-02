@@ -11,4 +11,3 @@ export * from "./summary-rail";
 export * from "./form-field";
 export * from "./error-summary";
 export * from "./confirm-dialog";
-export * from "./placeholder-page";
