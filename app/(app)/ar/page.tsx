@@ -4,6 +4,7 @@ import { useInvoices, useCustomers } from "@/lib/query/hooks";
 import { useCan } from "@/lib/auth/provider";
 import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { ARView } from "@/components/ar/ar-view";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function ArPage() {
   const invoices = useInvoices();
@@ -16,7 +17,7 @@ export default function ArPage() {
 
   return (
     <ARView
-      invoices={invoices.data ?? []} customers={customers.data ?? []} asOf={new Date().toISOString()}
+      invoices={invoices.data ?? []} customers={customers.data ?? []} asOf={DEMO_NOW}
       canClose={canClose} closedNote={closedNote}
       onClosePeriod={() => setClosedNote("Period closed — invoices are locked from edits (advisory).")}
     />

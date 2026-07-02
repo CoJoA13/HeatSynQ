@@ -8,6 +8,7 @@ import {
 import { SkeletonRows, ErrorPanel, EmptyState } from "@/components/patterns";
 import { OrderDetail } from "@/components/orders/order-detail";
 import { rollUpOrderStatus } from "@/lib/logic/tracking";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -37,7 +38,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     return <ErrorPanel message="Failed to load customer." onRetry={() => { order.refetch(); customer.refetch(); }} />;
 
   const cert = (certs.data ?? []).find((c) => c.workOrderId === o.id) ?? null;
-  const now = () => new Date().toISOString();
+  const now = () => DEMO_NOW;
   const actor = operator.name;
   const busy = release.isPending || transition.isPending || ship.isPending || trackIn.isPending || trackOut.isPending;
 

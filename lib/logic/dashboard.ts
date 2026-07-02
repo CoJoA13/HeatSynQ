@@ -65,7 +65,7 @@ export function toBillCount(invoices: Invoice[]): number {
 export function toBillCents(invoices: Invoice[]): number {
   return invoices.filter((i) => i.status === "to_bill").reduce((s, i) => s + i.amountCents, 0);
 }
-function sameMonth(iso: string, asOf: string): boolean {
+export function sameMonth(iso: string, asOf: string): boolean {
   const a = new Date(iso), b = new Date(asOf);
   return a.getUTCFullYear() === b.getUTCFullYear() && a.getUTCMonth() === b.getUTCMonth();
 }
