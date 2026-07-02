@@ -82,7 +82,7 @@ export function createMockRepositories(opts: Opts = {}): Repositories {
     scheduleBlocks: write(cols.scheduleBlocks),
     equipment: write(cols.equipment),
     maintenance: write(cols.maintenance),
-    operators: read(cols.operators),
+    operators: write(cols.operators),
     numbers: {
       async next(entity) { await delay(latency, fail); return counter.next(numberPrefix[entity]); },
     },
