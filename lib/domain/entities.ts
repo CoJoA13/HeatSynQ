@@ -220,7 +220,7 @@ export type Invoice = z.infer<typeof invoiceSchema>;
 
 export const scheduleBlockSchema = baseEntitySchema.extend({
   workOrderId: z.string(),
-  equipmentId: z.string(), // one of EQUIPMENT[].id (foreign keys are z.string(), like customerId)
+  equipmentId: z.string(), // FK equipment (foreign keys are z.string(), like customerId)
   day: z.string(),         // ISO midnight-UTC date
   state: z.enum(SCHEDULE_BLOCK_STATES),
 });

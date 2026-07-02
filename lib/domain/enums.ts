@@ -92,21 +92,6 @@ export const equipmentKindMeta: Record<EquipmentKind, { label: string }> = {
   inspect:    { label: "Inspection / Lab" },
 };
 
-export const EQUIPMENT = [
-  { id: "eq-iq-1",      name: "Batch IQ #1",        kind: "batch_iq" },
-  { id: "eq-iq-2",      name: "Batch IQ #2",        kind: "batch_iq" },
-  { id: "eq-iq-3",      name: "Batch IQ #3",        kind: "batch_iq" },
-  { id: "eq-temper-1",  name: "Temper Oven #1",     kind: "temper" },
-  { id: "eq-temper-2",  name: "Temper Oven #2",     kind: "temper" },
-  { id: "eq-vac-1",     name: "Vacuum Furnace #1",  kind: "vacuum" },
-  { id: "eq-pit-1",     name: "Pit Furnace #1",     kind: "pit" },
-  { id: "eq-belt-1",    name: "Continuous Belt #1", kind: "continuous" },
-  { id: "eq-wash-1",    name: "Wash Station",       kind: "wash" },
-  { id: "eq-inspect-1", name: "Inspection",         kind: "inspect" },
-] as const satisfies readonly { id: string; name: string; kind: EquipmentKind }[];
-export type EquipmentDef = (typeof EQUIPMENT)[number];
-export type EquipmentId = EquipmentDef["id"];
-
 export const EQUIPMENT_AVAILABILITY = ["available", "down", "maintenance"] as const;
 export type EquipmentAvailability = (typeof EQUIPMENT_AVAILABILITY)[number];
 export const equipmentAvailabilityMeta: Record<EquipmentAvailability, { label: string; tone: StatusTone }> = {

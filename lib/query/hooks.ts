@@ -1,6 +1,6 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer, ScheduleBlock } from "@/lib/domain";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer, ScheduleBlock, Equipment } from "@/lib/domain";
 import { orderStatusMeta } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
@@ -289,8 +289,8 @@ export function useAssignSchedule() {
   const r = useRepositories();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: { order: WorkOrder; equipmentId: string; day: string; operator: Operator; at: string }) => {
-      const patch = assignPatch(vars.order, vars.equipmentId, vars.day, vars.operator.name, vars.at);
+    mutationFn: async (vars: { order: WorkOrder; equipment: Pick<Equipment, "id" | "name">; day: string; operator: Operator; at: string }) => {
+      const patch = assignPatch(vars.order, vars.equipment, vars.day, vars.operator.name, vars.at);
       // Version-check the WO update FIRST — a stale order throws before any orphan block is created.
       const updated = await r.workOrders.update(vars.order.id, patch.workOrder, vars.order.version);
       await r.scheduleBlocks.create(patch.block);
