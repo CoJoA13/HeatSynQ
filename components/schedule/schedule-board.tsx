@@ -1,21 +1,22 @@
 "use client";
 import { Fragment, useState } from "react";
-import { KpiTile, ConfirmDialog } from "@/components/patterns";
-import { EQUIPMENT, equipmentKindMeta } from "@/lib/domain/enums";
+import { KpiTile, ConfirmDialog, StatusPill } from "@/components/patterns";
+import { equipmentKindMeta, equipmentAvailabilityMeta } from "@/lib/domain/enums";
 import { weekDays, scheduleCells, unscheduledOrders, scheduleSummary, type ScheduleCell } from "@/lib/logic/schedule";
 import { ScheduleCellCard } from "./schedule-cell";
 import { UnscheduledQueue } from "./unscheduled-queue";
 import { AssignDialog } from "./assign-dialog";
-import type { WorkOrder, Customer, ScheduleBlock } from "@/lib/domain";
+import type { WorkOrder, Customer, ScheduleBlock, Equipment } from "@/lib/domain";
 
-export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, busy, onAssign, onMove, onUnassign }: {
+export function ScheduleBoard({ orders, customers, blocks, equipment, asOf, canSchedule, busy, onAssign, onMove, onUnassign }: {
   orders: WorkOrder[];
   customers: Customer[];
   blocks: ScheduleBlock[];
+  equipment: Equipment[];
   asOf: string;
   canSchedule: boolean;
   busy: boolean;
-  onAssign: (order: WorkOrder, equipmentId: string, day: string) => void;
+  onAssign: (order: WorkOrder, equipment: Equipment, day: string) => void;
   onMove: (cell: ScheduleCell, equipmentId: string, day: string) => void;
   onUnassign: (cell: ScheduleCell) => void;
 }) {
@@ -53,11 +54,18 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
             {days.map((d) => (
               <div key={d.iso} className="text-text-faint px-2 pb-2 font-mono text-[10.5px] uppercase tracking-wider">{d.label}</div>
             ))}
-            {EQUIPMENT.map((eq) => (
+            {equipment.map((eq) => (
               <Fragment key={eq.id}>
                 <div className="border-border border-t px-2 py-2">
                   <div className="text-[12px] font-medium">{eq.name}</div>
                   <div className="text-text-muted text-[10.5px]">{equipmentKindMeta[eq.kind].label}</div>
+                  {eq.availability !== "available" && (
+                    <div className="mt-1">
+                      <StatusPill tone={equipmentAvailabilityMeta[eq.availability].tone}>
+                        {equipmentAvailabilityMeta[eq.availability].label}
+                      </StatusPill>
+                    </div>
+                  )}
                 </div>
                 {days.map((d) => {
                   const slotCells = cellsAt.get(`${eq.id}|${d.iso}`) ?? [];
@@ -104,8 +112,12 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
         mode="assign"
         workOrderNumber={assignFor?.number ?? ""}
         days={days}
+        equipment={equipment}
         busy={busy}
-        onConfirm={(equipmentId, day) => { if (assignFor) { onAssign(assignFor, equipmentId, day); setAssignFor(null); } }}
+        onConfirm={(equipmentId, day) => {
+          const unit = equipment.find((e) => e.id === equipmentId);
+          if (assignFor && unit) { onAssign(assignFor, unit, day); setAssignFor(null); }
+        }}
       />
       <AssignDialog
         open={moveFor !== null}
@@ -113,6 +125,7 @@ export function ScheduleBoard({ orders, customers, blocks, asOf, canSchedule, bu
         mode="move"
         workOrderNumber={moveFor?.workOrderNumber ?? ""}
         days={days}
+        equipment={equipment}
         initialEquipmentId={moveFor?.equipmentId}
         initialDay={moveFor?.day}
         busy={busy}

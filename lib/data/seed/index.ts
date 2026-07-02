@@ -14,6 +14,8 @@ import type {
   Operator,
   OrderStep,
   ScheduleBlock,
+  Equipment,
+  Maintenance,
 } from "@/lib/domain";
 import { areaForOp, orderProgressPct } from "@/lib/logic/tracking";
 
@@ -902,6 +904,49 @@ export function buildSeed() {
     { ...meta, id: "sb-1", workOrderId: "wo-48230", equipmentId: "eq-iq-2", day: "2026-07-01T00:00:00.000Z", state: "planned" },
   ];
 
+  const equipment: Equipment[] = [
+    { ...meta, id: "eq-iq-1",      name: "Batch IQ #1",        kind: "batch_iq",   availability: "available",   note: null },
+    { ...meta, id: "eq-iq-2",      name: "Batch IQ #2",        kind: "batch_iq",   availability: "available",   note: null },
+    { ...meta, id: "eq-iq-3",      name: "Batch IQ #3",        kind: "batch_iq",   availability: "available",   note: null },
+    { ...meta, id: "eq-temper-1",  name: "Temper Oven #1",     kind: "temper",     availability: "available",   note: null },
+    { ...meta, id: "eq-temper-2",  name: "Temper Oven #2",     kind: "temper",     availability: "down",        note: "Setpoint deviation +18°F — control board fault" },
+    { ...meta, id: "eq-vac-1",     name: "Vacuum Furnace #1",  kind: "vacuum",     availability: "maintenance", note: "SAT in progress — system accuracy test" },
+    { ...meta, id: "eq-pit-1",     name: "Pit Furnace #1",     kind: "pit",        availability: "available",   note: null },
+    { ...meta, id: "eq-belt-1",    name: "Continuous Belt #1", kind: "continuous", availability: "available",   note: null },
+    { ...meta, id: "eq-wash-1",    name: "Wash Station",       kind: "wash",       availability: "available",   note: null },
+    { ...meta, id: "eq-inspect-1", name: "Inspection",         kind: "inspect",    availability: "available",   note: null },
+  ];
+
+  // AMS-2750 pyrometry schedule: TUS every 90 days, SAT every 30 (demo values — real
+  // intervals vary by furnace class/instrumentation, which the app does not model).
+  const DAY = 86_400_000;
+  function mnt(equipmentId: string, type: Maintenance["type"], intervalDays: number, nextDueAt: string): Maintenance {
+    return {
+      ...meta, id: `mnt-${equipmentId.replace(/^eq-/, "")}-${type}`, equipmentId, type,
+      specificationId: "spec-ams2750", intervalDays,
+      lastDoneAt: new Date(new Date(nextDueAt).getTime() - intervalDays * DAY).toISOString(),
+      nextDueAt,
+    };
+  }
+  const maintenance: Maintenance[] = [
+    mnt("eq-iq-1",     "tus", 90, "2026-08-15T00:00:00.000Z"),
+    mnt("eq-iq-1",     "sat", 30, "2026-07-08T00:00:00.000Z"),
+    mnt("eq-iq-2",     "tus", 90, "2026-07-20T00:00:00.000Z"),
+    mnt("eq-iq-2",     "sat", 30, "2026-07-12T00:00:00.000Z"),
+    mnt("eq-iq-3",     "tus", 90, "2026-06-25T00:00:00.000Z"), // OVERDUE vs DEMO_NOW — loaded furnace, compliance red flag
+    mnt("eq-iq-3",     "sat", 30, "2026-07-05T00:00:00.000Z"),
+    mnt("eq-temper-1", "tus", 90, "2026-09-01T00:00:00.000Z"),
+    mnt("eq-temper-1", "sat", 30, "2026-07-15T00:00:00.000Z"),
+    mnt("eq-temper-2", "tus", 90, "2026-08-05T00:00:00.000Z"),
+    mnt("eq-temper-2", "sat", 30, "2026-07-18T00:00:00.000Z"),
+    mnt("eq-vac-1",    "tus", 90, "2026-08-25T00:00:00.000Z"),
+    mnt("eq-vac-1",    "sat", 30, "2026-06-30T00:00:00.000Z"), // DUE TODAY (boundary) — the unit under maintenance
+    mnt("eq-pit-1",    "tus", 90, "2026-07-30T00:00:00.000Z"),
+    mnt("eq-pit-1",    "sat", 30, "2026-07-22T00:00:00.000Z"),
+    mnt("eq-belt-1",   "tus", 90, "2026-09-10T00:00:00.000Z"),
+    mnt("eq-belt-1",   "sat", 30, "2026-07-25T00:00:00.000Z"),
+  ];
+
   const counters: Record<string, number> = { "Q-": 2841, "WO-": 48231, "INV-": 30412, "C-": 9921 };
 
   return {
@@ -919,6 +964,8 @@ export function buildSeed() {
     certifications,
     invoices,
     scheduleBlocks,
+    equipment,
+    maintenance,
     counters,
   };
 }

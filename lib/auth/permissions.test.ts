@@ -13,3 +13,11 @@ describe("permissions", () => {
     expect(can("office","apply_discount")).toBe(false);
   });
 });
+
+describe("maintain_equipment", () => {
+  it("grants manager and office, denies sales", () => {
+    expect(can("manager", "maintain_equipment")).toBe(true);
+    expect(can("office", "maintain_equipment")).toBe(true);
+    expect(can("sales", "maintain_equipment")).toBe(false);
+  });
+});

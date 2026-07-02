@@ -1,5 +1,6 @@
 import { StatusPill, MonoId } from "@/components/patterns";
-import { equipmentStateMeta, equipmentKindMeta, type EquipmentDef } from "@/lib/domain/enums";
+import { equipmentStateMeta, equipmentKindMeta } from "@/lib/domain/enums";
+import type { Equipment } from "@/lib/domain";
 import type { EquipmentLoad } from "@/lib/logic/shop-floor";
 
 /** Format an ISO instant as a UTC h:mm AM/PM clock (deterministic — no local timezone). */
@@ -12,10 +13,10 @@ function clockUtc(iso: string): string {
 }
 
 export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
-  equipment: EquipmentDef;
+  equipment: Equipment;
   entry: EquipmentLoad;
   customerName: string | null;
-  onSelect?: (workOrderId: string) => void;
+  onSelect?: (equipmentId: string) => void;
 }) {
   const sm = equipmentStateMeta[entry.state];
   const testId = `equipment-tile-${equipment.id}`;
@@ -31,10 +32,14 @@ export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
 
   if (!entry.load) {
     return (
-      <div data-testid={testId} className="rounded-card border border-border bg-surface p-4 opacity-60">
+      <button type="button" data-testid={testId} onClick={() => onSelect?.(equipment.id)}
+        className="w-full rounded-card border border-border bg-surface p-4 text-left opacity-60">
         {header}
-        <div className="text-text-muted mt-3 text-xs">No load · available</div>
-      </div>
+        {(entry.state === "down" || entry.state === "maintenance") && equipment.note && (
+          <div className="text-text-muted mt-3 text-xs">{equipment.note}</div>
+        )}
+        {entry.state === "idle" && <div className="text-text-muted mt-3 text-xs">No load · available</div>}
+      </button>
     );
   }
 
@@ -43,10 +48,13 @@ export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
     <button
       type="button"
       data-testid={testId}
-      onClick={() => onSelect?.(l.workOrderId)}
+      onClick={() => onSelect?.(equipment.id)}
       className="w-full rounded-card border border-border bg-surface p-4 text-left"
     >
       {header}
+      {(entry.state === "down" || entry.state === "maintenance") && equipment.note && (
+        <div className="text-text-muted mt-3 text-xs">{equipment.note}</div>
+      )}
       <div className="mt-3 flex items-center justify-between">
         <MonoId>{l.workOrderNumber}</MonoId>
         {l.late && <StatusPill tone="danger">LATE</StatusPill>}

@@ -1,7 +1,7 @@
 "use client";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer, ScheduleBlock } from "@/lib/domain";
-import { orderStatusMeta } from "@/lib/domain/enums";
+import type { Part, Quote, Operator, WorkOrder, OrderStatus, Certification, Invoice, Customer, ScheduleBlock, Equipment, Maintenance } from "@/lib/domain";
+import { orderStatusMeta, type EquipmentAvailability } from "@/lib/domain/enums";
 import type { CreateInput } from "@/lib/data/repositories";
 import { useRepositories } from "@/lib/data/provider";
 import { queryKeys } from "./keys";
@@ -11,6 +11,7 @@ import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOr
 import { trackInStep, trackOutStep, rollUpOrderStatus, orderProgressPct } from "@/lib/logic/tracking";
 import { toBillInvoiceFromOrder, billInvoice, payInvoice } from "@/lib/logic/invoice";
 import { assignPatch, unschedulePatch, movePatch } from "@/lib/logic/schedule";
+import { completePatch } from "@/lib/logic/maintenance";
 
 export function useCustomers() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customers, queryFn: () => r.customers.list() }); }
 export function useCustomer(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.customer(id), queryFn: () => r.customers.get(id) }); }
@@ -281,12 +282,16 @@ export function useScheduleBlocks() {
   return useQuery({ queryKey: queryKeys.scheduleBlocks, queryFn: () => r.scheduleBlocks.list() });
 }
 
+export function useEquipment() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.equipment, queryFn: () => r.equipment.list() }); }
+export function useEquipmentUnit(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.equipmentUnit(id), queryFn: () => r.equipment.get(id) }); }
+export function useMaintenance() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.maintenance, queryFn: () => r.maintenance.list() }); }
+
 export function useAssignSchedule() {
   const r = useRepositories();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (vars: { order: WorkOrder; equipmentId: string; day: string; operator: Operator; at: string }) => {
-      const patch = assignPatch(vars.order, vars.equipmentId, vars.day, vars.operator.name, vars.at);
+    mutationFn: async (vars: { order: WorkOrder; equipment: Pick<Equipment, "id" | "name">; day: string; operator: Operator; at: string }) => {
+      const patch = assignPatch(vars.order, vars.equipment, vars.day, vars.operator.name, vars.at);
       // Version-check the WO update FIRST — a stale order throws before any orphan block is created.
       const updated = await r.workOrders.update(vars.order.id, patch.workOrder, vars.order.version);
       await r.scheduleBlocks.create(patch.block);
@@ -326,6 +331,30 @@ export function useUnschedule() {
       qc.invalidateQueries({ queryKey: queryKeys.workOrders });
       qc.invalidateQueries({ queryKey: queryKeys.workOrder(u.id) });
       qc.invalidateQueries({ queryKey: queryKeys.scheduleBlocks });
+    },
+  });
+}
+
+export function useSetEquipmentAvailability() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { equipment: Equipment; availability: EquipmentAvailability; note: string | null }) =>
+      r.equipment.update(vars.equipment.id, { availability: vars.availability, note: vars.note }, vars.equipment.version),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.equipment }); // prefix covers ["equipment", id] detail
+    },
+  });
+}
+
+export function useCompleteMaintenance() {
+  const r = useRepositories();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { task: Maintenance; at: string }) =>
+      r.maintenance.update(vars.task.id, completePatch(vars.task, vars.at), vars.task.version),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.maintenance });
     },
   });
 }

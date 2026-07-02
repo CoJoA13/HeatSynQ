@@ -1,7 +1,7 @@
 "use client";
 import { useAuth, useCan } from "@/lib/auth/provider";
 import {
-  useWorkOrders, useCustomers, useScheduleBlocks,
+  useWorkOrders, useCustomers, useScheduleBlocks, useEquipment,
   useAssignSchedule, useMoveSchedule, useUnschedule,
 } from "@/lib/query/hooks";
 import { PageHeader, SkeletonRows, ErrorPanel } from "@/components/patterns";
@@ -14,14 +14,16 @@ export default function SchedulePage() {
   const orders = useWorkOrders();
   const customers = useCustomers();
   const blocks = useScheduleBlocks();
+  const equipment = useEquipment();
   const assign = useAssignSchedule();
   const move = useMoveSchedule();
   const unschedule = useUnschedule();
 
-  if (orders.isLoading || customers.isLoading || blocks.isLoading || !operator) return <SkeletonRows />;
+  if (orders.isLoading || customers.isLoading || blocks.isLoading || equipment.isLoading || !operator) return <SkeletonRows />;
   if (orders.isError) return <ErrorPanel message="Failed to load orders." onRetry={() => orders.refetch()} />;
   if (customers.isError) return <ErrorPanel message="Failed to load customers." onRetry={() => customers.refetch()} />;
   if (blocks.isError) return <ErrorPanel message="Failed to load schedule." onRetry={() => blocks.refetch()} />;
+  if (equipment.isError) return <ErrorPanel message="Failed to load equipment." onRetry={() => equipment.refetch()} />;
 
   const asOf = DEMO_NOW;
   const busy = assign.isPending || move.isPending || unschedule.isPending;
@@ -36,10 +38,11 @@ export default function SchedulePage() {
         orders={orderList}
         customers={customers.data ?? []}
         blocks={blockList}
+        equipment={equipment.data ?? []}
         asOf={asOf}
         canSchedule={canSchedule}
         busy={busy}
-        onAssign={(order, equipmentId, day) => assign.mutate({ order, equipmentId, day, operator, at: asOf })}
+        onAssign={(order, equip, day) => assign.mutate({ order, equipment: equip, day, operator, at: asOf })}
         onMove={(cell, equipmentId, day) => {
           const b = blockById.get(cell.blockId);
           if (b) move.mutate({ block: b, equipmentId, day });

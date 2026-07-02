@@ -3,7 +3,7 @@ import { baseEntitySchema, discountSchema } from "./base";
 import {
   QUOTE_STATUSES, ORDER_STATUSES, INVOICE_STATUSES, CERT_STATUSES,
   CUSTOMER_STATUSES, PRICING_BASES, ROLE_KEYS, AREAS, ORDER_STEP_STATES,
-  SCHEDULE_BLOCK_STATES, STANDARD_CATEGORIES,
+  SCHEDULE_BLOCK_STATES, STANDARD_CATEGORIES, EQUIPMENT_KINDS, EQUIPMENT_AVAILABILITY, MAINTENANCE_TYPES,
 } from "./enums";
 
 export const operatorSchema = baseEntitySchema.extend({
@@ -220,7 +220,7 @@ export type Invoice = z.infer<typeof invoiceSchema>;
 
 export const scheduleBlockSchema = baseEntitySchema.extend({
   workOrderId: z.string(),
-  equipmentId: z.string(), // one of EQUIPMENT[].id (foreign keys are z.string(), like customerId)
+  equipmentId: z.string(), // FK equipment (foreign keys are z.string(), like customerId)
   day: z.string(),         // ISO midnight-UTC date
   state: z.enum(SCHEDULE_BLOCK_STATES),
 });
@@ -234,3 +234,21 @@ export const standardSchema = baseEntitySchema.extend({
   nextReviewAt: z.string(),         // ISO midnight-UTC — next review due
 });
 export type Standard = z.infer<typeof standardSchema>;
+
+export const equipmentSchema = baseEntitySchema.extend({
+  name: z.string(),
+  kind: z.enum(EQUIPMENT_KINDS),
+  availability: z.enum(EQUIPMENT_AVAILABILITY),
+  note: z.string().nullable(),      // why down/maintenance; null when available
+});
+export type Equipment = z.infer<typeof equipmentSchema>;
+
+export const maintenanceSchema = baseEntitySchema.extend({
+  equipmentId: z.string(),          // FK equipment (foreign keys are z.string(), like customerId)
+  type: z.enum(MAINTENANCE_TYPES),
+  specificationId: z.string(),      // FK specification — AMS 2750 pyrometry
+  intervalDays: z.number().int().positive(),
+  lastDoneAt: z.string(),           // ISO midnight-UTC — last completed survey
+  nextDueAt: z.string(),            // ISO midnight-UTC — next survey due
+});
+export type Maintenance = z.infer<typeof maintenanceSchema>;

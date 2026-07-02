@@ -2,22 +2,29 @@
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/lib/ui/dialog";
 import { Button } from "@/lib/ui/button";
-import { EQUIPMENT, equipmentKindMeta } from "@/lib/domain/enums";
+import { equipmentKindMeta } from "@/lib/domain/enums";
 import type { WeekDay } from "@/lib/logic/schedule";
+import type { Equipment } from "@/lib/domain";
 
 const selectCls = "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm";
 
-function AssignForm({ mode, workOrderNumber, days, initialEquipmentId, initialDay, busy, onOpenChange, onConfirm }: {
+function AssignForm({ mode, workOrderNumber, days, equipment, initialEquipmentId, initialDay, busy, onOpenChange, onConfirm }: {
   mode: "assign" | "move";
   workOrderNumber: string;
   days: WeekDay[];
+  equipment: Equipment[];
   initialEquipmentId?: string;
   initialDay?: string;
   busy: boolean;
   onOpenChange: (o: boolean) => void;
   onConfirm: (equipmentId: string, day: string) => void;
 }) {
-  const [equipmentId, setEquipmentId] = useState(initialEquipmentId ?? EQUIPMENT[0].id);
+  const options = equipment.filter((e) => e.availability === "available");
+  const [equipmentId, setEquipmentId] = useState(() =>
+    initialEquipmentId && options.some((o) => o.id === initialEquipmentId)
+      ? initialEquipmentId
+      : options[0]?.id ?? "",
+  );
   const [day, setDay] = useState(initialDay ?? days[0]?.iso ?? "");
   return (
     <>
@@ -29,7 +36,7 @@ function AssignForm({ mode, workOrderNumber, days, initialEquipmentId, initialDa
         <label className="block text-xs">
           <span className="text-text-muted mb-1 block">Equipment</span>
           <select aria-label="Equipment" className={selectCls} value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
-            {EQUIPMENT.map((eq) => (
+            {options.map((eq) => (
               <option key={eq.id} value={eq.id}>{eq.name} — {equipmentKindMeta[eq.kind].label}</option>
             ))}
           </select>
@@ -51,12 +58,13 @@ function AssignForm({ mode, workOrderNumber, days, initialEquipmentId, initialDa
   );
 }
 
-export function AssignDialog({ open, onOpenChange, mode, workOrderNumber, days, initialEquipmentId, initialDay, busy, onConfirm }: {
+export function AssignDialog({ open, onOpenChange, mode, workOrderNumber, days, equipment, initialEquipmentId, initialDay, busy, onConfirm }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   mode: "assign" | "move";
   workOrderNumber: string;
   days: WeekDay[];
+  equipment: Equipment[];
   initialEquipmentId?: string;
   initialDay?: string;
   busy: boolean;
@@ -70,6 +78,7 @@ export function AssignDialog({ open, onOpenChange, mode, workOrderNumber, days, 
           mode={mode}
           workOrderNumber={workOrderNumber}
           days={days}
+          equipment={equipment}
           initialEquipmentId={initialEquipmentId}
           initialDay={initialDay}
           busy={busy}

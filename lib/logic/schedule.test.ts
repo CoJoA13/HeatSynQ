@@ -129,7 +129,7 @@ describe("scheduleSummary", () => {
 describe("mutation patch builders", () => {
   it("assignPatch sets scheduled + activity and a planned block input", () => {
     const order = wo({ id: "a", activity: [{ actor: "System", message: "Order received", at: "t0" }] });
-    const p = assignPatch(order, "eq-iq-2", "2026-07-01T00:00:00.000Z", "Dana Mercer", "t1");
+    const p = assignPatch(order, { id: "eq-iq-2", name: "Batch IQ #2" }, "2026-07-01T00:00:00.000Z", "Dana Mercer", "t1");
     expect(p.workOrder.status).toBe("scheduled");
     expect(p.workOrder.activity.at(-1)).toEqual({ actor: "Dana Mercer", message: "Scheduled — Batch IQ #2 · Wed 7/1", at: "t1" });
     expect(p.block).toEqual({ workOrderId: "a", equipmentId: "eq-iq-2", day: "2026-07-01T00:00:00.000Z", state: "planned" });

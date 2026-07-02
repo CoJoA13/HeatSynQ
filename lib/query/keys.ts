@@ -20,4 +20,7 @@ export const queryKeys = {
   priceKeys: ["priceKeys"] as const,
   pricingRulesByPriceKey: (priceKeyId: string) => ["pricingRules", "byPriceKey", priceKeyId] as const,
   scheduleBlocks: ["scheduleBlocks"] as const,
+  equipment: ["equipment"] as const,
+  equipmentUnit: (id: string) => ["equipment", id] as const,
+  maintenance: ["maintenance"] as const,
 };

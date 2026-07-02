@@ -1,6 +1,6 @@
-import { EQUIPMENT, type EquipmentId, type EquipmentState } from "@/lib/domain/enums";
+import type { EquipmentState } from "@/lib/domain/enums";
 import { isLate } from "@/lib/logic/dashboard";
-import type { WorkOrder, OrderStep } from "@/lib/domain";
+import type { WorkOrder, OrderStep, Equipment } from "@/lib/domain";
 
 /** Parse the first Fahrenheit setpoint from step params (e.g. "1700°F"). Whitespace-stripped. */
 export function parseSetpoint(params: string[]): string | null {
@@ -26,9 +26,9 @@ export function parseDurationMinutes(params: string[]): number | null {
 }
 
 /** Resolve a step's free-text equip label to a roster equipment id. */
-export function equipmentForStep(step: { equip: string; op: string }): EquipmentId {
+export function equipmentForStep(step: { equip: string; op: string }, equipment: Equipment[]): string {
   const raw = step.equip.trim().toLowerCase();
-  const exact = EQUIPMENT.find((e) => e.name.toLowerCase() === raw);
+  const exact = equipment.find((e) => e.name.toLowerCase() === raw);
   if (exact) return exact.id;
   const s = `${step.equip} ${step.op}`.toLowerCase();
   if (/vacuum/.test(s)) return "eq-vac-1";
@@ -42,7 +42,7 @@ export function equipmentForStep(step: { equip: string; op: string }): Equipment
 }
 
 export type EquipmentLoad = {
-  equipmentId: EquipmentId;
+  equipmentId: string;
   state: EquipmentState;
   load: {
     workOrderId: string;
@@ -69,20 +69,27 @@ function byTrackedInThenNumber(a: Candidate, b: Candidate): number {
   return a.order.number < b.order.number ? -1 : a.order.number > b.order.number ? 1 : 0;
 }
 
-/** Project open work orders onto the equipment roster. One entry per unit, in roster order. */
-export function equipmentLoads(orders: WorkOrder[], asOf: string): EquipmentLoad[] {
-  const byEquip = new Map<EquipmentId, Candidate[]>(EQUIPMENT.map((e) => [e.id, []]));
+/** Project open work orders onto the equipment roster. One entry per unit, in roster order.
+ *  Persisted availability (down/maintenance) wins the displayed state; the load, if any,
+ *  still renders — work physically in the furnace is never hidden. */
+export function equipmentLoads(orders: WorkOrder[], equipment: Equipment[], asOf: string): EquipmentLoad[] {
+  const byEquip = new Map<string, Candidate[]>(equipment.map((e) => [e.id, []]));
   for (const order of orders) {
     for (const s of order.steps) {
       if (s.state !== "in_process") continue;
-      byEquip.get(equipmentForStep(s))!.push({ order, step: s });
+      byEquip.get(equipmentForStep(s, equipment))?.push({ order, step: s });
     }
   }
-  return EQUIPMENT.map((e): EquipmentLoad => {
+  return equipment.map((e): EquipmentLoad => {
     const cands = byEquip.get(e.id)!;
-    if (cands.length === 0) return { equipmentId: e.id, state: "idle", load: null, queued: 0 };
+    if (cands.length === 0) {
+      const state: EquipmentState = e.availability === "available" ? "idle" : e.availability;
+      return { equipmentId: e.id, state, load: null, queued: 0 };
+    }
     const cur = [...cands].sort(byTrackedInThenNumber)[0];
-    const state: EquipmentState = cur.order.status === "on_hold" ? "on_hold" : "running";
+    const state: EquipmentState = e.availability !== "available"
+      ? e.availability
+      : cur.order.status === "on_hold" ? "on_hold" : "running";
     const mins = parseDurationMinutes(cur.step.params);
     const estFinishIso = state === "running" && cur.step.trackedInAt && mins != null
       ? new Date(new Date(cur.step.trackedInAt).getTime() + mins * 60_000).toISOString()
@@ -99,11 +106,12 @@ export function equipmentLoads(orders: WorkOrder[], asOf: string): EquipmentLoad
   });
 }
 
-export function shopFloorSummary(loads: EquipmentLoad[]): { running: number; idle: number; onHold: number; late: number } {
+export function shopFloorSummary(loads: EquipmentLoad[]): { running: number; idle: number; onHold: number; late: number; outOfService: number } {
   return {
     running: loads.filter((l) => l.state === "running").length,
     idle: loads.filter((l) => l.state === "idle").length,
     onHold: loads.filter((l) => l.state === "on_hold").length,
     late: loads.filter((l) => l.load?.late).length,
+    outOfService: loads.filter((l) => l.state === "down" || l.state === "maintenance").length,
   };
 }

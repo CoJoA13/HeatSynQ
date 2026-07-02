@@ -19,7 +19,7 @@ function AssignProbe() {
       <div data-testid="status">{order?.status ?? "loading"}</div>
       <div data-testid="planned">{planned.length}</div>
       <button disabled={!order || !operator} onClick={() => order && operator &&
-        assign.mutate({ order, equipmentId: "eq-iq-1", day: "2026-06-29T00:00:00.000Z", operator, at: "2026-06-30T12:00:00.000Z" })}>Assign</button>
+        assign.mutate({ order, equipment: { id: "eq-iq-1", name: "Batch IQ #1" }, day: "2026-06-29T00:00:00.000Z", operator, at: "2026-06-30T12:00:00.000Z" })}>Assign</button>
       <button disabled={!order || !operator || planned.length === 0} onClick={() => {
         const b = planned[0];
         if (order && operator && b) unschedule.mutate({ order, block: b, operator, at: "2026-06-30T12:00:00.000Z" });
@@ -45,7 +45,7 @@ function UnscheduleStaleProbe() {
       <div data-testid="status">{order?.status ?? "loading"}</div>
       <div data-testid="planned">{planned.length}</div>
       <button disabled={!order || !operator} onClick={() => order && operator &&
-        assign.mutate({ order, equipmentId: "eq-iq-1", day: "2026-06-29T00:00:00.000Z", operator, at: "2026-06-30T12:00:00.000Z" })}>Assign</button>
+        assign.mutate({ order, equipment: { id: "eq-iq-1", name: "Batch IQ #1" }, day: "2026-06-29T00:00:00.000Z", operator, at: "2026-06-30T12:00:00.000Z" })}>Assign</button>
       <button disabled={!order || !operator || planned.length === 0} onClick={() => {
         const b = planned[0];
         // Deliberately stale order version → version-check must fire before block cancel
