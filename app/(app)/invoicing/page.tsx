@@ -13,6 +13,7 @@ import {
   EmptyState,
 } from "@/components/patterns";
 import { InvoicingView } from "@/components/invoicing/invoicing-view";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function InvoicingPage() {
   const invoices = useInvoices();
@@ -20,7 +21,7 @@ export default function InvoicingPage() {
   const orders = useWorkOrders();
   const bill = useBillInvoice();
   const pay = usePayInvoice();
-  const now = () => new Date().toISOString();
+  const now = () => DEMO_NOW;
 
   // Row labels come from customers + work orders; don't enable billing until they load.
   if (invoices.isLoading || customers.isLoading || orders.isLoading)

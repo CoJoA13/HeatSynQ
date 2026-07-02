@@ -4,6 +4,7 @@ import { useWorkOrders, useCustomers, useTrackInStep, useTrackOutStep, useCertif
 import { PageHeader, SkeletonRows, ErrorPanel, EmptyState } from "@/components/patterns";
 import { TrackingBoard } from "@/components/tracking/tracking-board";
 import { openOrders } from "@/lib/logic/dashboard";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function TrackingPage() {
   const { operator } = useAuth();
@@ -20,7 +21,7 @@ export default function TrackingPage() {
 
   const open = openOrders(orders.data ?? []);
   const busy = trackIn.isPending || trackOut.isPending;
-  const now = new Date().toISOString();
+  const now = DEMO_NOW;
 
   return (
     <div>

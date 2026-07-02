@@ -4,6 +4,7 @@ import { useWorkOrders, useQuotes, useInvoices, useCertifications, useCustomers 
 import { dashboardKpis } from "@/lib/logic/dashboard";
 import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { TodayDashboard } from "@/components/today/today-dashboard";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function TodayPage() {
   const { operator, viewAs, setViewAs } = useAuth();
@@ -30,7 +31,7 @@ export default function TodayPage() {
     );
   }
 
-  const asOf = new Date().toISOString();
+  const asOf = DEMO_NOW;
   const tiles = dashboardKpis(
     viewAs,
     {

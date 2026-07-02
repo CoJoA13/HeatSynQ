@@ -5,6 +5,7 @@ import { useAuth, useCan } from "@/lib/auth/provider";
 import { useCustomers, useParts, usePricingRulesByPriceKey, useCreateQuoteDraft, useSendQuote } from "@/lib/query/hooks";
 import { SkeletonRows, ErrorPanel } from "@/components/patterns";
 import { QuoteBuilder } from "@/components/quotes/quote-builder";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function QuoteBuilderPage() {
   const router = useRouter();
@@ -27,7 +28,7 @@ export default function QuoteBuilderPage() {
       pricingRules={rules.data ?? []}
       salespersonId={operator?.id ?? ""}
       canDiscount={canDiscount}
-      todayIso={new Date().toISOString()}
+      todayIso={DEMO_NOW}
       submitting={createDraft.isPending || send.isPending}
       onSaveDraft={async (input) => { const q = await createDraft.mutateAsync(input); router.push(`/quotes/${q.id}`); }}
       onSend={async (input) => {

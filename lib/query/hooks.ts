@@ -9,6 +9,7 @@ import { navBadgeCounts } from "@/lib/logic/dashboard";
 import { sendQuote, approveQuote, rejectQuote, loseQuote, reviseQuote } from "@/lib/logic/quote-state";
 import { createOrderFromQuote, createCertForOrder, canTransitionOrder, canShipOrder, activityEntry } from "@/lib/logic/order";
 import { trackInStep, trackOutStep, rollUpOrderStatus, orderProgressPct } from "@/lib/logic/tracking";
+import { DEMO_NOW } from "@/lib/clock";
 import { toBillInvoiceFromOrder, billInvoice, payInvoice } from "@/lib/logic/invoice";
 import { assignPatch, unschedulePatch, movePatch } from "@/lib/logic/schedule";
 import { completePatch } from "@/lib/logic/maintenance";
@@ -141,7 +142,7 @@ export function useWinQuote() {
       const processMastersById = Object.fromEntries(pms.map((m) => [m.id, m]));
       // Version-check BEFORE any side effect: a stale quote throws here, leaving no orphan order/cert.
       const won = await r.quotes.update(quote.id, { status: "won" }, quote.version);
-      const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer, nowIso: new Date().toISOString() }));
+      const order = await r.workOrders.create(createOrderFromQuote(quote, { partsById, processMastersById, customer, nowIso: DEMO_NOW }));
       if (order.certifyRequired) await r.certifications.create(createCertForOrder(order, customer));
       return r.quotes.update(quote.id, { wonOrderId: order.id }, won.version);
     },
@@ -207,7 +208,7 @@ export function useTrackInStep() {
   const r = useRepositories(); const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: { order: WorkOrder; stepN: number; operator: Operator }) => {
-      const at = new Date().toISOString();
+      const at = DEMO_NOW;
       const step = vars.order.steps.find((s) => s.n === vars.stepN);
       const steps = trackInStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at);
       const status = rollUpOrderStatus(steps, vars.order.status);
@@ -226,7 +227,7 @@ export function useTrackOutStep() {
   const r = useRepositories(); const qc = useQueryClient();
   return useMutation({
     mutationFn: async (vars: { order: WorkOrder; stepN: number; operator: Operator; cert: Certification | null; inspectResult?: "pass" | "fail" }) => {
-      const at = new Date().toISOString();
+      const at = DEMO_NOW;
       const step = vars.order.steps.find((s) => s.n === vars.stepN);
       const steps = trackOutStep(vars.order.steps, vars.stepN, { id: vars.operator.id, initials: vars.operator.initials }, at, vars.inspectResult);
       const failed = vars.inspectResult === "fail";

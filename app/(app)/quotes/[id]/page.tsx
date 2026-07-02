@@ -21,6 +21,7 @@ import { QuoteView } from "@/components/quotes/quote-view";
 import { isEditable } from "@/lib/logic/quote-state";
 import type { CreateInput } from "@/lib/data/repositories";
 import type { Quote } from "@/lib/domain";
+import { DEMO_NOW } from "@/lib/clock";
 
 export default function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -75,7 +76,7 @@ export default function QuoteDetailPage({ params }: { params: Promise<{ id: stri
         pricingRules={rules.data ?? []}
         salespersonId={q.salespersonId}
         canDiscount={canDiscount}
-        todayIso={new Date().toISOString()}
+        todayIso={DEMO_NOW}
         initial={initial}
         initialCustomerId={q.customerId}
         submitting={update.isPending || send.isPending}
