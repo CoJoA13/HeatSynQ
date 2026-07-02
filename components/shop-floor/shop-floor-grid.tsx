@@ -10,7 +10,7 @@ export function ShopFloorGrid({ orders, customers, equipment, maintenance, asOf,
   equipment: Equipment[];
   maintenance: Maintenance[];
   asOf: string;
-  onSelect?: (workOrderId: string) => void;
+  onSelect?: (equipmentId: string) => void;
 }) {
   const loads = equipmentLoads(orders, equipment, asOf);
   const summary = shopFloorSummary(loads);

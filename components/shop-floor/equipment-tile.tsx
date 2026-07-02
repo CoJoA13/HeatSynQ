@@ -16,7 +16,7 @@ export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
   equipment: Equipment;
   entry: EquipmentLoad;
   customerName: string | null;
-  onSelect?: (workOrderId: string) => void;
+  onSelect?: (equipmentId: string) => void;
 }) {
   const sm = equipmentStateMeta[entry.state];
   const testId = `equipment-tile-${equipment.id}`;
@@ -32,13 +32,14 @@ export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
 
   if (!entry.load) {
     return (
-      <div data-testid={testId} className="rounded-card border border-border bg-surface p-4 opacity-60">
+      <button type="button" data-testid={testId} onClick={() => onSelect?.(equipment.id)}
+        className="w-full rounded-card border border-border bg-surface p-4 text-left opacity-60">
         {header}
         {(entry.state === "down" || entry.state === "maintenance") && equipment.note && (
           <div className="text-text-muted mt-3 text-xs">{equipment.note}</div>
         )}
         {entry.state === "idle" && <div className="text-text-muted mt-3 text-xs">No load · available</div>}
-      </div>
+      </button>
     );
   }
 
@@ -47,7 +48,7 @@ export function EquipmentTile({ equipment, entry, customerName, onSelect }: {
     <button
       type="button"
       data-testid={testId}
-      onClick={() => onSelect?.(l.workOrderId)}
+      onClick={() => onSelect?.(equipment.id)}
       className="w-full rounded-card border border-border bg-surface p-4 text-left"
     >
       {header}

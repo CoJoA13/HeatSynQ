@@ -28,7 +28,7 @@ export default function ShopFloorPage() {
         equipment={equipment.data ?? []}
         maintenance={maintenance.data ?? []}
         asOf={DEMO_NOW}
-        onSelect={(id) => router.push(`/orders/${id}`)}
+        onSelect={(id) => router.push(`/shop-floor/${id}`)}
       />
     </div>
   );

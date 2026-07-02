@@ -52,7 +52,7 @@ describe("ShopFloorGrid", () => {
     expect(within(tile).getByText("WO-1")).toBeInTheDocument();
     expect(within(tile).getByText("Apex Aerospace")).toBeInTheDocument();
     await userEvent.click(tile);
-    expect(onSelect).toHaveBeenCalledWith("wo-1");
+    expect(onSelect).toHaveBeenCalledWith("eq-pit-1");
   });
 
   it("shows out-of-service and pyrometry-due KPIs", () => {

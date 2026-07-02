@@ -31,7 +31,7 @@ describe("EquipmentTile", () => {
     expect(screen.getByText(/Setpoint 1700°F/)).toBeInTheDocument();
     expect(screen.getByText(/Est\. finish/)).toBeInTheDocument();
     await userEvent.click(screen.getByTestId("equipment-tile-eq-iq-3"));
-    expect(onSelect).toHaveBeenCalledWith("wo-1");
+    expect(onSelect).toHaveBeenCalledWith("eq-iq-3");
   });
 
   it("shows a LATE pill and queued count", () => {
@@ -40,10 +40,13 @@ describe("EquipmentTile", () => {
     expect(screen.getByText(/\+2 queued/)).toBeInTheDocument();
   });
 
-  it("renders an idle tile that is not a button", () => {
-    render(<EquipmentTile equipment={iq3} entry={{ equipmentId: "eq-iq-3", state: "idle", load: null, queued: 0 }} customerName={null} onSelect={() => {}} />);
+  it("renders an idle tile that is a button and fires onSelect with the equipment id", async () => {
+    const onSelect = vi.fn();
+    render(<EquipmentTile equipment={iq3} entry={{ equipmentId: "eq-iq-3", state: "idle", load: null, queued: 0 }} customerName={null} onSelect={onSelect} />);
     expect(screen.getByText(/no load · available/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    const button = screen.getByRole("button");
+    await userEvent.click(button);
+    expect(onSelect).toHaveBeenCalledWith("eq-iq-3");
   });
 
   it("shows the on-hold state pill", () => {
