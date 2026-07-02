@@ -37,10 +37,24 @@ describe("AssignDialog", () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
     render(<AssignDialog open mode="move" workOrderNumber="WO-48230" days={DAYS} equipment={EQUIPMENT}
-      initialEquipmentId="eq-iq-2" initialDay="2026-07-01T00:00:00.000Z" busy={false}
+      initialEquipmentId="eq-vac-1" initialDay="2026-07-01T00:00:00.000Z" busy={false}
       onOpenChange={() => {}} onConfirm={onConfirm} />);
+    expect(screen.getByLabelText("Equipment")).toHaveValue("eq-vac-1");
     await user.click(screen.getByRole("button", { name: "Move" }));
-    expect(onConfirm).toHaveBeenCalledWith("eq-iq-2", "2026-07-01T00:00:00.000Z");
+    expect(onConfirm).toHaveBeenCalledWith("eq-vac-1", "2026-07-01T00:00:00.000Z");
+  });
+
+  it("move mode falls back to the first available unit when the current unit is unavailable", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(<AssignDialog open mode="move" workOrderNumber="WO-48230" days={DAYS} equipment={EQUIPMENT}
+      initialEquipmentId="eq-temper-2" initialDay="2026-07-01T00:00:00.000Z" busy={false}
+      onOpenChange={() => {}} onConfirm={onConfirm} />);
+    // eq-temper-2 is "down" so it is not in the options list; the select must fall back
+    // to the first available unit (eq-iq-1) rather than silently holding the stale id.
+    expect(screen.getByLabelText("Equipment")).toHaveValue("eq-iq-1");
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    expect(onConfirm).toHaveBeenCalledWith("eq-iq-1", "2026-07-01T00:00:00.000Z");
   });
 
   it("excludes non-available units from the equipment options", () => {

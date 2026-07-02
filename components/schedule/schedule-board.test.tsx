@@ -17,6 +17,10 @@ const EQUIPMENT: Equipment[] = [
   equip({ id: "eq-iq-3", name: "Batch IQ #3", kind: "batch_iq" }),
   equip({ id: "eq-temper-1", name: "Temper Oven #1", kind: "temper" }),
   equip({ id: "eq-temper-2", name: "Temper Oven #2", kind: "temper", availability: "down", note: "Setpoint deviation" }),
+  // eq-vac-1 is intentionally kept "available" here (unlike the real seed data) so
+  // selectOptions("eq-vac-1") below resolves to a rendered option — the assign dialog
+  // filters its <option>s to available units only, so availability changes to this
+  // fixture row would break that selection.
   equip({ id: "eq-vac-1", name: "Vacuum Furnace #1", kind: "vacuum" }),
   equip({ id: "eq-pit-1", name: "Pit Furnace #1", kind: "pit" }),
   equip({ id: "eq-belt-1", name: "Continuous Belt #1", kind: "continuous" }),

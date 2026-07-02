@@ -20,7 +20,11 @@ function AssignForm({ mode, workOrderNumber, days, equipment, initialEquipmentId
   onConfirm: (equipmentId: string, day: string) => void;
 }) {
   const options = equipment.filter((e) => e.availability === "available");
-  const [equipmentId, setEquipmentId] = useState(initialEquipmentId ?? options[0]?.id ?? "");
+  const [equipmentId, setEquipmentId] = useState(() =>
+    initialEquipmentId && options.some((o) => o.id === initialEquipmentId)
+      ? initialEquipmentId
+      : options[0]?.id ?? "",
+  );
   const [day, setDay] = useState(initialDay ?? days[0]?.iso ?? "");
   return (
     <>
