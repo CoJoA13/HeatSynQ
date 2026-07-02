@@ -2,13 +2,10 @@
 import { KpiTile } from "@/components/patterns";
 import { cn } from "@/lib/utils";
 import type { RoleKey } from "@/lib/domain";
+import { ROLE_KEYS, roleMeta } from "@/lib/domain/enums";
 import type { KpiDescriptor } from "@/lib/logic/dashboard";
 
-const ROLES: { key: RoleKey; label: string }[] = [
-  { key: "manager", label: "Manager" },
-  { key: "sales", label: "Sales" },
-  { key: "office", label: "Office" },
-];
+const ROLES = ROLE_KEYS.map((key) => ({ key, label: roleMeta[key].label }));
 
 export function TodayDashboard({
   greeting,

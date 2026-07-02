@@ -25,6 +25,12 @@ export type PricingBasis = (typeof PRICING_BASES)[number];
 export const ROLE_KEYS = ["manager","sales","office"] as const;
 export type RoleKey = (typeof ROLE_KEYS)[number];
 
+export const roleMeta: Record<RoleKey, { label: string }> = {
+  manager: { label: "Manager" },
+  sales: { label: "Sales" },
+  office: { label: "Office" },
+};
+
 type Meta<T extends string> = Record<T, { label: string; tone: StatusTone }>;
 
 export const quoteStatusMeta: Meta<QuoteStatus> = {

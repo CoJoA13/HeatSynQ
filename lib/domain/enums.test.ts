@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toneClasses, type StatusTone, AREAS, areaMeta, ORDER_STEP_STATES, orderStepStateMeta } from "@/lib/domain/enums";
+import { toneClasses, type StatusTone, AREAS, areaMeta, ORDER_STEP_STATES, orderStepStateMeta, ROLE_KEYS, roleMeta } from "@/lib/domain/enums";
 
 describe("toneClasses", () => {
   it("returns text+bg utility classes per tone", () => {
@@ -29,5 +29,11 @@ describe("area + order-step-state metadata", () => {
       expect(orderStepStateMeta[s].label.length).toBeGreaterThan(0);
       expect(["success", "info", "warn", "danger", "neutral"]).toContain(orderStepStateMeta[s].tone);
     });
+  });
+});
+
+describe("roleMeta", () => {
+  it("labels every role", () => {
+    expect(ROLE_KEYS.map((k) => roleMeta[k].label)).toEqual(["Manager", "Sales", "Office"]);
   });
 });
