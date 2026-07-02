@@ -96,7 +96,7 @@ export function EquipmentDetail({ equipment, entry, customerName, tasks, specCod
             </div>
           </div>
         ) : (
-          <EmptyState title="No load · available" />
+          <EmptyState title={entry.state === "idle" ? "No load · available" : "No load"} />
         )}
       </div>
 

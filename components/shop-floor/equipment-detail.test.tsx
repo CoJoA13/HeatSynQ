@@ -113,6 +113,20 @@ describe("EquipmentDetail", () => {
     expect(screen.getByText("No load · available")).toBeInTheDocument();
   });
 
+  it("renders No load (without available) for a maintenance-state entry with no load", () => {
+    const unit = equip({ id: "eq-wash-1", name: "Wash Station", kind: "wash", availability: "maintenance" });
+    const maintenanceEntry: EquipmentLoad = { equipmentId: "eq-wash-1", state: "maintenance", load: null, queued: 0 };
+    render(
+      <EquipmentDetail
+        equipment={unit} entry={maintenanceEntry} customerName={null} tasks={[]}
+        specCodeById={specs} asOf={ASOF} canMaintain={false} busy={false}
+        onSetAvailability={() => {}} onComplete={() => {}}
+      />
+    );
+    expect(screen.getByText("No load")).toBeInTheDocument();
+    expect(screen.queryByText("No load · available")).not.toBeInTheDocument();
+  });
+
   it("wires PyrometryTable's onComplete through a confirm dialog to onComplete", async () => {
     const user = userEvent.setup();
     const unit = equip({ id: "eq-wash-1", name: "Wash Station", kind: "wash" });
