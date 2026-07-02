@@ -107,12 +107,29 @@ export const EQUIPMENT = [
 export type EquipmentDef = (typeof EQUIPMENT)[number];
 export type EquipmentId = EquipmentDef["id"];
 
-export const EQUIPMENT_STATES = ["running","idle","on_hold"] as const;
+export const EQUIPMENT_AVAILABILITY = ["available", "down", "maintenance"] as const;
+export type EquipmentAvailability = (typeof EQUIPMENT_AVAILABILITY)[number];
+export const equipmentAvailabilityMeta: Record<EquipmentAvailability, { label: string; tone: StatusTone }> = {
+  available:   { label: "Available",   tone: "neutral" },
+  down:        { label: "Down",        tone: "danger" },
+  maintenance: { label: "Maintenance", tone: "warn" },
+};
+
+export const MAINTENANCE_TYPES = ["tus", "sat"] as const;
+export type MaintenanceType = (typeof MAINTENANCE_TYPES)[number];
+export const maintenanceTypeMeta: Record<MaintenanceType, { label: string }> = {
+  tus: { label: "TUS" },
+  sat: { label: "SAT" },
+};
+
+export const EQUIPMENT_STATES = ["running", "idle", "on_hold", "down", "maintenance"] as const;
 export type EquipmentState = (typeof EQUIPMENT_STATES)[number];
 export const equipmentStateMeta: Record<EquipmentState, { label: string; tone: StatusTone }> = {
-  running: { label: "Running", tone: "success" },
-  idle:    { label: "Idle",    tone: "neutral" },
-  on_hold: { label: "On hold", tone: "warn" },
+  running:     { label: "Running",     tone: "success" },
+  idle:        { label: "Idle",        tone: "neutral" },
+  on_hold:     { label: "On hold",     tone: "warn" },
+  down:        { label: "Down",        tone: "danger" },
+  maintenance: { label: "Maintenance", tone: "warn" },
 };
 
 export const SCHEDULE_BLOCK_STATES = ["planned","cancelled"] as const;
