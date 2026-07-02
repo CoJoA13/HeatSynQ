@@ -69,10 +69,13 @@ Honesty rules for this slice:
 
 New files (each with sibling `.test.ts`):
 
-- `lib/logic/reports.ts` — `ReportKey`, `ReportCell`, `ReportTable`, `ReportResult`, `ReportData`,
-  `ReportDef` types; `REPORT_GROUPS` catalog config; `REPORTS` registry assembling the four group modules;
-  shared helpers `ageDays(dateIso, asOf)` (UTC floor-day difference in whole days) and any tiny shared
-  formatters. One-decimal percentage convention matches `onSchedulePct` ("66.7").
+- `lib/logic/report-types.ts` — `ReportKey`/`REPORT_KEYS`, `ReportCell` + `cell.*` constructors,
+  `ReportTable`, `ReportResult`, `ReportData`, `ReportDef` types; shared helpers `ageDays(dateIso, asOf)`
+  (UTC floor-day difference in whole days) and `ratioPct(num, den)` ("66.7%", "—" on zero denominator;
+  one-decimal convention matches `onSchedulePct`). Separate from the registry so group modules can import
+  it without a cycle.
+- `lib/logic/reports.ts` — `REPORT_GROUPS` catalog config + `REPORTS` registry assembling the four group
+  modules + `reportByKey`; re-exports `./report-types` so consumers import everything from one module.
 - `lib/logic/reports-sales.ts` — Sales by Customer, Sales by Process, Sales Summary, Bookings vs. Shipments.
 - `lib/logic/reports-ar.ts` — A/R Aging, Customer Statements, Cash Receipts, Past-Due Detail.
 - `lib/logic/reports-production.ts` — Equipment Utilization, On-Time Delivery, Reject Report, Work-in-Process.
@@ -145,8 +148,8 @@ INV-30401 $1,560 Jun 25.
 **past-due-detail — "Past-Due Detail"**
 Rows: sent invoices with `daysPastDue > 0` at `asOf`; sort days past due desc. Columns: INVOICE · CUSTOMER ·
 AMOUNT · DUE (`invoicedDate ?? shippedDate` + net days) · DAYS PAST DUE.
-KPIs: Past due $0 · Invoices 0 · Oldest —. Seed: **honest empty**; `empty`: "Nothing past due as of
-Jun 30, 2026."
+KPIs: Past due $0 · Invoices 0 · Oldest —. Seed: **honest empty**; `empty`: "Nothing past due." (the
+uniform "As of Jun 30, 2026" line already carries the date).
 
 ### Production & Tracking (icon ◉)
 
