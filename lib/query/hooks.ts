@@ -281,6 +281,10 @@ export function useScheduleBlocks() {
   return useQuery({ queryKey: queryKeys.scheduleBlocks, queryFn: () => r.scheduleBlocks.list() });
 }
 
+export function useEquipment() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.equipment, queryFn: () => r.equipment.list() }); }
+export function useEquipmentUnit(id: string) { const r = useRepositories(); return useQuery({ queryKey: queryKeys.equipmentUnit(id), queryFn: () => r.equipment.get(id) }); }
+export function useMaintenance() { const r = useRepositories(); return useQuery({ queryKey: queryKeys.maintenance, queryFn: () => r.maintenance.list() }); }
+
 export function useAssignSchedule() {
   const r = useRepositories();
   const qc = useQueryClient();
