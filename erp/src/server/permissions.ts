@@ -1,17 +1,10 @@
-export const AREAS = [
-  "orders", "parts", "processes", "customers", "quotes", "certs",
-  "shipping", "invoicing", "ar", "reports", "templates", "admin",
-] as const;
-export const CRUD_ACTIONS = ["view", "create", "edit", "delete"] as const;
-export const SPECIAL_ACTIONS = [
-  "void_shipper", "unlock_invoice", "void_order", "change_prices",
-  "edit_cert_results_after_print", "apply_payments", "run_qbo_export",
-  "close_ar_period", "edit_templates", "manage_users",
-] as const;
-
-export type Area = (typeof AREAS)[number];
-export type CrudAction = (typeof CRUD_ACTIONS)[number];
-export type SpecialAction = (typeof SPECIAL_ACTIONS)[number];
+// AREAS/CRUD_ACTIONS/SPECIAL_ACTIONS live in lib/permission-constants.ts (pure constants, no
+// server-only imports) so client components can import them without pulling in this module's
+// next/server + prisma dependency chain. Re-exported here so existing server-side imports
+// (this file's own use below, seed.ts, etc.) don't need to change.
+import { AREAS, CRUD_ACTIONS, SPECIAL_ACTIONS, type Area, type CrudAction, type SpecialAction } from "../lib/permission-constants";
+export { AREAS, CRUD_ACTIONS, SPECIAL_ACTIONS };
+export type { Area, CrudAction, SpecialAction };
 
 export const ALL_PERMISSIONS: string[] = [
   ...AREAS.flatMap((a) => CRUD_ACTIONS.map((c) => `${a}.${c}`)),
