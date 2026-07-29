@@ -32,6 +32,51 @@ describe("auth routes", () => {
     expect((await res.json()).error).toBe("Invalid username or password");
   });
 
+  it("rejects an unknown username with a generic message", async () => {
+    const res = await login(jsonReq("http://t/api/auth/login", { username: "nobody", password: "secret1" }));
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("Invalid username or password");
+  });
+
+  it("rejects an inactive user with a generic message", async () => {
+    await prisma.user.create({
+      data: {
+        username: "inactive",
+        displayName: "Inactive User",
+        passwordHash: await hashPassword("secret1"),
+        active: false,
+      },
+    });
+    const res = await login(jsonReq("http://t/api/auth/login", { username: "inactive", password: "secret1" }));
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("Invalid username or password");
+  });
+
+  it("rejects a soft-deleted user with a generic message", async () => {
+    await prisma.user.create({
+      data: {
+        username: "deleted",
+        displayName: "Deleted User",
+        passwordHash: await hashPassword("secret1"),
+        deletedAt: new Date(),
+      },
+    });
+    const res = await login(jsonReq("http://t/api/auth/login", { username: "deleted", password: "secret1" }));
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("Invalid username or password");
+  });
+
+  it("rejects a malformed JSON body with a generic message", async () => {
+    const req = new Request("http://t/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not json",
+    });
+    const res = await login(req);
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("Invalid username or password");
+  });
+
   it("logout clears the cookie", async () => {
     const loginRes = await login(jsonReq("http://t/api/auth/login", { username: "admin", password: "secret1" }));
     const cookie = loginRes.headers.get("set-cookie")!.split(";")[0];
