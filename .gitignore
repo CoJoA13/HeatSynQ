@@ -1,0 +1,5 @@
+# Session/history scratch
+.remember/
+
+# Large vendor reference PDF stays on disk, not in git
+VisualShopTraining.pdf
