@@ -3,3 +3,11 @@
 
 # Large vendor reference PDF stays on disk, not in git
 VisualShopTraining.pdf
+
+# SDD scratch
+.superpowers/
+
+erp/node_modules/
+erp/.next/
+erp/.env
+erp/coverage/
