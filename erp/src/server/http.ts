@@ -25,7 +25,7 @@ export async function requireUser(req: Request): Promise<SessionUser> {
   return user;
 }
 
-type Handler = (req: Request, ctx?: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
+type Handler = (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
 
 /** Wraps a route handler: catches HttpError, and if a session exists, runs inside the actor context. */
 export function handle(fn: Handler): Handler {

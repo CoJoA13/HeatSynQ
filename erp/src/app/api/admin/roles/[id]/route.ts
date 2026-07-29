@@ -8,7 +8,7 @@ const Body = z.object({ name: z.string().min(1).optional(), permissions: z.array
 
 export const PUT = handle(async (req, ctx) => {
   mustCan(await requireUser(req), "admin", "edit");
-  const { id } = await ctx!.params; // Next.js always supplies ctx for dynamic routes
+  const { id } = await ctx.params;
   const body = Body.parse(await req.json());
   if (body.name) await renameRole(id, body.name);
   if (body.permissions) await setRolePermissions(id, body.permissions);
@@ -17,7 +17,7 @@ export const PUT = handle(async (req, ctx) => {
 
 export const DELETE = handle(async (req, ctx) => {
   mustCan(await requireUser(req), "admin", "edit");
-  const { id } = await ctx!.params; // Next.js always supplies ctx for dynamic routes
+  const { id } = await ctx.params;
   await deleteRole(id);
   return NextResponse.json({ ok: true });
 });
