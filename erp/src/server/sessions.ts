@@ -1,11 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "./db";
+import { getSetting } from "./settings";
 
-export const SESSION_TIMEOUT_FALLBACK_MINUTES = 480;
-// NOTE (Task 10): once settings.ts exists, replace timeoutMinutes() body with
-// getSetting("session_timeout_minutes") — Task 10 Step 5 does exactly that.
 async function timeoutMinutes(): Promise<number> {
-  return SESSION_TIMEOUT_FALLBACK_MINUTES;
+  return getSetting("session_timeout_minutes");
 }
 
 function hashToken(token: string): string {
