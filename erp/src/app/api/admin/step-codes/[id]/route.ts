@@ -1,18 +1,21 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser } from "@/server/http";
+import { handle, requireUser, HttpError } from "@/server/http";
 import { mustCan } from "@/server/permissions";
-import { updateStepCode, deleteStepCode, setStepFields } from "@/server/process-step-codes";
+import { deleteStepCode, updateStepCodeWithFields } from "@/server/process-step-codes";
 
 export const PUT = handle(async (req, { params }) => {
   mustCan(requireUser(), "admin", "edit");
   const { id } = await params;
   const body = await req.json();
-  // `fields` is replaced wholesale and travels separately from the scalar columns.
-  if (Array.isArray(body.fields)) {
-    await setStepFields(id, body.fields);
-    delete body.fields;
+  const { fields, ...scalars } = body ?? {};
+  const hasFields = Array.isArray(fields);
+  // An empty body changes nothing — report that as an error rather than a no-op 200.
+  if (!hasFields && Object.keys(scalars).length === 0) {
+    throw new HttpError(400, "PUT body must include at least one change");
   }
-  if (Object.keys(body).length) await updateStepCode(id, body);
+  // Scalar columns and `fields` are applied together, atomically, as one audit row — see
+  // updateStepCodeWithFields for why a single PUT must not be able to half-apply.
+  await updateStepCodeWithFields(id, { ...scalars, ...(hasFields ? { fields } : {}) });
   return NextResponse.json({ ok: true });
 });
 
