@@ -1,5 +1,5 @@
 import { prisma } from "./db";
-import { HttpError } from "./http";
+import { HttpError } from "./errors";
 import { hashPassword } from "./password";
 import { ALL_PERMISSIONS, canDo } from "./permissions";
 import { auditedCreate, auditedUpdate } from "./audit";

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "./db";
-import { HttpError } from "./http";
+import { HttpError } from "./errors";
 import { currentActor } from "./context";
 
 const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min(min).max(max);

@@ -2,14 +2,10 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getSessionUser } from "./sessions";
 import { runWithActor } from "./context";
+import { HttpError } from "./errors";
 
+export { HttpError };
 export const SESSION_COOKIE = "erp_session";
-
-export class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
 
 export type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;
 

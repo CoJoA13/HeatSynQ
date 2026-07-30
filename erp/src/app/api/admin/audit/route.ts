@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser, HttpError } from "@/server/http";
+import { handle, requireUser } from "@/server/http";
+import { HttpError } from "@/server/errors";
 import { mustCan } from "@/server/permissions";
 import { readAudit, searchAudit } from "@/server/audit";
 
