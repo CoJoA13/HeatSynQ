@@ -33,10 +33,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
+    if (pathname === "/login") return;
     api<Me>("/api/auth/me").then(setMe).catch(() => router.push("/login"));
-  }, [router]);
+  }, [pathname, router]);
 
   async function signOut() {
+    setMe(null);
     await api("/api/auth/logout", { method: "POST" });
     router.push("/login");
   }
