@@ -8,18 +8,25 @@ export default function AuditPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [entity, setEntity] = useState("");
   const [actor, setActor] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const params = new URLSearchParams();
-    if (entity) params.set("entity", entity);
-    if (actor) params.set("actor", actor);
-    setEntries(await api<Entry[]>(`/api/admin/audit?${params}`));
+    try {
+      setError(null);
+      const params = new URLSearchParams();
+      if (entity) params.set("entity", entity);
+      if (actor) params.set("actor", actor);
+      setEntries(await api<Entry[]>(`/api/admin/audit?${params}`));
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
   useEffect(() => { void load(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
 
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Audit log</h1>
+      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
       <div className="mb-3 flex gap-2 text-sm">
         <input placeholder="Entity (e.g. user)" value={entity} onChange={(e) => setEntity(e.target.value)}
                className="rounded border px-2 py-1" />

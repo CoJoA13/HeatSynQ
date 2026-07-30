@@ -43,4 +43,22 @@ describe("audit route", () => {
     expect(body).toHaveLength(1);
     expect(body[0].action).toBe("update");
   });
+
+  it("rejects invalid 'from' date with 400", async () => {
+    const cookie = await adminCookie();
+    const res = await auditGet(get("http://t/api/admin/audit?from=notadate", cookie),
+      { params: Promise.resolve({}) });
+    const body = await res.json();
+    expect(res.status).toBe(400);
+    expect(body.error).toMatch(/from/i);
+  });
+
+  it("accepts valid date range params and returns array", async () => {
+    const cookie = await adminCookie();
+    const res = await auditGet(get("http://t/api/admin/audit?from=2020-01-01&to=2030-01-01", cookie),
+      { params: Promise.resolve({}) });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(Array.isArray(body)).toBe(true);
+  });
 });
