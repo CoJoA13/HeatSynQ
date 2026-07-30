@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { getSessionUser, type SessionUser } from "./sessions";
 import { runWithContext, currentUser } from "./context";
 import { HttpError } from "./errors";
+import { readableMessage } from "./error-message";
 
 export { HttpError };
 export type { SessionUser };
@@ -32,9 +33,7 @@ export function handle(fn: Handler): Handler {
       return await runWithContext({ actor, user }, () => fn(req, ctx));
     } catch (err) {
       if (err instanceof ZodError) {
-        const issue = err.issues[0];
-        const message = `${issue.path.join(".") || "body"}: ${issue.message}`;
-        return NextResponse.json({ error: message }, { status: 400 });
+        return NextResponse.json({ error: readableMessage(err) }, { status: 400 });
       }
       if (err instanceof HttpError) {
         return NextResponse.json({ error: err.message }, { status: err.status });

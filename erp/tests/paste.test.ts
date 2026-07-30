@@ -44,4 +44,38 @@ describe("paste entry", () => {
   it("rejects an unknown kind", async () => {
     await expect(pasteReference("nope", "x")).rejects.toMatchObject({ status: 400 });
   });
+
+  it("reports a readable sentence for a blank name, not a raw ZodError dump", async () => {
+    const result = await pasteReference("glAccount", "\tHeat Treat");
+    expect(result.created).toBe(0);
+    expect(result.errors).toEqual([
+      { row: 1, message: "name: Too small: expected string to have >=1 characters" },
+    ]);
+  });
+
+  it("reports a readable sentence for a duplicate name", async () => {
+    await createReference("glAccount", { name: "4010" });
+    const result = await pasteReference("glAccount", "4010\tDup");
+    expect(result.errors).toEqual([
+      { row: 1, message: "A gl account with that name already exists" },
+    ]);
+  });
+
+  it("reports a row with more cells than the kind has columns, instead of silently truncating", async () => {
+    const result = await pasteReference("glAccount", "9999\tDescription here\tEXTRA_COLUMN_VALUE");
+    expect(result.created).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].row).toBe(1);
+    expect(result.errors[0].message).toMatch(/too many columns/i);
+    expect(await listReference("glAccount")).toHaveLength(0);
+  });
+
+  it("counts blank lines toward the row number so a failure after one still points at the right line", async () => {
+    await createReference("glAccount", { name: "9010" });
+    const result = await pasteReference("glAccount", "1111\tFirst\n\n9010\tDup");
+    expect(result.created).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].row).toBe(3);
+    expect(result.errors[0].message).toMatch(/already exists/i);
+  });
 });
