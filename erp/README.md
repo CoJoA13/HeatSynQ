@@ -12,6 +12,12 @@ Self-hosted web ERP for the heat-treat shop. Next.js + Prisma + PostgreSQL.
 6. `npm run dev` → http://localhost:3000
 7. `npm test`
 
+### Reference data
+Admin → Reference data maintains GL accounts, materials, inspection codes/scales, container types,
+carriers, terms, payment types, salespeople, comment snippets, and specifications. Admin → Process
+step codes maintains the billable step vocabulary and the fields each step kind asks for.
+Every list exports to Excel and accepts spreadsheet paste.
+
 ## Production (single box on the shop network)
 1. Copy `.env.example` → `.env`; set a strong `SESSION_SECRET` and change the db password
    in `docker-compose.yml` + `DATABASE_URL`s together.

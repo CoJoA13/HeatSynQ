@@ -47,12 +47,18 @@ Model facts (owner's own words shaped these):
 
 ## 4. State of the build
 
-**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test` (75 integration tests against a real Postgres test DB), `npx tsc --noEmit`, `npx eslint src tests`.
+**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test`, `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
+
+**Phase 2A (foundation refactors + reference data) is complete.** The five Task-0 refactors from §6's backlog all landed: `HttpError` extracted to `src/server/errors.ts` (import-free, breaking the `settings → http → sessions → settings` cycle, enforced by a test asserting zero imports), one session resolution per request (`handle()` publishes it via `AsyncLocalStorage`, `requireUser` just reads it), a Prisma error-hygiene helper (`src/server/db-errors.ts` — maps P2002→400, P2025→404, and P2003→400 with the FK's field name recovered from the constraint name, e.g. "That gl account does not exist" instead of a raw Prisma message), settings values now redacted through the same `redact()` audit uses, and dotenv's promo line silenced in test output.
+
+Reference data ships with GL accounts, ten flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, salespeople, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped), and re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.
+
+Also fixed in Phase 2A's close-out: zod's specific validation messages (e.g. "Too small: expected string to have >=1 characters") were silently flattening to the generic "Invalid input" under Next's bundler, even though the identical code produced the specific text under vitest — zod's locale registration is a side-effecting `config(en())` call in its own entry point, and zod's `package.json` declares `"sideEffects": false`, so webpack tree-shook that call (and the locale module it pulls in) out of the server bundle. Fixed by re-registering the locale in `src/server/error-message.ts`, the one shared translation both `handle()` and `paste.ts` call — see that file's comment for the full mechanism. Caught only by checking a real built/dev server's HTTP responses, not by vitest, which never reproduced the bug.
 
 What Phase 1 delivers (all in `erp/`):
 - **Auth**: username/password (argon2id), hashed session tokens, sliding expiry driven by a setting, timing-attack-resistant login (DUMMY_HASH equalizer in `src/server/auth.ts`), middleware cookie gate.
 - **Permissions**: `src/server/permissions.ts` + `src/lib/permission-constants.ts` — 12 areas × view/create/edit/delete + 10 named special actions; resolution DENY override > GRANT override > role > deny. Roles and per-user overrides are owner-editable in Admin.
-- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers** (settings.ts's direct audit write is the one sanctioned exception).
+- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers**; `settings.ts`'s direct `prisma.auditLog.create` was a documented exception in Phase 1 but was retired in Phase 2A (Task 4) — `audit.ts` is now the sole writer, enforced by a sweep test (`tests/permissions-sweep.test.ts`) that fails if any other file calls `prisma.auditLog.create` again.
 - **Settings**: typed zod registry (`src/server/settings.ts`), 12 keys (company, numbering seeds, date defaults, session timeout), validated on read and write, audited, `Object.hasOwn`-guarded.
 - **Admin pages**: Users (no hard delete ever; self-lockout guards: can't deactivate yourself or the last user-manager), Roles (permission grid; revival of a soft-deleted name clears stale permissions), Settings, Audit log.
 - **Shell**: permission-aware left nav (routes for future phases 404 until built), global search placeholder (wired in Phase 3), auth-refetch on navigation.
@@ -75,12 +81,7 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 
 ## 6. Known backlog (all triaged, none blocking)
 
-**Do at Phase 2 start (from the final review — "Task 0" items):**
-- Auth-context refactor: `handle()` resolves the session user once (AsyncLocalStorage), `requireUser` reads it — currently every authed request does the session lookup + sliding-expiry write twice; me-route should reuse `resolve()` from permissions.
-- Extract `HttpError` into `src/server/errors.ts` to break the `settings → http → sessions → settings` import cycle before more modules join it.
-- Prisma error-hygiene helper: map P2002→400 / P2025→404 in services (covers: createUser duplicate race, renameRole soft-deleted-name edge, setRolePermissions dedupe, bogus-id 404s).
-- Route `settings.ts` audit values through `redact()` (before Phase 5 puts QBO secrets in settings).
-- dotenv v17 prints a promo line in test output — silence it (`quiet: true`) to keep output pristine.
+**Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
 **Deferred (fine to ride along):** health-route DB-down path; roles page deselect papercut; users page error banner doesn't clear on success; updateUser password truthy-check inconsistency; Shell loading indicator; settings page empty-blur cosmetic; searchAudit filter route tests; HistoryPanel changedFields unit test; session-row cleanup job; login rate limiting; backup alerting + backup-now button; SESSION_SECRET consumed by nothing yet; `renameRole` to a soft-deleted role's name → 500 edge.
 
@@ -113,7 +114,7 @@ npm install
 npx prisma migrate dev
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed
-npm test        # expect 75 passing
+npm test        # expect 165 passing (Phase 1: 75; Phase 2A added the rest)
 npm run dev     # http://localhost:3000 — admin/admin, change it
 ```
 
