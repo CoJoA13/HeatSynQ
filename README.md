@@ -4,6 +4,8 @@ A self-hosted web ERP for a commercial heat-treating shop — built to run in pa
 
 **Status:** Phase 1 (Foundation) complete — login, owner-configurable roles & permissions, full audit trail, typed settings, admin pages, app shell, Docker packaging with fail-loud nightly backups. 75 integration tests.
 
+> **Continuing this project on a new machine or in a fresh session? Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — it is the portable project memory: decisions, conventions, backlog, Fedora setup, and the Phase 2 kickoff prompt.
+
 ## Repository layout
 
 | Path | What it is |
