@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ZodError } from "zod";
 import { getSessionUser } from "./sessions";
 import { runWithActor } from "./context";
 
@@ -36,6 +37,11 @@ export function handle(fn: Handler): Handler {
     try {
       return await runWithActor(actor, () => fn(req, ctx));
     } catch (err) {
+      if (err instanceof ZodError) {
+        const issue = err.issues[0];
+        const message = `${issue.path.join(".") || "body"}: ${issue.message}`;
+        return NextResponse.json({ error: message }, { status: 400 });
+      }
       if (err instanceof HttpError) {
         return NextResponse.json({ error: err.message }, { status: err.status });
       }
