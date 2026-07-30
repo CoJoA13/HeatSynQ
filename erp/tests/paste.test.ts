@@ -70,6 +70,38 @@ describe("paste entry", () => {
     expect(await listReference("glAccount")).toHaveLength(0);
   });
 
+  it("accepts a trailing tab on a 2-column kind — Excel's empty trailing cell carries no data", async () => {
+    const result = await pasteReference("glAccount", "4010\tHeat Treat\t");
+    expect(result).toEqual({ created: 1, errors: [] });
+    expect(await listReference("glAccount")).toHaveLength(1);
+  });
+
+  it("accepts a trailing tab on a 1-column kind", async () => {
+    const result = await pasteReference("carrier", "UPS\t");
+    expect(result).toEqual({ created: 1, errors: [] });
+    expect(await listReference("carrier")).toHaveLength(1);
+  });
+
+  it("accepts multiple trailing tabs", async () => {
+    const result = await pasteReference("glAccount", "4010\tDesc\t\t\t");
+    expect(result).toEqual({ created: 1, errors: [] });
+    expect(await listReference("glAccount")).toHaveLength(1);
+  });
+
+  it("still rejects a genuine extra value past the declared columns", async () => {
+    const result = await pasteReference("glAccount", "4010\tDesc\tREAL_EXTRA");
+    expect(result.created).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/too many columns/i);
+    expect(await listReference("glAccount")).toHaveLength(0);
+  });
+
+  it("treats a whitespace-only overflow cell as empty, not as genuine content", async () => {
+    const result = await pasteReference("glAccount", "4010\tDesc\t   ");
+    expect(result).toEqual({ created: 1, errors: [] });
+    expect(await listReference("glAccount")).toHaveLength(1);
+  });
+
   it("counts blank lines toward the row number so a failure after one still points at the right line", async () => {
     await createReference("glAccount", { name: "9010" });
     const result = await pasteReference("glAccount", "1111\tFirst\n\n9010\tDup");

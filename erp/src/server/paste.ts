@@ -40,7 +40,12 @@ export async function pasteReference(kind: string, text: string): Promise<PasteR
     const cells = line.split("\t");
     // A row with more cells than the kind has columns must be reported, not silently truncated —
     // that would be the same kind of silent data loss .strict() exists to catch on single adds.
-    if (cells.length > columns.length) {
+    // But Excel routinely emits a trailing tab (or several) on an otherwise-normal row — copying
+    // a selection that includes an empty trailing cell, or a range one column wider than the
+    // data — so only cells carrying actual content past the declared columns count as an error;
+    // empty (post-trim) overflow cells are ignored, however many there are.
+    const overflow = cells.slice(columns.length);
+    if (overflow.some((c) => c.trim().length > 0)) {
       errors.push({
         row: rowNumber,
         message: `Too many columns: expected ${columns.length} (${columns.join(", ")}) but got ${cells.length}`,
