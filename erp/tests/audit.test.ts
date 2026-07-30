@@ -75,10 +75,17 @@ describe("audit helpers", () => {
       prisma.user.update({ where: { id: u.id }, data: { displayName: "Updated" } }),
     );
     const [entry] = await readAudit("user", u.id);
+    const beforeSnapshot = entry.before as Record<string, unknown>;
+    const afterSnapshot = entry.after as Record<string, unknown>;
     const beforeStr = JSON.stringify(entry.before);
     const afterStr = JSON.stringify(entry.after);
-    expect(beforeStr).not.toContain("fakeimage");
-    expect(afterStr).not.toContain("fakeimage");
-    expect(beforeStr).toContain("[redacted]");
+
+    // Structurally assert redaction of signatureImage in both snapshots
+    expect(beforeSnapshot.signatureImage).toBe("[redacted]");
+    expect(afterSnapshot.signatureImage).toBe("[redacted]");
+
+    // Prove no raw Buffer serialization survives
+    expect(beforeStr).not.toContain('"type":"Buffer"');
+    expect(afterStr).not.toContain('"type":"Buffer"');
   });
 });
