@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
@@ -12,6 +13,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [openHistory, setOpenHistory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pasting, setPasting] = useState(false);
   const labels = REFERENCE_LABELS[kind];
   const extras = REFERENCE_EXTRA_FIELDS[kind];
 
@@ -56,6 +58,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
            className="text-sm text-blue-700 underline">
           Export to Excel
         </a>
+        <button onClick={() => setPasting((p) => !p)} className="text-sm text-blue-700 underline">
+          {pasting ? "Hide paste entry" : "Paste from spreadsheet"}
+        </button>
       </div>
       <table className="w-full rounded border bg-white text-sm">
         <thead>
@@ -99,6 +104,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           </tr>
         </tbody>
       </table>
+      {pasting && <PasteGrid kind={kind} onDone={load} />}
     </div>
   );
 }
