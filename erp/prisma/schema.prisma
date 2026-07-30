@@ -89,3 +89,13 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([at])
 }
+
+model GlAccount {
+  id          String    @id @default(cuid())
+  name        String    @unique          // the account number, e.g. "4010"
+  description String    @default("")
+  active      Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
