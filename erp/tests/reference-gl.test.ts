@@ -90,6 +90,18 @@ describe("GL account reference", () => {
     await expect(createReference("glAccount", { name: "4010" })).rejects.toMatchObject({ status: 400 });
     expect(await prisma.glAccount.findMany()).toHaveLength(1);
   });
+
+  it("revives a soft-deleted, previously-inactive row as active by default", async () => {
+    const { id } = await createReference("glAccount", { name: "4010" });
+    await updateReference("glAccount", id, { active: false });
+    await deleteReference("glAccount", id);
+
+    await createReference("glAccount", { name: "4010" });
+
+    // A caller who gets no error back on create must see the row in a plain, default list —
+    // reviving it still `active: false` would make it invisible with no signal anything is wrong.
+    expect(await listReference("glAccount")).toHaveLength(1);
+  });
 });
 
 describe("reference delegate contract", () => {

@@ -69,7 +69,11 @@ export async function createReference(kind: string, input: Record<string, unknow
 
   const row = existing
     ? await auditedUpdate(kind, existing.id, () =>
-        delegate(kind).update({ where: { id: existing.id }, data: { ...data, deletedAt: null } }))
+        withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
+          // A re-created row must come back live unless the caller explicitly asked otherwise —
+          // reviving it still `active: false` (its state at the moment it was deleted) would let
+          // a "successful" create silently vanish from the default list with no error at all.
+          delegate(kind).update({ where: { id: existing.id }, data: { ...data, deletedAt: null, active: data.active ?? true } })))
     : await auditedCreate(kind, data, () =>
         withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
           delegate(kind).create({ data })));
