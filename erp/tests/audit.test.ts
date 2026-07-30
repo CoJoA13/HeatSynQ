@@ -1,0 +1,47 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { prisma, truncateAll } from "./helpers/db";
+import { runWithActor } from "@/server/context";
+import { auditedCreate, auditedUpdate, auditedSoftDelete, readAudit, searchAudit } from "@/server/audit";
+
+describe("audit helpers", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("logs create with actor and redacts passwordHash", async () => {
+    const user = await runWithActor({ id: "u0", name: "Admin" }, () =>
+      auditedCreate("user", { username: "jane", passwordHash: "SECRET", displayName: "Jane" }, () =>
+        prisma.user.create({ data: { username: "jane", passwordHash: "SECRET", displayName: "Jane" } }),
+      ),
+    );
+    const log = await readAudit("user", user.id);
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ action: "create", actorName: "Admin", actorId: "u0" });
+    expect(JSON.stringify(log[0].after)).not.toContain("SECRET");
+  });
+
+  it("logs update with before and after", async () => {
+    const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "Old" } });
+    await auditedUpdate("user", u.id, () =>
+      prisma.user.update({ where: { id: u.id }, data: { displayName: "New" } }),
+    );
+    const [entry] = await readAudit("user", u.id);
+    expect((entry.before as { displayName: string }).displayName).toBe("Old");
+    expect((entry.after as { displayName: string }).displayName).toBe("New");
+  });
+
+  it("soft delete sets deletedAt and logs with reason", async () => {
+    const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J" } });
+    await auditedSoftDelete("user", u.id, "left the company");
+    const row = await prisma.user.findUniqueOrThrow({ where: { id: u.id } });
+    expect(row.deletedAt).toBeInstanceOf(Date);
+    expect((await readAudit("user", u.id))[0]).toMatchObject({ action: "delete", reason: "left the company" });
+  });
+
+  it("searchAudit filters by entity", async () => {
+    const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J" } });
+    await auditedUpdate("user", u.id, () =>
+      prisma.user.update({ where: { id: u.id }, data: { displayName: "K" } }),
+    );
+    expect(await searchAudit({ entity: "user" })).toHaveLength(1);
+    expect(await searchAudit({ entity: "role" })).toHaveLength(0);
+  });
+});

@@ -4,6 +4,7 @@ import { createUser, listUsers, updateUser, setUserOverrides } from "@/server/us
 import { createRole } from "@/server/roles";
 import { verifyPassword } from "@/server/password";
 import { HttpError } from "@/server/http";
+import { readAudit } from "@/server/audit";
 
 describe("users service", () => {
   beforeEach(async () => await truncateAll());
@@ -39,5 +40,12 @@ describe("users service", () => {
     await setUserOverrides(id, [{ permission: "orders.view", mode: "DENY" }]);
     expect((await listUsers())[0].overrides).toEqual([{ permission: "orders.view", mode: "DENY" }]);
     await expect(setUserOverrides(id, [{ permission: "bogus.key", mode: "GRANT" }])).rejects.toThrow(HttpError);
+  });
+
+  it("user mutations write audit entries", async () => {
+    const { id } = await createUser({ username: "audited", displayName: "A", password: "pw123456" });
+    await updateUser(id, { displayName: "B" });
+    const log = await readAudit("user", id);
+    expect(log.map((l) => l.action)).toEqual(["update", "create"]);
   });
 });

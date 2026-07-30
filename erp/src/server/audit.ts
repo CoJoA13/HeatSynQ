@@ -1,0 +1,82 @@
+import { prisma } from "./db";
+import { currentActor } from "./context";
+import type { Prisma } from "@prisma/client";
+
+export type AuditableModel = "user" | "role" | "setting";
+
+function redact(value: unknown): Prisma.InputJsonValue | undefined {
+  if (value === null || value === undefined) return undefined;
+  const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  for (const key of Object.keys(clone)) {
+    if (key.toLowerCase().includes("passwordhash")) clone[key] = "[redacted]";
+  }
+  return clone as Prisma.InputJsonValue;
+}
+
+async function snapshot(model: AuditableModel, id: string): Promise<unknown> {
+  // Each auditable model has a string id primary key named `id`.
+  const client = prisma[model] as unknown as { findUnique: (a: { where: { id: string } }) => Promise<unknown> };
+  return client.findUnique({ where: { id } });
+}
+
+async function write(entry: {
+  entity: string; entityId: string; action: string;
+  before?: unknown; after?: unknown; reason?: string;
+}) {
+  const actor = currentActor();
+  await prisma.auditLog.create({
+    data: {
+      actorId: actor.id,
+      actorName: actor.name,
+      entity: entry.entity,
+      entityId: entry.entityId,
+      action: entry.action,
+      before: redact(entry.before),
+      after: redact(entry.after),
+      reason: entry.reason,
+    },
+  });
+}
+
+export async function auditedCreate<T extends { id: string }>(
+  model: AuditableModel, data: object, doIt: () => Promise<T>,
+): Promise<T> {
+  const created = await doIt();
+  await write({ entity: model, entityId: created.id, action: "create", after: data });
+  return created;
+}
+
+export async function auditedUpdate<T>(
+  model: AuditableModel, id: string, doIt: () => Promise<T>, opts?: { reason?: string },
+): Promise<T> {
+  const before = await snapshot(model, id);
+  const result = await doIt();
+  const after = await snapshot(model, id);
+  await write({ entity: model, entityId: id, action: "update", before, after, reason: opts?.reason });
+  return result;
+}
+
+export async function auditedSoftDelete(model: AuditableModel, id: string, reason?: string): Promise<void> {
+  const before = await snapshot(model, id);
+  const client = prisma[model] as unknown as {
+    update: (a: { where: { id: string }; data: { deletedAt: Date } }) => Promise<unknown>;
+  };
+  await client.update({ where: { id }, data: { deletedAt: new Date() } });
+  await write({ entity: model, entityId: id, action: "delete", before, reason });
+}
+
+export function readAudit(entity: string, entityId: string) {
+  return prisma.auditLog.findMany({ where: { entity, entityId }, orderBy: { at: "desc" } });
+}
+
+export function searchAudit(filter: { entity?: string; actorName?: string; from?: Date; to?: Date; limit?: number }) {
+  return prisma.auditLog.findMany({
+    where: {
+      ...(filter.entity ? { entity: filter.entity } : {}),
+      ...(filter.actorName ? { actorName: { contains: filter.actorName, mode: "insensitive" } } : {}),
+      ...(filter.from || filter.to ? { at: { gte: filter.from, lte: filter.to } } : {}),
+    },
+    orderBy: { at: "desc" },
+    take: filter.limit ?? 200,
+  });
+}
