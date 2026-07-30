@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll, prisma } from "./helpers/db";
 import { createUser, listUsers, updateUser, setUserOverrides } from "@/server/users";
-import { createRole } from "@/server/roles";
+import { createRole, setRolePermissions } from "@/server/roles";
 import { verifyPassword } from "@/server/password";
 import { HttpError } from "@/server/http";
 import { readAudit } from "@/server/audit";
+import { runWithActor } from "@/server/context";
 
 describe("users service", () => {
   beforeEach(async () => await truncateAll());
@@ -53,5 +54,58 @@ describe("users service", () => {
     const { id } = await createUser({ username: "leakcheck", displayName: "L", password: "S3cretUnique!" });
     const log = await readAudit("user", id);
     expect(JSON.stringify(log)).not.toContain("S3cretUnique!");
+  });
+
+  it("setUserOverrides produces an audit entry whose before/after overrides differ", async () => {
+    const { id } = await createUser({ username: "overrideaudit", displayName: "O", password: "pw123456" });
+    await setUserOverrides(id, [{ permission: "orders.view", mode: "GRANT" }]);
+    const [entry] = await readAudit("user", id);
+    const before = (entry.before as { overrides: { permission: string; mode: string }[] }).overrides;
+    const after = (entry.after as { overrides: { permission: string; mode: string }[] }).overrides;
+    expect(before).toEqual([]);
+    expect(after.map((o) => ({ permission: o.permission, mode: o.mode }))).toEqual([
+      { permission: "orders.view", mode: "GRANT" },
+    ]);
+    expect(before).not.toEqual(after);
+  });
+
+  describe("self-lockout guards", () => {
+    it("rejects a user deactivating their own account", async () => {
+      const { id } = await createUser({ username: "self", displayName: "Self", password: "pw123456" });
+      await expect(
+        runWithActor({ id, name: "Self" }, () => updateUser(id, { active: false })),
+      ).rejects.toThrow("You cannot deactivate your own account");
+      expect((await listUsers()).find((u) => u.id === id)?.active).toBe(true);
+    });
+
+    it("rejects deactivating the last active user manager", async () => {
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr", displayName: "Manager", password: "pw123456", roleId: role.id,
+      });
+      await expect(updateUser(id, { active: false })).rejects.toThrow("Cannot remove the last user manager");
+      expect((await listUsers()).find((u) => u.id === id)?.active).toBe(true);
+    });
+
+    it("rejects removing the role of the last active user manager", async () => {
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const { id } = await createUser({
+        username: "mgr3", displayName: "Manager3", password: "pw123456", roleId: role.id,
+      });
+      await expect(updateUser(id, { roleId: null })).rejects.toThrow("Cannot remove the last user manager");
+    });
+
+    it("allows deactivating a manager when another active manager remains", async () => {
+      const role = await createRole("Admin");
+      await setRolePermissions(role.id, ["action.manage_users"]);
+      const mgr1 = await createUser({
+        username: "mgr1", displayName: "Manager1", password: "pw123456", roleId: role.id,
+      });
+      await createUser({ username: "mgr2", displayName: "Manager2", password: "pw123456", roleId: role.id });
+      await updateUser(mgr1.id, { active: false });
+      expect((await listUsers()).find((u) => u.id === mgr1.id)?.active).toBe(false);
+    });
   });
 });

@@ -1,8 +1,18 @@
 import { prisma } from "./db";
 import { HttpError } from "./http";
 import { hashPassword } from "./password";
-import { ALL_PERMISSIONS } from "./permissions";
+import { ALL_PERMISSIONS, canDo } from "./permissions";
 import { auditedCreate, auditedUpdate } from "./audit";
+import { currentActor } from "./context";
+
+/** Active, non-deleted users whose effective permissions currently include action.manage_users. */
+async function activeManageUsersHolders() {
+  const users = await prisma.user.findMany({
+    where: { active: true, deletedAt: null },
+    include: { role: { include: { permissions: true } }, overrides: true },
+  });
+  return users.filter((u) => canDo(u, "manage_users"));
+}
 
 export async function listUsers() {
   const users = await prisma.user.findMany({
@@ -46,6 +56,28 @@ export async function updateUser(
   id: string,
   input: { displayName?: string; roleId?: string | null; active?: boolean; password?: string },
 ) {
+  if (input.active === false && id === currentActor().id) {
+    throw new HttpError(400, "You cannot deactivate your own account");
+  }
+
+  // Guard against locking everyone out of user management: only relevant when active or roleId
+  // is changing, and only when the target is *currently* the sole active manage_users holder.
+  if (input.active === false || input.roleId !== undefined) {
+    const holders = await activeManageUsersHolders();
+    const target = holders.find((h) => h.id === id);
+    if (target && holders.length === 1) {
+      const stillActive = input.active !== undefined ? input.active : target.active;
+      const role =
+        input.roleId !== undefined && input.roleId !== target.roleId
+          ? input.roleId
+            ? await prisma.role.findUnique({ where: { id: input.roleId }, include: { permissions: true } })
+            : null
+          : target.role;
+      const stillManages = stillActive && canDo({ role, overrides: target.overrides }, "manage_users");
+      if (!stillManages) throw new HttpError(400, "Cannot remove the last user manager");
+    }
+  }
+
   await auditedUpdate("user", id, async () =>
     prisma.user.update({
       where: { id },

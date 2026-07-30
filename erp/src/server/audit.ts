@@ -4,6 +4,17 @@ import type { Prisma } from "@prisma/client";
 
 export type AuditableModel = "user" | "role" | "setting";
 
+// Relations pulled into before/after snapshots so audit history reflects changes made through
+// associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
+// model row itself. `undefined` means "no relations" — snapshot() falls back to a bare
+// findUnique for that model. These relations carry no sensitive fields (permission/mode keys
+// only), so redact() doesn't need new patterns to keep snapshots safe.
+const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
+  role: { permissions: true },
+  user: { overrides: true },
+  setting: undefined,
+};
+
 function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
@@ -45,8 +56,10 @@ function redact(value: unknown): Prisma.InputJsonValue | undefined {
 
 async function snapshot(model: AuditableModel, id: string): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
-  const client = prisma[model] as unknown as { findUnique: (a: { where: { id: string } }) => Promise<unknown> };
-  return client.findUnique({ where: { id } });
+  const client = prisma[model] as unknown as {
+    findUnique: (a: { where: { id: string }; include?: object }) => Promise<unknown>;
+  };
+  return client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
 }
 
 async function write(entry: {

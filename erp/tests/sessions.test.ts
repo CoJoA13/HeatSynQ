@@ -45,4 +45,20 @@ describe("sessions", () => {
     await destroySession(token);
     expect(await getSessionUser(token)).toBeNull();
   });
+
+  it("slides the expiry forward on each successful lookup", async () => {
+    const user = await makeUser();
+    const { token, expiresAt: initialExpiresAt } = await createSession(user.id);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await getSessionUser(token);
+    const row = await prisma.session.findFirstOrThrow({ where: { userId: user.id } });
+    expect(row.expiresAt.getTime()).toBeGreaterThan(initialExpiresAt.getTime());
+  });
+
+  it("rejects soft-deleted users", async () => {
+    const user = await makeUser();
+    const { token } = await createSession(user.id);
+    await prisma.user.update({ where: { id: user.id }, data: { deletedAt: new Date() } });
+    expect(await getSessionUser(token)).toBeNull();
+  });
 });

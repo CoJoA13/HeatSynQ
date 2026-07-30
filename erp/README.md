@@ -3,13 +3,14 @@
 Self-hosted web ERP for the heat-treat shop. Next.js + Prisma + PostgreSQL.
 
 ## Development
-1. `docker compose up -d db`
-2. `npm install && npx prisma migrate dev`
-3. Apply migrations to the test DB:
+1. `cp .env.example .env`
+2. `docker compose up -d db`
+3. `npm install && npx prisma migrate dev`
+4. Apply migrations to the test DB:
    `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy`
-4. `npm run db:seed` (creates admin/admin — change the password after first login)
-5. `npm run dev` → http://localhost:3000
-6. `npm test`
+5. `npm run db:seed` (creates admin/admin — change the password after first login)
+6. `npm run dev` → http://localhost:3000
+7. `npm test`
 
 ## Production (single box on the shop network)
 1. Copy `.env.example` → `.env`; set a strong `SESSION_SECRET` and change the db password

@@ -13,6 +13,11 @@ export default function SettingsPage() {
   useEffect(() => { void load(); }, []);
 
   async function save(row: Row, raw: string) {
+    if (raw.trim() === "" && typeof row.value === "number") {
+      setError("Enter a value");
+      void load();
+      return;
+    }
     const value = typeof row.value === "number" ? Number(raw) : raw;
     try {
       await api("/api/admin/settings", { method: "PUT", body: JSON.stringify({ key: row.key, value }) });

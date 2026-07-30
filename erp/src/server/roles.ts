@@ -22,13 +22,23 @@ export async function createRole(name: string): Promise<{ id: string }> {
   if (existing && !existing.deletedAt) throw new HttpError(400, "A role with that name already exists");
   const role = existing
     ? await auditedUpdate("role", existing.id, () =>
-        prisma.role.update({ where: { id: existing.id }, data: { deletedAt: null } }),
+        // Revival: a previously soft-deleted role is coming back under its old name. Clear out
+        // whatever permissions it held before deletion so the resurrected role starts empty
+        // rather than silently inheriting stale grants.
+        prisma.$transaction([
+          prisma.rolePermission.deleteMany({ where: { roleId: existing.id } }),
+          prisma.role.update({ where: { id: existing.id }, data: { deletedAt: null } }),
+        ]).then(([, revived]) => revived),
       )
     : await auditedCreate("role", { name }, () => prisma.role.create({ data: { name } }));
   return { id: role.id };
 }
 
 export async function renameRole(roleId: string, name: string): Promise<void> {
+  const existing = await prisma.role.findUnique({ where: { name } });
+  if (existing && !existing.deletedAt && existing.id !== roleId) {
+    throw new HttpError(400, "A role with that name already exists");
+  }
   await auditedUpdate("role", roleId, () => prisma.role.update({ where: { id: roleId }, data: { name } }));
 }
 
