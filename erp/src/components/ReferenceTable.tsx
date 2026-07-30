@@ -52,7 +52,8 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
           Show inactive
         </label>
-        <a href={`/api/admin/reference/${kind}/export`} className="text-sm text-blue-700 underline">
+        <a href={`/api/admin/reference/${kind}/export${showInactive ? "?includeInactive=1" : ""}`}
+           className="text-sm text-blue-700 underline">
           Export to Excel
         </a>
       </div>
