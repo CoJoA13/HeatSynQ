@@ -1139,13 +1139,9 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
 };
 ```
 
-`BASE.merge(...)` uses zod's default strip behaviour, which would silently drop `bogus`. Make the merged schema strict so unknown keys are an error:
+**Already done — pulled forward into Task 5's fix round.** Task 5's review flagged the silent-strip as Critical rather than letting it replicate across ten entities, so `.strict()` is already applied in both `createReference` and `updateReference`. Verify it is still there (`grep -n "strict()" src/server/reference.ts` → two hits) and move on; do not add it twice.
 
-```ts
-const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict().parse(input);
-```
-
-Apply `.strict()` in `updateReference` too.
+Task 5's fix round also added **revival on create** for soft-deleted names, following the `roles.ts` precedent. That behaviour now applies to every kind you add here — a soft-deleted `Material` named "1045" is revived rather than rejected when re-created. Your round-trip tests should not be surprised by it.
 
 - [ ] **Step 7: Extend the audit union**
 
@@ -2170,8 +2166,26 @@ git commit -m "feat: spreadsheet paste entry for reference tables"
 ## Task 11: Phase 2A close-out
 
 **Files:**
-- Modify: `erp/README.md`, `docs/HANDOFF.md`
-- Test: `erp/tests/permissions-sweep.test.ts`
+- Modify: `erp/README.md`, `docs/HANDOFF.md`, `erp/src/server/http.ts` (validation messages, see Step 0)
+- Test: `erp/tests/permissions-sweep.test.ts`, `erp/tests/validation-messages.test.ts`
+
+- [ ] **Step 0: Fix validation messages in the running app (added 2026-07-30 after a Task 8 investigation)**
+
+**The defect:** under Next's module resolution every zod validation error flattens to the generic string `"Invalid input"`, while the identical code under vitest produces specific messages. Reproduced against a fresh build with `.next` cleared:
+
+| POST body to `/api/admin/reference/material` | running app | vitest |
+|---|---|---|
+| `{"name":""}` | `name: Invalid input` | `name: Too small: expected string to have >=1 characters` |
+| `{"name":123}` | `name: Invalid input` | `name: Invalid input: expected string, received number` |
+| `{"name":"X","description":"leaked"}` | `body: Invalid input` | `body: Unrecognized key: "description"` |
+
+**Why it matters:** spec §12 promises "save-time errors are specific and field-anchored", and HANDOFF §5 item 5 makes field-anchored messages a standing convention. Every message-asserting test passes because vitest resolves zod differently than Next's bundler does — so the suite gives false confidence about the exact thing the spec promises. It becomes user-visible the moment the owner mistypes anything.
+
+**Likely cause to investigate first:** zod 4 ships several entry points (`zod`, `zod/v4`, `zod/mini`) and registers its English locale separately. Next's server bundling probably resolves a build whose locale/messages are absent or tree-shaken, leaving `core`'s generic fallback. Confirm the mechanism before fixing — do not guess.
+
+**The bar:** the three rows above must produce the specific message through a real HTTP call against a running dev server, not merely under vitest. Add `erp/tests/validation-messages.test.ts` asserting the specific text, and state in the report how you verified it through the running server, since a vitest-only assertion is exactly what failed to catch this.
+
+If the root cause turns out to be genuinely outside our control (an upstream Next/zod interaction with no reasonable workaround), say so with evidence and implement the fallback instead: have `handle()` synthesise a specific message from the issue's `code`, `path`, and `keys` fields, which are present and correct in both runtimes even when `message` is not.
 
 - [ ] **Step 1: Write the permission sweep test**
 
