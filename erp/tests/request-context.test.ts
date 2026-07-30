@@ -49,4 +49,20 @@ describe("request context", () => {
     const res = await me(new Request("http://t/api/auth/me"), { params: Promise.resolve({}) });
     expect(res.status).toBe(401);
   });
+
+  it("401s with an expired session cookie", async () => {
+    const cookie = await signInWith(["admin.view"]);
+    await prisma.session.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+    const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }),
+                         { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s when the user was deactivated after signing in", async () => {
+    const cookie = await signInWith(["admin.view"]);
+    await prisma.user.updateMany({ data: { active: false } });
+    const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }),
+                         { params: Promise.resolve({}) });
+    expect(res.status).toBe(401);
+  });
 });
