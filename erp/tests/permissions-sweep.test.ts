@@ -20,10 +20,25 @@ function tsFiles(dir: string): string[] {
   });
 }
 
+// A bare `.includes("requireUser")` matches the import line even when the call itself is
+// never made (or is replaced by a fabricated user object) — proven by editing a route to keep
+// the import but drop the call, which the old check let through silently. Requiring the actual
+// invocation `requireUser()` closes that. Going further: every genuine call site in this
+// codebase either feeds the result straight into `mustCan(...)`/`mustDo(...)` or binds it to a
+// variable (`const user = requireUser()`), so require one of those two shapes rather than a
+// bare, result-discarding `requireUser();` — cheap extra signal, not just "the token appears
+// somewhere in the file". `\s*` (which matches newlines) keeps this from breaking if the call
+// wraps across lines; it does not require any of it to be on one line.
+const CALLS_REQUIRE_USER = /\b(?:mustCan|mustDo)\s*\(\s*requireUser\(\)|=\s*requireUser\(\)/;
+
+// Same class of gap as above: a bare `.includes("mustCan")` matches an unused import. Require
+// the actual call.
+const CALLS_PERMISSION_GATE = /\b(?:mustCan|mustDo)\s*\(/;
+
 describe("permission sweep", () => {
   it("every API route calls requireUser", () => {
     const offenders = routeFiles(join(process.cwd(), "src/app/api"))
-      .filter((f) => !readFileSync(f, "utf8").includes("requireUser"))
+      .filter((f) => !CALLS_REQUIRE_USER.test(readFileSync(f, "utf8")))
       // The health probe and login are deliberately public. So is logout: it must clear a
       // stale cookie even when the session behind it has already expired or is invalid, so
       // gating it on requireUser would leave that cookie stuck client-side on a 401 instead
@@ -35,7 +50,7 @@ describe("permission sweep", () => {
 
   it("every admin route gates on a permission", () => {
     const offenders = routeFiles(join(process.cwd(), "src/app/api/admin"))
-      .filter((f) => { const s = readFileSync(f, "utf8"); return !s.includes("mustCan") && !s.includes("mustDo"); });
+      .filter((f) => !CALLS_PERMISSION_GATE.test(readFileSync(f, "utf8")));
     expect(offenders).toEqual([]);
   });
 
