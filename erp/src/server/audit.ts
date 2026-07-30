@@ -15,7 +15,7 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   setting: undefined,
 };
 
-function redact(value: unknown): Prisma.InputJsonValue | undefined {
+export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 

@@ -86,4 +86,14 @@ describe("settings", () => {
     expect(diffMins).toBeGreaterThanOrEqual(4);
     expect(diffMins).toBeLessThanOrEqual(6);
   });
+
+  it("routes audit values through redact so secrets never land in the log", async () => {
+    const { redact } = await import("@/server/audit");
+    expect(redact({ value: { token: "sk-live-123", host: "qbo" } }))
+      .toEqual({ value: { token: "[redacted]", host: "qbo" } });
+
+    await setSetting("company_name", "Acme Heat Treat");
+    const [entry] = await readAudit("setting", "company_name");
+    expect(entry.after).toEqual({ value: "Acme Heat Treat" });
+  });
 });

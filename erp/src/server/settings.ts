@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { currentActor } from "./context";
+import { redact } from "./audit";
 
 const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min(min).max(max);
 
@@ -46,8 +47,8 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
   await prisma.auditLog.create({
     data: {
       actorId: actor.id, actorName: actor.name, entity: "setting", entityId: key, action: "update",
-      before: before ? { value: before.value } : { value: def.default },
-      after: { value: parsed.data },
+      before: redact(before ? { value: before.value } : { value: def.default }),
+      after: redact({ value: parsed.data }),
     },
   });
 }

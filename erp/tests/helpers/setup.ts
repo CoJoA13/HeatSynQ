@@ -1,4 +1,4 @@
 import { config } from "dotenv";
-config();
+config({ quiet: true });
 // Point every prisma client in the test process at the test database.
 process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
