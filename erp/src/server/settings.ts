@@ -23,6 +23,7 @@ export const SETTINGS = {
 export type SettingKey = keyof typeof SETTINGS;
 
 export async function getSetting<K extends SettingKey>(key: K): Promise<z.infer<(typeof SETTINGS)[K]["schema"]>> {
+  if (!Object.hasOwn(SETTINGS, key)) throw new HttpError(400, `Unknown setting: ${key}`);
   const row = await prisma.setting.findUnique({ where: { key } });
   const def = SETTINGS[key];
   const raw = row ? row.value : def.default;
@@ -31,8 +32,8 @@ export async function getSetting<K extends SettingKey>(key: K): Promise<z.infer<
 }
 
 export async function setSetting(key: string, value: unknown): Promise<void> {
+  if (!Object.hasOwn(SETTINGS, key)) throw new HttpError(400, `Unknown setting: ${key}`);
   const def = SETTINGS[key as SettingKey];
-  if (!def) throw new HttpError(400, `Unknown setting: ${key}`);
   const parsed = def.schema.safeParse(value);
   if (!parsed.success) throw new HttpError(400, `Invalid value for ${key}: ${parsed.error.issues[0]?.message}`);
   const actor = currentActor();
@@ -54,10 +55,16 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
 export async function allSettings() {
   const rows = await prisma.setting.findMany();
   const stored = new Map(rows.map((r) => [r.key, r.value]));
-  return (Object.keys(SETTINGS) as SettingKey[]).map((key) => ({
-    key,
-    label: SETTINGS[key].label,
-    group: SETTINGS[key].group,
-    value: stored.has(key) ? stored.get(key) : SETTINGS[key].default,
-  }));
+  return (Object.keys(SETTINGS) as SettingKey[]).map((key) => {
+    const def = SETTINGS[key];
+    const raw = stored.has(key) ? stored.get(key) : def.default;
+    const parsed = def.schema.safeParse(raw);
+    const value = parsed.success ? parsed.data : def.default;
+    return {
+      key,
+      label: def.label,
+      group: def.group,
+      value,
+    };
+  });
 }
