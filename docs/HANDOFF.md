@@ -20,6 +20,7 @@ HeatSynQ is a self-hosted web ERP for a commercial **heat-treating shop**, built
 | `docs/superpowers/plans/2026-07-29-roadmap.md` | The 8-phase build order (owner-approved) |
 | `docs/superpowers/plans/2026-07-29-phase-1-foundation.md` | Phase 1's executed plan (historical record; two mid-execution corrections were committed to it) |
 | `docs/superpowers/plans/2026-07-30-phase-2-kickoff.md` | **Start here for Phase 2** — scope, model notes, pre-work, and the context this handoff's author held |
+| `docs/2026-07-30-process-steps-model.md` | **The Process Steps model with diagrams** — supersedes spec §5.1's shared process master. Read before touching parts or recipes |
 | `docs/2026-07-29-crossref-findings.md` | Cross-reference of the two Visual Shop reference docs — contradictions, gaps, and which source to trust where |
 | `Visual-Shop-ERP-Reference-Report.md` | Teardown of Visual Shop from the vendor KB (primary design reference, with known errors — see findings doc) |
 | `VisualShopTraining.pdf` | 2018 vendor training manual — **not in git** (44 MB, gitignored). Lives on the original machine; copy manually if needed. Printed page N = PDF page N+2 |
@@ -32,8 +33,13 @@ Scope IN: order→cert→ship→invoice core; A/R & payments inside the ERP with
 Scope OUT (deliberate, owner-confirmed — do not re-add): **scheduling** (owner schedules in Excel around molten-salt quench-tank temperatures; "can't be automated without human intervention — always"), **shop-floor tracking** (no ship gate — "we just ship"), **equipment integration**, Sales Order Entry staging, outside processing, inventory, CCM/CRM/mass email, dashboard graphs, contract review, digital order approval, kanban, assembly process masters, automatic customer emails, **CAR** (owner has a separate program; in-ERP rework may come later), **order duplication** (owner: double-billing risk).
 
 Model facts (owner's own words shaped these):
-- **Quantity AND weight both required** on orders; a part must carry **each-weight** and a **process master** (and ideally an active quote) so order entry auto-populates everything.
+- **Quantity AND weight both required** on orders; a part must carry **each-weight** and **its own Process Steps** (and ideally an active quote) so order entry auto-populates everything.
 - **Loads are routine and essential**: 1,000 pcs at 300/load → 300/300/300/100, **auto-split at order save** from the part's load qty/wt. **Loads ≠ containers** (containers are customer packaging). Shipping is decoupled from load boundaries (ship 230 of a 300 load because that's what the customer's container calls for). Three quantity layers: ordered → per-load → shipped.
+- **Part numbers are unique per customer, never globally** (owner, 2026-07-30). The same number recurs across customers as work migrates to cheaper sources, and **the chemistry can require a different recipe** — so a part number alone never identifies a part (customer shows at every selection point), and nothing about a part is ever inferred across customers from a matching number. Binds search (P3), certs (P4), and every part picker.
+- **GL accounts are their own maintained reference table, and are optional when keying a Process Step Code** (owner, 2026-07-30: "configurable and not set in stone"). Step codes/payment types/surcharges reference an account rather than storing free text.
+- **Shared process masters are REMOVED — the recipe belongs to the part** (owner, 2026-07-30; supersedes spec §5.1, recorded in spec §15 amendments). Nearly every step varies part to part (racking *always*, test type/location *always*, temper and austenitize parameters routinely), so a shared master would be an empty shell overridden everywhere — and propagating one edit across parts is precisely what chemistry-dependent outcomes make unsafe. What *is* shared: **Process Step Codes** (billable reference vocabulary carrying GL) and **Templates** (blank skeletons; "Load Template" fills structure with **empty** fields). **No copy-from-another-part mechanic, by decision.** Each step code defines which typed fields it exposes. Per-part step overrides and the step library are deleted, not deferred. Full model + diagrams: `docs/2026-07-30-process-steps-model.md`.
+- **Specifications live on the part, many per part** — never on the process. The same recipe yields ASTM grade 1, 2, or 3 depending on the customer's base iron.
+- Naming: UI says **Process Steps** (a part's recipe) and **Process Step Code** (the billable reference table, replacing the earlier "Operation").
 - Certs: **commercial + ISO 9001 rigor only** (no Nadcap/CQI-9).
 - Users: **1–5**, office-based. Platform: **self-hosted web app**. Database: **bundled PostgreSQL**.
 - The shipper's *line complete* checkbox — a human, not arithmetic — decides an order is finished (kept from Visual Shop).
@@ -85,7 +91,7 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 1. **Samples of the current printed traveler, shipper, cert, and invoice** — these drive the Phase 3+ document templates and the cert field set. Drop scans/PDFs into the repo or the project folder.
 2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely).
 3. The office's go-to report list.
-4. GL account list for operations, surcharges, payment types.
+4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
 
 ## 8. Fresh machine setup (Fedora)
 
