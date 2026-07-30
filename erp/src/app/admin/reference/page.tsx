@@ -18,7 +18,7 @@ export default function ReferencePage() {
             </li>
           ))}
         </ul>
-        <div className="flex-1"><ReferenceTable kind={kind} /></div>
+        <div className="flex-1"><ReferenceTable key={kind} kind={kind} /></div>
       </div>
     </div>
   );
