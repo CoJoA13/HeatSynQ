@@ -44,4 +44,41 @@ describe("audit helpers", () => {
     expect(await searchAudit({ entity: "user" })).toHaveLength(1);
     expect(await searchAudit({ entity: "role" })).toHaveLength(0);
   });
+
+  it("redacts nested password and token fields in create", async () => {
+    const user = await runWithActor({ id: "u0", name: "Admin" }, () =>
+      auditedCreate(
+        "user",
+        {
+          username: "nested",
+          displayName: "Nested",
+          profile: { password: "NestedPw1", email: "test@example.com" },
+          apiToken: "tok_abc",
+          secret: "sec123",
+        },
+        () => prisma.user.create({ data: { username: "nested", passwordHash: "x", displayName: "Nested" } }),
+      ),
+    );
+    const log = await readAudit("user", user.id);
+    const afterStr = JSON.stringify(log[0].after);
+    expect(afterStr).not.toContain("NestedPw1");
+    expect(afterStr).not.toContain("tok_abc");
+    expect(afterStr).not.toContain("sec123");
+    expect(afterStr).toContain("[redacted]");
+  });
+
+  it("redacts signatureImage in update", async () => {
+    const u = await prisma.user.create({
+      data: { username: "sig", passwordHash: "x", displayName: "Sig", signatureImage: Buffer.from("fakeimage") },
+    });
+    await auditedUpdate("user", u.id, () =>
+      prisma.user.update({ where: { id: u.id }, data: { displayName: "Updated" } }),
+    );
+    const [entry] = await readAudit("user", u.id);
+    const beforeStr = JSON.stringify(entry.before);
+    const afterStr = JSON.stringify(entry.after);
+    expect(beforeStr).not.toContain("fakeimage");
+    expect(afterStr).not.toContain("fakeimage");
+    expect(beforeStr).toContain("[redacted]");
+  });
 });

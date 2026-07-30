@@ -7,10 +7,40 @@ export type AuditableModel = "user" | "role" | "setting";
 function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
-  for (const key of Object.keys(clone)) {
-    if (key.toLowerCase().includes("passwordhash")) clone[key] = "[redacted]";
+
+  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage"];
+
+  function redactRecursive(obj: unknown): unknown {
+    if (obj === null || obj === undefined) return obj;
+    if (Array.isArray(obj)) {
+      return obj.map((item) => {
+        if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+          return redactRecursive(item);
+        }
+        return item;
+      });
+    }
+    if (typeof obj === "object") {
+      const result: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(obj)) {
+        const keyLower = key.toLowerCase();
+        const isSensitive = sensitiveKeyPatterns.some((pattern) => keyLower.includes(pattern));
+        if (isSensitive) {
+          result[key] = "[redacted]";
+        } else if (val !== null && typeof val === "object" && !Array.isArray(val)) {
+          result[key] = redactRecursive(val);
+        } else if (Array.isArray(val)) {
+          result[key] = redactRecursive(val);
+        } else {
+          result[key] = val;
+        }
+      }
+      return result;
+    }
+    return obj;
   }
-  return clone as Prisma.InputJsonValue;
+
+  return redactRecursive(clone) as Prisma.InputJsonValue;
 }
 
 async function snapshot(model: AuditableModel, id: string): Promise<unknown> {

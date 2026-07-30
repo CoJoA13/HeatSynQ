@@ -48,4 +48,10 @@ describe("users service", () => {
     const log = await readAudit("user", id);
     expect(log.map((l) => l.action)).toEqual(["update", "create"]);
   });
+
+  it("createUser audit entry never contains the plaintext password", async () => {
+    const { id } = await createUser({ username: "leakcheck", displayName: "L", password: "S3cretUnique!" });
+    const log = await readAudit("user", id);
+    expect(JSON.stringify(log)).not.toContain("S3cretUnique!");
+  });
 });
