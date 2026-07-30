@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll, prisma } from "./helpers/db";
 import { getSetting, setSetting, allSettings } from "@/server/settings";
-import { readAudit } from "@/server/audit";
+import { readAudit, auditSettingChange } from "@/server/audit";
 import { HttpError } from "@/server/http";
 import { createSession } from "@/server/sessions";
 
@@ -88,12 +88,13 @@ describe("settings", () => {
   });
 
   it("routes audit values through redact so secrets never land in the log", async () => {
-    const { redact } = await import("@/server/audit");
-    expect(redact({ value: { token: "sk-live-123", host: "qbo" } }))
-      .toEqual({ value: { token: "[redacted]", host: "qbo" } });
+    const beforeValue = { token: "sk-live-123", host: "qbo" };
+    const afterValue = { token: "sk-live-456", host: "qbo-prod" };
 
-    await setSetting("company_name", "Acme Heat Treat");
-    const [entry] = await readAudit("setting", "company_name");
-    expect(entry.after).toEqual({ value: "Acme Heat Treat" });
+    await auditSettingChange("test_sensitive_setting", beforeValue, afterValue);
+
+    const [entry] = await readAudit("setting", "test_sensitive_setting");
+    expect(entry.before).toEqual({ value: { token: "[redacted]", host: "qbo" } });
+    expect(entry.after).toEqual({ value: { token: "[redacted]", host: "qbo-prod" } });
   });
 });

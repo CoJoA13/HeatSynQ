@@ -81,6 +81,21 @@ async function write(entry: {
   });
 }
 
+export async function auditSettingChange(key: string, beforeValue: unknown, afterValue: unknown): Promise<void> {
+  const actor = currentActor();
+  await prisma.auditLog.create({
+    data: {
+      actorId: actor.id,
+      actorName: actor.name,
+      entity: "setting",
+      entityId: key,
+      action: "update",
+      before: redact({ value: beforeValue }),
+      after: redact({ value: afterValue }),
+    },
+  });
+}
+
 export async function auditedCreate<T extends { id: string }>(
   model: AuditableModel, data: object, doIt: () => Promise<T>,
 ): Promise<T> {
