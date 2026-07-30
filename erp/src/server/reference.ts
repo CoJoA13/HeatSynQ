@@ -9,7 +9,13 @@ export type ReferenceRow = { id: string; name: string; active: boolean } & Recor
 
 /** Fields each kind accepts beyond `name` and `active`. */
 const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
-  glAccount: z.object({ description: z.string().max(200).optional() }),
+  glAccount:       z.object({ description: z.string().max(200).optional() }),
+  inspectionCode:  z.object({ defaultScaleId: z.string().nullable().optional() }),
+  paymentType:     z.object({ glAccountId: z.string().nullable().optional() }),
+  commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
+  specification:   z.object({ text: z.string().max(4000).optional() }),
+  material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
+  carrier: z.object({}), terms: z.object({}), salesperson: z.object({}),
 };
 
 const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });

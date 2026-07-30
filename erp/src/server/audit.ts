@@ -2,7 +2,10 @@ import { prisma } from "./db";
 import { currentActor } from "./context";
 import type { Prisma } from "@prisma/client";
 
-export type AuditableModel = "user" | "role" | "setting" | "glAccount";
+export type AuditableModel =
+  | "user" | "role" | "setting"
+  | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
+  | "carrier" | "terms" | "paymentType" | "salesperson" | "commentSnippet" | "specification";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -14,6 +17,16 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   user: { overrides: true },
   setting: undefined,
   glAccount: undefined,
+  material: undefined,
+  inspectionScale: undefined,
+  inspectionCode: undefined,
+  containerType: undefined,
+  carrier: undefined,
+  terms: undefined,
+  paymentType: undefined,
+  salesperson: undefined,
+  commentSnippet: undefined,
+  specification: undefined,
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

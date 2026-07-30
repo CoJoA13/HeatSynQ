@@ -91,11 +91,109 @@ model AuditLog {
 }
 
 model GlAccount {
-  id          String    @id @default(cuid())
-  name        String    @unique          // the account number, e.g. "4010"
-  description String    @default("")
-  active      Boolean   @default(true)
+  id           String        @id @default(cuid())
+  name         String        @unique          // the account number, e.g. "4010"
+  description  String        @default("")
+  active       Boolean       @default(true)
+  deletedAt    DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  paymentTypes PaymentType[]
+}
+
+model Material {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model InspectionScale {
+  id        String            @id @default(cuid())
+  name      String            @unique
+  active    Boolean           @default(true)
+  deletedAt DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  codes     InspectionCode[]
+}
+
+model InspectionCode {
+  id             String           @id @default(cuid())
+  name           String           @unique
+  defaultScaleId String?
+  defaultScale   InspectionScale? @relation(fields: [defaultScaleId], references: [id])
+  active         Boolean          @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model ContainerType {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Carrier {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Terms {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model PaymentType {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  glAccountId String?
+  glAccount   GlAccount? @relation(fields: [glAccountId], references: [id])
+  active      Boolean    @default(true)
   deletedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Salesperson {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model CommentSnippet {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  text      String    @default("")
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Specification {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  text      String    @default("")
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
