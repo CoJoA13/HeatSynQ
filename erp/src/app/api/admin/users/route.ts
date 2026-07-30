@@ -4,8 +4,8 @@ import { handle, requireUser } from "@/server/http";
 import { mustDo } from "@/server/permissions";
 import { listUsers, createUser } from "@/server/users";
 
-export const GET = handle(async (req) => {
-  mustDo(await requireUser(req), "manage_users");
+export const GET = handle(async () => {
+  mustDo(requireUser(), "manage_users");
   return NextResponse.json(await listUsers());
 });
 
@@ -17,6 +17,6 @@ const CreateBody = z.object({
 });
 
 export const POST = handle(async (req) => {
-  mustDo(await requireUser(req), "manage_users");
+  mustDo(requireUser(), "manage_users");
   return NextResponse.json(await createUser(CreateBody.parse(await req.json())));
 });

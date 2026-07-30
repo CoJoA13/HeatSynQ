@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
-import { runWithActor } from "@/server/context";
+import { runWithContext } from "@/server/context";
 import { auditedCreate, auditedUpdate, auditedSoftDelete, readAudit, searchAudit } from "@/server/audit";
 
 describe("audit helpers", () => {
   beforeEach(async () => await truncateAll());
 
   it("logs create with actor and redacts passwordHash", async () => {
-    const user = await runWithActor({ id: "u0", name: "Admin" }, () =>
+    const user = await runWithContext({ actor: { id: "u0", name: "Admin" }, user: null }, () =>
       auditedCreate("user", { username: "jane", passwordHash: "SECRET", displayName: "Jane" }, () =>
         prisma.user.create({ data: { username: "jane", passwordHash: "SECRET", displayName: "Jane" } }),
       ),
@@ -46,7 +46,7 @@ describe("audit helpers", () => {
   });
 
   it("redacts nested password and token fields in create", async () => {
-    const user = await runWithActor({ id: "u0", name: "Admin" }, () =>
+    const user = await runWithContext({ actor: { id: "u0", name: "Admin" }, user: null }, () =>
       auditedCreate(
         "user",
         {

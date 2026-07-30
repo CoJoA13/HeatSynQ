@@ -5,7 +5,7 @@ import { createRole, setRolePermissions } from "@/server/roles";
 import { verifyPassword } from "@/server/password";
 import { HttpError } from "@/server/http";
 import { readAudit } from "@/server/audit";
-import { runWithActor } from "@/server/context";
+import { runWithContext } from "@/server/context";
 
 describe("users service", () => {
   beforeEach(async () => await truncateAll());
@@ -73,7 +73,7 @@ describe("users service", () => {
     it("rejects a user deactivating their own account", async () => {
       const { id } = await createUser({ username: "self", displayName: "Self", password: "pw123456" });
       await expect(
-        runWithActor({ id, name: "Self" }, () => updateUser(id, { active: false })),
+        runWithContext({ actor: { id, name: "Self" }, user: null }, () => updateUser(id, { active: false })),
       ).rejects.toThrow("You cannot deactivate your own account");
       expect((await listUsers()).find((u) => u.id === id)?.active).toBe(true);
     });
