@@ -160,6 +160,7 @@ Today `handle()` resolves the session and then `requireUser()` resolves it *agai
 
 **Files:**
 - Modify: `erp/src/server/sessions.ts`, `context.ts`, `http.ts`, `erp/src/app/api/auth/me/route.ts`, and all ten route files
+- Create: `erp/tests/helpers/auth.ts` — shared sign-in helper. Tasks 5 and 9 need the same login boilerplate; writing it three times would be verbatim duplication of a logic block, which the review rubric treats as a defect.
 - Test: `erp/tests/request-context.test.ts`, plus updates to existing route tests
 
 **Interfaces:**
@@ -169,35 +170,53 @@ Today `handle()` resolves the session and then `requireUser()` resolves it *agai
   - `context.ts`: `runWithContext(ctx: RequestContext, fn: () => Promise<T>): Promise<T>`, `currentActor(): Actor`, `currentUser(): SessionUser | null`, `type RequestContext = { actor: Actor; user: SessionUser | null }`
   - `http.ts`: **`requireUser(): SessionUser`** — now **synchronous, no `req` argument**. Every call site becomes `mustCan(requireUser(), "area", "action")`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the shared sign-in helper**
+
+```ts
+// erp/tests/helpers/auth.ts
+import { prisma } from "./db";
+import { hashPassword } from "@/server/password";
+import { POST as login } from "@/app/api/auth/login/route";
+
+/**
+ * Creates a role carrying exactly `permissions`, a user holding it, and returns that
+ * user's session cookie. Used by every route test that needs an authenticated request.
+ */
+export async function signInWith(permissions: string[], username = "root"): Promise<string> {
+  const role = await prisma.role.create({
+    data: {
+      name: `Role-${username}`,
+      permissions: { create: permissions.map((permission) => ({ permission })) },
+    },
+  });
+  await prisma.user.create({
+    data: {
+      username, displayName: username,
+      passwordHash: await hashPassword("secret1"), roleId: role.id,
+    },
+  });
+  const res = await login(new Request("http://t/api/auth/login", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password: "secret1" }),
+  }), { params: Promise.resolve({}) });
+  return res.headers.get("set-cookie")!.split(";")[0];
+}
+```
+
+- [ ] **Step 1b: Write the failing test**
 
 ```ts
 // erp/tests/request-context.test.ts
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
-import { hashPassword } from "@/server/password";
-import { POST as login } from "@/app/api/auth/login/route";
+import { signInWith } from "./helpers/auth";
 import { GET as me } from "@/app/api/auth/me/route";
-
-async function signIn(): Promise<string> {
-  const role = await prisma.role.create({
-    data: { name: "Admin", permissions: { create: [{ permission: "admin.view" }] } },
-  });
-  await prisma.user.create({
-    data: { username: "root", displayName: "Root", passwordHash: await hashPassword("secret1"), roleId: role.id },
-  });
-  const res = await login(new Request("http://t/api/auth/login", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ username: "root", password: "secret1" }),
-  }), { params: Promise.resolve({}) });
-  return res.headers.get("set-cookie")!.split(";")[0];
-}
 
 describe("request context", () => {
   beforeEach(async () => await truncateAll());
 
   it("resolves the session exactly once per request", async () => {
-    const cookie = await signIn();
+    const cookie = await signInWith(["admin.view"]);
     const spy = vi.spyOn(prisma.session, "update");
     const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }),
                          { params: Promise.resolve({}) });
@@ -208,14 +227,14 @@ describe("request context", () => {
   });
 
   it("me returns effective permissions via the shared resolver", async () => {
-    const cookie = await signIn();
+    const cookie = await signInWith(["admin.view"]);
     const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }),
                          { params: Promise.resolve({}) });
     expect(await res.json()).toMatchObject({ username: "root", permissions: ["admin.view"] });
   });
 
   it("DENY override beats a role grant in the me payload", async () => {
-    const cookie = await signIn();
+    const cookie = await signInWith(["admin.view"]);
     const user = await prisma.user.findUniqueOrThrow({ where: { username: "root" } });
     await prisma.userPermissionOverride.create({
       data: { userId: user.id, permission: "admin.view", mode: "DENY" },
@@ -652,8 +671,10 @@ describe("GL account reference", () => {
 
   it("404s on an unknown id and rejects an unknown kind", async () => {
     await expect(updateReference("glAccount", "nope", { name: "x" })).rejects.toMatchObject({ status: 404 });
-    // @ts-expect-error deliberately invalid kind
-    await expect(listReference("notAKind")).rejects.toThrow(HttpError);
+    // `kind` is typed `string` on purpose so routes can pass a raw path segment — the guard
+    // is runtime, not compile time. No @ts-expect-error here: the call type-checks fine, and
+    // an unused directive is a hard tsc failure (TS2578).
+    await expect(listReference("notAKind")).rejects.toMatchObject({ status: 400 });
   });
 });
 ```
@@ -719,7 +740,8 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
 
 const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });
 
-function assertKind(kind: string): asserts kind is ReferenceKind {
+/** Exported so paste.ts guards on the same rule rather than re-deriving it. */
+export function assertKind(kind: string): asserts kind is ReferenceKind {
   if (!(REFERENCE_KINDS as readonly string[]).includes(kind)) {
     throw new HttpError(400, `Unknown reference kind: ${kind}`);
   }
@@ -837,6 +859,7 @@ Append to `erp/tests/reference-gl.test.ts`:
 
 ```ts
 import { GET as listRoute, POST as createRoute } from "@/app/api/admin/reference/[kind]/route";
+import { signInWith } from "./helpers/auth";
 
 describe("reference routes", () => {
   beforeEach(async () => await truncateAll());
@@ -848,19 +871,7 @@ describe("reference routes", () => {
   });
 
   it("403s for a signed-in user without admin.create", async () => {
-    const role = await prisma.role.create({
-      data: { name: "Viewer", permissions: { create: [{ permission: "admin.view" }] } },
-    });
-    const { hashPassword } = await import("@/server/password");
-    await prisma.user.create({
-      data: { username: "v", displayName: "V", passwordHash: await hashPassword("secret1"), roleId: role.id },
-    });
-    const { POST: login } = await import("@/app/api/auth/login/route");
-    const res0 = await login(new Request("http://t/api/auth/login", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "v", password: "secret1" }),
-    }), { params: Promise.resolve({}) });
-    const cookie = res0.headers.get("set-cookie")!.split(";")[0];
+    const cookie = await signInWith(["admin.view"]);
 
     const ok = await listRoute(new Request("http://t/api/admin/reference/glAccount", { headers: { cookie } }), ctx);
     expect(ok.status).toBe(200);
@@ -1821,9 +1832,7 @@ import { truncateAll } from "./helpers/db";
 import { toXlsx } from "@/server/excel";
 import { createReference } from "@/server/reference";
 import { GET as exportRoute } from "@/app/api/admin/reference/[kind]/export/route";
-import { prisma } from "./helpers/db";
-import { hashPassword } from "@/server/password";
-import { POST as login } from "@/app/api/auth/login/route";
+import { signInWith } from "./helpers/auth";
 
 describe("excel export", () => {
   beforeEach(async () => await truncateAll());
@@ -1845,18 +1854,7 @@ describe("excel export", () => {
     const anon = await exportRoute(new Request("http://t/api/admin/reference/glAccount/export"), ctx);
     expect(anon.status).toBe(401);
 
-    const role = await prisma.role.create({
-      data: { name: "Admin", permissions: { create: [{ permission: "admin.view" }] } },
-    });
-    await prisma.user.create({
-      data: { username: "root", displayName: "Root", passwordHash: await hashPassword("secret1"), roleId: role.id },
-    });
-    const res0 = await login(new Request("http://t/api/auth/login", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "root", password: "secret1" }),
-    }), { params: Promise.resolve({}) });
-    const cookie = res0.headers.get("set-cookie")!.split(";")[0];
-
+    const cookie = await signInWith(["admin.view"]);
     await createReference("glAccount", { name: "4010", description: "Heat Treat Revenue" });
     const res = await exportRoute(
       new Request("http://t/api/admin/reference/glAccount/export", { headers: { cookie } }), ctx);
@@ -1924,7 +1922,7 @@ export const GET = handle(async (req, { params }) => {
       "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "content-disposition": `attachment; filename="${kind}.xlsx"`,
     },
-  }) as NextResponse;
+  });
 });
 ```
 
@@ -2018,8 +2016,8 @@ Expected: FAIL — `Cannot find module '@/server/paste'`.
 
 ```ts
 // erp/src/server/paste.ts
-import { createReference } from "./reference";
-import { REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "../lib/reference-constants";
+import { createReference, assertKind } from "./reference";
+import { REFERENCE_EXTRA_FIELDS } from "../lib/reference-constants";
 
 export type PasteResult = { created: number; errors: { row: number; message: string }[] };
 
@@ -2039,12 +2037,8 @@ export function parseTsv(text: string, columns: string[]): Record<string, string
  * a single typo in row 40 must not discard the 39 rows above it.
  */
 export async function pasteReference(kind: string, text: string): Promise<PasteResult> {
-  const extras = REFERENCE_EXTRA_FIELDS[kind as ReferenceKind];
-  if (!extras) {
-    // Delegate the unknown-kind rejection to the service so the message stays in one place.
-    await createReference(kind, { name: "probe" });
-  }
-  const columns = ["name", ...extras.map((f) => f.key)];
+  assertKind(kind);
+  const columns = ["name", ...REFERENCE_EXTRA_FIELDS[kind].map((f) => f.key)];
   const rows = parseTsv(text, columns);
 
   const errors: PasteResult["errors"] = [];
