@@ -9,5 +9,33 @@ services:
     volumes:
       - dbdata:/var/lib/postgresql/data
       - ./db-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    ports: ["80:3000"]
+    environment:
+      DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp
+      SESSION_SECRET: ${SESSION_SECRET:?set in .env}
+    depends_on:
+      db: { condition: service_healthy }
+    profiles: ["prod"]
+
+  backup:
+    image: postgres:16
+    environment:
+      DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+    entrypoint: ["sh", "-c", "while true; do sh /backup.sh; sleep 86400; done"]
+    depends_on:
+      db: { condition: service_healthy }
+    profiles: ["prod"]
+
 volumes:
   dbdata:

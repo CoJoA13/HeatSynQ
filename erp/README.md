@@ -1,36 +1,31 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Shop ERP
 
-## Getting Started
+Self-hosted web ERP for the heat-treat shop. Next.js + Prisma + PostgreSQL.
 
-First, run the development server:
+## Development
+1. `docker compose up -d db`
+2. `npm install && npx prisma migrate dev`
+3. Apply migrations to the test DB:
+   `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy`
+4. `npm run db:seed` (creates admin/admin — change the password after first login)
+5. `npm run dev` → http://localhost:3000
+6. `npm test`
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Production (single box on the shop network)
+1. Copy `.env.example` → `.env`; set a strong `SESSION_SECRET` and change the db password
+   in `docker-compose.yml` + `DATABASE_URL`s together.
+2. `docker compose --profile prod up -d --build`
+3. First run only: seed from a checkout with dependencies installed, not from inside the
+   container — the production image is a pruned standalone build and doesn't carry `tsx`
+   or other dev tooling needed to run `prisma/seed.ts`. From a machine with network access
+   to the db (e.g. the box itself, since `db` publishes 5432):
+   `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp" npm run db:seed`
+   (match host/credentials to whatever you set in step 1).
+4. App at http://<server>/ — migrations apply automatically on start.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Backups
+- Nightly `pg_dump` gzip into `./backups/`, 30 days kept (backup container).
+- Restore: `gunzip -c backups/erp_<stamp>.sql.gz | docker compose exec -T db psql -U erp -d erp`
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Updating
+`git pull && docker compose --profile prod up -d --build` — users just refresh.
