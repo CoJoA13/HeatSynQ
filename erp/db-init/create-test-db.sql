@@ -1,0 +1,1 @@
+CREATE DATABASE erp_test OWNER erp;

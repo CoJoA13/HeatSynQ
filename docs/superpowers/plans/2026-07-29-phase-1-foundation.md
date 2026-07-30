@@ -743,7 +743,9 @@ export async function requireUser(req: Request): Promise<SessionUser> {
   return user;
 }
 
-type Handler = (req: Request, ctx?: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
+type Handler = (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
+// ctx REQUIRED: Next 15's generated ParamCheck rejects `ctx?` (undefined not assignable to RouteContext).
+// Tests therefore always pass a ctx: `TEST_CTX = { params: Promise.resolve({}) }`.
 
 /** Wraps a route handler: catches HttpError, and if a session exists, runs inside the actor context. */
 export function handle(fn: Handler): Handler {
@@ -1868,7 +1870,7 @@ async function adminCookie(): Promise<string> {
   const res = await login(new Request("http://t/api/auth/login", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ username: "root", password: "secret1" }),
-  }));
+  }), { params: Promise.resolve({}) });
   return res.headers.get("set-cookie")!.split(";")[0];
 }
 
@@ -2312,7 +2314,7 @@ describe("/api/auth/me", () => {
     const loginRes = await login(new Request("http://t/api/auth/login", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "jane", password: "secret1" }),
-    }));
+    }), { params: Promise.resolve({}) });
     const cookie = loginRes.headers.get("set-cookie")!.split(";")[0];
     const res = await me(new Request("http://t/api/auth/me", { headers: { cookie } }), { params: Promise.resolve({}) });
     const body = await res.json();
@@ -2322,7 +2324,7 @@ describe("/api/auth/me", () => {
 
   it("401s without a session", async () => {
     const res = await me(new Request("http://t/api/auth/me"), { params: Promise.resolve({}) });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(401); // (one-arg handler calls are a type error now that ctx is required)
   });
 });
 ```
