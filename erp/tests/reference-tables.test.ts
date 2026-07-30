@@ -54,4 +54,28 @@ describe("flat reference tables", () => {
   it("rejects an unknown extra field rather than silently dropping it", async () => {
     await expect(createReference("material", { name: "1045", bogus: true })).rejects.toThrow();
   });
+
+  it("rejects a bad defaultScaleId with a clean 400, not a raw Prisma FK error", async () => {
+    expect.assertions(3);
+    try {
+      await createReference("inspectionCode", { name: "HB", defaultScaleId: "nope" });
+    } catch (err) {
+      expect(err).toMatchObject({ status: 400 });
+      const message = (err as { message: string }).message;
+      expect(message.toLowerCase()).not.toContain("fkey");
+      expect(message.toLowerCase()).toContain("does not exist");
+    }
+  });
+
+  it("rejects a bad glAccountId with a clean 400, not a raw Prisma FK error", async () => {
+    expect.assertions(3);
+    try {
+      await createReference("paymentType", { name: "Check", glAccountId: "nope" });
+    } catch (err) {
+      expect(err).toMatchObject({ status: 400 });
+      const message = (err as { message: string }).message;
+      expect(message.toLowerCase()).not.toContain("fkey");
+      expect(message.toLowerCase()).toContain("does not exist");
+    }
+  });
 });
