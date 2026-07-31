@@ -6,7 +6,7 @@ export type AuditableModel =
   | "user" | "role" | "setting"
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
-  | "processStepCode" | "customer";
+  | "processStepCode" | "customer" | "customerAddress";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -35,6 +35,7 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Addresses and contacts (Task 5/6) are audited as their own models, so the parent snapshot
   // needs no relations.
   customer: undefined,
+  customerAddress: undefined,
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
