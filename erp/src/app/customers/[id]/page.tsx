@@ -25,9 +25,11 @@ type Contact = {
   getsShippers: boolean; getsInvoices: boolean; getsStatements: boolean; getsCerts: boolean;
 };
 type Term = { id: string; name: string };
-// Slice of CustomerRow needed for the parent selector — every OTHER active, non-deleted
-// customer, keyed by id so the current row can be excluded from its own option list.
-type CustomerOption = { id: string; code: string; name: string };
+// Slice of CustomerRow needed for the parent selector — every OTHER non-deleted customer
+// (active or not, see R3 below), keyed by id so the current row can be excluded from its own
+// option list. `active` is kept so an inactive option can be labelled rather than presented as
+// if it were a normal, active customer.
+type CustomerOption = { id: string; code: string; name: string; active: boolean };
 
 const emptyAddrDraft = { kind: "SHIP_TO" as AddressKind, name: "", street: "", city: "", state: "", zip: "" };
 const emptyContactDraft = { name: "", email: "", phone: "" };
@@ -63,14 +65,24 @@ function CustomerDetail({ id }: { id: string }) {
   // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
   // an empty list rather than a broken page: the select still renders with a blank option.
   useEffect(() => { api<Term[]>("/api/admin/reference/terms").then(setTerms).catch(() => {}); }, []);
-  // Parent-selector options: every OTHER active customer, fetched the same way terms are —
+  // Parent-selector options: every OTHER non-deleted customer, fetched the same way terms are —
   // once, independent of `load()`, gated on the same customers.view permission that got the
   // user onto this page in the first place, so there's no permission mismatch to worry about
   // (unlike Terms/admin.view above). The current customer excludes itself at render time
   // (F4) rather than here, since `id` never changes for a mounted instance (see the `key={id}`
   // remount comment on CustomerDetailPage) but filtering at the call site keeps this effect
   // identical in shape to the Terms one above.
-  useEffect(() => { api<CustomerOption[]>("/api/customers").then(setCustomers).catch(() => {}); }, []);
+  //
+  // includeInactive=1 (R3): the service permits an inactive customer as a parent and
+  // getCustomer() keeps returning that parentId regardless of the parent's active flag. A
+  // controlled <select> whose value matches no <option> silently renders as "— none —", which
+  // would misrepresent stored data and risk clobbering a real (if inactive) parent on the next
+  // interaction with the select. Fetching every non-deleted customer guarantees the assigned
+  // parent is always present as an option; inactive ones are labelled at render time so they
+  // aren't mistaken for active customers.
+  useEffect(() => {
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch(() => {});
+  }, []);
 
   // Per-key request queue: guards against optimistic saves committing out of order. Without
   // this, two overlapping PUTs for the same field (an ordinary double-click on a checkbox before
@@ -98,32 +110,46 @@ function CustomerDetail({ id }: { id: string }) {
   // this touches is bound to `c` as a controlled value (not defaultValue), so when a rejected
   // save rolls back via load() below, the input's displayed text follows the reverted state
   // instead of continuing to show the text that was just rejected (Fix C2).
-  async function save(body: Partial<Customer>) {
+  //
+  // Returns whether the save succeeded (R2). This is the same contract call() already offers
+  // its callers (F6): the caller decides what to do next instead of save() deciding for every
+  // caller by reloading unconditionally. That matters here because save() already reloads (and
+  // sets the error) on its own failure path — a caller that reloads *again* afterward, without
+  // checking success, clears an error that was just set (load() resets `error` to null on
+  // success). This is the third time that exact "a reload clears the error that was just set"
+  // shape has bitten this page (see the History: C2's own fix comment above, and toggleContact/
+  // saveAddressField/saveContactField below which are single-shot and never hit it only because
+  // nothing downstream of them reloads again). Returning a boolean here, once, closes the door
+  // on every future caller making the same mistake — a caller that wants to reload after success
+  // can simply check the return value first, and there is no second reload path left to forget.
+  async function save(body: Partial<Customer>): Promise<boolean> {
     setC((cur) => (cur ? { ...cur, ...body } : cur));
     const key = Object.keys(body).sort().join(",");
-    await serial(key, async () => {
+    return serial(key, async () => {
       try {
         await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
         setError(null);
+        return true;
       } catch (e) {
         // Roll back to server truth first, then report why — load() clears the error on
         // success, so setting the error before the reload lets that clear wipe it out
         // before the user ever sees it.
         await load().catch(() => {});
         setError((e as Error).message);
+        return false;
       }
     });
   }
   // Parent selection needs one extra step beyond a plain save(): the header's "Division of X"
   // text and this row's own option list are both derived from OTHER customers' data, which a
-  // bare PUT {parentId} response can't refresh (the PUT only echoes {ok:true}). Reloading after
-  // save() settles (success or the rollback save() already performed on failure) is simplest —
-  // it also picks up server-side rejections (self-parent, cycle, deleted parent) via save()'s
-  // existing error path, so those show up as the field-anchored 400 the service already raises,
-  // with no client-side re-implementation of those checks.
+  // bare PUT {parentId} response can't refresh (the PUT only echoes {ok:true}). Reloading is
+  // only correct once save() has actually succeeded (R2) — save() already reloads and sets the
+  // error itself on failure, so reloading again unconditionally would clear that error before
+  // the user ever saw why their selection was rejected (self-parent, cycle, deleted parent; the
+  // field-anchored 400 the service already raises, with no client-side re-implementation of
+  // those checks needed here).
   async function saveParent(parentId: string) {
-    await save({ parentId: parentId || null });
-    await load().catch(() => {});
+    if (await save({ parentId: parentId || null })) await load().catch(() => {});
   }
   // call() never optimistically mutates local state before the request (unlike save() and
   // toggleContactFlag() below), so its catch has nothing to roll back and setError() here can
@@ -180,9 +206,25 @@ function CustomerDetail({ id }: { id: string }) {
 
   return (
     <div className="p-6">
-      <h1 className="mb-1 text-2xl font-semibold">
-        <span className="font-mono">{c.code}</span> — {c.name}
-      </h1>
+      {/* R1: code and name were previously static header text — the only way to fix a typo in
+          either was to delete and re-create the customer, which is blocked outright once it has
+          children and discards its addresses/contacts either way. Editable in place now, using
+          the same onChange-sets-local/onBlur-saves shape as defaultPo etc. below: `code` is the
+          customer's unique identity and is trimmed/required server-side, so a duplicate or blank
+          value comes back as a field-anchored 400 through save()'s existing error path — the
+          input reverts to server truth and the error banner explains why, same as every other
+          field on this page (Fix C2). */}
+      <div className="mb-1 flex flex-wrap items-baseline gap-2">
+        <input value={c.code} aria-label="Customer code"
+               onChange={(e) => setC({ ...c, code: e.target.value })}
+               onBlur={(e) => save({ code: e.target.value })}
+               className="w-40 rounded border px-2 py-1 font-mono text-xl font-semibold" />
+        <span className="text-2xl font-semibold text-slate-400">—</span>
+        <input value={c.name} aria-label="Customer name"
+               onChange={(e) => setC({ ...c, name: e.target.value })}
+               onBlur={(e) => save({ name: e.target.value })}
+               className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold" />
+      </div>
       {c.parentCode && <p className="mb-3 text-sm text-slate-500">Division of {c.parentCode}</p>}
       {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
 
@@ -230,7 +272,9 @@ function CustomerDetail({ id }: { id: string }) {
                     className="ml-2 rounded border px-2 py-1">
               <option value="">— none —</option>
               {customers.filter((x) => x.id !== id).map((x) => (
-                <option key={x.id} value={x.id}>{x.code} — {x.name}</option>
+                <option key={x.id} value={x.id}>
+                  {x.code} — {x.name}{!x.active && " (inactive)"}
+                </option>
               ))}
             </select>
           </label>
