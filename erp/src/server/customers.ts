@@ -20,6 +20,17 @@ const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
 const money = z.union([z.number(), z.string()]).nullable().optional();
 
+// A revived row must be indistinguishable from a fresh create — the owner typing a code that
+// happens to match a deleted one is creating a customer, not resurrecting its commercial terms.
+// The row id is reused only because the unique constraint forces it. Every field the caller
+// does not supply on revival resets to its schema default, exactly as a genuine create would;
+// the caller's input is then applied over the top.
+const REVIVAL_DEFAULTS = {
+  parentId: null, termsId: null, creditLimit: null, creditHold: false, cod: false,
+  taxable: true, defaultPo: "", orderNotes: "", shippingNotes: "", invoiceNotes: "",
+  surchargeOptOut: false, financeChargeRate: null,
+} as const;
+
 const CREATE = z.object({
   code: z.string().min(1).max(30),
   name: z.string().min(1).max(200),
@@ -109,7 +120,7 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
           // returning it still inactive would make a "successful" create silently invisible.
           prisma.customer.update({
             where: { id: existing.id },
-            data: { ...data, deletedAt: null, active: data.active ?? true },
+            data: { ...REVIVAL_DEFAULTS, ...data, deletedAt: null, active: data.active ?? true },
           })))
     : await auditedCreate("customer", data, () =>
         withDbErrors({ entity: "Customer", conflictField: "code" }, () =>

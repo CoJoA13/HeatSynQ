@@ -102,4 +102,25 @@ describe("customers service", () => {
     await expect(getCustomer("nope")).rejects.toMatchObject({ status: 404 });
     await expect(updateCustomer("nope", { name: "x" })).rejects.toMatchObject({ status: 404 });
   });
+
+  it("revival resets every field a genuine create would default, not just active", async () => {
+    const fresh = await createCustomer({ code: "FRESH", name: "Fresh Co" });
+    const freshRow = await getCustomer(fresh.id);
+
+    const { id } = await createCustomer({
+      code: "ACME", name: "Acme", creditHold: true, taxable: false, surchargeOptOut: true,
+      cod: true, defaultPo: "OLD-PO", orderNotes: "old notes", shippingNotes: "old ship notes",
+      invoiceNotes: "old invoice notes", creditLimit: "9999.00", financeChargeRate: "0.02",
+    });
+    await deleteCustomer(id);
+
+    const revived = await createCustomer({ code: "ACME", name: "Acme Reborn" });
+    expect(revived.id).toBe(id);
+    const revivedRow = await getCustomer(revived.id);
+
+    const identityFields = ["id", "code", "name"] as const;
+    const omitIdentity = (row: typeof freshRow) =>
+      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
+    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+  });
 });
