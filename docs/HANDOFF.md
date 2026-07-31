@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-07-30, end of Phase 2B. This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-07-31, Phase 2B complete and in review (PR #2, not merged). Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
 
 ---
 
@@ -73,6 +73,22 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
+### 4a. RESUME HERE — state as of 2026-07-31 evening
+
+**Phase 2B is finished and open as a pull request, not merged.** `phase-2b-customers` at `b34e307`, pushed, `MERGEABLE`, 246 tests with `tsc` / `eslint` / `npm run build` all clean. **PR: https://github.com/CoJoA13/HeatSynQ/pull/2**
+
+Three rounds of automated review have run against it. **All 23 threads are answered and resolved.** Twenty were fixed on the branch; two were filed as issues; one was answered as already-recorded. Open issues, both deliberate deferrals rather than oversights:
+
+- **#3** — a correction typed during a failing save can leave the UI stale. Database stays correct; needs a compound race; resolves on reload.
+- **#4** — **needs an owner decision.** A contact can carry document-delivery flags (`getsInvoices`, `getsCerts`, …) with a blank email, and an existing email can be cleared while the flags stay on. Nothing breaks today, but Phases 4–5 will select those contacts for email delivery with no destination. Two defensible rules, both written up in the issue: reject the combination, or allow it and have those phases skip such contacts *visibly*. The second may fit better if the shop ever posts or faxes to a contact.
+
+**What to do next, in order:**
+1. Check the PR for a fourth review round (`gh pr view 2`, and the GraphQL `reviewThreads` query for unresolved ones). Triage by §5a's rule, reply on each thread, resolve.
+2. When the reviews go quiet, the merge decision is the owner's — `superpowers:finishing-a-development-branch` presents the options.
+3. Phase 2C is Parts. Its plan is not written. Its inputs: the kickoff brief (`docs/superpowers/plans/2026-07-30-phase-2-kickoff.md`, §2.3 and open items), the process-steps model doc, and §6's carried backlog. **Three obligations it inherits:** consolidate revival-on-create into one shared helper before parts add a fifth site; build name resolution for the raw-cuid reference columns; and decide the reference-pick-list permission question (§6), which parts need four times over on one screen.
+
+**After a reboot the environment comes back on its own** — `docker.service` is enabled and `erp-db-1` is `restart: unless-stopped`, so both databases return migrated. Git identity is set repo-locally. One nice change: a fresh login shell will carry the `docker` group natively, so the `sg docker -c '…'` wrapper used throughout this session is no longer needed — plain `docker compose …` works.
+
 ## 5. Conventions Phase 2+ must follow (learned and enforced in Phase 1)
 
 1. **TDD per task**: failing test → implement → pass → commit. Vitest, real DB (`erp_test`), `truncateAll()` in beforeEach, `fileParallelism: false`.
@@ -85,6 +101,27 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 8. **Server-rendered pages that fetch data must call `requireUser` themselves** — the middleware is a cookie-presence redirect only. (Phase 1 pages are client components hitting guarded APIs, which is also fine.)
 9. Conventional commits, ending with the Co-Authored-By line already used throughout `git log`.
 10. Prisma migrations are applied to BOTH databases: `npx prisma migrate dev` (dev) then `DATABASE_URL=<erp_test url> npx prisma migrate deploy`.
+11. **Any model with a `@unique` column plus soft delete needs revival-on-create**, and a revived row must be **indistinguishable from a fresh create** — clear `deletedAt`, reset every unsupplied field to its schema default, reset `active` to true unless explicitly passed, and soft-delete its children with it. Got wrong four times across two phases, always where it was reimplemented rather than shared. See §6's note about consolidating it.
+12. **Detail pages must remount per record** (`<Detail key={id} …>`), and any field bound with `defaultValue` will otherwise keep the previous record's text and write it onto the one now on screen. Cost a Critical in 2B.
+13. **A reload that clears the error banner must never run after the error is set.** Roll back to server truth *first*, then report why. This exact shape recurred three times on one page; the durable fix was making the save report success so callers stop reloading defensively.
+
+### 5a. Working conventions for code-review rounds (added end of Phase 2B)
+
+**Triage rule (owner's, 2026-07-31):** a finding that *fundamentally breaks something* gets fixed on the branch; anything minor gets filed as a GitHub issue instead. "Breaking" has meant: silent data loss or corruption, a 500 where the spec promises a field-anchored 400, an audit trail that misstates what happened, a silent failure the user cannot diagnose, or a stated deliverable being unusable (e.g. a field the model supports but no screen can enter). "Minor" has meant: narrow compound races where the database stays correct, and product-rule decisions that belong to the owner rather than to a fixer.
+
+Reply on every thread with the disposition and the commit or issue number, then resolve it — reviewers and the owner both read the thread, not the summary.
+
+**Verifying UI findings needs the bundled Chromium, driven directly.** The Playwright and chrome-devtools MCP servers both look for a Google Chrome binary at a root-owned path that is not installed, and there is no sudo. Four separate agents hit this and silently fell back to curl, which cannot see a rendering or state bug. What works:
+
+```bash
+npx playwright install chromium     # once; no sudo needed
+# then import from the npx cache whose version matches the installed build:
+#   node -p "require('<cache>/playwright-core/package.json').version"
+#   ls ~/.cache/ms-playwright        # chromium-<rev> must match browsers.json
+```
+Then write a small `.mjs` that imports `chromium` from that cached `playwright` and drives `npm run dev`. Two traps worth knowing: React controlled inputs do **not** expose `value` as an HTML attribute, so `input[value="X"]` selectors fail — locate by index or label instead; and the app shell has its own global search box, so `input[placeholder*="Search"]` matches two elements. Dump the page's inputs first rather than guessing selectors.
+
+Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
 ## 6. Known backlog (all triaged, none blocking)
 
