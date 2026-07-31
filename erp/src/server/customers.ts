@@ -36,8 +36,8 @@ const REVIVAL_DEFAULTS = {
 } as const;
 
 const CREATE = z.object({
-  code: z.string().min(1).max(30),
-  name: z.string().min(1).max(200),
+  code: z.string().trim().min(1).max(30),
+  name: z.string().trim().min(1).max(200),
   parentId: z.string().nullable().optional(),
   termsId: z.string().nullable().optional(),
   creditLimit: money,
@@ -144,7 +144,26 @@ export async function deleteCustomer(id: string): Promise<void> {
   // would leave rows whose parentCode resolves to something no screen can show.
   const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
   if (children > 0) throw new HttpError(400, "That customer still has child customers");
-  await withDbErrors({ entity: "Customer" }, () => auditedSoftDelete("customer", id));
+
+  // Addresses and contacts have no meaning without their parent, and `code` is reusable on
+  // revival (see REVIVAL_DEFAULTS above) — a re-created customer must start with none, exactly
+  // like a fresh create, or a reused code would resurrect the previous occupant's dock and
+  // contact onto whoever types that code next (this was Fix 2 in the final review: paste
+  // supplies only the four CUSTOMER_PASTE_COLUMNS and cannot touch addresses, so a re-pasted
+  // deleted code silently shipped to the previous customer's dock). Soft-deleting the children
+  // here, in the same transaction as the customer row and through the same audited* helpers as
+  // every other mutation, is what makes that guarantee hold: listAddresses/listContacts already
+  // filter on deletedAt: null, so once these rows carry a deletedAt they simply won't show up
+  // under the revived row.
+  await withDbErrors({ entity: "Customer" }, () => prisma.$transaction(async (tx) => {
+    const [addresses, contacts] = await Promise.all([
+      tx.customerAddress.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
+      tx.customerContact.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
+    ]);
+    for (const a of addresses) await auditedSoftDelete("customerAddress", a.id, "parent customer deleted", tx);
+    for (const c of contacts) await auditedSoftDelete("customerContact", c.id, "parent customer deleted", tx);
+    await auditedSoftDelete("customer", id, undefined, tx);
+  }));
 }
 
 /**

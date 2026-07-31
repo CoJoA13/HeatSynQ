@@ -59,6 +59,21 @@ describe("customer addresses", () => {
     expect(entries.map((e) => e.action)).toEqual(["delete", "update", "create"]);
   });
 
+  it("update audit diff reflects the committed change, not the pre-transaction state", async () => {
+    // Regression for Fix 1 (final review): updateAddress runs inside prisma.$transaction, and
+    // auditedUpdate used to take its before/after snapshots on the untransacted top-level client,
+    // so `after` was read before the transaction committed and came back identical to `before`.
+    const id = await customer();
+    const { id: addr } = await addAddress(id, { kind: "SHIP_TO", name: "Dock A", city: "Toledo" });
+    await updateAddress(addr, { name: "Dock B", city: "Cleveland" });
+    const [entry] = await readAudit("customerAddress", addr);
+    const before = entry.before as { name: string; city: string };
+    const after = entry.after as { name: string; city: string };
+    expect(before).not.toEqual(after);
+    expect(before).toMatchObject({ name: "Dock A", city: "Toledo" });
+    expect(after).toMatchObject({ name: "Dock B", city: "Cleveland" });
+  });
+
   it("promotes a remaining address when the default is deleted", async () => {
     const id = await customer();
     const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" });
@@ -154,6 +169,21 @@ describe("customer contacts", () => {
     expect(await prisma.customerContact.findUnique({ where: { id: contact } })).not.toBeNull();
     expect((await readAudit("customerContact", contact)).map((e) => e.action))
       .toEqual(["delete", "update", "create"]);
+  });
+
+  it("update audit diff reflects the committed change", async () => {
+    // Content coverage alongside the address regression above — customer-children.test.ts
+    // previously asserted only the sequence of audit actions, never their content, for either
+    // child entity.
+    const id = await customer();
+    const { id: contact } = await addContact(id, { name: "Dana", phone: "555-0100" });
+    await updateContact(contact, { name: "Dana Reed", phone: "555-0199" });
+    const [entry] = await readAudit("customerContact", contact);
+    const before = entry.before as { name: string; phone: string };
+    const after = entry.after as { name: string; phone: string };
+    expect(before).not.toEqual(after);
+    expect(before).toMatchObject({ name: "Dana", phone: "555-0100" });
+    expect(after).toMatchObject({ name: "Dana Reed", phone: "555-0199" });
   });
 
   it("rejects whitespace-only names", async () => {

@@ -78,9 +78,22 @@ export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   return redactRecursive(clone) as Prisma.InputJsonValue;
 }
 
-async function snapshot(model: AuditableModel, id: string): Promise<unknown> {
+// Anything that behaves like the top-level Prisma client for the purposes of snapshot/write --
+// either `prisma` itself or the `tx` a caller received from its own `prisma.$transaction`. A
+// caller running its mutation inside a transaction must pass that same `tx` through to the
+// audited* helpers below (via `opts.tx`): reads made on the top-level client while a transaction
+// holding the row's lock is still open see the pre-transaction row, not the write in progress
+// (Postgres's default READ COMMITTED isolation blocks the read until the transaction commits or
+// rolls back, then returns what was committed before it started). That produced Fix 1 from the
+// final review -- an address rename inside `prisma.$transaction` snapshotted identical before/after
+// because both snapshots ran on `prisma`, outside the transaction, while the update itself ran on
+// `tx`. Passing `tx` through makes every snapshot and the audit write itself part of the same
+// transaction as the mutation, so they see (and commit or roll back with) exactly what it wrote.
+type Db = typeof prisma | Prisma.TransactionClient;
+
+async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
-  const client = prisma[model] as unknown as {
+  const client = db[model] as unknown as {
     findUnique: (a: { where: { id: string }; include?: object }) => Promise<unknown>;
   };
   return client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
@@ -89,9 +102,9 @@ async function snapshot(model: AuditableModel, id: string): Promise<unknown> {
 async function write(entry: {
   entity: string; entityId: string; action: string;
   before?: unknown; after?: unknown; reason?: string;
-}) {
+}, db: Db) {
   const actor = currentActor();
-  await prisma.auditLog.create({
+  await db.auditLog.create({
     data: {
       actorId: actor.id,
       actorName: actor.name,
@@ -121,30 +134,35 @@ export async function auditSettingChange(key: string, beforeValue: unknown, afte
 }
 
 export async function auditedCreate<T extends { id: string }>(
-  model: AuditableModel, data: object, doIt: () => Promise<T>,
+  model: AuditableModel, data: object, doIt: () => Promise<T>, opts?: { tx?: Prisma.TransactionClient },
 ): Promise<T> {
   const created = await doIt();
-  await write({ entity: model, entityId: created.id, action: "create", after: data });
+  await write({ entity: model, entityId: created.id, action: "create", after: data }, opts?.tx ?? prisma);
   return created;
 }
 
 export async function auditedUpdate<T>(
-  model: AuditableModel, id: string, doIt: () => Promise<T>, opts?: { reason?: string },
+  model: AuditableModel, id: string, doIt: () => Promise<T>,
+  opts?: { reason?: string; tx?: Prisma.TransactionClient },
 ): Promise<T> {
-  const before = await snapshot(model, id);
+  const db = opts?.tx ?? prisma;
+  const before = await snapshot(model, id, db);
   const result = await doIt();
-  const after = await snapshot(model, id);
-  await write({ entity: model, entityId: id, action: "update", before, after, reason: opts?.reason });
+  const after = await snapshot(model, id, db);
+  await write({ entity: model, entityId: id, action: "update", before, after, reason: opts?.reason }, db);
   return result;
 }
 
-export async function auditedSoftDelete(model: AuditableModel, id: string, reason?: string): Promise<void> {
-  const before = await snapshot(model, id);
-  const client = prisma[model] as unknown as {
+export async function auditedSoftDelete(
+  model: AuditableModel, id: string, reason?: string, tx?: Prisma.TransactionClient,
+): Promise<void> {
+  const db = tx ?? prisma;
+  const before = await snapshot(model, id, db);
+  const client = db[model] as unknown as {
     update: (a: { where: { id: string }; data: { deletedAt: Date } }) => Promise<unknown>;
   };
   await client.update({ where: { id }, data: { deletedAt: new Date() } });
-  await write({ entity: model, entityId: id, action: "delete", before, reason });
+  await write({ entity: model, entityId: id, action: "delete", before, reason }, db);
 }
 
 export function readAudit(entity: string, entityId: string) {

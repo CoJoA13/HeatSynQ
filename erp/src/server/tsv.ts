@@ -107,7 +107,9 @@ export function parseTsv(text: string, columns: string[]): Record<string, string
  * silent truncation is the data loss `.strict()` exists to catch on single adds. But Excel
  * routinely emits trailing tabs on an otherwise-normal row (copying a selection with an empty
  * trailing cell, or a range one column wider than the data), so only overflow cells with actual
- * content count. Fields arrive already trimmed.
+ * content count. Fields arrive already trimmed from every caller today (parseRecords trims every
+ * field it produces) — the `.trim()` below is defensive, not redundant, in case a future caller
+ * ever hands this function fields from somewhere other than parseRecords.
  */
 export function overflowError(fields: string[], columns: string[]): string | null {
   const overflow = fields.slice(columns.length);

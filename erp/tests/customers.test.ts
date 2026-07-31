@@ -3,6 +3,8 @@ import { prisma, truncateAll } from "./helpers/db";
 import {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
 } from "@/server/customers";
+import { addAddress, listAddresses } from "@/server/customer-addresses";
+import { addContact, listContacts } from "@/server/customer-contacts";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 
@@ -18,6 +20,18 @@ describe("customers service", () => {
   it("requires both code and name", async () => {
     await expect(createCustomer({ code: "X" })).rejects.toThrow();
     await expect(createCustomer({ name: "No code" })).rejects.toThrow();
+  });
+
+  it("rejects a whitespace-only code", async () => {
+    await expect(createCustomer({ code: "   ", name: "Acme" })).rejects.toThrow();
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await expect(updateCustomer(id, { code: "   " })).rejects.toThrow();
+  });
+
+  it("rejects a whitespace-only name", async () => {
+    await expect(createCustomer({ code: "ACME", name: "   " })).rejects.toThrow();
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await expect(updateCustomer(id, { name: "   " })).rejects.toThrow();
   });
 
   it("rejects a duplicate code and an unknown field", async () => {
@@ -63,7 +77,7 @@ describe("customers service", () => {
     await expect(updateCustomer(a.id, { parentId: a.id })).rejects.toThrow(/circular|ancestor|itself/i);
   });
 
-  it("refuses to delete a customer that still has active children", async () => {
+  it("refuses to delete a customer that still has non-deleted children", async () => {
     const parent = await createCustomer({ code: "ACME", name: "Acme" });
     const child = await createCustomer({ code: "ACME-OH", name: "Ohio", parentId: parent.id });
     await expect(deleteCustomer(parent.id)).rejects.toThrow(/child/i);
@@ -101,6 +115,30 @@ describe("customers service", () => {
   it("404s on an unknown id", async () => {
     await expect(getCustomer("nope")).rejects.toMatchObject({ status: 404 });
     await expect(updateCustomer("nope", { name: "x" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("deleting a customer soft-deletes its addresses and contacts, so a reused code does not resurrect them", async () => {
+    // Fix 2 (final review): paste only ever supplies the four CUSTOMER_PASTE_COLUMNS and cannot
+    // touch addresses, so a re-pasted deleted code must not silently ship to the previous
+    // customer's dock or email their contact.
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock B" });
+    const { id: contactId } = await addContact(id, { name: "New Contact" });
+
+    await deleteCustomer(id);
+
+    // The old rows survive as soft-deleted, not hard-deleted.
+    const oldAddress = await prisma.customerAddress.findUnique({ where: { id: addressId } });
+    const oldContact = await prisma.customerContact.findUnique({ where: { id: contactId } });
+    expect(oldAddress).not.toBeNull();
+    expect(oldAddress?.deletedAt).toBeInstanceOf(Date);
+    expect(oldContact).not.toBeNull();
+    expect(oldContact?.deletedAt).toBeInstanceOf(Date);
+
+    const revived = await createCustomer({ code: "ACME", name: "Brand New Co" });
+    expect(revived.id).toBe(id);
+    expect(await listAddresses(revived.id)).toHaveLength(0);
+    expect(await listContacts(revived.id)).toHaveLength(0);
   });
 
   it("revival resets every field a genuine create would default, not just active", async () => {

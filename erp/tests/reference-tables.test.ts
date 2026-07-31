@@ -1,8 +1,35 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll } from "./helpers/db";
-import { listReference, createReference } from "@/server/reference";
+import { listReference, createReference, deleteReference } from "@/server/reference";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
+
+/** Drift-proof revival check shared by the extra-field kinds below: create a fresh row with
+ *  minimal input, create-and-delete another with a non-default extra field, re-create it
+ *  minimally, and assert the two rows are field-for-field identical apart from id/name. Mirrors
+ *  the pattern already approved for customers.ts's REVIVAL_DEFAULTS and glAccount's equivalent
+ *  test in reference-gl.test.ts — never assert a literal default value. */
+async function expectRevivalResetsExtraFields(
+  kind: "inspectionCode" | "paymentType" | "commentSnippet" | "specification",
+  nonDefaultExtra: Record<string, unknown>,
+) {
+  await createReference(kind, { name: "fresh" });
+  const [freshRow] = await listReference(kind, { includeInactive: true });
+
+  const { id } = await createReference(kind, { name: "stale", ...nonDefaultExtra });
+  await deleteReference(kind, id);
+
+  const revived = await createReference(kind, { name: "stale" });
+  expect(revived.id).toBe(id);
+  const revivedRow = (await listReference(kind, { includeInactive: true })).find((r) => r.id === id)!;
+
+  // listReference returns every column, including createdAt/updatedAt — genuinely distinct
+  // timestamps between the two rows, not part of what revival is being checked against.
+  const identityFields = ["id", "name", "createdAt", "updatedAt"] as const;
+  const omitIdentity = (row: typeof freshRow) =>
+    Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
+  expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+}
 
 describe("flat reference tables", () => {
   beforeEach(async () => await truncateAll());
@@ -49,6 +76,19 @@ describe("flat reference tables", () => {
     await createReference("specification", { name: "AMS 2759/1", text: "Heat treatment of steel parts" });
     expect((await listReference("commentSnippet"))[0].text).toMatch(/liability/i);
     expect((await listReference("specification"))[0].text).toMatch(/steel/i);
+  });
+
+  it("revival resets extra fields for every kind that has one, not just active", async () => {
+    // Fix 3 (final review): each of these extra fields is optional on createReference's input,
+    // so a revived row used to keep its predecessor's value when the caller didn't supply one.
+    const scale = await createReference("inspectionScale", { name: "Brinell" });
+    await expectRevivalResetsExtraFields("inspectionCode", { defaultScaleId: scale.id });
+
+    const gl = await createReference("glAccount", { name: "1010" });
+    await expectRevivalResetsExtraFields("paymentType", { glAccountId: gl.id });
+
+    await expectRevivalResetsExtraFields("commentSnippet", { text: "Old liability text" });
+    await expectRevivalResetsExtraFields("specification", { text: "Old spec text" });
   });
 
   it("rejects an unknown extra field rather than silently dropping it", async () => {

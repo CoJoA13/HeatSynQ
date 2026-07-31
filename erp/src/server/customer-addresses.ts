@@ -123,15 +123,15 @@ export async function addAddress(customerId: string, input: Record<string, unkno
   });
   const isDefault = data.isDefault ?? existing === 0;
 
-  // Demote (if applicable), create-with-audit, and normalize all run in one transaction so the
-  // defaulting state is never observably inconsistent between them — except the audit log write
-  // itself, which audit.ts always issues on the untransacted top-level client (see the report for
-  // why that piece isn't nested here).
+  // Demote (if applicable), create-with-audit, and normalize all run in one transaction, and the
+  // audit write itself is pinned to the same `tx` (via auditedCreate's `opts.tx`) so the whole
+  // sequence is one atomic unit — including the audit row, which rolls back with everything else
+  // if anything downstream fails.
   const id = await prisma.$transaction(async (tx) => {
     if (isDefault) await demoteAllIn(tx, customerId, data.kind);
     const row = await auditedCreate("customerAddress", { ...data, customerId, isDefault }, () =>
       withDbErrors({ entity: "Address" }, () =>
-        tx.customerAddress.create({ data: { ...data, customerId, isDefault } })));
+        tx.customerAddress.create({ data: { ...data, customerId, isDefault } })), { tx });
     await normalizeDefaultsIn(tx, customerId, data.kind);
     return row.id;
   });
@@ -150,7 +150,7 @@ export async function updateAddress(addressId: string, input: Record<string, unk
     if (data.isDefault === true) await demoteAllIn(tx, current.customerId, newKind);
     await withDbErrors({ entity: "Address" }, () =>
       auditedUpdate("customerAddress", addressId, () =>
-        tx.customerAddress.update({ where: { id: addressId }, data })));
+        tx.customerAddress.update({ where: { id: addressId }, data }), { tx }));
     // Normalize the address's kind post-update, and — if kind changed — the kind it left behind:
     // the old kind can be short a default (its default just moved away) exactly like a delete
     // would leave it, and the new kind can suddenly have two if the moved row still carried
@@ -165,9 +165,12 @@ export async function updateAddress(addressId: string, input: Record<string, unk
 export async function deleteAddress(addressId: string): Promise<void> {
   const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Address not found");
-  // auditedSoftDelete has no way to accept a transaction client (see the report), so this write
-  // and the normalization below are two sequential top-level operations rather than one atomic
-  // unit; normalizeDefaults still runs its own clear-then-pick sequence atomically.
+  // The soft delete and the subsequent re-normalization are two sequential top-level operations
+  // rather than one transaction: normalizeDefaults needs to see the delete already committed (it
+  // re-queries active rows to pick a new default), so nesting it inside the same transaction as
+  // the delete would gain nothing. Each piece is atomic on its own — auditedSoftDelete could take
+  // a `tx` (see auditedUpdate/auditedCreate) if a future caller needed to fuse it into a larger
+  // transaction, but nothing here does.
   await withDbErrors({ entity: "Address" }, () => auditedSoftDelete("customerAddress", addressId));
   await normalizeDefaults(current.customerId, current.kind as AddressKind);
 }

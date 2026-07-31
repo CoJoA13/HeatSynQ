@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
 import { truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
-import { createCustomer, listCustomers, pasteCustomers } from "@/server/customers";
+import { createCustomer, updateCustomer, listCustomers, pasteCustomers } from "@/server/customers";
 import { GET as exportRoute } from "@/app/api/customers/export/route";
 import { POST as pasteRoute } from "@/app/api/customers/paste/route";
 
@@ -48,6 +48,37 @@ describe("customer paste", () => {
     const sheet = wb.getWorksheet("Customers")!;
     expect(sheet.getRow(1).values).toEqual([undefined, "Code", "Name", "Default PO", "Order notes", "Active"]);
     expect((sheet.getRow(2).values as ExcelJS.CellValue[])[1]).toBe("ACME");
+  });
+
+  it("a filtered export honours search and includeInactive rather than exporting everything", async () => {
+    const cookie = await signInWith(["customers.view"]);
+    await createCustomer({ code: "ACME", name: "Acme Foundry" });
+    const { id: betaId } = await createCustomer({ code: "BETA", name: "Beta Castings" });
+    await createCustomer({ code: "GAMMA", name: "Gamma Inactive" });
+    // Make BETA inactive so it's excluded by default, and GAMMA excluded by the search term.
+    await updateCustomer(betaId, { active: false });
+
+    const res = await exportRoute(
+      new Request("http://t/api/customers/export?search=Acme", { headers: { cookie } }), noParams,
+    );
+    expect(res.status).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await res.arrayBuffer()) as unknown as ArrayBuffer);
+    const sheet = wb.getWorksheet("Customers")!;
+    const codes: string[] = [];
+    sheet.eachRow((row, rowNumber) => { if (rowNumber > 1) codes.push(row.getCell(1).value as string); });
+    expect(codes).toEqual(["ACME"]);
+
+    // includeInactive=1 with no search should bring BETA back, still excluding nothing else.
+    const resAll = await exportRoute(
+      new Request("http://t/api/customers/export?includeInactive=1", { headers: { cookie } }), noParams,
+    );
+    const wbAll = new ExcelJS.Workbook();
+    await wbAll.xlsx.load(Buffer.from(await resAll.arrayBuffer()) as unknown as ArrayBuffer);
+    const sheetAll = wbAll.getWorksheet("Customers")!;
+    const codesAll: string[] = [];
+    sheetAll.eachRow((row, rowNumber) => { if (rowNumber > 1) codesAll.push(row.getCell(1).value as string); });
+    expect(codesAll.sort()).toEqual(["ACME", "BETA", "GAMMA"]);
   });
 
   it("401s and 403s on both routes", async () => {

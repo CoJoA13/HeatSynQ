@@ -54,6 +54,29 @@ describe("process step codes", () => {
     expect(await listStepCodes()).toHaveLength(1);
   });
 
+  it("revival resets scalar fields and field defs a genuine create would default, not just active", async () => {
+    // Fix 3 (final review): glAccountId/equipmentTag are optional on createStepCode's input, and
+    // `fields` is a child table replaced through setStepFields — a revived code used to keep its
+    // predecessor's GL account, equipment tag, and field definitions. Drift-proof like
+    // customers.test.ts's equivalent test: compare two field-for-field rows, never a literal.
+    const gl = await createReference("glAccount", { name: "4010" });
+    const fresh = await createStepCode({ code: "FRESH", name: "Fresh Code" });
+    const freshRow = (await listStepCodes()).find((c) => c.id === fresh.id)!;
+
+    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize", glAccountId: gl.id, equipmentTag: "Furnace 3" });
+    await setStepFields(id, [{ label: "Temperature", type: "NUMBER", unit: "F", sort: 1 }]);
+    await deleteStepCode(id);
+
+    const revived = await createStepCode({ code: "HT-01", name: "Reborn" });
+    expect(revived.id).toBe(id);
+    const revivedRow = (await listStepCodes()).find((c) => c.id === id)!;
+
+    const identityFields = ["id", "code", "name"] as const;
+    const omitIdentity = (row: typeof freshRow) =>
+      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
+    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+  });
+
   it("still rejects a duplicate code when the existing row is not soft-deleted", async () => {
     await createStepCode({ code: "HT-01", name: "Austenitize" });
     await expect(createStepCode({ code: "HT-01", name: "Other" })).rejects.toMatchObject({ status: 400 });
