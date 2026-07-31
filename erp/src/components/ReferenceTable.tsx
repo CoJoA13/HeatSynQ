@@ -104,7 +104,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           </tr>
         </tbody>
       </table>
-      {pasting && <PasteGrid kind={kind} onDone={load} />}
+      {pasting && (
+        <PasteGrid
+          endpoint={`/api/admin/reference/${kind}/paste`}
+          columns={[REFERENCE_LABELS[kind].nameLabel, ...REFERENCE_EXTRA_FIELDS[kind].map((f) => f.label)]}
+          onDone={load}
+        />
+      )}
     </div>
   );
 }
