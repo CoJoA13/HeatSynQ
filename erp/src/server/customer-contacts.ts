@@ -15,7 +15,7 @@ export type ContactRow = {
 const email = z.union([z.literal(""), z.string().email().max(200)]).optional();
 
 const FIELDS = {
-  name: z.string().min(1).max(200),
+  name: z.string().trim().min(1).max(200),
   email,
   phone: z.string().max(50).optional(),
   getsShippers: z.boolean().optional(),

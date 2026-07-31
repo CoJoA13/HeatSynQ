@@ -155,4 +155,33 @@ describe("customer contacts", () => {
     expect((await readAudit("customerContact", contact)).map((e) => e.action))
       .toEqual(["delete", "update", "create"]);
   });
+
+  it("rejects whitespace-only names", async () => {
+    const id = await customer();
+    await expect(addContact(id, { name: "   " })).rejects.toThrow();
+  });
+
+  it("stores names trimmed", async () => {
+    const id = await customer();
+    await addContact(id, { name: "  Dana Reed  " });
+    const [c] = await listContacts(id);
+    expect(c.name).toBe("Dana Reed");
+  });
+
+  it("partial updates preserve untouched flags", async () => {
+    const id = await customer();
+    const { id: contact } = await addContact(id, {
+      name: "Dana",
+      getsInvoices: true,
+      getsStatements: true,
+    });
+    await updateContact(contact, { phone: "555-0100" });
+    const [c] = await listContacts(id);
+    expect(c).toMatchObject({
+      getsInvoices: true,
+      getsStatements: true,
+      getsShippers: false,
+      getsCerts: false,
+    });
+  });
 });
