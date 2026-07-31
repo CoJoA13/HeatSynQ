@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -25,6 +25,9 @@ type Contact = {
   getsShippers: boolean; getsInvoices: boolean; getsStatements: boolean; getsCerts: boolean;
 };
 type Term = { id: string; name: string };
+// Slice of CustomerRow needed for the parent selector — every OTHER active, non-deleted
+// customer, keyed by id so the current row can be excluded from its own option list.
+type CustomerOption = { id: string; code: string; name: string };
 
 const emptyAddrDraft = { kind: "SHIP_TO" as AddressKind, name: "", street: "", city: "", state: "", zip: "" };
 const emptyContactDraft = { name: "", email: "", phone: "" };
@@ -42,6 +45,7 @@ function CustomerDetail({ id }: { id: string }) {
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [terms, setTerms] = useState<Term[]>([]);
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [addrDraft, setAddrDraft] = useState(emptyAddrDraft);
   const [contactDraft, setContactDraft] = useState(emptyContactDraft);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +63,34 @@ function CustomerDetail({ id }: { id: string }) {
   // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
   // an empty list rather than a broken page: the select still renders with a blank option.
   useEffect(() => { api<Term[]>("/api/admin/reference/terms").then(setTerms).catch(() => {}); }, []);
+  // Parent-selector options: every OTHER active customer, fetched the same way terms are —
+  // once, independent of `load()`, gated on the same customers.view permission that got the
+  // user onto this page in the first place, so there's no permission mismatch to worry about
+  // (unlike Terms/admin.view above). The current customer excludes itself at render time
+  // (F4) rather than here, since `id` never changes for a mounted instance (see the `key={id}`
+  // remount comment on CustomerDetailPage) but filtering at the call site keeps this effect
+  // identical in shape to the Terms one above.
+  useEffect(() => { api<CustomerOption[]>("/api/customers").then(setCustomers).catch(() => {}); }, []);
+
+  // Per-key request queue: guards against optimistic saves committing out of order. Without
+  // this, two overlapping PUTs for the same field (an ordinary double-click on a checkbox before
+  // the first request resolves) race on the network, and if the first happens to land last, the
+  // database ends up holding the opposite of what the UI shows — the UI always reflects the LAST
+  // optimistic update applied locally, but the database reflects whichever REQUEST happened to
+  // be processed last, and those are not guaranteed to be the same request once two are in
+  // flight at once. Serializing per key — never starting request N+1 for that key until request
+  // N has settled — makes requests complete in the same order they were dispatched, so the last
+  // one queued is always the last one to reach the database. A ref (not state) because this is
+  // plumbing for in-flight requests, not something that should ever trigger a render.
+  const queue = useRef<Map<string, Promise<unknown>>>(new Map());
+  function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = queue.current.get(key) ?? Promise.resolve();
+    // Chain onto the previous request's SETTLEMENT (success or failure), not its success alone —
+    // one field's failed save must not permanently jam every later save to that same field.
+    const next = prev.then(fn, fn);
+    queue.current.set(key, next.catch(() => {}));
+    return next;
+  }
 
   // Optimistic: apply the change to local state immediately so a single click always lands
   // visually, then persist it. A controlled checkbox bound only to post-round-trip server state
@@ -68,56 +100,80 @@ function CustomerDetail({ id }: { id: string }) {
   // instead of continuing to show the text that was just rejected (Fix C2).
   async function save(body: Partial<Customer>) {
     setC((cur) => (cur ? { ...cur, ...body } : cur));
-    try {
-      await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
-      setError(null);
-    } catch (e) {
-      // Roll back to server truth first, then report why — load() clears the error on
-      // success, so setting the error before the reload lets that clear wipe it out
-      // before the user ever sees it.
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    const key = Object.keys(body).sort().join(",");
+    await serial(key, async () => {
+      try {
+        await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
+        setError(null);
+      } catch (e) {
+        // Roll back to server truth first, then report why — load() clears the error on
+        // success, so setting the error before the reload lets that clear wipe it out
+        // before the user ever sees it.
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
+  }
+  // Parent selection needs one extra step beyond a plain save(): the header's "Division of X"
+  // text and this row's own option list are both derived from OTHER customers' data, which a
+  // bare PUT {parentId} response can't refresh (the PUT only echoes {ok:true}). Reloading after
+  // save() settles (success or the rollback save() already performed on failure) is simplest —
+  // it also picks up server-side rejections (self-parent, cycle, deleted parent) via save()'s
+  // existing error path, so those show up as the field-anchored 400 the service already raises,
+  // with no client-side re-implementation of those checks.
+  async function saveParent(parentId: string) {
+    await save({ parentId: parentId || null });
+    await load().catch(() => {});
   }
   // call() never optimistically mutates local state before the request (unlike save() and
   // toggleContactFlag() below), so its catch has nothing to roll back and setError() here can
-  // never be raced by a load()-triggered clear.
-  async function call(path: string, init: RequestInit) {
-    try { await api(path, init); setError(null); await load(); }
-    catch (e) { setError((e as Error).message); }
+  // never be raced by a load()-triggered clear. Returns whether the request succeeded so a
+  // caller that holds a draft (add address/add contact, F6) can decide whether it's safe to
+  // clear it — clearing unconditionally would wipe a form the user still needs to correct.
+  async function call(path: string, init: RequestInit): Promise<boolean> {
+    try { await api(path, init); setError(null); await load(); return true; }
+    catch (e) { setError((e as Error).message); return false; }
   }
   async function toggleContactFlag(ct: Contact, key: (typeof CONTACT_FLAGS)[number]["key"], value: boolean) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, [key]: value } : row)));
-    try {
-      await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
-      setError(null);
-    } catch (e) {
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    await serial(`contact:${ct.id}:${key}`, async () => {
+      try {
+        await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+        setError(null);
+      } catch (e) {
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
   }
   // Same optimistic-then-persist shape as save()/toggleContactFlag(), scoped to one address or
   // contact row rather than the customer itself — this is what gives existing address/contact
   // rows a way to correct a scalar field (A1/A3) without a modal: type into the cell, blur it.
   async function saveAddressField(a: Address, patch: Partial<Address>) {
     setAddresses((cur) => cur.map((row) => (row.id === a.id ? { ...row, ...patch } : row)));
-    try {
-      await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
-      setError(null);
-    } catch (e) {
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    const key = `address:${a.id}:${Object.keys(patch).sort().join(",")}`;
+    await serial(key, async () => {
+      try {
+        await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        setError(null);
+      } catch (e) {
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
   }
   async function saveContactField(ct: Contact, patch: Partial<Contact>) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, ...patch } : row)));
-    try {
-      await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify(patch) });
-      setError(null);
-    } catch (e) {
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    const key = `contact:${ct.id}:${Object.keys(patch).sort().join(",")}`;
+    await serial(key, async () => {
+      try {
+        await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        setError(null);
+      } catch (e) {
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
   }
 
   if (!c) return <div className="p-6">{error ?? "Loading…"}</div>;
@@ -162,6 +218,20 @@ function CustomerDetail({ id }: { id: string }) {
                     className="ml-2 rounded border px-2 py-1">
               <option value="">—</option>
               {terms.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </label>
+          <label className="block text-sm">
+            Parent
+            {/* Blank means no parent. The current customer is excluded from its own option
+                list; everything else the service rejects (self-parent, cycle, deleted parent)
+                is surfaced through saveParent()'s existing error path rather than re-checked
+                here. */}
+            <select value={c.parentId ?? ""} onChange={(e) => void saveParent(e.target.value)}
+                    className="ml-2 rounded border px-2 py-1">
+              <option value="">— none —</option>
+              {customers.filter((x) => x.id !== id).map((x) => (
+                <option key={x.id} value={x.id}>{x.code} — {x.name}</option>
+              ))}
             </select>
           </label>
           <label className="block text-sm">
@@ -277,8 +347,16 @@ function CustomerDetail({ id }: { id: string }) {
           <input value={addrDraft.zip} placeholder="Zip" className="w-20 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setAddrDraft({ ...addrDraft, zip: e.target.value })} />
           <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
-                  onClick={() => { void call(`/api/customers/${id}/addresses`,
-                    { method: "POST", body: JSON.stringify(addrDraft) }); setAddrDraft(emptyAddrDraft); }}>
+                  // F6: the draft is cleared only once the POST has actually succeeded — call()
+                  // now reports success/failure, so a failed save leaves everything the user
+                  // typed in place to correct and resubmit, instead of wiping a six-field form
+                  // out from under them before the response even comes back.
+                  onClick={async () => {
+                    if (await call(`/api/customers/${id}/addresses`,
+                      { method: "POST", body: JSON.stringify(addrDraft) })) {
+                      setAddrDraft(emptyAddrDraft);
+                    }
+                  }}>
             Add address
           </button>
         </div>
@@ -339,8 +417,13 @@ function CustomerDetail({ id }: { id: string }) {
           <input value={contactDraft.phone} placeholder="Phone" className="flex-1 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setContactDraft({ ...contactDraft, phone: e.target.value })} />
           <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
-                  onClick={() => { void call(`/api/customers/${id}/contacts`,
-                    { method: "POST", body: JSON.stringify(contactDraft) }); setContactDraft(emptyContactDraft); }}>
+                  // F6: same fix as "Add address" above — reset only after the POST succeeds.
+                  onClick={async () => {
+                    if (await call(`/api/customers/${id}/contacts`,
+                      { method: "POST", body: JSON.stringify(contactDraft) })) {
+                      setContactDraft(emptyContactDraft);
+                    }
+                  }}>
             Add contact
           </button>
         </div>

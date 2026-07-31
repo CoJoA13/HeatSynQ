@@ -196,6 +196,42 @@ describe("customers service", () => {
     expect(c.financeChargeRate).toBe(0.02);
   });
 
+  // F1 (Phase 2B round-2 fix wave): the shared `money` validator checked that a value IS a
+  // decimal but never that it FITS its column's precision/scale. financeChargeRate is
+  // Decimal(6,4) (max 99.9999) — "100" sails past the old validator's generic bounds check and
+  // blows up inside Prisma with a status-less error that escapes handle() as a bare 500 instead
+  // of the field-anchored 400 spec S12 promises.
+  it("rejects a finance charge rate that overflows Decimal(6,4) as a field-anchored validation error, not a 500", async () => {
+    await expect(createCustomer({ code: "X", name: "X", financeChargeRate: "100" }))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
+  // F1: creditLimit is Decimal(12,2) — the old validator allowed up to 4 fractional digits (it
+  // was shared with financeChargeRate), so "1.005" sailed through validation and was silently
+  // rounded by Postgres to 1.01 on write. Silent rounding of money is never acceptable; a value
+  // with more precision than the column can hold must be rejected, not munged.
+  it("rejects a credit limit with more precision than Decimal(12,2) can hold, rather than silently rounding it", async () => {
+    await expect(createCustomer({ code: "Y", name: "Y", creditLimit: "1.005" }))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
+  // F2 (Phase 2B round-2 fix wave): customer-addresses.ts and customer-contacts.ts guard their
+  // update path on deletedAt: null and 404; customers.ts never got the same guard, so updating a
+  // soft-deleted customer silently succeeds and mutates a row that appears in no list.
+  it("404s when updating a soft-deleted customer instead of silently mutating the hidden row", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await deleteCustomer(id);
+    await expect(updateCustomer(id, { name: "Acme Renamed" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  // F2: deleteCustomer had the same gap — nothing stopped a second delete of an already-deleted
+  // row, which would silently re-stamp deletedAt and mint a duplicate audit "delete" entry.
+  it("404s when deleting an already soft-deleted customer", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await deleteCustomer(id);
+    await expect(deleteCustomer(id)).rejects.toMatchObject({ status: 404 });
+  });
+
   it("revival resets every field a genuine create would default, not just active", async () => {
     const fresh = await createCustomer({ code: "FRESH", name: "Fresh Co" });
     const freshRow = await getCustomer(fresh.id);

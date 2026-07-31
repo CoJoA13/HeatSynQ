@@ -236,6 +236,9 @@ model Customer {
   children          Customer[]        @relation("CustomerHierarchy")
   termsId           String?
   terms             Terms?            @relation(fields: [termsId], references: [id])
+  // Decimal(12, 2): 10 integer digits, 2 fractional (max 9999999999.99). Validated to this exact
+  // precision/scale by decimalField(12, 2) in src/server/customers.ts, BEFORE the value ever
+  // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
   creditLimit       Decimal?          @db.Decimal(12, 2)
   creditHold        Boolean           @default(false)
   cod               Boolean           @default(false)
@@ -245,6 +248,9 @@ model Customer {
   shippingNotes     String            @default("")
   invoiceNotes      String            @default("")
   surchargeOptOut   Boolean           @default(false)
+  // Decimal(6, 4): 2 integer digits, 4 fractional (max 99.9999). Validated to this exact
+  // precision/scale by decimalField(6, 4) in src/server/customers.ts, BEFORE the value ever
+  // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
   financeChargeRate Decimal?          @db.Decimal(6, 4)
   active            Boolean           @default(true)
   deletedAt         DateTime?
