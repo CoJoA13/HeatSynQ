@@ -55,10 +55,16 @@ function CustomerDetail({ id }: { id: string }) {
       await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
       setError(null);
     } catch (e) {
+      // Roll back to server truth first, then report why — load() clears the error on
+      // success, so setting the error before the reload lets that clear wipe it out
+      // before the user ever sees it.
+      await load().catch(() => {});
       setError((e as Error).message);
-      await load().catch(() => {}); // roll back to server truth
     }
   }
+  // call() never optimistically mutates local state before the request (unlike save() and
+  // toggleContactFlag() below), so its catch has nothing to roll back and setError() here can
+  // never be raced by a load()-triggered clear.
   async function call(path: string, init: RequestInit) {
     try { await api(path, init); setError(null); await load(); }
     catch (e) { setError((e as Error).message); }
@@ -69,8 +75,8 @@ function CustomerDetail({ id }: { id: string }) {
       await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
       setError(null);
     } catch (e) {
+      await load().catch(() => {});
       setError((e as Error).message);
-      await load().catch(() => {}); // roll back to server truth
     }
   }
 
