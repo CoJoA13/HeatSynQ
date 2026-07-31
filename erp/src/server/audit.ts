@@ -6,7 +6,7 @@ export type AuditableModel =
   | "user" | "role" | "setting"
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
-  | "processStepCode" | "customer" | "customerAddress";
+  | "processStepCode" | "customer" | "customerAddress" | "customerContact";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -36,6 +36,7 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // needs no relations.
   customer: undefined,
   customerAddress: undefined,
+  customerContact: undefined,
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

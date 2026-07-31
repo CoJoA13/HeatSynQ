@@ -251,6 +251,7 @@ model Customer {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   addresses         CustomerAddress[]
+  contacts          CustomerContact[]
 
   @@index([name])
 }
@@ -278,4 +279,22 @@ model CustomerAddress {
   updatedAt  DateTime    @updatedAt
 
   @@index([customerId, kind])
+}
+
+model CustomerContact {
+  id             String    @id @default(cuid())
+  customerId     String
+  customer       Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name           String
+  email          String    @default("")
+  phone          String    @default("")
+  getsShippers   Boolean   @default(false)
+  getsInvoices   Boolean   @default(false)
+  getsStatements Boolean   @default(false)
+  getsCerts      Boolean   @default(false)
+  active         Boolean   @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  @@index([customerId])
 }

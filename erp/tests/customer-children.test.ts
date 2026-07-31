@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { createCustomer } from "@/server/customers";
 import { listAddresses, addAddress, updateAddress, deleteAddress } from "@/server/customer-addresses";
+import { listContacts, addContact, updateContact, deleteContact } from "@/server/customer-contacts";
 import { readAudit } from "@/server/audit";
 
 async function customer() {
@@ -107,5 +108,51 @@ describe("customer addresses", () => {
     await updateAddress(second, { active: true });
     const rows = await listAddresses(id);
     expect(rows.find((a) => a.id === second)?.isDefault).toBe(true);
+  });
+});
+
+describe("customer contacts", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("adds contacts with per-document flags, defaulting them off", async () => {
+    const id = await customer();
+    await addContact(id, { name: "Dana Reed", email: "dana@acme.test", getsInvoices: true });
+    const [c] = await listContacts(id);
+    expect(c).toMatchObject({
+      name: "Dana Reed", email: "dana@acme.test",
+      getsInvoices: true, getsShippers: false, getsStatements: false, getsCerts: false,
+    });
+  });
+
+  it("requires a name and rejects a malformed email", async () => {
+    const id = await customer();
+    await expect(addContact(id, { email: "x@y.test" })).rejects.toThrow();
+    await expect(addContact(id, { name: "X", email: "not-an-email" })).rejects.toThrow();
+  });
+
+  it("accepts a blank email — phone-only contacts are normal", async () => {
+    const id = await customer();
+    await addContact(id, { name: "Shop Phone", phone: "555-0100" });
+    expect((await listContacts(id))[0].email).toBe("");
+  });
+
+  it("rejects an unknown field", async () => {
+    const id = await customer();
+    await expect(addContact(id, { name: "X", bogus: 1 })).rejects.toThrow();
+  });
+
+  it("404s when the customer does not exist", async () => {
+    await expect(addContact("nope", { name: "X" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("soft deletes and audits as its own entity", async () => {
+    const id = await customer();
+    const { id: contact } = await addContact(id, { name: "Dana" });
+    await updateContact(contact, { getsCerts: true });
+    await deleteContact(contact);
+    expect(await listContacts(id)).toHaveLength(0);
+    expect(await prisma.customerContact.findUnique({ where: { id: contact } })).not.toBeNull();
+    expect((await readAudit("customerContact", contact)).map((e) => e.action))
+      .toEqual(["delete", "update", "create"]);
   });
 });
