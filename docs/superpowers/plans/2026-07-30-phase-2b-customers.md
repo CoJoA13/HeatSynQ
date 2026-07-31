@@ -249,14 +249,16 @@ and replace the inline overflow block inside `pasteReference` with:
     }
 ```
 
-`paste.ts` keeps `pasteReference` and `PasteResult`. Re-export `parseTsv` from `paste.ts` only if something still imports it from there — check with `grep -rn "from \"@/server/paste\"" src tests` and prefer updating the importer.
+`paste.ts` keeps `pasteReference` and `PasteResult`.
+
+**`tests/paste.test.ts` imports `parseTsv` from `@/server/paste` in eight places.** Change **only that import line** to `@/server/tsv` — do not add a re-export to `paste.ts` to avoid touching the test, and do not change a single assertion.
 
 - [ ] **Step 5: Run the existing paste tests — this refactor must change no behaviour**
 
 ```bash
 npx vitest run tests/tsv.test.ts tests/paste.test.ts
 ```
-Expected: both green, with `tests/paste.test.ts` **unmodified**. If a paste test needs changing, you have altered behaviour — fix the move, not the test.
+Expected: both green. The **only** permitted edit to `tests/paste.test.ts` is the import specifier in Step 4; every assertion, input string, and expected value stays byte-identical. If an assertion needs changing, you have altered behaviour — fix the move, not the test. Verify with `git diff tests/paste.test.ts` and confirm it shows one changed line.
 
 - [ ] **Step 6: Run all four gates and commit**
 
@@ -571,7 +573,8 @@ async function assertNoCycle(id: string, parentId: string | null | undefined): P
 
 export async function createCustomer(input: Record<string, unknown>): Promise<{ id: string }> {
   const data = CREATE.parse(input);
-  await assertNoCycle("", data.parentId);
+  // No cycle check on create: a row that does not exist yet cannot be in anyone's parent chain.
+  // A bogus parentId falls through to Prisma's FK constraint, which db-errors maps to a clean 400.
 
   // `code` is unique and deletion is soft, so a deleted code would otherwise be permanently
   // unusable — the owner deletes a typo, retypes it, and gets "already exists" for a row nothing
@@ -957,10 +960,15 @@ export async function listAddresses(
     .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name));
 }
 
-/** Exactly one default per kind. Called inside the same transaction as the write that set it. */
-async function demoteOthers(customerId: string, kind: AddressKind, keepId: string) {
+/**
+ * Clears the default flag across a kind. Always called BEFORE the write that sets the new
+ * default, never after: demoting afterwards leaves a window where two addresses of one kind are
+ * both default, and whichever read lands in that window sees the wrong one. Demoting first leaves
+ * a window with none, which no code path treats as meaningful.
+ */
+async function demoteAll(customerId: string, kind: AddressKind) {
   await prisma.customerAddress.updateMany({
-    where: { customerId, kind, deletedAt: null, id: { not: keepId } },
+    where: { customerId, kind, deletedAt: null, isDefault: true },
     data: { isDefault: false },
   });
 }
@@ -977,10 +985,10 @@ export async function addAddress(customerId: string, input: Record<string, unkno
   });
   const isDefault = data.isDefault ?? existing === 0;
 
+  if (isDefault) await demoteAll(customerId, data.kind);
   const row = await auditedCreate("customerAddress", { ...data, customerId, isDefault }, () =>
     withDbErrors({ entity: "Address" }, () =>
       prisma.customerAddress.create({ data: { ...data, customerId, isDefault } })));
-  if (isDefault) await demoteOthers(customerId, data.kind, row.id);
   return { id: row.id };
 }
 
@@ -988,12 +996,13 @@ export async function updateAddress(addressId: string, input: Record<string, unk
   const data = EDIT.parse(input);
   const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Address not found");
+  // Demote before promoting, for the reason on demoteAll — never leave two defaults visible.
+  if (data.isDefault === true) {
+    await demoteAll(current.customerId, (data.kind ?? current.kind) as AddressKind);
+  }
   await withDbErrors({ entity: "Address" }, () =>
     auditedUpdate("customerAddress", addressId, () =>
       prisma.customerAddress.update({ where: { id: addressId }, data })));
-  if (data.isDefault === true) {
-    await demoteOthers(current.customerId, (data.kind ?? current.kind) as AddressKind, addressId);
-  }
 }
 
 export async function deleteAddress(addressId: string): Promise<void> {
