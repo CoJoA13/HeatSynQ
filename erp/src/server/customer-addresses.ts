@@ -48,17 +48,31 @@ export async function listAddresses(
 type Db = Prisma.TransactionClient;
 
 /**
+ * Writes a single row's isDefault flag through the audit helpers rather than a bare `update` —
+ * demoteAllIn/normalizeDefaultsIn used to write with direct updateMany/update calls that never
+ * went through audited*, so a demoted address's history kept claiming isDefault: true forever
+ * after the demotion: no audited write ever recorded the flip, so the row's most recent audit
+ * entry (from whenever it was actually promoted) was the last word on it. Every normalization
+ * write now goes through here instead.
+ */
+async function setDefault(db: Db, id: string, isDefault: boolean): Promise<void> {
+  await auditedUpdate("customerAddress", id, () =>
+    db.customerAddress.update({ where: { id }, data: { isDefault } }), { tx: db });
+}
+
+/**
  * Clears the default flag across a kind, given an explicit choice that is about to be written.
  * Called BEFORE the write that sets the new default, never after: demoting afterwards leaves a
  * window where two addresses of one kind are both default, and whichever read lands in that
- * window sees the wrong one. Demoting first leaves a window with none, which normalizeDefaults
+ * window sees the wrong one. Demoting first leaves a window with none, which normalizeDefaultsIn
  * (below), run immediately after the write in the same transaction, closes.
  */
 async function demoteAllIn(db: Db, customerId: string, kind: AddressKind) {
-  await db.customerAddress.updateMany({
+  const rows = await db.customerAddress.findMany({
     where: { customerId, kind, deletedAt: null, isDefault: true },
-    data: { isDefault: false },
+    select: { id: true },
   });
+  for (const row of rows) await setDefault(db, row.id, false);
 }
 
 /**
@@ -71,13 +85,21 @@ async function demoteAllIn(db: Db, customerId: string, kind: AddressKind) {
  */
 async function normalizeDefaultsIn(db: Db, customerId: string, kind: AddressKind): Promise<void> {
   // Rows that are soft-deleted or inactive must never carry the default flag.
-  await db.customerAddress.updateMany({
+  const stale = await db.customerAddress.findMany({
     where: {
       customerId, kind, isDefault: true,
       OR: [{ deletedAt: { not: null } }, { active: false }],
     },
-    data: { isDefault: false },
+    select: { id: true, deletedAt: true },
   });
+  for (const row of stale) {
+    // A soft-deleted row's own delete entry already captured its isDefault at the moment of
+    // deletion (auditedSoftDelete's `before` snapshot); flipping the flag afterward is internal
+    // bookkeeping on a row nothing displays again, not a fact worth its own audit entry. An
+    // inactive-but-not-deleted row is still listed (includeInactive) and still worth auditing.
+    if (row.deletedAt) await db.customerAddress.update({ where: { id: row.id }, data: { isDefault: false } });
+    else await setDefault(db, row.id, false);
+  }
 
   const activeRows = await db.customerAddress.findMany({
     where: { customerId, kind, deletedAt: null, active: true },
@@ -93,20 +115,10 @@ async function normalizeDefaultsIn(db: Db, customerId: string, kind: AddressKind
   // existing defaults by name (deterministic, since activeRows is already name-sorted) rather
   // than picking arbitrarily.
   const winnerId = (defaults[0] ?? activeRows[0]).id;
-  await db.customerAddress.updateMany({
-    where: { customerId, kind, deletedAt: null, active: true, id: { not: winnerId } },
-    data: { isDefault: false },
-  });
-  await db.customerAddress.update({ where: { id: winnerId }, data: { isDefault: true } });
-}
-
-/**
- * Standalone entry point for normalizeDefaultsIn: wraps the clear-then-pick sequence in its own
- * transaction so it stays atomic even when nothing else composes it into a larger one (see
- * deleteAddress).
- */
-async function normalizeDefaults(customerId: string, kind: AddressKind): Promise<void> {
-  await prisma.$transaction((tx) => normalizeDefaultsIn(tx, customerId, kind));
+  for (const row of activeRows) {
+    if (row.id !== winnerId && row.isDefault) await setDefault(db, row.id, false);
+  }
+  if (!defaults.some((d) => d.id === winnerId)) await setDefault(db, winnerId, true);
 }
 
 export async function addAddress(customerId: string, input: Record<string, unknown>): Promise<{ id: string }> {
@@ -143,34 +155,42 @@ export async function updateAddress(addressId: string, input: Record<string, unk
   const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Address not found");
   const newKind = (data.kind ?? current.kind) as AddressKind;
+  const oldKind = current.kind as AddressKind;
 
   await prisma.$transaction(async (tx) => {
     // Demote before promoting, for the reason on demoteAllIn — an explicit isDefault: true wins
     // deterministically rather than being arbitrarily re-picked by normalizeDefaultsIn below.
     if (data.isDefault === true) await demoteAllIn(tx, current.customerId, newKind);
     await withDbErrors({ entity: "Address" }, () =>
-      auditedUpdate("customerAddress", addressId, () =>
-        tx.customerAddress.update({ where: { id: addressId }, data }), { tx }));
-    // Normalize the address's kind post-update, and — if kind changed — the kind it left behind:
-    // the old kind can be short a default (its default just moved away) exactly like a delete
-    // would leave it, and the new kind can suddenly have two if the moved row still carried
-    // isDefault: true from its old kind.
-    await normalizeDefaultsIn(tx, current.customerId, newKind);
-    if (data.kind && data.kind !== current.kind) {
-      await normalizeDefaultsIn(tx, current.customerId, current.kind as AddressKind);
-    }
+      auditedUpdate("customerAddress", addressId, async () => {
+        const row = await tx.customerAddress.update({ where: { id: addressId }, data });
+        // Normalize the address's kind post-update, and — if kind changed — the kind it left
+        // behind: the old kind can be short a default (its default just moved away) exactly
+        // like a delete would leave it, and the new kind can suddenly have two if the moved row
+        // still carried isDefault: true from its old kind. This runs INSIDE doIt(), before
+        // auditedUpdate takes its own "after" snapshot, so that snapshot reflects the fully
+        // normalized row rather than a mid-transaction state that this very normalization goes
+        // on to overwrite a moment later in the same transaction — otherwise the primary edit's
+        // own audit entry would disagree with what actually got committed.
+        await normalizeDefaultsIn(tx, current.customerId, newKind);
+        if (data.kind && data.kind !== oldKind) {
+          await normalizeDefaultsIn(tx, current.customerId, oldKind);
+        }
+        return row;
+      }, { tx }));
   });
 }
 
 export async function deleteAddress(addressId: string): Promise<void> {
   const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Address not found");
-  // The soft delete and the subsequent re-normalization are two sequential top-level operations
-  // rather than one transaction: normalizeDefaults needs to see the delete already committed (it
-  // re-queries active rows to pick a new default), so nesting it inside the same transaction as
-  // the delete would gain nothing. Each piece is atomic on its own — auditedSoftDelete could take
-  // a `tx` (see auditedUpdate/auditedCreate) if a future caller needed to fuse it into a larger
-  // transaction, but nothing here does.
-  await withDbErrors({ entity: "Address" }, () => auditedSoftDelete("customerAddress", addressId));
-  await normalizeDefaults(current.customerId, current.kind as AddressKind);
+  // The soft delete, its audit write, and the re-normalization all run in one transaction: a
+  // transaction can read its own soft-delete (normalizeDefaultsIn re-queries active rows to pick
+  // a new default, and needs to see this delete already applied), and if normalization failed
+  // after the delete committed on its own, the API would error while the kind was left with
+  // active addresses and no default.
+  await withDbErrors({ entity: "Address" }, () => prisma.$transaction(async (tx) => {
+    await auditedSoftDelete("customerAddress", addressId, undefined, tx);
+    await normalizeDefaultsIn(tx, current.customerId, current.kind as AddressKind);
+  }));
 }

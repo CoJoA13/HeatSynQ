@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
@@ -139,6 +140,60 @@ describe("customers service", () => {
     expect(revived.id).toBe(id);
     expect(await listAddresses(revived.id)).toHaveLength(0);
     expect(await listContacts(revived.id)).toHaveLength(0);
+  });
+
+  // Group B2: createCustomer skips assertNoCycle entirely, reasoning that a row that doesn't
+  // exist yet cannot be in anyone's parent chain — true for a fresh create, false for the
+  // revival path, where the row (and its id) already exists.
+  it("guards against a cycle introduced by reviving a customer as its own parent", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await deleteCustomer(id);
+    await expect(createCustomer({ code: "ACME", name: "Acme Reborn", parentId: id }))
+      .rejects.toThrow(/circular|ancestor/i);
+  });
+
+  // Group B3: the hierarchy walk resolves a requested parent with a bare findUnique, and a fresh
+  // create relies only on the physical foreign key — both succeed against a soft-deleted parent
+  // because soft deletion leaves the row present, producing an active child whose parent appears
+  // in no customer list.
+  it("refuses a soft-deleted customer as a parent on create", async () => {
+    const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
+    await deleteCustomer(parentId);
+    await expect(createCustomer({ code: "NEW", name: "New", parentId }))
+      .rejects.toThrow(/parent/i);
+  });
+
+  it("refuses a soft-deleted customer as a parent on update", async () => {
+    const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
+    const { id: childId } = await createCustomer({ code: "CHILD", name: "Child" });
+    await deleteCustomer(parentId);
+    await expect(updateCustomer(childId, { parentId })).rejects.toThrow(/parent/i);
+  });
+
+  it("refuses a soft-deleted customer as a parent on revival", async () => {
+    const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
+    await deleteCustomer(parentId);
+    const { id: dupId } = await createCustomer({ code: "DUP", name: "Dup" });
+    await deleteCustomer(dupId);
+    await expect(createCustomer({ code: "DUP", name: "Dup Reborn", parentId }))
+      .rejects.toThrow(/parent/i);
+  });
+
+  // Group C1: creditLimit/financeChargeRate accepted any string, so an invalid one sailed
+  // through zod and blew up inside Prisma with a PrismaClientValidationError — which has no
+  // HTTP status and escapes handle() as a bare 500 instead of a field-anchored 400.
+  it("rejects a non-numeric decimal string as a validation error rather than a raw Prisma failure", async () => {
+    await expect(createCustomer({ code: "X", name: "X", creditLimit: "not-a-number" }))
+      .rejects.toBeInstanceOf(ZodError);
+    await expect(createCustomer({ code: "Y", name: "Y", financeChargeRate: "abc" }))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
+  it("accepts a decimal string or a plain number for the money fields", async () => {
+    const { id } = await createCustomer({ code: "X", name: "X", creditLimit: "1234.56", financeChargeRate: 0.02 });
+    const c = await getCustomer(id);
+    expect(c.creditLimit).toBe(1234.56);
+    expect(c.financeChargeRate).toBe(0.02);
   });
 
   it("revival resets every field a genuine create would default, not just active", async () => {

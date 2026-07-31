@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { createCustomer } from "@/server/customers";
 import { listAddresses, addAddress, updateAddress, deleteAddress } from "@/server/customer-addresses";
 import { listContacts, addContact, updateContact, deleteContact } from "@/server/customer-contacts";
-import { readAudit } from "@/server/audit";
+import * as audit from "@/server/audit";
+const { readAudit } = audit;
 
 async function customer() {
   return (await createCustomer({ code: "ACME", name: "Acme" })).id;
@@ -123,6 +124,63 @@ describe("customer addresses", () => {
     await updateAddress(second, { active: true });
     const rows = await listAddresses(id);
     expect(rows.find((a) => a.id === second)?.isDefault).toBe(true);
+  });
+
+  // Group B1: normalization writes (demoteAllIn/normalizeDefaultsIn) used to write with bare
+  // updateMany/update calls that never went through the audited* helpers, so a demoted address's
+  // history kept claiming isDefault: true forever after it was actually demoted.
+  it("routes the demotion caused by promoting a different address through the audit helpers", async () => {
+    const id = await customer();
+    const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // auto-default
+    await addAddress(id, { kind: "SHIP_TO", name: "Dock 2", isDefault: true }); // demotes Dock 1
+
+    const actual = await prisma.customerAddress.findUnique({ where: { id: first } });
+    expect(actual?.isDefault).toBe(false);
+
+    const [entry] = await readAudit("customerAddress", first);
+    expect(entry.action).toBe("update");
+    expect((entry.after as { isDefault: boolean }).isDefault).toBe(false);
+  });
+
+  // Group B1, second half: a normalization that runs after an explicit auditedUpdate (inside the
+  // same transaction) must not leave that update's own "after" snapshot disagreeing with what
+  // actually got committed to the row.
+  it("an update whose own row gets renormalized still has an after-snapshot matching the committed row", async () => {
+    const id = await customer();
+    const { id: ship1 } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
+    await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" });
+    await addAddress(id, { kind: "BILL_TO", name: "AP" }); // default of BILL_TO
+
+    // Move ship1 (currently the SHIP_TO default) into BILL_TO, which already has a default.
+    // Nothing here sets isDefault explicitly, so the primary write leaves it untouched — the
+    // *normalization* is what has to resolve the resulting two-defaults-in-BILL_TO conflict.
+    await updateAddress(ship1, { kind: "BILL_TO" });
+
+    const actual = await prisma.customerAddress.findUnique({ where: { id: ship1 } });
+    const [entry] = await readAudit("customerAddress", ship1);
+    expect((entry.after as { isDefault: boolean }).isDefault).toBe(actual?.isDefault);
+  });
+
+  // Group C3: deleteAddress's soft delete and its re-normalization used to be two sequential
+  // top-level operations. If normalization failed after the delete had already committed on its
+  // own, the delete would stick while the kind was left with active addresses and no default.
+  // Fusing them into one transaction means a normalization failure must roll the delete back too.
+  it("rolls the soft delete back if the fused normalization fails", async () => {
+    const id = await customer();
+    const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
+    await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" }); // promotion candidate on delete
+
+    // normalizeDefaultsIn promotes "Dock 2" through setDefault -> auditedUpdate; force that
+    // specific write to fail so the transaction aborts after the soft delete already ran.
+    const spy = vi.spyOn(audit, "auditedUpdate").mockRejectedValueOnce(new Error("boom"));
+    try {
+      await expect(deleteAddress(first)).rejects.toThrow("boom");
+    } finally {
+      spy.mockRestore();
+    }
+
+    const row = await prisma.customerAddress.findUnique({ where: { id: first } });
+    expect(row?.deletedAt).toBeNull();
   });
 });
 

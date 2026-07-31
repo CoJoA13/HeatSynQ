@@ -22,7 +22,33 @@ export type CustomerRow = {
 // number. Convert at the service boundary so routes, the UI, and Excel all see plain numbers.
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
-const money = z.union([z.number(), z.string()]).nullable().optional();
+// Accepts a plain number or a decimal string ("25000.00"), but never an arbitrary string: an
+// invalid one (e.g. "not-a-number") used to sail through zod as a string and blow up inside
+// Prisma with a PrismaClientValidationError, which has no HTTP status and escapes handle() as a
+// bare 500 instead of the field-anchored 400 Spec §12 promises. Bounded to fit comfortably
+// within both money columns' precision (Decimal(12,2) and Decimal(6,4)) with room to spare, so a
+// value that passes here cannot overflow the database column either.
+const DECIMAL_STRING = /^-?\d{1,10}(\.\d{1,4})?$/;
+const MONEY_MAX = 999_999_999.9999;
+const money = z.union([z.number(), z.string()])
+  .nullable()
+  .optional()
+  .transform((value, ctx) => {
+    if (value === null || value === undefined) return value;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || Math.abs(value) > MONEY_MAX) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Must be a valid decimal amount" });
+        return z.NEVER;
+      }
+      return value;
+    }
+    const trimmed = value.trim();
+    if (!DECIMAL_STRING.test(trimmed) || Math.abs(Number(trimmed)) > MONEY_MAX) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Must be a valid decimal amount" });
+      return z.NEVER;
+    }
+    return Number(trimmed);
+  });
 
 // A revived row must be indistinguishable from a fresh create — the owner typing a code that
 // happens to match a deleted one is creating a customer, not resurrecting its commercial terms.
@@ -91,10 +117,27 @@ export async function getCustomer(id: string): Promise<CustomerRow> {
   return toRow(row);
 }
 
-/** Rejects a parent chain that would make `id` its own ancestor. */
+/**
+ * Rejects a parentId that doesn't reference a live customer. Soft deletion leaves the row
+ * physically present, so the FK constraint alone accepts it — the result is an active child
+ * whose parent appears in no customer list. Shared by fresh creates (which skip the cycle walk
+ * below but still must not point at a deleted row) and assertNoCycle.
+ */
+async function assertParentExists(parentId: string): Promise<void> {
+  const parent = await prisma.customer.findFirst({ where: { id: parentId, deletedAt: null }, select: { id: true } });
+  if (!parent) throw new HttpError(400, "That parent does not exist");
+}
+
+/**
+ * Rejects a parent chain that would make `id` its own ancestor, and rejects a soft-deleted
+ * parent. Only meaningful for a row that already exists (update, or the revival path of
+ * create) — a genuinely fresh row cannot yet be anyone's ancestor, so createCustomer calls
+ * assertParentExists directly instead for that case.
+ */
 async function assertNoCycle(id: string, parentId: string | null | undefined): Promise<void> {
   if (!parentId) return;
   if (parentId === id) throw new HttpError(400, "A customer cannot be its own ancestor");
+  await assertParentExists(parentId);
   let cursor: string | null = parentId;
   const seen = new Set<string>([id]);
   while (cursor) {
@@ -108,14 +151,20 @@ async function assertNoCycle(id: string, parentId: string | null | undefined): P
 
 export async function createCustomer(input: Record<string, unknown>): Promise<{ id: string }> {
   const data = CREATE.parse(input);
-  // No cycle check on create: a row that does not exist yet cannot be in anyone's parent chain.
-  // A bogus parentId falls through to Prisma's FK constraint, which db-errors maps to a clean 400.
 
   // `code` is unique and deletion is soft, so a deleted code would otherwise be permanently
   // unusable — the owner deletes a typo, retypes it, and gets "already exists" for a row nothing
   // can display. Mirrors createReference (src/server/reference.ts) and createRole.
   const existing = await prisma.customer.findUnique({ where: { code: data.code } });
   if (existing && !existing.deletedAt) throw new HttpError(400, "A customer with that code already exists");
+
+  // A genuinely fresh row does not exist yet, so it cannot be in anyone's parent chain — only
+  // existence/non-deletion of the requested parent needs checking. A revival's row already
+  // exists under `existing.id` (the code's original id, reused), exactly like update, so it
+  // needs the full cycle guard: passing the deleted row's own id as parentId would otherwise
+  // make it its own ancestor the moment it comes back.
+  if (existing) await assertNoCycle(existing.id, data.parentId);
+  else if (data.parentId) await assertParentExists(data.parentId);
 
   const row = existing
     ? await auditedUpdate("customer", existing.id, () =>
