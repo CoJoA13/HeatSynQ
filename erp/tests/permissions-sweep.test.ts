@@ -76,4 +76,24 @@ describe("permission sweep", () => {
       .filter((f) => readFileSync(f, "utf8").includes("prisma.auditLog.create"));
     expect(offenders).toEqual([]);
   });
+
+  it("no service mutates Prisma outside an audit helper", () => {
+    // Services call prisma.<model>.create/update INSIDE an audited* callback, so requiring an
+    // audit* call somewhere in the same file is the cheap structural proxy. Pattern must match
+    // auditSettingChange too — settings.ts upserts and audits through that helper, not audited*.
+    const EXCEPT = new Set([
+      "audit.ts",    // owns the helpers; legitimately writes audit rows itself
+      "db.ts",       // the client
+      "sessions.ts", // sliding session expiry is not a business mutation and writes no audit row
+    ]);
+    const offenders = readdirSync(join(process.cwd(), "src/server"))
+      .filter((f) => f.endsWith(".ts") && !EXCEPT.has(f))
+      .filter((f) => {
+        const s = readFileSync(join(process.cwd(), "src/server", f), "utf8");
+        const mutates = /prisma\.[a-zA-Z]+\.(create|update|upsert|delete)(Many)?\s*\(/.test(s);
+        const audits = /\baudit(ed)?[A-Z][A-Za-z]*\s*\(/.test(s);
+        return mutates && !audits;
+      });
+    expect(offenders).toEqual([]);
+  });
 });

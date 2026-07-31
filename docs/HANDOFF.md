@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-07-30, end of Phase 1. This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-07-30, end of Phase 2B. This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
 
 ---
 
@@ -51,7 +51,14 @@ Model facts (owner's own words shaped these):
 
 **Phase 2A (foundation refactors + reference data) is complete.** The five Task-0 refactors from §6's backlog all landed: `HttpError` extracted to `src/server/errors.ts` (import-free, breaking the `settings → http → sessions → settings` cycle, enforced by a test asserting zero imports), one session resolution per request (`handle()` publishes it via `AsyncLocalStorage`, `requireUser` just reads it), a Prisma error-hygiene helper (`src/server/db-errors.ts` — maps P2002→400, P2025→404, and P2003→400 with the FK's field name recovered from the constraint name, e.g. "That gl account does not exist" instead of a raw Prisma message), settings values now redacted through the same `redact()` audit uses, and dotenv's promo line silenced in test output.
 
-Reference data ships with GL accounts, ten flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, salespeople, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped), and re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.
+Reference data ships with GL accounts, nine flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. (The tenth pick-list, `Salesperson`, was removed in Phase 2B — owner confirmed the shop assigns nobody.) The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped), and re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.
+
+**Phase 2B (customers) is complete.** Customers carry an owner-assigned unique `code` alongside the
+name (Visual Shop's customer-id habit), an optional parent for divisions that bill together, the
+Phase 5 commercial fields (credit limit/hold, COD, taxable, terms, surcharge opt-out, finance-charge
+override), three standing note blocks, typed addresses with one default per kind, and contacts with
+per-document flags. The unused `Salesperson` reference table was removed. The Excel-quote-aware TSV
+parser moved to `src/server/tsv.ts` so customer paste reuses it rather than reimplementing it.
 
 Also fixed in Phase 2A's close-out: zod's specific validation messages (e.g. "Too small: expected string to have >=1 characters") were silently flattening to the generic "Invalid input" under Next's bundler, even though the identical code produced the specific text under vitest — zod's locale registration is a side-effecting `config(en())` call in its own entry point, and zod's `package.json` declares `"sideEffects": false`, so webpack tree-shook that call (and the locale module it pulls in) out of the server bundle. Fixed by re-registering the locale in `src/server/error-message.ts`, the one shared translation both `handle()` and `paste.ts` call — see that file's comment for the full mechanism. Caught only by checking a real built/dev server's HTTP responses, not by vitest, which never reproduced the bug.
 
@@ -88,7 +95,7 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 **Carried out of Phase 2A** (triaged by its final whole-branch review; the execution ledger they came from is gone, so this is the surviving record):
 
 - **Owner-ruled, build in 2B:** reference columns holding a foreign key (`inspectionCode.defaultScaleId`, `paymentType.glAccountId`) render, export, and accept a **raw cuid**, so paste is unusable for those two kinds. 2B owes name resolution on read and name-accepting create/paste — built as the general mechanism customers and parts reuse. Detail in the Phase 2 kickoff brief, open item 4.
-- **Any model with `@unique` + soft delete needs revival-on-create.** `roles`, the eleven reference kinds, and process step codes all have it now; it was missed twice and ruled Critical both times. Customers and parts have far more unique columns — write the rule down before 2B adds them.
+- **Any model with `@unique` + soft delete needs revival-on-create.** `roles`, the eleven reference kinds, and process step codes all have it now; it was missed twice and ruled Critical both times. Customers and parts have far more unique columns; the rule is written into the Phase 2 kickoff brief §2.6 and applied to `Customer.code`.
 - **The sweeps do not assert that *services* route mutations through the audit helpers.** `tests/permissions-sweep.test.ts` covers routes calling `requireUser`, admin routes gating on a permission, the client/server boundary, and `audit.ts` as sole audit writer — but a 2B service calling `prisma.customer.update` directly would pass. Most likely invariant for a new author to break.
 - **Smaller, none blocking:** revival keeps stale extra columns from the deleted row; soft-deleting a GL account leaves step codes pointing at it with no `needsGlAccount` warning (matters for Phase 5's QBO export); `parseTsv` is now only used by its own tests and its documented truncate semantics are the bug `pasteReference` was fixed to reject; `FIELD` in `process-step-codes.ts` is the one schema without `.strict()` and the step-codes page depends on that; `withDbErrors`/`auditedUpdate` nesting is inverted between create and update; a second DELETE re-stamps `deletedAt` and writes another audit row; creating a name that matches a hidden inactive row says "already exists" with no hint it is inactive; the step-codes page has no delete, active toggle, or `HistoryPanel` though the API supports all three; five test files still carry duplicated login boilerplate instead of `signInWith`.
 
@@ -121,7 +128,7 @@ npm install
 npx prisma migrate dev
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed
-npm test        # expect 165 passing (Phase 1: 75; Phase 2A added the rest)
+npm test        # expect 224 passing (Phase 1: 75; Phase 2A + 2B added the rest)
 npm run dev     # http://localhost:3000 — admin/admin, change it
 ```
 
