@@ -4,6 +4,10 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { parseRecords, isBlankRecord, overflowError } from "./tsv";
+import { readableMessage } from "./error-message";
+import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
+import type { PasteResult } from "./paste";
 
 export type CustomerRow = {
   id: string; code: string; name: string;
@@ -141,4 +145,35 @@ export async function deleteCustomer(id: string): Promise<void> {
   const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
   if (children > 0) throw new HttpError(400, "That customer still has child customers");
   await withDbErrors({ entity: "Customer" }, () => auditedSoftDelete("customer", id));
+}
+
+/**
+ * Creates every valid row and collects failures per row rather than aborting the batch — a
+ * single typo on line 40 must not discard the 39 rows above it. Row numbers are the 1-based
+ * line in the pasted text, counting blank lines (the user's spreadsheet still counts them) and
+ * reporting a record that spans several physical lines at the line it starts on.
+ */
+export async function pasteCustomers(text: string): Promise<PasteResult> {
+  const columns = [...CUSTOMER_PASTE_COLUMNS];
+  const { records, error } = parseRecords(text);
+  const errors: PasteResult["errors"] = [];
+  let created = 0;
+
+  for (const record of records) {
+    if (isBlankRecord(record.fields)) continue;
+    const overflow = overflowError(record.fields, columns);
+    if (overflow) { errors.push({ row: record.startLine, message: overflow }); continue; }
+    const row = Object.fromEntries(columns.map((c, i) => [c, record.fields[i] ?? ""]));
+    // Drop empty optional cells so zod's .optional() applies instead of receiving "".
+    const input = Object.fromEntries(
+      Object.entries(row).filter(([k, v]) => k === "code" || k === "name" || v !== ""));
+    try {
+      await createCustomer(input);
+      created++;
+    } catch (err) {
+      errors.push({ row: record.startLine, message: readableMessage(err) });
+    }
+  }
+  if (error) errors.push({ row: error.line, message: error.message });
+  return { created, errors };
 }
