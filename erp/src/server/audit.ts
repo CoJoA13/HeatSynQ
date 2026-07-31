@@ -5,7 +5,7 @@ import type { Prisma } from "@prisma/client";
 export type AuditableModel =
   | "user" | "role" | "setting"
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
-  | "carrier" | "terms" | "paymentType" | "salesperson" | "commentSnippet" | "specification"
+  | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
@@ -25,7 +25,6 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   carrier: undefined,
   terms: undefined,
   paymentType: undefined,
-  salesperson: undefined,
   commentSnippet: undefined,
   specification: undefined,
   // Field definitions are mutated through the parent (setStepFields deletes/recreates

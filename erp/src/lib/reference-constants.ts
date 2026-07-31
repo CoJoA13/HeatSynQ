@@ -1,7 +1,7 @@
 // Pure constants — safe to import from client components (no server imports).
 export const REFERENCE_KINDS = [
   "glAccount", "material", "inspectionScale", "inspectionCode", "containerType",
-  "carrier", "terms", "paymentType", "salesperson", "commentSnippet", "specification",
+  "carrier", "terms", "paymentType", "commentSnippet", "specification",
 ] as const;
 export type ReferenceKind = (typeof REFERENCE_KINDS)[number];
 
@@ -14,7 +14,6 @@ export const REFERENCE_LABELS: Record<ReferenceKind, { singular: string; plural:
   carrier:         { singular: "Carrier",          plural: "Carriers",          nameLabel: "Name" },
   terms:           { singular: "Terms",            plural: "Terms",             nameLabel: "Name" },
   paymentType:     { singular: "Payment type",     plural: "Payment types",     nameLabel: "Name" },
-  salesperson:     { singular: "Salesperson",      plural: "Salespeople",       nameLabel: "Name" },
   commentSnippet:  { singular: "Comment snippet",  plural: "Comment snippets",  nameLabel: "Name" },
   specification:   { singular: "Specification",    plural: "Specifications",    nameLabel: "Name" },
 };
@@ -26,5 +25,5 @@ export const REFERENCE_EXTRA_FIELDS: Record<ReferenceKind, { key: string; label:
   paymentType:     [{ key: "glAccountId",    label: "GL account",    kind: "ref" }],
   commentSnippet:  [{ key: "text",           label: "Text",          kind: "text" }],
   specification:   [{ key: "text",           label: "Text",          kind: "text" }],
-  material: [], inspectionScale: [], containerType: [], carrier: [], terms: [], salesperson: [],
+  material: [], inspectionScale: [], containerType: [], carrier: [], terms: [],
 };

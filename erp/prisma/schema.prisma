@@ -203,15 +203,6 @@ model PaymentType {
   updatedAt   DateTime   @updatedAt
 }
 
-model Salesperson {
-  id        String    @id @default(cuid())
-  name      String    @unique
-  active    Boolean   @default(true)
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-}
-
 model CommentSnippet {
   id        String    @id @default(cuid())
   name      String    @unique

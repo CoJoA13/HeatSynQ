@@ -10,7 +10,7 @@ describe("flat reference tables", () => {
   it("exposes every kind the owner needs to key", () => {
     expect([...REFERENCE_KINDS].sort()).toEqual([
       "carrier", "commentSnippet", "containerType", "glAccount", "inspectionCode",
-      "inspectionScale", "material", "paymentType", "salesperson", "specification", "terms",
+      "inspectionScale", "material", "paymentType", "specification", "terms",
     ]);
   });
 

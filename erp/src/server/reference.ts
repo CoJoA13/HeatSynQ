@@ -15,7 +15,7 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
-  carrier: z.object({}), terms: z.object({}), salesperson: z.object({}),
+  carrier: z.object({}), terms: z.object({}),
 };
 
 const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });
