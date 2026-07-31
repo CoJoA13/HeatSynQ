@@ -21,6 +21,14 @@ type Contact = {
 
 export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
+  // Next reuses this route's component instance across /customers/A -> /customers/B (only the
+  // param changes, no remount). Keying the body by id forces a fresh instance per customer, so
+  // the uncontrolled text fields (defaultValue) and the address/contact drafts cannot carry one
+  // customer's unsaved content onto another customer's id.
+  return <CustomerDetail key={id} id={id} />;
+}
+
+function CustomerDetail({ id }: { id: string }) {
   const [c, setC] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -34,19 +42,36 @@ export default function CustomerDetailPage() {
       api<Address[]>(`/api/customers/${id}/addresses`),
       api<Contact[]>(`/api/customers/${id}/contacts`),
     ]);
-    setC(cust); setAddresses(addr); setContacts(cont);
+    setC(cust); setAddresses(addr); setContacts(cont); setError(null);
   }, [id]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
-  async function save(body: object) {
+  // Optimistic: apply the change to local state immediately so a single click always lands
+  // visually, then persist it. A controlled checkbox bound only to post-round-trip server state
+  // can revert mid-flight and silently swallow a click; updating first avoids that.
+  async function save(body: Partial<Customer>) {
+    setC((cur) => (cur ? { ...cur, ...body } : cur));
     try {
       await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
-      setError(null); await load();
-    } catch (e) { setError((e as Error).message); }
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+      await load().catch(() => {}); // roll back to server truth
+    }
   }
   async function call(path: string, init: RequestInit) {
     try { await api(path, init); setError(null); await load(); }
     catch (e) { setError((e as Error).message); }
+  }
+  async function toggleContactFlag(ct: Contact, key: (typeof CONTACT_FLAGS)[number]["key"], value: boolean) {
+    setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, [key]: value } : row)));
+    try {
+      await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+      await load().catch(() => {}); // roll back to server truth
+    }
   }
 
   if (!c) return <div className="p-6">{error ?? "Loading…"}</div>;
@@ -157,8 +182,7 @@ export default function CustomerDetailPage() {
                 {CONTACT_FLAGS.map((f) => (
                   <td key={f.key} className="px-1 text-center">
                     <input type="checkbox" checked={ct[f.key]}
-                           onChange={(e) => call(`/api/customers/${id}/contacts/${ct.id}`,
-                             { method: "PUT", body: JSON.stringify({ [f.key]: e.target.checked }) })} />
+                           onChange={(e) => toggleContactFlag(ct, f.key, e.target.checked)} />
                   </td>
                 ))}
                 <td className="text-right">
