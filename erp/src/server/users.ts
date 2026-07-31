@@ -1,9 +1,10 @@
 import { prisma } from "./db";
-import { HttpError } from "./http";
+import { HttpError } from "./errors";
 import { hashPassword } from "./password";
 import { ALL_PERMISSIONS, canDo } from "./permissions";
 import { auditedCreate, auditedUpdate } from "./audit";
 import { currentActor } from "./context";
+import { withDbErrors } from "./db-errors";
 
 /** Active, non-deleted users whose effective permissions currently include action.manage_users. */
 async function activeManageUsersHolders() {
@@ -39,15 +40,17 @@ export async function createUser(input: { username: string; displayName: string;
   // `password`) would leak the plaintext into the "after" snapshot. `rest` carries every
   // other field; `passwordHash: "set"` records that a password was set without exposing it.
   const { password, ...rest } = input;
-  const user = await auditedCreate("user", { ...rest, passwordHash: "set" }, async () =>
-    prisma.user.create({
-      data: {
-        username: input.username,
-        displayName: input.displayName,
-        passwordHash: await hashPassword(password),
-        roleId: input.roleId ?? null,
-      },
-    }),
+  const user = await auditedCreate("user", { ...rest, passwordHash: "set" }, () =>
+    withDbErrors({ entity: "User", conflictField: "username" }, async () =>
+      prisma.user.create({
+        data: {
+          username: input.username,
+          displayName: input.displayName,
+          passwordHash: await hashPassword(password),
+          roleId: input.roleId ?? null,
+        },
+      }),
+    ),
   );
   return { id: user.id };
 }
@@ -78,16 +81,18 @@ export async function updateUser(
     }
   }
 
-  await auditedUpdate("user", id, async () =>
-    prisma.user.update({
-      where: { id },
-      data: {
-        ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-        ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
-        ...(input.active !== undefined ? { active: input.active } : {}),
-        ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
-      },
-    }),
+  await withDbErrors({ entity: "User" }, () =>
+    auditedUpdate("user", id, async () =>
+      prisma.user.update({
+        where: { id },
+        data: {
+          ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+          ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
+          ...(input.active !== undefined ? { active: input.active } : {}),
+          ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
+        },
+      }),
+    ),
   );
 }
 

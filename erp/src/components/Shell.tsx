@@ -22,6 +22,8 @@ const NAV: { label: string; href: string; area: string }[] = [
 const ADMIN = [
   { label: "Users", href: "/admin/users" },
   { label: "Roles", href: "/admin/roles" },
+  { label: "Reference data", href: "/admin/reference" },
+  { label: "Process step codes", href: "/admin/step-codes" },
   { label: "Settings", href: "/admin/settings" },
   { label: "Audit log", href: "/admin/audit" },
 ];

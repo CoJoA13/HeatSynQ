@@ -1,17 +1,13 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { getSessionUser } from "./sessions";
-import { runWithActor } from "./context";
+import { getSessionUser, type SessionUser } from "./sessions";
+import { runWithContext, currentUser } from "./context";
+import { HttpError } from "./errors";
+import { readableMessage } from "./error-message";
 
+export { HttpError };
+export type { SessionUser };
 export const SESSION_COOKIE = "erp_session";
-
-export class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
-
-export type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;
 
 export function cookieToken(req: Request): string | null {
   const header = req.headers.get("cookie") ?? "";
@@ -19,28 +15,25 @@ export function cookieToken(req: Request): string | null {
   return match ? match[1] : null;
 }
 
-export async function requireUser(req: Request): Promise<SessionUser> {
-  const token = cookieToken(req);
-  const user = token ? await getSessionUser(token) : null;
+export function requireUser(): SessionUser {
+  const user = currentUser();
   if (!user) throw new HttpError(401, "Not signed in");
   return user;
 }
 
 type Handler = (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
 
-/** Wraps a route handler: catches HttpError, and if a session exists, runs inside the actor context. */
+/** Resolves the session ONCE, publishes it on the request context, and maps errors to JSON. */
 export function handle(fn: Handler): Handler {
   return async (req, ctx) => {
     const token = cookieToken(req);
     const user = token ? await getSessionUser(token) : null;
     const actor = user ? { id: user.id, name: user.displayName } : { id: null, name: "anonymous" };
     try {
-      return await runWithActor(actor, () => fn(req, ctx));
+      return await runWithContext({ actor, user }, () => fn(req, ctx));
     } catch (err) {
       if (err instanceof ZodError) {
-        const issue = err.issues[0];
-        const message = `${issue.path.join(".") || "body"}: ${issue.message}`;
-        return NextResponse.json({ error: message }, { status: 400 });
+        return NextResponse.json({ error: readableMessage(err) }, { status: 400 });
       }
       if (err instanceof HttpError) {
         return NextResponse.json({ error: err.message }, { status: err.status });

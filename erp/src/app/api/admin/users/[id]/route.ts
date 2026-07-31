@@ -13,7 +13,7 @@ const Body = z.object({
 });
 
 export const PUT = handle(async (req, ctx) => {
-  mustDo(await requireUser(req), "manage_users");
+  mustDo(requireUser(), "manage_users");
   const { id } = await ctx.params;
   const body = Body.parse(await req.json());
   const { overrides, ...rest } = body;

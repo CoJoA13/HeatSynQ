@@ -20,6 +20,7 @@ HeatSynQ is a self-hosted web ERP for a commercial **heat-treating shop**, built
 | `docs/superpowers/plans/2026-07-29-roadmap.md` | The 8-phase build order (owner-approved) |
 | `docs/superpowers/plans/2026-07-29-phase-1-foundation.md` | Phase 1's executed plan (historical record; two mid-execution corrections were committed to it) |
 | `docs/superpowers/plans/2026-07-30-phase-2-kickoff.md` | **Start here for Phase 2** — scope, model notes, pre-work, and the context this handoff's author held |
+| `docs/2026-07-30-process-steps-model.md` | **The Process Steps model with diagrams** — supersedes spec §5.1's shared process master. Read before touching parts or recipes |
 | `docs/2026-07-29-crossref-findings.md` | Cross-reference of the two Visual Shop reference docs — contradictions, gaps, and which source to trust where |
 | `Visual-Shop-ERP-Reference-Report.md` | Teardown of Visual Shop from the vendor KB (primary design reference, with known errors — see findings doc) |
 | `VisualShopTraining.pdf` | 2018 vendor training manual — **not in git** (44 MB, gitignored). Lives on the original machine; copy manually if needed. Printed page N = PDF page N+2 |
@@ -32,8 +33,13 @@ Scope IN: order→cert→ship→invoice core; A/R & payments inside the ERP with
 Scope OUT (deliberate, owner-confirmed — do not re-add): **scheduling** (owner schedules in Excel around molten-salt quench-tank temperatures; "can't be automated without human intervention — always"), **shop-floor tracking** (no ship gate — "we just ship"), **equipment integration**, Sales Order Entry staging, outside processing, inventory, CCM/CRM/mass email, dashboard graphs, contract review, digital order approval, kanban, assembly process masters, automatic customer emails, **CAR** (owner has a separate program; in-ERP rework may come later), **order duplication** (owner: double-billing risk).
 
 Model facts (owner's own words shaped these):
-- **Quantity AND weight both required** on orders; a part must carry **each-weight** and a **process master** (and ideally an active quote) so order entry auto-populates everything.
+- **Quantity AND weight both required** on orders; a part must carry **each-weight** and **its own Process Steps** (and ideally an active quote) so order entry auto-populates everything.
 - **Loads are routine and essential**: 1,000 pcs at 300/load → 300/300/300/100, **auto-split at order save** from the part's load qty/wt. **Loads ≠ containers** (containers are customer packaging). Shipping is decoupled from load boundaries (ship 230 of a 300 load because that's what the customer's container calls for). Three quantity layers: ordered → per-load → shipped.
+- **Part numbers are unique per customer, never globally** (owner, 2026-07-30). The same number recurs across customers as work migrates to cheaper sources, and **the chemistry can require a different recipe** — so a part number alone never identifies a part (customer shows at every selection point), and nothing about a part is ever inferred across customers from a matching number. Binds search (P3), certs (P4), and every part picker.
+- **GL accounts are their own maintained reference table, and are optional when keying a Process Step Code** (owner, 2026-07-30: "configurable and not set in stone"). Step codes/payment types/surcharges reference an account rather than storing free text.
+- **Shared process masters are REMOVED — the recipe belongs to the part** (owner, 2026-07-30; supersedes spec §5.1, recorded in spec §15 amendments). Nearly every step varies part to part (racking *always*, test type/location *always*, temper and austenitize parameters routinely), so a shared master would be an empty shell overridden everywhere — and propagating one edit across parts is precisely what chemistry-dependent outcomes make unsafe. What *is* shared: **Process Step Codes** (billable reference vocabulary carrying GL) and **Templates** (blank skeletons; "Load Template" fills structure with **empty** fields). **No copy-from-another-part mechanic, by decision.** Each step code defines which typed fields it exposes. Per-part step overrides and the step library are deleted, not deferred. Full model + diagrams: `docs/2026-07-30-process-steps-model.md`.
+- **Specifications live on the part, many per part** — never on the process. The same recipe yields ASTM grade 1, 2, or 3 depending on the customer's base iron.
+- Naming: UI says **Process Steps** (a part's recipe) and **Process Step Code** (the billable reference table, replacing the earlier "Operation").
 - Certs: **commercial + ISO 9001 rigor only** (no Nadcap/CQI-9).
 - Users: **1–5**, office-based. Platform: **self-hosted web app**. Database: **bundled PostgreSQL**.
 - The shipper's *line complete* checkbox — a human, not arithmetic — decides an order is finished (kept from Visual Shop).
@@ -41,12 +47,18 @@ Model facts (owner's own words shaped these):
 
 ## 4. State of the build
 
-**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test` (75 integration tests against a real Postgres test DB), `npx tsc --noEmit`, `npx eslint src tests`.
+**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test`, `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
+
+**Phase 2A (foundation refactors + reference data) is complete.** The five Task-0 refactors from §6's backlog all landed: `HttpError` extracted to `src/server/errors.ts` (import-free, breaking the `settings → http → sessions → settings` cycle, enforced by a test asserting zero imports), one session resolution per request (`handle()` publishes it via `AsyncLocalStorage`, `requireUser` just reads it), a Prisma error-hygiene helper (`src/server/db-errors.ts` — maps P2002→400, P2025→404, and P2003→400 with the FK's field name recovered from the constraint name, e.g. "That gl account does not exist" instead of a raw Prisma message), settings values now redacted through the same `redact()` audit uses, and dotenv's promo line silenced in test output.
+
+Reference data ships with GL accounts, ten flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, salespeople, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped), and re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.
+
+Also fixed in Phase 2A's close-out: zod's specific validation messages (e.g. "Too small: expected string to have >=1 characters") were silently flattening to the generic "Invalid input" under Next's bundler, even though the identical code produced the specific text under vitest — zod's locale registration is a side-effecting `config(en())` call in its own entry point, and zod's `package.json` declares `"sideEffects": false`, so webpack tree-shook that call (and the locale module it pulls in) out of the server bundle. Fixed by re-registering the locale in `src/server/error-message.ts`, the one shared translation both `handle()` and `paste.ts` call — see that file's comment for the full mechanism. Caught only by checking a real built/dev server's HTTP responses, not by vitest, which never reproduced the bug.
 
 What Phase 1 delivers (all in `erp/`):
 - **Auth**: username/password (argon2id), hashed session tokens, sliding expiry driven by a setting, timing-attack-resistant login (DUMMY_HASH equalizer in `src/server/auth.ts`), middleware cookie gate.
 - **Permissions**: `src/server/permissions.ts` + `src/lib/permission-constants.ts` — 12 areas × view/create/edit/delete + 10 named special actions; resolution DENY override > GRANT override > role > deny. Roles and per-user overrides are owner-editable in Admin.
-- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers** (settings.ts's direct audit write is the one sanctioned exception).
+- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers**; `settings.ts`'s direct `prisma.auditLog.create` was a documented exception in Phase 1 but was retired in Phase 2A (Task 4) — `audit.ts` is now the sole writer, enforced by a sweep test (`tests/permissions-sweep.test.ts`) that fails if any other file calls `prisma.auditLog.create` again.
 - **Settings**: typed zod registry (`src/server/settings.ts`), 12 keys (company, numbering seeds, date defaults, session timeout), validated on read and write, audited, `Object.hasOwn`-guarded.
 - **Admin pages**: Users (no hard delete ever; self-lockout guards: can't deactivate yourself or the last user-manager), Roles (permission grid; revival of a soft-deleted name clears stale permissions), Settings, Audit log.
 - **Shell**: permission-aware left nav (routes for future phases 404 until built), global search placeholder (wired in Phase 3), auth-refetch on navigation.
@@ -69,14 +81,16 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 
 ## 6. Known backlog (all triaged, none blocking)
 
-**Do at Phase 2 start (from the final review — "Task 0" items):**
-- Auth-context refactor: `handle()` resolves the session user once (AsyncLocalStorage), `requireUser` reads it — currently every authed request does the session lookup + sliding-expiry write twice; me-route should reuse `resolve()` from permissions.
-- Extract `HttpError` into `src/server/errors.ts` to break the `settings → http → sessions → settings` import cycle before more modules join it.
-- Prisma error-hygiene helper: map P2002→400 / P2025→404 in services (covers: createUser duplicate race, renameRole soft-deleted-name edge, setRolePermissions dedupe, bogus-id 404s).
-- Route `settings.ts` audit values through `redact()` (before Phase 5 puts QBO secrets in settings).
-- dotenv v17 prints a promo line in test output — silence it (`quiet: true`) to keep output pristine.
+**Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
 **Deferred (fine to ride along):** health-route DB-down path; roles page deselect papercut; users page error banner doesn't clear on success; updateUser password truthy-check inconsistency; Shell loading indicator; settings page empty-blur cosmetic; searchAudit filter route tests; HistoryPanel changedFields unit test; session-row cleanup job; login rate limiting; backup alerting + backup-now button; SESSION_SECRET consumed by nothing yet; `renameRole` to a soft-deleted role's name → 500 edge.
+
+**Carried out of Phase 2A** (triaged by its final whole-branch review; the execution ledger they came from is gone, so this is the surviving record):
+
+- **Owner-ruled, build in 2B:** reference columns holding a foreign key (`inspectionCode.defaultScaleId`, `paymentType.glAccountId`) render, export, and accept a **raw cuid**, so paste is unusable for those two kinds. 2B owes name resolution on read and name-accepting create/paste — built as the general mechanism customers and parts reuse. Detail in the Phase 2 kickoff brief, open item 4.
+- **Any model with `@unique` + soft delete needs revival-on-create.** `roles`, the eleven reference kinds, and process step codes all have it now; it was missed twice and ruled Critical both times. Customers and parts have far more unique columns — write the rule down before 2B adds them.
+- **The sweeps do not assert that *services* route mutations through the audit helpers.** `tests/permissions-sweep.test.ts` covers routes calling `requireUser`, admin routes gating on a permission, the client/server boundary, and `audit.ts` as sole audit writer — but a 2B service calling `prisma.customer.update` directly would pass. Most likely invariant for a new author to break.
+- **Smaller, none blocking:** revival keeps stale extra columns from the deleted row; soft-deleting a GL account leaves step codes pointing at it with no `needsGlAccount` warning (matters for Phase 5's QBO export); `parseTsv` is now only used by its own tests and its documented truncate semantics are the bug `pasteReference` was fixed to reject; `FIELD` in `process-step-codes.ts` is the one schema without `.strict()` and the step-codes page depends on that; `withDbErrors`/`auditedUpdate` nesting is inverted between create and update; a second DELETE re-stamps `deletedAt` and writes another audit row; creating a name that matches a hidden inactive row says "already exists" with no hint it is inactive; the step-codes page has no delete, active toggle, or `HistoryPanel` though the API supports all three; five test files still carry duplicated login boilerplate instead of `signInWith`.
 
 **Phase 2+ deliverables promised by spec but not yet scheduled:** HTTPS on LAN + `Secure` cookie flag (reverse proxy); practice database mode (Phase 8); backup-now button + configurable folder (Phase 8).
 
@@ -85,7 +99,7 @@ Seeded credentials: `admin` / `admin` — **change immediately** on any real ins
 1. **Samples of the current printed traveler, shipper, cert, and invoice** — these drive the Phase 3+ document templates and the cert field set. Drop scans/PDFs into the repo or the project folder.
 2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely).
 3. The office's go-to report list.
-4. GL account list for operations, surcharges, payment types.
+4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
 
 ## 8. Fresh machine setup (Fedora)
 
@@ -107,7 +121,7 @@ npm install
 npx prisma migrate dev
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed
-npm test        # expect 75 passing
+npm test        # expect 165 passing (Phase 1: 75; Phase 2A added the rest)
 npm run dev     # http://localhost:3000 — admin/admin, change it
 ```
 

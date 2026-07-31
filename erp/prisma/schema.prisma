@@ -89,3 +89,145 @@ model AuditLog {
   @@index([entity, entityId])
   @@index([at])
 }
+
+model GlAccount {
+  id                String            @id @default(cuid())
+  name              String            @unique          // the account number, e.g. "4010"
+  description       String            @default("")
+  active            Boolean           @default(true)
+  deletedAt         DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  paymentTypes      PaymentType[]
+  processStepCodes  ProcessStepCode[]
+}
+
+enum StepFieldType {
+  NUMBER
+  TEXT
+  DATE
+  CHECKBOX
+}
+
+model ProcessStepCode {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  glAccountId  String?
+  glAccount    GlAccount?            @relation(fields: [glAccountId], references: [id])
+  equipmentTag String                @default("")
+  active       Boolean               @default(true)
+  deletedAt    DateTime?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  fields       ProcessStepFieldDef[]
+}
+
+model ProcessStepFieldDef {
+  id     String          @id @default(cuid())
+  codeId String
+  code   ProcessStepCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+  label  String
+  type   StepFieldType
+  unit   String?
+  sort   Int
+
+  @@unique([codeId, label])
+}
+
+model Material {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model InspectionScale {
+  id        String            @id @default(cuid())
+  name      String            @unique
+  active    Boolean           @default(true)
+  deletedAt DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  codes     InspectionCode[]
+}
+
+model InspectionCode {
+  id             String           @id @default(cuid())
+  name           String           @unique
+  defaultScaleId String?
+  defaultScale   InspectionScale? @relation(fields: [defaultScaleId], references: [id])
+  active         Boolean          @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model ContainerType {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Carrier {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Terms {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model PaymentType {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  glAccountId String?
+  glAccount   GlAccount? @relation(fields: [glAccountId], references: [id])
+  active      Boolean    @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Salesperson {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model CommentSnippet {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  text      String    @default("")
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Specification {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  text      String    @default("")
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}

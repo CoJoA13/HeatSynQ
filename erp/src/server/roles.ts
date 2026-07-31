@@ -1,7 +1,8 @@
 import { prisma } from "./db";
-import { HttpError } from "./http";
+import { HttpError } from "./errors";
 import { ALL_PERMISSIONS } from "./permissions";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { withDbErrors } from "./db-errors";
 
 export async function listRoles() {
   const roles = await prisma.role.findMany({
@@ -30,7 +31,8 @@ export async function createRole(name: string): Promise<{ id: string }> {
           prisma.role.update({ where: { id: existing.id }, data: { deletedAt: null } }),
         ]).then(([, revived]) => revived),
       )
-    : await auditedCreate("role", { name }, () => prisma.role.create({ data: { name } }));
+    : await auditedCreate("role", { name }, () =>
+        withDbErrors({ entity: "Role", conflictField: "name" }, () => prisma.role.create({ data: { name } })));
   return { id: role.id };
 }
 
@@ -39,7 +41,8 @@ export async function renameRole(roleId: string, name: string): Promise<void> {
   if (existing && !existing.deletedAt && existing.id !== roleId) {
     throw new HttpError(400, "A role with that name already exists");
   }
-  await auditedUpdate("role", roleId, () => prisma.role.update({ where: { id: roleId }, data: { name } }));
+  await withDbErrors({ entity: "Role", conflictField: "name" }, () =>
+    auditedUpdate("role", roleId, () => prisma.role.update({ where: { id: roleId }, data: { name } })));
 }
 
 export async function setRolePermissions(roleId: string, permissions: string[]): Promise<void> {

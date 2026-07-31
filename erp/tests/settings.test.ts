@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll, prisma } from "./helpers/db";
 import { getSetting, setSetting, allSettings } from "@/server/settings";
-import { readAudit } from "@/server/audit";
+import { readAudit, auditSettingChange } from "@/server/audit";
 import { HttpError } from "@/server/http";
 import { createSession } from "@/server/sessions";
 
@@ -85,5 +85,16 @@ describe("settings", () => {
     const diffMins = diffMs / 60_000;
     expect(diffMins).toBeGreaterThanOrEqual(4);
     expect(diffMins).toBeLessThanOrEqual(6);
+  });
+
+  it("routes audit values through redact so secrets never land in the log", async () => {
+    const beforeValue = { token: "sk-live-123", host: "qbo" };
+    const afterValue = { token: "sk-live-456", host: "qbo-prod" };
+
+    await auditSettingChange("test_sensitive_setting", beforeValue, afterValue);
+
+    const [entry] = await readAudit("setting", "test_sensitive_setting");
+    expect(entry.before).toEqual({ value: { token: "[redacted]", host: "qbo" } });
+    expect(entry.after).toEqual({ value: { token: "[redacted]", host: "qbo-prod" } });
   });
 });

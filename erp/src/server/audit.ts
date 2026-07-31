@@ -2,7 +2,11 @@ import { prisma } from "./db";
 import { currentActor } from "./context";
 import type { Prisma } from "@prisma/client";
 
-export type AuditableModel = "user" | "role" | "setting";
+export type AuditableModel =
+  | "user" | "role" | "setting"
+  | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
+  | "carrier" | "terms" | "paymentType" | "salesperson" | "commentSnippet" | "specification"
+  | "processStepCode";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -13,9 +17,25 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   role: { permissions: true },
   user: { overrides: true },
   setting: undefined,
+  glAccount: undefined,
+  material: undefined,
+  inspectionScale: undefined,
+  inspectionCode: undefined,
+  containerType: undefined,
+  carrier: undefined,
+  terms: undefined,
+  paymentType: undefined,
+  salesperson: undefined,
+  commentSnippet: undefined,
+  specification: undefined,
+  // Field definitions are mutated through the parent (setStepFields deletes/recreates
+  // ProcessStepFieldDef rows), not via a scalar column on ProcessStepCode itself — without this
+  // include, before/after snapshots would both omit `fields` and the diff would show no change
+  // for the exact operation most worth auditing.
+  processStepCode: { fields: true },
 };
 
-function redact(value: unknown): Prisma.InputJsonValue | undefined {
+export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
@@ -77,6 +97,21 @@ async function write(entry: {
       before: redact(entry.before),
       after: redact(entry.after),
       reason: entry.reason,
+    },
+  });
+}
+
+export async function auditSettingChange(key: string, beforeValue: unknown, afterValue: unknown): Promise<void> {
+  const actor = currentActor();
+  await prisma.auditLog.create({
+    data: {
+      actorId: actor.id,
+      actorName: actor.name,
+      entity: "setting",
+      entityId: key,
+      action: "update",
+      before: redact({ value: beforeValue }),
+      after: redact({ value: afterValue }),
     },
   });
 }

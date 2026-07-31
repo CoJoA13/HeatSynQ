@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser, HttpError } from "@/server/http";
+import { handle, requireUser } from "@/server/http";
+import { HttpError } from "@/server/errors";
 import { mustCan } from "@/server/permissions";
 import { readAudit, searchAudit } from "@/server/audit";
 
 export const GET = handle(async (req) => {
-  mustCan(await requireUser(req), "admin", "view");
+  mustCan(requireUser(), "admin", "view");
   const url = new URL(req.url);
   const entity = url.searchParams.get("entity") ?? undefined;
   const entityId = url.searchParams.get("entityId") ?? undefined;

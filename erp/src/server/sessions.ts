@@ -36,3 +36,5 @@ export async function getSessionUser(token: string) {
 export async function destroySession(token: string): Promise<void> {
   await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
 }
+
+export type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;

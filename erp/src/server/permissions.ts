@@ -31,7 +31,7 @@ export function canDo(user: PermUser, special: SpecialAction): boolean {
 }
 
 /** Throw-on-deny helpers for route handlers. */
-import { HttpError } from "./http";
+import { HttpError } from "./errors";
 export function mustCan(user: PermUser, area: Area, action: CrudAction): void {
   if (!can(user, area, action)) throw new HttpError(403, "You do not have permission for that");
 }
