@@ -882,6 +882,8 @@ Expected: FAIL — `Cannot find module '@/server/customer-addresses'`.
 
 - [ ] **Step 3: Add the schema and migrate both databases**
 
+**Add the back-relation to `Customer` in the same edit:** `addresses CustomerAddress[]`. Task 3 deliberately omitted it because `CustomerAddress` did not exist yet and Prisma's validator rejects a relation with only one side declared. Adding the model without the back-relation fails the same way.
+
 ```prisma
 enum AddressKind {
   SHIP_TO
@@ -1161,6 +1163,8 @@ Run: `npx vitest run tests/customer-children.test.ts -t "customer contacts"`
 Expected: FAIL — `Cannot find module '@/server/customer-contacts'`.
 
 - [ ] **Step 3: Add the schema and migrate both databases**
+
+**Add the back-relation to `Customer` in the same edit:** `contacts CustomerContact[]`. Task 3 deliberately omitted it because `CustomerContact` did not exist yet and Prisma's validator rejects a relation with only one side declared.
 
 ```prisma
 model CustomerContact {
