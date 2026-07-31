@@ -21,11 +21,16 @@ export const GET = handle(async (req, { params }) => {
   ];
 
   const buf = await toXlsx(labels.plural, columns, rows as unknown as Record<string, unknown>[]);
+  // The raw camelCase `kind` (e.g. "glAccount.xlsx") is an internal identifier, not something to
+  // hand the owner on every download — use the human label already shown on screen. Strip
+  // characters that are illegal in a filename or would break out of the quoted
+  // content-disposition value (quotes, backslashes, path separators, control characters).
+  const filename = `${labels.plural.replace(/["\\/:*?<>|\x00-\x1f]/g, "")}.xlsx`;
   return new NextResponse(new Uint8Array(buf), {
     status: 200,
     headers: {
       "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "content-disposition": `attachment; filename="${kind}.xlsx"`,
+      "content-disposition": `attachment; filename="${filename}"`,
     },
   });
 });

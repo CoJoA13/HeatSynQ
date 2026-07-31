@@ -49,7 +49,9 @@ describe("excel export", () => {
       new Request("http://t/api/admin/reference/glAccount/export", { headers: { cookie } }), ctx);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/spreadsheetml/);
-    expect(res.headers.get("content-disposition")).toMatch(/glAccount.*\.xlsx/);
+    // The download filename is the human label ("GL accounts"), not the raw camelCase kind
+    // ("glAccount") — that internal identifier used to be the only thing the owner ever saw.
+    expect(res.headers.get("content-disposition")).toMatch(/filename="GL accounts\.xlsx"/);
     expect(Buffer.from(await res.clone().arrayBuffer()).byteLength).toBeGreaterThan(0);
 
     // Prove a genuinely working workbook reached the wire — the seam the brief warned about

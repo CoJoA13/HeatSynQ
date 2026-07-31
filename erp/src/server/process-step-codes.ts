@@ -58,9 +58,28 @@ export async function listStepCodes(opts?: { includeInactive?: boolean }): Promi
 
 export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ id: string }> {
   const data = CREATE.parse(input);
-  const row = await auditedCreate("processStepCode", data, () =>
-    withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-      prisma.processStepCode.create({ data })));
+
+  // A soft-deleted code still occupies its unique `code` string, so retyping the same code must
+  // revive that row rather than 400 on a duplicate the caller can no longer see. This is
+  // verbatim the defect ruled Critical for the eleven reference kinds during Task 5 (see
+  // createReference's identical pattern in ./reference.ts) — step codes simply ended up outside
+  // that ruling because they're not one of the generic reference kinds.
+  const existing = await prisma.processStepCode.findUnique({ where: { code: data.code } });
+  if (existing && !existing.deletedAt) {
+    throw new HttpError(400, "A process step code with that code already exists");
+  }
+
+  const row = existing
+    ? await auditedUpdate("processStepCode", existing.id, () =>
+        withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
+          // A re-created code must come back live unless the caller explicitly asked otherwise —
+          // reviving it still `active: false` (its state at the moment it was deleted) would let
+          // a "successful" create silently vanish from the default list with no error at all.
+          // `CREATE` has no `active` field, so this always applies on revival.
+          prisma.processStepCode.update({ where: { id: existing.id }, data: { ...data, deletedAt: null, active: true } })))
+    : await auditedCreate("processStepCode", data, () =>
+        withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
+          prisma.processStepCode.create({ data })));
   return { id: row.id };
 }
 

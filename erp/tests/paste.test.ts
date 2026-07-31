@@ -110,4 +110,53 @@ describe("paste entry", () => {
     expect(result.errors[0].row).toBe(3);
     expect(result.errors[0].message).toMatch(/already exists/i);
   });
+
+  describe("Excel cell quoting", () => {
+    it("unescapes a doubled inner quote — Excel's encoding for a literal quote in a cell", () => {
+      // Excel wraps `3/4" round` as `"3/4"" round"` when copying — inch marks are everywhere at
+      // a heat-treat shop, and a naive split used to leave the quotes in the material's name.
+      expect(parseTsv(`"3/4"" round"`, ["name"])).toEqual([{ name: '3/4" round' }]);
+    });
+
+    it("keeps a multi-line quoted cell as ONE record with the embedded newline preserved", () => {
+      const rows = parseTsv('AMS 2759\t"line one\nline two"', ["name", "text"]);
+      expect(rows).toEqual([{ name: "AMS 2759", text: "line one\nline two" }]);
+    });
+
+    it("bulk-creates a multi-line specification as a single row, not a junk row from the second line", async () => {
+      const result = await pasteReference("specification", 'AMS 2759\t"line one\nline two"');
+      expect(result).toEqual({ created: 1, errors: [] });
+      const [row] = await listReference("specification");
+      expect(row.text).toBe("line one\nline two");
+    });
+
+    it("treats a raw tab inside a quoted cell as content, not a column delimiter", () => {
+      const rows = parseTsv('AMS 2759\t"has\ta tab"', ["name", "text"]);
+      expect(rows).toEqual([{ name: "AMS 2759", text: "has\ta tab" }]);
+    });
+
+    it("reports an unterminated quoted cell as an error rather than silently accepting it", () => {
+      expect(() => parseTsv('AMS 2759\t"unterminated', ["name", "text"])).toThrow(/unterminated/i);
+    });
+
+    it("pasteReference reports an unterminated quote as a row error instead of throwing", async () => {
+      const result = await pasteReference("specification", '4010\tGood\nAMS 2759\t"unterminated');
+      expect(result.created).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].message).toMatch(/unterminated/i);
+    });
+
+    it("reports the correct starting line number for a record that follows a multi-line quoted cell", async () => {
+      const result = await pasteReference(
+        "specification",
+        'AMS 2759\t"line one\nline two"\nAMS 2759\tDuplicate name',
+      );
+      // First record spans physical lines 1-2 (the quoted cell embeds one newline); the second
+      // record starts on line 3, not line 2 — the line the multi-line cell happened to end on.
+      expect(result.created).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].row).toBe(3);
+      expect(result.errors[0].message).toMatch(/already exists/i);
+    });
+  });
 });

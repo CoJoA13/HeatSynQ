@@ -31,6 +31,35 @@ describe("process step codes", () => {
     await expect(createStepCode({ code: "HT-01", name: "Other" })).rejects.toThrow(HttpError);
   });
 
+  it("revives a soft-deleted code when the same code is re-created", async () => {
+    const { id: firstId } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await deleteStepCode(firstId);
+    expect(await listStepCodes()).toHaveLength(0);
+
+    const { id: secondId } = await createStepCode({ code: "HT-01", name: "Renamed" });
+    expect(secondId).toBe(firstId);
+    expect(await listStepCodes()).toHaveLength(1);
+    expect((await listStepCodes())[0]).toMatchObject({ code: "HT-01", name: "Renamed" });
+  });
+
+  it("revives a soft-deleted, previously-inactive code as active by default", async () => {
+    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await updateStepCode(id, { active: false });
+    await deleteStepCode(id);
+
+    await createStepCode({ code: "HT-01", name: "Austenitize" });
+
+    // A caller who gets no error back on create must see the row in a plain, default list —
+    // reviving it still `active: false` would make it invisible with no signal anything is wrong.
+    expect(await listStepCodes()).toHaveLength(1);
+  });
+
+  it("still rejects a duplicate code when the existing row is not soft-deleted", async () => {
+    await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await expect(createStepCode({ code: "HT-01", name: "Other" })).rejects.toMatchObject({ status: 400 });
+    expect(await listStepCodes()).toHaveLength(1);
+  });
+
   it("stores ordered field definitions and returns them in sort order", async () => {
     const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
     await setStepFields(id, [
