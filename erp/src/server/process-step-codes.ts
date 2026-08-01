@@ -41,13 +41,6 @@ const CREATE = z.object({
   equipmentTag: z.string().max(60).optional(),
 }).strict();
 
-// A revived row must be indistinguishable from a fresh create — mirrors REVIVAL_DEFAULTS in
-// customers.ts. `glAccountId` and `equipmentTag` are both optional in CREATE, so a caller
-// reviving a code without supplying them would otherwise leave the previous occupant's GL
-// account and equipment tag in place. `fields` gets the same treatment below, but as a delete of
-// the orphaned ProcessStepFieldDef rows rather than a default value, since it's a child table.
-const REVIVAL_DEFAULTS = { glAccountId: null, equipmentTag: "" } as const;
-
 export async function listStepCodes(opts?: { includeInactive?: boolean }): Promise<StepCode[]> {
   const rows = await prisma.processStepCode.findMany({
     where: { deletedAt: null, ...(opts?.includeInactive ? {} : { active: true }) },
@@ -66,35 +59,17 @@ export async function listStepCodes(opts?: { includeInactive?: boolean }): Promi
 export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ id: string }> {
   const data = CREATE.parse(input);
 
-  // A soft-deleted code still occupies its unique `code` string, so retyping the same code must
-  // revive that row rather than 400 on a duplicate the caller can no longer see. This is
-  // verbatim the defect ruled Critical for the eleven reference kinds during Task 5 (see
-  // createReference's identical pattern in ./reference.ts) — step codes simply ended up outside
-  // that ruling because they're not one of the generic reference kinds.
-  const existing = await prisma.processStepCode.findUnique({ where: { code: data.code } });
-  if (existing && !existing.deletedAt) {
-    throw new HttpError(400, "A process step code with that code already exists");
-  }
+  // findFirst, NOT findUnique: `code` is unique only among live rows, but the generated client
+  // still types it unique, so findUnique would compile and return the soft-deleted row.
+  const existing = await prisma.processStepCode.findFirst({
+    where: { code: data.code, deletedAt: null },
+    select: { id: true },
+  });
+  if (existing) throw new HttpError(400, "A process step code with that code already exists");
 
-  const row = existing
-    ? await auditedUpdate("processStepCode", existing.id, () =>
-        withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-          // A re-created code must come back live unless the caller explicitly asked otherwise —
-          // reviving it still `active: false` (its state at the moment it was deleted) would let
-          // a "successful" create silently vanish from the default list with no error at all.
-          // `CREATE` has no `active` field, so this always applies on revival. The old field
-          // definitions are cleared in the same transaction: without it, a revived code would
-          // keep its predecessor's fields even though the caller supplied none.
-          prisma.$transaction(async (tx) => {
-            await tx.processStepFieldDef.deleteMany({ where: { codeId: existing.id } });
-            return tx.processStepCode.update({
-              where: { id: existing.id },
-              data: { ...REVIVAL_DEFAULTS, ...data, deletedAt: null, active: true },
-            });
-          })))
-    : await auditedCreate("processStepCode", data, () =>
-        withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-          prisma.processStepCode.create({ data })));
+  const row = await auditedCreate("processStepCode", data, () =>
+    withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
+      prisma.processStepCode.create({ data })));
   return { id: row.id };
 }
 
