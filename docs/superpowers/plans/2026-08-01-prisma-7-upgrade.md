@@ -39,6 +39,7 @@ These were confirmed empirically against a real Prisma 7.9.1 + PostgreSQL 16 spi
 | `$use` middleware / metrics | Repo uses neither (grepped). No work. |
 | Mapped-enum v7.2.0 bug | Not applicable — this schema's three enums (`OverrideMode`, `StepFieldType`, `AddressKind`) carry no `@map` on their values. |
 | Node / TypeScript floors | Node 22.23.1 ≥ 20.19 ✓ · TypeScript 5.9.3 ≥ 5.4 ✓ |
+| **ESM blast radius** | **Zero files** (measured during Task 1, correcting this plan's own forecast). `vitest.config.ts`'s bare `__dirname` was expected to break under `"type": "module"` and does not — Vite bundles its config through esbuild and injects `__dirname`. `next build`, the 255 tests, `tsc` and `eslint` were all green on the flip alone. §4b's "most likely to break things" warning did not materialise. |
 
 ---
 
@@ -103,12 +104,15 @@ In `erp/package.json`, immediately after `"private": true,`:
   "type": "module",
 ```
 
-- [ ] **Step 3: Run the suite to see it break**
+- [ ] **Step 3: Run the suite to see whether it breaks**
 
 ```bash
 npx vitest run tests/users.test.ts
 ```
-Expected: FAIL — `ReferenceError: __dirname is not defined in ES module scope`, thrown from `vitest.config.ts` before any test runs.
+
+**Executed 2026-08-01 — it does NOT break, and the prediction below was wrong.** This step originally predicted `ReferenceError: __dirname is not defined in ES module scope`. It does not happen: Vite bundles `vitest.config.ts` through esbuild before evaluating it and injects a `__dirname` binding, so the bare reference resolves fine even under `"type": "module"`. Verified twice — by the implementer and independently by the controller — with the pre-change config restored and `"type": "module"` in place: 11/11 passing.
+
+So the real ESM blast radius of this repo was **zero files**, not one. Step 4 is kept anyway: deriving the alias from `import.meta.url` is correct ESM that does not depend on a bundler shim, and it matches `eslint.config.mjs`. But it is a robustness change, not a fix for a live break — do not describe it as one.
 
 - [ ] **Step 4: Fix the one `__dirname` site**
 
