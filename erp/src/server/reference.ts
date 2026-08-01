@@ -5,6 +5,7 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
 import { linksFrom, nameKey } from "../lib/reference-links";
+import { findBlockers } from "./reference-blockers";
 
 export type ReferenceRow = { id: string; name: string; active: boolean } & Record<string, unknown>;
 
@@ -150,5 +151,10 @@ export async function updateReference(kind: string, id: string, input: Record<st
 
 export async function deleteReference(kind: string, id: string): Promise<void> {
   assertKind(kind);
+  const blockers = await findBlockers(kind, id);
+  if (blockers.length) {
+    const label = REFERENCE_LABELS[kind].singular.toLowerCase();
+    throw new HttpError(400, `That ${label} is still in use by ${blockers.length} record(s)`);
+  }
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular }, () => auditedSoftDelete(kind, id));
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
-import { truncateAll } from "./helpers/db";
+import { truncateAll, prisma } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { listReference, createReference, updateReference, deleteReference } from "@/server/reference";
 import { pasteReference } from "@/server/paste";
@@ -35,11 +35,14 @@ describe("reference FK name resolution", () => {
   });
 
   it("leaves the name null when the target was soft-deleted out from under it", async () => {
-    // assertTermsExists-style guards stop this arising going forward, but rows predating the
-    // guard exist; the list must degrade to a null name rather than throwing.
+    // assertTermsExists-style guards, and now deleteReference's own reference-delete guard
+    // (Task 5), stop this arising going forward — deleteReference would refuse here because a
+    // live inspectionCode still points at the scale. Rows predating both guards exist, so the
+    // legacy state is simulated directly against Prisma rather than through the (correctly)
+    // guarded service call; the list must still degrade to a null name rather than throwing.
     const scale = await createReference("inspectionScale", { name: "Brinell" });
     await createReference("inspectionCode", { name: "HB-1", defaultScaleId: scale.id });
-    await deleteReference("inspectionScale", scale.id);
+    await prisma.inspectionScale.update({ where: { id: scale.id }, data: { deletedAt: new Date() } });
 
     const [row] = await listReference("inspectionCode");
     expect(row.defaultScaleName).toBeNull();
