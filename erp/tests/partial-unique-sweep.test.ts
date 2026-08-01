@@ -79,9 +79,12 @@ live row goes untouched.`).toEqual([]);
   // deleted row keeps occupying that value — which is exactly what forced revival-on-create,
   // and with it the audit-identity bug in issue #10.
   it("every soft-deletable model's unique columns are live-rows-only", () => {
-    // User.username is deliberately excluded: createUser has no revival branch and users are
-    // never hard-deleted (handoff §4), so no re-create ever collides. Recorded here rather
-    // than left as an unexplained gap.
+    // User.username is deliberately excluded: nothing ever sets User.deletedAt — there is no
+    // deleteUser in src/server/users.ts and no user DELETE route — so no row is ever soft-deleted
+    // for a re-create to collide with. Recorded here rather than left as an unexplained gap. If a
+    // deleteUser (or a user DELETE route) ever lands, this allowlist entry is exactly what would
+    // hide the resulting regression — remove it and give User.username the same partial-unique
+    // treatment as everything else the day that happens.
     const ALLOWED = new Set(["User.username"]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same

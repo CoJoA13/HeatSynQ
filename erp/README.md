@@ -6,7 +6,7 @@ Self-hosted web ERP for the heat-treat shop. Next.js + Prisma + PostgreSQL.
 1. `cp .env.example .env`
 2. `docker compose up -d db`
 3. `npm install`
-4. `npx prisma generate` — the client is gitignored, and Prisma 7's `migrate dev`/`migrate deploy` no longer generates it for you
+4. `npx prisma generate` — the client is gitignored, and Prisma 7's `migrate dev` no longer generates it for you
 5. `npx prisma migrate deploy` (dev DB)
 6. Apply migrations to the test DB:
    `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy`

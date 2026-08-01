@@ -2,7 +2,7 @@
 
 A self-hosted web ERP for a commercial heat-treating shop — built to run in parallel with, and eventually replace, Visual Shop (Cornerstone Systems, Inc.).
 
-**Status:** Phase 1 (Foundation) complete — login, owner-configurable roles & permissions, full audit trail, typed settings, admin pages, app shell, Docker packaging with fail-loud nightly backups. 258 integration tests.
+**Status:** Phase 1 (Foundation), Phase 2A (reference data) and Phase 2B (customers) complete and merged to `main` — login, owner-configurable roles & permissions, full audit trail, typed settings, admin pages, app shell, Docker packaging with fail-loud nightly backups, GL accounts/materials/inspection/process step codes and other reference data, and customers with addresses and contacts. 258 integration tests. The Prisma 7 upgrade is in progress on a branch; Phase 2C (parts) is next.
 
 > **Continuing this project on a new machine or in a fresh session? Start at [`docs/HANDOFF.md`](docs/HANDOFF.md)** — it is the portable project memory: decisions, conventions, backlog, Fedora setup, and the Phase 2 kickoff prompt.
 
@@ -19,7 +19,7 @@ A self-hosted web ERP for a commercial heat-treating shop — built to run in pa
 ## Build phases
 
 1. **Foundation** — auth, permissions, audit, settings, shell ✅
-2. **Master data** — customers, parts, process masters, reference tables
+2. **Master data** — customers, parts, process steps & process step codes, reference tables
 3. **Orders & loads** — order entry, auto load-split, order board, traveler PDF
 4. **Certs & shipping** — certifications, shippers, MOS, BOL
 5. **Invoicing & A/R** — pricing, surcharges, finance charges, QuickBooks Online export
