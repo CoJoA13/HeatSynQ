@@ -32,9 +32,12 @@ describe("partial unique sweep", () => {
   // A partial unique index does NOT remove the column from the generated WhereUniqueInput —
   // verified against Prisma 7.9.1, where the type stays AtLeast<{…}, "id" | "code">. So
   // findUnique({ where: { code } }) compiles, and silently returns the SOFT-DELETED row
-  // instead of the live one. upsert on the same column throws P2039 at runtime. Neither is
-  // caught by tsc, eslint, or any behavioural test that happens not to have a deleted row
-  // lying around. This sweep is the only thing standing between that and production.
+  // instead of the live one. upsert on the same column is state-dependent and its worst case
+  // is silent too: with only a dead row it succeeds and quietly reuses that dead row (the row
+  // stays deleted); with both a dead and a live row it throws P2039. Neither the silent reuse
+  // nor the findUnique misread is caught by tsc, eslint, or any behavioural test that happens
+  // not to have a deleted row lying around. This sweep is the only thing standing between
+  // that and production.
   it("no findUnique or upsert is keyed on a live-rows-only unique column", () => {
     const partial = partialUniqueColumns();
     expect(partial.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
@@ -51,8 +54,9 @@ describe("partial unique sweep", () => {
       }
     }
 
-    expect(offenders, `Use findFirst({ where: { <col>, deletedAt: null } }) instead — findUnique on a
-partially-unique column returns the soft-deleted row, and upsert throws P2039.`).toEqual([]);
+    expect(offenders, `Use findFirst({ where: { <col>, deletedAt: null } }) instead — upsert on a
+partially-unique column silently reuses a dead row when only a dead row exists (and throws
+P2039 when both a dead and a live row exist), and findUnique returns the soft-deleted row.`).toEqual([]);
   });
 
   // The invariant behind §5.18: if a model can be soft-deleted, a plain @unique on it means a
@@ -64,9 +68,15 @@ partially-unique column returns the soft-deleted row, and upsert throws P2039.`)
     // than left as an unexplained gap.
     const ALLOWED = new Set(["User.username"]);
 
+    // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
+    // way the field-level match below used to (see comment there) — a schema reformat that
+    // happened to break this specific pattern must fail the assertion right below it, not
+    // silently evaluate zero models and pass.
+    const softDeletable = models().filter(([, body]) => /^[ \t]*deletedAt[ \t]+DateTime\?/m.test(body));
+    expect(softDeletable.length).toBeGreaterThan(0); // a broken parse must not silently empty this sweep
+
     const offenders: string[] = [];
-    for (const [name, body] of models()) {
-      if (!/^\s*deletedAt\s+DateTime\?/m.test(body)) continue;
+    for (const [name, body] of softDeletable) {
       // [ \t]+ (not \s+) and a negative lookbehind on the `@` keep this match on a single field
       // declaration line. `\s+` matches newlines too, so with the schema's blank line before a
       // model's own `@@unique([...], where: ...)` block, `\s+` bridges straight through the field
