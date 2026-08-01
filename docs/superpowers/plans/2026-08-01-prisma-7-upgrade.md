@@ -911,19 +911,31 @@ Replace the tests at `reference-gl.test.ts:73` (`"revives a soft-deleted row whe
 And at `reference-tables.test.ts:81`, replace `"revival resets extra fields for every kind that has one, not just active"` with the same shape run across every kind that has an extra column, so the per-kind coverage is not lost:
 
 ```ts
+**Corrected 2026-08-01 (Task 7 review).** The first draft of this table used `extra: {}` for `inspectionCode` and `paymentType`. That is a **weaker test than the one it replaces**: those two extras are foreign keys defaulting to `null`, so creating the first row without them makes the post-recreate `fresh: null` assertion pass trivially, whether or not a stale value would have carried forward. The removed test set real ids. Each kind must be seeded with a genuine **non-default** value, which for the two FKs means creating the referenced row first — so the table holds a `setup` callback rather than a static literal.
+
+```ts
   const KINDS_WITH_EXTRAS = [
-    { kind: "glAccount", extra: { description: "old" }, field: "description", fresh: "" },
-    { kind: "inspectionCode", extra: {}, field: "defaultScaleId", fresh: null },
-    { kind: "paymentType", extra: {}, field: "glAccountId", fresh: null },
-    { kind: "commentSnippet", extra: { text: "old" }, field: "text", fresh: "" },
-    { kind: "specification", extra: { text: "old" }, field: "text", fresh: "" },
+    { kind: "glAccount",      setup: async () => ({ description: "old" }), field: "description",    fresh: "" },
+    { kind: "commentSnippet", setup: async () => ({ text: "old" }),        field: "text",           fresh: "" },
+    { kind: "specification",  setup: async () => ({ text: "old" }),        field: "text",           fresh: "" },
+    { kind: "inspectionCode", field: "defaultScaleId", fresh: null,
+      setup: async () => ({ defaultScaleId: (await createReference("inspectionScale", { name: "HRC" })).id }) },
+    { kind: "paymentType",    field: "glAccountId",    fresh: null,
+      setup: async () => ({ glAccountId: (await createReference("glAccount", { name: "4010" })).id }) },
   ] as const;
 
   it.each(KINDS_WITH_EXTRAS)(
     "$kind: a re-created name is a new row with default extras",
-    async ({ kind, extra, field, fresh }) => {
+    async ({ kind, setup, field, fresh }) => {
+      const extra = await setup();
       const first = await createReference(kind, { name: "X1", ...extra });
       await deleteReference(kind, first.id);
+
+      // Assert the non-default value actually took, so the test cannot pass merely because
+      // the value never applied in the first place.
+      expect((await listReference(kind, { includeInactive: true }))
+        .find((r) => r.id === first.id)?.[field] ?? null).not.toBe(fresh);
+
       const second = await createReference(kind, { name: "X1" });
       expect(second.id).not.toBe(first.id);
       const rows = await listReference(kind);
@@ -931,6 +943,8 @@ And at `reference-tables.test.ts:81`, replace `"revival resets extra fields for 
     },
   );
 ```
+
+The pre-delete assertion is the part that makes this non-trivial: without it, a create path that silently dropped the caller's extras would still satisfy the final expectation.
 
 - [ ] **Step 3: Run them to watch them fail**
 
