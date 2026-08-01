@@ -23,6 +23,12 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const extras = REFERENCE_EXTRA_FIELDS[kind];
   const refLinks = linksFrom(kind);
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({});
+  // Gated per the permission each route actually enforces, not one blanket key: add/paste hit
+  // POST routes requiring admin.create, delete hits a DELETE route requiring admin.delete, and
+  // only the Active-toggle PUT requires admin.edit (src/app/api/admin/reference/[kind]/route.ts,
+  // .../paste/route.ts, .../[id]/route.ts).
+  const canCreate = gate(perms, "admin.create");
+  const canDelete = gate(perms, "admin.delete");
   const canEdit = gate(perms, "admin.edit");
 
   const load = useCallback(async () => {
@@ -104,7 +110,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
            className="text-sm text-blue-700 underline">
           Export to Excel
         </a>
-        <button onClick={() => setPasting((p) => !p)} disabled={canEdit.disabled} title={canEdit.title}
+        <button onClick={() => setPasting((p) => !p)} disabled={canCreate.disabled} title={canCreate.title}
                 className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           {pasting ? "Hide paste entry" : "Paste from spreadsheet"}
         </button>
@@ -133,7 +139,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
               <td className="p-2 text-right">
                 <button onClick={() => setOpenHistory(openHistory === r.id ? null : r.id)}
                         className="mr-3 text-xs text-slate-600">history</button>
-                <button onClick={() => remove(r)} disabled={canEdit.disabled} title={canEdit.title}
+                <button onClick={() => remove(r)} disabled={canDelete.disabled} title={canDelete.title}
                         className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
                   delete
                 </button>
@@ -163,7 +169,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
             ))}
             <td />
             <td className="p-2 text-right">
-              <button onClick={add} disabled={canEdit.disabled} title={canEdit.title}
+              <button onClick={add} disabled={canCreate.disabled} title={canCreate.title}
                       className="rounded bg-slate-800 px-3 py-1 text-white disabled:cursor-not-allowed disabled:bg-slate-400">
                 Add
               </button>
