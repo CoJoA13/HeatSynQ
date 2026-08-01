@@ -6,6 +6,7 @@ import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
 import { linksFrom, nameKey } from "@/lib/reference-links";
 import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
 type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
@@ -18,7 +19,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [error, setError] = useState<string | null>(null);
   const [pasting, setPasting] = useState(false);
   const [blocked, setBlocked] = useState<{ row: Row; list: Blocker[] } | null>(null);
-  const [perms, setPerms] = useState<string[] | undefined>(undefined);
+  const { permissions: perms, error: permsError } = usePermissions();
   const labels = REFERENCE_LABELS[kind];
   const extras = REFERENCE_EXTRA_FIELDS[kind];
   const refLinks = linksFrom(kind);
@@ -35,10 +36,6 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
     setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
   }, [kind, showInactive]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
-  useEffect(() => {
-    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions))
-      .catch((e) => setError((e as Error).message));
-  }, []);
 
   // A stale blocker list from another kind's row must not linger on screen once the admin
   // switches tables.
@@ -100,7 +97,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
 
   return (
     <div>
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
       <div className="mb-2 flex items-center gap-3">
         <label className="flex items-center gap-1 text-sm">
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />

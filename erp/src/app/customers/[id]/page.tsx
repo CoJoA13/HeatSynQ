@@ -5,6 +5,7 @@ import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
 import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 type Customer = {
   id: string; code: string; name: string; parentId: string | null; parentCode: string | null;
@@ -78,7 +79,11 @@ function CustomerDetail({ id }: { id: string }) {
   const [addingAddress, setAddingAddress] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [perms, setPerms] = useState<string[] | undefined>(undefined);
+  // Permissions don't change while this page is mounted, so one fetch is enough (usePermissions,
+  // src/lib/use-permissions.ts — shared with customers/page.tsx and ReferenceTable.tsx). A
+  // failure surfaces through permsError, folded into the same error banner below, instead of
+  // leaving every control silently stuck disabled.
+  const { permissions: perms, error: permsError } = usePermissions();
 
   const load = useCallback(async () => {
     const [cust, addr, cont] = await Promise.all([
@@ -89,13 +94,6 @@ function CustomerDetail({ id }: { id: string }) {
     setC(cust); setAddresses(addr); setContacts(cont); setError(null);
   }, [id, showInactiveAddresses, showInactiveContacts]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
-  // Independent of load(), same shape as the terms/customers effects below: permissions don't
-  // change while this page is mounted, so one fetch is enough, and a failure here surfaces
-  // through the same error banner instead of leaving every control silently stuck disabled.
-  useEffect(() => {
-    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions))
-      .catch((e) => setError((e as Error).message));
-  }, []);
   const canDelete = gate(perms, "customers.delete");
   const canEdit = gate(perms, "customers.edit");
   // Terms options are global reference data, not per-customer — fetched once, independent of
@@ -363,7 +361,7 @@ function CustomerDetail({ id }: { id: string }) {
     });
   }
 
-  if (!c) return <div className="p-6">{error ?? "Loading…"}</div>;
+  if (!c) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
 
   return (
     <div className="p-6">
@@ -391,7 +389,9 @@ function CustomerDetail({ id }: { id: string }) {
         </button>
       </div>
       {c.parentCode && <p className="mb-3 text-sm text-slate-500">Division of {c.parentCode}</p>}
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
 
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Commercial</h2>

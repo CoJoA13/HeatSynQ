@@ -5,6 +5,7 @@ import { api } from "@/lib/fetcher";
 import { PasteGrid } from "@/components/PasteGrid";
 import { CUSTOMER_PASTE_COLUMNS } from "@/lib/customer-constants";
 import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 type Customer = {
   id: string; code: string; name: string; parentCode: string | null;
@@ -18,7 +19,7 @@ export default function CustomersPage() {
   const [pasting, setPasting] = useState(false);
   const [draft, setDraft] = useState({ code: "", name: "" });
   const [error, setError] = useState<string | null>(null);
-  const [perms, setPerms] = useState<string[] | undefined>(undefined);
+  const { permissions: perms, error: permsError } = usePermissions();
 
   const query = `${showInactive ? "includeInactive=1&" : ""}${search ? `search=${encodeURIComponent(search)}` : ""}`;
 
@@ -26,10 +27,6 @@ export default function CustomersPage() {
     setRows(await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`));
   }, [query]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
-  useEffect(() => {
-    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions))
-      .catch((e) => setError((e as Error).message));
-  }, []);
 
   const canCreate = gate(perms, "customers.create");
 
@@ -43,7 +40,9 @@ export default function CustomersPage() {
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Customers</h1>
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
 
       <div className="mb-3 flex items-center gap-3">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
