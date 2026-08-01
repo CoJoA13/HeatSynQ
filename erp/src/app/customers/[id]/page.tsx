@@ -133,8 +133,14 @@ function CustomerDetail({ id }: { id: string }) {
   // interaction with the select. Fetching every non-deleted customer guarantees the assigned
   // parent is always present as an option; inactive ones are labelled at render time so they
   // aren't mistaken for active customers.
+  //
+  // A failed fetch produces exactly the "— none —" misread described above (the empty options
+  // list has no entry matching c.parentId), and saveParent("") on the next interaction would
+  // then write parentId: null over a real division link — so, like Terms above, the failure is
+  // reported through the same error banner rather than swallowed into a silent empty list.
   useEffect(() => {
-    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch(() => {});
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers)
+      .catch((e) => setError(`Could not load parent options: ${(e as Error).message}`));
   }, []);
 
   // Per-key request queue: guards against optimistic saves committing out of order. Without
