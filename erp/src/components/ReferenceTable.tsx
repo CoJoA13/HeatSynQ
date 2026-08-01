@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/fetcher";
+import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
@@ -77,7 +77,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       await api(`/api/admin/reference/${kind}/${row.id}`, {
         method: "PUT", body: JSON.stringify({ active: !row.active }),
       });
-      setError(null); await load();
+      // Retiring a row via the Active toggle is the sanctioned alternative to deleting it (§4.2)
+      // — it must not leave a blocker panel from an earlier failed delete attempt on screen.
+      setError(null); setBlocked(null); await load();
     } catch (e) { setError((e as Error).message); }
   }
 
@@ -88,10 +90,15 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       setError(null); setBlocked(null); await load();
     } catch (e) {
       // A refusal is not a dead end here: say what is blocking, and make the list exportable.
-      const list = await api<Blocker[]>(`/api/admin/reference/${kind}/${row.id}/blockers`)
-        .catch(() => [] as Blocker[]);
-      if (list.length) { setBlocked({ row, list }); setError(null); }
-      else setError((e as Error).message);
+      // Only the delete guard's own 400 means there IS a blocker list to fetch — a 500 or a
+      // network failure is a genuine error, not a refusal, and fetching (and likely finding no)
+      // blockers for it would misreport a real failure as "N records use it".
+      if (e instanceof ApiError && e.status === 400) {
+        const list = await api<Blocker[]>(`/api/admin/reference/${kind}/${row.id}/blockers`)
+          .catch(() => [] as Blocker[]);
+        if (list.length) { setBlocked({ row, list }); setError(null); return; }
+      }
+      setError((e as Error).message);
     }
   }
 

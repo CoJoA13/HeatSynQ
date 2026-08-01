@@ -12,14 +12,12 @@ export type ReferenceRow = { id: string; name: string; active: boolean } & Recor
 /** Fields each kind accepts beyond `name` and `active`. */
 const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   glAccount:       z.object({ description: z.string().max(200).optional() }),
-  inspectionCode:  z.object({
-    defaultScaleId: z.string().nullable().optional(),
-    defaultScaleName: z.string().nullable().optional(),
-  }),
-  paymentType:     z.object({
-    glAccountId: z.string().nullable().optional(),
-    glAccountName: z.string().nullable().optional(),
-  }),
+  // The <column>Name form (e.g. defaultScaleName, glAccountName) is deliberately absent here:
+  // resolveLinkNames() below always deletes that key and replaces it with the resolved
+  // <column>Id before this schema ever parses the input, so a `defaultScaleName` entry would be
+  // unreachable dead code that just advertises API surface zod never actually sees.
+  inspectionCode:  z.object({ defaultScaleId: z.string().nullable().optional() }),
+  paymentType:     z.object({ glAccountId: z.string().nullable().optional() }),
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
