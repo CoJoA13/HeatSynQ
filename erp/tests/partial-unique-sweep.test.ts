@@ -14,7 +14,13 @@ function partialUniqueColumns(): Set<string> {
   const cols = new Set<string>();
   for (const [, body] of models()) {
     for (const m of body.matchAll(/@@unique\(\[([^\]]+)\][^)]*\bwhere:/g)) {
-      m[1].split(",").forEach((c) => cols.add(c.trim()));
+      const parts = m[1].split(",").map((c) => c.trim());
+      parts.forEach((c) => cols.add(c));
+      // Prisma also generates a compound-key field on WhereUniqueInput for a multi-column
+      // @@unique, e.g. @@unique([customerId, partNumber], where: …) produces
+      // `customerId_partNumber` — a lookup keyed on that compound name hits the exact same
+      // soft-deleted-row hole as a single column and must be covered too.
+      if (parts.length > 1) cols.add(parts.join("_"));
     }
   }
   return cols;
@@ -38,7 +44,15 @@ describe("partial unique sweep", () => {
   // nor the findUnique misread is caught by tsc, eslint, or any behavioural test that happens
   // not to have a deleted row lying around. This sweep is the only thing standing between
   // that and production.
-  it("no findUnique or upsert is keyed on a live-rows-only unique column", () => {
+  //
+  // findUniqueOrThrow shares findUnique's misread — it throws only when NO row (live or dead)
+  // matches, so a dead-only match returns the dead row instead of throwing. update and delete
+  // are worse than either: keyed on a live-rows-only column, they silently write to, or
+  // hard-delete, the archived row while the live row goes completely untouched — no exception
+  // of any kind. updateMany/deleteMany are unaffected (they take a filter, not a
+  // WhereUniqueInput) and stay excluded below by requiring "(" immediately after the method
+  // name, so "updateMany(" and "deleteMany(" cannot match this alternation.
+  it("no findUnique, findUniqueOrThrow, upsert, update, or delete is keyed on a live-rows-only unique column", () => {
     const partial = partialUniqueColumns();
     expect(partial.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
 
@@ -47,7 +61,7 @@ describe("partial unique sweep", () => {
 
     for (const file of files) {
       const src = readFileSync(file, "utf8");
-      for (const m of src.matchAll(/\.(findUnique|upsert)\(\s*\{\s*where:\s*\{\s*(\w+)/g)) {
+      for (const m of src.matchAll(/\.(findUnique|findUniqueOrThrow|upsert|update|delete)\(\s*\{\s*where:\s*\{\s*(\w+)/g)) {
         if (partial.has(m[2])) {
           offenders.push(`${file.replace(process.cwd() + "/", "")}: .${m[1]}({ where: { ${m[2]} … } })`);
         }
@@ -56,7 +70,9 @@ describe("partial unique sweep", () => {
 
     expect(offenders, `Use findFirst({ where: { <col>, deletedAt: null } }) instead — upsert on a
 partially-unique column silently reuses a dead row when only a dead row exists (and throws
-P2039 when both a dead and a live row exist), and findUnique returns the soft-deleted row.`).toEqual([]);
+P2039 when both a dead and a live row exist); findUnique/findUniqueOrThrow return the
+soft-deleted row; update/delete silently write to, or hard-delete, the archived row while the
+live row goes untouched.`).toEqual([]);
   });
 
   // The invariant behind §5.18: if a model can be soft-deleted, a plain @unique on it means a
@@ -90,10 +106,24 @@ P2039 when both a dead and a live row exist), and findUnique returns the soft-de
         const key = `${name}.${m[1]}`;
         if (!ALLOWED.has(key)) offenders.push(key);
       }
+
+      // Block-level compound uniques are the same hole in a different shape: a bare
+      // @@unique([a, b]) on a soft-deletable model isn't a field-level @unique at all (so the
+      // loop above never sees it), but a deleted row still occupies the compound value forever,
+      // and the generated WhereUniqueInput still exposes the compound key (a_b) for a lookup to
+      // misread — e.g. a Part model's @@unique([customerId, partNumber]) without `where:`. Skip
+      // blocks that *do* carry `where:`; that's the correct partial-unique pattern already used
+      // 13 times over in this schema.
+      for (const m of body.matchAll(/@@unique\(\[([^\]]+)\][^)]*\)/g)) {
+        if (!m[0].includes("where:")) {
+          offenders.push(`${name}.@@unique([${m[1].split(",").map((c) => c.trim()).join(", ")}])`);
+        }
+      }
     }
 
-    expect(offenders, `These columns are @unique on a soft-deletable model. A deleted row will
-occupy the value forever, forcing revival-on-create back into existence (handoff §5.18).
-Use @@unique([col], where: raw("\\"deletedAt\\" IS NULL")) instead.`).toEqual([]);
+    expect(offenders, `These columns are @unique (or a bare @@unique([...]) block) on a
+soft-deletable model. A deleted row will occupy the value forever, forcing revival-on-create
+back into existence (handoff §5.18). Use @@unique([col], where: raw("\\"deletedAt\\" IS NULL"))
+instead — for a compound block, @@unique([a, b], where: raw("\\"deletedAt\\" IS NULL")).`).toEqual([]);
   });
 });
