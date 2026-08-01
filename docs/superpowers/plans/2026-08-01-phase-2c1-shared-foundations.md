@@ -154,8 +154,13 @@ describe("reference links sweep", () => {
     for (const [modelName, body] of models()) {
       // A Prisma relation field looks like:
       //   glAccount  GlAccount? @relation(fields: [glAccountId], references: [id])
-      // Capture the target model and the FK column it names.
-      for (const m of body.matchAll(/^\s*\w+\s+(\w+)\??\s+@relation\(fields:\s*\[(\w+)\]/gm)) {
+      // …or, when the relation is named:
+      //   parent  Customer? @relation("CustomerHierarchy", fields: [parentId], references: [id])
+      // The optional name group is NOT cosmetic: Prisma *requires* a relation name whenever two
+      // FKs from one model point at the same model, so a regex demanding `@relation(fields:`
+      // goes blind exactly when a model gains a second reference to the same reference table —
+      // and that FK then silently gets no delete protection and no name resolution.
+      for (const m of body.matchAll(/^\s*\w+\s+(\w+)\??\s+@relation\((?:"[^"]*"\s*,\s*)?fields:\s*\[(\w+)\]/gm)) {
         const [, targetModel, column] = m;
         if (!kinds.has(toKind(targetModel))) continue;   // not a reference table
         const key = `${toKind(modelName)}.${column}`;
@@ -168,11 +173,20 @@ REFERENCE_LINKS in src/lib/reference-links.ts. Unregistered means no delete prot
 name resolution — both fail silently. Add an entry per offender.`).toEqual([]);
   });
 
-  // Guards the sweep against passing vacuously: if the model or relation regex ever stops
-  // matching, offenders is trivially empty and this test would go green while checking nothing.
-  it("the sweep actually parses the schema", () => {
+  // Guards the sweep against passing vacuously. Note what each assertion actually covers:
+  // the length checks exercise only the model-block regex and the registry, so the third
+  // assertion is the one that exercises the RELATION regex — with an empty registry, every
+  // known FK must be reported. Without it, a broken relation match would leave offenders
+  // trivially empty and the main sweep would pass while checking nothing.
+  it("the sweep actually parses the schema, relations included", () => {
     expect(models().length).toBeGreaterThan(15);
     expect(REFERENCE_LINKS.length).toBeGreaterThanOrEqual(4);
+    expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
+      "customer.termsId -> terms",
+      "inspectionCode.defaultScaleId -> inspectionScale",
+      "paymentType.glAccountId -> glAccount",
+      "processStepCode.glAccountId -> glAccount",
+    ]);
   });
 
   it("every registered link targets a real reference kind", () => {
