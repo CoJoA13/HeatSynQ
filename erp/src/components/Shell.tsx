@@ -24,6 +24,7 @@ const ADMIN = [
   { label: "Roles", href: "/admin/roles" },
   { label: "Reference data", href: "/admin/reference" },
   { label: "Process step codes", href: "/admin/step-codes" },
+  { label: "Part fields", href: "/admin/part-fields" },
   { label: "Settings", href: "/admin/settings" },
   { label: "Audit log", href: "/admin/audit" },
 ];

@@ -7,9 +7,9 @@ import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/
 import { linksFrom, nameKey } from "@/lib/reference-links";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
-type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
 
 export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -193,24 +193,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
         </tbody>
       </table>
       {blocked && (
-        <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
-          <div className="mb-2 font-medium">
-            Cannot delete {labels.singular.toLowerCase()} “{blocked.row.name}” — {blocked.list.length} record(s) use it:
-          </div>
-          <ul className="mb-2 space-y-1">
-            {blocked.list.map((b) => (
-              <li key={`${b.entityLabel}-${b.id}`}>
-                <span className="text-slate-500">{b.entityLabel}</span>{" "}
-                {b.href ? <a href={b.href} className="text-blue-700 underline">{b.name}</a> : <span>{b.name}</span>}
-              </li>
-            ))}
-          </ul>
-          <div className="flex gap-3">
-            <a href={`/api/admin/reference/${kind}/${blocked.row.id}/blockers/export`}
-               className="text-blue-700 underline">Export list to Excel</a>
-            <button onClick={() => setBlocked(null)} className="text-slate-600">dismiss</button>
-          </div>
-        </div>
+        <BlockerPanel
+          label={labels.singular.toLowerCase()}
+          rowName={blocked.row.name}
+          list={blocked.list}
+          exportHref={`/api/admin/reference/${kind}/${blocked.row.id}/blockers/export`}
+          onDismiss={() => setBlocked(null)}
+        />
       )}
       {pasting && (
         <PasteGrid
