@@ -144,6 +144,23 @@ async function assertParentExists(parentId: string): Promise<void> {
 }
 
 /**
+ * Rejects a termsId that doesn't reference a live Terms row, for the same reason
+ * assertParentExists exists: soft deletion leaves the row physically present, so the foreign
+ * key alone accepts it. The result is a customer holding a termsId that every reference list
+ * filters out — the detail page's Terms select then renders blank while the value is still
+ * set (misrepresenting stored data), and Phase 5 billing would inherit a hidden terms record.
+ *
+ * An INACTIVE terms record is deliberately still assignable: `active: false` hides a row from
+ * the default pick list, it does not retire an existing assignment. The detail page requests
+ * includeInactive=1 and labels such an option rather than dropping it, exactly as the parent
+ * selector does.
+ */
+async function assertTermsExists(termsId: string): Promise<void> {
+  const terms = await prisma.terms.findFirst({ where: { id: termsId, deletedAt: null }, select: { id: true } });
+  if (!terms) throw new HttpError(400, "Those terms do not exist");
+}
+
+/**
  * Rejects a parent chain that would make `id` its own ancestor, and rejects a soft-deleted
  * parent. Only meaningful for a row that already exists (update, or the revival path of
  * create) — a genuinely fresh row cannot yet be anyone's ancestor, so createCustomer calls
@@ -180,6 +197,7 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
   // make it its own ancestor the moment it comes back.
   if (existing) await assertNoCycle(existing.id, data.parentId);
   else if (data.parentId) await assertParentExists(data.parentId);
+  if (data.termsId) await assertTermsExists(data.termsId);
 
   const row = existing
     ? await auditedUpdate("customer", existing.id, () =>
@@ -205,6 +223,8 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
   if (data.parentId !== undefined) await assertNoCycle(id, data.parentId);
+  // Only a non-null assignment needs checking — `null` clears the field, which is always legal.
+  if (data.termsId) await assertTermsExists(data.termsId);
   await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
     auditedUpdate("customer", id, () => prisma.customer.update({ where: { id }, data })));
 }

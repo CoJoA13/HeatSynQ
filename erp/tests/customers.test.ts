@@ -179,6 +179,48 @@ describe("customers service", () => {
       .rejects.toThrow(/parent/i);
   });
 
+  // Group B4 (round-4 review): termsId was validated as nothing but a string, so the physical
+  // foreign key was the only check — and a soft-deleted Terms row is still physically present,
+  // so it passed. The customer then held a termsId that every reference list filters out: the
+  // detail page's Terms select renders blank (misrepresenting stored data, exactly like the
+  // soft-deleted parent above) and Phase 5 billing would inherit a hidden terms record.
+  it("refuses a soft-deleted terms record on create", async () => {
+    const terms = await prisma.terms.create({ data: { name: "Net 30" } });
+    await prisma.terms.update({ where: { id: terms.id }, data: { deletedAt: new Date() } });
+    await expect(createCustomer({ code: "ACME", name: "Acme", termsId: terms.id }))
+      .rejects.toThrow(/terms/i);
+  });
+
+  it("refuses a soft-deleted terms record on update", async () => {
+    const terms = await prisma.terms.create({ data: { name: "Net 30" } });
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await prisma.terms.update({ where: { id: terms.id }, data: { deletedAt: new Date() } });
+    await expect(updateCustomer(id, { termsId: terms.id })).rejects.toThrow(/terms/i);
+  });
+
+  it("refuses a soft-deleted terms record on revival", async () => {
+    const terms = await prisma.terms.create({ data: { name: "Net 30" } });
+    await prisma.terms.update({ where: { id: terms.id }, data: { deletedAt: new Date() } });
+    const { id } = await createCustomer({ code: "DUP", name: "Dup" });
+    await deleteCustomer(id);
+    await expect(createCustomer({ code: "DUP", name: "Dup Reborn", termsId: terms.id }))
+      .rejects.toThrow(/terms/i);
+  });
+
+  it("reports an unknown terms id as a field-anchored 400, not a raw foreign-key failure", async () => {
+    await expect(createCustomer({ code: "ACME", name: "Acme", termsId: "not-a-real-id" }))
+      .rejects.toThrow(/terms/i);
+  });
+
+  // An INACTIVE terms record is still assignable — inactive hides a row from the default pick
+  // list, it does not retire the assignment. The detail page fetches includeInactive=1 and
+  // labels such an option rather than dropping it (the same rule the parent selector follows).
+  it("accepts an inactive terms record", async () => {
+    const terms = await prisma.terms.create({ data: { name: "Net 30", active: false } });
+    const { id } = await createCustomer({ code: "ACME", name: "Acme", termsId: terms.id });
+    expect((await getCustomer(id)).termsId).toBe(terms.id);
+  });
+
   // Group C1: creditLimit/financeChargeRate accepted any string, so an invalid one sailed
   // through zod and blew up inside Prisma with a PrismaClientValidationError — which has no
   // HTTP status and escapes handle() as a bare 500 instead of a field-anchored 400.

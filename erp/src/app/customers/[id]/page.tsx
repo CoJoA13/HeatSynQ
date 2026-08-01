@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
@@ -24,7 +24,10 @@ type Contact = {
   id: string; name: string; email: string; phone: string;
   getsShippers: boolean; getsInvoices: boolean; getsStatements: boolean; getsCerts: boolean;
 };
-type Term = { id: string; name: string };
+// `active` is carried for the same reason CustomerOption below carries it (R3): an inactive
+// terms record assigned to this customer must still appear as an option, labelled rather than
+// silently dropped. See the fetch comment on the terms effect below.
+type Term = { id: string; name: string; active: boolean };
 // Slice of CustomerRow needed for the parent selector — every OTHER non-deleted customer
 // (active or not, see R3 below), keyed by id so the current row can be excluded from its own
 // option list. `active` is kept so an inactive option can be labelled rather than presented as
@@ -43,6 +46,7 @@ export default function CustomerDetailPage() {
 }
 
 function CustomerDetail({ id }: { id: string }) {
+  const router = useRouter();
   const [c, setC] = useState<Customer | null>(null);
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -64,7 +68,20 @@ function CustomerDetail({ id }: { id: string }) {
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
   // an empty list rather than a broken page: the select still renders with a blank option.
-  useEffect(() => { api<Term[]>("/api/admin/reference/terms").then(setTerms).catch(() => {}); }, []);
+  //
+  // includeInactive=1 for the same reason the parent selector uses it (R3, below): marking a
+  // Terms record inactive hides it from the default reference list but does NOT clear it from
+  // the customers already assigned to it, and getCustomer() keeps returning that termsId. A
+  // controlled <select> whose value matches no <option> falls back to rendering the blank
+  // choice, which would claim no terms are assigned when in fact some are — and the next
+  // interaction with the select would write that blank back over real data. Fetching inactive
+  // rows too guarantees the assigned record is always present; it is labelled at render time so
+  // it isn't mistaken for a normal pick. (Soft-DELETED terms can no longer be assigned at all —
+  // assertTermsExists in src/server/customers.ts rejects them on both create and update — so
+  // this list only has to account for the inactive case.)
+  useEffect(() => {
+    api<Term[]>("/api/admin/reference/terms?includeInactive=1").then(setTerms).catch(() => {});
+  }, []);
   // Parent-selector options: every OTHER non-deleted customer, fetched the same way terms are —
   // once, independent of `load()`, gated on the same customers.view permission that got the
   // user onto this page in the first place, so there's no permission mismatch to worry about
@@ -160,6 +177,25 @@ function CustomerDetail({ id }: { id: string }) {
     try { await api(path, init); setError(null); await load(); return true; }
     catch (e) { setError((e as Error).message); return false; }
   }
+  // Deliberately not routed through call(): call() reloads on success, and this record no longer
+  // exists on success — the reload would 404 and replace the list we're navigating to with an
+  // error. The failure path matters just as much as the success one here, because deleteCustomer
+  // legitimately refuses in cases the user can act on (a customer that still has child
+  // customers), and that 400 has to stay on screen instead of being swallowed by a navigation.
+  async function removeCustomer() {
+    if (!c) return;
+    if (!confirm(
+      `Delete customer "${c.code} — ${c.name}"?\n\n` +
+      `Its addresses and contacts are deleted with it. The code can be reused later, ` +
+      `which starts a fresh customer rather than restoring this one.`
+    )) return;
+    try {
+      await api(`/api/customers/${id}`, { method: "DELETE" });
+      router.push("/customers");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
   async function toggleContactFlag(ct: Contact, key: (typeof CONTACT_FLAGS)[number]["key"], value: boolean) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, [key]: value } : row)));
     await serial(`contact:${ct.id}:${key}`, async () => {
@@ -175,18 +211,32 @@ function CustomerDetail({ id }: { id: string }) {
   // Same optimistic-then-persist shape as save()/toggleContactFlag(), scoped to one address or
   // contact row rather than the customer itself — this is what gives existing address/contact
   // rows a way to correct a scalar field (A1/A3) without a modal: type into the cell, blur it.
-  async function saveAddressField(a: Address, patch: Partial<Address>) {
+  // Reports success for the same reason save() does (R2): a caller that needs to refresh
+  // server-derived state afterwards must be able to tell success from failure, because the
+  // failure path here already reloads and sets the error — reloading again unconditionally
+  // would clear that error before the user saw it.
+  async function saveAddressField(a: Address, patch: Partial<Address>): Promise<boolean> {
     setAddresses((cur) => cur.map((row) => (row.id === a.id ? { ...row, ...patch } : row)));
     const key = `address:${a.id}:${Object.keys(patch).sort().join(",")}`;
-    await serial(key, async () => {
+    return serial(key, async () => {
       try {
         await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
         setError(null);
+        return true;
       } catch (e) {
         await load().catch(() => {});
         setError((e as Error).message);
+        return false;
       }
     });
+  }
+  // Changing an address's KIND needs the extra reload a scalar edit doesn't (same shape as
+  // saveParent above): the server re-normalizes the default flag across both the kind being
+  // joined and the kind being vacated, and listAddresses orders rows by kind — neither of which
+  // the optimistic local patch can predict. Without the reload the badges and row order would
+  // keep describing the old arrangement until something else refreshed the page.
+  async function saveAddressKind(a: Address, kind: AddressKind) {
+    if (await saveAddressField(a, { kind })) await load().catch(() => {});
   }
   async function saveContactField(ct: Contact, patch: Partial<Contact>) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, ...patch } : row)));
@@ -224,6 +274,9 @@ function CustomerDetail({ id }: { id: string }) {
                onChange={(e) => setC({ ...c, name: e.target.value })}
                onBlur={(e) => save({ name: e.target.value })}
                className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold" />
+        <button onClick={removeCustomer} className="ml-auto text-sm text-red-600">
+          Delete customer
+        </button>
       </div>
       {c.parentCode && <p className="mb-3 text-sm text-slate-500">Division of {c.parentCode}</p>}
       {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
@@ -259,7 +312,9 @@ function CustomerDetail({ id }: { id: string }) {
             <select value={c.termsId ?? ""} onChange={(e) => save({ termsId: e.target.value || null })}
                     className="ml-2 rounded border px-2 py-1">
               <option value="">—</option>
-              {terms.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              {terms.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}{!t.active && " (inactive)"}</option>
+              ))}
             </select>
           </label>
           <label className="block text-sm">
@@ -326,7 +381,21 @@ function CustomerDetail({ id }: { id: string }) {
           <tbody>
             {addresses.map((a) => (
               <tr key={a.id} className="border-t">
-                <td className="py-1">{ADDRESS_KIND_LABELS[a.kind]}</td>
+                {/* Editable rather than static text: an address typed as Bill To when it should
+                    have been Ship To was previously correctable only by deleting the row and
+                    re-keying all six fields, even though updateAddress() has always accepted a
+                    kind change — and it handles the consequences properly, re-normalizing the
+                    default flag for BOTH the kind being joined and the one being vacated, so a
+                    moved default neither duplicates nor disappears. Same optimistic
+                    onChange-saves shape as the scalar cells beside it. */}
+                <td className="py-1">
+                  <select value={a.kind} className="rounded border px-1 py-0.5"
+                          onChange={(e) => void saveAddressKind(a, e.target.value as AddressKind)}>
+                    {ADDRESS_KINDS.map((k) => (
+                      <option key={k} value={k}>{ADDRESS_KIND_LABELS[k]}</option>
+                    ))}
+                  </select>
+                </td>
                 <td>
                   <input value={a.name} className="w-28 rounded border px-1 py-0.5"
                          onChange={(e) => setAddresses((cur) =>
