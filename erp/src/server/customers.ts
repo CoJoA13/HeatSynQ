@@ -4,6 +4,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
@@ -138,23 +139,6 @@ async function assertParentExists(parentId: string, db: Db = prisma): Promise<vo
 }
 
 /**
- * Rejects a termsId that doesn't reference a live Terms row, for the same reason
- * assertParentExists exists: soft deletion leaves the row physically present, so the foreign
- * key alone accepts it. The result is a customer holding a termsId that every reference list
- * filters out — the detail page's Terms select then renders blank while the value is still
- * set (misrepresenting stored data), and Phase 5 billing would inherit a hidden terms record.
- *
- * An INACTIVE terms record is deliberately still assignable: `active: false` hides a row from
- * the default pick list, it does not retire an existing assignment. The detail page requests
- * includeInactive=1 and labels such an option rather than dropping it, exactly as the parent
- * selector does.
- */
-async function assertTermsExists(termsId: string): Promise<void> {
-  const terms = await prisma.terms.findFirst({ where: { id: termsId, deletedAt: null }, select: { id: true } });
-  if (!terms) throw new HttpError(400, "Those terms do not exist");
-}
-
-/**
  * Rejects a parent chain that would make `id` its own ancestor, and rejects a soft-deleted
  * parent. Only meaningful for a row that already exists — a genuinely fresh row cannot yet be
  * anyone's ancestor, so createCustomer calls assertParentExists directly instead; only
@@ -190,13 +174,15 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
   if (existing) throw new HttpError(400, "A customer with that code already exists");
 
   // A genuinely fresh row does not exist yet, so it cannot be in anyone's parent chain — only
-  // existence/non-deletion of the requested parent needs checking.
-  if (data.parentId) await assertParentExists(data.parentId);
-  if (data.termsId) await assertTermsExists(data.termsId);
-
+  // existence/non-deletion of the requested parent needs checking. Both target checks run
+  // inside the write's own Serializable transaction (assertRefExists's doc comment explains
+  // why an outside-the-transaction read cannot close the writer-side TOCTOU).
   const row = await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-    prisma.$transaction((tx) =>
-      auditedCreate("customer", data, () => tx.customer.create({ data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      if (data.parentId) await assertParentExists(data.parentId, tx);
+      if (data.termsId) await assertRefExists("terms", data.termsId, tx);
+      return auditedCreate("customer", data, () => tx.customer.create({ data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return { id: row.id };
 }
 
@@ -223,24 +209,26 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
   // longer find, and the edit vanishes into a row nothing displays again.
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
-  // Only a non-null assignment needs checking — `null` clears the field, which is always legal.
-  if (data.termsId) await assertTermsExists(data.termsId);
 
-  // A parent change validates and writes inside ONE Serializable transaction. Reading the parent
-  // chain and then writing as two separate statements is not enough: two concurrent requests
-  // setting A.parent = B and B.parent = A can each observe the other row still parentless, both
-  // pass assertNoCycle, and both commit — producing exactly the cycle the guard exists to
-  // prevent, and one that no single later request can be blamed for. Serializable makes Postgres
-  // abort whichever transaction would produce a result no serial ordering could, surfacing as
-  // P2034 and translated by withDbErrors into a 409 telling the caller to retry.
+  // A parent change or a non-null termsId assignment validates and writes inside ONE
+  // Serializable transaction. Reading the target and then writing as two separate statements is
+  // not enough: two concurrent requests setting A.parent = B and B.parent = A can each observe
+  // the other row still parentless, both pass assertNoCycle, and both commit — producing exactly
+  // the cycle the guard exists to prevent, and one that no single later request can be blamed
+  // for. The same TOCTOU applies to termsId against a concurrent reference-delete
+  // (assertRefExists's doc comment). Serializable makes Postgres abort whichever transaction
+  // would produce a result no serial ordering could, surfacing as P2034 and translated by
+  // withDbErrors into a 409 telling the caller to retry.
   //
-  // Scoped to parent changes on purpose. Serializable costs more and can abort under ordinary
+  // Scoped to these two changes on purpose. Serializable costs more and can abort under ordinary
   // concurrency, and every other column on this row is a last-write-wins scalar with no
-  // cross-row invariant to protect — only the hierarchy has one.
-  if (data.parentId !== undefined) {
+  // cross-row invariant to protect — only the hierarchy and the terms FK have one.
+  // `null` clears termsId, which is always legal and needs no check.
+  if (data.parentId !== undefined || data.termsId) {
     await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
       prisma.$transaction(async (tx) => {
         await assertNoCycle(id, data.parentId, tx);
+        if (data.termsId) await assertRefExists("terms", data.termsId, tx);
         await auditedUpdate("customer", id, () => claimLiveAndUpdate(tx, id, data), { tx });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return;

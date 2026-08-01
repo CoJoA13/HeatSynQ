@@ -125,8 +125,9 @@ function CustomerDetail({ id }: { id: string }) {
   // interaction with the select would write that blank back over real data. Fetching inactive
   // rows too guarantees the assigned record is always present; it is labelled at render time so
   // it isn't mistaken for a normal pick. (Soft-DELETED terms can no longer be assigned at all —
-  // assertTermsExists in src/server/customers.ts rejects them on both create and update — so
-  // this list only has to account for the inactive case.)
+  // assertRefExists in src/server/reference-guards.ts, called from createCustomer/updateCustomer
+  // in src/server/customers.ts, rejects them on both create and update — so this list only has
+  // to account for the inactive case.)
   useEffect(() => {
     api<Term[]>("/api/picklists/terms?includeInactive=1").then(setTerms)
       .catch((e) => addOptionsError(`Could not load terms: ${(e as Error).message}`));

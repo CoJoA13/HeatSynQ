@@ -4,6 +4,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
 import { linksFrom, nameKey } from "../lib/reference-links";
 import { findBlockers } from "./reference-blockers";
@@ -138,19 +139,34 @@ export async function createReference(kind: string, input: Record<string, unknow
     throw new HttpError(400, `A ${REFERENCE_LABELS[kind].singular.toLowerCase()} with that name already exists`);
   }
 
+  // Serializable, and each linked FK target validated on this transaction's own `tx`, for the
+  // same reason as createCustomer's parentId/termsId checks: a read against the top-level
+  // `prisma` client cannot participate in the write's own Serializable read-write cycle, so it
+  // cannot close the writer-side half of the reference-delete TOCTOU (assertRefExists's doc
+  // comment).
   const row = await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-    prisma.$transaction((tx) =>
-      auditedCreate(kind, data, () => delegate(kind, tx).create({ data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      for (const link of linksFrom(kind)) {
+        const value = data[link.column];
+        if (value !== undefined && value !== null) await assertRefExists(link.targetKind, value as string, tx);
+      }
+      return auditedCreate(kind, data, () => delegate(kind, tx).create({ data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return { id: row.id };
 }
 
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
   const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
-    .parse(await resolveLinkNames(kind, input));
+    .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-    prisma.$transaction((tx) =>
-      auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      for (const link of linksFrom(kind)) {
+        const value = data[link.column];
+        if (value !== undefined && value !== null) await assertRefExists(link.targetKind, value as string, tx);
+      }
+      await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**

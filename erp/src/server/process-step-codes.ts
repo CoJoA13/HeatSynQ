@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { STEP_FIELD_TYPES, type StepFieldType } from "../lib/step-field-constants";
 
 export type StepFieldInput = { label: string; type: StepFieldType; unit?: string | null; sort: number };
@@ -67,17 +69,24 @@ export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ i
   });
   if (existing) throw new HttpError(400, "A process step code with that code already exists");
 
+  // Serializable, with the GL account target validated on this transaction's own `tx` — same
+  // shape as createCustomer's parentId/termsId checks (assertRefExists's doc comment explains
+  // why the check must share the write's own transaction to close the writer-side TOCTOU).
   const row = await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    prisma.$transaction((tx) =>
-      auditedCreate("processStepCode", data, () => tx.processStepCode.create({ data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      return auditedCreate("processStepCode", data, () => tx.processStepCode.create({ data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return { id: row.id };
 }
 
 export async function updateStepCode(id: string, input: Partial<z.input<typeof CREATE>> & { active?: boolean }) {
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(input);
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    prisma.$transaction((tx) =>
-      auditedUpdate("processStepCode", id, () => tx.processStepCode.update({ where: { id }, data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      await auditedUpdate("processStepCode", id, () => tx.processStepCode.update({ where: { id }, data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 export async function deleteStepCode(id: string): Promise<void> {
@@ -121,11 +130,12 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
   const parsedFields = fields === undefined ? undefined : FIELDS_ARRAY.parse(fields);
 
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    prisma.$transaction((tx) =>
-      auditedUpdate("processStepCode", id, async () => {
-        // Runs first: a bad glAccountId fails here with P2003 before any field statement runs,
-        // and the transaction rolls the whole batch back on any failure, so the field
-        // definitions are left untouched either way.
+    prisma.$transaction(async (tx) => {
+      // Runs first, on this transaction's own `tx`: a bad glAccountId is rejected here before
+      // any field statement runs, and the transaction rolls the whole batch back on any failure,
+      // so the field definitions are left untouched either way.
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      await auditedUpdate("processStepCode", id, async () => {
         await tx.processStepCode.update({ where: { id }, data });
         if (parsedFields !== undefined) {
           await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
@@ -133,5 +143,6 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
             data: parsedFields.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
           });
         }
-      }, { tx })));
+      }, { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
