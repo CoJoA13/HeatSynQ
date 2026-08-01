@@ -1107,7 +1107,9 @@ npx vitest run && npx tsc --noEmit && npx eslint src tests
 git add -A && git commit -m "feat: part specification and inspection child services"
 ```
 
----## Task 6: Price-break service and the LOT rule's add side
+---
+
+## Task 6: Price-break service and the LOT rule's add side
 
 **Files:**
 - Create: `erp/src/server/part-price-breaks.ts`
