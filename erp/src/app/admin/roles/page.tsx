@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { AREAS, CRUD_ACTIONS, SPECIAL_ACTIONS } from "@/lib/permission-constants";
+import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 type Role = { id: string; name: string; permissions: string[]; userCount: number };
 
@@ -10,6 +12,13 @@ export default function RolesPage() {
   const [selected, setSelected] = useState<Role | null>(null);
   const [newName, setNewName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const { permissions: perms, error: permsError } = usePermissions();
+  // Gated per the permission each route actually enforces (verified by reading the routes, not
+  // inferred): add role and the permission checkboxes both hit PUT/POST routes requiring
+  // admin.edit (src/app/api/admin/roles/route.ts, .../roles/[id]/route.ts); delete hits the
+  // DELETE route Task 8 tightened to admin.delete.
+  const canEdit = gate(perms, "admin.edit");
+  const canDelete = gate(perms, "admin.delete");
 
   const load = useCallback(async () => {
     const data = await api<Role[]>("/api/admin/roles");
@@ -44,7 +53,9 @@ export default function RolesPage() {
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Roles</h1>
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
       <div className="flex gap-6">
         <div className="w-64">
           <ul className="mb-3 divide-y rounded border bg-white">
@@ -54,14 +65,20 @@ export default function RolesPage() {
                   onClick={() => setSelected(r)}>
                 <span>{r.name} <span className="text-xs text-slate-500">({r.userCount})</span></span>
                 <button onClick={(e) => { e.stopPropagation(); void remove(r); }}
-                        className="text-xs text-red-600">delete</button>
+                        disabled={canDelete.disabled} title={canDelete.title}
+                        className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
+                  delete
+                </button>
               </li>
             ))}
           </ul>
           <div className="flex gap-2">
             <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New role name"
                    className="w-full rounded border px-2 py-1 text-sm" />
-            <button onClick={create} className="rounded bg-slate-800 px-3 py-1 text-sm text-white">Add</button>
+            <button onClick={create} disabled={canEdit.disabled} title={canEdit.title}
+                    className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+              Add
+            </button>
           </div>
         </div>
         {selected && (
@@ -79,6 +96,7 @@ export default function RolesPage() {
                       return (
                         <td key={key} className="px-2 text-center">
                           <input type="checkbox" checked={selected.permissions.includes(key)}
+                                 disabled={canEdit.disabled} title={canEdit.title}
                                  onChange={() => toggle(key)} />
                         </td>
                       );
@@ -93,7 +111,9 @@ export default function RolesPage() {
                 const key = `action.${s}`;
                 return (
                   <label key={key} className="flex items-center gap-2">
-                    <input type="checkbox" checked={selected.permissions.includes(key)} onChange={() => toggle(key)} />
+                    <input type="checkbox" checked={selected.permissions.includes(key)}
+                           disabled={canEdit.disabled} title={canEdit.title}
+                           onChange={() => toggle(key)} />
                     {s.replaceAll("_", " ")}
                   </label>
                 );
