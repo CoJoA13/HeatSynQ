@@ -18,6 +18,16 @@ export const REFERENCE_LABELS: Record<ReferenceKind, { singular: string; plural:
   specification:   { singular: "Specification",    plural: "Specifications",    nameLabel: "Name" },
 };
 
+/** Kinds readable by any signed-in user. A distinct set from ReferenceKind, and NOT a subset:
+ *  it drops glAccount (the one kind no data-entry screen reads — keeping chart-of-accounts
+ *  numbers off a route everyone can reach) and adds processStepCode, which is not a reference
+ *  kind at all but which the Phase 2C-3 Process Steps designer must read. */
+export const PICKLIST_KINDS = [
+  ...REFERENCE_KINDS.filter((k) => k !== "glAccount"),
+  "processStepCode",
+] as const;
+export type PickListKind = (typeof PICKLIST_KINDS)[number];
+
 /** Extra columns beyond name/active, for the generic list UI and Excel export. */
 export const REFERENCE_EXTRA_FIELDS: Record<ReferenceKind, { key: string; label: string; kind: "text" | "ref" }[]> = {
   glAccount:       [{ key: "description",    label: "Description",   kind: "text" }],

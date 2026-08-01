@@ -88,8 +88,10 @@ function CustomerDetail({ id }: { id: string }) {
   }, [id, showInactiveAddresses, showInactiveContacts]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
   // Terms options are global reference data, not per-customer — fetched once, independent of
-  // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
-  // an empty list rather than a broken page: the select still renders with a blank option.
+  // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
+  // customers.edit but not admin.view must still see Terms options, and a failure here is
+  // reported through the same error banner as `load()` rather than swallowed into a silent
+  // empty dropdown that would look exactly like a shop with no terms configured.
   //
   // includeInactive=1 for the same reason the parent selector uses it (R3, below): marking a
   // Terms record inactive hides it from the default reference list but does NOT clear it from
@@ -102,7 +104,8 @@ function CustomerDetail({ id }: { id: string }) {
   // assertTermsExists in src/server/customers.ts rejects them on both create and update — so
   // this list only has to account for the inactive case.)
   useEffect(() => {
-    api<Term[]>("/api/admin/reference/terms?includeInactive=1").then(setTerms).catch(() => {});
+    api<Term[]>("/api/picklists/terms?includeInactive=1").then(setTerms)
+      .catch((e) => setError(`Could not load terms: ${(e as Error).message}`));
   }, []);
   // Parent-selector options: every OTHER non-deleted customer, fetched the same way terms are —
   // once, independent of `load()`, gated on the same customers.view permission that got the
