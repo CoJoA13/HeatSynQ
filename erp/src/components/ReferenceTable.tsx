@@ -7,6 +7,7 @@ import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/
 import { linksFrom, nameKey } from "@/lib/reference-links";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
+type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
 
 export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -15,6 +16,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [openHistory, setOpenHistory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pasting, setPasting] = useState(false);
+  const [blocked, setBlocked] = useState<{ row: Row; list: Blocker[] } | null>(null);
   const labels = REFERENCE_LABELS[kind];
   const extras = REFERENCE_EXTRA_FIELDS[kind];
   const refLinks = linksFrom(kind);
@@ -24,6 +26,10 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
     setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
   }, [kind, showInactive]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+
+  // A stale blocker list from another kind's row must not linger on screen once the admin
+  // switches tables.
+  useEffect(() => { setBlocked(null); }, [kind]);
 
   useEffect(() => {
     if (!refLinks.length) return;
@@ -69,8 +75,14 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
     if (!confirm(`Delete ${labels.singular.toLowerCase()} "${row.name}"?`)) return;
     try {
       await api(`/api/admin/reference/${kind}/${row.id}`, { method: "DELETE" });
-      setError(null); await load();
-    } catch (e) { setError((e as Error).message); }
+      setError(null); setBlocked(null); await load();
+    } catch (e) {
+      // A refusal is not a dead end here: say what is blocking, and make the list exportable.
+      const list = await api<Blocker[]>(`/api/admin/reference/${kind}/${row.id}/blockers`)
+        .catch(() => [] as Blocker[]);
+      if (list.length) { setBlocked({ row, list }); setError(null); }
+      else setError((e as Error).message);
+    }
   }
 
   return (
@@ -144,6 +156,26 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           </tr>
         </tbody>
       </table>
+      {blocked && (
+        <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
+          <div className="mb-2 font-medium">
+            Cannot delete {labels.singular.toLowerCase()} “{blocked.row.name}” — {blocked.list.length} record(s) use it:
+          </div>
+          <ul className="mb-2 space-y-1">
+            {blocked.list.map((b) => (
+              <li key={`${b.entityLabel}-${b.id}`}>
+                <span className="text-slate-500">{b.entityLabel}</span>{" "}
+                {b.href ? <a href={b.href} className="text-blue-700 underline">{b.name}</a> : <span>{b.name}</span>}
+              </li>
+            ))}
+          </ul>
+          <div className="flex gap-3">
+            <a href={`/api/admin/reference/${kind}/${blocked.row.id}/blockers/export`}
+               className="text-blue-700 underline">Export list to Excel</a>
+            <button onClick={() => setBlocked(null)} className="text-slate-600">dismiss</button>
+          </div>
+        </div>
+      )}
       {pasting && (
         <PasteGrid
           endpoint={`/api/admin/reference/${kind}/paste`}
