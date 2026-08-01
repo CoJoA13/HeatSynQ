@@ -149,6 +149,24 @@ describe("reference delegate contract", () => {
     await deleteReference(kind, id);
     expect(await listReference(kind, { includeInactive: true })).toHaveLength(0);
   });
+
+  // Revival-on-create is still in place until Task 7 removes it — un-skip there.
+  it.skip("permits a deleted row and a live row to share a name, but not two live rows", async () => {
+    const first = await createReference("material", { name: "4140" });
+    await deleteReference("material", first.id);
+
+    // The whole point of the partial index: the archived row keeps its real name.
+    const archived = await prisma.material.findUnique({ where: { id: first.id } });
+    expect(archived?.name).toBe("4140");
+    expect(archived?.deletedAt).not.toBeNull();
+
+    // A live row may now take that name — and is a genuinely new row.
+    const second = await createReference("material", { name: "4140" });
+    expect(second.id).not.toBe(first.id);
+
+    // But two live rows may not.
+    await expect(createReference("material", { name: "4140" })).rejects.toThrow(/already exists/i);
+  });
 });
 
 describe("reference routes", () => {
