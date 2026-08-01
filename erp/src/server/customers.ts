@@ -5,6 +5,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
@@ -23,46 +24,9 @@ export type CustomerRow = {
 // number. Convert at the service boundary so routes, the UI, and Excel all see plain numbers.
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
-// Accepts a plain number or a decimal string ("25000.00"), but never an arbitrary string: an
-// invalid one (e.g. "not-a-number") used to sail through zod as a string and blow up inside
-// Prisma with a PrismaClientValidationError, which has no HTTP status and escapes handle() as a
-// bare 500 instead of the field-anchored 400 Spec §12 promises.
-//
-// `precision`/`scale` must match the column's own `@db.Decimal(precision, scale)` exactly — see
-// the paired comment on Customer.creditLimit/financeChargeRate in prisma/schema.prisma, which
-// points back here. A shared, column-agnostic validator (the previous shape of this function)
-// only checked that a value WAS a decimal, never that it FIT the specific column it was headed
-// for: "100" is a fine decimal but overflows financeChargeRate's Decimal(6,4) (max 99.9999) and
-// blows up inside Prisma with a status-less error (still a 500); "1.005" is a fine decimal but
-// has one more fractional digit than creditLimit's Decimal(12,2) allows, so Postgres silently
-// rounds it to 1.01 on write. Both are field-anchored 400s here instead: the regex bounds the
-// integer-digit count to `precision - scale` and the fractional-digit count to `scale` directly,
-// so a value that passes can neither overflow the column nor lose precision to rounding.
-function decimalField(precision: number, scale: number) {
-  const intDigits = precision - scale;
-  const pattern = new RegExp(`^-?\\d{1,${intDigits}}(\\.\\d{1,${scale}})?$`);
-  const message =
-    `Must be a decimal with at most ${intDigits} digit${intDigits === 1 ? "" : "s"} before ` +
-    `and ${scale} digit${scale === 1 ? "" : "s"} after the decimal point`;
-  return z.union([z.number(), z.string()])
-    .nullable()
-    .optional()
-    .transform((value, ctx) => {
-      if (value === null || value === undefined) return value;
-      // A non-finite number (NaN/Infinity) stringifies to something the digit pattern below can
-      // never match ("NaN", "Infinity"), so it is rejected by the same check as any other
-      // malformed value rather than needing a separate Number.isFinite guard.
-      const raw = typeof value === "number" ? String(value) : value.trim();
-      if (!pattern.test(raw)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message });
-        return z.NEVER;
-      }
-      return Number(raw);
-    });
-}
-
 // Kept in sync with prisma/schema.prisma's `@db.Decimal(12, 2)` / `@db.Decimal(6, 4)` — see the
-// comment on decimalField above and the matching comment on the schema fields themselves.
+// comment on decimalField (src/server/decimal-field.ts) and the matching comment on the schema
+// fields themselves.
 const creditLimitField = decimalField(12, 2);
 const financeChargeRateField = decimalField(6, 4);
 
