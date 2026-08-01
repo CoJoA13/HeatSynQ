@@ -18,11 +18,13 @@
     "@prisma/adapter-pg": "7.9.1",
     "@prisma/client": "7.9.1",
     "argon2": "^0.45.1",
+    "dotenv": "^17.4.2",
     "exceljs": "^4.4.0",
     "next": "15.5.22",
     "prisma": "7.9.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
+    "tsx": "^4.23.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -32,11 +34,9 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^3.2.7",
-    "dotenv": "^17.4.2",
     "eslint": "^9",
     "eslint-config-next": "15.5.22",
     "tailwindcss": "^4",
-    "tsx": "^4.23.1",
     "typescript": "^5",
     "vitest": "^3.2.7"
   }
