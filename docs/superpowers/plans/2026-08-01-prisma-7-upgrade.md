@@ -1218,9 +1218,10 @@ describe("partial unique sweep", () => {
   // A partial unique index does NOT remove the column from the generated WhereUniqueInput —
   // verified against Prisma 7.9.1, where the type stays AtLeast<{…}, "id" | "code">. So
   // findUnique({ where: { code } }) compiles, and silently returns the SOFT-DELETED row
-  // instead of the live one. upsert on the same column throws P2039 at runtime. Neither is
-  // caught by tsc, eslint, or any behavioural test that happens not to have a deleted row
-  // lying around. This sweep is the only thing standing between that and production.
+  // instead of the live one. upsert is worse: with only a soft-deleted row at that value it
+  // SUCCEEDS and silently reuses the dead row (it throws only when a live row also exists).
+  // Neither is caught by tsc, eslint, or any behavioural test that happens not to have a
+  // deleted row lying around. This sweep is the only thing standing between that and production.
   it("no findUnique or upsert is keyed on a live-rows-only unique column", () => {
     const partial = partialUniqueColumns();
     expect(partial.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
@@ -1237,8 +1238,9 @@ describe("partial unique sweep", () => {
       }
     }
 
-    expect(offenders, `Use findFirst({ where: { <col>, deletedAt: null } }) instead — findUnique on a
-partially-unique column returns the soft-deleted row, and upsert throws P2039.`).toEqual([]);
+    expect(offenders, `Use findFirst({ where: { <col>, deletedAt: null } }) instead — on a
+partially-unique column findUnique returns the soft-deleted row, and upsert silently reuses it
+(throwing only when a live row also holds that value).`).toEqual([]);
   });
 
   // The invariant behind §5.18: if a model can be soft-deleted, a plain @unique on it means a
