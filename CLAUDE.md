@@ -97,7 +97,7 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 
 ## Working conventions
 
-TDD per task: failing test → implement → pass → commit. Conventional commit messages, ending with the `Co-Authored-By` line already used throughout `git log`.
+TDD per task: failing test → implement → pass → commit. Conventional commit messages, with **no attribution trailer on individual commits** — owner's instruction, 2026-08-01. Every branch is squash-merged, so a per-commit `Co-Authored-By` / `Claude-Session` line gets concatenated N times into one squash message. Attribution goes in the **PR body**, where the squash preserves it exactly once. (Commits before 2026-08-01 carry the trailer; that is history, not the convention.)
 
 The Phase 1 process is worth keeping: a fresh subagent per task, an independent spec-and-quality review of each task, fix rounds until approved, then a final whole-branch review before merge. Those per-task reviews caught real bugs the plan itself contained — a plaintext password in an audit payload, a `__proto__` registry crash, silent empty backups. The review loop is not ceremony.
 

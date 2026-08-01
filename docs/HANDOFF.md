@@ -73,9 +73,19 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — state as of 2026-08-01, Prisma 7 upgrade merged
+### 4a. RESUME HERE — state as of 2026-08-01, Phase 2C-1 merged
 
-**The Prisma 7 upgrade and the removal of revival-on-create are complete and MERGED to `main`.** Squash-merged 2026-08-01 as `22e0dd3` (PR #11, 26 commits); the `prisma-7-upgrade` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, `main` is green on all four gates — **258 tests**, `tsc`, `eslint`, `npm run build` — and both databases report no pending migrations. **Next work is Phase 2C (Parts); its plan is not written.**
+**Phase 2C was split into three branches** (owner ruling, 2026-08-01) because as originally framed it was ~11 new models and ~30 tasks, roughly 3× Phase 2B: **2C-1 shared foundations** (done), **2C-2 Parts core** (next), **2C-3 Process Steps + Templates**.
+
+**Phase 2C-1 is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `47d6d0a` (PR #12, 31 commits); the `phase-2c1-foundations` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, `main` is green on all four gates — **304 tests**, `tsc`, `eslint`, `npm run build` — and both databases report no pending migrations. **It changed no schema**, deliberately: `git diff` on `prisma/` against the pre-branch `main` was empty throughout.
+
+It delivered the five obligations §4a previously listed as inherited by 2C, each as one shared implementation: the FK registry (`src/lib/reference-links.ts`) and its sweep, FK name resolution on read/export/create/paste, the reference-delete guard with blocker listing and Excel export, the session-only `/api/picklists/[kind]` route, the shared permission-gating helper (`src/lib/permission-ui.ts` + `use-permissions.ts`), and `deleteRole`'s required reason. Spec: `docs/superpowers/specs/2026-08-01-phase-2c1-shared-foundations-design.md`.
+
+Codex posted five findings on PR #12; four were fixed on the branch. The fifth (the delete guard's TOCTOU) is **partially fixed and knowingly open** — see §6, which records exactly what the Serializable wrap does and does not close, and why the writer-side half is 2C-2's.
+
+**Next work is Phase 2C-2 (Parts core); its plan is not written.** Its spec/plan should be brainstormed fresh — 2C-1's spec §9 lists what it inherits, and **its Part registry entries must supply `displayName`**: a part is identified by `(customer, partNumber)` and part numbers recur across customers, so a bare name in a blocker list cannot be told from another part's.
+
+**The Prisma 7 upgrade and the removal of revival-on-create are complete and MERGED to `main`.** Squash-merged 2026-08-01 as `22e0dd3` (PR #11, 26 commits); the `prisma-7-upgrade` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` was green on all four gates — 258 tests at that point, `tsc`, `eslint`, `npm run build`.
 
 One Codex finding was posted against the PR and fixed before merge (`f6fd887`): `prisma/seed.ts` passed a possibly-unset `DATABASE_URL` straight to `PrismaPg`, which falls back to `PGHOST`/`PGUSER` rather than failing — so an unset variable would have seeded an admin account with a known password into whatever database happened to be reachable. `src/server/db.ts` already carried that guard; the seed now does too.
 
