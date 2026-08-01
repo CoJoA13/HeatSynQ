@@ -4,6 +4,7 @@ import { mustCan } from "@/server/permissions";
 import { listReference } from "@/server/reference";
 import { toXlsx } from "@/server/excel";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
+import { nameKey } from "@/lib/reference-links";
 
 export const GET = handle(async (req, { params }) => {
   mustCan(requireUser(), "admin", "view");
@@ -16,7 +17,12 @@ export const GET = handle(async (req, { params }) => {
   const labels = REFERENCE_LABELS[kind as ReferenceKind];
   const columns = [
     { key: "name", header: labels.nameLabel },
-    ...REFERENCE_EXTRA_FIELDS[kind as ReferenceKind].map((f) => ({ key: f.key, header: f.label })),
+    ...REFERENCE_EXTRA_FIELDS[kind as ReferenceKind].map((f) => ({
+      // A ref column exports the resolved name — a cuid in a spreadsheet is unusable, and
+      // paste (Task 4) reads this same column back by name.
+      key: f.kind === "ref" ? nameKey(f.key) : f.key,
+      header: f.label,
+    })),
     { key: "active", header: "Active" },
   ];
 

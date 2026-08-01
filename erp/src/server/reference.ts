@@ -4,6 +4,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
+import { linksFrom, nameKey } from "../lib/reference-links";
 
 export type ReferenceRow = { id: string; name: string; active: boolean } & Record<string, unknown>;
 
@@ -54,10 +55,28 @@ export async function listReference(
   kind: string, opts?: { includeInactive?: boolean },
 ): Promise<ReferenceRow[]> {
   assertKind(kind);
-  return delegate(kind).findMany({
+  const rows = await delegate(kind).findMany({
     where: { deletedAt: null, ...(opts?.includeInactive ? {} : { active: true }) },
     orderBy: { name: "asc" },
   });
+
+  // Resolve each FK column to the target's name, so screens and Excel show "Rockwell C"
+  // rather than a cuid. One batched query per link, not one per row.
+  for (const link of linksFrom(kind)) {
+    const ids = [...new Set(rows.map((r) => r[link.column]).filter((v): v is string => typeof v === "string"))];
+    // Deleted targets resolve to null rather than throwing — rows predating the FK guards exist.
+    // Filtered on deletedAt only, never on active: an inactive target still resolves to its
+    // name — inactive hides a row from pick lists, it does not invalidate existing assignments.
+    const targets = ids.length
+      ? await delegate(link.targetKind).findMany({ where: { id: { in: ids }, deletedAt: null } })
+      : [];
+    const byId = new Map(targets.map((t) => [t.id, t.name]));
+    for (const row of rows) {
+      const id = row[link.column];
+      row[nameKey(link.column)] = typeof id === "string" ? byId.get(id) ?? null : null;
+    }
+  }
+  return rows;
 }
 
 export async function createReference(kind: string, input: Record<string, unknown>): Promise<{ id: string }> {
