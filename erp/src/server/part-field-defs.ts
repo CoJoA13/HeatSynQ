@@ -50,9 +50,30 @@ export async function updatePartFieldDef(id: string, input: Record<string, unkno
     if (existing) throw new HttpError(400, "A part field with that name already exists");
   }
 
+  // Serializable only when the patch carries a `type` key — the only case that can possibly be a
+  // type change, and thus the only case needing the blocker scan below to run in the same
+  // transaction as the write, exactly like deletePartFieldDef's guard (owner ruling, 2026-08-01:
+  // a field's type cannot change while a live part still holds a non-empty value for it). A patch
+  // that never touches `type` can't strand a value on a mismatched type, so it keeps the cheaper
+  // default isolation it already had.
+  const needsSerializable = data.type !== undefined;
+
   await withDbErrors({ entity: "Part field", conflictField: "name" }, () =>
-    prisma.$transaction((tx) =>
-      auditedUpdate("partFieldDef", id, () => tx.partFieldDef.update({ where: { id }, data }), { tx })));
+    prisma.$transaction(async (tx) => {
+      if (data.type !== undefined) {
+        const current = await tx.partFieldDef.findFirst({ where: { id, deletedAt: null }, select: { type: true } });
+        if (!current) throw new HttpError(404, "Part field not found");
+        // A same-type `type` key is not a change and is free even with values on the field.
+        if (current.type !== data.type) {
+          const blockers = await partFieldDefBlockersOn(tx, id);
+          if (blockers.length) {
+            throw new HttpError(400,
+              `That field still holds a value on ${blockers.length} part(s) — its type cannot change`);
+          }
+        }
+      }
+      await auditedUpdate("partFieldDef", id, () => tx.partFieldDef.update({ where: { id }, data }), { tx });
+    }, needsSerializable ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
 /** Every LIVE part holding a non-empty value for this field, deduped per part. Implemented once,

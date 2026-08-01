@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { createPart } from "@/server/parts";
+import { createPart, deletePart } from "@/server/parts";
 import {
   listPartFieldDefs, createPartFieldDef, updatePartFieldDef, deletePartFieldDef, partFieldDefBlockers,
 } from "@/server/part-field-defs";
@@ -72,6 +72,48 @@ describe("part field definitions", () => {
     expect(row.active).toBe(false);
     expect(row.sort).toBe(5);
     expect(await listPartFieldDefs()).toHaveLength(0);
+  });
+
+  it("blocks a type change while a live part holds a non-empty value; allowed once cleared", async () => {
+    const { partId } = await fixture();
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 }));
+    await asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "DWG-100" }]));
+
+    await expect(asSystem(() => updatePartFieldDef(fieldId, { type: "NUMBER" })))
+      .rejects.toThrow("still holds a value on 1 part(s) — its type cannot change");
+    expect((await listPartFieldDefs({ includeInactive: true })).find((r) => r.id === fieldId)!.type)
+      .toBe("TEXT");
+
+    await asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "" }]));
+    await asSystem(() => updatePartFieldDef(fieldId, { type: "NUMBER" }));
+    expect((await listPartFieldDefs({ includeInactive: true })).find((r) => r.id === fieldId)!.type)
+      .toBe("NUMBER");
+  });
+
+  it("a same-type `type` key in the patch is not a change and passes despite a non-empty value", async () => {
+    const { partId } = await fixture();
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 }));
+    await asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "DWG-100" }]));
+
+    await asSystem(() => updatePartFieldDef(fieldId, { type: "TEXT", sort: 9 }));
+    const row = (await listPartFieldDefs({ includeInactive: true })).find((r) => r.id === fieldId)!;
+    expect(row.type).toBe("TEXT");
+    expect(row.sort).toBe(9);
+  });
+
+  it("name/sort/active edits are unaffected by values on the field", async () => {
+    const { partId } = await fixture();
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 }));
+    await asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "DWG-100" }]));
+
+    await asSystem(() => updatePartFieldDef(fieldId, { name: "Drawing number", sort: 3, active: false }));
+    const row = (await listPartFieldDefs({ includeInactive: true })).find((r) => r.id === fieldId)!;
+    expect(row.name).toBe("Drawing number");
+    expect(row.sort).toBe(3);
+    expect(row.active).toBe(false);
   });
 });
 
@@ -151,6 +193,12 @@ describe("part field values", () => {
     const after = entries[1].after as { value: string };
     expect(before.value).toBe("A");
     expect(after.value).toBe("B");
+  });
+
+  it("listing values for a soft-deleted part is a 404", async () => {
+    const { partId } = await fixture();
+    await asSystem(() => deletePart(partId, "cleanup"));
+    await expect(asSystem(() => listPartFieldValues(partId))).rejects.toThrow("Part not found");
   });
 
   it("unchanged value writes no audit entry", async () => {

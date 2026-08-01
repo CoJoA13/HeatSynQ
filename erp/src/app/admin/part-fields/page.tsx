@@ -14,7 +14,7 @@ export default function PartFieldsPage() {
     name: "", type: PART_FIELD_TYPES[0], sort: 0,
   });
   const [error, setError] = useState<string | null>(null);
-  const [blocked, setBlocked] = useState<{ row: FieldDef; list: Blocker[] } | null>(null);
+  const [blocked, setBlocked] = useState<{ row: FieldDef; list: Blocker[]; verb: string } | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
   // Gated per the permission each route actually enforces (ReferenceTable.tsx precedent, fixed
   // in 2C-1's review, followed here rather than the step-codes page, which gates none of this):
@@ -43,7 +43,22 @@ export default function PartFieldsPage() {
       // failure is swallowed here only because the original error below is what gets reported;
       // it is not silencing that original error.
       await load().catch(() => {});
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      // A blocked type change is the same "not a dead end" case as a blocked delete below
+      // (ReferenceTable.tsx precedent): say what's holding a value on this field and make the
+      // list exportable, rather than just reporting the 400 text.
+      const row = rows.find((r) => r.id === id);
+      if (e instanceof ApiError && e.status === 400 && message.includes("its type cannot change") && row) {
+        try {
+          const list = await api<Blocker[]>(`/api/admin/part-fields/${id}/blockers`);
+          if (list.length) { setBlocked({ row, list, verb: "change the type of" }); setError(null); return; }
+        } catch (listErr) {
+          setError(`${message} — the list of what's using it could not be loaded ` +
+            `(${(listErr as Error).message}). Try again.`);
+          return;
+        }
+      }
+      setError(message);
     }
   }
 
@@ -106,7 +121,7 @@ export default function PartFieldsPage() {
       if (e instanceof ApiError && e.status === 400) {
         try {
           const list = await api<Blocker[]>(`/api/admin/part-fields/${row.id}/blockers`);
-          if (list.length) { setBlocked({ row, list }); setError(null); return; }
+          if (list.length) { setBlocked({ row, list, verb: "delete" }); setError(null); return; }
         } catch (listErr) {
           setError(`${(e as Error).message} — the list of what's using it could not be loaded ` +
             `(${(listErr as Error).message}). Try again.`);
@@ -198,6 +213,7 @@ export default function PartFieldsPage() {
           label="part field"
           rowName={blocked.row.name}
           list={blocked.list}
+          action={blocked.verb}
           exportHref={`/api/admin/part-fields/${blocked.row.id}/blockers/export`}
           onDismiss={() => setBlocked(null)}
         />

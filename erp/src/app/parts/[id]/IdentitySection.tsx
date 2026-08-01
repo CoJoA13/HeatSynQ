@@ -113,8 +113,12 @@ export function IdentitySection({
                  title={canEdit.title}
                  onChange={(e) => patchDraft({ loadQty: e.target.value })}
                  onBlur={(e) => onBlurSave(e, {}, (v) => {
-                   if (v === "") { void save({ loadQty: null }); return; }
-                   const n = Number(v);
+                   // Trim before the empty-check: Number(" ") is 0, not NaN, so an untrimmed
+                   // whitespace-only value would silently parse as the integer 0 instead of
+                   // being treated as "cleared" like a truly empty value.
+                   const trimmed = v.trim();
+                   if (trimmed === "") { void save({ loadQty: null }); return; }
+                   const n = Number(trimmed);
                    if (!Number.isInteger(n)) { onError("Load qty must be a whole number"); return; }
                    void save({ loadQty: n });
                  })}

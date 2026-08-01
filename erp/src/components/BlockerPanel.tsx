@@ -7,19 +7,22 @@
 export type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
 
 export function BlockerPanel({
-  label, rowName, list, exportHref, onDismiss,
+  label, rowName, list, exportHref, onDismiss, action = "delete",
 }: {
-  /** Lowercase singular noun for the row being deleted, e.g. "material" or "part field". */
+  /** Lowercase singular noun for the row being blocked, e.g. "material" or "part field". */
   label: string;
   rowName: string;
   list: Blocker[];
   exportHref: string;
   onDismiss: () => void;
+  /** Present-tense verb phrase for the blocked action, e.g. "delete" or "change the type of".
+   *  Defaults to "delete" — the panel's original and still most common caller. */
+  action?: string;
 }) {
   return (
     <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
       <div className="mb-2 font-medium">
-        Cannot delete {label} “{rowName}” — {list.length} record(s) use it:
+        Cannot {action} {label} “{rowName}” — {list.length} record(s) use it:
       </div>
       <ul className="mb-2 space-y-1">
         {list.map((b) => (

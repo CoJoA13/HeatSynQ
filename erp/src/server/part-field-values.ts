@@ -42,10 +42,12 @@ function validateValue(def: { name: string; type: string }, value: string): stri
  *  part's values ("" when unset). Inactive hides a field from new entry, it does not invalidate a
  *  value already on the part (§5.14). */
 export async function listPartFieldValues(partId: string): Promise<PartFieldValueRow[]> {
-  const [defs, values] = await Promise.all([
+  const [part, defs, values] = await Promise.all([
+    prisma.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } }),
     prisma.partFieldDef.findMany({ where: { deletedAt: null }, orderBy: { sort: "asc" } }),
     prisma.partFieldValue.findMany({ where: { partId } }),
   ]);
+  if (!part) throw new HttpError(404, "Part not found");
   const byField = new Map(values.map((v) => [v.fieldId, v.value]));
   return defs
     .filter((d) => d.active || (byField.get(d.id) ?? "") !== "")
