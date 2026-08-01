@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-07-31, Phase 2B complete and in review (PR #2, not merged). Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-08-01, Phase 2B merged to `main` (PR #2 squashed as `32f7f9d`). Next work is the Prisma 7 upgrade (§5.18), then Phase 2C. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
 
 ---
 
@@ -73,11 +73,11 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — state as of 2026-07-31 evening
+### 4a. RESUME HERE — state as of 2026-08-01, Phase 2B merged
 
-**Phase 2B is finished and open as a pull request, not merged.** `phase-2b-customers`, pushed, `MERGEABLE`, 255 tests with `tsc` / `eslint` / `npm run build` all clean. **PR: https://github.com/CoJoA13/HeatSynQ/pull/2**
+**Phase 2B (customers) is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `32f7f9d`; PR #2 closed, the `phase-2b-customers` branch deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` is green on all four gates — 255 tests, `tsc`, `eslint`, `npm run build`.
 
-Eight rounds of automated review have run against it. **All 40 threads are answered and resolved.** Thirty-three were fixed on the branch; seven were filed as issues; one was answered as already-recorded. Open issues — all deliberate deferrals or owner decisions, none an oversight. **#6, #7 and #8 are already decided; their rulings are §5.14–§5.17 and 2C builds them:**
+Eight rounds of automated review ran against it. **All 40 threads were answered and resolved.** Thirty-three were fixed on the branch; seven were filed as issues; one was answered as already-recorded. The issues below are the surviving record — all are deliberate deferrals or owner decisions, none an oversight. **#6, #7, #8 and #10 are already decided; their rulings are §5.14–§5.18:**
 
 - **#3** — a correction typed during a failing save can leave the UI stale. Database stays correct; needs a compound race; resolves on reload.
 - **#4** — **needs an owner decision.** A contact can carry document-delivery flags (`getsInvoices`, `getsCerts`, …) with a blank email, and an existing email can be cleared while the flags stay on. Nothing breaks today, but Phases 4–5 will select those contacts for email delivery with no destination. Two defensible rules, both written up in the issue: reject the combination, or allow it and have those phases skip such contacts *visibly*. The second may fit better if the shop ever posts or faxes to a contact.
@@ -91,10 +91,9 @@ Eight rounds of automated review have run against it. **All 40 threads are answe
 Round 4's fixes (`047eb51`): `assertTermsExists` closed the last unguarded reference column (a soft-deleted Terms row passed the foreign key and left a customer holding a reference no list resolves); the terms selector now carries inactive rows so an assigned one stops rendering as blank; address `kind` became editable (the service always supported it); and customer delete got a UI at last — the route and its `customers.delete` permission had shipped with nothing able to call them, which also made revival-on-create unreachable from the app.
 
 **What to do next, in order:**
-1. Check the PR for a ninth review round (`gh pr view 2`, and the GraphQL `reviewThreads` query for unresolved ones). Triage by §5a's rule, reply on each thread, resolve.
-2. When the reviews go quiet, the merge decision is the owner's — `superpowers:finishing-a-development-branch` presents the options.
-3. **Before 2C starts: upgrade Prisma to 7 and delete revival-on-create** (owner's ruling, 2026-07-31, issue #10 — see §5.18). This is sequenced first on purpose: it removes a constraint 2C would otherwise be designed around, and it *replaces* 2C's old "consolidate revival into one shared helper" obligation rather than fulfilling it. Doing it afterwards would mean parts builds a fifth revival site and then unbuilds it.
-4. Phase 2C is Parts. Its plan is not written. Its inputs: the kickoff brief (`docs/superpowers/plans/2026-07-30-phase-2-kickoff.md`, §2.3 and open items), the process-steps model doc, and §6's carried backlog. **Five obligations it inherits:** build name resolution for the raw-cuid reference columns; build the reference-delete guard ruled in §5.14; build the pick-list read route ruled in §5.15, which parts need four times over on one screen; build the permission-aware control helper ruled in §5.16 (one shared helper, not per-page conditionals — the customer pages adopt it too); and add the delete reason `deleteRole` still owes under §5.17. **All are decided — none is still waiting on the owner.**
+1. **Upgrade Prisma 6.19.3 → 7 and delete revival-on-create** (owner's ruling, issue #10 — the full plan is §5.18). This is the next piece of work and it comes *before* 2C, because it removes a constraint 2C would otherwise be designed around and it replaces 2C's old "consolidate revival" obligation rather than fulfilling it. Step one is establishing the actual supported 6 → 7 path from Prisma's own guide — treat the upgrade as its own scoped change, gated on all four quality gates, applied to **both** databases.
+2. Phase 2C is Parts. Its plan is not written. Its inputs: the kickoff brief (`docs/superpowers/plans/2026-07-30-phase-2-kickoff.md`, §2.3 and open items), the process-steps model doc, and §6's carried backlog. **Five obligations it inherits:** build name resolution for the raw-cuid reference columns; build the reference-delete guard ruled in §5.14; build the pick-list read route ruled in §5.15, which parts need four times over on one screen; build the permission-aware control helper ruled in §5.16 (one shared helper, not per-page conditionals — the customer pages adopt it too); and add the delete reason `deleteRole` still owes under §5.17. **All are decided — none is waiting on the owner.**
+3. **#4 is the one open question still owed an owner decision** (contacts flagged for document delivery with no email address). It does not block the Prisma work or 2C — it binds Phases 4–5, when those contacts actually get emailed.
 
 **After a reboot the environment comes back on its own** — `docker.service` is enabled and `erp-db-1` is `restart: unless-stopped`, so both databases return migrated. Git identity is set repo-locally. One nice change: a fresh login shell will carry the `docker` group natively, so the `sg docker -c '…'` wrapper used throughout this session is no longer needed — plain `docker compose …` works.
 
