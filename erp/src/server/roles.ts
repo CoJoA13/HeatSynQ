@@ -19,28 +19,22 @@ export async function listRoles() {
 }
 
 export async function createRole(name: string): Promise<{ id: string }> {
-  const existing = await prisma.role.findUnique({ where: { name } });
-  if (existing && !existing.deletedAt) throw new HttpError(400, "A role with that name already exists");
-  const role = existing
-    ? await auditedUpdate("role", existing.id, () =>
-        // Revival: a previously soft-deleted role is coming back under its old name. Clear out
-        // whatever permissions it held before deletion so the resurrected role starts empty
-        // rather than silently inheriting stale grants.
-        prisma.$transaction([
-          prisma.rolePermission.deleteMany({ where: { roleId: existing.id } }),
-          prisma.role.update({ where: { id: existing.id }, data: { deletedAt: null } }),
-        ]).then(([, revived]) => revived),
-      )
-    : await auditedCreate("role", { name }, () =>
-        withDbErrors({ entity: "Role", conflictField: "name" }, () => prisma.role.create({ data: { name } })));
+  // findFirst, NOT findUnique — Role.name is unique only among live rows, but the client still
+  // types it unique, so findUnique compiles and returns the soft-deleted row instead.
+  const existing = await prisma.role.findFirst({ where: { name, deletedAt: null }, select: { id: true } });
+  if (existing) throw new HttpError(400, "A role with that name already exists");
+
+  const role = await auditedCreate("role", { name }, () =>
+    withDbErrors({ entity: "Role", conflictField: "name" }, () => prisma.role.create({ data: { name } })));
   return { id: role.id };
 }
 
 export async function renameRole(roleId: string, name: string): Promise<void> {
-  const existing = await prisma.role.findUnique({ where: { name } });
-  if (existing && !existing.deletedAt && existing.id !== roleId) {
-    throw new HttpError(400, "A role with that name already exists");
-  }
+  const existing = await prisma.role.findFirst({
+    where: { name, deletedAt: null, NOT: { id: roleId } },
+    select: { id: true },
+  });
+  if (existing) throw new HttpError(400, "A role with that name already exists");
   await withDbErrors({ entity: "Role", conflictField: "name" }, () =>
     auditedUpdate("role", roleId, () => prisma.role.update({ where: { id: roleId }, data: { name } })));
 }
