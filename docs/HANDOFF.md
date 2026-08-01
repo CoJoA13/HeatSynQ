@@ -188,7 +188,7 @@ npm install
 npx prisma migrate dev
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed
-npm test        # expect 224 passing (Phase 1: 75; Phase 2A + 2B added the rest)
+npm test        # expect 255 passing (Phase 1: 75; Phase 2A + 2B added the rest)
 npm run dev     # http://localhost:3000 — admin/admin, change it
 ```
 
@@ -198,7 +198,13 @@ Fedora-specific notes:
 - **firewalld**: only relevant when exposing the prod app to the shop LAN (`sudo firewall-cmd --add-port=80/tcp --permanent && sudo firewall-cmd --reload`).
 - Dev DB data from the old machine does not travel (it was throwaway seed/test data). If you ever need it: `erp/backups/` gzip dumps restore per `erp/README.md`.
 
-## 9. Kicking off Phase 2 (paste this into a fresh session on the new machine)
+## 9. Kicking off the next piece of work (paste one of these into a fresh session)
+
+**Next up — the Prisma 7 upgrade (do this before 2C):**
+
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where the project stands and **§5.18 for the full plan**, plus GitHub issue #10 for the reasoning. The task: upgrade Prisma from 6.19.3 to 7, then delete revival-on-create everywhere by making each soft-deleted unique column unique **only among live rows** (`@@index([code], where: "…", unique: true)` — verified that 6.19.3 rejects this syntax, which is why the upgrade comes first). Establish the actual supported 6 → 7 upgrade path from Prisma's own guide before changing anything — do not assume one. Work on a `prisma-7-upgrade` branch. Apply migrations to **both** databases (handoff "Schema changes apply to two databases"). All four gates must be green before it is done: `npm test`, `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`. Sites to convert: `customer`, `role`, all ten reference kinds, `processStepCode` — §5.18 lists the mechanical consequences. Remember the prime directive: do not assume — ask the owner.
+
+**After that — Phase 2C (Parts):**
 
 > Read `docs/HANDOFF.md`, then `docs/superpowers/plans/2026-07-30-phase-2-kickoff.md`, `docs/superpowers/specs/2026-07-29-heat-treat-erp-design.md`, and `docs/superpowers/plans/2026-07-29-roadmap.md`. Then write the detailed Phase 2 implementation plan (superpowers:writing-plans) following the kickoff brief's task outline and Phase 1's conventions (handoff §5), and execute it with superpowers:subagent-driven-development on a `phase-2-master-data` branch. Push to origin when the phase passes its final review. Remember the prime directive: do not assume — ask the owner.
 
