@@ -1,5 +1,6 @@
 import { prisma } from "./db";
 import { currentActor } from "./context";
+import { HttpError } from "./errors";
 import type { Prisma } from "@prisma/client";
 
 export type AuditableModel =
@@ -153,15 +154,38 @@ export async function auditedUpdate<T>(
   return result;
 }
 
+/**
+ * The soft-delete write is conditional on the row still being live, and the audit entry is only
+ * written if that condition actually claimed the row.
+ *
+ * Callers pre-check with a `findFirst({ deletedAt: null })` so the ordinary "it's already gone"
+ * case gets a well-labelled 404. That check cannot be the whole guard: it is a separate
+ * statement from the write, so two overlapping deletes of the same row — an ordinary
+ * double-click on a delete link — can both pass it before either commits. Updating by `id`
+ * alone then let both succeed, the second re-stamping `deletedAt` with a later time and adding a
+ * second "delete" entry to the history of a row that was deleted once. `updateMany` with
+ * `deletedAt: null` in the WHERE makes the check and the write a single atomic statement:
+ * whichever transaction gets there second matches no rows, writes nothing, and reports that the
+ * record is already gone instead of inventing a second deletion.
+ *
+ * Fixing it here rather than in each caller covers all eight delete paths at once — including
+ * roles, reference rows and process step codes, where handoff §6 recorded this same defect
+ * ("a second DELETE re-stamps deletedAt and writes another audit row") as a carried item.
+ */
 export async function auditedSoftDelete(
   model: AuditableModel, id: string, reason?: string, tx?: Prisma.TransactionClient,
 ): Promise<void> {
   const db = tx ?? prisma;
   const before = await snapshot(model, id, db);
   const client = db[model] as unknown as {
-    update: (a: { where: { id: string }; data: { deletedAt: Date } }) => Promise<unknown>;
+    updateMany: (a: {
+      where: { id: string; deletedAt: null }; data: { deletedAt: Date };
+    }) => Promise<{ count: number }>;
   };
-  await client.update({ where: { id }, data: { deletedAt: new Date() } });
+  const { count } = await client.updateMany({ where: { id, deletedAt: null }, data: { deletedAt: new Date() } });
+  // Deliberately the same 404 the callers' own pre-check raises, so a racing loser is reported
+  // exactly like a sequential repeat rather than as some new class of failure.
+  if (count === 0) throw new HttpError(404, "That record has already been deleted");
   await write({ entity: model, entityId: id, action: "delete", before, reason }, db);
 }
 

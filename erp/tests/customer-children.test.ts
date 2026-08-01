@@ -273,3 +273,36 @@ describe("customer contacts", () => {
     });
   });
 });
+
+// Round-7 review: deleteAddress/deleteContact pre-check the live row with a findFirst, then
+// soft-delete in a separate statement. Two overlapping DELETEs (an ordinary double-click on the
+// row's delete link) can both pass that check before either writes, and auditedSoftDelete
+// updated by id alone with no `deletedAt: null` condition — so both succeeded, the second
+// re-stamped deletedAt with a later time, and the history showed two deletions of one row. The
+// pre-check cannot close this; only a conditional write can. Looped because the interleaving is
+// timing-dependent, exactly like the reciprocal-parent race in customers.test.ts.
+describe("concurrent child deletion", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("soft-deletes once and audits once when two deletes overlap", async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = (await createCustomer({ code: `C${i}`, name: `C${i}` })).id;
+      const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock" });
+      const { id: contactId } = await addContact(id, { name: "Pat" });
+
+      const addr = await Promise.allSettled([deleteAddress(addressId), deleteAddress(addressId)]);
+      const ct = await Promise.allSettled([deleteContact(contactId), deleteContact(contactId)]);
+
+      expect(addr.filter((r) => r.status === "fulfilled"), `address attempt ${i}`).toHaveLength(1);
+      expect(ct.filter((r) => r.status === "fulfilled"), `contact attempt ${i}`).toHaveLength(1);
+      expect(
+        (await readAudit("customerAddress", addressId)).filter((e) => e.action === "delete"),
+        `address audit attempt ${i}`,
+      ).toHaveLength(1);
+      expect(
+        (await readAudit("customerContact", contactId)).filter((e) => e.action === "delete"),
+        `contact audit attempt ${i}`,
+      ).toHaveLength(1);
+    }
+  });
+});

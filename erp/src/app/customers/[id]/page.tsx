@@ -202,11 +202,23 @@ function CustomerDetail({ id }: { id: string }) {
   // user to submit it again. The row was already there, so the retry created a duplicate. What
   // the user needs to be told in that case is that the save worked and the screen is stale, not
   // that the save failed.
+  // In-flight guard for the row action links (delete, make default), keyed by path+method. The
+  // server is now atomic about a repeated delete (auditedSoftDelete claims the row conditionally
+  // and the loser gets a 404), so this is not what makes the data correct — it is what stops an
+  // ordinary double-click turning into a pointless error banner about a row the user did in fact
+  // just delete. A ref, not state, for the same reason the add-buttons use one: the second click
+  // can arrive before React re-renders.
+  const inFlight = useRef<Set<string>>(new Set());
+
   async function call(path: string, init: RequestInit): Promise<boolean> {
+    const key = `${init.method ?? "GET"} ${path}`;
+    if (inFlight.current.has(key)) return false;
+    inFlight.current.add(key);
     try {
       await api(path, init);
     } catch (e) {
       setError((e as Error).message);
+      inFlight.current.delete(key);
       return false;
     }
     setError(null);
@@ -215,6 +227,7 @@ function CustomerDetail({ id }: { id: string }) {
     } catch (e) {
       setError(`Saved, but the page could not be refreshed — reload to see the current data. (${(e as Error).message})`);
     }
+    inFlight.current.delete(key);
     return true;
   }
 
