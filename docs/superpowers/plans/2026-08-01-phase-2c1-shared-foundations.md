@@ -698,8 +698,14 @@ In `erp/src/server/reference.ts`, extend `EXTRA_SCHEMAS` so ref-bearing kinds ac
 
 ```ts
 /** Turns `<column>Name` input into `<column>` (an id) by looking the name up among LIVE rows of
- *  the target kind. The id form stays accepted so the UI's select can keep submitting an id.
- *  Mutates and returns a shallow copy — the caller's object is not touched. */
+ *  the target kind.
+ *
+ *  The raw id form stays accepted too. Not for the UI — the grid's select submits the name
+ *  (Task 4 Step 6) — but because existing callers and tests already pass `defaultScaleId` /
+ *  `glAccountId` directly, and an id is unambiguous where a name needs resolving. Removing it
+ *  would be a breaking API change this task has no reason to make.
+ *
+ *  Returns a shallow copy — the caller's object is not mutated. */
 async function resolveLinkNames(kind: ReferenceKind, input: Record<string, unknown>) {
   const data = { ...input };
   for (const link of linksFrom(kind)) {
