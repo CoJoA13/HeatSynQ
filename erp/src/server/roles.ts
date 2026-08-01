@@ -50,8 +50,19 @@ export async function setRolePermissions(roleId: string, permissions: string[]):
   );
 }
 
-export async function deleteRole(roleId: string): Promise<void> {
+/**
+ * `reason` is required, not optional — spec §9's "destructive-ish actions require a reason".
+ * Role delete qualifies on two counts: it carries the role's permission grants away, and it
+ * frees the role name for reuse by an unrelated future role. Enforced in the service rather
+ * than only at the route so no future caller can bypass it, matching deleteCustomer.
+ *
+ * Requiring a reason on EVERY delete was considered and rejected (handoff §5.17): demanding a
+ * justification for a carrier typed wrong four seconds earlier trains people to type "x".
+ */
+export async function deleteRole(roleId: string, reason: string): Promise<void> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to delete a role");
   const holders = await prisma.user.count({ where: { roleId, deletedAt: null } });
   if (holders > 0) throw new HttpError(400, "Role is assigned to users");
-  await auditedSoftDelete("role", roleId);
+  await withDbErrors({ entity: "Role" }, () => auditedSoftDelete("role", roleId, why));
 }

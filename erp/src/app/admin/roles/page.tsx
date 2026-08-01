@@ -32,9 +32,13 @@ export default function RolesPage() {
   }
 
   async function remove(role: Role) {
-    if (!confirm(`Delete role "${role.name}"?`)) return;
-    try { await api(`/api/admin/roles/${role.id}`, { method: "DELETE" }); setSelected(null); await load(); }
-    catch (e) { setError((e as Error).message); }
+    const reason = prompt(`Delete role "${role.name}"?\n\nWhy? (recorded in the audit trail)`);
+    // null = cancelled; empty = submitted blank, which the service rejects with a clear message.
+    if (reason === null) return;
+    try {
+      await api(`/api/admin/roles/${role.id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+      setError(null); await load();
+    } catch (e) { setError((e as Error).message); }
   }
 
   return (
