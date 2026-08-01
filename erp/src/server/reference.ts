@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
@@ -147,12 +148,33 @@ export async function updateReference(kind: string, id: string, input: Record<st
     auditedUpdate(kind, id, () => delegate(kind).update({ where: { id }, data })));
 }
 
+/**
+ * The blocker scan and the soft delete it guards run inside one Serializable transaction, not
+ * two separate statements — a concurrent request assigning this row's id to a new record could
+ * otherwise commit in the gap between them, leaving a live row pointing at a row this function
+ * just soft-deleted (the exact state the guard exists to prevent). Same shape as
+ * updateCustomer's parent-cycle guard (customers.ts): read and write share one transaction, and
+ * withDbErrors already maps Serializable's P2034 abort to a 409 asking the caller to retry.
+ *
+ * This closes the race only where the *concurrent writer's own transaction* also reads the
+ * target row — Postgres's SSI aborts on a genuine read-write cycle, not on a one-sided read. As
+ * of this fix, none of the four registered FK writers (customer.termsId,
+ * processStepCode.glAccountId, paymentType.glAccountId, inspectionCode.defaultScaleId) read
+ * their target inside the same transaction as their write, so no cycle can form and this closes
+ * no live race today — see .superpowers/codex-pr12-fixes.md (F1) for the per-writer enumeration.
+ * It is still the correct, necessary half of the fix: it matches this codebase's own
+ * Serializable-guard precedent (updateCustomer's parent-cycle guard) and is what a writer would
+ * *also* need to participate transactionally to actually close the window.
+ */
 export async function deleteReference(kind: string, id: string): Promise<void> {
   assertKind(kind);
-  const blockers = await findBlockers(kind, id);
-  if (blockers.length) {
-    const label = REFERENCE_LABELS[kind].singular.toLowerCase();
-    throw new HttpError(400, `That ${label} is still in use by ${blockers.length} record(s)`);
-  }
-  await withDbErrors({ entity: REFERENCE_LABELS[kind].singular }, () => auditedSoftDelete(kind, id));
+  const label = REFERENCE_LABELS[kind].singular.toLowerCase();
+  await withDbErrors({ entity: REFERENCE_LABELS[kind].singular }, () =>
+    prisma.$transaction(async (tx) => {
+      const blockers = await findBlockers(kind, id, tx);
+      if (blockers.length) {
+        throw new HttpError(400, `That ${label} is still in use by ${blockers.length} record(s)`);
+      }
+      await auditedSoftDelete(kind, id, undefined, tx);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

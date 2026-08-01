@@ -1,8 +1,14 @@
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { linksTargeting } from "../lib/reference-links";
 import type { ReferenceKind } from "../lib/reference-constants";
 
 export type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
+
+// Either the top-level client or a `tx` from prisma.$transaction — same shape as customers.ts's
+// Db. deleteReference (reference.ts) passes its own `tx` through so the blocker scan and the
+// soft delete it guards run inside one transaction instead of two separate round trips.
+type Db = Prisma.TransactionClient;
 
 /** Every LIVE row, across every registered link, whose foreign key holds this reference row's id.
  *
@@ -15,10 +21,10 @@ export type Blocker = { entityLabel: string; name: string; id: string; href: str
  *
  *  Computed on demand, not cached: blocker sets stay small for years because the system starts
  *  empty, and a stale cache on a data-integrity guard is worse than a query. */
-export async function findBlockers(kind: ReferenceKind, id: string): Promise<Blocker[]> {
+export async function findBlockers(kind: ReferenceKind, id: string, db: Db = prisma): Promise<Blocker[]> {
   const out: Blocker[] = [];
   for (const link of linksTargeting(kind)) {
-    const delegate = prisma[link.model] as unknown as {
+    const delegate = db[link.model] as unknown as {
       findMany: (a: object) => Promise<Record<string, unknown>[]>;
     };
     const rows = await delegate.findMany({

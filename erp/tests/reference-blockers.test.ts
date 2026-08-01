@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
-import { truncateAll } from "./helpers/db";
+import { truncateAll, prisma } from "./helpers/db";
 import { createReference, deleteReference, listReference } from "@/server/reference";
 import { createCustomer, deleteCustomer } from "@/server/customers";
 import { createStepCode } from "@/server/process-step-codes";
@@ -81,6 +81,33 @@ describe("reference delete guard", () => {
   it("still deletes a row nothing points at — the guard must not obstruct a typo cleanup", async () => {
     const t = await createReference("terms", { name: "Typo" });
     await expect(deleteReference("terms", t.id)).resolves.toBeUndefined();
+  });
+
+  // F1: findBlockers and the soft delete it guards now run inside one Serializable transaction
+  // (see reference.ts's deleteReference). A genuine concurrency test isn't practical against a
+  // single test DB connection, so this locks down the one thing that IS testable here: the
+  // happy path — refuse-when-referenced, delete-when-not — is unchanged by the transaction wrap.
+  it("still refuses a referenced row and still deletes an unreferenced one, now inside one transaction", async () => {
+    const free = await createReference("terms", { name: "Unreferenced" });
+    await expect(deleteReference("terms", free.id)).resolves.toBeUndefined();
+    expect((await listReference("terms")).map((r) => r.id)).not.toContain(free.id);
+
+    const used = await createReference("terms", { name: "Still used" });
+    await createCustomer({ code: "TXN1", name: "Txn Co", termsId: used.id });
+    await expect(deleteReference("terms", used.id)).rejects.toThrow(/still (in use|used)/i);
+    expect((await listReference("terms")).map((r) => r.id)).toContain(used.id);
+  });
+
+  // Locks down the new optional third parameter's contract: a caller-supplied transaction client
+  // is honored rather than findBlockers silently falling back to the top-level `prisma` client.
+  it("findBlockers accepts an explicit transaction client", async () => {
+    const terms = await createReference("terms", { name: "Net 30" });
+    const c = await createCustomer({ code: "ACME3", name: "Acme Three", termsId: terms.id });
+
+    const blockers = await prisma.$transaction((tx) => findBlockers("terms", terms.id, tx));
+    expect(blockers).toEqual([
+      { entityLabel: "Customer", name: "Acme Three", id: c.id, href: `/customers/${c.id}` },
+    ]);
   });
 
   it("serves the blocker list to an admin and 403s a non-admin", async () => {
