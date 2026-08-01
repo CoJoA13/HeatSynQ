@@ -60,6 +60,26 @@ describe("part inspections", () => {
     }))).rejects.toThrow("min cannot exceed max");
   });
 
+  it("patching only max against a stored min rejects when the merge violates min <= max", async () => {
+    const { code, partId } = await fixture();
+    const { id } = await asSystem(() => addPartInspection(partId, {
+      inspectionCodeId: code.id, sort: 0, min: "10", max: "50",
+    }));
+    await expect(asSystem(() => updatePartInspection(partId, id, { max: "5" })))
+      .rejects.toThrow("min cannot exceed max");
+  });
+
+  it("patching only max against a stored min succeeds when the merge still satisfies min <= max", async () => {
+    const { code, partId } = await fixture();
+    const { id } = await asSystem(() => addPartInspection(partId, {
+      inspectionCodeId: code.id, sort: 0, min: "10", max: "50",
+    }));
+    await asSystem(() => updatePartInspection(partId, id, { max: "20" }));
+    const rows = await listPartInspections(partId);
+    expect(rows[0].min).toBe(10);
+    expect(rows[0].max).toBe(20);
+  });
+
   it("rejects soft-deleted code and scale", async () => {
     const { code, partId } = await fixture();
     const deadCode = await prisma.inspectionCode.create({ data: { name: "Gone", deletedAt: new Date() } });
