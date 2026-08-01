@@ -74,6 +74,21 @@ describe("reference FK name resolution", () => {
     expect(row.defaultScaleName).toBe("Rockwell C");
   });
 
+  // F2: before BASE trimmed on store, a name typed with surrounding whitespace was saved
+  // verbatim while resolveLinkNames() trimmed before its findFirst lookup — so the grid could
+  // display the stored name, submit it exactly, and get a false "does not exist". This proves
+  // the round trip: the source name is created WITH whitespace, and the FK assignment uses
+  // exactly the (now-trimmed) name the grid would display.
+  it("resolves a name-based FK assignment using the displayed (trimmed) name", async () => {
+    const scale = await createReference("inspectionScale", { name: "  Rockwell C  " });
+    const displayed = (await listReference("inspectionScale")).find((r) => r.id === scale.id)!.name;
+    expect(displayed).toBe("Rockwell C");
+
+    const { id } = await createReference("inspectionCode", { name: "HRC-1", defaultScaleName: displayed });
+    const row = (await listReference("inspectionCode")).find((r) => r.id === id);
+    expect(row?.defaultScaleId).toBe(scale.id);
+  });
+
   it("rejects an unknown name with a field-anchored message naming the value", async () => {
     await expect(createReference("inspectionCode", { name: "HRC-1", defaultScaleName: "Nope" }))
       .rejects.toThrow(/Default scale.*Nope/i);

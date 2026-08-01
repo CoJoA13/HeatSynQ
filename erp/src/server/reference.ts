@@ -25,7 +25,11 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   carrier: z.object({}), terms: z.object({}),
 };
 
-const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });
+// `.trim()` mirrors customers.ts's CREATE.name — without it a name is stored exactly as typed
+// (e.g. "  Rockwell C  ") but resolveLinkNames() below trims before its lookup, so the grid could
+// display a name, submit it unchanged, and get a false "does not exist". Trimming on store makes
+// "X" and " X " collide under the partial-unique index, which is correct: they are the same name.
+const BASE = z.object({ name: z.string().trim().min(1).max(100), active: z.boolean().optional() });
 
 /** Exported so paste.ts guards on the same rule rather than re-deriving it. */
 export function assertKind(kind: string): asserts kind is ReferenceKind {
