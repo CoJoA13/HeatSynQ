@@ -910,7 +910,6 @@ Replace the tests at `reference-gl.test.ts:73` (`"revives a soft-deleted row whe
 
 And at `reference-tables.test.ts:81`, replace `"revival resets extra fields for every kind that has one, not just active"` with the same shape run across every kind that has an extra column, so the per-kind coverage is not lost:
 
-```ts
 **Corrected 2026-08-01 (Task 7 review).** The first draft of this table used `extra: {}` for `inspectionCode` and `paymentType`. That is a **weaker test than the one it replaces**: those two extras are foreign keys defaulting to `null`, so creating the first row without them makes the post-recreate `fresh: null` assertion pass trivially, whether or not a stale value would have carried forward. The removed test set real ids. Each kind must be seeded with a genuine **non-default** value, which for the two FKs means creating the referenced row first — so the table holds a `setup` callback rather than a static literal.
 
 ```ts
