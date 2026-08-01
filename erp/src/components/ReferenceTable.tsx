@@ -94,9 +94,18 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       // network failure is a genuine error, not a refusal, and fetching (and likely finding no)
       // blockers for it would misreport a real failure as "N records use it".
       if (e instanceof ApiError && e.status === 400) {
-        const list = await api<Blocker[]>(`/api/admin/reference/${kind}/${row.id}/blockers`)
-          .catch(() => [] as Blocker[]);
-        if (list.length) { setBlocked({ row, list }); setError(null); return; }
+        try {
+          const list = await api<Blocker[]>(`/api/admin/reference/${kind}/${row.id}/blockers`);
+          if (list.length) { setBlocked({ row, list }); setError(null); return; }
+        } catch (listErr) {
+          // The delete WAS correctly refused, but the follow-up fetch for WHAT is blocking it
+          // failed too (network, 500). A silently empty list here is indistinguishable from
+          // "nothing blocks it" and recreates the undiscoverable dead end this feature exists to
+          // remove — say plainly that the list is missing, not empty, so the user can retry.
+          setError(`${(e as Error).message} — the list of what's using it could not be loaded ` +
+            `(${(listErr as Error).message}). Try again.`);
+          return;
+        }
       }
       setError((e as Error).message);
     }
