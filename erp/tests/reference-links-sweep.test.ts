@@ -29,8 +29,12 @@ export function unregisteredLinks(schemaText: string, registered: Set<string>): 
   for (const [modelName, body] of models(schemaText)) {
     // A Prisma relation field looks like:
     //   glAccount  GlAccount? @relation(fields: [glAccountId], references: [id])
+    // Prisma also requires a relation *name* before `fields:` whenever a model holds two FKs
+    // to the same target model, e.g. `@relation("CustomerHierarchy", fields: [parentId], ...)`
+    // at prisma/schema.prisma:260 — the optional `(?:"[^"]*"\s*,\s*)?` group accounts for that
+    // so such an FK isn't invisible to the sweep the day it targets a reference table.
     // Capture the target model and the FK column it names.
-    for (const m of body.matchAll(/^\s*\w+\s+(\w+)\??\s+@relation\(fields:\s*\[(\w+)\]/gm)) {
+    for (const m of body.matchAll(/^\s*\w+\s+(\w+)\??\s+@relation\((?:"[^"]*"\s*,\s*)?fields:\s*\[(\w+)\]/gm)) {
       const [, targetModel, column] = m;
       if (!kinds.has(toKind(targetModel))) continue;   // not a reference table
       const key = `${toKind(modelName)}.${column}`;
@@ -54,11 +58,25 @@ REFERENCE_LINKS in src/lib/reference-links.ts. Unregistered means no delete prot
 name resolution — both fail silently. Add an entry per offender.`).toEqual([]);
   });
 
-  // Guards the sweep against passing vacuously: if the model or relation regex ever stops
-  // matching, offenders is trivially empty and this test would go green while checking nothing.
+  // Guards the sweep against passing vacuously: if the model-block regex ever stops matching,
+  // there's nothing left to scan and this would go green while checking nothing.
   it("the sweep actually parses the schema", () => {
     expect(models(SCHEMA).length).toBeGreaterThan(15);
     expect(REFERENCE_LINKS.length).toBeGreaterThanOrEqual(4);
+  });
+
+  // Exercises the relation regex itself against the real schema, not just the model-block regex
+  // above: with an empty registry, every FK the schema actually holds against a reference table
+  // must be reported. If the relation matching ever breaks (e.g. a schema reformat changes how
+  // a `@relation(...)` line is written), this drops toward [] and fails here — instead of
+  // letting the main sweep above pass while silently checking nothing.
+  it("finds every known reference FK when nothing is registered", () => {
+    expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
+      "customer.termsId -> terms",
+      "inspectionCode.defaultScaleId -> inspectionScale",
+      "paymentType.glAccountId -> glAccount",
+      "processStepCode.glAccountId -> glAccount",
+    ]);
   });
 
   it("every registered link targets a real reference kind", () => {
@@ -82,5 +100,25 @@ model Customer {
 }
 `;
     expect(unregisteredLinks(fixture, new Set())).toEqual(["customer.carrierId -> carrier"]);
+  });
+
+  // Prisma requires a relation *name* whenever a model holds two FKs to the same target model
+  // (Customer.parentId at prisma/schema.prisma:260 is the real example). The first time a model
+  // needs two references to the *same reference table*, its FK is declared exactly this way —
+  // this proves that shape is not invisible to the sweep.
+  it("names an unregistered foreign key declared with a named relation (bite-proof fixture)", () => {
+    const fixture = `
+model Material {
+  id   String @id
+}
+
+model Part {
+  id                String    @id
+  deletedAt         DateTime?
+  primaryMaterialId String?
+  primaryMaterial   Material? @relation("PrimaryMaterial", fields: [primaryMaterialId], references: [id])
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual(["part.primaryMaterialId -> material"]);
   });
 });
