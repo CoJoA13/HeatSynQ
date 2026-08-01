@@ -368,9 +368,20 @@ npx vitest run tests/picklists.test.ts
 ```
 Expected: FAIL — the route module does not exist.
 
-- [ ] **Step 4: Implement the route**
+- [ ] **Step 4: Implement the service, then the route**
 
-Create `erp/src/app/api/picklists/[kind]/route.ts`:
+**Corrected 2026-08-01 (Task 2 review).** This step originally put the Prisma queries and the
+`processStepCode` branch directly in the route handler, which violates `CLAUDE.md`'s binding
+architecture: *"Handlers stay thin and follow a fixed shape — authorize, parse, delegate.
+Business rules live in the services under `src/server/*.ts`."* Every comparable route obeys it.
+Put the logic in `erp/src/server/picklists.ts` as
+`listPickList(kind, opts?): Promise<{id;name;active}[]>` — owning kind validation (404 for an
+unknown or excluded kind), the deletedAt/active filter, the processStepCode branch and its
+narrow projection, and a loud failure if the delegate does not resolve — and reduce the route to
+authorize, parse, delegate.
+
+The route body below shows the *pre-correction* shape; keep its comments and gate, but move the
+query logic into the service:
 
 ```ts
 import { NextResponse } from "next/server";
