@@ -43,3 +43,6 @@ next-env.d.ts
 
 # nightly pg_dump backups (production)
 /backups
+
+# prisma client (generated; run `npx prisma generate`)
+/prisma/generated

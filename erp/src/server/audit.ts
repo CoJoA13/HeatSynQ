@@ -1,7 +1,7 @@
 import { prisma } from "./db";
 import { currentActor } from "./context";
 import { HttpError } from "./errors";
-import type { Prisma } from "@prisma/client";
+import type { Prisma } from "../../prisma/generated/prisma/client";
 
 export type AuditableModel =
   | "user" | "role" | "setting"

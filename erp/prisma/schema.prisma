@@ -1,16 +1,17 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client"
+  output          = "./generated/prisma"
+  // Partial (filtered) unique indexes are how a soft-deleted row stops occupying its own
+  // unique value — see handoff §5.18 and the partial @@unique blocks below. Still a preview
+  // feature in 7.9.1; the Prisma packages are pinned exactly so it cannot shift underneath us.
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
