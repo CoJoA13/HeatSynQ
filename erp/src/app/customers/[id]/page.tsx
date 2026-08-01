@@ -576,7 +576,8 @@ function CustomerDetail({ id }: { id: string }) {
                       make default
                     </button>
                   )}
-                  <button className="text-xs text-red-600"
+                  <button className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                          disabled={canEdit.disabled} title={canEdit.title}
                           onClick={() => call(`/api/customers/${id}/addresses/${a.id}`, { method: "DELETE" })}>
                     delete
                   </button>
@@ -679,7 +680,8 @@ function CustomerDetail({ id }: { id: string }) {
                          onChange={(e) => saveContactField(ct, { active: e.target.checked })} />
                 </td>
                 <td className="text-right">
-                  <button className="text-xs text-red-600"
+                  <button className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                          disabled={canEdit.disabled} title={canEdit.title}
                           onClick={() => call(`/api/customers/${id}/contacts/${ct.id}`, { method: "DELETE" })}>
                     delete
                   </button>

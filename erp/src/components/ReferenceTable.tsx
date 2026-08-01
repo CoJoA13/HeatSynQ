@@ -127,7 +127,8 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
                 </td>
               ))}
               <td className="p-2">
-                <input type="checkbox" checked={r.active} onChange={() => toggleActive(r)} />
+                <input type="checkbox" checked={r.active} disabled={canEdit.disabled} title={canEdit.title}
+                       onChange={() => toggleActive(r)} />
               </td>
               <td className="p-2 text-right">
                 <button onClick={() => setOpenHistory(openHistory === r.id ? null : r.id)}
