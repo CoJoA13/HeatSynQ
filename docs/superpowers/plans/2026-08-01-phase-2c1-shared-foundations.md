@@ -1314,7 +1314,16 @@ page for every control that mutates and would 403, and gate each one:
 | `customers/[id]/page.tsx` | Delete customer | `customers.delete` |
 | `customers/[id]/page.tsx` | add address, add contact, make default | `customers.edit` |
 | `customers/[id]/page.tsx` | **delete address, delete contact** | `customers.edit` |
-| `components/ReferenceTable.tsx` | add, delete, paste | `admin.edit` |
+| `components/ReferenceTable.tsx` | add, paste | `admin.create` |
+| `components/ReferenceTable.tsx` | delete | `admin.delete` |
+| `components/ReferenceTable.tsx` | active toggle | `admin.edit` |
+
+**Gate each control on the permission ITS OWN route enforces — verify, do not infer.** The
+first draft of this table gated every reference-grid control on `admin.edit`, but the routes
+require `admin.create` (add, paste), `admin.delete` (delete) and only `admin.edit` for the
+active toggle. A gate on the wrong key is a broken gate in both directions: it disables a
+control the user is entitled to use, and — worse — the tooltip names a permission that would
+not help, sending them to ask their admin for the wrong grant. Open each route and match it.
 
 - **Inputs render `readOnly` when the user lacks the edit permission — never hidden.** A `customers.view`-only user still has to read the name, terms and notes:
   ```tsx
