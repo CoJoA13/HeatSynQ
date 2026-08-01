@@ -73,6 +73,10 @@ describe("parts core", () => {
     await expect(asSystem(() => createPart({
       customerId: acme.id, partNumber: "X", eachWeight: 1, materialId: dead.id,
     }))).rejects.toThrow("That material does not exist");
+
+    const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "X2", eachWeight: 1 }));
+    await expect(asSystem(() => updatePart(id, { materialId: dead.id })))
+      .rejects.toThrow("That material does not exist");
   });
 
   it("switching pricePer to LOT with live breaks is refused", async () => {
