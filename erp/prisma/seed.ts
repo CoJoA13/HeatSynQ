@@ -4,6 +4,15 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import argon2 from "argon2";
 import { ALL_PERMISSIONS } from "../src/server/permissions";
 
+// Same guard, and the same reason, as src/server/db.ts: PrismaPg({ connectionString: undefined })
+// does not fail — node-postgres falls back to PGHOST/PGUSER/system defaults, so an unset
+// DATABASE_URL silently seeds whatever database happens to be reachable. It matters more here
+// than in db.ts, because this script writes: it creates the admin role and an admin user with a
+// known default password. `npx prisma db seed` would be caught by prisma.config.ts's
+// env("DATABASE_URL"), but `npm run db:seed` runs `tsx prisma/seed.ts` directly and never loads
+// that config — and it is the form every doc tells you to run.
+if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set");
+
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
 });
