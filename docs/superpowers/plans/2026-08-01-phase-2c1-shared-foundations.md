@@ -304,7 +304,7 @@ describe("pick-list route", () => {
     // The whole point: a user with customers.edit but not admin.view must still see Terms.
     // Nothing to grant means nothing to forget.
     await createReference("material", { name: "4140" });
-    const { cookie } = await signInWith([]);
+    const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/material", { headers: { cookie } }),
                           ctx("material"));
     expect(res.status).toBe(200);
@@ -314,7 +314,7 @@ describe("pick-list route", () => {
   it("serves process step codes without leaking their GL account", async () => {
     const gl = await createReference("glAccount", { name: "4010" });
     await createStepCode({ code: "HT-01", name: "Austenitize", glAccountId: gl.id });
-    const { cookie } = await signInWith([]);
+    const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/processStepCode", { headers: { cookie } }),
                           ctx("processStepCode"));
     const [row] = await res.json();
@@ -323,14 +323,14 @@ describe("pick-list route", () => {
   });
 
   it("404s glAccount — it stays admin-only", async () => {
-    const { cookie } = await signInWith([]);
+    const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/glAccount", { headers: { cookie } }),
                           ctx("glAccount"));
     expect(res.status).toBe(404);
   });
 
   it("404s an unknown kind", async () => {
-    const { cookie } = await signInWith([]);
+    const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/nope", { headers: { cookie } }), ctx("nope"));
     expect(res.status).toBe(404);
   });
@@ -342,7 +342,7 @@ describe("pick-list route", () => {
     const off = await createReference("carrier", { name: "Retired" });
     await updateReference("carrier", off.id, { active: false });
 
-    const { cookie } = await signInWith([]);
+    const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/carrier", { headers: { cookie } }), ctx("carrier"));
     expect((await res.json()).map((r: { id: string }) => r.id)).toEqual([live.id]);
 
@@ -613,7 +613,7 @@ Append to `erp/tests/reference-names.test.ts`:
     const scale = await createReference("inspectionScale", { name: "Rockwell C" });
     await createReference("inspectionCode", { name: "HRC-1", defaultScaleId: scale.id });
 
-    const { cookie } = await signInWith(["admin.view"]);
+    const cookie = await signInWith(["admin.view"]);
     const res = await exportRoute(
       new Request("http://x/api/admin/reference/inspectionCode/export", { headers: { cookie } }),
       { params: Promise.resolve({ kind: "inspectionCode" }) });
@@ -1082,7 +1082,7 @@ Append to `erp/tests/reference-blockers.test.ts`:
     const terms = await createReference("terms", { name: "Net 30" });
     await createCustomer({ code: "ACME", name: "Acme Foundry", termsId: terms.id });
 
-    const { cookie } = await signInWith(["admin.view"]);
+    const cookie = await signInWith(["admin.view"]);
     const res = await blockersExportRoute(new Request("http://x", { headers: { cookie } }),
                                           { params: Promise.resolve({ kind: "terms", id: terms.id }) });
     expect(res.headers.get("content-type")).toContain("spreadsheetml");
