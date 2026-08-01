@@ -3,6 +3,7 @@ import ExcelJS from "exceljs";
 import { truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { listReference, createReference, updateReference, deleteReference } from "@/server/reference";
+import { pasteReference } from "@/server/paste";
 import { GET as exportRoute } from "@/app/api/admin/reference/[kind]/export/route";
 
 describe("reference FK name resolution", () => {
@@ -61,5 +62,40 @@ describe("reference FK name resolution", () => {
     const values = wb.getWorksheet(1)!.getRow(2).values as unknown[];
     expect(values).toContain("Rockwell C");
     expect(values.join(" ")).not.toContain(scale.id);
+  });
+
+  it("creates by name instead of cuid", async () => {
+    await createReference("inspectionScale", { name: "Rockwell C" });
+    const { id } = await createReference("inspectionCode", { name: "HRC-1", defaultScaleName: "Rockwell C" });
+    const row = (await listReference("inspectionCode")).find((r) => r.id === id)!;
+    expect(row.defaultScaleName).toBe("Rockwell C");
+  });
+
+  it("rejects an unknown name with a field-anchored message naming the value", async () => {
+    await expect(createReference("inspectionCode", { name: "HRC-1", defaultScaleName: "Nope" }))
+      .rejects.toThrow(/Default scale.*Nope/i);
+  });
+
+  it("rejects a name that matches only a soft-deleted row", async () => {
+    const scale = await createReference("inspectionScale", { name: "Gone" });
+    await deleteReference("inspectionScale", scale.id);
+    await expect(createReference("inspectionCode", { name: "HRC-2", defaultScaleName: "Gone" }))
+      .rejects.toThrow(/Default scale/i);
+  });
+
+  it("updates by name", async () => {
+    const a = await createReference("inspectionScale", { name: "Rockwell C" });
+    await createReference("inspectionScale", { name: "Brinell" });
+    const code = await createReference("inspectionCode", { name: "HRC-1", defaultScaleId: a.id });
+    await updateReference("inspectionCode", code.id, { defaultScaleName: "Brinell" });
+    const row = (await listReference("inspectionCode")).find((r) => r.id === code.id)!;
+    expect(row.defaultScaleName).toBe("Brinell");
+  });
+
+  it("pastes by name, reporting unknown names per row without discarding good rows", async () => {
+    await createReference("inspectionScale", { name: "Rockwell C" });
+    const result = await pasteReference("inspectionCode", "HRC-1\tRockwell C\nHRC-2\tNope\nHRC-3\tRockwell C");
+    expect(result.created).toBe(2);
+    expect(result.errors).toEqual([{ row: 2, message: expect.stringMatching(/Default scale.*Nope/i) }]);
   });
 });

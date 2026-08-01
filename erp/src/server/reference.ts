@@ -11,8 +11,14 @@ export type ReferenceRow = { id: string; name: string; active: boolean } & Recor
 /** Fields each kind accepts beyond `name` and `active`. */
 const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   glAccount:       z.object({ description: z.string().max(200).optional() }),
-  inspectionCode:  z.object({ defaultScaleId: z.string().nullable().optional() }),
-  paymentType:     z.object({ glAccountId: z.string().nullable().optional() }),
+  inspectionCode:  z.object({
+    defaultScaleId: z.string().nullable().optional(),
+    defaultScaleName: z.string().nullable().optional(),
+  }),
+  paymentType:     z.object({
+    glAccountId: z.string().nullable().optional(),
+    glAccountName: z.string().nullable().optional(),
+  }),
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
@@ -79,12 +85,42 @@ export async function listReference(
   return rows;
 }
 
+/** Turns `<column>Name` input into `<column>` (an id) by looking the name up among LIVE rows of
+ *  the target kind.
+ *
+ *  The raw id form stays accepted too. Not for the UI — the grid's select submits the name
+ *  (Task 4 Step 6) — but because existing callers and tests already pass `defaultScaleId` /
+ *  `glAccountId` directly, and an id is unambiguous where a name needs resolving. Removing it
+ *  would be a breaking API change this task has no reason to make.
+ *
+ *  Returns a shallow copy — the caller's object is not mutated. */
+async function resolveLinkNames(kind: ReferenceKind, input: Record<string, unknown>) {
+  const data = { ...input };
+  for (const link of linksFrom(kind)) {
+    const key = nameKey(link.column);
+    if (!(key in data)) continue;
+    const raw = data[key];
+    delete data[key];
+    if (raw === null || raw === "") { data[link.column] = null; continue; }
+    const name = String(raw).trim();
+    // findFirst, not findUnique: `name` is unique only among live rows, so findUnique would
+    // compile and return a soft-deleted row (tests/partial-unique-sweep.test.ts bans it).
+    const target = await delegate(link.targetKind).findFirst({
+      where: { name, deletedAt: null }, select: { id: true },
+    });
+    if (!target) throw new HttpError(400, `${link.label} "${name}" does not exist`);
+    data[link.column] = target.id;
+  }
+  return data;
+}
+
 export async function createReference(kind: string, input: Record<string, unknown>): Promise<{ id: string }> {
   assertKind(kind);
   // EXTRA_SCHEMAS[kind] widens to the Record's general value type once indexed by a non-literal
   // key, which in turn widens `name` on the merged shape's inferred type — cast back to what we
   // know BASE guarantees so `data.name` below type-checks as `string`, not `unknown`.
-  const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict().parse(input) as z.infer<typeof BASE> & Record<string, unknown>;
+  const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict()
+    .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
 
   // A soft-deleted row still occupies its unique `name`, but is invisible to every list — so a
   // live duplicate is the only thing that must 400 here. `name` is unique only among live rows
@@ -106,7 +142,8 @@ export async function createReference(kind: string, input: Record<string, unknow
 
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
-  const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict().parse(input);
+  const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
+    .parse(await resolveLinkNames(kind, input));
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
     auditedUpdate(kind, id, () => delegate(kind).update({ where: { id }, data })));
 }

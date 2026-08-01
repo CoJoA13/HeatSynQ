@@ -4,6 +4,7 @@ import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
+import { linksFrom, nameKey } from "@/lib/reference-links";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
 
@@ -16,11 +17,37 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [pasting, setPasting] = useState(false);
   const labels = REFERENCE_LABELS[kind];
   const extras = REFERENCE_EXTRA_FIELDS[kind];
+  const refLinks = linksFrom(kind);
+  const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({});
 
   const load = useCallback(async () => {
     setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
   }, [kind, showInactive]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+
+  useEffect(() => {
+    if (!refLinks.length) return;
+    Promise.all(refLinks.map(async (l) => {
+      // /api/picklists/<kind> deliberately 404s for glAccount — it stays off the route every
+      // signed-in user can reach, but paymentType.glAccountId IS a valid FK target here. This
+      // grid is itself an admin.view-gated screen (its own row listing above already calls
+      // /api/admin/reference/${kind}), so every ref-link's options are fetched from that same
+      // admin endpoint rather than the narrower picklist route — one endpoint choice, no
+      // per-link special-casing, and it sidesteps the 404 without widening PICKLIST_KINDS.
+      // includeInactive so an already-assigned inactive target still renders by name.
+      const opts = await api<{ id: string; name: string }[]>(
+        `/api/admin/reference/${l.targetKind}?includeInactive=1`);
+      return [l.column, opts] as const;
+    }))
+      .then((pairs) => setRefOptions(Object.fromEntries(pairs)))
+      // No .catch(() => {}) here: a failed fetch that renders an empty dropdown is
+      // indistinguishable from a shop that has configured nothing. Say so instead.
+      .catch((e) => setError(`Could not load pick lists: ${(e as Error).message}`));
+    // refLinks is recomputed every render (a fresh array from linksFrom), so it deliberately
+    // isn't a dependency here — that would re-run this effect on every render instead of once
+    // per kind change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
 
   async function add() {
     try {
@@ -74,7 +101,11 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           {rows.map((r) => (
             <tr key={r.id} className="border-t">
               <td className="p-2">{r.name}</td>
-              {extras.map((f) => <td key={f.key} className="p-2">{String(r[f.key] ?? "")}</td>)}
+              {extras.map((f) => (
+                <td key={f.key} className="p-2">
+                  {String(r[f.kind === "ref" ? nameKey(f.key) : f.key] ?? "")}
+                </td>
+              ))}
               <td className="p-2">
                 <input type="checkbox" checked={r.active} onChange={() => toggleActive(r)} />
               </td>
@@ -93,8 +124,17 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
             </td>
             {extras.map((f) => (
               <td key={f.key} className="p-2">
-                <input value={draft[f.key] ?? ""} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
-                       placeholder={f.label} className="w-full rounded border px-2 py-1" />
+                {f.kind === "ref" ? (
+                  <select value={draft[nameKey(f.key)] ?? ""}
+                          onChange={(e) => setDraft({ ...draft, [nameKey(f.key)]: e.target.value })}
+                          className="w-full rounded border px-2 py-1">
+                    <option value="">—</option>
+                    {(refOptions[f.key] ?? []).map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}
+                  </select>
+                ) : (
+                  <input value={draft[f.key] ?? ""} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                         placeholder={f.label} className="w-full rounded border px-2 py-1" />
+                )}
               </td>
             ))}
             <td />
