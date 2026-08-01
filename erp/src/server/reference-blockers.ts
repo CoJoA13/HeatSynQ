@@ -23,6 +23,10 @@ type Db = Prisma.TransactionClient;
  *  empty, and a stale cache on a data-integrity guard is worse than a query. */
 export async function findBlockers(kind: ReferenceKind, id: string, db: Db = prisma): Promise<Blocker[]> {
   const out: Blocker[] = [];
+  // Declared once, above the links loop: a part reachable through two links of one kind (e.g.
+  // two PartInspection rows on the same code, or a part linked via both an inspection and a
+  // specification) must still list once.
+  const seen = new Set<string>();
   for (const link of linksTargeting(kind)) {
     const delegate = db[link.model] as unknown as {
       findMany: (a: object) => Promise<Record<string, unknown>[]>;
@@ -30,20 +34,25 @@ export async function findBlockers(kind: ReferenceKind, id: string, db: Db = pri
     const rows = await delegate.findMany({
       where: { [link.column]: id, deletedAt: null },
       orderBy: { createdAt: "asc" },
+      ...(link.include ? { include: link.include } : {}),
     });
     for (const row of rows) {
-      const rowId = String(row.id);
       // Formatting is the registry's job, not this function's — see `displayName` on
       // ReferenceLink. That is what lets 2C-2 add a Part link (identified by
       // (customer, partNumber), never by name alone) by editing one registry entry, with no
-      // change here.
+      // change here. `blockerId` lets a child row that presents its parent (partInspection ->
+      // part) report the parent's id instead of its own.
+      const blockerId = link.blockerId ? link.blockerId(row) : String(row.id);
+      const key = `${link.entityLabel}:${blockerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const label = link.displayName?.(row)
-        ?? (typeof row.name === "string" && row.name ? row.name : rowId);
+        ?? (typeof row.name === "string" && row.name ? row.name : blockerId);
       out.push({
         entityLabel: link.entityLabel,
         name: label,
-        id: rowId,
-        href: link.detailPath ? link.detailPath(rowId) : null,
+        id: blockerId,
+        href: link.detailPath ? link.detailPath(blockerId) : null,
       });
     }
   }

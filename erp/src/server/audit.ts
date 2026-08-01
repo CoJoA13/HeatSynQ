@@ -7,7 +7,8 @@ export type AuditableModel =
   | "user" | "role" | "setting"
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
-  | "processStepCode" | "customer" | "customerAddress" | "customerContact";
+  | "processStepCode" | "customer" | "customerAddress" | "customerContact"
+  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -38,6 +39,15 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   customer: undefined,
   customerAddress: undefined,
   customerContact: undefined,
+  // children are audited as their own models
+  part: undefined,
+  // history reads "ASTM A536", not a cuid
+  partSpecification: { specification: true },
+  partInspection: { inspectionCode: true, scale: true },
+  partPriceBreak: undefined,
+  partFieldDef: undefined,
+  // history names the field the value belongs to
+  partFieldValue: { field: true },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
