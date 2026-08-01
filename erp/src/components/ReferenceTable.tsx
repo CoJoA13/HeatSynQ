@@ -5,6 +5,7 @@ import { HistoryPanel } from "@/components/HistoryPanel";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
 import { linksFrom, nameKey } from "@/lib/reference-links";
+import { gate } from "@/lib/permission-ui";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
 type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
@@ -17,15 +18,21 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [error, setError] = useState<string | null>(null);
   const [pasting, setPasting] = useState(false);
   const [blocked, setBlocked] = useState<{ row: Row; list: Blocker[] } | null>(null);
+  const [perms, setPerms] = useState<string[] | undefined>(undefined);
   const labels = REFERENCE_LABELS[kind];
   const extras = REFERENCE_EXTRA_FIELDS[kind];
   const refLinks = linksFrom(kind);
   const [refOptions, setRefOptions] = useState<Record<string, { id: string; name: string }[]>>({});
+  const canEdit = gate(perms, "admin.edit");
 
   const load = useCallback(async () => {
     setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
   }, [kind, showInactive]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+  useEffect(() => {
+    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions))
+      .catch((e) => setError((e as Error).message));
+  }, []);
 
   // A stale blocker list from another kind's row must not linger on screen once the admin
   // switches tables.
@@ -97,7 +104,8 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
            className="text-sm text-blue-700 underline">
           Export to Excel
         </a>
-        <button onClick={() => setPasting((p) => !p)} className="text-sm text-blue-700 underline">
+        <button onClick={() => setPasting((p) => !p)} disabled={canEdit.disabled} title={canEdit.title}
+                className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           {pasting ? "Hide paste entry" : "Paste from spreadsheet"}
         </button>
       </div>
@@ -124,7 +132,10 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
               <td className="p-2 text-right">
                 <button onClick={() => setOpenHistory(openHistory === r.id ? null : r.id)}
                         className="mr-3 text-xs text-slate-600">history</button>
-                <button onClick={() => remove(r)} className="text-xs text-red-600">delete</button>
+                <button onClick={() => remove(r)} disabled={canEdit.disabled} title={canEdit.title}
+                        className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
+                  delete
+                </button>
                 {openHistory === r.id && <HistoryPanel entity={kind} entityId={r.id} />}
               </td>
             </tr>
@@ -151,7 +162,10 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
             ))}
             <td />
             <td className="p-2 text-right">
-              <button onClick={add} className="rounded bg-slate-800 px-3 py-1 text-white">Add</button>
+              <button onClick={add} disabled={canEdit.disabled} title={canEdit.title}
+                      className="rounded bg-slate-800 px-3 py-1 text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+                Add
+              </button>
             </td>
           </tr>
         </tbody>

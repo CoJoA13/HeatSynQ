@@ -4,6 +4,7 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { PasteGrid } from "@/components/PasteGrid";
 import { CUSTOMER_PASTE_COLUMNS } from "@/lib/customer-constants";
+import { gate } from "@/lib/permission-ui";
 
 type Customer = {
   id: string; code: string; name: string; parentCode: string | null;
@@ -17,6 +18,7 @@ export default function CustomersPage() {
   const [pasting, setPasting] = useState(false);
   const [draft, setDraft] = useState({ code: "", name: "" });
   const [error, setError] = useState<string | null>(null);
+  const [perms, setPerms] = useState<string[] | undefined>(undefined);
 
   const query = `${showInactive ? "includeInactive=1&" : ""}${search ? `search=${encodeURIComponent(search)}` : ""}`;
 
@@ -24,6 +26,12 @@ export default function CustomersPage() {
     setRows(await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`));
   }, [query]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+  useEffect(() => {
+    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions))
+      .catch((e) => setError((e as Error).message));
+  }, []);
+
+  const canCreate = gate(perms, "customers.create");
 
   async function add() {
     try {
@@ -47,7 +55,8 @@ export default function CustomersPage() {
         <a href={`/api/customers/export${query ? `?${query}` : ""}`} className="text-sm text-blue-700 underline">
           Export to Excel
         </a>
-        <button onClick={() => setPasting((p) => !p)} className="text-sm text-blue-700 underline">
+        <button onClick={() => setPasting((p) => !p)} disabled={canCreate.disabled} title={canCreate.title}
+                className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
           {pasting ? "Hide paste entry" : "Paste from spreadsheet"}
         </button>
       </div>
@@ -85,7 +94,10 @@ export default function CustomersPage() {
                      placeholder="Name" className="w-full rounded border px-2 py-1" />
             </td>
             <td className="p-2 text-right">
-              <button onClick={add} className="rounded bg-slate-800 px-3 py-1 text-white">Add</button>
+              <button onClick={add} disabled={canCreate.disabled} title={canCreate.title}
+                      className="rounded bg-slate-800 px-3 py-1 text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+                Add
+              </button>
             </td>
           </tr>
         </tbody>
