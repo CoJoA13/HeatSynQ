@@ -163,7 +163,13 @@ export async function updateAddress(addressId: string, input: Record<string, unk
     if (data.isDefault === true) await demoteAllIn(tx, current.customerId, newKind);
     await withDbErrors({ entity: "Address" }, () =>
       auditedUpdate("customerAddress", addressId, async () => {
-        const row = await tx.customerAddress.update({ where: { id: addressId }, data });
+        // Conditional on the row still being live, for the reason spelled out on updateContact:
+        // the findFirst pre-check above is a separate statement, so a concurrent delete could
+        // otherwise land between the two and leave this editing a soft-deleted row.
+        const { count } = await tx.customerAddress.updateMany({
+          where: { id: addressId, deletedAt: null }, data,
+        });
+        if (count === 0) throw new HttpError(404, "Address not found");
         // Normalize the address's kind post-update, and — if kind changed — the kind it left
         // behind: the old kind can be short a default (its default just moved away) exactly
         // like a delete would leave it, and the new kind can suddenly have two if the moved row
@@ -176,7 +182,6 @@ export async function updateAddress(addressId: string, input: Record<string, unk
         if (data.kind && data.kind !== oldKind) {
           await normalizeDefaultsIn(tx, current.customerId, oldKind);
         }
-        return row;
       }, { tx }));
   });
 }

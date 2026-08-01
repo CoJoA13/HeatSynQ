@@ -306,3 +306,30 @@ describe("concurrent child deletion", () => {
     }
   });
 });
+
+// Round-8 review: the update path has the same check/write window the delete path had. The
+// service pre-checks the live row with findFirst, then updates by id unconditionally, so a
+// DELETE committing in between left the PUT modifying a soft-deleted row and appending an
+// "update" entry AFTER that row's "delete" entry — while reporting success to the user.
+describe("an edit racing a delete", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("never records an update after the delete of the same row", async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = (await createCustomer({ code: `C${i}`, name: `C${i}` })).id;
+      const { id: contactId } = await addContact(id, { name: "Pat" });
+      const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock" });
+
+      await Promise.allSettled([updateContact(contactId, { phone: "555-1234" }), deleteContact(contactId)]);
+      await Promise.allSettled([updateAddress(addressId, { city: "Erie" }), deleteAddress(addressId)]);
+
+      for (const [model, rowId] of [["customerContact", contactId], ["customerAddress", addressId]] as const) {
+        // readAudit is newest-first; oldest-first is easier to reason about here.
+        const actions = (await readAudit(model, rowId)).map((e) => e.action).reverse();
+        const deleteAt = actions.indexOf("delete");
+        expect(deleteAt, `${model} was never deleted on attempt ${i}`).toBeGreaterThanOrEqual(0);
+        expect(actions.slice(deleteAt + 1), `${model} audited after its delete on attempt ${i}`).toEqual([]);
+      }
+    }
+  });
+});

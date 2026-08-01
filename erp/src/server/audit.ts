@@ -189,8 +189,19 @@ export async function auditedSoftDelete(
   await write({ entity: model, entityId: id, action: "delete", before, reason }, db);
 }
 
+/**
+ * `at` is millisecond-precision, so two entries written in the same millisecond — an edit and a
+ * delete racing each other, or a cascade writing several rows at once — tie on it, and ordering
+ * by `at` alone leaves their relative order up to the planner. That is what HistoryPanel renders,
+ * so a tie could show a record's delete above an update that preceded it. `id` breaks the tie
+ * deterministically: cuid is timestamp-prefixed and counter-sequenced, so within a process it
+ * also breaks it in the right direction.
+ */
 export function readAudit(entity: string, entityId: string) {
-  return prisma.auditLog.findMany({ where: { entity, entityId }, orderBy: { at: "desc" } });
+  return prisma.auditLog.findMany({
+    where: { entity, entityId },
+    orderBy: [{ at: "desc" }, { id: "desc" }],
+  });
 }
 
 export function searchAudit(filter: { entity?: string; actorName?: string; from?: Date; to?: Date; limit?: number }) {

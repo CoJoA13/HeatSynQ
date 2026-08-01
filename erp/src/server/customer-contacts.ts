@@ -55,13 +55,35 @@ export async function updateContact(contactId: string, input: Record<string, unk
   const data = EDIT.parse(input);
   const current = await prisma.customerContact.findFirst({ where: { id: contactId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Contact not found");
+  // The findFirst above gives the ordinary "already gone" case a well-labelled 404, but it is a
+  // separate statement from the write: a DELETE committing in between would otherwise leave this
+  // update modifying a soft-deleted row and appending an "update" entry after that row's
+  // "delete" entry, while reporting success. `updateMany` with `deletedAt: null` in the WHERE
+  // makes claiming the row and writing it one atomic statement, and throwing from inside
+  // auditedUpdate's callback means the audit entry is never written when the row was lost.
+  //
+  // The mutation and its audit row also share one transaction (the gap handoff §6 records as
+  // half-closed). That is what keeps the *history* honest as well as the data: with two
+  // autocommit statements, a delete committing between this update's write and its audit insert
+  // still produced a history reading "updated after it was deleted", even though the update had
+  // legitimately claimed a live row. Inside a transaction the row lock the update takes holds
+  // until the audit row is written, so a concurrent delete waits and the entries land in the
+  // order the mutations actually happened.
   await withDbErrors({ entity: "Contact" }, () =>
-    auditedUpdate("customerContact", contactId, () =>
-      prisma.customerContact.update({ where: { id: contactId }, data })));
+    prisma.$transaction((tx) =>
+      auditedUpdate("customerContact", contactId, async () => {
+        const { count } = await tx.customerContact.updateMany({
+          where: { id: contactId, deletedAt: null }, data,
+        });
+        if (count === 0) throw new HttpError(404, "Contact not found");
+      }, { tx })));
 }
 
 export async function deleteContact(contactId: string): Promise<void> {
   const current = await prisma.customerContact.findFirst({ where: { id: contactId, deletedAt: null } });
   if (!current) throw new HttpError(404, "Contact not found");
-  await withDbErrors({ entity: "Contact" }, () => auditedSoftDelete("customerContact", contactId));
+  // In a transaction for the same reason updateContact is: the soft-delete write and its audit
+  // row must commit together, or a concurrent edit can slot its own audit entry between them.
+  await withDbErrors({ entity: "Contact" }, () =>
+    prisma.$transaction((tx) => auditedSoftDelete("customerContact", contactId, undefined, tx)));
 }

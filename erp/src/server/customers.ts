@@ -221,6 +221,21 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
   return { id: row.id };
 }
 
+/**
+ * Writes the patch only if the row is still live, in one statement. The callers' `findFirst`
+ * pre-check gives the ordinary "already deleted" case a well-labelled 404, but it is a separate
+ * statement from the write — a DELETE committing in between would otherwise leave the update
+ * modifying a soft-deleted row and appending an "update" audit entry after that row's "delete"
+ * entry, while reporting success. Throwing from inside auditedUpdate's callback means no audit
+ * entry is written for an update that never claimed the row.
+ */
+async function claimLiveAndUpdate(
+  db: Db, id: string, data: Prisma.CustomerUpdateManyMutationInput,
+): Promise<void> {
+  const { count } = await db.customer.updateMany({ where: { id, deletedAt: null }, data });
+  if (count === 0) throw new HttpError(404, "Customer not found");
+}
+
 export async function updateCustomer(id: string, input: Record<string, unknown>): Promise<void> {
   const data = CREATE.partial().strict().parse(input);
   // customer-addresses.ts and customer-contacts.ts both guard their update path on
@@ -247,13 +262,16 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
     await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
       prisma.$transaction(async (tx) => {
         await assertNoCycle(id, data.parentId, tx);
-        await auditedUpdate("customer", id, () => tx.customer.update({ where: { id }, data }), { tx });
+        await auditedUpdate("customer", id, () => claimLiveAndUpdate(tx, id, data), { tx });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return;
   }
 
+  // In a transaction so the write and its audit row commit together — see updateContact for why
+  // that ordering matters when an edit races a delete.
   await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-    auditedUpdate("customer", id, () => prisma.customer.update({ where: { id }, data })));
+    prisma.$transaction((tx) =>
+      auditedUpdate("customer", id, () => claimLiveAndUpdate(tx, id, data), { tx })));
 }
 
 /**
