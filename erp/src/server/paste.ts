@@ -1,6 +1,7 @@
 import { createReference, assertKind } from "./reference";
 import { readableMessage } from "./error-message";
 import { REFERENCE_EXTRA_FIELDS } from "../lib/reference-constants";
+import { nameKey } from "../lib/reference-links";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 
 export type PasteResult = { created: number; errors: { row: number; message: string }[] };
@@ -17,7 +18,7 @@ export type PasteResult = { created: number; errors: { row: number; message: str
  */
 export async function pasteReference(kind: string, text: string): Promise<PasteResult> {
   assertKind(kind);
-  const columns = ["name", ...REFERENCE_EXTRA_FIELDS[kind].map((f) => f.key)];
+  const columns = ["name", ...REFERENCE_EXTRA_FIELDS[kind].map((f) => (f.kind === "ref" ? nameKey(f.key) : f.key))];
   const { records, error } = parseRecords(text);
 
   const errors: PasteResult["errors"] = [];

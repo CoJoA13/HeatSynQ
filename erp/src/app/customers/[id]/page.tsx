@@ -4,6 +4,8 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
+import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 type Customer = {
   id: string; code: string; name: string; parentId: string | null; parentCode: string | null;
@@ -77,6 +79,26 @@ function CustomerDetail({ id }: { id: string }) {
   const [addingAddress, setAddingAddress] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // F4: a failed Terms or parent-options fetch used to report into `error`, the same state
+  // `load()` resets to null on every successful customer refresh (below, and again after save()/
+  // saveParent()/call() succeed). That refresh runs far more often than these two effects, so the
+  // failure was wiped almost immediately while the corresponding options array stayed empty — and
+  // the file's own comment on the Terms/parent <select>s explains why an empty options array is
+  // dangerous, not just cosmetic: a controlled <select> whose value matches no <option> silently
+  // renders "— none —", misrepresenting stored data and risking overwriting a real (if inactive)
+  // Terms or parent on the next interaction. `optionsError` is its own state specifically so that
+  // no unrelated refresh can clear it out from under the user; it is rendered as its own banner,
+  // separate from `error`/`permsError` below, and reported per-source rather than clobbering an
+  // earlier failure if both fetches happen to fail.
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const addOptionsError = useCallback((message: string) => {
+    setOptionsError((cur) => (cur ? `${cur} ${message}` : message));
+  }, []);
+  // Permissions don't change while this page is mounted, so one fetch is enough (usePermissions,
+  // src/lib/use-permissions.ts — shared with customers/page.tsx and ReferenceTable.tsx). A
+  // failure surfaces through permsError, folded into the same error banner below, instead of
+  // leaving every control silently stuck disabled.
+  const { permissions: perms, error: permsError } = usePermissions();
 
   const load = useCallback(async () => {
     const [cust, addr, cont] = await Promise.all([
@@ -87,9 +109,13 @@ function CustomerDetail({ id }: { id: string }) {
     setC(cust); setAddresses(addr); setContacts(cont); setError(null);
   }, [id, showInactiveAddresses, showInactiveContacts]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+  const canDelete = gate(perms, "customers.delete");
+  const canEdit = gate(perms, "customers.edit");
   // Terms options are global reference data, not per-customer — fetched once, independent of
-  // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
-  // an empty list rather than a broken page: the select still renders with a blank option.
+  // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
+  // customers.edit but not admin.view must still see Terms options, and a failure here is
+  // reported through `optionsError` (F4) rather than swallowed into a silent empty dropdown that
+  // would look exactly like a shop with no terms configured.
   //
   // includeInactive=1 for the same reason the parent selector uses it (R3, below): marking a
   // Terms record inactive hides it from the default reference list but does NOT clear it from
@@ -102,8 +128,9 @@ function CustomerDetail({ id }: { id: string }) {
   // assertTermsExists in src/server/customers.ts rejects them on both create and update — so
   // this list only has to account for the inactive case.)
   useEffect(() => {
-    api<Term[]>("/api/admin/reference/terms?includeInactive=1").then(setTerms).catch(() => {});
-  }, []);
+    api<Term[]>("/api/picklists/terms?includeInactive=1").then(setTerms)
+      .catch((e) => addOptionsError(`Could not load terms: ${(e as Error).message}`));
+  }, [addOptionsError]);
   // Parent-selector options: every OTHER non-deleted customer, fetched the same way terms are —
   // once, independent of `load()`, gated on the same customers.view permission that got the
   // user onto this page in the first place, so there's no permission mismatch to worry about
@@ -119,9 +146,15 @@ function CustomerDetail({ id }: { id: string }) {
   // interaction with the select. Fetching every non-deleted customer guarantees the assigned
   // parent is always present as an option; inactive ones are labelled at render time so they
   // aren't mistaken for active customers.
+  //
+  // A failed fetch produces exactly the "— none —" misread described above (the empty options
+  // list has no entry matching c.parentId), and saveParent("") on the next interaction would
+  // then write parentId: null over a real division link — so, like Terms above, the failure is
+  // reported through `optionsError` (F4) rather than swallowed into a silent empty list.
   useEffect(() => {
-    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch(() => {});
-  }, []);
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers)
+      .catch((e) => addOptionsError(`Could not load parent options: ${(e as Error).message}`));
+  }, [addOptionsError]);
 
   // Per-key request queue: guards against optimistic saves committing out of order. Without
   // this, two overlapping PUTs for the same field (an ordinary double-click on a checkbox before
@@ -343,7 +376,7 @@ function CustomerDetail({ id }: { id: string }) {
     });
   }
 
-  if (!c) return <div className="p-6">{error ?? "Loading…"}</div>;
+  if (!c) return <div className="p-6">{error ?? permsError ?? optionsError ?? "Loading…"}</div>;
 
   return (
     <div className="p-6">
@@ -356,43 +389,57 @@ function CustomerDetail({ id }: { id: string }) {
           input reverts to server truth and the error banner explains why, same as every other
           field on this page (Fix C2). */}
       <div className="mb-1 flex flex-wrap items-baseline gap-2">
-        <input value={c.code} aria-label="Customer code" onFocus={noteFocus}
+        <input value={c.code} aria-label="Customer code" onFocus={noteFocus} readOnly={!canEdit.allowed}
                onChange={(e) => setC({ ...c, code: e.target.value })}
                onBlur={(e) => onBlurSave(e, { trim: true }, (code) => void save({ code }))}
-               className="w-40 rounded border px-2 py-1 font-mono text-xl font-semibold" />
+               className="w-40 rounded border px-2 py-1 font-mono text-xl font-semibold read-only:bg-slate-50" />
         <span className="text-2xl font-semibold text-slate-400">—</span>
-        <input value={c.name} aria-label="Customer name" onFocus={noteFocus}
+        <input value={c.name} aria-label="Customer name" onFocus={noteFocus} readOnly={!canEdit.allowed}
                onChange={(e) => setC({ ...c, name: e.target.value })}
                onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void save({ name }))}
-               className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold" />
-        <button onClick={removeCustomer} className="ml-auto text-sm text-red-600">
+               className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold read-only:bg-slate-50" />
+        <button onClick={removeCustomer} disabled={canDelete.disabled} title={canDelete.title}
+                className="ml-auto text-sm text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
           Delete customer
         </button>
       </div>
       {c.parentCode && <p className="mb-3 text-sm text-slate-500">Division of {c.parentCode}</p>}
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
+      {/* F4: its own banner, its own state — a customer refresh (load(), which resets `error` to
+          null on every success) must not be able to silently clear a report that the Terms or
+          parent options failed to load, since the Terms/Parent <select>s below stay empty (and
+          silently misrepresent stored data) until the page is reloaded. */}
+      {optionsError && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{optionsError}</p>
+      )}
 
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Commercial</h2>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={c.creditHold} onChange={(e) => save({ creditHold: e.target.checked })} />
+            <input type="checkbox" checked={c.creditHold} disabled={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => save({ creditHold: e.target.checked })} />
             Credit hold
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={c.taxable} onChange={(e) => save({ taxable: e.target.checked })} />
+            <input type="checkbox" checked={c.taxable} disabled={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => save({ taxable: e.target.checked })} />
             Taxable
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={c.cod} onChange={(e) => save({ cod: e.target.checked })} />
+            <input type="checkbox" checked={c.cod} disabled={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => save({ cod: e.target.checked })} />
             COD
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={c.active} onChange={(e) => save({ active: e.target.checked })} />
+            <input type="checkbox" checked={c.active} disabled={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => save({ active: e.target.checked })} />
             Active
           </label>
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={c.surchargeOptOut}
+            <input type="checkbox" checked={c.surchargeOptOut} disabled={!canEdit.allowed} title={canEdit.title}
                    onChange={(e) => save({ surchargeOptOut: e.target.checked })} />
             Surcharge opt-out
           </label>
@@ -400,7 +447,8 @@ function CustomerDetail({ id }: { id: string }) {
         <div className="mt-3 grid grid-cols-2 gap-3">
           <label className="block text-sm">
             Terms
-            <select value={c.termsId ?? ""} onChange={(e) => save({ termsId: e.target.value || null })}
+            <select value={c.termsId ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => save({ termsId: e.target.value || null })}
                     className="ml-2 rounded border px-2 py-1">
               <option value="">—</option>
               {terms.map((t) => (
@@ -414,7 +462,8 @@ function CustomerDetail({ id }: { id: string }) {
                 list; everything else the service rejects (self-parent, cycle, deleted parent)
                 is surfaced through saveParent()'s existing error path rather than re-checked
                 here. */}
-            <select value={c.parentId ?? ""} onChange={(e) => void saveParent(e.target.value)}
+            <select value={c.parentId ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => void saveParent(e.target.value)}
                     className="ml-2 rounded border px-2 py-1">
               <option value="">— none —</option>
               {customers.filter((x) => x.id !== id).map((x) => (
@@ -426,24 +475,24 @@ function CustomerDetail({ id }: { id: string }) {
           </label>
           <label className="block text-sm">
             Default PO
-            <input value={c.defaultPo} onFocus={noteFocus}
+            <input value={c.defaultPo} onFocus={noteFocus} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, defaultPo: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (defaultPo) => void save({ defaultPo }))}
-                   className="ml-2 rounded border px-2 py-1" />
+                   className="ml-2 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
             Credit limit
-            <input value={c.creditLimit ?? ""} inputMode="decimal" onFocus={noteFocus}
+            <input value={c.creditLimit ?? ""} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, creditLimit: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ creditLimit: v === "" ? null : v }))}
-                   className="ml-2 w-32 rounded border px-2 py-1" />
+                   className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
             Finance charge rate
-            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocus}
+            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
-                   className="ml-2 w-32 rounded border px-2 py-1" />
+                   className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
         </div>
       </section>
@@ -454,10 +503,10 @@ function CustomerDetail({ id }: { id: string }) {
           .map(([key, label]) => (
             <label key={key} className="mb-2 block text-sm">
               {label}
-              <textarea value={c[key]} rows={2} onFocus={noteFocus}
+              <textarea value={c[key]} rows={2} onFocus={noteFocus} readOnly={!canEdit.allowed}
                         onChange={(e) => setC({ ...c, [key]: e.target.value })}
                         onBlur={(e) => onBlurSave(e, {}, (v) => void save({ [key]: v }))}
-                        className="mt-1 w-full rounded border p-2" />
+                        className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
             </label>
           ))}
       </section>
@@ -489,7 +538,8 @@ function CustomerDetail({ id }: { id: string }) {
                     moved default neither duplicates nor disappears. Same optimistic
                     onChange-saves shape as the scalar cells beside it. */}
                 <td className="py-1">
-                  <select value={a.kind} className="rounded border px-1 py-0.5"
+                  <select value={a.kind} className="rounded border px-1 py-0.5" disabled={!canEdit.allowed}
+                          title={canEdit.title}
                           onChange={(e) => void saveAddressKind(a, e.target.value as AddressKind)}>
                     {ADDRESS_KINDS.map((k) => (
                       <option key={k} value={k}>{ADDRESS_KIND_LABELS[k]}</option>
@@ -497,31 +547,36 @@ function CustomerDetail({ id }: { id: string }) {
                   </select>
                 </td>
                 <td>
-                  <input value={a.name} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={a.name} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, name: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (name) => void saveAddressField(a, { name }))} />
                 </td>
                 <td>
-                  <input value={a.street} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={a.street} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, street: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (street) => void saveAddressField(a, { street }))} />
                 </td>
                 <td>
-                  <input value={a.city} className="w-20 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={a.city} className="w-20 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, city: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (city) => void saveAddressField(a, { city }))} />
                 </td>
                 <td>
-                  <input value={a.state} className="w-12 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={a.state} className="w-12 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, state: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (state) => void saveAddressField(a, { state }))} />
                 </td>
                 <td>
-                  <input value={a.zip} className="w-16 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={a.zip} className="w-16 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, zip: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (zip) => void saveAddressField(a, { zip }))} />
@@ -532,6 +587,7 @@ function CustomerDetail({ id }: { id: string }) {
                     optimistic patch. */}
                 <td className="px-1 text-center">
                   <input type="checkbox" checked={a.active} aria-label={`Address ${a.name} active`}
+                         disabled={!canEdit.allowed} title={canEdit.title}
                          onChange={async (e) => {
                            if (await saveAddressField(a, { active: e.target.checked })) {
                              await load().catch(() => {});
@@ -541,13 +597,15 @@ function CustomerDetail({ id }: { id: string }) {
                 <td>{a.isDefault && <span className="rounded bg-slate-200 px-1 text-xs">default</span>}</td>
                 <td className="text-right">
                   {!a.isDefault && (
-                    <button className="mr-3 text-xs text-slate-600"
+                    <button className="mr-3 text-xs text-slate-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                            disabled={canEdit.disabled} title={canEdit.title}
                             onClick={() => call(`/api/customers/${id}/addresses/${a.id}`,
                               { method: "PUT", body: JSON.stringify({ isDefault: true }) })}>
                       make default
                     </button>
                   )}
-                  <button className="text-xs text-red-600"
+                  <button className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                          disabled={canEdit.disabled} title={canEdit.title}
                           onClick={() => call(`/api/customers/${id}/addresses/${a.id}`, { method: "DELETE" })}>
                     delete
                   </button>
@@ -572,7 +630,8 @@ function CustomerDetail({ id }: { id: string }) {
           <input value={addrDraft.zip} placeholder="Zip" className="w-20 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setAddrDraft({ ...addrDraft, zip: e.target.value })} />
           <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:opacity-50"
-                  disabled={addingAddress}
+                  disabled={addingAddress || canEdit.disabled}
+                  title={canEdit.disabled ? canEdit.title : undefined}
                   // F6: the draft is cleared only once the POST has actually succeeded — call()
                   // now reports success/failure, so a failed save leaves everything the user
                   // typed in place to correct and resubmit, instead of wiping a six-field form
@@ -617,35 +676,40 @@ function CustomerDetail({ id }: { id: string }) {
             {contacts.map((ct) => (
               <tr key={ct.id} className="border-t">
                 <td className="py-1">
-                  <input value={ct.name} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={ct.name} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, name: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void saveContactField(ct, { name }))} />
                 </td>
                 <td>
-                  <input value={ct.email} className="w-36 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={ct.email} className="w-36 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, email: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (email) => void saveContactField(ct, { email }))} />
                 </td>
                 <td>
-                  <input value={ct.phone} className="w-24 rounded border px-1 py-0.5" onFocus={noteFocus}
+                  <input value={ct.phone} className="w-24 rounded border px-1 py-0.5 read-only:bg-slate-50"
+                         onFocus={noteFocus} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, phone: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (phone) => void saveContactField(ct, { phone }))} />
                 </td>
                 {CONTACT_FLAGS.map((f) => (
                   <td key={f.key} className="px-1 text-center">
-                    <input type="checkbox" checked={ct[f.key]}
+                    <input type="checkbox" checked={ct[f.key]} disabled={!canEdit.allowed} title={canEdit.title}
                            onChange={(e) => toggleContactFlag(ct, f.key, e.target.checked)} />
                   </td>
                 ))}
                 <td className="px-1 text-center">
                   <input type="checkbox" checked={ct.active} aria-label={`Contact ${ct.name} active`}
+                         disabled={!canEdit.allowed} title={canEdit.title}
                          onChange={(e) => saveContactField(ct, { active: e.target.checked })} />
                 </td>
                 <td className="text-right">
-                  <button className="text-xs text-red-600"
+                  <button className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                          disabled={canEdit.disabled} title={canEdit.title}
                           onClick={() => call(`/api/customers/${id}/contacts/${ct.id}`, { method: "DELETE" })}>
                     delete
                   </button>
@@ -662,7 +726,8 @@ function CustomerDetail({ id }: { id: string }) {
           <input value={contactDraft.phone} placeholder="Phone" className="flex-1 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setContactDraft({ ...contactDraft, phone: e.target.value })} />
           <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:opacity-50"
-                  disabled={addingContact}
+                  disabled={addingContact || canEdit.disabled}
+                  title={canEdit.disabled ? canEdit.title : undefined}
                   // F6: same fix as "Add address" above — reset only after the POST succeeds,
                   // and the same double-submit guard.
                   onClick={async () => {

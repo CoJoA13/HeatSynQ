@@ -31,9 +31,9 @@ describe("roles service", () => {
   it("refuses to delete a role users still hold, allows otherwise", async () => {
     const { id } = await createRole("Office");
     await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J", roleId: id } });
-    await expect(deleteRole(id)).rejects.toThrow("Role is assigned to users");
+    await expect(deleteRole(id, "cleaning up unused roles")).rejects.toThrow("Role is assigned to users");
     await prisma.user.updateMany({ data: { roleId: null } });
-    await deleteRole(id);
+    await deleteRole(id, "cleaning up unused roles");
     expect(await listRoles()).toHaveLength(0);
   });
 
@@ -60,7 +60,7 @@ describe("roles service", () => {
 
   it("renameRole onto a soft-deleted role's name is allowed, not a 500", async () => {
     const { id: deadId } = await createRole("Old");
-    await deleteRole(deadId);
+    await deleteRole(deadId, "merged into Live");
     const { id: liveId } = await createRole("Live");
     await expect(renameRole(liveId, "Old")).resolves.not.toThrow();
     expect((await listRoles()).find((r) => r.id === liveId)?.name).toBe("Old");
@@ -69,7 +69,7 @@ describe("roles service", () => {
   it("re-creating a deleted role name makes a NEW role with no inherited grants", async () => {
     const first = await createRole("Shipping");
     await setRolePermissions(first.id, ["customers.view"]);
-    await deleteRole(first.id);
+    await deleteRole(first.id, "consolidating into Warehouse");
 
     const second = await createRole("Shipping");
     expect(second.id).not.toBe(first.id);
@@ -79,5 +79,19 @@ describe("roles service", () => {
     expect(fresh?.permissions).toEqual([]);
 
     expect((await readAudit("role", second.id)).map((e) => e.action)).toEqual(["create"]);
+  });
+
+  it("requires a reason to delete a role", async () => {
+    const { id } = await createRole("Shipping");
+    await expect(deleteRole(id, "")).rejects.toThrow(/reason is required/i);
+    await expect(deleteRole(id, "   ")).rejects.toThrow(/reason is required/i);
+  });
+
+  it("stores the trimmed reason on the audit entry", async () => {
+    const { id } = await createRole("Shipping");
+    await deleteRole(id, "  duplicate of Office  ");
+    const [entry] = await readAudit("role", id);
+    expect(entry.action).toBe("delete");
+    expect(entry.reason).toBe("duplicate of Office");
   });
 });

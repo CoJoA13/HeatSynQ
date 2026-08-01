@@ -23,6 +23,15 @@ describe("flat reference tables", () => {
     }
   });
 
+  // F2: BASE's name was stored verbatim while resolveLinkNames() trimmed before its lookup, so a
+  // name typed with surrounding whitespace could be displayed, submitted unchanged, and rejected
+  // as "does not exist". Trimming on store keeps what's saved consistent with what's resolved.
+  it("stores a name trimmed of surrounding whitespace", async () => {
+    const { id } = await createReference("terms", { name: "  Net 45  " });
+    const row = (await listReference("terms")).find((r) => r.id === id);
+    expect(row?.name).toBe("Net 45");
+  });
+
   it("rejects duplicate names on every kind", async () => {
     for (const kind of REFERENCE_KINDS) {
       await createReference(kind, { name: "dup" });
