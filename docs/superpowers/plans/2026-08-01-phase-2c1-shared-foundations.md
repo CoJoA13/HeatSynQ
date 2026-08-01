@@ -1304,13 +1304,16 @@ const canDelete = gate(perms, "customers.delete");
 
 `perms` starts `undefined`, and `gate(undefined, …)` denies — so controls render disabled until `/api/auth/me` answers, rather than flashing enabled and then locking.
 
-Sites:
+Sites — **treat this as a starting point, not an inventory.** The first draft omitted the
+per-row delete buttons, which are more destructive than the add buttons it did list. Sweep the
+page for every control that mutates and would 403, and gate each one:
 
 | File | Control | Gate |
 |---|---|---|
 | `customers/page.tsx` | Add row, Paste from spreadsheet | `customers.create` |
 | `customers/[id]/page.tsx` | Delete customer | `customers.delete` |
 | `customers/[id]/page.tsx` | add address, add contact, make default | `customers.edit` |
+| `customers/[id]/page.tsx` | **delete address, delete contact** | `customers.edit` |
 | `components/ReferenceTable.tsx` | add, delete, paste | `admin.edit` |
 
 - **Inputs render `readOnly` when the user lacks the edit permission — never hidden.** A `customers.view`-only user still has to read the name, terms and notes:
