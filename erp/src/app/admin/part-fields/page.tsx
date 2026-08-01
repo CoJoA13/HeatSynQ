@@ -63,7 +63,13 @@ export default function PartFieldsPage() {
     const before = focused.current[`${id}.name`];
     const name = value.trim();
     if (name === before?.trim()) return;
-    if (!name) { setError("Name is required"); void load(); return; }
+    if (!name) {
+      // Revert to server truth; its own failure is swallowed here the same way save()'s catch
+      // swallows it (§5.13) — the validation message below is what gets reported either way.
+      void load().catch(() => {});
+      setError("Name is required");
+      return;
+    }
     void save(id, { name });
   }
 
@@ -72,8 +78,8 @@ export default function PartFieldsPage() {
     if (value === before) return;
     const n = Number(value);
     if (!Number.isInteger(n) || n < 0) {
+      void load().catch(() => {});
       setError("Sort must be a whole number, 0 or greater");
-      void load();
       return;
     }
     void save(id, { sort: n });
