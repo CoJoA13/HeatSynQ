@@ -16,13 +16,20 @@ type Customer = {
   creditHold: boolean; cod: boolean; taxable: boolean; surchargeOptOut: boolean;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string; active: boolean;
 };
+// `active` on both child types is carried and editable (round 5): the services have always
+// supported the flag and their list routes have always accepted includeInactive, but this page
+// exposed neither — so a row set inactive through the API vanished from the only screen that
+// could have brought it back. Deletion here is soft and `active` is the "keep it for history,
+// stop offering it" flag (handoff §5.4), which is a state a shop genuinely wants for an old dock
+// or a contact who left.
 type Address = {
   id: string; kind: AddressKind; name: string; street: string;
-  city: string; state: string; zip: string; isDefault: boolean;
+  city: string; state: string; zip: string; isDefault: boolean; active: boolean;
 };
 type Contact = {
   id: string; name: string; email: string; phone: string;
   getsShippers: boolean; getsInvoices: boolean; getsStatements: boolean; getsCerts: boolean;
+  active: boolean;
 };
 // `active` is carried for the same reason CustomerOption below carries it (R3): an inactive
 // terms record assigned to this customer must still appear as an option, labelled rather than
@@ -54,16 +61,31 @@ function CustomerDetail({ id }: { id: string }) {
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [addrDraft, setAddrDraft] = useState(emptyAddrDraft);
   const [contactDraft, setContactDraft] = useState(emptyContactDraft);
+  const [showInactiveAddresses, setShowInactiveAddresses] = useState(false);
+  const [showInactiveContacts, setShowInactiveContacts] = useState(false);
+  // Add-buttons are disabled while their POST is in flight. Without this a double-click — an
+  // ordinary way to press a button — submits the same draft twice, and since addresses and
+  // contacts have no uniqueness constraint both requests commit, leaving duplicate rows and
+  // duplicate audit entries the user then has to clean up by hand.
+  //
+  // The authoritative guard is the ref, not the state. `disabled` and the button label are
+  // rendered output and only take effect once React has re-rendered; the second click of a
+  // double-click can arrive before that, running the same handler closure with a stale `false`.
+  // A ref updates synchronously on the first click, so the second one always sees it.
+  const addingAddressRef = useRef(false);
+  const addingContactRef = useRef(false);
+  const [addingAddress, setAddingAddress] = useState(false);
+  const [addingContact, setAddingContact] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [cust, addr, cont] = await Promise.all([
       api<Customer>(`/api/customers/${id}`),
-      api<Address[]>(`/api/customers/${id}/addresses`),
-      api<Contact[]>(`/api/customers/${id}/contacts`),
+      api<Address[]>(`/api/customers/${id}/addresses${showInactiveAddresses ? "?includeInactive=1" : ""}`),
+      api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
     ]);
     setC(cust); setAddresses(addr); setContacts(cont); setError(null);
-  }, [id]);
+  }, [id, showInactiveAddresses, showInactiveContacts]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. A user without admin.view (Terms lives under the admin reference API) simply sees
@@ -170,27 +192,83 @@ function CustomerDetail({ id }: { id: string }) {
   }
   // call() never optimistically mutates local state before the request (unlike save() and
   // toggleContactFlag() below), so its catch has nothing to roll back and setError() here can
-  // never be raced by a load()-triggered clear. Returns whether the request succeeded so a
+  // never be raced by a load()-triggered clear. Returns whether the MUTATION succeeded so a
   // caller that holds a draft (add address/add contact, F6) can decide whether it's safe to
   // clear it — clearing unconditionally would wipe a form the user still needs to correct.
+  //
+  // The mutation and the refresh are reported separately (round 6). They used to share one try,
+  // so a GET failing inside load() — a dropped connection a moment after the POST committed —
+  // came back as `false` with an error banner, which kept the draft on screen and invited the
+  // user to submit it again. The row was already there, so the retry created a duplicate. What
+  // the user needs to be told in that case is that the save worked and the screen is stale, not
+  // that the save failed.
   async function call(path: string, init: RequestInit): Promise<boolean> {
-    try { await api(path, init); setError(null); await load(); return true; }
-    catch (e) { setError((e as Error).message); return false; }
+    try {
+      await api(path, init);
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    }
+    setError(null);
+    try {
+      await load();
+    } catch (e) {
+      setError(`Saved, but the page could not be refreshed — reload to see the current data. (${(e as Error).message})`);
+    }
+    return true;
+  }
+
+  // Blur-save guard (round 5/6). Every text field on this page saved unconditionally on blur, so
+  // simply tabbing through the form sent a PUT per field and wrote an audit entry whose before
+  // and after are identical — filling the history spec §9 promises with events that assert a
+  // change nobody made. `focusedValue` snapshots the field as it was when the user entered it;
+  // a blur whose value matches that snapshot never reaches the network. One ref is enough
+  // because only one field can hold focus at a time.
+  const focusedValue = useRef("");
+  const noteFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    focusedValue.current = e.target.value;
+  };
+  // `trim` mirrors the server's own zod .trim() on that specific field (customer code and name,
+  // contact name). Applying it here as well keeps the input showing what was actually stored:
+  // otherwise the server saved "Acme" while the box went on displaying " Acme " indefinitely,
+  // since a successful save neither returns nor reloads the normalized row. Trimming also feeds
+  // the no-op comparison, so adding and removing a trailing space is correctly seen as no change.
+  function onBlurSave(
+    e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
+    opts: { trim?: boolean },
+    commit: (value: string) => void,
+  ) {
+    const normalize = (v: string) => (opts.trim ? v.trim() : v);
+    const value = normalize(e.target.value);
+    if (value === normalize(focusedValue.current)) return;
+    commit(value);
   }
   // Deliberately not routed through call(): call() reloads on success, and this record no longer
   // exists on success — the reload would 404 and replace the list we're navigating to with an
   // error. The failure path matters just as much as the success one here, because deleteCustomer
   // legitimately refuses in cases the user can act on (a customer that still has child
   // customers), and that 400 has to stay on screen instead of being swallowed by a navigation.
+  // prompt() rather than confirm() because spec §9 requires a reason on a destructive action,
+  // and this is one on three counts: the addresses and contacts go with it, the code becomes
+  // reusable by an unrelated future customer, and the row is invisible to every list afterwards.
+  // The reason is what lets whoever reads the history later tell a typo cleanup from a real
+  // removal. The server requires it too (deleteCustomer), so an empty one is rejected there as
+  // well — this check only spares the user a round trip.
   async function removeCustomer() {
     if (!c) return;
-    if (!confirm(
+    const reason = prompt(
       `Delete customer "${c.code} — ${c.name}"?\n\n` +
       `Its addresses and contacts are deleted with it. The code can be reused later, ` +
-      `which starts a fresh customer rather than restoring this one.`
-    )) return;
+      `which starts a fresh customer rather than restoring this one.\n\n` +
+      `Reason for deleting (recorded in the audit history):`
+    );
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) {
+      setError("A reason is required to delete a customer.");
+      return;
+    }
     try {
-      await api(`/api/customers/${id}`, { method: "DELETE" });
+      await api(`/api/customers/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
       router.push("/customers");
     } catch (e) {
       setError((e as Error).message);
@@ -265,14 +343,14 @@ function CustomerDetail({ id }: { id: string }) {
           input reverts to server truth and the error banner explains why, same as every other
           field on this page (Fix C2). */}
       <div className="mb-1 flex flex-wrap items-baseline gap-2">
-        <input value={c.code} aria-label="Customer code"
+        <input value={c.code} aria-label="Customer code" onFocus={noteFocus}
                onChange={(e) => setC({ ...c, code: e.target.value })}
-               onBlur={(e) => save({ code: e.target.value })}
+               onBlur={(e) => onBlurSave(e, { trim: true }, (code) => void save({ code }))}
                className="w-40 rounded border px-2 py-1 font-mono text-xl font-semibold" />
         <span className="text-2xl font-semibold text-slate-400">—</span>
-        <input value={c.name} aria-label="Customer name"
+        <input value={c.name} aria-label="Customer name" onFocus={noteFocus}
                onChange={(e) => setC({ ...c, name: e.target.value })}
-               onBlur={(e) => save({ name: e.target.value })}
+               onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void save({ name }))}
                className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold" />
         <button onClick={removeCustomer} className="ml-auto text-sm text-red-600">
           Delete customer
@@ -335,22 +413,23 @@ function CustomerDetail({ id }: { id: string }) {
           </label>
           <label className="block text-sm">
             Default PO
-            <input value={c.defaultPo} onChange={(e) => setC({ ...c, defaultPo: e.target.value })}
-                   onBlur={(e) => save({ defaultPo: e.target.value })}
+            <input value={c.defaultPo} onFocus={noteFocus}
+                   onChange={(e) => setC({ ...c, defaultPo: e.target.value })}
+                   onBlur={(e) => onBlurSave(e, {}, (defaultPo) => void save({ defaultPo }))}
                    className="ml-2 rounded border px-2 py-1" />
           </label>
           <label className="block text-sm">
             Credit limit
-            <input value={c.creditLimit ?? ""} inputMode="decimal"
+            <input value={c.creditLimit ?? ""} inputMode="decimal" onFocus={noteFocus}
                    onChange={(e) => setC({ ...c, creditLimit: e.target.value })}
-                   onBlur={(e) => save({ creditLimit: e.target.value === "" ? null : e.target.value })}
+                   onBlur={(e) => onBlurSave(e, {}, (v) => void save({ creditLimit: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1" />
           </label>
           <label className="block text-sm">
             Finance charge rate
-            <input value={c.financeChargeRate ?? ""} inputMode="decimal"
+            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocus}
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
-                   onBlur={(e) => save({ financeChargeRate: e.target.value === "" ? null : e.target.value })}
+                   onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1" />
           </label>
         </div>
@@ -362,20 +441,28 @@ function CustomerDetail({ id }: { id: string }) {
           .map(([key, label]) => (
             <label key={key} className="mb-2 block text-sm">
               {label}
-              <textarea value={c[key]} rows={2} onChange={(e) => setC({ ...c, [key]: e.target.value })}
-                        onBlur={(e) => save({ [key]: e.target.value })}
+              <textarea value={c[key]} rows={2} onFocus={noteFocus}
+                        onChange={(e) => setC({ ...c, [key]: e.target.value })}
+                        onBlur={(e) => onBlurSave(e, {}, (v) => void save({ [key]: v }))}
                         className="mt-1 w-full rounded border p-2" />
             </label>
           ))}
       </section>
 
       <section className="mb-6 rounded border bg-white p-4">
-        <h2 className="mb-2 font-medium">Addresses</h2>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-medium">Addresses</h2>
+          <label className="flex items-center gap-1 text-sm">
+            <input type="checkbox" checked={showInactiveAddresses}
+                   onChange={(e) => setShowInactiveAddresses(e.target.checked)} />
+            Show inactive
+          </label>
+        </div>
         <table className="mb-2 w-full text-sm">
           <thead>
             <tr className="text-left">
               <th className="py-1">Kind</th><th>Name</th><th>Street</th><th>City</th><th>State</th><th>Zip</th>
-              <th /><th />
+              <th className="px-1">Active</th><th /><th />
             </tr>
           </thead>
           <tbody>
@@ -397,34 +484,46 @@ function CustomerDetail({ id }: { id: string }) {
                   </select>
                 </td>
                 <td>
-                  <input value={a.name} className="w-28 rounded border px-1 py-0.5"
+                  <input value={a.name} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, name: e.target.value } : row)))}
-                         onBlur={(e) => saveAddressField(a, { name: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (name) => void saveAddressField(a, { name }))} />
                 </td>
                 <td>
-                  <input value={a.street} className="w-28 rounded border px-1 py-0.5"
+                  <input value={a.street} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, street: e.target.value } : row)))}
-                         onBlur={(e) => saveAddressField(a, { street: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (street) => void saveAddressField(a, { street }))} />
                 </td>
                 <td>
-                  <input value={a.city} className="w-20 rounded border px-1 py-0.5"
+                  <input value={a.city} className="w-20 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, city: e.target.value } : row)))}
-                         onBlur={(e) => saveAddressField(a, { city: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (city) => void saveAddressField(a, { city }))} />
                 </td>
                 <td>
-                  <input value={a.state} className="w-12 rounded border px-1 py-0.5"
+                  <input value={a.state} className="w-12 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, state: e.target.value } : row)))}
-                         onBlur={(e) => saveAddressField(a, { state: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (state) => void saveAddressField(a, { state }))} />
                 </td>
                 <td>
-                  <input value={a.zip} className="w-16 rounded border px-1 py-0.5"
+                  <input value={a.zip} className="w-16 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, zip: e.target.value } : row)))}
-                         onBlur={(e) => saveAddressField(a, { zip: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (zip) => void saveAddressField(a, { zip }))} />
+                </td>
+                {/* Round 5: deactivating re-normalizes the kind's default flag server-side
+                    (normalizeDefaultsIn drops the flag from an inactive row and promotes another),
+                    so this reloads on success like the kind change does rather than trusting the
+                    optimistic patch. */}
+                <td className="px-1 text-center">
+                  <input type="checkbox" checked={a.active} aria-label={`Address ${a.name} active`}
+                         onChange={async (e) => {
+                           if (await saveAddressField(a, { active: e.target.checked })) {
+                             await load().catch(() => {});
+                           }
+                         }} />
                 </td>
                 <td>{a.isDefault && <span className="rounded bg-slate-200 px-1 text-xs">default</span>}</td>
                 <td className="text-right">
@@ -459,52 +558,68 @@ function CustomerDetail({ id }: { id: string }) {
                  onChange={(e) => setAddrDraft({ ...addrDraft, state: e.target.value })} />
           <input value={addrDraft.zip} placeholder="Zip" className="w-20 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setAddrDraft({ ...addrDraft, zip: e.target.value })} />
-          <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
+          <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:opacity-50"
+                  disabled={addingAddress}
                   // F6: the draft is cleared only once the POST has actually succeeded — call()
                   // now reports success/failure, so a failed save leaves everything the user
                   // typed in place to correct and resubmit, instead of wiping a six-field form
                   // out from under them before the response even comes back.
                   onClick={async () => {
-                    if (await call(`/api/customers/${id}/addresses`,
-                      { method: "POST", body: JSON.stringify(addrDraft) })) {
-                      setAddrDraft(emptyAddrDraft);
+                    if (addingAddressRef.current) return;
+                    addingAddressRef.current = true;
+                    setAddingAddress(true);
+                    try {
+                      if (await call(`/api/customers/${id}/addresses`,
+                        { method: "POST", body: JSON.stringify(addrDraft) })) {
+                        setAddrDraft(emptyAddrDraft);
+                      }
+                    } finally {
+                      addingAddressRef.current = false;
+                      setAddingAddress(false);
                     }
                   }}>
-            Add address
+            {addingAddress ? "Adding…" : "Add address"}
           </button>
         </div>
       </section>
 
       <section className="mb-6 rounded border bg-white p-4">
-        <h2 className="mb-2 font-medium">Contacts</h2>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-medium">Contacts</h2>
+          <label className="flex items-center gap-1 text-sm">
+            <input type="checkbox" checked={showInactiveContacts}
+                   onChange={(e) => setShowInactiveContacts(e.target.checked)} />
+            Show inactive
+          </label>
+        </div>
         <table className="mb-2 w-full text-sm">
           <thead>
             <tr className="text-left">
               <th>Name</th><th>Email</th><th>Phone</th>
               {CONTACT_FLAGS.map((f) => <th key={f.key} className="px-1">{f.label}</th>)}
-              <th />
+              <th className="px-1">Active</th><th />
             </tr>
           </thead>
           <tbody>
             {contacts.map((ct) => (
               <tr key={ct.id} className="border-t">
                 <td className="py-1">
-                  <input value={ct.name} className="w-28 rounded border px-1 py-0.5"
+                  <input value={ct.name} className="w-28 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, name: e.target.value } : row)))}
-                         onBlur={(e) => saveContactField(ct, { name: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void saveContactField(ct, { name }))} />
                 </td>
                 <td>
-                  <input value={ct.email} className="w-36 rounded border px-1 py-0.5"
+                  <input value={ct.email} className="w-36 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, email: e.target.value } : row)))}
-                         onBlur={(e) => saveContactField(ct, { email: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (email) => void saveContactField(ct, { email }))} />
                 </td>
                 <td>
-                  <input value={ct.phone} className="w-24 rounded border px-1 py-0.5"
+                  <input value={ct.phone} className="w-24 rounded border px-1 py-0.5" onFocus={noteFocus}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, phone: e.target.value } : row)))}
-                         onBlur={(e) => saveContactField(ct, { phone: e.target.value })} />
+                         onBlur={(e) => onBlurSave(e, {}, (phone) => void saveContactField(ct, { phone }))} />
                 </td>
                 {CONTACT_FLAGS.map((f) => (
                   <td key={f.key} className="px-1 text-center">
@@ -512,6 +627,10 @@ function CustomerDetail({ id }: { id: string }) {
                            onChange={(e) => toggleContactFlag(ct, f.key, e.target.checked)} />
                   </td>
                 ))}
+                <td className="px-1 text-center">
+                  <input type="checkbox" checked={ct.active} aria-label={`Contact ${ct.name} active`}
+                         onChange={(e) => saveContactField(ct, { active: e.target.checked })} />
+                </td>
                 <td className="text-right">
                   <button className="text-xs text-red-600"
                           onClick={() => call(`/api/customers/${id}/contacts/${ct.id}`, { method: "DELETE" })}>
@@ -529,15 +648,25 @@ function CustomerDetail({ id }: { id: string }) {
                  onChange={(e) => setContactDraft({ ...contactDraft, email: e.target.value })} />
           <input value={contactDraft.phone} placeholder="Phone" className="flex-1 rounded border px-2 py-1 text-sm"
                  onChange={(e) => setContactDraft({ ...contactDraft, phone: e.target.value })} />
-          <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
-                  // F6: same fix as "Add address" above — reset only after the POST succeeds.
+          <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:opacity-50"
+                  disabled={addingContact}
+                  // F6: same fix as "Add address" above — reset only after the POST succeeds,
+                  // and the same double-submit guard.
                   onClick={async () => {
-                    if (await call(`/api/customers/${id}/contacts`,
-                      { method: "POST", body: JSON.stringify(contactDraft) })) {
-                      setContactDraft(emptyContactDraft);
+                    if (addingContactRef.current) return;
+                    addingContactRef.current = true;
+                    setAddingContact(true);
+                    try {
+                      if (await call(`/api/customers/${id}/contacts`,
+                        { method: "POST", body: JSON.stringify(contactDraft) })) {
+                        setContactDraft(emptyContactDraft);
+                      }
+                    } finally {
+                      addingContactRef.current = false;
+                      setAddingContact(false);
                     }
                   }}>
-            Add contact
+            {addingContact ? "Adding…" : "Add contact"}
           </button>
         </div>
       </section>

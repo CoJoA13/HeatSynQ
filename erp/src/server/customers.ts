@@ -132,14 +132,19 @@ export async function getCustomer(id: string): Promise<CustomerRow> {
   return toRow(row);
 }
 
+// Either the top-level client or a `tx` from prisma.$transaction — lets the hierarchy guards run
+// standalone or fused into a caller's transaction with the same code (same shape as
+// customer-addresses.ts's Db).
+type Db = Prisma.TransactionClient;
+
 /**
  * Rejects a parentId that doesn't reference a live customer. Soft deletion leaves the row
  * physically present, so the FK constraint alone accepts it — the result is an active child
  * whose parent appears in no customer list. Shared by fresh creates (which skip the cycle walk
  * below but still must not point at a deleted row) and assertNoCycle.
  */
-async function assertParentExists(parentId: string): Promise<void> {
-  const parent = await prisma.customer.findFirst({ where: { id: parentId, deletedAt: null }, select: { id: true } });
+async function assertParentExists(parentId: string, db: Db = prisma): Promise<void> {
+  const parent = await db.customer.findFirst({ where: { id: parentId, deletedAt: null }, select: { id: true } });
   if (!parent) throw new HttpError(400, "That parent does not exist");
 }
 
@@ -166,17 +171,19 @@ async function assertTermsExists(termsId: string): Promise<void> {
  * create) — a genuinely fresh row cannot yet be anyone's ancestor, so createCustomer calls
  * assertParentExists directly instead for that case.
  */
-async function assertNoCycle(id: string, parentId: string | null | undefined): Promise<void> {
+async function assertNoCycle(
+  id: string, parentId: string | null | undefined, db: Db = prisma,
+): Promise<void> {
   if (!parentId) return;
   if (parentId === id) throw new HttpError(400, "A customer cannot be its own ancestor");
-  await assertParentExists(parentId);
+  await assertParentExists(parentId, db);
   let cursor: string | null = parentId;
   const seen = new Set<string>([id]);
   while (cursor) {
     if (seen.has(cursor)) throw new HttpError(400, "That parent would create a circular relationship");
     seen.add(cursor);
     const next: { parentId: string | null } | null =
-      await prisma.customer.findUnique({ where: { id: cursor }, select: { parentId: true } });
+      await db.customer.findUnique({ where: { id: cursor }, select: { parentId: true } });
     cursor = next?.parentId ?? null;
   }
 }
@@ -222,14 +229,46 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
   // longer find, and the edit vanishes into a row nothing displays again.
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
-  if (data.parentId !== undefined) await assertNoCycle(id, data.parentId);
   // Only a non-null assignment needs checking — `null` clears the field, which is always legal.
   if (data.termsId) await assertTermsExists(data.termsId);
+
+  // A parent change validates and writes inside ONE Serializable transaction. Reading the parent
+  // chain and then writing as two separate statements is not enough: two concurrent requests
+  // setting A.parent = B and B.parent = A can each observe the other row still parentless, both
+  // pass assertNoCycle, and both commit — producing exactly the cycle the guard exists to
+  // prevent, and one that no single later request can be blamed for. Serializable makes Postgres
+  // abort whichever transaction would produce a result no serial ordering could, surfacing as
+  // P2034 and translated by withDbErrors into a 409 telling the caller to retry.
+  //
+  // Scoped to parent changes on purpose. Serializable costs more and can abort under ordinary
+  // concurrency, and every other column on this row is a last-write-wins scalar with no
+  // cross-row invariant to protect — only the hierarchy has one.
+  if (data.parentId !== undefined) {
+    await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
+      prisma.$transaction(async (tx) => {
+        await assertNoCycle(id, data.parentId, tx);
+        await auditedUpdate("customer", id, () => tx.customer.update({ where: { id }, data }), { tx });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    return;
+  }
+
   await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
     auditedUpdate("customer", id, () => prisma.customer.update({ where: { id }, data })));
 }
 
-export async function deleteCustomer(id: string): Promise<void> {
+/**
+ * `reason` is required, not optional — spec §9: "destructive-ish actions require a reason". This
+ * one qualifies on three counts: it soft-deletes every address and contact along with the row,
+ * it frees the `code` for reuse by a future customer that will be unrelated to this one, and it
+ * is invisible afterwards to every list. Without a reason the audit entry cannot distinguish a
+ * typo cleanup from an intentional removal, which is the question anyone reading the history
+ * later is actually asking. Enforced in the service rather than only at the route so no future
+ * caller can bypass it.
+ */
+export async function deleteCustomer(id: string, reason: string): Promise<void> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to delete a customer");
+
   // Same gap as updateCustomer above: without this, deleting an already soft-deleted customer
   // silently re-stamps deletedAt and mints a duplicate "delete" audit entry instead of reporting
   // that there is nothing left to delete.
@@ -258,7 +297,7 @@ export async function deleteCustomer(id: string): Promise<void> {
     ]);
     for (const a of addresses) await auditedSoftDelete("customerAddress", a.id, "parent customer deleted", tx);
     for (const c of contacts) await auditedSoftDelete("customerContact", c.id, "parent customer deleted", tx);
-    await auditedSoftDelete("customer", id, undefined, tx);
+    await auditedSoftDelete("customer", id, why, tx);
   }));
 }
 

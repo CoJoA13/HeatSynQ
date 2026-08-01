@@ -44,7 +44,7 @@ describe("customers service", () => {
   it("revives a soft-deleted code and brings it back active", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
     await updateCustomer(id, { active: false });
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
     const again = await createCustomer({ code: "ACME", name: "Acme Reborn" });
     expect(again.id).toBe(id);
     const rows = await listCustomers();
@@ -81,9 +81,9 @@ describe("customers service", () => {
   it("refuses to delete a customer that still has non-deleted children", async () => {
     const parent = await createCustomer({ code: "ACME", name: "Acme" });
     const child = await createCustomer({ code: "ACME-OH", name: "Ohio", parentId: parent.id });
-    await expect(deleteCustomer(parent.id)).rejects.toThrow(/child/i);
-    await deleteCustomer(child.id);
-    await deleteCustomer(parent.id);
+    await expect(deleteCustomer(parent.id, "test cleanup")).rejects.toThrow(/child/i);
+    await deleteCustomer(child.id, "test cleanup");
+    await deleteCustomer(parent.id, "test cleanup");
     expect(await listCustomers()).toHaveLength(0);
   });
 
@@ -99,7 +99,7 @@ describe("customers service", () => {
     await updateCustomer(id, { active: false });
     expect(await listCustomers()).toHaveLength(0);
     expect(await listCustomers({ includeInactive: true })).toHaveLength(1);
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
     expect(await listCustomers({ includeInactive: true })).toHaveLength(0);
     expect(await prisma.customer.findUnique({ where: { id } })).not.toBeNull();
   });
@@ -126,7 +126,7 @@ describe("customers service", () => {
     const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock B" });
     const { id: contactId } = await addContact(id, { name: "New Contact" });
 
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
 
     // The old rows survive as soft-deleted, not hard-deleted.
     const oldAddress = await prisma.customerAddress.findUnique({ where: { id: addressId } });
@@ -147,7 +147,7 @@ describe("customers service", () => {
   // revival path, where the row (and its id) already exists.
   it("guards against a cycle introduced by reviving a customer as its own parent", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
     await expect(createCustomer({ code: "ACME", name: "Acme Reborn", parentId: id }))
       .rejects.toThrow(/circular|ancestor/i);
   });
@@ -158,7 +158,7 @@ describe("customers service", () => {
   // in no customer list.
   it("refuses a soft-deleted customer as a parent on create", async () => {
     const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
-    await deleteCustomer(parentId);
+    await deleteCustomer(parentId, "test cleanup");
     await expect(createCustomer({ code: "NEW", name: "New", parentId }))
       .rejects.toThrow(/parent/i);
   });
@@ -166,15 +166,15 @@ describe("customers service", () => {
   it("refuses a soft-deleted customer as a parent on update", async () => {
     const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
     const { id: childId } = await createCustomer({ code: "CHILD", name: "Child" });
-    await deleteCustomer(parentId);
+    await deleteCustomer(parentId, "test cleanup");
     await expect(updateCustomer(childId, { parentId })).rejects.toThrow(/parent/i);
   });
 
   it("refuses a soft-deleted customer as a parent on revival", async () => {
     const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
-    await deleteCustomer(parentId);
+    await deleteCustomer(parentId, "test cleanup");
     const { id: dupId } = await createCustomer({ code: "DUP", name: "Dup" });
-    await deleteCustomer(dupId);
+    await deleteCustomer(dupId, "test cleanup");
     await expect(createCustomer({ code: "DUP", name: "Dup Reborn", parentId }))
       .rejects.toThrow(/parent/i);
   });
@@ -202,7 +202,7 @@ describe("customers service", () => {
     const terms = await prisma.terms.create({ data: { name: "Net 30" } });
     await prisma.terms.update({ where: { id: terms.id }, data: { deletedAt: new Date() } });
     const { id } = await createCustomer({ code: "DUP", name: "Dup" });
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
     await expect(createCustomer({ code: "DUP", name: "Dup Reborn", termsId: terms.id }))
       .rejects.toThrow(/terms/i);
   });
@@ -219,6 +219,46 @@ describe("customers service", () => {
     const terms = await prisma.terms.create({ data: { name: "Net 30", active: false } });
     const { id } = await createCustomer({ code: "ACME", name: "Acme", termsId: terms.id });
     expect((await getCustomer(id)).termsId).toBe(terms.id);
+  });
+
+  // Group B5 (round-5 review): assertNoCycle read the parent chain outside any transaction, so
+  // two concurrent updates setting A.parent = B and B.parent = A could each observe the other
+  // row still parentless, both pass validation, and both commit — writing the exact cycle the
+  // guard exists to prevent. Whichever request wins, the pair must never end up pointing at
+  // each other.
+  // Repeated because the interleaving is timing-dependent: against the unguarded code the cycle
+  // formed on roughly one attempt in four, so a single attempt would let a regression through
+  // three times out of four. Ten independent pairs make detection ~94% while staying
+  // deterministic once the guard is in place.
+  it("cannot form a reciprocal parent cycle from two concurrent updates", async () => {
+    for (let i = 0; i < 10; i++) {
+      const a = await createCustomer({ code: `A${i}`, name: `A${i}` });
+      const b = await createCustomer({ code: `B${i}`, name: `B${i}` });
+      await Promise.allSettled([
+        updateCustomer(a.id, { parentId: b.id }),
+        updateCustomer(b.id, { parentId: a.id }),
+      ]);
+      const [rowA, rowB] = await Promise.all([
+        prisma.customer.findUnique({ where: { id: a.id }, select: { parentId: true } }),
+        prisma.customer.findUnique({ where: { id: b.id }, select: { parentId: true } }),
+      ]);
+      expect(rowA?.parentId === b.id && rowB?.parentId === a.id, `cycle formed on attempt ${i}`).toBe(false);
+    }
+  });
+
+  // Group B6 (round-6 review): spec §9 — "destructive-ish actions require a reason". The delete
+  // wrote reason: null, leaving no way to tell a typo cleanup from an intentional removal in an
+  // operation that also soft-deletes every address and contact and frees the code for reuse.
+  it("requires a reason to delete a customer and records it on the audit entry", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await expect(deleteCustomer(id, "")).rejects.toThrow(/reason/i);
+    await expect(deleteCustomer(id, "   ")).rejects.toThrow(/reason/i);
+
+    await deleteCustomer(id, "  keyed twice by mistake  ");
+    const entries = await readAudit("customer", id);
+    expect(entries[0].action).toBe("delete");
+    // Trimmed, so a reason of pure whitespace can never masquerade as a real one.
+    expect(entries[0].reason).toBe("keyed twice by mistake");
   });
 
   // Group C1: creditLimit/financeChargeRate accepted any string, so an invalid one sailed
@@ -262,7 +302,7 @@ describe("customers service", () => {
   // soft-deleted customer silently succeeds and mutates a row that appears in no list.
   it("404s when updating a soft-deleted customer instead of silently mutating the hidden row", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
     await expect(updateCustomer(id, { name: "Acme Renamed" })).rejects.toMatchObject({ status: 404 });
   });
 
@@ -270,8 +310,8 @@ describe("customers service", () => {
   // row, which would silently re-stamp deletedAt and mint a duplicate audit "delete" entry.
   it("404s when deleting an already soft-deleted customer", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
-    await deleteCustomer(id);
-    await expect(deleteCustomer(id)).rejects.toMatchObject({ status: 404 });
+    await deleteCustomer(id, "test cleanup");
+    await expect(deleteCustomer(id, "test cleanup")).rejects.toMatchObject({ status: 404 });
   });
 
   it("revival resets every field a genuine create would default, not just active", async () => {
@@ -283,7 +323,7 @@ describe("customers service", () => {
       cod: true, defaultPo: "OLD-PO", orderNotes: "old notes", shippingNotes: "old ship notes",
       invoiceNotes: "old invoice notes", creditLimit: "9999.00", financeChargeRate: "0.02",
     });
-    await deleteCustomer(id);
+    await deleteCustomer(id, "test cleanup");
 
     const revived = await createCustomer({ code: "ACME", name: "Acme Reborn" });
     expect(revived.id).toBe(id);

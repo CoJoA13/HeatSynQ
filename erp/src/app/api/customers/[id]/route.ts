@@ -14,8 +14,12 @@ export const PUT = handle(async (req, { params }) => {
   return NextResponse.json({ ok: true });
 });
 
-export const DELETE = handle(async (_req, { params }) => {
+export const DELETE = handle(async (req, { params }) => {
   mustCan(requireUser(), "customers", "delete");
-  await deleteCustomer((await params).id);
+  // A DELETE carrying a body — the reason spec §9 requires for a destructive action. A request
+  // with no body at all is deliberately not a parse error: the service reports the missing
+  // reason as a field-anchored 400 rather than this route failing on malformed JSON.
+  const body = (await req.json().catch(() => ({}))) as { reason?: unknown };
+  await deleteCustomer((await params).id, typeof body.reason === "string" ? body.reason : "");
   return NextResponse.json({ ok: true });
 });
