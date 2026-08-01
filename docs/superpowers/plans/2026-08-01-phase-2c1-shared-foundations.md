@@ -985,10 +985,12 @@ export async function findBlockers(kind: ReferenceKind, id: string): Promise<Blo
     });
     for (const row of rows) {
       const rowId = String(row.id);
-      // processStepCode's human key is `code`; every other linked model uses `name`.
-      const label = typeof row.name === "string" && row.name
-        ? (typeof row.code === "string" ? `${row.code} — ${row.name}` : row.name)
-        : rowId;
+      // processStepCode's human key is `code` + `name`; every other linked model uses `name`.
+      // Key this on link.model, NOT on `typeof row.code === "string"` — Customer has a `code`
+      // column too, so sniffing for the field renders customers as "ACME — Acme Foundry".
+      const label = link.model === "processStepCode" && typeof row.code === "string" && typeof row.name === "string"
+        ? `${row.code} — ${row.name}`
+        : (typeof row.name === "string" && row.name ? row.name : rowId);
       out.push({
         entityLabel: link.entityLabel,
         name: label,
