@@ -6,6 +6,7 @@ import { PasteGrid } from "@/components/PasteGrid";
 import { CUSTOMER_PASTE_COLUMNS } from "@/lib/customer-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 
 type Customer = {
   id: string; code: string; name: string; parentCode: string | null;
@@ -23,9 +24,16 @@ export default function CustomersPage() {
 
   const query = `${showInactive ? "includeInactive=1&" : ""}${search ? `search=${encodeURIComponent(search)}` : ""}`;
 
+  // Named `latest`, not `gate` — this file also imports `gate` from permission-ui for the
+  // held-permission checks below, and shadowing that binding with the stale-response gate would
+  // break every `gate(perms, ...)` call in this component.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    setRows(await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`));
-  }, [query]);
+    const t = latest.next();
+    const data = await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`);
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+  }, [query, latest]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   const canCreate = gate(perms, "customers.create");
