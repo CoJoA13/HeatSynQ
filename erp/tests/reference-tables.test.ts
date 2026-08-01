@@ -51,18 +51,37 @@ describe("flat reference tables", () => {
     expect((await listReference("specification"))[0].text).toMatch(/steel/i);
   });
 
+  // `setup` returns the non-default extra value to seed the first row with. The two FK fields
+  // (inspectionCode.defaultScaleId, paymentType.glAccountId) can't be a static literal — a real
+  // row has to exist first to reference — so every entry gets a callback, run inside the test
+  // body, rather than mixing static objects with FK lookups.
   const KINDS_WITH_EXTRAS = [
-    { kind: "glAccount", extra: { description: "old" }, field: "description", fresh: "" },
-    { kind: "inspectionCode", extra: {}, field: "defaultScaleId", fresh: null },
-    { kind: "paymentType", extra: {}, field: "glAccountId", fresh: null },
-    { kind: "commentSnippet", extra: { text: "old" }, field: "text", fresh: "" },
-    { kind: "specification", extra: { text: "old" }, field: "text", fresh: "" },
+    { kind: "glAccount", setup: async () => ({ description: "old" }), field: "description", fresh: "" },
+    {
+      kind: "inspectionCode",
+      setup: async () => ({ defaultScaleId: (await createReference("inspectionScale", { name: "Brinell" })).id }),
+      field: "defaultScaleId", fresh: null,
+    },
+    {
+      kind: "paymentType",
+      setup: async () => ({ glAccountId: (await createReference("glAccount", { name: "1010" })).id }),
+      field: "glAccountId", fresh: null,
+    },
+    { kind: "commentSnippet", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
+    { kind: "specification", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
   ] as const;
 
   it.each(KINDS_WITH_EXTRAS)(
     "$kind: a re-created name is a new row with default extras",
-    async ({ kind, extra, field, fresh }) => {
+    async ({ kind, setup, field, fresh }) => {
+      const extra = await setup();
       const first = await createReference(kind, { name: "X1", ...extra });
+
+      // The predecessor must genuinely hold the non-default value — otherwise the reset check
+      // below would pass even if createReference never applied `extra` in the first place.
+      const firstRow = (await listReference(kind)).find((r) => r.id === first.id);
+      expect(firstRow?.[field]).not.toBe(fresh);
+
       await deleteReference(kind, first.id);
       const second = await createReference(kind, { name: "X1" });
       expect(second.id).not.toBe(first.id);
