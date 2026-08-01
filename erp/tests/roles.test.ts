@@ -58,14 +58,26 @@ describe("roles service", () => {
     expect(before).not.toEqual(after);
   });
 
-  it("createRole resurrection clears stale permissions from the deleted role", async () => {
-    const { id } = await createRole("Office");
-    await setRolePermissions(id, ["orders.view", "orders.edit"]);
-    await deleteRole(id);
-    const revived = await createRole("Office");
-    expect(revived.id).toBe(id);
+  it("renameRole onto a soft-deleted role's name is allowed, not a 500", async () => {
+    const { id: deadId } = await createRole("Old");
+    await deleteRole(deadId);
+    const { id: liveId } = await createRole("Live");
+    await expect(renameRole(liveId, "Old")).resolves.not.toThrow();
+    expect((await listRoles()).find((r) => r.id === liveId)?.name).toBe("Old");
+  });
+
+  it("re-creating a deleted role name makes a NEW role with no inherited grants", async () => {
+    const first = await createRole("Shipping");
+    await setRolePermissions(first.id, ["customers.view"]);
+    await deleteRole(first.id);
+
+    const second = await createRole("Shipping");
+    expect(second.id).not.toBe(first.id);
+
     const roles = await listRoles();
-    expect(roles).toHaveLength(1);
-    expect(roles[0].permissions).toEqual([]);
+    const fresh = roles.find((r) => r.id === second.id);
+    expect(fresh?.permissions).toEqual([]);
+
+    expect((await readAudit("role", second.id)).map((e) => e.action)).toEqual(["create"]);
   });
 });

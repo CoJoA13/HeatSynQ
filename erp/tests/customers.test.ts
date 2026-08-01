@@ -41,15 +41,33 @@ describe("customers service", () => {
     await expect(createCustomer({ code: "NEW", name: "N", bogus: 1 })).rejects.toThrow();
   });
 
-  it("revives a soft-deleted code and brings it back active", async () => {
-    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
-    await updateCustomer(id, { active: false });
-    await deleteCustomer(id, "test cleanup");
-    const again = await createCustomer({ code: "ACME", name: "Acme Reborn" });
-    expect(again.id).toBe(id);
-    const rows = await listCustomers();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ code: "ACME", name: "Acme Reborn", active: true });
+  it("re-creating a deleted code makes a NEW row with its own history, not a revival", async () => {
+    const first = await createCustomer({
+      code: "ACME", name: "Acme Original", creditHold: true, orderNotes: "old notes",
+    });
+    await deleteCustomer(first.id, "keyed by mistake");
+
+    const second = await createCustomer({ code: "ACME", name: "Acme Industries" });
+
+    // A new identity, not the dead row wearing a new name.
+    expect(second.id).not.toBe(first.id);
+
+    // Nothing of the predecessor leaks through.
+    const row = await getCustomer(second.id);
+    expect(row.name).toBe("Acme Industries");
+    expect(row.creditHold).toBe(false);
+    expect(row.orderNotes).toBe("");
+    expect(row.active).toBe(true);
+
+    // The audit trail says "create", and carries none of the predecessor's entries.
+    expect((await readAudit("customer", second.id)).map((e) => e.action)).toEqual(["create"]);
+
+    // And the archived row keeps its own value, its own id, and its own history.
+    const archived = await prisma.customer.findUnique({ where: { id: first.id } });
+    expect(archived?.code).toBe("ACME");
+    expect(archived?.deletedAt).not.toBeNull();
+    expect((await readAudit("customer", first.id)).map((e) => e.action).sort())
+      .toEqual(["create", "delete"]);
   });
 
   it("stores the Phase 5 commercial fields and returns decimals as numbers", async () => {
@@ -128,7 +146,7 @@ describe("customers service", () => {
 
     await deleteCustomer(id, "test cleanup");
 
-    // The old rows survive as soft-deleted, not hard-deleted.
+    // The old rows survive as soft-deleted, not hard-deleted, still attached to the dead customer.
     const oldAddress = await prisma.customerAddress.findUnique({ where: { id: addressId } });
     const oldContact = await prisma.customerContact.findUnique({ where: { id: contactId } });
     expect(oldAddress).not.toBeNull();
@@ -136,20 +154,13 @@ describe("customers service", () => {
     expect(oldContact).not.toBeNull();
     expect(oldContact?.deletedAt).toBeInstanceOf(Date);
 
-    const revived = await createCustomer({ code: "ACME", name: "Brand New Co" });
-    expect(revived.id).toBe(id);
-    expect(await listAddresses(revived.id)).toHaveLength(0);
-    expect(await listContacts(revived.id)).toHaveLength(0);
-  });
-
-  // Group B2: createCustomer skips assertNoCycle entirely, reasoning that a row that doesn't
-  // exist yet cannot be in anyone's parent chain — true for a fresh create, false for the
-  // revival path, where the row (and its id) already exists.
-  it("guards against a cycle introduced by reviving a customer as its own parent", async () => {
-    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
-    await deleteCustomer(id, "test cleanup");
-    await expect(createCustomer({ code: "ACME", name: "Acme Reborn", parentId: id }))
-      .rejects.toThrow(/circular|ancestor/i);
+    // Re-using the code makes a brand new row (see createCustomer) — it starts with no
+    // addresses or contacts of its own, and the dead customer's records stay behind under the
+    // dead customer's own id.
+    const reused = await createCustomer({ code: "ACME", name: "Brand New Co" });
+    expect(reused.id).not.toBe(id);
+    expect(await listAddresses(reused.id)).toHaveLength(0);
+    expect(await listContacts(reused.id)).toHaveLength(0);
   });
 
   // Group B3: the hierarchy walk resolves a requested parent with a bare findUnique, and a fresh
@@ -168,15 +179,6 @@ describe("customers service", () => {
     const { id: childId } = await createCustomer({ code: "CHILD", name: "Child" });
     await deleteCustomer(parentId, "test cleanup");
     await expect(updateCustomer(childId, { parentId })).rejects.toThrow(/parent/i);
-  });
-
-  it("refuses a soft-deleted customer as a parent on revival", async () => {
-    const { id: parentId } = await createCustomer({ code: "GONE", name: "Gone" });
-    await deleteCustomer(parentId, "test cleanup");
-    const { id: dupId } = await createCustomer({ code: "DUP", name: "Dup" });
-    await deleteCustomer(dupId, "test cleanup");
-    await expect(createCustomer({ code: "DUP", name: "Dup Reborn", parentId }))
-      .rejects.toThrow(/parent/i);
   });
 
   // Group B4 (round-4 review): termsId was validated as nothing but a string, so the physical
@@ -314,24 +316,13 @@ describe("customers service", () => {
     await expect(deleteCustomer(id, "test cleanup")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("revival resets every field a genuine create would default, not just active", async () => {
-    const fresh = await createCustomer({ code: "FRESH", name: "Fresh Co" });
-    const freshRow = await getCustomer(fresh.id);
+  it("allows renaming a customer's code onto one only a deleted row still holds", async () => {
+    const dead = await createCustomer({ code: "OLD", name: "Gone" });
+    await deleteCustomer(dead.id, "no longer a customer");
+    const live = await createCustomer({ code: "KEEP", name: "Still here" });
 
-    const { id } = await createCustomer({
-      code: "ACME", name: "Acme", creditHold: true, taxable: false, surchargeOptOut: true,
-      cod: true, defaultPo: "OLD-PO", orderNotes: "old notes", shippingNotes: "old ship notes",
-      invoiceNotes: "old invoice notes", creditLimit: "9999.00", financeChargeRate: "0.02",
-    });
-    await deleteCustomer(id, "test cleanup");
+    await updateCustomer(live.id, { code: "OLD" });
 
-    const revived = await createCustomer({ code: "ACME", name: "Acme Reborn" });
-    expect(revived.id).toBe(id);
-    const revivedRow = await getCustomer(revived.id);
-
-    const identityFields = ["id", "code", "name"] as const;
-    const omitIdentity = (row: typeof freshRow) =>
-      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
-    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+    expect((await getCustomer(live.id)).code).toBe("OLD");
   });
 });

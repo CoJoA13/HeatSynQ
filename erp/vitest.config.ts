@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   test: {
@@ -7,5 +7,6 @@ export default defineConfig({
     setupFiles: ["tests/helpers/setup.ts"],
     fileParallelism: false, // one shared test DB — keep files sequential
   },
-  resolve: { alias: { "@": path.resolve(__dirname, "src") } },
+  // `__dirname` does not exist in an ES module; this is the same idiom eslint.config.mjs uses.
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
 });

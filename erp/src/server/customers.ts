@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
@@ -64,17 +64,6 @@ function decimalField(precision: number, scale: number) {
 // comment on decimalField above and the matching comment on the schema fields themselves.
 const creditLimitField = decimalField(12, 2);
 const financeChargeRateField = decimalField(6, 4);
-
-// A revived row must be indistinguishable from a fresh create — the owner typing a code that
-// happens to match a deleted one is creating a customer, not resurrecting its commercial terms.
-// The row id is reused only because the unique constraint forces it. Every field the caller
-// does not supply on revival resets to its schema default, exactly as a genuine create would;
-// the caller's input is then applied over the top.
-const REVIVAL_DEFAULTS = {
-  parentId: null, termsId: null, creditLimit: null, creditHold: false, cod: false,
-  taxable: true, defaultPo: "", orderNotes: "", shippingNotes: "", invoiceNotes: "",
-  surchargeOptOut: false, financeChargeRate: null,
-} as const;
 
 const CREATE = z.object({
   code: z.string().trim().min(1).max(30),
@@ -167,9 +156,9 @@ async function assertTermsExists(termsId: string): Promise<void> {
 
 /**
  * Rejects a parent chain that would make `id` its own ancestor, and rejects a soft-deleted
- * parent. Only meaningful for a row that already exists (update, or the revival path of
- * create) — a genuinely fresh row cannot yet be anyone's ancestor, so createCustomer calls
- * assertParentExists directly instead for that case.
+ * parent. Only meaningful for a row that already exists — a genuinely fresh row cannot yet be
+ * anyone's ancestor, so createCustomer calls assertParentExists directly instead; only
+ * updateCustomer calls this.
  */
 async function assertNoCycle(
   id: string, parentId: string | null | undefined, db: Db = prisma,
@@ -191,33 +180,23 @@ async function assertNoCycle(
 export async function createCustomer(input: Record<string, unknown>): Promise<{ id: string }> {
   const data = CREATE.parse(input);
 
-  // `code` is unique and deletion is soft, so a deleted code would otherwise be permanently
-  // unusable — the owner deletes a typo, retypes it, and gets "already exists" for a row nothing
-  // can display. Mirrors createReference (src/server/reference.ts) and createRole.
-  const existing = await prisma.customer.findUnique({ where: { code: data.code } });
-  if (existing && !existing.deletedAt) throw new HttpError(400, "A customer with that code already exists");
+  // Unique only among live rows (see prisma/schema.prisma), so a deleted code is free to be
+  // re-used and simply becomes a new row. findFirst, NOT findUnique: the column is still typed
+  // unique on the client, so findUnique compiles and silently returns the soft-deleted row.
+  const existing = await prisma.customer.findFirst({
+    where: { code: data.code, deletedAt: null },
+    select: { id: true },
+  });
+  if (existing) throw new HttpError(400, "A customer with that code already exists");
 
   // A genuinely fresh row does not exist yet, so it cannot be in anyone's parent chain — only
-  // existence/non-deletion of the requested parent needs checking. A revival's row already
-  // exists under `existing.id` (the code's original id, reused), exactly like update, so it
-  // needs the full cycle guard: passing the deleted row's own id as parentId would otherwise
-  // make it its own ancestor the moment it comes back.
-  if (existing) await assertNoCycle(existing.id, data.parentId);
-  else if (data.parentId) await assertParentExists(data.parentId);
+  // existence/non-deletion of the requested parent needs checking.
+  if (data.parentId) await assertParentExists(data.parentId);
   if (data.termsId) await assertTermsExists(data.termsId);
 
-  const row = existing
-    ? await auditedUpdate("customer", existing.id, () =>
-        withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-          // A revived row must come back live unless the caller explicitly asked otherwise;
-          // returning it still inactive would make a "successful" create silently invisible.
-          prisma.customer.update({
-            where: { id: existing.id },
-            data: { ...REVIVAL_DEFAULTS, ...data, deletedAt: null, active: data.active ?? true },
-          })))
-    : await auditedCreate("customer", data, () =>
-        withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-          prisma.customer.create({ data })));
+  const row = await auditedCreate("customer", data, () =>
+    withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
+      prisma.customer.create({ data })));
   return { id: row.id };
 }
 
@@ -298,16 +277,16 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
   const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
   if (children > 0) throw new HttpError(400, "That customer still has child customers");
 
-  // Addresses and contacts have no meaning without their parent, and `code` is reusable on
-  // revival (see REVIVAL_DEFAULTS above) — a re-created customer must start with none, exactly
-  // like a fresh create, or a reused code would resurrect the previous occupant's dock and
-  // contact onto whoever types that code next (this was Fix 2 in the final review: paste
-  // supplies only the four CUSTOMER_PASTE_COLUMNS and cannot touch addresses, so a re-pasted
-  // deleted code silently shipped to the previous customer's dock). Soft-deleting the children
-  // here, in the same transaction as the customer row and through the same audited* helpers as
-  // every other mutation, is what makes that guarantee hold: listAddresses/listContacts already
-  // filter on deletedAt: null, so once these rows carry a deletedAt they simply won't show up
-  // under the revived row.
+  // Addresses and contacts have no meaning without their parent, so they are soft-deleted
+  // alongside it, in the same transaction and through the same audited* helpers as every other
+  // mutation — consistent with every other soft-delete cascade in this file, and with what
+  // listAddresses/listContacts already assume (deletedAt: null). A re-used code now produces a
+  // brand new customer row (see createCustomer above), so this is no longer what stops a reused
+  // code from resurrecting the previous occupant's dock and contact onto whoever types that code
+  // next — a new row's id was never attached to the old rows in the first place — but the
+  // cascade is still the correct outcome: a deleted customer's addresses and contacts should not
+  // remain live and undeleted (this was Fix 2 in the final review, back when a reused code did
+  // reuse the row).
   await withDbErrors({ entity: "Customer" }, () => prisma.$transaction(async (tx) => {
     const [addresses, contacts] = await Promise.all([
       tx.customerAddress.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),

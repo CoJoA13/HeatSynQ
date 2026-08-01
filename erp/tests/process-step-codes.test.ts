@@ -31,50 +31,34 @@ describe("process step codes", () => {
     await expect(createStepCode({ code: "HT-01", name: "Other" })).rejects.toThrow(HttpError);
   });
 
-  it("revives a soft-deleted code when the same code is re-created", async () => {
-    const { id: firstId } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+  it("re-creating a deleted code makes a NEW code with no inherited fields", async () => {
+    const gl = await createReference("glAccount", { name: "4010" });
+    const { id: firstId } = await createStepCode({
+      code: "HT-01", name: "Austenitize", glAccountId: gl.id, equipmentTag: "F1",
+    });
+    await setStepFields(firstId, [{ label: "Soak", type: "NUMBER", unit: "min", sort: 0 }]);
+
+    // Confirm the non-default values actually took before the delete — otherwise the
+    // "resets to default" assertions below could pass even if they never applied in the first
+    // place (Task 7's review caught exactly this: a field seeded with its own default value).
+    const firstRow = (await listStepCodes()).find((c) => c.id === firstId)!;
+    expect(firstRow).toMatchObject({ glAccountId: gl.id, equipmentTag: "F1" });
+    expect(firstRow.fields).toHaveLength(1);
+
     await deleteStepCode(firstId);
-    expect(await listStepCodes()).toHaveLength(0);
 
     const { id: secondId } = await createStepCode({ code: "HT-01", name: "Renamed" });
-    expect(secondId).toBe(firstId);
-    expect(await listStepCodes()).toHaveLength(1);
-    expect((await listStepCodes())[0]).toMatchObject({ code: "HT-01", name: "Renamed" });
-  });
+    expect(secondId).not.toBe(firstId);
 
-  it("revives a soft-deleted, previously-inactive code as active by default", async () => {
-    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
-    await updateStepCode(id, { active: false });
-    await deleteStepCode(id);
+    const [fresh] = await listStepCodes();
+    expect(fresh).toMatchObject({
+      id: secondId, code: "HT-01", name: "Renamed",
+      glAccountId: null, equipmentTag: "", active: true, needsGlAccount: true,
+    });
+    expect(fresh.fields).toEqual([]);
 
-    await createStepCode({ code: "HT-01", name: "Austenitize" });
-
-    // A caller who gets no error back on create must see the row in a plain, default list —
-    // reviving it still `active: false` would make it invisible with no signal anything is wrong.
-    expect(await listStepCodes()).toHaveLength(1);
-  });
-
-  it("revival resets scalar fields and field defs a genuine create would default, not just active", async () => {
-    // Fix 3 (final review): glAccountId/equipmentTag are optional on createStepCode's input, and
-    // `fields` is a child table replaced through setStepFields — a revived code used to keep its
-    // predecessor's GL account, equipment tag, and field definitions. Drift-proof like
-    // customers.test.ts's equivalent test: compare two field-for-field rows, never a literal.
-    const gl = await createReference("glAccount", { name: "4010" });
-    const fresh = await createStepCode({ code: "FRESH", name: "Fresh Code" });
-    const freshRow = (await listStepCodes()).find((c) => c.id === fresh.id)!;
-
-    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize", glAccountId: gl.id, equipmentTag: "Furnace 3" });
-    await setStepFields(id, [{ label: "Temperature", type: "NUMBER", unit: "F", sort: 1 }]);
-    await deleteStepCode(id);
-
-    const revived = await createStepCode({ code: "HT-01", name: "Reborn" });
-    expect(revived.id).toBe(id);
-    const revivedRow = (await listStepCodes()).find((c) => c.id === id)!;
-
-    const identityFields = ["id", "code", "name"] as const;
-    const omitIdentity = (row: typeof freshRow) =>
-      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
-    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+    // A real create entry under its own identity — the defect issue #10 was filed for.
+    expect((await readAudit("processStepCode", secondId)).map((e) => e.action)).toEqual(["create"]);
   });
 
   it("still rejects a duplicate code when the existing row is not soft-deleted", async () => {

@@ -22,6 +22,13 @@ COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 COPY --from=build /app/prisma ./prisma
+# Prisma 7 moved the datasource URL out of schema.prisma's `datasource` block (no more
+# `url = env("DATABASE_URL")` there) and into prisma.config.ts's `datasource.url`. `prisma
+# migrate deploy` reads the config file, not the schema, for that URL, so prisma.config.ts
+# has to ship in the run image too — without it the CLI fails at container start with
+# "The datasource.url property is required in your Prisma config file when using prisma
+# migrate deploy," even though DATABASE_URL is set correctly in the environment.
+COPY --from=build /app/prisma.config.ts ./
 # `prisma migrate deploy` at container start needs the full "prisma" CLI. Copying only
 # node_modules/prisma + node_modules/@prisma (as CLI docs historically suggest) is not
 # enough on Prisma 6.19: the CLI unconditionally loads @prisma/config, which pulls in its

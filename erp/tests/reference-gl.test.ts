@@ -70,19 +70,19 @@ describe("GL account reference", () => {
     expect(row.description).toBe("Heat Treat");
   });
 
-  it("revives a soft-deleted row when the same name is re-created", async () => {
-    const { id: firstId } = await createReference("glAccount", { name: "4010", description: "Heat Treat" });
-    await deleteReference("glAccount", firstId);
-    expect(await listReference("glAccount")).toHaveLength(0);
+  it("re-creating a deleted name makes a NEW row carrying none of the predecessor", async () => {
+    const first = await createReference("glAccount", { name: "4010", description: "old" });
+    await deleteReference("glAccount", first.id);
 
-    const { id: secondId } = await createReference("glAccount", { name: "4010", description: "Revived" });
-    expect(secondId).toBe(firstId);
+    const second = await createReference("glAccount", { name: "4010" });
+    expect(second.id).not.toBe(first.id);
 
-    const rows = await prisma.glAccount.findMany();
-    expect(rows).toHaveLength(1);
-    expect(rows[0].deletedAt).toBeNull();
-    expect(rows[0].description).toBe("Revived");
-    expect(await listReference("glAccount")).toHaveLength(1);
+    const rows = await listReference("glAccount");
+    const fresh = rows.find((r) => r.id === second.id);
+    expect(fresh?.description).toBe("");   // schema default, not "old"
+    expect(fresh?.active).toBe(true);
+
+    expect((await readAudit("glAccount", second.id)).map((e) => e.action)).toEqual(["create"]);
   });
 
   it("still rejects a duplicate when the existing row is not soft-deleted", async () => {
@@ -91,40 +91,14 @@ describe("GL account reference", () => {
     expect(await prisma.glAccount.findMany()).toHaveLength(1);
   });
 
-  it("revival resets extra fields a genuine create would default, not just active", async () => {
-    // Fix 3 (final review): `description` is optional on createReference's input, so a revived
-    // GL account used to keep its predecessor's description when the caller didn't supply one.
-    // Drift-proof the way customers.test.ts's equivalent test is: compare two field-for-field
-    // rows rather than asserting a literal default value.
-    const fresh = await createReference("glAccount", { name: "9999" });
-    const [freshRow] = await listReference("glAccount", { includeInactive: true });
+  it("allows renaming a reference row onto a name only a deleted row still holds", async () => {
+    const dead = await createReference("material", { name: "OLD" });
+    await deleteReference("material", dead.id);
+    const live = await createReference("material", { name: "KEEP" });
 
-    const { id } = await createReference("glAccount", { name: "4010", description: "Old description" });
-    await deleteReference("glAccount", id);
+    await updateReference("material", live.id, { name: "OLD" });
 
-    const revived = await createReference("glAccount", { name: "4010" });
-    expect(revived.id).toBe(id);
-    const revivedRow = (await listReference("glAccount", { includeInactive: true })).find((r) => r.id === id)!;
-
-    // listReference returns every column, including createdAt/updatedAt — genuinely distinct
-    // timestamps between the two rows, not part of what revival is being checked against.
-    const identityFields = ["id", "name", "createdAt", "updatedAt"] as const;
-    const omitIdentity = (row: typeof freshRow) =>
-      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
-    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
-    expect(fresh.id).not.toBe(revived.id);
-  });
-
-  it("revives a soft-deleted, previously-inactive row as active by default", async () => {
-    const { id } = await createReference("glAccount", { name: "4010" });
-    await updateReference("glAccount", id, { active: false });
-    await deleteReference("glAccount", id);
-
-    await createReference("glAccount", { name: "4010" });
-
-    // A caller who gets no error back on create must see the row in a plain, default list —
-    // reviving it still `active: false` would make it invisible with no signal anything is wrong.
-    expect(await listReference("glAccount")).toHaveLength(1);
+    expect((await listReference("material")).find((r) => r.id === live.id)?.name).toBe("OLD");
   });
 });
 
@@ -148,6 +122,23 @@ describe("reference delegate contract", () => {
 
     await deleteReference(kind, id);
     expect(await listReference(kind, { includeInactive: true })).toHaveLength(0);
+  });
+
+  it("permits a deleted row and a live row to share a name, but not two live rows", async () => {
+    const first = await createReference("material", { name: "4140" });
+    await deleteReference("material", first.id);
+
+    // The whole point of the partial index: the archived row keeps its real name.
+    const archived = await prisma.material.findUnique({ where: { id: first.id } });
+    expect(archived?.name).toBe("4140");
+    expect(archived?.deletedAt).not.toBeNull();
+
+    // A live row may now take that name — and is a genuinely new row.
+    const second = await createReference("material", { name: "4140" });
+    expect(second.id).not.toBe(first.id);
+
+    // But two live rows may not.
+    await expect(createReference("material", { name: "4140" })).rejects.toThrow(/already exists/i);
   });
 });
 

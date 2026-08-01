@@ -24,7 +24,8 @@ cd erp
 cp .env.example .env              # first run only
 docker compose up -d db           # Postgres 16; creates erp + erp_test via db-init/
 npm install
-npx prisma migrate deploy         # dev DB
+npx prisma generate                # client is gitignored; generate before typechecking or testing
+npx prisma migrate deploy          # dev DB
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed                   # admin/admin
 npm run dev                       # http://localhost:3000
@@ -33,7 +34,7 @@ npm run dev                       # http://localhost:3000
 Quality gates — all three must stay green:
 
 ```bash
-npm test                          # vitest, 75 integration tests against the real erp_test DB
+npm test                          # vitest, 258 integration tests against the real erp_test DB
 npx tsc --noEmit
 npx eslint src tests
 ```
@@ -53,10 +54,13 @@ There is one shared test database and no per-run migration. After editing `prism
 
 ```bash
 npx prisma migrate dev                                                     # dev DB, creates the migration
+npx prisma generate                                                        # v7 no longer does this for you
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 ```
 
-Skipping the second command leaves the tests running against a stale schema. `npx prisma generate` is also required before typechecking a fresh checkout — without the generated client, Prisma callback parameters surface as implicit-`any` errors in `src/server/` and the tests.
+Skipping the second command leaves you typechecking against a stale client; skipping the third leaves the tests running against a stale schema. `npx prisma generate` is also required before typechecking a fresh checkout — the client is generated into `prisma/generated/`, and is gitignored, so without it every Prisma type in `src/server/` and the tests is missing.
+
+`--skip-generate` and `--skip-seed` no longer exist as flags, and `migrate diff --to-schema-datamodel` is now `--to-schema`. Seeding is now declared in `prisma.config.ts` (`migrations.seed`), not `package.json`'s `prisma.seed` key — v7 no longer reads that.
 
 ## Architecture
 
@@ -78,7 +82,7 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 
 **Audit** (`src/server/audit.ts`). Every mutation goes through `auditedCreate` / `auditedUpdate` / `auditedSoftDelete` — `settings.ts`'s direct write is the one sanctioned exception. `auditedUpdate` snapshots before and after, and `SNAPSHOT_INCLUDE` decides which relations are pulled into those snapshots. **When you add an auditable entity, extend both `AuditableModel` and `SNAPSHOT_INCLUDE`** — omitting the relations means changes made through join tables never show up in history. `redact()` scrubs keys matching password/token/secret/signatureImage recursively, but treat it as defense-in-depth: don't hand a secret-bearing payload to the audit layer in the first place.
 
-**Deletion is always soft** (`deletedAt`), with active flags for hiding. Hard deletes only in tests. Reviving a soft-deleted name must clear the stale permissions attached to it.
+**Deletion is always soft** (`deletedAt`), with active flags for hiding. Hard deletes only in tests. Unique columns on soft-deletable models are unique **only among live rows** (a partial index filtered on `deletedAt IS NULL`), so re-using a deleted code creates a genuinely new row with its own id and its own audit history — there is no revival-on-create, and adding one back is a regression. **Never `findUnique`/`upsert` on such a column**: the generated client still types it unique, so both compile, and `findUnique` silently returns the deleted row. Use `findFirst({ where: { code, deletedAt: null } })`. `tests/partial-unique-sweep.test.ts` enforces both halves.
 
 **Settings** (`src/server/settings.ts`) is a typed zod registry validated on both read and write, guarded with `Object.hasOwn` against prototype keys.
 
@@ -89,6 +93,7 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 - **Any server-rendered page that fetches data must call `requireUser` itself.** The middleware does not authorize it. Phase 1 pages sidestep this by being client components against guarded APIs.
 - **Route handler tests must pass ctx**: `handler(request, { params: Promise.resolve({}) })`. The `Handler` type requires it — Next 15's ParamCheck rejects an optional ctx.
 - Tests share one database and call `truncateAll()` in `beforeEach`; `vitest.config.ts` sets `fileParallelism: false` to keep that safe. Don't parallelize them.
+- **`npx prisma migrate dev` needs a TTY.** It refuses outright in a non-interactive shell — including a Claude Code session driving Bash — with "the environment is non-interactive, which is not supported," and neither `CI=true` nor `--create-only` gets past it (it worked fine before Prisma 7). Without a TTY: `npx prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --script`, read the output in full, hand-write it into a new `prisma/migrations/<timestamp>_<name>/migration.sql`, then apply with the usual two `migrate deploy` calls. That is how this branch's one migration was made (handoff §5.18).
 
 ## Working conventions
 

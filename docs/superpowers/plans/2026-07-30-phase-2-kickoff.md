@@ -19,7 +19,7 @@
 Everything below is soft-delete + active-flag + audited (extend `AuditableModel` and, where relations are mutated through a parent, `SNAPSHOT_INCLUDE`). Child entities that get their own CRUD (addresses, contacts, price breaks, steps) are audited as their own models — cleaner history than giant parent snapshots.
 
 ### 2.1 Customer
-- **`code` (required, unique) + `name` (required)** — owner decision 2026-07-30, supersedes the spec's name-only Customer. The code is owner-assigned (`ACME`), matches Visual Shop's customer-id key so staff carry the habit, and is what order entry and global search type. Because `code` is unique **and** deletion is soft, it needs **revival-on-create** — see the rule in §2.6.
+- **`code` (required, unique) + `name` (required)** — owner decision 2026-07-30, supersedes the spec's name-only Customer. The code is owner-assigned (`ACME`), matches Visual Shop's customer-id key so staff carry the habit, and is what order entry and global search type. Because `code` is unique **and** deletion is soft, it needs a uniqueness rule that survives soft delete — see §2.6, **superseded 2026-08-01**: not revival-on-create (removed), a partial-unique index instead.
 - **`parentId` (nullable self-reference)** — owner decision 2026-07-30. Divisions of one company can hang off a parent. Phase 2B stores and displays only; Phase 5 A/R uses it so one check pays several children's invoices and statements roll up. Reject cycles (a customer may not be its own ancestor) and refuse to soft-delete a customer that still has active children, mirroring `deleteRole`'s "assigned to users" guard.
 - Other fields: active; credit limit (nullable decimal), **credit hold** (bool), COD (bool), taxable (bool), terms (ref), default PO text; standing instruction/note fields that later surface at order entry, shipping, and invoicing (model now as three text columns: `orderNotes`, `shippingNotes`, `invoiceNotes`); surcharge opt-out (bool) and finance-charge override rate (nullable) — consumed in Phase 5, modeled now to avoid migration churn.
 - **No salesperson field** — the owner confirmed 2026-07-30 that this shop does not assign salespeople.
@@ -36,8 +36,35 @@ Everything below is soft-delete + active-flag + audited (extend `AuditableModel`
 - ~~**Salesperson**~~ — **removed in Phase 2B** (owner, 2026-07-30: this shop does not assign salespeople). It shipped in 2A and is unreferenced; leaving it would put a permanently-empty pick-list in the admin screens. Removing it means dropping the model, its entries in `REFERENCE_KINDS` / `REFERENCE_LABELS` / `REFERENCE_EXTRA_FIELDS` / `EXTRA_SCHEMAS` / `AuditableModel` / `SNAPSHOT_INCLUDE`, the tests asserting an eleven-kind list, and a migration. Spec §7.8's "sales by salesperson" report is dropped with it.
 - All: name + active + audit. No behavior beyond being pick-lists yet.
 
-### 2.6 Rule learned in Phase 2A — applies to every entity from here
-**Any model with a `@unique` column plus soft delete needs revival-on-create.** Without it the unique value is permanently burned by a row nothing can display: the owner deletes a typo, retypes it, and gets "already exists" for something invisible. This was ruled Critical twice in 2A (reference kinds, then process step codes). Revival must clear `deletedAt`, update the fields from the new input, **and reset `active` to true** unless the caller passed it explicitly — omitting that reset was itself a Critical regression, because a row deactivated before deletion came back invisible. Copy `createReference` in `src/server/reference.ts`. Customer `code` is the first case in 2B; parts will have more.
+### 2.6 Rule learned in Phase 2A — superseded 2026-08-01, applies to every entity from here in its new form
+
+**SUPERSEDED 2026-08-01, branch `prisma-7-upgrade`.** Do not build revival-on-create for
+parts or anything else in 2C — it was removed from every site it existed at (`customer`,
+`role`, all ten reference kinds, `processStepCode`), on the owner's ruling (issue #10), because
+reusing a dead row also reused its **audit identity** (one company's history rendering under an
+unrelated company's record). Full record: `docs/HANDOFF.md` §5.11 and §5.18. Enforcement:
+`tests/partial-unique-sweep.test.ts` fails the build on a revival site or a `findUnique`/`upsert`
+keyed on one of these columns.
+
+The reasoning below is kept because it still explains *why* a plain `@unique` column plus soft
+delete is dangerous — that danger is what motivated the fix that replaced this rule, not a reason
+to rebuild what this section originally prescribed.
+
+~~**Any model with a `@unique` column plus soft delete needs revival-on-create.**~~ Without a fix,
+the unique value is permanently burned by a row nothing can display: the owner deletes a typo,
+retypes it, and gets "already exists" for something invisible. This was ruled Critical twice in
+2A (reference kinds, then process step codes). ~~Revival must clear `deletedAt`, update the fields
+from the new input, and reset `active` to true unless the caller passed it explicitly — omitting
+that reset was itself a Critical regression, because a row deactivated before deletion came back
+invisible. Copy `createReference` in `src/server/reference.ts`. Customer `code` is the first case
+in 2B; parts will have more.~~
+
+**What actually governs now:** the column is unique **only among live rows** — a partial index,
+`@@unique([col], where: raw("\"deletedAt\" IS NULL"))` — so a re-used code/name is simply a new
+row with its own id and its own history; there is nothing to revive. `createReference` in
+`src/server/reference.ts` no longer contains revival — don't copy it expecting that behavior. Give
+any new unique column on a soft-deletable model (parts' included) the same partial-unique
+treatment instead of a plain `@unique`.
 
 ### 2.3 Part (memorized) — the heart of Phase 2
 - Belongs to one customer. **Part number required; unique per customer** — confirmed by the owner 2026-07-30. Unique constraint is `(customerId, partNumber)`; there is deliberately **no global unique index** on part number.
