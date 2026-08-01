@@ -20,21 +20,6 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
 
 const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });
 
-// A revived row must be indistinguishable from a fresh create — mirrors REVIVAL_DEFAULTS in
-// customers.ts. Every EXTRA_SCHEMAS field is optional, so a caller reviving a row (retyping a
-// deleted name) without supplying its extra fields would otherwise leave the old values in place
-// (Prisma's update only touches keys present in `data`): a revived GL account kept its old
-// description, a revived inspection code its old default scale. Values here match each column's
-// schema default (see prisma/schema.prisma), and the caller's input is applied over the top.
-const REVIVAL_EXTRA_DEFAULTS: Record<ReferenceKind, Record<string, unknown>> = {
-  glAccount: { description: "" },
-  inspectionCode: { defaultScaleId: null },
-  paymentType: { glAccountId: null },
-  commentSnippet: { text: "" },
-  specification: { text: "" },
-  material: {}, inspectionScale: {}, containerType: {}, carrier: {}, terms: {},
-};
-
 /** Exported so paste.ts guards on the same rule rather than re-deriving it. */
 export function assertKind(kind: string): asserts kind is ReferenceKind {
   if (!(REFERENCE_KINDS as readonly string[]).includes(kind)) {
@@ -45,7 +30,9 @@ export function assertKind(kind: string): asserts kind is ReferenceKind {
 // Every reference kind is a Prisma delegate with the same id/name/active/deletedAt shape.
 type RefDelegate = {
   findMany: (a: object) => Promise<ReferenceRow[]>;
-  findUnique: (a: { where: { name: string } }) => Promise<(ReferenceRow & { deletedAt: Date | null }) | null>;
+  // findFirst, not findUnique: `name` is unique only among live rows, but the generated client
+  // still types it unique — findUnique would compile and return the soft-deleted row.
+  findFirst: (a: { where: object; select?: object }) => Promise<{ id: string } | null>;
   create: (a: { data: object }) => Promise<{ id: string }>;
   update: (a: { where: { id: string }; data: object }) => Promise<{ id: string }>;
 };
@@ -80,27 +67,21 @@ export async function createReference(kind: string, input: Record<string, unknow
   // know BASE guarantees so `data.name` below type-checks as `string`, not `unknown`.
   const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict().parse(input) as z.infer<typeof BASE> & Record<string, unknown>;
 
-  // A soft-deleted row still occupies its unique `name`, so retyping the same name must revive
-  // that row rather than 400 on a duplicate the caller can no longer see (or silently orphan it
-  // behind a second row). Mirrors createRole's revival pattern (see src/server/roles.ts).
-  const existing = await delegate(kind).findUnique({ where: { name: data.name } });
-  if (existing && !existing.deletedAt) {
+  // A soft-deleted row still occupies its unique `name`, but is invisible to every list — so a
+  // live duplicate is the only thing that must 400 here. `name` is unique only among live rows
+  // (Task 4's partial index), hence findFirst filtered on deletedAt rather than findUnique, which
+  // would compile and silently return the soft-deleted row.
+  const existing = await delegate(kind).findFirst({
+    where: { name: data.name, deletedAt: null },
+    select: { id: true },
+  });
+  if (existing) {
     throw new HttpError(400, `A ${REFERENCE_LABELS[kind].singular.toLowerCase()} with that name already exists`);
   }
 
-  const row = existing
-    ? await auditedUpdate(kind, existing.id, () =>
-        withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-          // A re-created row must come back live unless the caller explicitly asked otherwise —
-          // reviving it still `active: false` (its state at the moment it was deleted) would let
-          // a "successful" create silently vanish from the default list with no error at all.
-          delegate(kind).update({
-            where: { id: existing.id },
-            data: { ...REVIVAL_EXTRA_DEFAULTS[kind], ...data, deletedAt: null, active: data.active ?? true },
-          })))
-    : await auditedCreate(kind, data, () =>
-        withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-          delegate(kind).create({ data })));
+  const row = await auditedCreate(kind, data, () =>
+    withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
+      delegate(kind).create({ data })));
   return { id: row.id };
 }
 
