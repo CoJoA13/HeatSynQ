@@ -79,6 +79,21 @@ function CustomerDetail({ id }: { id: string }) {
   const [addingAddress, setAddingAddress] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // F4: a failed Terms or parent-options fetch used to report into `error`, the same state
+  // `load()` resets to null on every successful customer refresh (below, and again after save()/
+  // saveParent()/call() succeed). That refresh runs far more often than these two effects, so the
+  // failure was wiped almost immediately while the corresponding options array stayed empty — and
+  // the file's own comment on the Terms/parent <select>s explains why an empty options array is
+  // dangerous, not just cosmetic: a controlled <select> whose value matches no <option> silently
+  // renders "— none —", misrepresenting stored data and risking overwriting a real (if inactive)
+  // Terms or parent on the next interaction. `optionsError` is its own state specifically so that
+  // no unrelated refresh can clear it out from under the user; it is rendered as its own banner,
+  // separate from `error`/`permsError` below, and reported per-source rather than clobbering an
+  // earlier failure if both fetches happen to fail.
+  const [optionsError, setOptionsError] = useState<string | null>(null);
+  const addOptionsError = useCallback((message: string) => {
+    setOptionsError((cur) => (cur ? `${cur} ${message}` : message));
+  }, []);
   // Permissions don't change while this page is mounted, so one fetch is enough (usePermissions,
   // src/lib/use-permissions.ts — shared with customers/page.tsx and ReferenceTable.tsx). A
   // failure surfaces through permsError, folded into the same error banner below, instead of
@@ -99,8 +114,8 @@ function CustomerDetail({ id }: { id: string }) {
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
   // customers.edit but not admin.view must still see Terms options, and a failure here is
-  // reported through the same error banner as `load()` rather than swallowed into a silent
-  // empty dropdown that would look exactly like a shop with no terms configured.
+  // reported through `optionsError` (F4) rather than swallowed into a silent empty dropdown that
+  // would look exactly like a shop with no terms configured.
   //
   // includeInactive=1 for the same reason the parent selector uses it (R3, below): marking a
   // Terms record inactive hides it from the default reference list but does NOT clear it from
@@ -114,8 +129,8 @@ function CustomerDetail({ id }: { id: string }) {
   // this list only has to account for the inactive case.)
   useEffect(() => {
     api<Term[]>("/api/picklists/terms?includeInactive=1").then(setTerms)
-      .catch((e) => setError(`Could not load terms: ${(e as Error).message}`));
-  }, []);
+      .catch((e) => addOptionsError(`Could not load terms: ${(e as Error).message}`));
+  }, [addOptionsError]);
   // Parent-selector options: every OTHER non-deleted customer, fetched the same way terms are —
   // once, independent of `load()`, gated on the same customers.view permission that got the
   // user onto this page in the first place, so there's no permission mismatch to worry about
@@ -135,11 +150,11 @@ function CustomerDetail({ id }: { id: string }) {
   // A failed fetch produces exactly the "— none —" misread described above (the empty options
   // list has no entry matching c.parentId), and saveParent("") on the next interaction would
   // then write parentId: null over a real division link — so, like Terms above, the failure is
-  // reported through the same error banner rather than swallowed into a silent empty list.
+  // reported through `optionsError` (F4) rather than swallowed into a silent empty list.
   useEffect(() => {
     api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers)
-      .catch((e) => setError(`Could not load parent options: ${(e as Error).message}`));
-  }, []);
+      .catch((e) => addOptionsError(`Could not load parent options: ${(e as Error).message}`));
+  }, [addOptionsError]);
 
   // Per-key request queue: guards against optimistic saves committing out of order. Without
   // this, two overlapping PUTs for the same field (an ordinary double-click on a checkbox before
@@ -361,7 +376,7 @@ function CustomerDetail({ id }: { id: string }) {
     });
   }
 
-  if (!c) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
+  if (!c) return <div className="p-6">{error ?? permsError ?? optionsError ?? "Loading…"}</div>;
 
   return (
     <div className="p-6">
@@ -391,6 +406,13 @@ function CustomerDetail({ id }: { id: string }) {
       {c.parentCode && <p className="mb-3 text-sm text-slate-500">Division of {c.parentCode}</p>}
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
+      {/* F4: its own banner, its own state — a customer refresh (load(), which resets `error` to
+          null on every success) must not be able to silently clear a report that the Terms or
+          parent options failed to load, since the Terms/Parent <select>s below stay empty (and
+          silently misrepresent stored data) until the page is reloaded. */}
+      {optionsError && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{optionsError}</p>
       )}
 
       <section className="mb-6 rounded border bg-white p-4">
