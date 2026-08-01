@@ -229,6 +229,12 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
   const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
   if (children > 0) throw new HttpError(400, "That customer still has child customers");
 
+  // A count, not a blocker list (spec §11): the parts list filtered by this customer already
+  // names every part with links, so this guard only needs to say no and let that screen answer
+  // "which ones".
+  const parts = await prisma.part.count({ where: { customerId: id, deletedAt: null } });
+  if (parts > 0) throw new HttpError(400, "That customer still has parts");
+
   // Addresses and contacts have no meaning without their parent, so they are soft-deleted
   // alongside it, in the same transaction and through the same audited* helpers as every other
   // mutation — consistent with every other soft-delete cascade in this file, and with what

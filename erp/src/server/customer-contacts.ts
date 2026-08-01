@@ -52,16 +52,21 @@ export async function addContact(customerId: string, input: Record<string, unkno
   return { id: row.id };
 }
 
-export async function updateContact(contactId: string, input: Record<string, unknown>): Promise<void> {
+export async function updateContact(
+  customerId: string, contactId: string, input: Record<string, unknown>,
+): Promise<void> {
   const data = EDIT.parse(input);
-  const current = await prisma.customerContact.findFirst({ where: { id: contactId, deletedAt: null } });
+  const current = await prisma.customerContact.findFirst({
+    where: { id: contactId, customerId, deletedAt: null },
+  });
   if (!current) throw new HttpError(404, "Contact not found");
-  // The findFirst above gives the ordinary "already gone" case a well-labelled 404, but it is a
-  // separate statement from the write: a DELETE committing in between would otherwise leave this
-  // update modifying a soft-deleted row and appending an "update" entry after that row's
-  // "delete" entry, while reporting success. `updateMany` with `deletedAt: null` in the WHERE
-  // makes claiming the row and writing it one atomic statement, and throwing from inside
-  // auditedUpdate's callback means the audit entry is never written when the row was lost.
+  // The findFirst above gives the ordinary "already gone" (or wrong-customer) case a
+  // well-labelled 404, but it is a separate statement from the write: a DELETE committing in
+  // between would otherwise leave this update modifying a soft-deleted row and appending an
+  // "update" entry after that row's "delete" entry, while reporting success. `updateMany` with
+  // `deletedAt: null` AND `customerId` in the WHERE makes claiming the row and writing it one
+  // atomic statement, and throwing from inside auditedUpdate's callback means the audit entry is
+  // never written when the row was lost or belonged to a different customer.
   //
   // The mutation and its audit row also share one transaction (the gap handoff §6 records as
   // half-closed). That is what keeps the *history* honest as well as the data: with two
@@ -74,14 +79,16 @@ export async function updateContact(contactId: string, input: Record<string, unk
     prisma.$transaction((tx) =>
       auditedUpdate("customerContact", contactId, async () => {
         const { count } = await tx.customerContact.updateMany({
-          where: { id: contactId, deletedAt: null }, data,
+          where: { id: contactId, customerId, deletedAt: null }, data,
         });
         if (count === 0) throw new HttpError(404, "Contact not found");
       }, { tx })));
 }
 
-export async function deleteContact(contactId: string): Promise<void> {
-  const current = await prisma.customerContact.findFirst({ where: { id: contactId, deletedAt: null } });
+export async function deleteContact(customerId: string, contactId: string): Promise<void> {
+  const current = await prisma.customerContact.findFirst({
+    where: { id: contactId, customerId, deletedAt: null },
+  });
   if (!current) throw new HttpError(404, "Contact not found");
   // In a transaction for the same reason updateContact is: the soft-delete write and its audit
   // row must commit together, or a concurrent edit can slot its own audit entry between them.

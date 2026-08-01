@@ -150,9 +150,13 @@ export async function addAddress(customerId: string, input: Record<string, unkno
   return { id };
 }
 
-export async function updateAddress(addressId: string, input: Record<string, unknown>): Promise<void> {
+export async function updateAddress(
+  customerId: string, addressId: string, input: Record<string, unknown>,
+): Promise<void> {
   const data = EDIT.parse(input);
-  const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
+  const current = await prisma.customerAddress.findFirst({
+    where: { id: addressId, customerId, deletedAt: null },
+  });
   if (!current) throw new HttpError(404, "Address not found");
   const newKind = (data.kind ?? current.kind) as AddressKind;
   const oldKind = current.kind as AddressKind;
@@ -163,11 +167,13 @@ export async function updateAddress(addressId: string, input: Record<string, unk
     if (data.isDefault === true) await demoteAllIn(tx, current.customerId, newKind);
     await withDbErrors({ entity: "Address" }, () =>
       auditedUpdate("customerAddress", addressId, async () => {
-        // Conditional on the row still being live, for the reason spelled out on updateContact:
-        // the findFirst pre-check above is a separate statement, so a concurrent delete could
-        // otherwise land between the two and leave this editing a soft-deleted row.
+        // Conditional on the row still being live AND still scoped to this customer, for the
+        // reason spelled out on updateContact: the findFirst pre-check above is a separate
+        // statement, so a concurrent delete could otherwise land between the two and leave this
+        // editing a soft-deleted row — or, without the customerId condition, a caller could edit
+        // an address that lives under a different customer's URL.
         const { count } = await tx.customerAddress.updateMany({
-          where: { id: addressId, deletedAt: null }, data,
+          where: { id: addressId, customerId, deletedAt: null }, data,
         });
         if (count === 0) throw new HttpError(404, "Address not found");
         // Normalize the address's kind post-update, and — if kind changed — the kind it left
@@ -186,8 +192,10 @@ export async function updateAddress(addressId: string, input: Record<string, unk
   });
 }
 
-export async function deleteAddress(addressId: string): Promise<void> {
-  const current = await prisma.customerAddress.findFirst({ where: { id: addressId, deletedAt: null } });
+export async function deleteAddress(customerId: string, addressId: string): Promise<void> {
+  const current = await prisma.customerAddress.findFirst({
+    where: { id: addressId, customerId, deletedAt: null },
+  });
   if (!current) throw new HttpError(404, "Address not found");
   // The soft delete, its audit write, and the re-normalization all run in one transaction: a
   // transaction can read its own soft-delete (normalizeDefaultsIn re-queries active rows to pick
