@@ -6,7 +6,10 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
-import { PRICE_PER, type PricePerValue } from "../lib/part-constants";
+import { parseRecords, isBlankRecord, overflowError } from "./tsv";
+import { readableMessage } from "./error-message";
+import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
+import type { PasteResult } from "./paste";
 
 export type PartRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
@@ -158,4 +161,96 @@ export async function deletePart(id: string, reason: string): Promise<void> {
     for (const b of breaks) await auditedSoftDelete("partPriceBreak", b.id, "parent part deleted", tx);
     await auditedSoftDelete("part", id, why, tx);
   }));
+}
+
+function parseBool(cell: string, column: string): boolean {
+  const v = cell.trim().toLowerCase();
+  if (["yes", "y", "true", "1"].includes(v)) return true;
+  if (["", "no", "n", "false", "0"].includes(v)) return false;
+  throw new HttpError(400, `${column} must be Yes or No`);
+}
+
+function parsePricePer(cell: string): string {
+  const v = cell.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if ((PRICE_PER as readonly string[]).includes(v)) return v;
+  throw new HttpError(400, `Price per must be one of: ${PRICE_PER.join(", ")}`);
+}
+
+/**
+ * Creates every valid row and collects failures per row — the pasteCustomers precedent
+ * (customers.ts). Two cells resolve against other tables before createPart ever sees them:
+ * customerCode -> customerId and materialName -> materialId, both against LIVE rows only
+ * (findFirst, never findUnique — customer.code and material.name are both unique-among-live-rows
+ * partial indexes, so findUnique would silently accept a soft-deleted match).
+ */
+export async function pasteParts(text: string, opts: { allowPricing: boolean }): Promise<PasteResult> {
+  const columns = [...PART_PASTE_COLUMNS];
+  const { records, error } = parseRecords(text);
+  const errors: PasteResult["errors"] = [];
+  let created = 0;
+
+  for (const record of records) {
+    if (isBlankRecord(record.fields)) continue;
+    const overflow = overflowError(record.fields, columns);
+    if (overflow) { errors.push({ row: record.startLine, message: overflow }); continue; }
+    const row: Record<string, string> =
+      Object.fromEntries(columns.map((c, i) => [c, record.fields[i] ?? ""]));
+
+    try {
+      // Presence, not truthiness — an empty cell can't carry a price, so only a non-empty
+      // pricing cell needs the gate. Checked before any lookup so a paster without
+      // change_prices never triggers customer/material queries for a row that will be
+      // rejected anyway.
+      if (!opts.allowPricing && PRICING_FIELDS.some((c) => row[c] !== "")) {
+        throw new HttpError(400, "Requires change_prices to paste pricing columns");
+      }
+
+      const customer = await prisma.customer.findFirst({
+        where: { code: row.customerCode, deletedAt: null }, select: { id: true },
+      });
+      if (!customer) throw new HttpError(400, `Customer "${row.customerCode}" does not exist`);
+
+      let materialId: string | undefined;
+      if (row.materialName !== "") {
+        const material = await prisma.material.findFirst({
+          where: { name: row.materialName, deletedAt: null }, select: { id: true },
+        });
+        if (!material) throw new HttpError(400, `Material "${row.materialName}" does not exist`);
+        materialId = material.id;
+      }
+
+      // z.number() has no string coercion, unlike decimalField below — a raw cell here would
+      // either reject a valid "10" as the wrong type, or (worse) let a non-numeric cell become
+      // NaN and reach zod as a bare "nan", so the integer check happens by hand.
+      let loadQty: number | undefined;
+      if (row.loadQty !== "") {
+        const n = Number(row.loadQty);
+        if (!Number.isInteger(n)) throw new HttpError(400, "Load qty must be a whole number");
+        loadQty = n;
+      }
+
+      const input: Record<string, unknown> = {
+        customerId: customer.id,
+        partNumber: row.partNumber,
+        eachWeight: row.eachWeight,
+        serializationRequired: parseBool(row.serializationRequired, "Serialization"),
+      };
+      if (row.name !== "") input.name = row.name;
+      if (row.description !== "") input.description = row.description;
+      if (materialId) input.materialId = materialId;
+      if (loadQty !== undefined) input.loadQty = loadQty;
+      if (row.loadWeight !== "") input.loadWeight = row.loadWeight;
+      if (row.setupCharge !== "") input.setupCharge = row.setupCharge;
+      if (row.unitPrice !== "") input.unitPrice = row.unitPrice;
+      if (row.minimumCharge !== "") input.minimumCharge = row.minimumCharge;
+      if (row.pricePer !== "") input.pricePer = parsePricePer(row.pricePer);
+
+      await createPart(input);
+      created++;
+    } catch (err) {
+      errors.push({ row: record.startLine, message: readableMessage(err) });
+    }
+  }
+  if (error) errors.push({ row: error.line, message: error.message });
+  return { created, errors };
 }
