@@ -95,6 +95,9 @@ describe("parts routes", () => {
 
   it("PATCH /api/parts/[id] pricing fields likewise; plain edits pass with parts.edit alone", async () => {
     const { partId } = await partFixture();
+    expect((await patchPart(
+      bodyReq(`http://t/api/parts/${partId}`, "PATCH", undefined, { name: "x" }), withParams({ id: partId }))).status).toBe(401);
+
     const editOnly = await signInWith(["parts.edit"], "edit-only-1");
 
     const plain = await patchPart(
@@ -113,6 +116,9 @@ describe("parts routes", () => {
 
   it("DELETE /api/parts/[id] requires parts.delete and passes reason from the body", async () => {
     const { partId } = await partFixture();
+    expect((await deletePartRoute(
+      noBodyReq(`http://t/api/parts/${partId}`, "DELETE"), withParams({ id: partId }))).status).toBe(401);
+
     const noPerm = await signInWith(["parts.view"], "no-delete-1");
     expect((await deletePartRoute(
       noBodyReq(`http://t/api/parts/${partId}`, "DELETE", noPerm), withParams({ id: partId }))).status).toBe(403);
@@ -147,6 +153,13 @@ describe("parts routes", () => {
     const editor = await signInWith(["parts.view", "parts.edit"], "spec-editor-1");
 
     expect((await listSpecs(getReq(`http://t/api/parts/${partId}/specifications`), withParams({ id: partId }))).status).toBe(401);
+    expect((await addSpecRoute(
+      bodyReq(`http://t/api/parts/${partId}/specifications`, "POST", undefined, { specificationId: spec.id }),
+      withParams({ id: partId }))).status).toBe(401);
+    expect((await removeSpecRoute(
+      noBodyReq(`http://t/api/parts/${partId}/specifications/x`, "DELETE"),
+      withParams({ id: partId, linkId: "x" }))).status).toBe(401);
+
     const wrong = await signInWith(["customers.view"], "wrong-3");
     expect((await addSpecRoute(
       bodyReq(`http://t/api/parts/${partId}/specifications`, "POST", wrong, { specificationId: spec.id }),
@@ -173,6 +186,16 @@ describe("parts routes", () => {
     const editor = await signInWith(["parts.view", "parts.edit"], "insp-editor-1");
 
     expect((await listInspections(getReq(`http://t/api/parts/${partId}/inspections`), withParams({ id: partId }))).status).toBe(401);
+    expect((await addInspectionRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections`, "POST", undefined, { inspectionCodeId: code.id, sort: 0 }),
+      withParams({ id: partId }))).status).toBe(401);
+    expect((await patchInspectionRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/x`, "PATCH", undefined, { location: "x" }),
+      withParams({ id: partId, inspId: "x" }))).status).toBe(401);
+    expect((await deleteInspectionRoute(
+      noBodyReq(`http://t/api/parts/${partId}/inspections/x`, "DELETE"),
+      withParams({ id: partId, inspId: "x" }))).status).toBe(401);
+
     const wrong = await signInWith(["customers.view"], "wrong-4");
     expect((await addInspectionRoute(
       bodyReq(`http://t/api/parts/${partId}/inspections`, "POST", wrong, { inspectionCodeId: code.id, sort: 0 }),
@@ -197,6 +220,17 @@ describe("parts routes", () => {
 
   it("break routes demand change_prices unconditionally", async () => {
     const { partId } = await partFixture();
+    expect((await listBreaks(getReq(`http://t/api/parts/${partId}/breaks`), withParams({ id: partId }))).status).toBe(401);
+    expect((await addBreakRoute(
+      bodyReq(`http://t/api/parts/${partId}/breaks`, "POST", undefined, { threshold: 500, price: "0.95" }),
+      withParams({ id: partId }))).status).toBe(401);
+    expect((await patchBreakRoute(
+      bodyReq(`http://t/api/parts/${partId}/breaks/x`, "PATCH", undefined, { price: "1.00" }),
+      withParams({ id: partId, breakId: "x" }))).status).toBe(401);
+    expect((await deleteBreakRoute(
+      noBodyReq(`http://t/api/parts/${partId}/breaks/x`, "DELETE"),
+      withParams({ id: partId, breakId: "x" }))).status).toBe(401);
+
     const editOnly = await signInWith(["parts.view", "parts.edit"], "break-editor-1");
     const editPrice = await signInWith(["parts.view", "parts.edit", "action.change_prices"], "break-editor-price-1");
 
@@ -267,6 +301,9 @@ describe("parts routes", () => {
     const editor = await signInWith(["parts.view", "parts.edit"], "fields-editor-1");
 
     expect((await getFieldsRoute(getReq(`http://t/api/parts/${partId}/fields`), withParams({ id: partId }))).status).toBe(401);
+    expect((await putFieldsRoute(
+      bodyReq(`http://t/api/parts/${partId}/fields`, "PUT", undefined, { values: [] }),
+      withParams({ id: partId }))).status).toBe(401);
     const listed = await getFieldsRoute(getReq(`http://t/api/parts/${partId}/fields`, viewer), withParams({ id: partId }));
     expect(listed.status).toBe(200);
 
@@ -299,6 +336,15 @@ describe("parts routes", () => {
 
   it("/api/admin/part-fields CRUD gates on admin area actions (create/edit/delete per method)", async () => {
     expect((await listFieldDefs(getReq("http://t/api/admin/part-fields"), noParams)).status).toBe(401);
+    expect((await createFieldDefRoute(
+      bodyReq("http://t/api/admin/part-fields", "POST", undefined, { name: "x", type: "TEXT", sort: 0 }),
+      noParams)).status).toBe(401);
+    expect((await updateFieldDefRoute(
+      bodyReq("http://t/api/admin/part-fields/x", "PUT", undefined, { sort: 1 }),
+      withParams({ id: "x" }))).status).toBe(401);
+    expect((await deleteFieldDefRoute(
+      noBodyReq("http://t/api/admin/part-fields/x", "DELETE"),
+      withParams({ id: "x" }))).status).toBe(401);
 
     const viewer = await signInWith(["admin.view"], "af-viewer-1");
     const wrong = await signInWith(["customers.view"], "wrong-5");
@@ -340,6 +386,8 @@ describe("parts routes", () => {
     await setPartFieldValues(partId, [{ fieldId, value: "DWG-100" }]);
 
     expect((await fieldDefBlockersRoute(getReq(`http://t/api/admin/part-fields/${fieldId}/blockers`), withParams({ id: fieldId }))).status).toBe(401);
+    expect((await fieldDefBlockersExportRoute(
+      getReq(`http://t/api/admin/part-fields/${fieldId}/blockers/export`), withParams({ id: fieldId }))).status).toBe(401);
 
     const viewer = await signInWith(["admin.view"], "af-blockers-viewer-1");
     const blockers = await fieldDefBlockersRoute(
