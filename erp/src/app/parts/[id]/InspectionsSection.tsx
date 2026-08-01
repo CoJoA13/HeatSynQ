@@ -97,7 +97,14 @@ export function InspectionsSection({
       await api(`/api/parts/${partId}/inspections/${b.id}`, { method: "PATCH", body: JSON.stringify({ sort: a.sort }) });
       onError(null);
       await load();
-    } catch (e) { onError((e as Error).message); }
+    } catch (e) {
+      // Roll back to server truth FIRST, then report why (§5.13) — the two PATCHes above are not
+      // atomic, so a failure on the second leaves the server holding only half the swap. Reload
+      // before setting the error, the saveRow() precedent above, so local rows never diverge from
+      // what the server actually has.
+      await load().catch(() => {});
+      onError((e as Error).message);
+    }
   }
   async function add() {
     if (!draft.inspectionCodeId) return;
