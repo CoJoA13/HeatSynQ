@@ -40,18 +40,17 @@ export async function createUser(input: { username: string; displayName: string;
   // `password`) would leak the plaintext into the "after" snapshot. `rest` carries every
   // other field; `passwordHash: "set"` records that a password was set without exposing it.
   const { password, ...rest } = input;
-  const user = await auditedCreate("user", { ...rest, passwordHash: "set" }, () =>
-    withDbErrors({ entity: "User", conflictField: "username" }, async () =>
-      prisma.user.create({
-        data: {
-          username: input.username,
-          displayName: input.displayName,
-          passwordHash: await hashPassword(password),
-          roleId: input.roleId ?? null,
-        },
-      }),
-    ),
-  );
+  const user = await withDbErrors({ entity: "User", conflictField: "username" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate("user", { ...rest, passwordHash: "set" }, async () =>
+        tx.user.create({
+          data: {
+            username: input.username,
+            displayName: input.displayName,
+            passwordHash: await hashPassword(password),
+            roleId: input.roleId ?? null,
+          },
+        }), { tx })));
   return { id: user.id };
 }
 
@@ -82,29 +81,27 @@ export async function updateUser(
   }
 
   await withDbErrors({ entity: "User" }, () =>
-    auditedUpdate("user", id, async () =>
-      prisma.user.update({
-        where: { id },
-        data: {
-          ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-          ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
-          ...(input.active !== undefined ? { active: input.active } : {}),
-          ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
-        },
-      }),
-    ),
-  );
+    prisma.$transaction((tx) =>
+      auditedUpdate("user", id, async () =>
+        tx.user.update({
+          where: { id },
+          data: {
+            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+            ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
+            ...(input.active !== undefined ? { active: input.active } : {}),
+            ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
+          },
+        }), { tx })));
 }
 
 export async function setUserOverrides(id: string, overrides: { permission: string; mode: "GRANT" | "DENY" }[]) {
   const unknown = overrides.filter((o) => !ALL_PERMISSIONS.includes(o.permission));
   if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.map((o) => o.permission).join(", ")}`);
-  await auditedUpdate("user", id, () =>
-    prisma.$transaction([
-      prisma.userPermissionOverride.deleteMany({ where: { userId: id } }),
-      prisma.userPermissionOverride.createMany({
+  await prisma.$transaction((tx) =>
+    auditedUpdate("user", id, async () => {
+      await tx.userPermissionOverride.deleteMany({ where: { userId: id } });
+      await tx.userPermissionOverride.createMany({
         data: overrides.map((o) => ({ userId: id, permission: o.permission, mode: o.mode })),
-      }),
-    ]),
-  );
+      });
+    }, { tx }));
 }

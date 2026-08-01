@@ -194,9 +194,9 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
   if (data.parentId) await assertParentExists(data.parentId);
   if (data.termsId) await assertTermsExists(data.termsId);
 
-  const row = await auditedCreate("customer", data, () =>
-    withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-      prisma.customer.create({ data })));
+  const row = await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate("customer", data, () => tx.customer.create({ data }), { tx })));
   return { id: row.id };
 }
 

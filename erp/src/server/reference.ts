@@ -47,8 +47,8 @@ type RefDelegate = {
   create: (a: { data: object }) => Promise<{ id: string }>;
   update: (a: { where: { id: string }; data: object }) => Promise<{ id: string }>;
 };
-function delegate(kind: ReferenceKind): RefDelegate {
-  return prisma[kind] as unknown as RefDelegate;
+function delegate(kind: ReferenceKind, db: Prisma.TransactionClient = prisma): RefDelegate {
+  return db[kind] as unknown as RefDelegate;
 }
 
 // A compile-time check here (asserting every REFERENCE_KINDS member's Prisma payload has the
@@ -138,9 +138,9 @@ export async function createReference(kind: string, input: Record<string, unknow
     throw new HttpError(400, `A ${REFERENCE_LABELS[kind].singular.toLowerCase()} with that name already exists`);
   }
 
-  const row = await auditedCreate(kind, data, () =>
-    withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-      delegate(kind).create({ data })));
+  const row = await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate(kind, data, () => delegate(kind, tx).create({ data }), { tx })));
   return { id: row.id };
 }
 
@@ -149,7 +149,8 @@ export async function updateReference(kind: string, id: string, input: Record<st
   const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
     .parse(await resolveLinkNames(kind, input));
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-    auditedUpdate(kind, id, () => delegate(kind).update({ where: { id }, data })));
+    prisma.$transaction((tx) =>
+      auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx })));
 }
 
 /**

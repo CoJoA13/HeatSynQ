@@ -45,9 +45,10 @@ export async function addContact(customerId: string, input: Record<string, unkno
   const data = ADD.parse(input);
   const owner = await prisma.customer.findFirst({ where: { id: customerId, deletedAt: null } });
   if (!owner) throw new HttpError(404, "Customer not found");
-  const row = await auditedCreate("customerContact", { ...data, customerId }, () =>
-    withDbErrors({ entity: "Contact" }, () =>
-      prisma.customerContact.create({ data: { ...data, customerId } })));
+  const row = await withDbErrors({ entity: "Contact" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate("customerContact", { ...data, customerId }, () =>
+        tx.customerContact.create({ data: { ...data, customerId } }), { tx })));
   return { id: row.id };
 }
 

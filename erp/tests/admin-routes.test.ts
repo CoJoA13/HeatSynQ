@@ -34,8 +34,9 @@ describe("audit route", () => {
   it("returns entries filtered by entity/entityId", async () => {
     const cookie = await adminCookie();
     const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J" } });
-    await auditedUpdate("user", u.id, () =>
-      prisma.user.update({ where: { id: u.id }, data: { displayName: "K" } }));
+    await prisma.$transaction((tx) =>
+      auditedUpdate("user", u.id, () =>
+        tx.user.update({ where: { id: u.id }, data: { displayName: "K" } }), { tx }));
     const res = await auditGet(get(`http://t/api/admin/audit?entity=user&entityId=${u.id}`, cookie),
       { params: Promise.resolve({}) });
     const body = await res.json();

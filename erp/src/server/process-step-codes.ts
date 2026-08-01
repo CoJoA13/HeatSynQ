@@ -67,40 +67,41 @@ export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ i
   });
   if (existing) throw new HttpError(400, "A process step code with that code already exists");
 
-  const row = await auditedCreate("processStepCode", data, () =>
-    withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-      prisma.processStepCode.create({ data })));
+  const row = await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate("processStepCode", data, () => tx.processStepCode.create({ data }), { tx })));
   return { id: row.id };
 }
 
 export async function updateStepCode(id: string, input: Partial<z.input<typeof CREATE>> & { active?: boolean }) {
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(input);
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    auditedUpdate("processStepCode", id, () => prisma.processStepCode.update({ where: { id }, data })));
+    prisma.$transaction((tx) =>
+      auditedUpdate("processStepCode", id, () => tx.processStepCode.update({ where: { id }, data }), { tx })));
 }
 
 export async function deleteStepCode(id: string): Promise<void> {
-  await withDbErrors({ entity: "Process step code" }, () => auditedSoftDelete("processStepCode", id));
+  await withDbErrors({ entity: "Process step code" }, () =>
+    prisma.$transaction((tx) => auditedSoftDelete("processStepCode", id, undefined, tx)));
 }
 
 /** Replaces the entire field-definition set for a code. */
 export async function setStepFields(id: string, fields: StepFieldInput[]): Promise<void> {
   const parsed = FIELDS_ARRAY.parse(fields);
   await withDbErrors({ entity: "Process step code" }, () =>
-    auditedUpdate("processStepCode", id, async () => {
-      // deleteMany/createMany against a nonexistent codeId both silently no-op (nothing to
-      // delete, nothing violates a constraint when `fields` is empty), so without this check a
-      // bad id would report success and write a useless before=null/after=null audit row
-      // instead of 404ing the way updateStepCode does via Prisma's P2025.
-      const exists = await prisma.processStepCode.findUnique({ where: { id }, select: { id: true } });
-      if (!exists) throw new HttpError(404, "Process step code not found");
-      return prisma.$transaction([
-        prisma.processStepFieldDef.deleteMany({ where: { codeId: id } }),
-        prisma.processStepFieldDef.createMany({
+    prisma.$transaction((tx) =>
+      auditedUpdate("processStepCode", id, async () => {
+        // deleteMany/createMany against a nonexistent codeId both silently no-op (nothing to
+        // delete, nothing violates a constraint when `fields` is empty), so without this check a
+        // bad id would report success and write a useless before=null/after=null audit row
+        // instead of 404ing the way updateStepCode does via Prisma's P2025.
+        const exists = await tx.processStepCode.findUnique({ where: { id }, select: { id: true } });
+        if (!exists) throw new HttpError(404, "Process step code not found");
+        await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
+        await tx.processStepFieldDef.createMany({
           data: parsed.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-        }),
-      ]);
-    }));
+        });
+      }, { tx })));
 }
 
 export type StepCodeUpdateInput = Partial<z.input<typeof CREATE>> & { active?: boolean; fields?: StepFieldInput[] };
@@ -120,17 +121,17 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
   const parsedFields = fields === undefined ? undefined : FIELDS_ARRAY.parse(fields);
 
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    auditedUpdate("processStepCode", id, () =>
-      prisma.$transaction([
+    prisma.$transaction((tx) =>
+      auditedUpdate("processStepCode", id, async () => {
         // Runs first: a bad glAccountId fails here with P2003 before any field statement runs,
-        // and the array form of $transaction rolls the whole batch back on any failure, so the
-        // field definitions are left untouched either way.
-        prisma.processStepCode.update({ where: { id }, data }),
-        ...(parsedFields === undefined ? [] : [
-          prisma.processStepFieldDef.deleteMany({ where: { codeId: id } }),
-          prisma.processStepFieldDef.createMany({
+        // and the transaction rolls the whole batch back on any failure, so the field
+        // definitions are left untouched either way.
+        await tx.processStepCode.update({ where: { id }, data });
+        if (parsedFields !== undefined) {
+          await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
+          await tx.processStepFieldDef.createMany({
             data: parsedFields.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-          }),
-        ]),
-      ])));
+          });
+        }
+      }, { tx })));
 }
