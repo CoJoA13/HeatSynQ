@@ -42,6 +42,24 @@ describe("reference delete guard", () => {
     ]);
   });
 
+  // The label is a registry concern, not a findBlockers concern (final-branch-review item 3):
+  // findBlockers used to branch on `link.model === "processStepCode"` to build "code — name",
+  // which made findBlockers itself a second place every future linking model had to edit. Now
+  // the formatting lives on the registry entry's `displayName`, and this asserts the exact
+  // string (not just stringContaining, as above) to lock the rendered format down.
+  it("uses the registry's displayName to format a blocker's label", async () => {
+    const gl = await createReference("glAccount", { name: "4020" });
+    const code = await createStepCode({ code: "HT-02", name: "Quench", glAccountId: gl.id });
+
+    expect(await findBlockers("glAccount", gl.id)).toEqual([
+      { entityLabel: "Process step code", name: "HT-02 — Quench", id: code.id, href: null },
+    ]);
+  });
+
+  // Links with no displayName (every registered link except processStepCode) fall back to the
+  // row's plain `name` — proven above by the Customer/Terms blocker test, which asserts
+  // `name: "Acme Foundry"` with no prefix.
+
   it("gathers blockers across every registered link, not just the first", async () => {
     const gl = await createReference("glAccount", { name: "4010" });
     await createStepCode({ code: "HT-01", name: "Austenitize", glAccountId: gl.id });

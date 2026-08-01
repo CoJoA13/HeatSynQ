@@ -19,6 +19,10 @@ export type ReferenceLink = {
   /** Detail-page path. Omitted where the entity has no detail page — the admin grids are small
    *  and unpaginated, so the row is already on screen (owner ruling, spec §7.1). */
   detailPath?: (id: string) => string;
+  /** How this blocker names itself. Defaults to `row.name`. Put per-model formatting HERE, not
+   *  in findBlockers — a Part is identified by (customer, partNumber), never by name alone, so
+   *  its 2C-2 registry entry MUST supply this rather than rely on the default. */
+  displayName?: (row: Record<string, unknown>) => string;
 };
 
 /** The single source of truth for "which column points at which reference kind".
@@ -29,7 +33,8 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
   { model: "customer", column: "termsId", targetKind: "terms",
     label: "Terms", entityLabel: "Customer", detailPath: (id) => `/customers/${id}` },
   { model: "processStepCode", column: "glAccountId", targetKind: "glAccount",
-    label: "GL account", entityLabel: "Process step code" },
+    label: "GL account", entityLabel: "Process step code",
+    displayName: (r) => `${r.code} — ${r.name}` },
   { model: "paymentType", column: "glAccountId", targetKind: "glAccount",
     label: "GL account", entityLabel: "Payment type" },
   { model: "inspectionCode", column: "defaultScaleId", targetKind: "inspectionScale",

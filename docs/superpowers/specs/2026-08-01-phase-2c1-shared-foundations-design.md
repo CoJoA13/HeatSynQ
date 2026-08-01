@@ -45,21 +45,25 @@ export type ReferenceLink = {
   entityLabel: string;         // "Customer"
   /** Detail-page path, omitted where the entity has no detail page. */
   detailPath?: (id: string) => string;
+  /** How a blocker row formats its OWN label. Defaults to `row.name`; a linking model whose
+   *  identity is not a bare name (Part's is (customer, partNumber) — see below) supplies this
+   *  instead of `findBlockers` special-casing it. */
+  displayName?: (row: Record<string, unknown>) => string;
 };
 ```
 
 Four entries exist today:
 
-| model | column | targetKind | entityLabel | detailPath |
-|---|---|---|---|---|
-| `customer` | `termsId` | `terms` | Customer | `/customers/{id}` |
-| `processStepCode` | `glAccountId` | `glAccount` | Process step code | — |
-| `paymentType` | `glAccountId` | `glAccount` | Payment type | — |
-| `inspectionCode` | `defaultScaleId` | `inspectionScale` | Inspection code | — |
+| model | column | targetKind | entityLabel | detailPath | displayName |
+|---|---|---|---|---|---|
+| `customer` | `termsId` | `terms` | Customer | `/customers/{id}` | — (defaults to `name`) |
+| `processStepCode` | `glAccountId` | `glAccount` | Process step code | — | `` `${code} — ${name}` `` |
+| `paymentType` | `glAccountId` | `glAccount` | Payment type | — | — (defaults to `name`) |
+| `inspectionCode` | `defaultScaleId` | `inspectionScale` | Inspection code | — | — (defaults to `name`) |
 
 2C-2 adds parts' four (material, specification, inspection code, inspection scale) with a `detailPath` to `/parts/{id}`.
 
-`detailPath` being optional is exactly how the owner's ruling (§7.1) is encoded: link where a detail page exists, plain text where it does not. Parts start linking in 2C-2 by adding a function to one registry entry — the guard needs no change.
+`detailPath` being optional is exactly how the owner's ruling (§7.1) is encoded: link where a detail page exists, plain text where it does not. **`displayName` is optional for the same reason, and the final whole-branch review is why it exists at all:** the first implementation of this spine left `processStepCode`'s "code — name" formatting hardcoded as a `link.model === "processStepCode"` branch inside `findBlockers` itself, which made `findBlockers` a second place every future linking model had to edit — exactly the "reimplemented rather than shared" shape §1 names as the thing this spine exists to stop, and the review that caught it is what moved the formatting onto the registry entry above. Per the main spec (§3, decision log), a Part is identified by `(customer, partNumber)` — part numbers recur across customers, and a name alone never identifies one — so **2C-2's Part entries must supply `displayName` rather than rely on the default**; a blocker list is not real discoverability if the label it shows can't be told apart from another part's. With `displayName` on the registry, Parts start linking in 2C-2 by adding a function (or two, where a Part link needs one) to one registry entry — the guard needs no change.
 
 ### 3.2 The sweep
 

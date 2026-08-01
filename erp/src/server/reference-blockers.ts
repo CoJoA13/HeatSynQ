@@ -27,14 +27,12 @@ export async function findBlockers(kind: ReferenceKind, id: string): Promise<Blo
     });
     for (const row of rows) {
       const rowId = String(row.id);
-      // processStepCode's human key is `code` + `name`; every other linked model uses `name`
-      // alone. Keyed on link.model, NOT on whether the row happens to have a `code` field:
-      // Customer also has a `code` column (its own business key, e.g. "ACME"), but a blocker
-      // list should read "Acme Foundry", not "ACME — Acme Foundry" — a generic
-      // `typeof row.code === "string"` check would wrongly prefix every customer blocker too.
-      const label = link.model === "processStepCode" && typeof row.code === "string" && typeof row.name === "string"
-        ? `${row.code} — ${row.name}`
-        : (typeof row.name === "string" && row.name ? row.name : rowId);
+      // Formatting is the registry's job, not this function's — see `displayName` on
+      // ReferenceLink. That is what lets 2C-2 add a Part link (identified by
+      // (customer, partNumber), never by name alone) by editing one registry entry, with no
+      // change here.
+      const label = link.displayName?.(row)
+        ?? (typeof row.name === "string" && row.name ? row.name : rowId);
       out.push({
         entityLabel: link.entityLabel,
         name: label,
