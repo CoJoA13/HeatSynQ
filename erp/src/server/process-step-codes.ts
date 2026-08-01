@@ -69,24 +69,31 @@ export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ i
   });
   if (existing) throw new HttpError(400, "A process step code with that code already exists");
 
-  // Serializable, with the GL account target validated on this transaction's own `tx` — same
-  // shape as createCustomer's parentId/termsId checks (assertRefExists's doc comment explains
-  // why the check must share the write's own transaction to close the writer-side TOCTOU).
+  // Serializable is scoped to writes that actually assign the FK (spec §5.2) — a pure rename or
+  // equipmentTag edit pays none of Serializable's abort-under-ordinary-concurrency cost. The
+  // target is still validated on this transaction's own `tx` whenever it IS being assigned, for
+  // the same reason as createCustomer's parentId/termsId checks (assertRefExists's doc comment
+  // explains why the check must share the write's own transaction to close the writer-side
+  // TOCTOU).
+  const assignsGlAccount = data.glAccountId != null;
   const row = await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
     prisma.$transaction(async (tx) => {
       if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
       return auditedCreate("processStepCode", data, () => tx.processStepCode.create({ data }), { tx });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
   return { id: row.id };
 }
 
 export async function updateStepCode(id: string, input: Partial<z.input<typeof CREATE>> & { active?: boolean }) {
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(input);
+  // Same Serializable scoping as createStepCode above — see that comment. Clearing glAccountId
+  // to null, or a patch that never touches it, needs neither the check nor Serializable.
+  const assignsGlAccount = data.glAccountId != null;
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
     prisma.$transaction(async (tx) => {
       if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
       await auditedUpdate("processStepCode", id, () => tx.processStepCode.update({ where: { id }, data }), { tx });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
 export async function deleteStepCode(id: string): Promise<void> {
@@ -129,6 +136,8 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(rest);
   const parsedFields = fields === undefined ? undefined : FIELDS_ARRAY.parse(fields);
 
+  // Same Serializable scoping as createStepCode above — see that comment.
+  const assignsGlAccount = data.glAccountId != null;
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
     prisma.$transaction(async (tx) => {
       // Runs first, on this transaction's own `tx`: a bad glAccountId is rejected here before
@@ -144,5 +153,5 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
           });
         }
       }, { tx });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
