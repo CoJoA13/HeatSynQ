@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-01. The Prisma 7 upgrade and the removal of revival-on-create (§5.18) are **done** on `prisma-7-upgrade`, pending merge to `main`; Phase 2B is merged (PR #2 squashed as `32f7f9d`). Next work is Phase 2C. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-08-01. The Prisma 7 upgrade and the removal of revival-on-create (§5.18) are **done and MERGED to `main`** (PR #11 squashed as `22e0dd3`); Phase 2B is merged (PR #2 squashed as `32f7f9d`). Next work is Phase 2C. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
 
 ---
 
@@ -73,9 +73,13 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — state as of 2026-08-01, Prisma 7 upgrade complete
+### 4a. RESUME HERE — state as of 2026-08-01, Prisma 7 upgrade merged
 
-**Phase 2B (customers) is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `32f7f9d`; PR #2 closed, the `phase-2b-customers` branch deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` is green on all four gates — 255 tests, `tsc`, `eslint`, `npm run build`.
+**The Prisma 7 upgrade and the removal of revival-on-create are complete and MERGED to `main`.** Squash-merged 2026-08-01 as `22e0dd3` (PR #11, 26 commits); the `prisma-7-upgrade` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, `main` is green on all four gates — **258 tests**, `tsc`, `eslint`, `npm run build` — and both databases report no pending migrations. **Next work is Phase 2C (Parts); its plan is not written.**
+
+One Codex finding was posted against the PR and fixed before merge (`f6fd887`): `prisma/seed.ts` passed a possibly-unset `DATABASE_URL` straight to `PrismaPg`, which falls back to `PGHOST`/`PGUSER` rather than failing — so an unset variable would have seeded an admin account with a known password into whatever database happened to be reachable. `src/server/db.ts` already carried that guard; the seed now does too.
+
+**Phase 2B (customers) is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `32f7f9d`; PR #2 closed, the `phase-2b-customers` branch deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` was green on all four gates — 255 tests at that point, `tsc`, `eslint`, `npm run build`.
 
 Eight rounds of automated review ran against it. **All 40 threads were answered and resolved.** Thirty-three were fixed on the branch; seven were filed as issues; one was answered as already-recorded. The issues below are the surviving record — all are deliberate deferrals or owner decisions, none an oversight. **#6, #7, #8 and #10 are already decided; their rulings are §5.14–§5.18:**
 
