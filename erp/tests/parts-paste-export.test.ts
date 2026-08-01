@@ -138,7 +138,6 @@ describe("parts paste and export", () => {
   });
 
   it("export writes names not cuids and includes Active", async () => {
-    const cookie = await signInWith(["parts.view"]);
     const customer = await acme();
     const material = await ductileIron();
     await pasteParts(
@@ -146,6 +145,14 @@ describe("parts paste and export", () => {
       { allowPricing: false },
     );
 
+    const anon = await exportRoute(new Request("http://t/api/parts/export"), noParams);
+    expect(anon.status).toBe(401);
+
+    const wrong = await signInWith(["customers.view"], "export-wrong-1");
+    const denied = await exportRoute(new Request("http://t/api/parts/export", { headers: { cookie: wrong } }), noParams);
+    expect(denied.status).toBe(403);
+
+    const cookie = await signInWith(["parts.view"]);
     const res = await exportRoute(new Request("http://t/api/parts/export", { headers: { cookie } }), noParams);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-disposition")).toMatch(/Parts\.xlsx/);

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser } from "@/server/http";
+import { handle, requireUser, HttpError } from "@/server/http";
 import { mustCan, mustDo } from "@/server/permissions";
 import { getPart, updatePart, deletePart } from "@/server/parts";
 import { PRICING_FIELDS } from "@/lib/part-constants";
@@ -13,6 +13,11 @@ export const PATCH = handle(async (req, { params }) => {
   const user = requireUser();
   mustCan(user, "parts", "edit");
   const body = (await req.json()) as Record<string, unknown>;
+  // An empty body changes nothing — report that as an error rather than a no-op 200
+  // (step-codes/[id]/route.ts precedent).
+  if (Object.keys(body).length === 0) {
+    throw new HttpError(400, "PUT body must include at least one change");
+  }
   // Presence, not truthiness: setting a price to null is still a price change.
   if (PRICING_FIELDS.some((f) => f in body)) mustDo(user, "change_prices");
   await updatePart((await params).id, body);

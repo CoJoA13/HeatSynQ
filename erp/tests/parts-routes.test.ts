@@ -114,6 +114,14 @@ describe("parts routes", () => {
     expect(allowed.status).toBe(200);
   });
 
+  it("PATCH /api/parts/[id] rejects an empty body with 400 rather than a no-op 200", async () => {
+    const { partId } = await partFixture();
+    const editor = await signInWith(["parts.edit"], "empty-patch-1");
+    const res = await patchPart(
+      bodyReq(`http://t/api/parts/${partId}`, "PATCH", editor, {}), withParams({ id: partId }));
+    expect(res.status).toBe(400);
+  });
+
   it("DELETE /api/parts/[id] requires parts.delete and passes reason from the body", async () => {
     const { partId } = await partFixture();
     expect((await deletePartRoute(
@@ -380,6 +388,14 @@ describe("parts routes", () => {
     expect(deleted.status).toBe(200);
   });
 
+  it("PUT /api/admin/part-fields/[id] rejects an empty body with 400 rather than a no-op 200", async () => {
+    const { id: fieldId } = await createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 });
+    const editor = await signInWith(["admin.view", "admin.edit"], "empty-patch-2");
+    const res = await updateFieldDefRoute(
+      bodyReq(`http://t/api/admin/part-fields/${fieldId}`, "PUT", editor, {}), withParams({ id: fieldId }));
+    expect(res.status).toBe(400);
+  });
+
   it("blockers export returns an xlsx content-type and disposition", async () => {
     const { partId } = await partFixture();
     const { id: fieldId } = await createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 });
@@ -397,6 +413,8 @@ describe("parts routes", () => {
     expect(blockerBody).toEqual([{ entityLabel: "Part", name: "ACME · 12345", id: partId, href: `/parts/${partId}` }]);
 
     const wrong = await signInWith(["customers.view"], "wrong-6");
+    expect((await fieldDefBlockersRoute(
+      getReq(`http://t/api/admin/part-fields/${fieldId}/blockers`, wrong), withParams({ id: fieldId }))).status).toBe(403);
     expect((await fieldDefBlockersExportRoute(
       getReq(`http://t/api/admin/part-fields/${fieldId}/blockers/export`, wrong), withParams({ id: fieldId }))).status).toBe(403);
 
