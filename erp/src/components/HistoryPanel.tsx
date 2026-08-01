@@ -14,11 +14,29 @@ function changedFields(e: Entry): string[] {
     .filter((k) => !["updatedAt"].includes(k));
 }
 
+// The audit endpoint is gated on admin.view (a permission-model decision recorded in
+// docs/HANDOFF.md §6, deliberately not revisited here). A user who can view the record this
+// panel is attached to but lacks admin.view gets a 403 from that request, which the old code
+// treated identically to "zero entries" — silently misreporting a record that does have history
+// as having none. "loading" also matters as its own state, not folded into "ok" with zero
+// entries: the panel must not flash "No history" for the instant before the real answer arrives.
+type Status = "loading" | "ok" | "error";
+
 export function HistoryPanel({ entity, entityId }: { entity: string; entityId: string }) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [status, setStatus] = useState<Status>("loading");
   useEffect(() => {
-    api<Entry[]>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`).then(setEntries).catch(() => {});
+    setStatus("loading");
+    api<Entry[]>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`)
+      .then((rows) => { setEntries(rows); setStatus("ok"); })
+      .catch(() => setStatus("error"));
   }, [entity, entityId]);
+  if (status === "loading") return <p className="text-sm text-slate-500">Loading history…</p>;
+  // Never render "No history" for a request that did not succeed — that's indistinguishable
+  // from a record that genuinely has none, and actively misinforms whoever lacks admin.view.
+  if (status === "error") {
+    return <p className="text-sm text-slate-500">History unavailable (you may not have permission to view it).</p>;
+  }
   if (entries.length === 0) return <p className="text-sm text-slate-500">No history.</p>;
   return (
     <ul className="divide-y rounded border bg-white text-sm">

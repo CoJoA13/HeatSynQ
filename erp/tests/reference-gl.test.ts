@@ -91,6 +91,30 @@ describe("GL account reference", () => {
     expect(await prisma.glAccount.findMany()).toHaveLength(1);
   });
 
+  it("revival resets extra fields a genuine create would default, not just active", async () => {
+    // Fix 3 (final review): `description` is optional on createReference's input, so a revived
+    // GL account used to keep its predecessor's description when the caller didn't supply one.
+    // Drift-proof the way customers.test.ts's equivalent test is: compare two field-for-field
+    // rows rather than asserting a literal default value.
+    const fresh = await createReference("glAccount", { name: "9999" });
+    const [freshRow] = await listReference("glAccount", { includeInactive: true });
+
+    const { id } = await createReference("glAccount", { name: "4010", description: "Old description" });
+    await deleteReference("glAccount", id);
+
+    const revived = await createReference("glAccount", { name: "4010" });
+    expect(revived.id).toBe(id);
+    const revivedRow = (await listReference("glAccount", { includeInactive: true })).find((r) => r.id === id)!;
+
+    // listReference returns every column, including createdAt/updatedAt — genuinely distinct
+    // timestamps between the two rows, not part of what revival is being checked against.
+    const identityFields = ["id", "name", "createdAt", "updatedAt"] as const;
+    const omitIdentity = (row: typeof freshRow) =>
+      Object.fromEntries(Object.entries(row).filter(([k]) => !(identityFields as readonly string[]).includes(k)));
+    expect(omitIdentity(revivedRow)).toEqual(omitIdentity(freshRow));
+    expect(fresh.id).not.toBe(revived.id);
+  });
+
   it("revives a soft-deleted, previously-inactive row as active by default", async () => {
     const { id } = await createReference("glAccount", { name: "4010" });
     await updateReference("glAccount", id, { active: false });

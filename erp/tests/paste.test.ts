@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll } from "./helpers/db";
-import { parseTsv, pasteReference } from "@/server/paste";
+import { parseTsv } from "@/server/tsv";
+import { pasteReference } from "@/server/paste";
 import { listReference, createReference } from "@/server/reference";
 
 describe("paste entry", () => {

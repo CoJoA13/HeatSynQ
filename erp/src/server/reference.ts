@@ -15,10 +15,25 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
-  carrier: z.object({}), terms: z.object({}), salesperson: z.object({}),
+  carrier: z.object({}), terms: z.object({}),
 };
 
 const BASE = z.object({ name: z.string().min(1).max(100), active: z.boolean().optional() });
+
+// A revived row must be indistinguishable from a fresh create — mirrors REVIVAL_DEFAULTS in
+// customers.ts. Every EXTRA_SCHEMAS field is optional, so a caller reviving a row (retyping a
+// deleted name) without supplying its extra fields would otherwise leave the old values in place
+// (Prisma's update only touches keys present in `data`): a revived GL account kept its old
+// description, a revived inspection code its old default scale. Values here match each column's
+// schema default (see prisma/schema.prisma), and the caller's input is applied over the top.
+const REVIVAL_EXTRA_DEFAULTS: Record<ReferenceKind, Record<string, unknown>> = {
+  glAccount: { description: "" },
+  inspectionCode: { defaultScaleId: null },
+  paymentType: { glAccountId: null },
+  commentSnippet: { text: "" },
+  specification: { text: "" },
+  material: {}, inspectionScale: {}, containerType: {}, carrier: {}, terms: {},
+};
 
 /** Exported so paste.ts guards on the same rule rather than re-deriving it. */
 export function assertKind(kind: string): asserts kind is ReferenceKind {
@@ -79,7 +94,10 @@ export async function createReference(kind: string, input: Record<string, unknow
           // A re-created row must come back live unless the caller explicitly asked otherwise —
           // reviving it still `active: false` (its state at the moment it was deleted) would let
           // a "successful" create silently vanish from the default list with no error at all.
-          delegate(kind).update({ where: { id: existing.id }, data: { ...data, deletedAt: null, active: data.active ?? true } })))
+          delegate(kind).update({
+            where: { id: existing.id },
+            data: { ...REVIVAL_EXTRA_DEFAULTS[kind], ...data, deletedAt: null, active: data.active ?? true },
+          })))
     : await auditedCreate(kind, data, () =>
         withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
           delegate(kind).create({ data })));

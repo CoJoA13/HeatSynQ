@@ -76,4 +76,38 @@ describe("permission sweep", () => {
       .filter((f) => readFileSync(f, "utf8").includes("prisma.auditLog.create"));
     expect(offenders).toEqual([]);
   });
+
+  it("no service mutates Prisma outside an audit helper", () => {
+    // Services call prisma.<model>.create/update INSIDE an audited* callback, so requiring an
+    // audit* call somewhere in the same file is the cheap structural proxy. Pattern must match
+    // auditSettingChange too — settings.ts upserts and audits through that helper, not audited*.
+    // The mutation pattern deliberately does NOT require the literal token "prisma." — services
+    // route through aliases too (customer-addresses.ts mutates via `db.customerAddress.*` and
+    // `tx.customerAddress.*` inside a transaction; reference.ts mutates via `delegate(kind).*`,
+    // with zero literal "prisma." occurrences in the file). Anchoring on "prisma." would make the
+    // check vacuous for exactly the files that use those idioms — it would never see the mutation
+    // at all, audited or not. Matching the method name regardless of receiver closes that.
+    //
+    // KNOWN LIMIT: this is a file-level proxy, not a call-level check. It only asks "does this
+    // file contain a mutation call somewhere AND an audit call somewhere" — it does not tie a
+    // specific mutation to the audit call guarding it. A service that mixes one audited mutation
+    // and one unaudited mutation in the same file passes. That's an accepted gap: cheap enough to
+    // catch a service written with zero audit discipline (the realistic failure mode when a new
+    // service file is added and audit is simply forgotten), not a substitute for reviewing each
+    // mutation individually.
+    const EXCEPT = new Set([
+      "audit.ts",    // owns the helpers; legitimately writes audit rows itself
+      "db.ts",       // the client
+      "sessions.ts", // sliding session expiry is not a business mutation and writes no audit row
+    ]);
+    const offenders = readdirSync(join(process.cwd(), "src/server"))
+      .filter((f) => f.endsWith(".ts") && !EXCEPT.has(f))
+      .filter((f) => {
+        const s = readFileSync(join(process.cwd(), "src/server", f), "utf8");
+        const mutates = /\.(create|update|upsert|delete)(Many)?\s*\(/.test(s);
+        const audits = /\baudit(ed)?[A-Z][A-Za-z]*\s*\(/.test(s);
+        return mutates && !audits;
+      });
+    expect(offenders).toEqual([]);
+  });
 });

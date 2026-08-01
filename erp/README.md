@@ -14,9 +14,15 @@ Self-hosted web ERP for the heat-treat shop. Next.js + Prisma + PostgreSQL.
 
 ### Reference data
 Admin → Reference data maintains GL accounts, materials, inspection codes/scales, container types,
-carriers, terms, payment types, salespeople, comment snippets, and specifications. Admin → Process
-step codes maintains the billable step vocabulary and the fields each step kind asks for.
+carriers, terms, payment types, comment snippets, and specifications. Admin → Process step codes
+maintains the billable step vocabulary and the fields each step kind asks for.
 Every list exports to Excel and accepts spreadsheet paste.
+
+### Customers
+Customers → list, search, and open a customer. Each carries a unique code, an optional parent
+(for divisions billed together), credit terms, typed addresses (ship-to / bill-to / received-from,
+one default per kind), and contacts flagged for which documents they receive. The list exports to
+Excel and accepts spreadsheet paste (columns: code, name, default PO, order notes).
 
 ## Production (single box on the shop network)
 1. Copy `.env.example` → `.env`; set a strong `SESSION_SECRET` and change the db password

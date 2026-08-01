@@ -1,20 +1,20 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/lib/fetcher";
-import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
 
 type Result = { created: number; errors: { row: number; message: string }[] };
 
-export function PasteGrid({ kind, onDone }: { kind: ReferenceKind; onDone: () => void }) {
+export function PasteGrid(
+  { endpoint, columns, onDone }: { endpoint: string; columns: string[]; onDone: () => void },
+) {
   const [text, setText] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
-  const columns = [REFERENCE_LABELS[kind].nameLabel, ...REFERENCE_EXTRA_FIELDS[kind].map((f) => f.label)];
 
   async function submit() {
     setBusy(true);
     try {
-      setResult(await api<Result>(`/api/admin/reference/${kind}/paste`, {
+      setResult(await api<Result>(endpoint, {
         method: "POST", body: JSON.stringify({ text }),
       }));
       onDone();

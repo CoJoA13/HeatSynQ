@@ -29,6 +29,16 @@ export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
       throw new HttpError(400, `A ${opts.entity.toLowerCase()} with that ${field} already exists`);
     }
     if (err.code === "P2025") throw new HttpError(404, `${opts.entity} not found`);
+    // P2034: the transaction was aborted because a concurrent one touched the same rows. Under
+    // Serializable isolation Postgres raises this rather than allowing two transactions whose
+    // combined effect no serial order could produce — which is exactly how the hierarchy guard
+    // in customers.ts stops two reciprocal parent updates from forming a cycle. Nothing is
+    // wrong with the request itself and nothing was written, so the honest answer is "that
+    // collided with another change, send it again", not a 500.
+    if (err.code === "P2034") {
+      throw new HttpError(409,
+        `Another change to that ${opts.entity.toLowerCase()} was saved at the same time — please try again`);
+    }
     if (err.code === "P2003") {
       const field = readableFkField(err);
       throw new HttpError(400, field ? `That ${field} does not exist` : "That reference does not exist");
