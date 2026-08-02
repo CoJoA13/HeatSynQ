@@ -4,6 +4,7 @@ import { runWithContext } from "@/server/context";
 import {
   getRevisions, getRevision, addStep, updateStep, removeStep, reorderSteps, lockRevision, loadTemplate,
 } from "@/server/part-process-steps";
+import { updateStepCode, setStepFields } from "@/server/process-step-codes";
 import { readAudit } from "@/server/audit";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -95,6 +96,54 @@ describe("part process steps: the revision-cut rule", () => {
 
     const after = await getRevision(part.id, 1);
     expect(after).toEqual(before);
+  });
+
+  // Owner ruling, spec §3.3: renames propagate everywhere (no denormalized display columns);
+  // what immutability freezes is the recipe's VALUES, not the vocabulary's spelling. A locked
+  // revision joins to the code/field-def rows live on every read, so a rename or relabel after
+  // the lock shows up on that same locked revision — while the value string and instruction it
+  // was locked with never change.
+  it("a locked revision renders a renamed code and relabeled field live, while its values stay frozen", async () => {
+    const customer = await prisma.customer.create({ data: { code: "AC2", name: "Acme 2" } });
+    const part = await prisma.part.create({ data: { customerId: customer.id, partNumber: "P-2", eachWeight: 1 } });
+    // Deliberate typo ("Austentize") and a short label ("Temp") — both get corrected below.
+    const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austentize" } });
+    const fieldDef = await prisma.processStepFieldDef.create({
+      data: { codeId: code.id, label: "Temp", type: "NUMBER", sort: 1 },
+    });
+
+    const { stepId } = await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "Heat to target temperature.",
+      values: [{ fieldDefId: fieldDef.id, value: "1650" }],
+    }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+    const before = await getRevision(part.id, 1);
+
+    // Rename the code and relabel/re-unit the field def, both id-preserving — the value row
+    // still points at the same fieldDefId, the step still points at the same codeId.
+    await asSystem(() => updateStepCode(code.id, { code: "HT-01A", name: "Austenitize" }));
+    await asSystem(() => setStepFields(code.id, [
+      { id: fieldDef.id, label: "Temperature", type: "NUMBER", unit: "F", sort: 1 },
+    ]));
+
+    const after = await getRevision(part.id, 1);
+    expect(after.revisionNumber).toBe(1);
+    expect(after.lockedAt).not.toBeNull();
+    expect(after.steps[0].id).toBe(stepId);
+
+    // Vocabulary is live: the SAME locked revision now shows the new spelling and the new label/unit.
+    expect(after.steps[0].code).toBe("HT-01A");
+    expect(after.steps[0].codeName).toBe("Austenitize");
+    expect(after.steps[0].values[0].label).toBe("Temperature");
+    expect(after.steps[0].values[0].unit).toBe("F");
+
+    // Values are frozen: the instruction text and the value string are byte-identical to before
+    // the rename — nothing about what was locked in changed, only how it's labeled.
+    expect(after.steps[0].instruction).toBe(before.steps[0].instruction);
+    expect(after.steps[0].values[0].value).toBe(before.steps[0].values[0].value);
+    expect(before.steps[0].code).toBe("HT-01");
+    expect(before.steps[0].codeName).toBe("Austentize");
+    expect(before.steps[0].values[0].label).toBe("Temp");
   });
 
   // The single-step cut tests above can't distinguish a correct position-keyed copy from a bug
