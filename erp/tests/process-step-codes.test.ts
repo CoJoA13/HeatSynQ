@@ -1,14 +1,31 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import ExcelJS from "exceljs";
 import { truncateAll, prisma } from "./helpers/db";
 import {
   listStepCodes, createStepCode, updateStepCode, deleteStepCode, setStepFields, stepFieldBlockers,
 } from "@/server/process-step-codes";
 import { createReference } from "@/server/reference";
+import { findBlockers } from "@/server/reference-blockers";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 import { GET as listRoute, POST as createRoute } from "@/app/api/admin/step-codes/route";
 import { PUT as updateRoute, DELETE as deleteRoute } from "@/app/api/admin/step-codes/[id]/route";
+import { GET as stepCodeBlockersRoute } from "@/app/api/admin/step-codes/[id]/blockers/route";
+import { GET as stepCodeBlockersExportRoute } from "@/app/api/admin/step-codes/[id]/blockers/export/route";
 import { signInWith } from "./helpers/auth";
+
+// Shared by the guard-matrix and route-blocker describes below. `part.create` needs
+// `eachWeight: 1` (a required non-default column); a "historical" revision is one with
+// `lockedAt` set and a higher-numbered revision present (tests/process-step-code-blockers.test.ts
+// precedent — Task 2's findBlockers coverage).
+async function stepCodeFixture() {
+  const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+  const part = await prisma.part.create({ data: { customerId: customer.id, partNumber: "P-1", eachWeight: 1 } });
+  const { id: codeId } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+  return { customer, part, codeId };
+}
+const addPartStep = (revisionId: string, codeId: string, position = 1) =>
+  prisma.partProcessStep.create({ data: { revisionId, codeId, position, instruction: "" } });
 
 describe("process step codes", () => {
   beforeEach(async () => await truncateAll());
@@ -334,5 +351,158 @@ describe("step field defs: .strict(), id-preserving edits, value blockers", () =
     // Neither refusal partially applied — the def is untouched.
     const fields = (await listStepCodes()).find((c) => c.id === codeId)!.fields;
     expect(fields).toEqual([fieldDef]);
+  });
+});
+
+// Task 7: deleteStepCode adopts deleteReference's guarded shape verbatim (reference.ts:210) —
+// Serializable transaction, findBlockers scan, refuse-with-count or auditedSoftDelete. Owner
+// ruling (design spec §3.2 / §7): ANY live use blocks — current-revision step, locked-historical
+// step, or template step — while a soft-deleted part's or template's step never does (liveWhere,
+// Task 2).
+describe("step-code delete guard", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("blocks delete when the code is used by a current-revision step", async () => {
+    const { part, codeId } = await stepCodeFixture();
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    await addPartStep(rev.id, codeId);
+
+    const err = await deleteStepCode(codeId).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe("That process step code is still in use by 1 record(s)");
+    expect(await listStepCodes()).toHaveLength(1);
+  });
+
+  it("blocks delete when the code is used ONLY by a locked-historical step (owner ruling §3.2)", async () => {
+    const { part, codeId } = await stepCodeFixture();
+    const historical = await prisma.partProcessRevision.create({
+      data: { partId: part.id, revisionNumber: 1, lockedAt: new Date() },
+    });
+    await addPartStep(historical.id, codeId);
+    // The current revision exists (higher-numbered, unlocked) and does NOT reference the code —
+    // the only live reference is the locked, historical one.
+    await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 2 } });
+
+    const err = await deleteStepCode(codeId).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe("That process step code is still in use by 1 record(s)");
+    expect(await listStepCodes()).toHaveLength(1);
+  });
+
+  it("blocks delete when the code is used by a template step", async () => {
+    const { codeId } = await stepCodeFixture();
+    const tpl = await prisma.processTemplate.create({ data: { name: "Austemper" } });
+    await prisma.processTemplateStep.create({ data: { templateId: tpl.id, position: 1, codeId } });
+
+    const err = await deleteStepCode(codeId).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe("That process step code is still in use by 1 record(s)");
+    expect(await listStepCodes()).toHaveLength(1);
+  });
+
+  it("does NOT block on a step under a soft-deleted part", async () => {
+    const { part, codeId } = await stepCodeFixture();
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    await addPartStep(rev.id, codeId);
+    await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
+
+    await expect(deleteStepCode(codeId)).resolves.toBeUndefined();
+    expect(await listStepCodes()).toHaveLength(0);
+  });
+
+  it("does NOT block on a step under a soft-deleted template", async () => {
+    const { codeId } = await stepCodeFixture();
+    const tpl = await prisma.processTemplate.create({ data: { name: "Austemper" } });
+    await prisma.processTemplateStep.create({ data: { templateId: tpl.id, position: 1, codeId } });
+    await prisma.processTemplate.update({ where: { id: tpl.id }, data: { deletedAt: new Date() } });
+
+    await expect(deleteStepCode(codeId)).resolves.toBeUndefined();
+    expect(await listStepCodes()).toHaveLength(0);
+  });
+
+  it("an unused code soft-deletes cleanly, recording a delete audit entry", async () => {
+    const { codeId } = await stepCodeFixture();
+
+    await expect(deleteStepCode(codeId)).resolves.toBeUndefined();
+
+    expect(await listStepCodes()).toHaveLength(0);
+    // readAudit orders newest-first ({ at: "desc" }, { id: "desc" }) — see audit.ts.
+    expect((await readAudit("processStepCode", codeId)).map((e) => e.action)).toEqual(["delete", "create"]);
+  });
+
+  it("the 400 count matches the deduped blocker list length across two revisions of one part", async () => {
+    const { part, codeId } = await stepCodeFixture();
+    const historical = await prisma.partProcessRevision.create({
+      data: { partId: part.id, revisionNumber: 1, lockedAt: new Date() },
+    });
+    const current = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 2 } });
+    await addPartStep(historical.id, codeId);
+    await addPartStep(current.id, codeId);
+
+    // Same part referenced from both revisions — findBlockers dedupes it to one row (Task 2).
+    const blockers = await findBlockers("processStepCode", codeId);
+    expect(blockers).toHaveLength(1);
+
+    const err = await deleteStepCode(codeId).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).message).toBe(`That process step code is still in use by ${blockers.length} record(s)`);
+  });
+});
+
+// Mirrors tests/reference-blockers.test.ts's route coverage for
+// src/app/api/admin/reference/[kind]/[id]/blockers{,/export}/route.ts — same `mustCan("admin",
+// "view")` gating, same toXlsx column shape.
+describe("step-code blocker routes", () => {
+  beforeEach(async () => await truncateAll());
+  const idCtx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  it("401s both routes without a session", async () => {
+    const blockers = await stepCodeBlockersRoute(new Request("http://t/x"), idCtx("placeholder"));
+    expect(blockers.status).toBe(401);
+
+    const exported = await stepCodeBlockersExportRoute(new Request("http://t/x"), idCtx("placeholder"));
+    expect(exported.status).toBe(401);
+  });
+
+  it("403s both routes for a session lacking admin.view", async () => {
+    const cookie = await signInWith([], "nobody");
+
+    const blockers = await stepCodeBlockersRoute(new Request("http://t/x", { headers: { cookie } }), idCtx("placeholder"));
+    expect(blockers.status).toBe(403);
+
+    const exported = await stepCodeBlockersExportRoute(
+      new Request("http://t/x", { headers: { cookie } }), idCtx("placeholder"),
+    );
+    expect(exported.status).toBe(403);
+  });
+
+  it("200s the blocker list and a matching xlsx export", async () => {
+    const { part, codeId } = await stepCodeFixture();
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    await addPartStep(rev.id, codeId);
+
+    const cookie = await signInWith(["admin.view"]);
+
+    const res = await stepCodeBlockersRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(codeId));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { entityLabel: "Part", name: "AC · P-1", id: part.id, href: `/parts/${part.id}` },
+    ]);
+
+    const exported = await stepCodeBlockersExportRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(codeId));
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-type")).toContain("spreadsheetml");
+
+    const wb = new ExcelJS.Workbook();
+    // See tests/excel.test.ts: exceljs's own type declarations shadow the global `Buffer` with a
+    // module-local `interface Buffer extends ArrayBuffer {}` this project's `lib: ["esnext"]` no
+    // longer structurally satisfies — the cast is only for the type checker, the bytes are unchanged.
+    await wb.xlsx.load(Buffer.from(await exported.arrayBuffer()) as unknown as ArrayBuffer);
+    const row = wb.getWorksheet(1)!.getRow(2).values as unknown[];
+    expect(row).toContain("Part");
+    expect(row).toContain("AC · P-1");
   });
 });

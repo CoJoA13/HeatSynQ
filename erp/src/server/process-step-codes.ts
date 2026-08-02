@@ -7,7 +7,8 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { STEP_FIELD_TYPES, type StepFieldType } from "../lib/step-field-constants";
-import type { Blocker } from "./reference-blockers";
+import { TARGET_LABELS } from "../lib/reference-links";
+import { findBlockers, type Blocker } from "./reference-blockers";
 
 export type StepFieldInput = { id?: string; label: string; type: StepFieldType; unit?: string | null; sort: number };
 export type StepCode = {
@@ -119,9 +120,31 @@ export async function updateStepCode(id: string, input: Partial<z.input<typeof C
     }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
+/**
+ * `deleteReference`'s guarded shape (reference.ts), transplanted verbatim for the one
+ * `BlockerTarget` that isn't a `ReferenceKind`: the blocker scan and the soft delete it guards
+ * run inside one Serializable transaction, not two separate statements, for the same
+ * writer-side TOCTOU reason documented on `deleteReference` — a concurrent write assigning this
+ * code's id to a new `partProcessStep`/`processTemplateStep` row (both now validate their
+ * `codeId` via `assertRefExists` on their own Serializable transaction) forms the read-write
+ * cycle Postgres's SSI needs to abort the race, rather than silently leaving a live row pointing
+ * at a code this call just soft-deleted.
+ *
+ * Owner ruling (design spec §3.2 / §7): ANY live use blocks — a current-revision step, a locked
+ * historical revision's step, or a template step, all via the registry's `liveWhere`-filtered
+ * `findBlockers("processStepCode", id, tx)` (Task 2). No `reason` parameter here — spec §5.17
+ * excludes step codes from the required-reason delete prompt other entities carry.
+ */
 export async function deleteStepCode(id: string): Promise<void> {
+  const label = TARGET_LABELS.processStepCode;
   await withDbErrors({ entity: "Process step code" }, () =>
-    prisma.$transaction((tx) => auditedSoftDelete("processStepCode", id, undefined, tx)));
+    prisma.$transaction(async (tx) => {
+      const blockers = await findBlockers("processStepCode", id, tx);
+      if (blockers.length) {
+        throw new HttpError(400, `That ${label} is still in use by ${blockers.length} record(s)`);
+      }
+      await auditedSoftDelete("processStepCode", id, undefined, tx);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**
