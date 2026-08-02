@@ -294,24 +294,29 @@ describe("step field defs: .strict(), id-preserving edits, value blockers", () =
     });
   });
 
-  // Regression (fix-round correction — task-3-report.md has the full trail). syncStepFields's
+  // Regression (fix-round 2 correction — task-3-report.md has the full trail). syncStepFields's
   // guard is deliberately UNfiltered by the owning part's liveness — spec §6 ("blocked while any
   // PartProcessStepValue references the def... locked revisions included") and §11 testing item 4
-  // ("delete/type-change blocked while values exist, including only-historical values").
+  // ("delete/type-change blocked while values exist, including only-historical values") — because
   // `ProcessStepFieldDef` has no `deletedAt`, so its "delete" here is a genuine hard delete
-  // against `PartProcessStepValue.fieldDefId`'s `ON DELETE RESTRICT` FK — it can never safely
-  // ignore a still-existing row, regardless of whether the owning part is soft-deleted.
-  // `stepFieldBlockers`, by contrast, is scoped to live parts only (brief's own spec for that
-  // function) — so the two intentionally disagree on what counts. This locks in both halves: a
-  // value under a soft-deleted part is invisible to the live listing, AND it still produces the
-  // guard's normal field-named 400 (never a raw DB error — a live-filtered guard would let the
-  // code attempt the real hard delete and get an unrelated-sounding "That reference does not
-  // exist" from Postgres instead, which is worse, not better, for discoverability).
-  it("a value under a soft-deleted part is invisible to stepFieldBlockers but still blocks delete/type-change", async () => {
+  // against `PartProcessStepValue.fieldDefId`'s `ON DELETE RESTRICT` FK and can never safely
+  // ignore a still-existing row. Per the owner's core rule (spec §5.14, "a refusal whose blocker
+  // panel shows nothing is an undiscoverable dead end"), `stepFieldBlockers` was widened to match
+  // the guard exactly (not narrowed the other way, which would have been physically impossible —
+  // see the fix-round-1 note in the report for why a live-filtered guard just trades this
+  // function's clean 400 for a raw DB error instead). This locks in the corrected shape: a value
+  // under a soft-deleted part is still listed, marked `(deleted)` with no href since there's no
+  // reachable detail page, and still produces the guard's normal field-named 400 for both
+  // type-change and delete.
+  it("a value under a soft-deleted part still shows in stepFieldBlockers as deleted, and still blocks delete/type-change", async () => {
     const { part, codeId, fieldDef } = await fixtureWithValue();
     await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
 
-    expect(await stepFieldBlockers(fieldDef.id)).toEqual([]);
+    const blockers = await stepFieldBlockers(fieldDef.id);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatchObject({
+      entityLabel: "Part", name: "AC · P-1 (deleted)", id: part.id, href: null,
+    });
 
     const typeErr = await setStepFields(codeId, [
       { id: fieldDef.id, label: fieldDef.label, type: "TEXT", sort: 1 },

@@ -131,16 +131,17 @@ export async function deleteStepCode(id: string): Promise<void> {
  * from the payload is deleted. Both a delete and a type change are refused with the two exact
  * messages below while ANY value still references the def — spec §6: "blocked while any
  * PartProcessStepValue references the def... locked revisions included"; §11 testing item 4:
- * "including only-historical values." Deliberately UNLIKE `stepFieldBlockers` below (which is
- * scoped to live parts only) and unlike the `partFieldDefBlockersOn` precedent this otherwise
- * follows (part-field-defs.ts, where the guard and the listing share one live-filtered query):
- * `ProcessStepFieldDef` has no `deletedAt` — deleting it here is a genuine hard delete against
- * `PartProcessStepValue.fieldDefId`'s `ON DELETE RESTRICT` FK, unlike `PartFieldDef`'s soft
- * delete. A live-filtered guard would let a def whose only reference is a value under a
- * soft-deleted part slip past this check and then hit that FK directly, trading this function's
- * field-named 400 for a raw, unhelpful DB error — worse discoverability, not better. See
- * task-3-report.md's fix-round note for the full trail (this was reverted from a live-filtered
- * version after a review round proposed it, citing the wrong spec rule).
+ * "including only-historical values." UNLIKE the `partFieldDefBlockersOn` precedent this
+ * otherwise follows (part-field-defs.ts, where the guard's `count` is scoped to live parts
+ * because `PartFieldDef` is itself soft-deletable): `ProcessStepFieldDef` has no `deletedAt` —
+ * deleting it here is a genuine hard delete against `PartProcessStepValue.fieldDefId`'s
+ * `ON DELETE RESTRICT` FK, so it can never safely ignore a still-existing row regardless of the
+ * owning part's soft-delete state — a live-filtered guard would let a def whose only reference is
+ * a value under a soft-deleted part slip past this check and then hit that FK directly, trading
+ * this function's field-named 400 for a raw, unhelpful DB error. `stepFieldBlockers` below counts
+ * the exact same unfiltered set (owner ruling, spec §5.14: a refusal's blocker panel must never
+ * be emptier than what the refusal is actually blocked by), so guard and panel agree by
+ * construction — see its own doc comment for how a soft-deleted part's row is still shown.
  */
 async function syncStepFields(
   tx: Prisma.TransactionClient, codeId: string, parsed: z.infer<typeof FIELDS_ARRAY>,
@@ -202,23 +203,28 @@ export async function setStepFields(id: string, fields: StepFieldInput[]): Promi
 }
 
 /**
- * Every LIVE part holding a value for this field def, deduped per part, `CODE · partNumber`
- * named with an `/parts/[id]` href — the partFieldDefBlockers precedent (part-field-defs.ts),
- * scoped through step -> revision -> part instead of a direct part relation. Deliberately
- * narrower than `syncStepFields`'s guard above (which counts every value, live or not) — this
- * lists parts worth a caller's attention (something they could go edit), not every row that
- * happens to keep the def permanently undeletable. A def whose only reference is a value under
- * a soft-deleted part legitimately returns `[]` here while the guard still refuses; see the
- * comment on `syncStepFields` for why that asymmetry is correct rather than a drift bug.
+ * Every part holding a value for this field def, deduped per part, `CODE · partNumber` named
+ * with an `/parts/[id]` href — the partFieldDefBlockers precedent (part-field-defs.ts), scoped
+ * through step -> revision -> part instead of a direct part relation. Deliberately matches
+ * `syncStepFields`'s guard above exactly (unfiltered by the owning part's `deletedAt`) rather
+ * than narrowing to live parts only, per the owner's core rule (spec §5.14): a refusal whose
+ * blocker panel shows nothing is an undiscoverable dead end. A soft-deleted part still gets
+ * listed — `name` gets a ` (deleted)` suffix and `href` is `null` (no reachable detail page for
+ * a deleted part) — so a def that's permanently undeletable because of pure history is still
+ * fully explained here, not silently blocked with an empty panel.
  */
 export async function stepFieldBlockers(fieldDefId: string): Promise<Blocker[]> {
   const values = await prisma.partProcessStepValue.findMany({
-    where: { fieldDefId, step: { revision: { part: { deletedAt: null } } } },
+    where: { fieldDefId },
     include: {
       step: {
         include: {
           revision: {
-            include: { part: { select: { id: true, partNumber: true, customer: { select: { code: true } } } } },
+            include: {
+              part: {
+                select: { id: true, partNumber: true, deletedAt: true, customer: { select: { code: true } } },
+              },
+            },
           },
         },
       },
@@ -231,9 +237,10 @@ export async function stepFieldBlockers(fieldDefId: string): Promise<Blocker[]> 
     const part = v.step.revision.part;
     if (seen.has(part.id)) continue;
     seen.add(part.id);
+    const isDeleted = part.deletedAt !== null;
     out.push({
-      entityLabel: "Part", name: `${part.customer.code} · ${part.partNumber}`,
-      id: part.id, href: `/parts/${part.id}`,
+      entityLabel: "Part", name: `${part.customer.code} · ${part.partNumber}${isDeleted ? " (deleted)" : ""}`,
+      id: part.id, href: isDeleted ? null : `/parts/${part.id}`,
     });
   }
   return out;
