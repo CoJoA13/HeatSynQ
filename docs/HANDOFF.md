@@ -231,7 +231,7 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ```bash
 # 1. Tooling
-sudo dnf install -y git nodejs22 npm            # or use nvm; Node 22+ required
+sudo dnf install -y git nodejs26 npm            # or use nvm; Node 26 required (Dockerfile + CI pin it)
 # Docker Engine (compose v2 profiles are used; Docker CE recommended over podman):
 sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo
