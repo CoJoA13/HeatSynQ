@@ -325,3 +325,42 @@ export async function lockRevision(
     throw err;
   }
 }
+
+/**
+ * Loads a template's blank structure onto the part's working revision — REPLACE, not merge
+ * (spec §8 / owner ruling §3.1): every existing step and value of the working revision is
+ * deleted, then one step is created per template step (position and code copied, `instruction`
+ * seeded from the template step's `boilerplate`, zero value rows). The confirm-before-replace UX
+ * is Task 10's job on the client; this service just replaces. Cuts N+1 first if the current
+ * revision is locked, same as every other mutator in this file.
+ *
+ * A template is picked live from a list, not held as a stored assignment — nothing references
+ * templates the way step assignments reference codes — so a soft-deleted or inactive template is
+ * refused outright rather than getting the §5.14 "inactive still valid" treatment codes get.
+ */
+export async function loadTemplate(partId: string, templateId: string): Promise<{ revisionNumber: number }> {
+  return withDbErrors({ entity: "Process step" }, () =>
+    prisma.$transaction(async (tx) => {
+      const { rev } = await workingRevision(partId, tx);
+      const template = await tx.processTemplate.findFirst({
+        where: { id: templateId, deletedAt: null },
+        include: { steps: { orderBy: { position: "asc" } } },
+      });
+      if (!template) throw new HttpError(404, "Template not found");
+      if (!template.active) throw new HttpError(400, "That template is inactive");
+      const distinctCodeIds = [...new Set(template.steps.map((s) => s.codeId))];
+      for (const codeId of distinctCodeIds) {
+        await assertRefExists("processStepCode", codeId, tx);
+      }
+      await auditedUpdate("partProcessRevision", rev.id, async () => {
+        await tx.partProcessStepValue.deleteMany({ where: { step: { revisionId: rev.id } } });
+        await tx.partProcessStep.deleteMany({ where: { revisionId: rev.id } });
+        for (const s of template.steps) {
+          await tx.partProcessStep.create({
+            data: { revisionId: rev.id, position: s.position, codeId: s.codeId, instruction: s.boilerplate },
+          });
+        }
+      }, { tx });
+      return { revisionNumber: rev.revisionNumber };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
-  getRevisions, getRevision, addStep, updateStep, removeStep, reorderSteps, lockRevision,
+  getRevisions, getRevision, addStep, updateStep, removeStep, reorderSteps, lockRevision, loadTemplate,
 } from "@/server/part-process-steps";
 import { readAudit } from "@/server/audit";
 
@@ -343,5 +343,158 @@ describe("part process steps: the revision-cut rule", () => {
     await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
     await expect(getRevisions(part.id)).rejects.toMatchObject({ status: 404 });
     await expect(getRevision(part.id, 1)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("part process steps: loadTemplate", () => {
+  beforeEach(truncateAll);
+
+  /** A 3-step template built on two distinct codes, named apart from `fixture()`'s own "HT-01" so
+   *  the two can coexist inside one test (one carries a field def, to prove the load never copies
+   *  values even though the code has somewhere to put them). Position order matches creation
+   *  order: "load per racking sheet" (TMP-01), "" (TMP-02), "cool to room temp" (TMP-01 again — a
+   *  repeated code, so a distinct-code dedupe bug in the ref check would still pass). */
+  async function templateFixture() {
+    const code1 = await prisma.processStepCode.create({ data: { code: "TMP-01", name: "Template Austenitize" } });
+    await prisma.processStepFieldDef.create({
+      data: { codeId: code1.id, label: "Temperature", type: "NUMBER", unit: "F", sort: 1 },
+    });
+    const code2 = await prisma.processStepCode.create({ data: { code: "TMP-02", name: "Template Wash" } });
+    const template = await prisma.processTemplate.create({ data: { name: "Standard Anneal" } });
+    await prisma.processTemplateStep.create({
+      data: { templateId: template.id, position: 1, codeId: code1.id, boilerplate: "load per racking sheet" },
+    });
+    await prisma.processTemplateStep.create({
+      data: { templateId: template.id, position: 2, codeId: code2.id },
+    });
+    await prisma.processTemplateStep.create({
+      data: { templateId: template.id, position: 3, codeId: code1.id, boilerplate: "cool to room temp" },
+    });
+    return { template, code1, code2 };
+  }
+
+  it("loads structure only — three steps, boilerplate copied as instruction, zero value rows", async () => {
+    const { part } = await fixture();
+    const { template } = await templateFixture();
+
+    const { revisionNumber } = await asSystem(() => loadTemplate(part.id, template.id));
+    expect(revisionNumber).toBe(1);
+
+    const detail = await getRevision(part.id, 1);
+    expect(detail.steps).toHaveLength(3);
+    expect(detail.steps.map((s) => s.position)).toEqual([1, 2, 3]);
+    expect(detail.steps.map((s) => s.instruction)).toEqual(["load per racking sheet", "", "cool to room temp"]);
+    expect(detail.steps.every((s) => s.values.length === 0)).toBe(true);
+
+    // Not just the joined view — the underlying value table has genuinely nothing for these
+    // steps, even though the code they're built on carries a field def.
+    const stepIds = detail.steps.map((s) => s.id);
+    const valueCount = await prisma.partProcessStepValue.count({ where: { stepId: { in: stepIds } } });
+    expect(valueCount).toBe(0);
+  });
+
+  it("replace: existing steps and their values are gone, only template structure remains", async () => {
+    const { part, code, fieldDef } = await fixture();
+    const oldStep1 = await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "old-1", values: [{ fieldDefId: fieldDef.id, value: "1650" }],
+    }));
+    const oldStep2 = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "old-2" }));
+    const { template } = await templateFixture();
+
+    const { revisionNumber } = await asSystem(() => loadTemplate(part.id, template.id));
+    expect(revisionNumber).toBe(1);
+
+    const detail = await getRevision(part.id, 1);
+    expect(detail.steps).toHaveLength(3);
+    expect(detail.steps.map((s) => s.instruction)).toEqual(["load per racking sheet", "", "cool to room temp"]);
+
+    const survivingSteps = await prisma.partProcessStep.findMany({
+      where: { id: { in: [oldStep1.stepId, oldStep2.stepId] } },
+    });
+    expect(survivingSteps).toEqual([]);
+    const survivingValues = await prisma.partProcessStepValue.findMany({ where: { stepId: oldStep1.stepId } });
+    expect(survivingValues).toEqual([]);
+  });
+
+  it("locked current survives: loadTemplate cuts N+1, rev 1 stays byte-identical, rev 2 holds the template", async () => {
+    const { part, code, fieldDef } = await fixture();
+    await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "one", values: [{ fieldDefId: fieldDef.id, value: "1650" }],
+    }));
+    await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "two" }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+    const before = await getRevision(part.id, 1);
+
+    const { template } = await templateFixture();
+    const { revisionNumber } = await asSystem(() => loadTemplate(part.id, template.id));
+    expect(revisionNumber).toBe(2);
+
+    const after = await getRevision(part.id, 1);
+    expect(after).toEqual(before);
+
+    const rev2 = await getRevision(part.id, 2);
+    expect(rev2.steps).toHaveLength(3);
+    expect(rev2.steps.map((s) => s.instruction)).toEqual(["load per racking sheet", "", "cool to room temp"]);
+    expect(rev2.steps.every((s) => s.values.length === 0)).toBe(true);
+  });
+
+  it("refuses a soft-deleted template (404) or an inactive one (400)", async () => {
+    const { part } = await fixture();
+    const code = await prisma.processStepCode.create({ data: { code: "HT-02", name: "Temper" } });
+
+    const deletedTemplate = await prisma.processTemplate.create({
+      data: { name: "Deleted Template", deletedAt: new Date() },
+    });
+    await expect(asSystem(() => loadTemplate(part.id, deletedTemplate.id)))
+      .rejects.toMatchObject({ status: 404, message: "Template not found" });
+
+    await expect(asSystem(() => loadTemplate(part.id, "nonexistent")))
+      .rejects.toMatchObject({ status: 404, message: "Template not found" });
+
+    const inactiveTemplate = await prisma.processTemplate.create({
+      data: { name: "Inactive Template", active: false },
+    });
+    await prisma.processTemplateStep.create({ data: { templateId: inactiveTemplate.id, position: 1, codeId: code.id } });
+    await expect(asSystem(() => loadTemplate(part.id, inactiveTemplate.id)))
+      .rejects.toMatchObject({ status: 400, message: "That template is inactive" });
+
+    // Neither refusal touched the part's revisions.
+    expect(await getRevisions(part.id)).toEqual([]);
+  });
+
+  it("loading an empty template clears the working revision to zero steps", async () => {
+    const { part, code } = await fixture();
+    await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "old" }));
+    const emptyTemplate = await prisma.processTemplate.create({ data: { name: "Empty Template" } });
+
+    const { revisionNumber } = await asSystem(() => loadTemplate(part.id, emptyTemplate.id));
+    expect(revisionNumber).toBe(1);
+
+    const detail = await getRevision(part.id, 1);
+    expect(detail.steps).toEqual([]);
+  });
+
+  it("audit: the load is one revision-level update whose after-snapshot lists the template's steps", async () => {
+    const { part, code, fieldDef } = await fixture();
+    await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "old", values: [{ fieldDefId: fieldDef.id, value: "1650" }],
+    }));
+    const revId = (await prisma.partProcessRevision.findFirstOrThrow({ where: { partId: part.id } })).id;
+    const auditBefore = await readAudit("partProcessRevision", revId);
+
+    const { template } = await templateFixture();
+    await asSystem(() => loadTemplate(part.id, template.id));
+
+    const entries = await readAudit("partProcessRevision", revId);
+    expect(entries).toHaveLength(auditBefore.length + 1);
+    expect(entries[0].action).toBe("update");
+
+    const after = entries[0].after as { steps: { instruction: string; code: { code: string } }[] };
+    expect(after.steps.map((s) => s.instruction)).toEqual(["load per racking sheet", "", "cool to room temp"]);
+    expect(after.steps.map((s) => s.code.code)).toEqual(["TMP-01", "TMP-02", "TMP-01"]);
+
+    const before = entries[0].before as { steps: { instruction: string }[] };
+    expect(before.steps).toHaveLength(1);
+    expect(before.steps[0].instruction).toBe("old");
   });
 });
