@@ -81,11 +81,30 @@ export async function createTemplate(input: { name: string }): Promise<{ id: str
   return { id: row.id };
 }
 
+/**
+ * Writes the patch only if the row is still live, in one statement. The `findFirst` pre-check
+ * in `updateTemplate` gives the ordinary "already deleted" case a well-labelled 404, but it is a
+ * separate statement from the write — a concurrent delete committing in the gap would otherwise
+ * leave the update modifying a soft-deleted row and appending an "update" audit entry after that
+ * row's "delete" entry, while still reporting success (a delete->update history that reads like
+ * a revival). Throwing from inside `auditedUpdate`'s callback means no audit entry is written
+ * for an update that never actually claimed the row. Mirrors `claimLiveAndUpdate`
+ * (customers.ts) / `claimLive` (parts.ts).
+ */
+async function claimLiveAndUpdate(
+  tx: Prisma.TransactionClient, id: string, data: Prisma.ProcessTemplateUpdateManyMutationInput,
+): Promise<void> {
+  const { count } = await tx.processTemplate.updateMany({ where: { id, deletedAt: null }, data });
+  if (count === 0) throw new HttpError(404, "Template not found");
+}
+
 export async function updateTemplate(id: string, input: { name?: string; active?: boolean }): Promise<void> {
   const data = UPDATE.parse(input);
+  const current = await prisma.processTemplate.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+  if (!current) throw new HttpError(404, "Template not found");
   await withDbErrors({ entity: "Template", conflictField: "name" }, () =>
     prisma.$transaction((tx) =>
-      auditedUpdate("processTemplate", id, () => tx.processTemplate.update({ where: { id }, data }), { tx })));
+      auditedUpdate("processTemplate", id, () => claimLiveAndUpdate(tx, id, data), { tx })));
 }
 
 /**
@@ -123,6 +142,13 @@ export async function addTemplateStep(
           data: { templateId, position: nextPosition, codeId: data.codeId, boilerplate: data.boilerplate },
         });
         stepId = step.id;
+        // Bumps the parent's updatedAt: nothing else writes ProcessTemplate itself when only its
+        // steps change, so without this a "recently modified" sort over TemplateSummary would
+        // stay frozen at the template's own create/rename time regardless of how many times its
+        // step list was edited. Set explicitly, not left to Prisma's own @updatedAt handling —
+        // an otherwise-empty `data: {}` was verified NOT to bump it (no SET clause is emitted at
+        // all when there's nothing else to write), so the touch has to carry the value itself.
+        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
       }, { tx });
       return { id: stepId };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
@@ -137,9 +163,12 @@ export async function updateTemplateStep(
       await assertTemplateLive(tx, templateId);
       const step = await tx.processTemplateStep.findFirst({ where: { id: stepId, templateId } });
       if (!step) throw new HttpError(404, "Template step not found");
-      await auditedUpdate("processTemplate", templateId, () =>
-        tx.processTemplateStep.update({ where: { id: step.id }, data: { boilerplate: data.boilerplate } }),
-      { tx });
+      await auditedUpdate("processTemplate", templateId, async () => {
+        await tx.processTemplateStep.update({ where: { id: step.id }, data: { boilerplate: data.boilerplate } });
+        // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
+        // explicitly rather than left to Prisma's own @updatedAt handling.
+        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
+      }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
@@ -162,6 +191,9 @@ export async function removeTemplateStep(templateId: string, stepId: string): Pr
         for (const s of rest) {
           await tx.processTemplateStep.update({ where: { id: s.id }, data: { position: s.position - 1 } });
         }
+        // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
+        // explicitly rather than left to Prisma's own @updatedAt handling.
+        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
       }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -186,6 +218,9 @@ export async function reorderTemplateSteps(templateId: string, orderedStepIds: s
         for (const [index, id] of orderedStepIds.entries()) {
           await tx.processTemplateStep.update({ where: { id }, data: { position: index + 1 } });
         }
+        // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
+        // explicitly rather than left to Prisma's own @updatedAt handling.
+        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
       }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

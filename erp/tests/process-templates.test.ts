@@ -145,6 +145,25 @@ describe("process templates service", () => {
       await expect(asSystem(() => updateTemplate("nonexistent", { name: "x" })))
         .rejects.toMatchObject({ status: 404 });
     });
+
+    it("404s on a soft-deleted template and writes no audit entry", async () => {
+      const { id } = await asSystem(() => createTemplate({ name: "Standard Anneal" }));
+      await asSystem(() => deleteTemplate(id, "test cleanup"));
+      const before = await readAudit("processTemplate", id);
+
+      await expect(asSystem(() => updateTemplate(id, { name: "Renamed After Delete" })))
+        .rejects.toMatchObject({ status: 404 });
+
+      // Not just "still 404s" — the failed claim must not have appended an update entry after
+      // the delete, which would read as a revival in the history.
+      const after = await readAudit("processTemplate", id);
+      expect(after).toHaveLength(before.length);
+      expect(after.some((e) => e.action === "update")).toBe(false);
+
+      // The row itself carries no trace of the attempted rename either.
+      const row = await prisma.processTemplate.findUniqueOrThrow({ where: { id } });
+      expect(row.name).toBe("Standard Anneal");
+    });
   });
 
   describe("deleteTemplate", () => {
@@ -307,6 +326,44 @@ describe("process templates service", () => {
       const removeEntries = await readAudit("processTemplate", id);
       const removeAfter = removeEntries[0].after as { steps: { id: string }[] };
       expect(removeAfter.steps.some((s) => s.id === step.id)).toBe(false);
+    });
+
+    // A brief real wait between reads, not a mocked clock: @updatedAt's resolution is the
+    // millisecond, and asserting `>=` alone would pass even if a step op wrote nothing at all
+    // (an unchanged timestamp still satisfies `>=`), so the assertion has to be strict `>`. The
+    // 10ms wait is what makes strict `>` deterministic rather than a coin flip on same-millisecond
+    // writes.
+    it("every step mutation bumps the template's own updatedAt", async () => {
+      const { code } = await fixture();
+      const { id } = await asSystem(() => createTemplate({ name: "Standard Anneal" }));
+      const wait = () => new Promise((resolve) => setTimeout(resolve, 10));
+      const readUpdatedAt = async () =>
+        (await prisma.processTemplate.findUniqueOrThrow({ where: { id } })).updatedAt;
+
+      let prev = await readUpdatedAt();
+
+      await wait();
+      const step = await asSystem(() => addTemplateStep(id, { codeId: code.id }));
+      let now = await readUpdatedAt();
+      expect(now.getTime()).toBeGreaterThan(prev.getTime());
+      prev = now;
+
+      await wait();
+      await asSystem(() => updateTemplateStep(id, step.id, { boilerplate: "Heat to 1650F" }));
+      now = await readUpdatedAt();
+      expect(now.getTime()).toBeGreaterThan(prev.getTime());
+      prev = now;
+
+      await wait();
+      await asSystem(() => reorderTemplateSteps(id, [step.id]));
+      now = await readUpdatedAt();
+      expect(now.getTime()).toBeGreaterThan(prev.getTime());
+      prev = now;
+
+      await wait();
+      await asSystem(() => removeTemplateStep(id, step.id));
+      now = await readUpdatedAt();
+      expect(now.getTime()).toBeGreaterThan(prev.getTime());
     });
   });
 });
