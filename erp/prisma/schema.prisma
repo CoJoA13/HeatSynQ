@@ -152,31 +152,34 @@ model Material {
   deletedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+  parts     Part[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
 
 model InspectionScale {
-  id        String           @id @default(cuid())
-  name      String
-  active    Boolean          @default(true)
-  deletedAt DateTime?
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
-  codes     InspectionCode[]
+  id              String           @id @default(cuid())
+  name            String
+  active          Boolean          @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  codes           InspectionCode[]
+  partInspections PartInspection[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
 
 model InspectionCode {
-  id             String           @id @default(cuid())
-  name           String
-  defaultScaleId String?
-  defaultScale   InspectionScale? @relation(fields: [defaultScaleId], references: [id])
-  active         Boolean          @default(true)
-  deletedAt      DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id              String           @id @default(cuid())
+  name            String
+  defaultScaleId  String?
+  defaultScale    InspectionScale? @relation(fields: [defaultScaleId], references: [id])
+  active          Boolean          @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  partInspections PartInspection[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -241,13 +244,14 @@ model CommentSnippet {
 }
 
 model Specification {
-  id        String    @id @default(cuid())
-  name      String
-  text      String    @default("")
-  active    Boolean   @default(true)
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id                 String              @id @default(cuid())
+  name               String
+  text               String              @default("")
+  active             Boolean             @default(true)
+  deletedAt          DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  partSpecifications PartSpecification[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -283,6 +287,7 @@ model Customer {
   updatedAt         DateTime          @updatedAt
   addresses         CustomerAddress[]
   contacts          CustomerContact[]
+  parts             Part[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -330,4 +335,126 @@ model CustomerContact {
   updatedAt      DateTime  @updatedAt
 
   @@index([customerId])
+}
+
+enum PricePer {
+  EACH
+  LB
+  PER_100
+  PER_1000
+  LOT
+}
+
+enum PartFieldType {
+  TEXT
+  NUMBER
+  DATE
+  CHECKBOX
+}
+
+model Part {
+  id                    String              @id @default(cuid())
+  customerId            String
+  customer              Customer            @relation(fields: [customerId], references: [id])
+  partNumber            String
+  name                  String              @default("")
+  description           String              @default("")
+  materialId            String?
+  material              Material?           @relation(fields: [materialId], references: [id])
+  eachWeight            Decimal             @db.Decimal(10, 4) // lbs; required, > 0
+  loadQty               Int? // ≥ 1 when present
+  loadWeight            Decimal?            @db.Decimal(10, 2) // lbs; > 0 when present
+  serializationRequired Boolean             @default(false)
+  setupCharge           Decimal?            @db.Decimal(12, 2)
+  unitPrice             Decimal?            @db.Decimal(12, 4)
+  minimumCharge         Decimal?            @db.Decimal(12, 2)
+  pricePer              PricePer            @default(EACH)
+  active                Boolean             @default(true)
+  deletedAt             DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  specifications        PartSpecification[]
+  inspections           PartInspection[]
+  priceBreaks           PartPriceBreak[]
+  fieldValues           PartFieldValue[]
+
+  @@unique([customerId, partNumber], where: raw("\"deletedAt\" IS NULL"))
+  @@index([partNumber])
+  @@index([customerId])
+}
+
+model PartSpecification {
+  id              String        @id @default(cuid())
+  partId          String
+  part            Part          @relation(fields: [partId], references: [id])
+  specificationId String
+  specification   Specification @relation(fields: [specificationId], references: [id])
+  deletedAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([partId, specificationId], where: raw("\"deletedAt\" IS NULL"))
+  @@index([specificationId])
+}
+
+model PartInspection {
+  id               String           @id @default(cuid())
+  partId           String
+  part             Part             @relation(fields: [partId], references: [id])
+  inspectionCodeId String
+  inspectionCode   InspectionCode   @relation(fields: [inspectionCodeId], references: [id])
+  scaleId          String?
+  scale            InspectionScale? @relation(fields: [scaleId], references: [id])
+  min              Decimal?         @db.Decimal(10, 4)
+  max              Decimal?         @db.Decimal(10, 4)
+  location         String           @default("") // "Brinell @ flange OD"
+  sort             Int
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([partId])
+  @@index([inspectionCodeId])
+  @@index([scaleId])
+}
+
+model PartPriceBreak {
+  id        String    @id @default(cuid())
+  partId    String
+  part      Part      @relation(fields: [partId], references: [id])
+  threshold Decimal   @db.Decimal(12, 2) // in the part's price-per unit (owner ruling §3.1)
+  price     Decimal   @db.Decimal(12, 4)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([partId, threshold], where: raw("\"deletedAt\" IS NULL"))
+}
+
+model PartFieldDef {
+  id        String           @id @default(cuid())
+  name      String
+  type      PartFieldType
+  sort      Int
+  active    Boolean          @default(true)
+  deletedAt DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  values    PartFieldValue[]
+
+  @@unique([name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+model PartFieldValue {
+  id        String       @id @default(cuid())
+  partId    String
+  part      Part         @relation(fields: [partId], references: [id])
+  fieldId   String
+  field     PartFieldDef @relation(fields: [fieldId], references: [id])
+  value     String       @default("")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@unique([partId, fieldId])
+  @@index([fieldId])
 }

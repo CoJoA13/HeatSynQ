@@ -24,8 +24,9 @@ export async function createRole(name: string): Promise<{ id: string }> {
   const existing = await prisma.role.findFirst({ where: { name, deletedAt: null }, select: { id: true } });
   if (existing) throw new HttpError(400, "A role with that name already exists");
 
-  const role = await auditedCreate("role", { name }, () =>
-    withDbErrors({ entity: "Role", conflictField: "name" }, () => prisma.role.create({ data: { name } })));
+  const role = await withDbErrors({ entity: "Role", conflictField: "name" }, () =>
+    prisma.$transaction((tx) =>
+      auditedCreate("role", { name }, () => tx.role.create({ data: { name } }), { tx })));
   return { id: role.id };
 }
 
@@ -36,18 +37,18 @@ export async function renameRole(roleId: string, name: string): Promise<void> {
   });
   if (existing) throw new HttpError(400, "A role with that name already exists");
   await withDbErrors({ entity: "Role", conflictField: "name" }, () =>
-    auditedUpdate("role", roleId, () => prisma.role.update({ where: { id: roleId }, data: { name } })));
+    prisma.$transaction((tx) =>
+      auditedUpdate("role", roleId, () => tx.role.update({ where: { id: roleId }, data: { name } }), { tx })));
 }
 
 export async function setRolePermissions(roleId: string, permissions: string[]): Promise<void> {
   const unknown = permissions.filter((p) => !ALL_PERMISSIONS.includes(p));
   if (unknown.length) throw new HttpError(400, `Unknown permissions: ${unknown.join(", ")}`);
-  await auditedUpdate("role", roleId, () =>
-    prisma.$transaction([
-      prisma.rolePermission.deleteMany({ where: { roleId } }),
-      prisma.rolePermission.createMany({ data: permissions.map((permission) => ({ roleId, permission })) }),
-    ]),
-  );
+  await prisma.$transaction((tx) =>
+    auditedUpdate("role", roleId, async () => {
+      await tx.rolePermission.deleteMany({ where: { roleId } });
+      await tx.rolePermission.createMany({ data: permissions.map((permission) => ({ roleId, permission })) });
+    }, { tx }));
 }
 
 /**
@@ -64,5 +65,6 @@ export async function deleteRole(roleId: string, reason: string): Promise<void> 
   if (!why) throw new HttpError(400, "A reason is required to delete a role");
   const holders = await prisma.user.count({ where: { roleId, deletedAt: null } });
   if (holders > 0) throw new HttpError(400, "Role is assigned to users");
-  await withDbErrors({ entity: "Role" }, () => auditedSoftDelete("role", roleId, why));
+  await withDbErrors({ entity: "Role" }, () =>
+    prisma.$transaction((tx) => auditedSoftDelete("role", roleId, why, tx)));
 }

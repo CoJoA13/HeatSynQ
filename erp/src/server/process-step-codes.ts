@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { STEP_FIELD_TYPES, type StepFieldType } from "../lib/step-field-constants";
 
 export type StepFieldInput = { label: string; type: StepFieldType; unit?: string | null; sort: number };
@@ -67,40 +69,55 @@ export async function createStepCode(input: z.input<typeof CREATE>): Promise<{ i
   });
   if (existing) throw new HttpError(400, "A process step code with that code already exists");
 
-  const row = await auditedCreate("processStepCode", data, () =>
-    withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-      prisma.processStepCode.create({ data })));
+  // Serializable is scoped to writes that actually assign the FK (spec §5.2) — a pure rename or
+  // equipmentTag edit pays none of Serializable's abort-under-ordinary-concurrency cost. The
+  // target is still validated on this transaction's own `tx` whenever it IS being assigned, for
+  // the same reason as createCustomer's parentId/termsId checks (assertRefExists's doc comment
+  // explains why the check must share the write's own transaction to close the writer-side
+  // TOCTOU).
+  const assignsGlAccount = data.glAccountId != null;
+  const row = await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
+    prisma.$transaction(async (tx) => {
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      return auditedCreate("processStepCode", data, () => tx.processStepCode.create({ data }), { tx });
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
   return { id: row.id };
 }
 
 export async function updateStepCode(id: string, input: Partial<z.input<typeof CREATE>> & { active?: boolean }) {
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(input);
+  // Same Serializable scoping as createStepCode above — see that comment. Clearing glAccountId
+  // to null, or a patch that never touches it, needs neither the check nor Serializable.
+  const assignsGlAccount = data.glAccountId != null;
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    auditedUpdate("processStepCode", id, () => prisma.processStepCode.update({ where: { id }, data })));
+    prisma.$transaction(async (tx) => {
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      await auditedUpdate("processStepCode", id, () => tx.processStepCode.update({ where: { id }, data }), { tx });
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
 export async function deleteStepCode(id: string): Promise<void> {
-  await withDbErrors({ entity: "Process step code" }, () => auditedSoftDelete("processStepCode", id));
+  await withDbErrors({ entity: "Process step code" }, () =>
+    prisma.$transaction((tx) => auditedSoftDelete("processStepCode", id, undefined, tx)));
 }
 
 /** Replaces the entire field-definition set for a code. */
 export async function setStepFields(id: string, fields: StepFieldInput[]): Promise<void> {
   const parsed = FIELDS_ARRAY.parse(fields);
   await withDbErrors({ entity: "Process step code" }, () =>
-    auditedUpdate("processStepCode", id, async () => {
-      // deleteMany/createMany against a nonexistent codeId both silently no-op (nothing to
-      // delete, nothing violates a constraint when `fields` is empty), so without this check a
-      // bad id would report success and write a useless before=null/after=null audit row
-      // instead of 404ing the way updateStepCode does via Prisma's P2025.
-      const exists = await prisma.processStepCode.findUnique({ where: { id }, select: { id: true } });
-      if (!exists) throw new HttpError(404, "Process step code not found");
-      return prisma.$transaction([
-        prisma.processStepFieldDef.deleteMany({ where: { codeId: id } }),
-        prisma.processStepFieldDef.createMany({
+    prisma.$transaction((tx) =>
+      auditedUpdate("processStepCode", id, async () => {
+        // deleteMany/createMany against a nonexistent codeId both silently no-op (nothing to
+        // delete, nothing violates a constraint when `fields` is empty), so without this check a
+        // bad id would report success and write a useless before=null/after=null audit row
+        // instead of 404ing the way updateStepCode does via Prisma's P2025.
+        const exists = await tx.processStepCode.findUnique({ where: { id }, select: { id: true } });
+        if (!exists) throw new HttpError(404, "Process step code not found");
+        await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
+        await tx.processStepFieldDef.createMany({
           data: parsed.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-        }),
-      ]);
-    }));
+        });
+      }, { tx })));
 }
 
 export type StepCodeUpdateInput = Partial<z.input<typeof CREATE>> & { active?: boolean; fields?: StepFieldInput[] };
@@ -119,18 +136,22 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(rest);
   const parsedFields = fields === undefined ? undefined : FIELDS_ARRAY.parse(fields);
 
+  // Same Serializable scoping as createStepCode above — see that comment.
+  const assignsGlAccount = data.glAccountId != null;
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
-    auditedUpdate("processStepCode", id, () =>
-      prisma.$transaction([
-        // Runs first: a bad glAccountId fails here with P2003 before any field statement runs,
-        // and the array form of $transaction rolls the whole batch back on any failure, so the
-        // field definitions are left untouched either way.
-        prisma.processStepCode.update({ where: { id }, data }),
-        ...(parsedFields === undefined ? [] : [
-          prisma.processStepFieldDef.deleteMany({ where: { codeId: id } }),
-          prisma.processStepFieldDef.createMany({
+    prisma.$transaction(async (tx) => {
+      // Runs first, on this transaction's own `tx`: a bad glAccountId is rejected here before
+      // any field statement runs, and the transaction rolls the whole batch back on any failure,
+      // so the field definitions are left untouched either way.
+      if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
+      await auditedUpdate("processStepCode", id, async () => {
+        await tx.processStepCode.update({ where: { id }, data });
+        if (parsedFields !== undefined) {
+          await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
+          await tx.processStepFieldDef.createMany({
             data: parsedFields.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-          }),
-        ]),
-      ])));
+          });
+        }
+      }, { tx });
+    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }

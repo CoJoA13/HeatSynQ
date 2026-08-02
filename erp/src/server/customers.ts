@@ -4,10 +4,13 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
+import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
 import type { PasteResult } from "./paste";
+import type { Blocker } from "./reference-blockers";
 
 export type CustomerRow = {
   id: string; code: string; name: string;
@@ -22,46 +25,9 @@ export type CustomerRow = {
 // number. Convert at the service boundary so routes, the UI, and Excel all see plain numbers.
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
-// Accepts a plain number or a decimal string ("25000.00"), but never an arbitrary string: an
-// invalid one (e.g. "not-a-number") used to sail through zod as a string and blow up inside
-// Prisma with a PrismaClientValidationError, which has no HTTP status and escapes handle() as a
-// bare 500 instead of the field-anchored 400 Spec §12 promises.
-//
-// `precision`/`scale` must match the column's own `@db.Decimal(precision, scale)` exactly — see
-// the paired comment on Customer.creditLimit/financeChargeRate in prisma/schema.prisma, which
-// points back here. A shared, column-agnostic validator (the previous shape of this function)
-// only checked that a value WAS a decimal, never that it FIT the specific column it was headed
-// for: "100" is a fine decimal but overflows financeChargeRate's Decimal(6,4) (max 99.9999) and
-// blows up inside Prisma with a status-less error (still a 500); "1.005" is a fine decimal but
-// has one more fractional digit than creditLimit's Decimal(12,2) allows, so Postgres silently
-// rounds it to 1.01 on write. Both are field-anchored 400s here instead: the regex bounds the
-// integer-digit count to `precision - scale` and the fractional-digit count to `scale` directly,
-// so a value that passes can neither overflow the column nor lose precision to rounding.
-function decimalField(precision: number, scale: number) {
-  const intDigits = precision - scale;
-  const pattern = new RegExp(`^-?\\d{1,${intDigits}}(\\.\\d{1,${scale}})?$`);
-  const message =
-    `Must be a decimal with at most ${intDigits} digit${intDigits === 1 ? "" : "s"} before ` +
-    `and ${scale} digit${scale === 1 ? "" : "s"} after the decimal point`;
-  return z.union([z.number(), z.string()])
-    .nullable()
-    .optional()
-    .transform((value, ctx) => {
-      if (value === null || value === undefined) return value;
-      // A non-finite number (NaN/Infinity) stringifies to something the digit pattern below can
-      // never match ("NaN", "Infinity"), so it is rejected by the same check as any other
-      // malformed value rather than needing a separate Number.isFinite guard.
-      const raw = typeof value === "number" ? String(value) : value.trim();
-      if (!pattern.test(raw)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message });
-        return z.NEVER;
-      }
-      return Number(raw);
-    });
-}
-
 // Kept in sync with prisma/schema.prisma's `@db.Decimal(12, 2)` / `@db.Decimal(6, 4)` — see the
-// comment on decimalField above and the matching comment on the schema fields themselves.
+// comment on decimalField (src/server/decimal-field.ts) and the matching comment on the schema
+// fields themselves.
 const creditLimitField = decimalField(12, 2);
 const financeChargeRateField = decimalField(6, 4);
 
@@ -138,23 +104,6 @@ async function assertParentExists(parentId: string, db: Db = prisma): Promise<vo
 }
 
 /**
- * Rejects a termsId that doesn't reference a live Terms row, for the same reason
- * assertParentExists exists: soft deletion leaves the row physically present, so the foreign
- * key alone accepts it. The result is a customer holding a termsId that every reference list
- * filters out — the detail page's Terms select then renders blank while the value is still
- * set (misrepresenting stored data), and Phase 5 billing would inherit a hidden terms record.
- *
- * An INACTIVE terms record is deliberately still assignable: `active: false` hides a row from
- * the default pick list, it does not retire an existing assignment. The detail page requests
- * includeInactive=1 and labels such an option rather than dropping it, exactly as the parent
- * selector does.
- */
-async function assertTermsExists(termsId: string): Promise<void> {
-  const terms = await prisma.terms.findFirst({ where: { id: termsId, deletedAt: null }, select: { id: true } });
-  if (!terms) throw new HttpError(400, "Those terms do not exist");
-}
-
-/**
  * Rejects a parent chain that would make `id` its own ancestor, and rejects a soft-deleted
  * parent. Only meaningful for a row that already exists — a genuinely fresh row cannot yet be
  * anyone's ancestor, so createCustomer calls assertParentExists directly instead; only
@@ -190,13 +139,15 @@ export async function createCustomer(input: Record<string, unknown>): Promise<{ 
   if (existing) throw new HttpError(400, "A customer with that code already exists");
 
   // A genuinely fresh row does not exist yet, so it cannot be in anyone's parent chain — only
-  // existence/non-deletion of the requested parent needs checking.
-  if (data.parentId) await assertParentExists(data.parentId);
-  if (data.termsId) await assertTermsExists(data.termsId);
-
-  const row = await auditedCreate("customer", data, () =>
-    withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
-      prisma.customer.create({ data })));
+  // existence/non-deletion of the requested parent needs checking. Both target checks run
+  // inside the write's own Serializable transaction (assertRefExists's doc comment explains
+  // why an outside-the-transaction read cannot close the writer-side TOCTOU).
+  const row = await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
+    prisma.$transaction(async (tx) => {
+      if (data.parentId) await assertParentExists(data.parentId, tx);
+      if (data.termsId) await assertRefExists("terms", data.termsId, tx);
+      return auditedCreate("customer", data, () => tx.customer.create({ data }), { tx });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return { id: row.id };
 }
 
@@ -223,24 +174,26 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
   // longer find, and the edit vanishes into a row nothing displays again.
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
-  // Only a non-null assignment needs checking — `null` clears the field, which is always legal.
-  if (data.termsId) await assertTermsExists(data.termsId);
 
-  // A parent change validates and writes inside ONE Serializable transaction. Reading the parent
-  // chain and then writing as two separate statements is not enough: two concurrent requests
-  // setting A.parent = B and B.parent = A can each observe the other row still parentless, both
-  // pass assertNoCycle, and both commit — producing exactly the cycle the guard exists to
-  // prevent, and one that no single later request can be blamed for. Serializable makes Postgres
-  // abort whichever transaction would produce a result no serial ordering could, surfacing as
-  // P2034 and translated by withDbErrors into a 409 telling the caller to retry.
+  // A parent change or a non-null termsId assignment validates and writes inside ONE
+  // Serializable transaction. Reading the target and then writing as two separate statements is
+  // not enough: two concurrent requests setting A.parent = B and B.parent = A can each observe
+  // the other row still parentless, both pass assertNoCycle, and both commit — producing exactly
+  // the cycle the guard exists to prevent, and one that no single later request can be blamed
+  // for. The same TOCTOU applies to termsId against a concurrent reference-delete
+  // (assertRefExists's doc comment). Serializable makes Postgres abort whichever transaction
+  // would produce a result no serial ordering could, surfacing as P2034 and translated by
+  // withDbErrors into a 409 telling the caller to retry.
   //
-  // Scoped to parent changes on purpose. Serializable costs more and can abort under ordinary
+  // Scoped to these two changes on purpose. Serializable costs more and can abort under ordinary
   // concurrency, and every other column on this row is a last-write-wins scalar with no
-  // cross-row invariant to protect — only the hierarchy has one.
-  if (data.parentId !== undefined) {
+  // cross-row invariant to protect — only the hierarchy and the terms FK have one.
+  // `null` clears termsId, which is always legal and needs no check.
+  if (data.parentId !== undefined || data.termsId) {
     await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
       prisma.$transaction(async (tx) => {
         await assertNoCycle(id, data.parentId, tx);
+        if (data.termsId) await assertRefExists("terms", data.termsId, tx);
         await auditedUpdate("customer", id, () => claimLiveAndUpdate(tx, id, data), { tx });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return;
@@ -251,6 +204,27 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
   await withDbErrors({ entity: "Customer", conflictField: "code" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("customer", id, () => claimLiveAndUpdate(tx, id, data), { tx })));
+}
+
+/**
+ * Every LIVE part belonging to this customer, regardless of `active` — deliberately unfiltered,
+ * because inactive parts are hidden from the parts list by default but still count against
+ * deleteCustomer's guard below, and because the parts list has no true customer filter to begin
+ * with. Both are exactly the gap that made §11's original "a count, not a blocker list" call
+ * wrong (owner ruling 2026-08-01, PR #13 round 3 review — see the dated note on that bullet).
+ * Ordered by partNumber, named the same way partFieldDefBlockers names a Part blocker: a Part is
+ * (customer, partNumber), never a bare name (2C-1 spec §9) — and since every row here belongs to
+ * THIS one customer, its own code is what every name shares.
+ */
+export async function customerPartBlockers(customerId: string): Promise<Blocker[]> {
+  const parts = await prisma.part.findMany({
+    where: { customerId, deletedAt: null },
+    select: { id: true, partNumber: true, customer: { select: { code: true } } },
+    orderBy: { partNumber: "asc" },
+  });
+  return parts.map((p) => ({
+    entityLabel: "Part", name: `${p.customer.code} · ${p.partNumber}`, id: p.id, href: `/parts/${p.id}`,
+  }));
 }
 
 /**
@@ -272,22 +246,41 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
 
-  // Mirrors deleteRole's "still assigned" guard: orphaning children behind a deleted parent
-  // would leave rows whose parentCode resolves to something no screen can show.
-  const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
-  if (children > 0) throw new HttpError(400, "That customer still has child customers");
-
-  // Addresses and contacts have no meaning without their parent, so they are soft-deleted
-  // alongside it, in the same transaction and through the same audited* helpers as every other
-  // mutation — consistent with every other soft-delete cascade in this file, and with what
-  // listAddresses/listContacts already assume (deletedAt: null). A re-used code now produces a
-  // brand new customer row (see createCustomer above), so this is no longer what stops a reused
-  // code from resurrecting the previous occupant's dock and contact onto whoever types that code
-  // next — a new row's id was never attached to the old rows in the first place — but the
-  // cascade is still the correct outcome: a deleted customer's addresses and contacts should not
-  // remain live and undeleted (this was Fix 2 in the final review, back when a reused code did
-  // reuse the row).
+  // F1: the children and parts guard counts run ON tx, inside this same Serializable
+  // transaction — not on the bare `prisma` client before it starts. This pairs with createPart's
+  // Serializable in-tx customer-liveness read (parts.ts): without both halves sharing
+  // Serializable, a concurrent "create a part for this customer" and "delete this customer" can
+  // each pass their own pre-check (0 live parts here, customer still live there) before either
+  // commits, leaving a live part hanging off a customer this same instant deleted — exactly the
+  // orphan the parts guard below exists to prevent, and one no later request can undo (the part's
+  // customer is gone). Serializable makes Postgres abort whichever side would produce a result no
+  // serial ordering could, surfacing as P2034 and translated by withDbErrors into a 409 telling
+  // the caller to retry. Messages and evaluation order (children before parts) are unchanged.
   await withDbErrors({ entity: "Customer" }, () => prisma.$transaction(async (tx) => {
+    // Mirrors deleteRole's "still assigned" guard: orphaning children behind a deleted parent
+    // would leave rows whose parentCode resolves to something no screen can show.
+    const children = await tx.customer.count({ where: { parentId: id, deletedAt: null } });
+    if (children > 0) throw new HttpError(400, "That customer still has child customers");
+
+    // The guard itself stays a count, read in-tx exactly as F1 fixed it — only the message
+    // changed (H4, PR #13 round 3 review, amends §11): §11's original call assumed the parts
+    // list already named every blocker with links, but there is no true customer filter on that
+    // list, and inactive parts block deletion while hidden from it by default. The count still
+    // carries the refusal here; `customerPartBlockers` above is the separate, on-demand query
+    // the /blockers route serves so the UI can show what those parts actually are.
+    const parts = await tx.part.count({ where: { customerId: id, deletedAt: null } });
+    if (parts > 0) throw new HttpError(400, `That customer still has ${parts} part(s)`);
+
+    // Addresses and contacts have no meaning without their parent, so they are soft-deleted
+    // alongside it, in the same transaction and through the same audited* helpers as every other
+    // mutation — consistent with every other soft-delete cascade in this file, and with what
+    // listAddresses/listContacts already assume (deletedAt: null). A re-used code now produces a
+    // brand new customer row (see createCustomer above), so this is no longer what stops a reused
+    // code from resurrecting the previous occupant's dock and contact onto whoever types that
+    // code next — a new row's id was never attached to the old rows in the first place — but the
+    // cascade is still the correct outcome: a deleted customer's addresses and contacts should
+    // not remain live and undeleted (this was Fix 2 in the final review, back when a reused code
+    // did reuse the row).
     const [addresses, contacts] = await Promise.all([
       tx.customerAddress.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
       tx.customerContact.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
@@ -295,7 +288,7 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     for (const a of addresses) await auditedSoftDelete("customerAddress", a.id, "parent customer deleted", tx);
     for (const c of contacts) await auditedSoftDelete("customerContact", c.id, "parent customer deleted", tx);
     await auditedSoftDelete("customer", id, why, tx);
-  }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**

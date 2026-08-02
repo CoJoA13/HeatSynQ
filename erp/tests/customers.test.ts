@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import {
-  listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
+  listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, customerPartBlockers,
 } from "@/server/customers";
 import { addAddress, listAddresses } from "@/server/customer-addresses";
 import { addContact, listContacts } from "@/server/customer-contacts";
+import { createPart, deletePart } from "@/server/parts";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 
@@ -103,6 +104,49 @@ describe("customers service", () => {
     await deleteCustomer(child.id, "test cleanup");
     await deleteCustomer(parent.id, "test cleanup");
     expect(await listCustomers()).toHaveLength(0);
+  });
+
+  // F1: the children/parts guard counts moved from bare `prisma` reads into the delete
+  // transaction (on `tx`, Serializable) so a concurrent createPart can't slip a live part under a
+  // customer this same instant found "childless and partless". This pins the functional behavior
+  // — both guards still fire, in the same order (children before parts) — that the move must not
+  // disturb, even though the race itself isn't something a sequential test can exercise.
+  it("still refuses on both guards, in order, with the counts read inside the transaction", async () => {
+    const parent = await createCustomer({ code: "ACME", name: "Acme" });
+    await createCustomer({ code: "ACME-OH", name: "Ohio", parentId: parent.id });
+    await createPart({ customerId: parent.id, partNumber: "12345", eachWeight: 1 });
+    // Both guards would fire; the child guard must win, same as before the counts moved.
+    await expect(deleteCustomer(parent.id, "test cleanup")).rejects.toThrow(/child/i);
+    const row = await prisma.customer.findUnique({ where: { id: parent.id } });
+    expect(row?.deletedAt).toBeNull();
+  });
+
+  // H4 (Codex round 3 review, owner ruling 2026-08-01, amends spec §11): the parts refusal now
+  // names the count in its message, and a separate blocker list exists for the UI to fetch.
+  it("delete refusal message carries the live part count", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
+    await createPart({ customerId: id, partNumber: "12346", eachWeight: 1 });
+    await expect(deleteCustomer(id, "test cleanup")).rejects.toThrow("That customer still has 2 part(s)");
+  });
+
+  it("customerPartBlockers lists every live part regardless of active, excludes soft-deleted, "
+    + "ordered by partNumber", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    const other = await createCustomer({ code: "BETA", name: "Beta" });
+    const { id: p2 } = await createPart({ customerId: id, partNumber: "22222", eachWeight: 1 });
+    const { id: p1 } = await createPart({
+      customerId: id, partNumber: "11111", eachWeight: 1, active: false,
+    });
+    const { id: p3 } = await createPart({ customerId: id, partNumber: "33333", eachWeight: 1 });
+    await deletePart(p3, "cleanup");
+    await createPart({ customerId: other.id, partNumber: "99999", eachWeight: 1 });
+
+    const blockers = await customerPartBlockers(id);
+    expect(blockers).toEqual([
+      { entityLabel: "Part", name: "ACME · 11111", id: p1, href: `/parts/${p1}` },
+      { entityLabel: "Part", name: "ACME · 22222", id: p2, href: `/parts/${p2}` },
+    ]);
   });
 
   it("searches on code and name", async () => {

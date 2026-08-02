@@ -92,6 +92,10 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
     expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
       "customer.termsId -> terms",
       "inspectionCode.defaultScaleId -> inspectionScale",
+      "part.materialId -> material",
+      "partInspection.inspectionCodeId -> inspectionCode",
+      "partInspection.scaleId -> inspectionScale",
+      "partSpecification.specificationId -> specification",
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
     ]);

@@ -5,12 +5,14 @@ import { updateAddress, deleteAddress } from "@/server/customer-addresses";
 
 export const PUT = handle(async (req, { params }) => {
   mustCan(requireUser(), "customers", "edit");
-  await updateAddress((await params).addressId, await req.json());
+  const { id, addressId } = await params;
+  await updateAddress(id, addressId, await req.json());
   return NextResponse.json({ ok: true });
 });
 
 export const DELETE = handle(async (_req, { params }) => {
   mustCan(requireUser(), "customers", "edit");
-  await deleteAddress((await params).addressId);
+  const { id, addressId } = await params;
+  await deleteAddress(id, addressId);
   return NextResponse.json({ ok: true });
 });

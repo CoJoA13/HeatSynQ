@@ -4,6 +4,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
 import { linksFrom, nameKey } from "../lib/reference-links";
 import { findBlockers } from "./reference-blockers";
@@ -47,8 +48,8 @@ type RefDelegate = {
   create: (a: { data: object }) => Promise<{ id: string }>;
   update: (a: { where: { id: string }; data: object }) => Promise<{ id: string }>;
 };
-function delegate(kind: ReferenceKind): RefDelegate {
-  return prisma[kind] as unknown as RefDelegate;
+function delegate(kind: ReferenceKind, db: Prisma.TransactionClient = prisma): RefDelegate {
+  return db[kind] as unknown as RefDelegate;
 }
 
 // A compile-time check here (asserting every REFERENCE_KINDS member's Prisma payload has the
@@ -138,18 +139,45 @@ export async function createReference(kind: string, input: Record<string, unknow
     throw new HttpError(400, `A ${REFERENCE_LABELS[kind].singular.toLowerCase()} with that name already exists`);
   }
 
-  const row = await auditedCreate(kind, data, () =>
-    withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-      delegate(kind).create({ data })));
+  // Serializable is scoped to writes that actually assign a registered FK (spec §5.2) — most
+  // kinds (material, carrier, terms, ...) have no entry in REFERENCE_LINKS at all, and even
+  // inspectionCode/paymentType only need it when the FK column is actually being set to a
+  // non-null value; a plain rename or `active` toggle pays none of Serializable's
+  // abort-under-ordinary-concurrency cost. Each assigned target is still validated on this
+  // transaction's own `tx`, for the same reason as createCustomer's parentId/termsId checks: a
+  // read against the top-level `prisma` client cannot participate in the write's own Serializable
+  // read-write cycle, so it cannot close the writer-side half of the reference-delete TOCTOU
+  // (assertRefExists's doc comment).
+  const links = linksFrom(kind);
+  const assignsFk = links.some((link) => data[link.column] != null);
+  const row = await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
+    prisma.$transaction(async (tx) => {
+      for (const link of links) {
+        const value = data[link.column];
+        if (value != null) await assertRefExists(link.targetKind, value as string, tx);
+      }
+      return auditedCreate(kind, data, () => delegate(kind, tx).create({ data }), { tx });
+    }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
   return { id: row.id };
 }
 
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
   const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
-    .parse(await resolveLinkNames(kind, input));
+    .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
+  // Same Serializable scoping as createReference above — see that comment. Clearing an FK to
+  // null needs neither a target check nor Serializable: nothing points at anything after the
+  // write, so there is no cross-row invariant to protect.
+  const links = linksFrom(kind);
+  const assignsFk = links.some((link) => data[link.column] != null);
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
-    auditedUpdate(kind, id, () => delegate(kind).update({ where: { id }, data })));
+    prisma.$transaction(async (tx) => {
+      for (const link of links) {
+        const value = data[link.column];
+        if (value != null) await assertRefExists(link.targetKind, value as string, tx);
+      }
+      await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
+    }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
 /**
@@ -161,14 +189,15 @@ export async function updateReference(kind: string, id: string, input: Record<st
  * withDbErrors already maps Serializable's P2034 abort to a 409 asking the caller to retry.
  *
  * This closes the race only where the *concurrent writer's own transaction* also reads the
- * target row — Postgres's SSI aborts on a genuine read-write cycle, not on a one-sided read. As
- * of this fix, none of the four registered FK writers (customer.termsId,
- * processStepCode.glAccountId, paymentType.glAccountId, inspectionCode.defaultScaleId) read
- * their target inside the same transaction as their write, so no cycle can form and this closes
- * no live race today — see .superpowers/codex-pr12-fixes.md (F1) for the per-writer enumeration.
- * It is still the correct, necessary half of the fix: it matches this codebase's own
- * Serializable-guard precedent (updateCustomer's parent-cycle guard) and is what a writer would
- * *also* need to participate transactionally to actually close the window.
+ * target row — Postgres's SSI aborts on a genuine read-write cycle, not on a one-sided read. All
+ * four registered FK writers (customer.termsId, processStepCode.glAccountId,
+ * paymentType.glAccountId, inspectionCode.defaultScaleId) now validate their target via
+ * assertRefExists on their own Serializable transaction whenever they assign a non-null value to
+ * a registered FK column, so the read-write cycle SSI needs to abort the race can actually form:
+ * a concurrent delete's blocker scan and a concurrent writer's assertRefExists both read the same
+ * row inside their own Serializable transactions, and Postgres aborts whichever one would commit
+ * a result no serial ordering of the two could produce. This guard is live, not merely
+ * precedent-setting.
  */
 export async function deleteReference(kind: string, id: string): Promise<void> {
   assertKind(kind);

@@ -7,7 +7,8 @@ export type AuditableModel =
   | "user" | "role" | "setting"
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
-  | "processStepCode" | "customer" | "customerAddress" | "customerContact";
+  | "processStepCode" | "customer" | "customerAddress" | "customerContact"
+  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -38,6 +39,15 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   customer: undefined,
   customerAddress: undefined,
   customerContact: undefined,
+  // children are audited as their own models
+  part: undefined,
+  // history reads "ASTM A536", not a cuid
+  partSpecification: { specification: true },
+  partInspection: { inspectionCode: true, scale: true },
+  partPriceBreak: undefined,
+  partFieldDef: undefined,
+  // history names the field the value belongs to
+  partFieldValue: { field: true },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
@@ -90,6 +100,10 @@ export function redact(value: unknown): Prisma.InputJsonValue | undefined {
 // because both snapshots ran on `prisma`, outside the transaction, while the update itself ran on
 // `tx`. Passing `tx` through makes every snapshot and the audit write itself part of the same
 // transaction as the mutation, so they see (and commit or roll back with) exactly what it wrote.
+// `tx` on `auditedCreate`/`auditedUpdate`/`auditedSoftDelete` is required, not optional: the two
+// autocommit statements this type once tolerated (mutation on `prisma`, audit insert on `prisma`)
+// left an audit-write failure able to commit an unaudited mutation. Making it required lets the
+// compiler enumerate every caller instead of trusting each one to opt in.
 type Db = typeof prisma | Prisma.TransactionClient;
 
 async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
@@ -135,22 +149,22 @@ export async function auditSettingChange(key: string, beforeValue: unknown, afte
 }
 
 export async function auditedCreate<T extends { id: string }>(
-  model: AuditableModel, data: object, doIt: () => Promise<T>, opts?: { tx?: Prisma.TransactionClient },
+  model: AuditableModel, data: object, doIt: () => Promise<T>, opts: { tx: Prisma.TransactionClient },
 ): Promise<T> {
   const created = await doIt();
-  await write({ entity: model, entityId: created.id, action: "create", after: data }, opts?.tx ?? prisma);
+  await write({ entity: model, entityId: created.id, action: "create", after: data }, opts.tx);
   return created;
 }
 
 export async function auditedUpdate<T>(
   model: AuditableModel, id: string, doIt: () => Promise<T>,
-  opts?: { reason?: string; tx?: Prisma.TransactionClient },
+  opts: { tx: Prisma.TransactionClient; reason?: string },
 ): Promise<T> {
-  const db = opts?.tx ?? prisma;
+  const db = opts.tx;
   const before = await snapshot(model, id, db);
   const result = await doIt();
   const after = await snapshot(model, id, db);
-  await write({ entity: model, entityId: id, action: "update", before, after, reason: opts?.reason }, db);
+  await write({ entity: model, entityId: id, action: "update", before, after, reason: opts.reason }, db);
   return result;
 }
 
@@ -173,9 +187,9 @@ export async function auditedUpdate<T>(
  * ("a second DELETE re-stamps deletedAt and writes another audit row") as a carried item.
  */
 export async function auditedSoftDelete(
-  model: AuditableModel, id: string, reason?: string, tx?: Prisma.TransactionClient,
+  model: AuditableModel, id: string, reason: string | undefined, tx: Prisma.TransactionClient,
 ): Promise<void> {
-  const db = tx ?? prisma;
+  const db = tx;
   const before = await snapshot(model, id, db);
   const client = db[model] as unknown as {
     updateMany: (a: {

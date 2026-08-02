@@ -8,8 +8,9 @@ describe("audit helpers", () => {
 
   it("logs create with actor and redacts passwordHash", async () => {
     const user = await runWithContext({ actor: { id: "u0", name: "Admin" }, user: null }, () =>
-      auditedCreate("user", { username: "jane", passwordHash: "SECRET", displayName: "Jane" }, () =>
-        prisma.user.create({ data: { username: "jane", passwordHash: "SECRET", displayName: "Jane" } }),
+      prisma.$transaction((tx) =>
+        auditedCreate("user", { username: "jane", passwordHash: "SECRET", displayName: "Jane" }, () =>
+          tx.user.create({ data: { username: "jane", passwordHash: "SECRET", displayName: "Jane" } }), { tx }),
       ),
     );
     const log = await readAudit("user", user.id);
@@ -20,8 +21,9 @@ describe("audit helpers", () => {
 
   it("logs update with before and after", async () => {
     const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "Old" } });
-    await auditedUpdate("user", u.id, () =>
-      prisma.user.update({ where: { id: u.id }, data: { displayName: "New" } }),
+    await prisma.$transaction((tx) =>
+      auditedUpdate("user", u.id, () =>
+        tx.user.update({ where: { id: u.id }, data: { displayName: "New" } }), { tx }),
     );
     const [entry] = await readAudit("user", u.id);
     expect((entry.before as { displayName: string }).displayName).toBe("Old");
@@ -30,7 +32,7 @@ describe("audit helpers", () => {
 
   it("soft delete sets deletedAt and logs with reason", async () => {
     const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J" } });
-    await auditedSoftDelete("user", u.id, "left the company");
+    await prisma.$transaction((tx) => auditedSoftDelete("user", u.id, "left the company", tx));
     const row = await prisma.user.findUniqueOrThrow({ where: { id: u.id } });
     expect(row.deletedAt).toBeInstanceOf(Date);
     expect((await readAudit("user", u.id))[0]).toMatchObject({ action: "delete", reason: "left the company" });
@@ -38,8 +40,9 @@ describe("audit helpers", () => {
 
   it("searchAudit filters by entity", async () => {
     const u = await prisma.user.create({ data: { username: "j", passwordHash: "x", displayName: "J" } });
-    await auditedUpdate("user", u.id, () =>
-      prisma.user.update({ where: { id: u.id }, data: { displayName: "K" } }),
+    await prisma.$transaction((tx) =>
+      auditedUpdate("user", u.id, () =>
+        tx.user.update({ where: { id: u.id }, data: { displayName: "K" } }), { tx }),
     );
     expect(await searchAudit({ entity: "user" })).toHaveLength(1);
     expect(await searchAudit({ entity: "role" })).toHaveLength(0);
@@ -47,16 +50,19 @@ describe("audit helpers", () => {
 
   it("redacts nested password and token fields in create", async () => {
     const user = await runWithContext({ actor: { id: "u0", name: "Admin" }, user: null }, () =>
-      auditedCreate(
-        "user",
-        {
-          username: "nested",
-          displayName: "Nested",
-          profile: { password: "NestedPw1", email: "test@example.com" },
-          apiToken: "tok_abc",
-          secret: "sec123",
-        },
-        () => prisma.user.create({ data: { username: "nested", passwordHash: "x", displayName: "Nested" } }),
+      prisma.$transaction((tx) =>
+        auditedCreate(
+          "user",
+          {
+            username: "nested",
+            displayName: "Nested",
+            profile: { password: "NestedPw1", email: "test@example.com" },
+            apiToken: "tok_abc",
+            secret: "sec123",
+          },
+          () => tx.user.create({ data: { username: "nested", passwordHash: "x", displayName: "Nested" } }),
+          { tx },
+        ),
       ),
     );
     const log = await readAudit("user", user.id);
@@ -71,8 +77,9 @@ describe("audit helpers", () => {
     const u = await prisma.user.create({
       data: { username: "sig", passwordHash: "x", displayName: "Sig", signatureImage: Buffer.from("fakeimage") },
     });
-    await auditedUpdate("user", u.id, () =>
-      prisma.user.update({ where: { id: u.id }, data: { displayName: "Updated" } }),
+    await prisma.$transaction((tx) =>
+      auditedUpdate("user", u.id, () =>
+        tx.user.update({ where: { id: u.id }, data: { displayName: "Updated" } }), { tx }),
     );
     const [entry] = await readAudit("user", u.id);
     const beforeSnapshot = entry.before as Record<string, unknown>;

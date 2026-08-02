@@ -52,8 +52,8 @@ describe("customer addresses", () => {
   it("soft deletes and audits as its own entity", async () => {
     const id = await customer();
     const { id: addr } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" });
-    await updateAddress(addr, { city: "Toledo" });
-    await deleteAddress(addr);
+    await updateAddress(id, addr, { city: "Toledo" });
+    await deleteAddress(id, addr);
     expect(await listAddresses(id)).toHaveLength(0);
     expect(await prisma.customerAddress.findUnique({ where: { id: addr } })).not.toBeNull();
     const entries = await readAudit("customerAddress", addr);
@@ -66,7 +66,7 @@ describe("customer addresses", () => {
     // so `after` was read before the transaction committed and came back identical to `before`.
     const id = await customer();
     const { id: addr } = await addAddress(id, { kind: "SHIP_TO", name: "Dock A", city: "Toledo" });
-    await updateAddress(addr, { name: "Dock B", city: "Cleveland" });
+    await updateAddress(id, addr, { name: "Dock B", city: "Cleveland" });
     const [entry] = await readAudit("customerAddress", addr);
     const before = entry.before as { name: string; city: string };
     const after = entry.after as { name: string; city: string };
@@ -79,7 +79,7 @@ describe("customer addresses", () => {
     const id = await customer();
     const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" });
     const { id: second } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" });
-    await deleteAddress(first);
+    await deleteAddress(id, first);
     expect((await listAddresses(id)).find((a) => a.id === second)?.isDefault).toBe(true);
   });
 
@@ -88,7 +88,7 @@ describe("customer addresses", () => {
     const { id: ship1 } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
     const { id: ship2 } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" });
     await addAddress(id, { kind: "BILL_TO", name: "AP" }); // default
-    await updateAddress(ship1, { kind: "BILL_TO" });
+    await updateAddress(id, ship1, { kind: "BILL_TO" });
     const rows = await listAddresses(id);
     const shipDefaults = rows.filter((r) => r.kind === "SHIP_TO" && r.isDefault);
     const billDefaults = rows.filter((r) => r.kind === "BILL_TO" && r.isDefault);
@@ -99,7 +99,7 @@ describe("customer addresses", () => {
   it("clearing isDefault on the sole default of a kind re-promotes it", async () => {
     const id = await customer();
     const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
-    await updateAddress(first, { isDefault: false });
+    await updateAddress(id, first, { isDefault: false });
     const shipDefaults = (await listAddresses(id)).filter((r) => r.kind === "SHIP_TO" && r.isDefault);
     expect(shipDefaults.map((r) => r.id)).toEqual([first]);
   });
@@ -108,7 +108,7 @@ describe("customer addresses", () => {
     const id = await customer();
     const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
     const { id: second } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" });
-    await updateAddress(first, { active: false });
+    await updateAddress(id, first, { active: false });
     const rows = await listAddresses(id, { includeInactive: true });
     const by = (x: string) => rows.find((a) => a.id === x)!;
     expect(by(second).isDefault).toBe(true);
@@ -119,9 +119,9 @@ describe("customer addresses", () => {
     const id = await customer();
     const { id: first } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 1" }); // default
     const { id: second } = await addAddress(id, { kind: "SHIP_TO", name: "Dock 2" });
-    await updateAddress(second, { active: false }); // only "first" is active now, still default
-    await deleteAddress(first); // deletes the default; the only remaining address is inactive
-    await updateAddress(second, { active: true });
+    await updateAddress(id, second, { active: false }); // only "first" is active now, still default
+    await deleteAddress(id, first); // deletes the default; the only remaining address is inactive
+    await updateAddress(id, second, { active: true });
     const rows = await listAddresses(id);
     expect(rows.find((a) => a.id === second)?.isDefault).toBe(true);
   });
@@ -154,7 +154,7 @@ describe("customer addresses", () => {
     // Move ship1 (currently the SHIP_TO default) into BILL_TO, which already has a default.
     // Nothing here sets isDefault explicitly, so the primary write leaves it untouched — the
     // *normalization* is what has to resolve the resulting two-defaults-in-BILL_TO conflict.
-    await updateAddress(ship1, { kind: "BILL_TO" });
+    await updateAddress(id, ship1, { kind: "BILL_TO" });
 
     const actual = await prisma.customerAddress.findUnique({ where: { id: ship1 } });
     const [entry] = await readAudit("customerAddress", ship1);
@@ -174,7 +174,7 @@ describe("customer addresses", () => {
     // specific write to fail so the transaction aborts after the soft delete already ran.
     const spy = vi.spyOn(audit, "auditedUpdate").mockRejectedValueOnce(new Error("boom"));
     try {
-      await expect(deleteAddress(first)).rejects.toThrow("boom");
+      await expect(deleteAddress(id, first)).rejects.toThrow("boom");
     } finally {
       spy.mockRestore();
     }
@@ -221,8 +221,8 @@ describe("customer contacts", () => {
   it("soft deletes and audits as its own entity", async () => {
     const id = await customer();
     const { id: contact } = await addContact(id, { name: "Dana" });
-    await updateContact(contact, { getsCerts: true });
-    await deleteContact(contact);
+    await updateContact(id, contact, { getsCerts: true });
+    await deleteContact(id, contact);
     expect(await listContacts(id)).toHaveLength(0);
     expect(await prisma.customerContact.findUnique({ where: { id: contact } })).not.toBeNull();
     expect((await readAudit("customerContact", contact)).map((e) => e.action))
@@ -235,7 +235,7 @@ describe("customer contacts", () => {
     // child entity.
     const id = await customer();
     const { id: contact } = await addContact(id, { name: "Dana", phone: "555-0100" });
-    await updateContact(contact, { name: "Dana Reed", phone: "555-0199" });
+    await updateContact(id, contact, { name: "Dana Reed", phone: "555-0199" });
     const [entry] = await readAudit("customerContact", contact);
     const before = entry.before as { name: string; phone: string };
     const after = entry.after as { name: string; phone: string };
@@ -263,7 +263,7 @@ describe("customer contacts", () => {
       getsInvoices: true,
       getsStatements: true,
     });
-    await updateContact(contact, { phone: "555-0100" });
+    await updateContact(id, contact, { phone: "555-0100" });
     const [c] = await listContacts(id);
     expect(c).toMatchObject({
       getsInvoices: true,
@@ -290,8 +290,8 @@ describe("concurrent child deletion", () => {
       const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock" });
       const { id: contactId } = await addContact(id, { name: "Pat" });
 
-      const addr = await Promise.allSettled([deleteAddress(addressId), deleteAddress(addressId)]);
-      const ct = await Promise.allSettled([deleteContact(contactId), deleteContact(contactId)]);
+      const addr = await Promise.allSettled([deleteAddress(id, addressId), deleteAddress(id, addressId)]);
+      const ct = await Promise.allSettled([deleteContact(id, contactId), deleteContact(id, contactId)]);
 
       expect(addr.filter((r) => r.status === "fulfilled"), `address attempt ${i}`).toHaveLength(1);
       expect(ct.filter((r) => r.status === "fulfilled"), `contact attempt ${i}`).toHaveLength(1);
@@ -320,8 +320,8 @@ describe("an edit racing a delete", () => {
       const { id: contactId } = await addContact(id, { name: "Pat" });
       const { id: addressId } = await addAddress(id, { kind: "SHIP_TO", name: "Dock" });
 
-      await Promise.allSettled([updateContact(contactId, { phone: "555-1234" }), deleteContact(contactId)]);
-      await Promise.allSettled([updateAddress(addressId, { city: "Erie" }), deleteAddress(addressId)]);
+      await Promise.allSettled([updateContact(id, contactId, { phone: "555-1234" }), deleteContact(id, contactId)]);
+      await Promise.allSettled([updateAddress(id, addressId, { city: "Erie" }), deleteAddress(id, addressId)]);
 
       for (const [model, rowId] of [["customerContact", contactId], ["customerAddress", addressId]] as const) {
         // readAudit is newest-first; oldest-first is easier to reason about here.

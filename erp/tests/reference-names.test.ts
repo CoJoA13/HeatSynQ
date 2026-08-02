@@ -35,7 +35,7 @@ describe("reference FK name resolution", () => {
   });
 
   it("leaves the name null when the target was soft-deleted out from under it", async () => {
-    // assertTermsExists-style guards, and now deleteReference's own reference-delete guard
+    // assertRefExists-style guards, and now deleteReference's own reference-delete guard
     // (Task 5), stop this arising going forward — deleteReference would refuse here because a
     // live inspectionCode still points at the scale. Rows predating both guards exist, so the
     // legacy state is simulated directly against Prisma rather than through the (correctly)
