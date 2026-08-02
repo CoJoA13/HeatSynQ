@@ -6,6 +6,7 @@ import {
   listPartFieldDefs, createPartFieldDef, updatePartFieldDef, deletePartFieldDef, partFieldDefBlockers,
 } from "@/server/part-field-defs";
 import { listPartFieldValues, setPartFieldValues } from "@/server/part-field-values";
+import { readAudit } from "@/server/audit";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -114,6 +115,39 @@ describe("part field definitions", () => {
     expect(row.name).toBe("Drawing number");
     expect(row.sort).toBe(3);
     expect(row.active).toBe(false);
+  });
+
+  // F3: a patch that never touches `type` used to write via a bare `update({ where: { id } })`
+  // with no liveness claim, so a stale PUT arriving after a delete edited the soft-deleted row
+  // and appended a post-delete "update" audit entry. Claim-live (updateMany + deletedAt: null)
+  // makes that a 404 instead, same as every other claim-live write in this codebase.
+  it("a stale non-type PUT after delete 404s and writes no audit entry", async () => {
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 }));
+    await asSystem(() => deletePartFieldDef(fieldId));
+    const before = await readAudit("partFieldDef", fieldId);
+
+    await expect(asSystem(() => updatePartFieldDef(fieldId, { name: "Drawing number" })))
+      .rejects.toMatchObject({ status: 404 });
+
+    const after = await readAudit("partFieldDef", fieldId);
+    expect(after).toHaveLength(before.length);
+  });
+
+  // Same claim on the type-change path: its pre-check already reads deletedAt: null, but the
+  // write it fed into was the same unguarded `update`. Route the write through the identical
+  // claim-live helper so both patch shapes share one liveness guarantee.
+  it("a stale type-change PUT after delete 404s and writes no audit entry", async () => {
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 }));
+    await asSystem(() => deletePartFieldDef(fieldId));
+    const before = await readAudit("partFieldDef", fieldId);
+
+    await expect(asSystem(() => updatePartFieldDef(fieldId, { type: "NUMBER" })))
+      .rejects.toMatchObject({ status: 404 });
+
+    const after = await readAudit("partFieldDef", fieldId);
+    expect(after).toHaveLength(before.length);
   });
 });
 

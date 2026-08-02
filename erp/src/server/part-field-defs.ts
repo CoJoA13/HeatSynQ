@@ -41,6 +41,16 @@ export async function createPartFieldDef(input: Record<string, unknown>): Promis
   return { id: row.id };
 }
 
+/** Writes only if still live, one statement — the claimLiveAndUpdate precedent (customers.ts).
+ *  F3: a patch that never touches `type` had no liveness claim at all (a bare `update({ where:
+ *  { id } })`), so a stale PUT arriving after a delete edited the soft-deleted row and appended a
+ *  post-delete audit entry. Shared by both the type-change and non-type-change paths below, so
+ *  both patch shapes get the same guarantee. */
+async function claimLive(tx: Prisma.TransactionClient, id: string, data: Prisma.PartFieldDefUpdateManyMutationInput) {
+  const { count } = await tx.partFieldDef.updateMany({ where: { id, deletedAt: null }, data });
+  if (count === 0) throw new HttpError(404, "Part field not found");
+}
+
 export async function updatePartFieldDef(id: string, input: Record<string, unknown>): Promise<void> {
   const data = EDIT.parse(input);
   if (data.name !== undefined) {
@@ -72,7 +82,7 @@ export async function updatePartFieldDef(id: string, input: Record<string, unkno
           }
         }
       }
-      await auditedUpdate("partFieldDef", id, () => tx.partFieldDef.update({ where: { id }, data }), { tx });
+      await auditedUpdate("partFieldDef", id, () => claimLive(tx, id, data), { tx });
     }, needsSerializable ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
