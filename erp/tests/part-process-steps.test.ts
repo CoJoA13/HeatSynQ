@@ -270,6 +270,34 @@ describe("part process steps: the revision-cut rule", () => {
     if (cutTo !== null) expect(cutTo).toBe(2);
   });
 
+  // A cut copies every step to a NEW id, so per-step UI state keyed by step id has nothing to
+  // match against afterwards — which is how a structural action on a locked revision silently
+  // discarded whatever the user had typed into some other step (Codex, PR #22). The mapping the
+  // cut already builds internally is now returned, so the client can follow its drafts across.
+  it("returns the cut's old-to-new step id mapping, and an empty one when amending in place", async () => {
+    const { part, code } = await fixture();
+    const first = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "one" }));
+    const second = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "two" }));
+    // Amend in place: nothing was cut, so there is nothing to map.
+    expect(second.stepIdMap).toEqual({});
+
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+    const afterCut = await asSystem(() => updateStep(part.id, first.stepId, { instruction: "one edited" }));
+    expect(afterCut.revisionNumber).toBe(2);
+
+    // Every step of the locked revision appears exactly once, pointing at its copy on rev 2.
+    const rev1 = await getRevision(part.id, 1);
+    const rev2 = await getRevision(part.id, 2);
+    expect(Object.keys(afterCut.stepIdMap).sort()).toEqual(rev1.steps.map((s) => s.id).sort());
+    expect(Object.values(afterCut.stepIdMap).sort()).toEqual(rev2.steps.map((s) => s.id).sort());
+    // The mapping is position-faithful: following an old id lands on the step that succeeded it.
+    for (const old of rev1.steps) {
+      const copy = rev2.steps.find((s) => s.id === afterCut.stepIdMap[old.id]);
+      expect(copy?.position).toBe(old.position);
+      expect(copy?.codeId).toBe(old.codeId);
+    }
+  });
+
   it("lockRevision is idempotent and 404s on a missing revision", async () => {
     const { part, code } = await fixture();
     await asSystem(() => addStep(part.id, { codeId: code.id }));

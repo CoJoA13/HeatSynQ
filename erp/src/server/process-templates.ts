@@ -142,13 +142,25 @@ export async function addTemplateStep(
           data: { templateId, position: nextPosition, codeId: data.codeId, boilerplate: data.boilerplate },
         });
         stepId = step.id;
+        // Through claimLiveAndUpdate, so this doubles as the atomic liveness claim: its
+        // `deletedAt: null` is evaluated as part of the UPDATE, and a concurrent delete therefore
+        // either loses the row or wins it outright, with a 404 rather than a child written under a
+        // deleted parent. assertTemplateLive above stays as the fast, friendly 404 for the
+        // ordinary sequential case, but it is a separate read and cannot be the guarantee.
+        //
+        // Codex raised this as a live TOCTOU on PR #22; the stated failure mode did not in fact
+        // reproduce, because this very statement already took a row lock that made a Serializable
+        // mutation abort with 40001 against a committed concurrent delete. That protection was
+        // incidental to the updatedAt bump below, though — it would have evaporated the moment
+        // anyone decided the touch was unnecessary — so the claim is now explicit.
+        //
         // Bumps the parent's updatedAt: nothing else writes ProcessTemplate itself when only its
         // steps change, so without this a "recently modified" sort over TemplateSummary would
         // stay frozen at the template's own create/rename time regardless of how many times its
         // step list was edited. Set explicitly, not left to Prisma's own @updatedAt handling —
         // an otherwise-empty `data: {}` was verified NOT to bump it (no SET clause is emitted at
         // all when there's nothing else to write), so the touch has to carry the value itself.
-        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
+        await claimLiveAndUpdate(tx, templateId, { updatedAt: new Date() });
       }, { tx });
       return { id: stepId };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
@@ -167,7 +179,7 @@ export async function updateTemplateStep(
         await tx.processTemplateStep.update({ where: { id: step.id }, data: { boilerplate: data.boilerplate } });
         // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
         // explicitly rather than left to Prisma's own @updatedAt handling.
-        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
+        await claimLiveAndUpdate(tx, templateId, { updatedAt: new Date() });
       }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -193,7 +205,7 @@ export async function removeTemplateStep(templateId: string, stepId: string): Pr
         }
         // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
         // explicitly rather than left to Prisma's own @updatedAt handling.
-        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
+        await claimLiveAndUpdate(tx, templateId, { updatedAt: new Date() });
       }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -220,7 +232,7 @@ export async function reorderTemplateSteps(templateId: string, orderedStepIds: s
         }
         // Bumps the parent's updatedAt — see addTemplateStep's comment for why it's set
         // explicitly rather than left to Prisma's own @updatedAt handling.
-        await tx.processTemplate.update({ where: { id: templateId }, data: { updatedAt: new Date() } });
+        await claimLiveAndUpdate(tx, templateId, { updatedAt: new Date() });
       }, { tx });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

@@ -35,6 +35,7 @@ function Detail({ id }: { id: string }) {
   const [codes, setCodes] = useState<StepCodeOption[]>([]);
   const [codesReady, setCodesReady] = useState(false);
   const [addCodeId, setAddCodeId] = useState("");
+  const [addingStep, setAddingStep] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
 
   // Per-step boilerplate draft, keyed by stepId. Rebuilt from server truth (`template.steps`)
@@ -119,6 +120,12 @@ function Detail({ id }: { id: string }) {
     setTemplate((cur) => (cur ? { ...cur, active } : cur));
     try {
       await api(`/api/process-templates/${id}`, { method: "PATCH", body: JSON.stringify({ active }) });
+      // Reconcile from the server on success too, not only on failure (Codex, PR #22). The name
+      // and step controls stay live during this PATCH and their handlers call load(); one landing
+      // mid-flight reads the OLD active value and overwrites the optimistic checkbox, and with no
+      // reload here nothing ever corrected it — the box showed one thing, the database held the
+      // other. Safe to reload now that load() preserves an unsaved name and merges step drafts.
+      await load().catch(() => {});
       setError(null);
     } catch (e) {
       await load().catch(() => {});
@@ -139,14 +146,18 @@ function Detail({ id }: { id: string }) {
     return (boilerplateDrafts.get(step.id) ?? step.boilerplate) !== step.boilerplate;
   }
 
+  // One at a time, the same guard the part-detail Add step carries (Codex, PR #22): addCodeId is
+  // not cleared until the POST returns, and repeating a code on a template is legitimate, so two
+  // quick clicks both succeeded and appended a duplicate step nobody asked for.
   async function addStep() {
-    if (!addCodeId) return;
+    if (!addCodeId || addingStep) return;
+    setAddingStep(true);
     try {
       await api(`/api/process-templates/${id}/steps`, { method: "POST", body: JSON.stringify({ codeId: addCodeId }) });
       setAddCodeId("");
       setError(null);
       await load();
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError((e as Error).message); } finally { setAddingStep(false); }
   }
 
   async function saveBoilerplate(stepId: string) {
@@ -285,9 +296,11 @@ function Detail({ id }: { id: string }) {
               <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
             ))}
           </select>
-          <button type="button" onClick={addStep} disabled={canEdit.disabled || !addCodeId} title={canEdit.title}
+          <button type="button" onClick={addStep}
+                  disabled={canEdit.disabled || !addCodeId || addingStep}
+                  title={addingStep ? "Adding…" : canEdit.title}
                   className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-            Add step
+            {addingStep ? "Adding…" : "Add step"}
           </button>
         </div>
       </section>

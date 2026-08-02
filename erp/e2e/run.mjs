@@ -40,7 +40,9 @@ const FLOWS = [
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
 // need to reach whatever's currently been acquired, and a signal can land at any point during
 // main()'s execution — there is no single function-local scope both paths share.
-const state = { devServer: null, browser: null, fixtures: null, created: { templateIds: [] } };
+const state = {
+  devServer: null, browser: null, fixtures: null, created: { templateIds: [] }, cleanupFailed: null,
+};
 let teardownPromise = null;
 
 function runDbScript(command, payload) {
@@ -159,6 +161,12 @@ function teardown() {
           runDbScript("cleanup", { ...state.fixtures, templateIds: state.created.templateIds });
           console.log("  cleanup ok");
         } catch (err) {
+          // Recorded, not just logged (Codex, PR #22): this used to swallow the failure, so a
+          // broken cleanup — a new foreign key missing from the deletion order, say — let the run
+          // print "All 6 flows passed" and exit 0 while leaving fixture rows and sessions behind
+          // in the developer's database. The whole contract of this harness is that it cleans up
+          // after itself, so failing to is a failed run.
+          state.cleanupFailed = String(err);
           console.error(`  cleanup FAILED — dev DB may still hold E2E fixture rows: ${err}`);
         }
       }
@@ -301,6 +309,11 @@ async function main() {
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0 || results.length !== FLOWS.length) {
     console.error(`\n${failed.length} of ${FLOWS.length} flow(s) failed.`);
+    process.exitCode = 1;
+  } else if (state.cleanupFailed) {
+    console.error(`\nAll ${FLOWS.length} flows passed, but dev-DB cleanup FAILED — fixture rows ` +
+      `are still in the erp database and the next run's self-heal will have to reap them. ` +
+      `Treating the run as failed: ${state.cleanupFailed}`);
     process.exitCode = 1;
   } else {
     console.log(`\nAll ${FLOWS.length} flows passed. Artifacts: ${ARTIFACTS_DIR}`);

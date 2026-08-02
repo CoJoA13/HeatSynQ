@@ -105,8 +105,8 @@ export type Fixtures = {
 
 async function deletePartProcessData(partIds: string[]): Promise<void> {
   // Sequential, not Promise.all: in practice there is at most one partId (both create()'s single
-  // fixture part and reapLeftovers' "E2E"-prefixed partNumber lookup match only one convention),
-  // and each part's own four deletes are already strictly ordered (children before parent).
+  // fixture part and reapLeftovers' customer-scoped lookup match exactly one row), and each
+  // part's own four deletes are already strictly ordered (children before parent).
   for (const partId of partIds) {
     const revisions = await prisma.partProcessRevision.findMany({ where: { partId }, select: { id: true } });
     const revisionIds = revisions.map((r) => r.id);
@@ -167,7 +167,15 @@ async function reapLeftovers(): Promise<void> {
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
     }),
-    prisma.part.findMany({ where: { partNumber: FIXTURE.partNumber }, select: { id: true } }),
+    // Deliberately NOT resolved here — a part's natural key is (customerId, partNumber), so
+    // matching the number alone would sweep up another customer's legitimately-numbered part and
+    // hard-delete it with its process revisions (Codex P1, PR #22). Scoped through the fixture
+    // customer below instead. Safe to make the customer the gate: cleanup deletes parts BEFORE
+    // customers, so a fixture part can never outlive its fixture customer.
+    prisma.part.findMany({
+      where: { partNumber: FIXTURE.partNumber, customer: { code: FIXTURE.customerCode } },
+      select: { id: true },
+    }),
     prisma.processStepCode.findMany({
       where: { code: { in: [FIXTURE.stepCodeA, FIXTURE.stepCodeB] } }, select: { id: true },
     }),

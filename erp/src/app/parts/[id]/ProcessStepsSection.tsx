@@ -176,6 +176,19 @@ export function ProcessStepsSection({
   // that silent cut becomes visible instead of leaving the picker pointed at a now-superseded
   // number. Same-revision mutations still reload the list (stepCount changed) but only need a
   // detail refetch, not a `selected` change.
+  // Re-keys the pending drafts through a cut's old->new step id mapping. The copies carry brand
+  // new ids, so without this the rebuild finds nothing to carry and every unsaved edit on every
+  // other step is replaced by persisted values — the same silent loss the same-revision carry
+  // already prevents, one level harder (Codex, PR #22). Empty mapping = no cut = nothing to do.
+  function remapDrafts(stepIdMap: Record<string, string>) {
+    if (Object.keys(stepIdMap).length === 0) return;
+    setDrafts((cur) => {
+      const next = new Map<string, Draft>();
+      for (const [stepId, draft] of cur) next.set(stepIdMap[stepId] ?? stepId, draft);
+      return next;
+    });
+  }
+
   async function refreshAfter(revisionNumber: number) {
     // The reload's failure used to be swallowed, and the selection moved anyway. That left the
     // stale list authoritative for `highest`, so the revision just created was classified as
@@ -240,10 +253,10 @@ export function ProcessStepsSection({
     if (changedValues.length > 0) patch.values = changedValues;
     if (patch.instruction === undefined && patch.values === undefined) return;
     try {
-      const res = await api<{ revisionNumber: number }>(`/api/parts/${partId}/process/steps/${stepId}`, {
-        method: "PATCH", body: JSON.stringify(patch),
-      });
+      const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
+        `/api/parts/${partId}/process/steps/${stepId}`, { method: "PATCH", body: JSON.stringify(patch) });
       onError(null);
+      remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
@@ -256,21 +269,21 @@ export function ProcessStepsSection({
     if (!addCodeId || addingStep) return;
     setAddingStep(true);
     try {
-      const res = await api<{ revisionNumber: number; stepId: string }>(`/api/parts/${partId}/process/steps`, {
-        method: "POST", body: JSON.stringify({ codeId: addCodeId }),
-      });
+      const res = await api<{ revisionNumber: number; stepId: string; stepIdMap: Record<string, string> }>(
+        `/api/parts/${partId}/process/steps`, { method: "POST", body: JSON.stringify({ codeId: addCodeId }) });
       setAddCodeId("");
       onError(null);
+      remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); } finally { setAddingStep(false); }
   }
 
   async function removeStepAction(stepId: string) {
     try {
-      const res = await api<{ revisionNumber: number }>(`/api/parts/${partId}/process/steps/${stepId}`, {
-        method: "DELETE",
-      });
+      const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
+        `/api/parts/${partId}/process/steps/${stepId}`, { method: "DELETE" });
       onError(null);
+      remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }
@@ -283,10 +296,11 @@ export function ProcessStepsSection({
     const reordered = swapAt(detail.steps, idx, dir);
     if (!reordered) return;
     try {
-      const res = await api<{ revisionNumber: number }>(`/api/parts/${partId}/process/reorder`, {
-        method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }),
-      });
+      const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
+        `/api/parts/${partId}/process/reorder`,
+        { method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }) });
       onError(null);
+      remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }

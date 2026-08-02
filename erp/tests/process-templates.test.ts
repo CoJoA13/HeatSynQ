@@ -5,7 +5,7 @@ import {
   listTemplates, getTemplate, createTemplate, updateTemplate, deleteTemplate,
   addTemplateStep, updateTemplateStep, removeTemplateStep, reorderTemplateSteps,
 } from "@/server/process-templates";
-import { readAudit } from "@/server/audit";
+import { auditedSoftDelete, readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -364,6 +364,43 @@ describe("process templates service", () => {
       await asSystem(() => removeTemplateStep(id, step.id));
       now = await readUpdatedAt();
       expect(now.getTime()).toBeGreaterThan(prev.getTime());
+    });
+  });
+  // The four step mutations claim the template as live through the same updateMany the metadata
+  // path uses, rather than trusting the separate assertTemplateLive read at the top. Codex raised
+  // this as a live TOCTOU on PR #22 and the stated failure mode did NOT reproduce — the parent
+  // `updatedAt` touch already took a row lock that made the Serializable mutation abort against a
+  // committed concurrent delete. But that protection belonged to a feature (the recently-modified
+  // sort), not to the guarantee, and would have vanished with it. This pins the behaviour so it
+  // cannot regress silently either way.
+  describe("a step mutation cannot land under a template deleted mid-flight", () => {
+    it("refuses, writes no child, and adds no audit entry after the delete", async () => {
+      const { code } = await fixture();
+      const { id } = await asSystem(() => createTemplate({ name: "T1" }));
+
+      let deleted!: () => void;
+      const hasDeleted = new Promise<void>((r) => { deleted = r; });
+      let mayCommit!: () => void;
+      const release = new Promise<void>((r) => { mayCommit = r; });
+
+      // deleteTemplate's own shape — DEFAULT isolation, held open past the soft delete. The
+      // mutation's Serializable setting cannot order against this on its own; the claim must.
+      const delTxn = asSystem(() => prisma.$transaction(async (tx) => {
+        await auditedSoftDelete("processTemplate", id, "why", tx);
+        deleted();
+        await release;
+      }, { timeout: 20000 }));
+
+      await hasDeleted;
+      const add = asSystem(() => addTemplateStep(id, { codeId: code.id }));
+      await new Promise((r) => setTimeout(r, 300));
+      mayCommit();
+      await delTxn;
+
+      await expect(add).rejects.toMatchObject({ status: expect.any(Number) });
+      expect(await prisma.processTemplateStep.count({ where: { templateId: id } })).toBe(0);
+      expect((await readAudit("processTemplate", id)).map((a) => a.action).sort())
+        .toEqual(["create", "delete"]);
     });
   });
 });

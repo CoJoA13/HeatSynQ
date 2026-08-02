@@ -189,7 +189,10 @@ describe("process steps routes", () => {
         body: JSON.stringify({ instruction: "Updated" }),
       }), ctx(part.id, stepId));
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ revisionNumber: 1 });
+      // `stepIdMap` is empty because nothing was cut — an amend in place. It is asserted rather
+      // than ignored so the shape stays pinned: a client reads it to follow per-step drafts
+      // across a cut, and silently dropping it would put that work back at risk.
+      expect(await res.json()).toEqual({ revisionNumber: 1, stepIdMap: {} });
     });
 
     it("PATCH rejects an unknown key with 400 (.strict())", async () => {
@@ -227,7 +230,10 @@ describe("process steps routes", () => {
         ctx(part.id, stepId),
       );
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ revisionNumber: 1 });
+      // `stepIdMap` is empty because nothing was cut — an amend in place. It is asserted rather
+      // than ignored so the shape stays pinned: a client reads it to follow per-step drafts
+      // across a cut, and silently dropping it would put that work back at risk.
+      expect(await res.json()).toEqual({ revisionNumber: 1, stepIdMap: {} });
     });
   });
 
@@ -270,7 +276,10 @@ describe("process steps routes", () => {
         body: JSON.stringify({ orderedStepIds: [secondId, firstId] }),
       }), { params: Promise.resolve({ id: part.id }) });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ revisionNumber: 1 });
+      // `stepIdMap` is empty because nothing was cut — an amend in place. It is asserted rather
+      // than ignored so the shape stays pinned: a client reads it to follow per-step drafts
+      // across a cut, and silently dropping it would put that work back at risk.
+      expect(await res.json()).toEqual({ revisionNumber: 1, stepIdMap: {} });
 
       const detail = await revisionGET(
         new Request(`http://t/api/parts/${part.id}/process/revisions/1`, { headers: { cookie } }),

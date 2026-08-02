@@ -14,6 +14,7 @@ type Code = {
   active: boolean; needsGlAccount: boolean; fields: Field[];
 };
 type Gl = { id: string; name: string; description?: string };
+type SavePayload = { body: object; fieldCtx?: { defId: string; label: string } };
 
 export default function StepCodesPage() {
   const [codes, setCodes] = useState<Code[]>([]);
@@ -39,12 +40,15 @@ export default function StepCodesPage() {
 
   // includeInactive=1 always: the Active column IS the reactivation control (part-fields.tsx
   // precedent), so a code just switched off must stay visible and selectable to be switched back on.
+  // Mirrors `codes` for the save queue to read at RUN time. A queued transform must see the field
+  // set as it is when its turn comes, not as it was when the user clicked — see enqueueFieldOp.
+  const codesRef = useRef<Code[]>([]);
   const load = useCallback(async () => {
     const [c, g] = await Promise.all([
       api<Code[]>("/api/admin/step-codes?includeInactive=1"),
       api<Gl[]>("/api/admin/reference/glAccount"),
     ]);
-    setCodes(c); setGls(g);
+    setCodes(c); codesRef.current = c; setGls(g);
   }, []);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
@@ -81,8 +85,14 @@ export default function StepCodesPage() {
   // `run` handles its own errors, so this is belt and braces.
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
 
-  function save(id: string, body: object, fieldCtx?: { defId: string; label: string }): Promise<void> {
+  function save(id: string, build: SavePayload | (() => SavePayload | null)): Promise<void> {
     const run = async () => {
+      // Resolved here, not at call time: a deferred build sees the field set as it is when its
+      // turn in the queue comes. `null` means the operation no longer applies (its code or row
+      // went away while it waited) — a no-op, not an error.
+      const payload = typeof build === "function" ? build() : build;
+      if (!payload) return;
+      const { body, fieldCtx } = payload;
       try {
         await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
         setError(null); setBlocked(null); setFieldBlocked(null); await load();
@@ -142,43 +152,65 @@ export default function StepCodesPage() {
   // `editLocal` — the array index is a stable key while the user is only editing text, since add/
   // remove/reorder always go straight to the server and reload rather than mutating locally.
   function editFieldLocal(codeId: string, fieldIdx: number, patch: Partial<Field>) {
-    setCodes((cur) => cur.map((c) => (
-      c.id !== codeId ? c : { ...c, fields: c.fields.map((f, i) => (i === fieldIdx ? { ...f, ...patch } : f)) }
-    )));
+    setCodes((cur) => {
+      const next = cur.map((c) => (
+        c.id !== codeId ? c : { ...c, fields: c.fields.map((f, i) => (i === fieldIdx ? { ...f, ...patch } : f)) }
+      ));
+      codesRef.current = next;
+      return next;
+    });
   }
 
-  // Replaces the whole field-def set for one code, id-preserving — every field already carries
-  // its own `id` from listStepCodes, and it is passed straight through, so a relabel or unit edit
-  // keeps pointing at the same PartProcessStepValue rows instead of losing them to a delete+
-  // recreate. `sort` is renumbered to the on-screen order, matching the pre-existing add/remove
-  // behavior this extends to edits.
-  async function saveFields(codeId: string, fields: Field[], fieldCtx?: { defId: string; label: string }) {
-    await save(codeId, { fields: fields.map((f, i) => ({ ...f, sort: i })) }, fieldCtx);
-  }
+  // Every field op replaces the whole field-def set, id-preserving — each field carries its own
+  // `id` from listStepCodes and it is passed straight through, so a relabel or unit edit keeps
+  // pointing at the same PartProcessStepValue rows instead of losing them to a delete+recreate.
+  // `sort` is renumbered to the on-screen order (see enqueueFieldOp).
 
   // Spec §6 lists reorder alongside add/edit/delete as one of the field-def row operations, and
   // it was the one that never got built (Codex, PR #22). `sort` is what orders the inputs on the
   // part-detail step editor and the traveler, so without this a field's position was fixed for
   // good the moment it recorded a value: remove-and-re-add, the only other way to change it, is
   // exactly what the server refuses once values exist. No `fieldCtx` — reordering touches neither
-  // the set of fields nor any type, so it can't hit that guard. saveFields already renumbers
-  // `sort` to the on-screen order, so handing it a reordered array is the whole operation.
+  // the set of fields nor any type, so it can't hit that guard. enqueueFieldOp renumbers `sort`
+  // to the resulting order, so returning a reordered array is the whole operation.
   function moveField(codeId: string, fieldIdx: number, dir: -1 | 1) {
-    const code = codes.find((c) => c.id === codeId);
-    if (!code) return;
-    const reordered = swapAt(code.fields, fieldIdx, dir);
-    if (!reordered) return;
-    void saveFields(codeId, reordered);
+    void enqueueFieldOp(codeId, (fields) => swapAt(fields, fieldIdx, dir));
+  }
+
+  /**
+   * Queues a save whose payload is computed when it RUNS, from the freshest field set, rather than
+   * captured now. Serializing the requests was only half the problem (Codex, PR #22): each payload
+   * is the whole field array, so a payload built before an earlier queued save reloaded carries
+   * that save's column back to its old value and undoes it — change a field's type, click reorder
+   * before the reload lands, and the reorder's stale array restores the old type. Expressing each
+   * operation as a transform over the current fields removes the staleness rather than papering
+   * over it, and it keeps the controls live, which disabling them would not.
+   *
+   * `fieldCtx` is resolved at run time too, since it names a field by index.
+   */
+  function enqueueFieldOp(
+    codeId: string,
+    transform: (fields: Field[]) => Field[] | null,
+    ctxOf?: (fields: Field[]) => { defId: string; label: string } | undefined,
+  ): Promise<void> {
+    return save(codeId, () => {
+      const code = codesRef.current.find((c) => c.id === codeId);
+      if (!code) return null;
+      const fields = transform(code.fields);
+      if (!fields) return null;
+      return { body: { fields: fields.map((f, i) => ({ ...f, sort: i })) }, fieldCtx: ctxOf?.(code.fields) };
+    });
   }
 
   // The removed field is the one a refusal (still-in-use) would name — pass it along so `save` can
   // fetch its blockers on a 400.
   function removeField(codeId: string, fieldIdx: number) {
-    const code = codes.find((c) => c.id === codeId);
-    if (!code) return;
-    const field = code.fields[fieldIdx];
-    void saveFields(codeId, code.fields.filter((_, i) => i !== fieldIdx),
-      field.id ? { defId: field.id, label: field.label } : undefined);
+    void enqueueFieldOp(
+      codeId,
+      (fields) => (fieldIdx < fields.length ? fields.filter((_, i) => i !== fieldIdx) : null),
+      (fields) => (fields[fieldIdx]?.id
+        ? { defId: fields[fieldIdx].id as string, label: fields[fieldIdx].label } : undefined),
+    );
   }
 
   // onFocus/onBlur split (part-fields.tsx precedent): typing doesn't hit the network on every
@@ -196,18 +228,14 @@ export default function StepCodesPage() {
       setError("Field label is required");
       return;
     }
-    const code = codes.find((c) => c.id === codeId);
-    if (!code) return;
-    void saveFields(codeId, code.fields.map((f, i) => (i === fieldIdx ? { ...f, label } : f)));
+    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, label } : f)));
   }
 
   function blurSaveUnit(codeId: string, fieldIdx: number, value: string) {
     const key = `${codeId}.${fieldIdx}.unit`;
     const before = focused.current[key];
     if (value === before) return;
-    const code = codes.find((c) => c.id === codeId);
-    if (!code) return;
-    void saveFields(codeId, code.fields.map((f, i) => (i === fieldIdx ? { ...f, unit: value || null } : f)));
+    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, unit: value || null } : f)));
   }
 
   return (
@@ -256,7 +284,7 @@ export default function StepCodesPage() {
 
             <label className="mb-2 flex items-center gap-2 text-sm">
               <input type="checkbox" checked={current.active} disabled={canEdit.disabled} title={canEdit.title}
-                     onChange={(e) => save(current.id, { active: e.target.checked })} />
+                     onChange={(e) => void save(current.id, { body: { active: e.target.checked } })} />
               Active
             </label>
 
@@ -264,7 +292,7 @@ export default function StepCodesPage() {
               GL account
               <select value={current.glAccountId ?? ""} disabled={canEdit.disabled} title={canEdit.title}
                       className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100"
-                      onChange={(e) => save(current.id, { glAccountId: e.target.value || null })}>
+                      onChange={(e) => void save(current.id, { body: { glAccountId: e.target.value || null } })}>
                 <option value="">(needs GL account)</option>
                 {gls.map((g) => <option key={g.id} value={g.id}>{g.name} {g.description}</option>)}
               </select>
@@ -285,9 +313,14 @@ export default function StepCodesPage() {
                     </td>
                     <td>
                       <select value={f.type} disabled={canEdit.disabled} title={canEdit.title}
-                              onChange={(e) => void saveFields(current.id, current.fields.map((ff, j) => (
-                                j === i ? { ...ff, type: e.target.value as StepFieldType } : ff
-                              )), f.id ? { defId: f.id, label: f.label } : undefined)}
+                              onChange={(e) => void enqueueFieldOp(
+                                current.id,
+                                (fields) => fields.map((ff, j) => (
+                                  j === i ? { ...ff, type: e.target.value as StepFieldType } : ff
+                                )),
+                                (fields) => (fields[i]?.id
+                                  ? { defId: fields[i].id as string, label: fields[i].label } : undefined),
+                              )}
                               className="rounded border px-2 py-1 disabled:bg-slate-100">
                         {STEP_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
@@ -325,7 +358,7 @@ export default function StepCodesPage() {
               </tbody>
             </table>
             <AddField disabled={canEdit.disabled} title={canEdit.title}
-                      onAdd={(f) => void saveFields(current.id, [...current.fields, f])} />
+                      onAdd={(f) => void enqueueFieldOp(current.id, (fields) => [...fields, f])} />
             <p className="mt-3 text-xs text-slate-500">
               A code with no fields is text-only — that is correct for steps like Hot Wash.
               The order here is the order the fields are asked for on a process step and printed

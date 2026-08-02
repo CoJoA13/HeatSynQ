@@ -221,14 +221,24 @@ export async function getRevision(partId: string, revisionNumber: number): Promi
   };
 }
 
+/** The old-step-id -> new-step-id mapping a revision cut produced, or `{}` when no cut happened.
+ *  Returned by every mutator so the client can follow per-step UI state (unsaved drafts) across a
+ *  cut, whose copies carry brand-new ids — without it, a structural action on a locked revision
+ *  silently discarded whatever the user had typed into some other step (Codex, PR #22). Plain
+ *  object rather than a Map: this crosses the wire as JSON. */
+export type StepIdMapping = Record<string, string>;
+
+const asMapping = (m: Map<string, string> | null): StepIdMapping =>
+  m ? Object.fromEntries(m) : {};
+
 export async function addStep(
   partId: string, input: { codeId: string; instruction?: string; values?: { fieldDefId: string; value: string }[] },
-): Promise<{ revisionNumber: number; stepId: string }> {
+): Promise<{ revisionNumber: number; stepId: string; stepIdMap: StepIdMapping }> {
   const data = ADD.parse(input);
   return withDbErrors({ entity: "Process step" }, () =>
     prisma.$transaction(async (tx) => {
       await assertRefExists("processStepCode", data.codeId, tx);
-      const { rev } = await workingRevision(partId, tx);
+      const { rev, stepIdMap } = await workingRevision(partId, tx);
       const nextPosition = (await tx.partProcessStep.count({ where: { revisionId: rev.id } })) + 1;
       let stepId = "";
       await auditedUpdate("partProcessRevision", rev.id, async () => {
@@ -238,13 +248,13 @@ export async function addStep(
         stepId = step.id;
         await applyValues(tx, step.id, data.codeId, data.values);
       }, { tx });
-      return { revisionNumber: rev.revisionNumber, stepId };
+      return { revisionNumber: rev.revisionNumber, stepId, stepIdMap: asMapping(stepIdMap) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 export async function updateStep(
   partId: string, stepId: string, input: { instruction?: string; values?: { fieldDefId: string; value: string }[] },
-): Promise<{ revisionNumber: number }> {
+): Promise<{ revisionNumber: number; stepIdMap: StepIdMapping }> {
   const data = EDIT.parse(input);
   // Before `workingRevision`, deliberately: reaching it is what cuts N+1 off a locked revision,
   // and a patch that cannot change anything has no business doing that. `{}` and `{ values: [] }`
@@ -266,11 +276,13 @@ export async function updateStep(
         }
         if (data.values !== undefined) await applyValues(tx, step.id, step.codeId, data.values);
       }, { tx });
-      return { revisionNumber: rev.revisionNumber };
+      return { revisionNumber: rev.revisionNumber, stepIdMap: asMapping(stepIdMap) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
-export async function removeStep(partId: string, stepId: string): Promise<{ revisionNumber: number }> {
+export async function removeStep(
+  partId: string, stepId: string,
+): Promise<{ revisionNumber: number; stepIdMap: StepIdMapping }> {
   return withDbErrors({ entity: "Process step" }, () =>
     prisma.$transaction(async (tx) => {
       const { rev, stepIdMap } = await workingRevision(partId, tx);
@@ -289,11 +301,13 @@ export async function removeStep(partId: string, stepId: string): Promise<{ revi
           await tx.partProcessStep.update({ where: { id: s.id }, data: { position: s.position - 1 } });
         }
       }, { tx });
-      return { revisionNumber: rev.revisionNumber };
+      return { revisionNumber: rev.revisionNumber, stepIdMap: asMapping(stepIdMap) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
-export async function reorderSteps(partId: string, orderedStepIds: string[]): Promise<{ revisionNumber: number }> {
+export async function reorderSteps(
+  partId: string, orderedStepIds: string[],
+): Promise<{ revisionNumber: number; stepIdMap: StepIdMapping }> {
   return withDbErrors({ entity: "Process step" }, () =>
     prisma.$transaction(async (tx) => {
       const { rev, stepIdMap } = await workingRevision(partId, tx);
@@ -314,7 +328,7 @@ export async function reorderSteps(partId: string, orderedStepIds: string[]): Pr
           await tx.partProcessStep.update({ where: { id }, data: { position: index + 1 } });
         }
       }, { tx });
-      return { revisionNumber: rev.revisionNumber };
+      return { revisionNumber: rev.revisionNumber, stepIdMap: asMapping(stepIdMap) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
@@ -396,6 +410,9 @@ export async function loadTemplate(partId: string, templateId: string): Promise<
           });
         }
       }, { tx });
+      // No `stepIdMap` here, unlike every other mutator: loadTemplate REPLACES the working
+      // revision's steps outright, so no step survives for a draft to follow, and discarding them
+      // is the correct outcome — the user has already confirmed replacing what was there.
       return { revisionNumber: rev.revisionNumber };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
