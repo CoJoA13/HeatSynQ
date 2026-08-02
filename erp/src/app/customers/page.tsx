@@ -28,13 +28,24 @@ export default function CustomersPage() {
   // held-permission checks below, and shadowing that binding with the stale-response gate would
   // break every `gate(perms, ...)` call in this component.
   const latest = useLatest();
+  // F7: the catch must be ticket-gated too, not just the success path. Without this, a
+  // superseded request's REJECTION (a dropped connection on the OLD search term, say) can land
+  // after a newer request already succeeded, and setError() would overwrite the fresh rows with
+  // a stale failure message — the mirror image of the stale-success bug isCurrent() already
+  // guarded against below.
   const load = useCallback(async () => {
     const t = latest.next();
-    const data = await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`);
+    let data: Customer[];
+    try {
+      data = await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+      return;
+    }
     if (!latest.isCurrent(t)) return;
     setRows(data);
   }, [query, latest]);
-  useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
   const canCreate = gate(perms, "customers.create");
 
