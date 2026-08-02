@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { buildStepDrafts, type StepDraft } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 
 // Local mirrors of src/server/part-process-steps.ts's exported row types — not imported from
@@ -18,8 +19,9 @@ type TemplateOption = { id: string; name: string; active: boolean; stepCount: nu
 
 // Per-step editable draft, keyed by stepId in the two Maps below — the CustomFieldsSection
 // `original`-map diffing pattern, widened to carry both the instruction text and a value-per-
-// fieldDefId map so a per-step Save sends only what actually changed.
-type Draft = { instruction: string; values: Map<string, string> };
+// fieldDefId map so a per-step Save sends only what actually changed. Built by
+// `buildStepDrafts` (src/lib/step-drafts.ts), where it is `StepDraft`.
+type Draft = StepDraft;
 
 export function ProcessStepsSection({
   partId, perms, onError,
@@ -37,7 +39,14 @@ export function ProcessStepsSection({
   const [viewDenied, setViewDenied] = useState(false);
 
   const [codes, setCodes] = useState<StepCodeOption[]>([]);
+  // Two flags, not one. `codesReady` means the field definitions are in hand — it gates the Add
+  // step picker, which has nothing to offer without them. `codesSettled` means the request is
+  // merely over, success or failure, and gates draft-building: the drafts carry the instruction
+  // text and the already-persisted values, neither of which needs the definitions, so waiting on
+  // `codesReady` there left a failed fetch showing empty textareas over persisted instructions
+  // and silently discarding keystrokes (Codex, PR #22).
   const [codesReady, setCodesReady] = useState(false);
+  const [codesSettled, setCodesSettled] = useState(false);
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [templatesReady, setTemplatesReady] = useState(false);
 
@@ -84,7 +93,10 @@ export function ProcessStepsSection({
       const data = await api<RevisionDetail>(`/api/parts/${partId}/process/revisions/${revisionNumber}`);
       if (detailLatest.isCurrent(t)) setDetail(data);
     } catch (e) {
-      if (detailLatest.isCurrent(t)) onError((e as Error).message);
+      // Drop whatever is on screen rather than leaving it there indefinitely under a revision
+      // number it does not belong to — the same reason the `[selected]` effect below clears
+      // ahead of the fetch. Reached on the refreshAfter path, which reloads in place.
+      if (detailLatest.isCurrent(t)) { setDetail(null); onError((e as Error).message); }
     }
   }, [partId, detailLatest, onError]);
 
@@ -98,8 +110,14 @@ export function ProcessStepsSection({
     }).catch((e) => onError((e as Error).message));
   }, [loadRevisions, onError]);
 
+  // Clear before fetching, not after: `readOnly` and the Rev badge both derive from `selected`,
+  // so leaving the previous revision's steps on screen while the new one loads renders one
+  // revision's recipe under another's number — and, selecting the current revision from a
+  // superseded one, re-enables the edit controls over it (Codex, PR #22). The steps a user acts
+  // on are now always the steps of the revision the badge names.
   useEffect(() => {
-    if (selected === null) { setDetail(null); return; }
+    setDetail(null);
+    if (selected === null) return;
     void loadDetail(selected);
   }, [selected, loadDetail]);
 
@@ -112,7 +130,8 @@ export function ProcessStepsSection({
     api<StepCodeOption[]>("/api/process/step-code-fields").then((data) => {
       setCodes(data);
       setCodesReady(true);
-    }).catch((e) => onError((e as Error).message));
+    }).catch((e) => onError((e as Error).message))
+      .finally(() => setCodesSettled(true));
   }, [onError]);
   useEffect(() => {
     api<TemplateOption[]>("/api/process-templates").then((data) => {
@@ -129,26 +148,17 @@ export function ProcessStepsSection({
     });
   }, [onError]);
 
-  // Rebuilds the per-step drafts once both the revision detail and the live codes are in hand.
-  // Each step's value map is seeded with an "" entry for every field def the step's code
-  // currently carries (so a never-set field still renders an input), then overwritten with
-  // whatever values actually came back from the server. `originals` is a deep-enough snapshot
-  // (its own `Map` per step) so later edits to `drafts` never mutate it.
+  // Rebuilds the per-step drafts once the revision detail is in hand and the codes request has
+  // settled — see `codesSettled` above for why that is "settled", not "succeeded". Gating on
+  // settlement rather than on `codes` being non-empty keeps this to a single rebuild: waiting for
+  // the request either way means the drafts are built once, not built bare and then thrown away
+  // (with whatever the user had typed into them) when the codes land a moment later.
   useEffect(() => {
-    if (!detail || !codesReady) return;
-    const nextDrafts = new Map<string, Draft>();
-    const nextOriginals = new Map<string, Draft>();
-    for (const s of detail.steps) {
-      const code = codes.find((c) => c.id === s.codeId);
-      const values = new Map<string, string>();
-      for (const f of code?.fields ?? []) values.set(f.id, "");
-      for (const v of s.values) values.set(v.fieldDefId, v.value);
-      nextDrafts.set(s.id, { instruction: s.instruction, values });
-      nextOriginals.set(s.id, { instruction: s.instruction, values: new Map(values) });
-    }
+    if (!detail || !codesSettled) return;
+    const { drafts: nextDrafts, originals: nextOriginals } = buildStepDrafts(detail.steps, codes);
     setDrafts(nextDrafts);
     setOriginals(nextOriginals);
-  }, [detail, codesReady, codes]);
+  }, [detail, codesSettled, codes]);
 
   // Every mutation response carries `revisionNumber` (context doc). When it differs from what
   // was selected — the very first step ever added (null -> 1), or a locked current revision
@@ -359,10 +369,25 @@ export function ProcessStepsSection({
                       <label key={f.id} className="block text-xs">
                         {f.label}
                         {f.type === "CHECKBOX" ? (
-                          <span className="ml-2 inline-flex items-center">
+                          <span className="ml-2 inline-flex items-center gap-2">
                             <input type="checkbox" checked={value === "true"} disabled={rowDisabled}
                                    title={rowTitle}
                                    onChange={(e) => setValue(s.id, f.id, e.target.checked ? "true" : "false")} />
+                            {/* The CustomFieldsSection H3 fix, which this control had reproduced
+                                the bug of: a checkbox alone can only ever stage "true" or "false"
+                                once touched, and "false" is a recorded value — enough to block
+                                its own field def's delete and type change (stepFieldBlockers),
+                                with nothing in the control able to produce the "" that clears it.
+                                applyValues (part-process-steps.ts) deletes the value row on "",
+                                and "" validates for every type, so no server change is needed.
+                                Shown only when there is something to clear. */}
+                            {value !== "" && (
+                              <button type="button" onClick={() => setValue(s.id, f.id, "")}
+                                      disabled={rowDisabled} title="Clear this field (unset)"
+                                      className="text-xs text-slate-600 underline disabled:cursor-not-allowed disabled:text-slate-400">
+                                clear
+                              </button>
+                            )}
                           </span>
                         ) : f.type === "DATE" ? (
                           <input type="date" value={value} disabled={rowDisabled} title={rowTitle}
@@ -390,6 +415,11 @@ export function ProcessStepsSection({
         })}
         {detail && detail.steps.length === 0 && (
           <li className="text-sm text-slate-500">No steps on this revision.</li>
+        )}
+        {/* `detail` is cleared the moment the selection changes, so this covers the gap the
+            fetch leaves — without it the list would just go blank, which reads as "no steps". */}
+        {!detail && selected !== null && (
+          <li className="text-sm text-slate-500">Loading revision {selected}…</li>
         )}
       </ol>
 
