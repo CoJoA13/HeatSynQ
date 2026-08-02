@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { truncateAll } from "./helpers/db";
+import { truncateAll, prisma } from "./helpers/db";
 import {
-  listStepCodes, createStepCode, updateStepCode, deleteStepCode, setStepFields,
+  listStepCodes, createStepCode, updateStepCode, deleteStepCode, setStepFields, stepFieldBlockers,
 } from "@/server/process-step-codes";
 import { createReference } from "@/server/reference";
 import { readAudit } from "@/server/audit";
@@ -206,5 +206,91 @@ describe("process step code routes", () => {
     const fields = (await listStepCodes())[0].fields;
     expect(fields.map((f) => f.label)).toEqual(["Temperature"]);
     expect(await readAudit("processStepCode", id)).toHaveLength(auditCountBefore);
+  });
+});
+
+describe("step field defs: .strict(), id-preserving edits, value blockers", () => {
+  beforeEach(async () => await truncateAll());
+
+  // customer -> part -> partProcessRevision -> partProcessStep -> partProcessStepValue, created
+  // directly via prisma per the task-3 brief — the steps service doesn't exist yet (Task 4).
+  async function fixtureWithValue() {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    const part = await prisma.part.create({ data: { customerId: customer.id, partNumber: "P-1", eachWeight: 1 } });
+    const { id: codeId } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await setStepFields(codeId, [{ label: "Temp", type: "NUMBER", sort: 1 }]);
+    const fieldDef = (await listStepCodes()).find((c) => c.id === codeId)!.fields[0];
+    const revision = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    const step = await prisma.partProcessStep.create({
+      data: { revisionId: revision.id, codeId, position: 1, instruction: "" },
+    });
+    const value = await prisma.partProcessStepValue.create({
+      data: { stepId: step.id, fieldDefId: fieldDef.id, value: "1500" },
+    });
+    return { customer, part, codeId, fieldDef, value };
+  }
+
+  it(".strict() rejects an unknown key on a field item instead of silently dropping it", async () => {
+    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await expect(setStepFields(id, [{ label: "Temp", type: "NUMBER", sort: 1, bogus: "x" } as never]))
+      .rejects.toMatchObject({ status: 400 });
+  });
+
+  it("relabeling a field by id preserves its id, so the value row still points at it", async () => {
+    const { codeId, fieldDef, value } = await fixtureWithValue();
+
+    await setStepFields(codeId, [{ id: fieldDef.id, label: "Temperature", type: "NUMBER", unit: "F", sort: 1 }]);
+
+    const fields = (await listStepCodes()).find((c) => c.id === codeId)!.fields;
+    expect(fields).toHaveLength(1);
+    expect(fields[0]).toMatchObject({ id: fieldDef.id, label: "Temperature", unit: "F" });
+
+    const row = await prisma.partProcessStepValue.findUniqueOrThrow({ where: { id: value.id } });
+    expect(row.fieldDefId).toBe(fieldDef.id);
+  });
+
+  it("refuses a type change on a field that still has a value, naming the field in the message", async () => {
+    const { codeId, fieldDef } = await fixtureWithValue();
+
+    const err = await setStepFields(codeId, [
+      { id: fieldDef.id, label: fieldDef.label, type: "TEXT", sort: 1 },
+    ]).catch((e) => e);
+
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe(`Cannot change the type of "${fieldDef.label}" — 1 step value(s) use it`);
+
+    // The refusal rolled the whole transaction back — the def's type is untouched, not half-applied.
+    const fields = (await listStepCodes()).find((c) => c.id === codeId)!.fields;
+    expect(fields).toEqual([fieldDef]);
+  });
+
+  it("refuses to delete a field that still has a value, when the payload omits it", async () => {
+    const { codeId, fieldDef } = await fixtureWithValue();
+
+    const err = await setStepFields(codeId, []).catch((e) => e);
+
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toBe(`Cannot remove field "${fieldDef.label}" — 1 step value(s) use it`);
+
+    // The refusal rolled the whole transaction back — the def still exists, not half-deleted.
+    const fields = (await listStepCodes()).find((c) => c.id === codeId)!.fields;
+    expect(fields).toEqual([fieldDef]);
+  });
+
+  it("stepFieldBlockers lists the part once even across two revisions' values", async () => {
+    const { part, codeId, fieldDef } = await fixtureWithValue();
+    const revision2 = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 2 } });
+    const step2 = await prisma.partProcessStep.create({
+      data: { revisionId: revision2.id, codeId, position: 1, instruction: "" },
+    });
+    await prisma.partProcessStepValue.create({ data: { stepId: step2.id, fieldDefId: fieldDef.id, value: "1600" } });
+
+    const blockers = await stepFieldBlockers(fieldDef.id);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatchObject({
+      entityLabel: "Part", name: "AC · P-1", id: part.id, href: `/parts/${part.id}`,
+    });
   });
 });

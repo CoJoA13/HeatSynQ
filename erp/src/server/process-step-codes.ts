@@ -1,25 +1,34 @@
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
+import { readableMessage } from "./error-message";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { STEP_FIELD_TYPES, type StepFieldType } from "../lib/step-field-constants";
+import type { Blocker } from "./reference-blockers";
 
-export type StepFieldInput = { label: string; type: StepFieldType; unit?: string | null; sort: number };
+export type StepFieldInput = { id?: string; label: string; type: StepFieldType; unit?: string | null; sort: number };
 export type StepCode = {
   id: string; code: string; name: string; glAccountId: string | null;
   equipmentTag: string; active: boolean; needsGlAccount: boolean;
   fields: (StepFieldInput & { id: string })[];
 };
 
+// .strict(): an unrecognized key (e.g. a stale client sending a field the schema doesn't know)
+// 400s instead of being silently dropped — see the `id` field below for the defect that being
+// non-strict was masking (HANDOFF §6).
 const FIELD = z.object({
+  // Present only for a field that already exists — see setStepFields's diff-by-id rework. Absent
+  // (or omitted) means "create a new field def." Not validated against the target code here;
+  // syncStepFields 404s an id that isn't actually one of this code's own defs.
+  id: z.string().optional(),
   label: z.string().min(1).max(60),
   type: z.enum(STEP_FIELD_TYPES),
   unit: z.string().max(20).nullable().optional(),
   sort: z.number().int().min(0),
-});
+}).strict();
 
 // `sort` drives both the on-screen field order and the printed traveler layout. Two fields
 // sharing a `sort` would leave Postgres to tie-break `ORDER BY sort ASC` nondeterministically,
@@ -42,6 +51,20 @@ const CREATE = z.object({
   glAccountId: z.string().nullable().optional(),
   equipmentTag: z.string().max(60).optional(),
 }).strict();
+
+/** `FIELDS_ARRAY.parse`, but a rejection (e.g. `.strict()`'s unrecognized-key error) becomes an
+ *  ordinary `HttpError(400, ...)` instead of a raw `ZodError`. Routes never need this — `handle()`
+ *  already maps `ZodError` to a 400 JSON response — but `setStepFields`/`updateStepCodeWithFields`
+ *  are called directly by callers (and tests) that never pass through `handle()`, and every other
+ *  refusal in this file already carries a `.status`; a field-payload rejection should too. */
+function parseFields(fields: unknown): z.infer<typeof FIELDS_ARRAY> {
+  try {
+    return FIELDS_ARRAY.parse(fields);
+  } catch (err) {
+    if (err instanceof ZodError) throw new HttpError(400, readableMessage(err));
+    throw err;
+  }
+}
 
 export async function listStepCodes(opts?: { includeInactive?: boolean }): Promise<StepCode[]> {
   const rows = await prisma.processStepCode.findMany({
@@ -101,23 +124,105 @@ export async function deleteStepCode(id: string): Promise<void> {
     prisma.$transaction((tx) => auditedSoftDelete("processStepCode", id, undefined, tx)));
 }
 
-/** Replaces the entire field-definition set for a code. */
+/**
+ * Diffs `parsed` against `codeId`'s current field defs by id, inside the caller's own `tx`:
+ * items carrying an `id` update that def in place (so any `PartProcessStepValue` row pointing at
+ * it keeps pointing at the same id); items with no `id` create a new def; an existing def absent
+ * from the payload is deleted. Both a delete and a type change are refused with the two exact
+ * messages below while any value still references the def — a wholesale delete+recreate (the
+ * implementation this replaces) would orphan those value rows or hit the FK's ON DELETE RESTRICT
+ * outright, either silently losing history or surfacing a raw DB error instead of a field-named
+ * one. Shared by `setStepFields` and `updateStepCodeWithFields` so the PUT route — the one path
+ * the admin page actually calls — gets the same id-preserving, value-safe behavior.
+ */
+async function syncStepFields(
+  tx: Prisma.TransactionClient, codeId: string, parsed: z.infer<typeof FIELDS_ARRAY>,
+): Promise<void> {
+  const existing = await tx.processStepFieldDef.findMany({ where: { codeId } });
+  const existingById = new Map(existing.map((d) => [d.id, d]));
+  const keptIds = new Set(parsed.flatMap((f) => (f.id !== undefined ? [f.id] : [])));
+
+  for (const def of existing) {
+    if (keptIds.has(def.id)) continue;
+    const n = await tx.partProcessStepValue.count({ where: { fieldDefId: def.id } });
+    if (n > 0) throw new HttpError(400, `Cannot remove field "${def.label}" — ${n} step value(s) use it`);
+    await tx.processStepFieldDef.delete({ where: { id: def.id } });
+  }
+
+  for (const f of parsed) {
+    if (f.id !== undefined) {
+      const def = existingById.get(f.id);
+      // Not this code's own def (stale id, or one from another code entirely) — fail loudly
+      // rather than silently falling back to a create that drops the caller's intended id.
+      if (!def) throw new HttpError(404, "Process step field not found");
+      if (def.type !== f.type) {
+        const n = await tx.partProcessStepValue.count({ where: { fieldDefId: def.id } });
+        if (n > 0) {
+          throw new HttpError(400, `Cannot change the type of "${def.label}" — ${n} step value(s) use it`);
+        }
+      }
+      await tx.processStepFieldDef.update({
+        where: { id: def.id },
+        data: { label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort },
+      });
+    } else {
+      await tx.processStepFieldDef.create({
+        data: { codeId, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort },
+      });
+    }
+  }
+}
+
+/** Applies the field-definition diff described on `syncStepFields`. */
 export async function setStepFields(id: string, fields: StepFieldInput[]): Promise<void> {
-  const parsed = FIELDS_ARRAY.parse(fields);
+  const parsed = parseFields(fields);
   await withDbErrors({ entity: "Process step code" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("processStepCode", id, async () => {
-        // deleteMany/createMany against a nonexistent codeId both silently no-op (nothing to
-        // delete, nothing violates a constraint when `fields` is empty), so without this check a
-        // bad id would report success and write a useless before=null/after=null audit row
-        // instead of 404ing the way updateStepCode does via Prisma's P2025.
+        // syncStepFields alone would silently no-op against a nonexistent codeId when `fields` is
+        // empty (nothing to delete, nothing to create), so without this check a bad id would
+        // report success and write a useless before=null/after=null audit row instead of 404ing
+        // the way updateStepCode does via Prisma's P2025.
         const exists = await tx.processStepCode.findUnique({ where: { id }, select: { id: true } });
         if (!exists) throw new HttpError(404, "Process step code not found");
-        await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
-        await tx.processStepFieldDef.createMany({
-          data: parsed.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-        });
-      }, { tx })));
+        await syncStepFields(tx, id, parsed);
+      }, { tx }),
+    // Serializable: the delete/type-change refusals above are count-then-act against
+    // PartProcessStepValue — the same TOCTOU the deletePartFieldDef/updatePartFieldDef precedent
+    // (part-field-defs.ts) closes with Serializable rather than leaving a concurrent value insert
+    // free to slip in between the count and the write.
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Every LIVE part holding a value for this field def, deduped per part, `CODE · partNumber`
+ *  named with an `/parts/[id]` href — the partFieldDefBlockers precedent (part-field-defs.ts),
+ *  scoped through step -> revision -> part instead of a direct part relation. */
+export async function stepFieldBlockers(fieldDefId: string): Promise<Blocker[]> {
+  const values = await prisma.partProcessStepValue.findMany({
+    where: { fieldDefId, step: { revision: { part: { deletedAt: null } } } },
+    include: {
+      step: {
+        include: {
+          revision: {
+            include: { part: { select: { id: true, partNumber: true, customer: { select: { code: true } } } } },
+          },
+        },
+      },
+    },
+    orderBy: { id: "asc" },
+  });
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const v of values) {
+    const part = v.step.revision.part;
+    if (seen.has(part.id)) continue;
+    seen.add(part.id);
+    out.push({
+      entityLabel: "Part", name: `${part.customer.code} · ${part.partNumber}`,
+      id: part.id, href: `/parts/${part.id}`,
+    });
+  }
+  return out;
 }
 
 export type StepCodeUpdateInput = Partial<z.input<typeof CREATE>> & { active?: boolean; fields?: StepFieldInput[] };
@@ -134,10 +239,14 @@ export type StepCodeUpdateInput = Partial<z.input<typeof CREATE>> & { active?: b
 export async function updateStepCodeWithFields(id: string, input: StepCodeUpdateInput): Promise<void> {
   const { fields, ...rest } = input;
   const data = CREATE.partial().extend({ active: z.boolean().optional() }).strict().parse(rest);
-  const parsedFields = fields === undefined ? undefined : FIELDS_ARRAY.parse(fields);
+  const parsedFields = fields === undefined ? undefined : parseFields(fields);
 
-  // Same Serializable scoping as createStepCode above — see that comment.
+  // Same Serializable scoping as createStepCode above — see that comment. `parsedFields` adds a
+  // second, independent reason: syncStepFields's delete/type-change refusals are count-then-act
+  // against PartProcessStepValue (see setStepFields), so a request carrying `fields` needs the
+  // same isolation even when it never touches glAccountId.
   const assignsGlAccount = data.glAccountId != null;
+  const needsSerializable = assignsGlAccount || parsedFields !== undefined;
   await withDbErrors({ entity: "Process step code", conflictField: "code" }, () =>
     prisma.$transaction(async (tx) => {
       // Runs first, on this transaction's own `tx`: a bad glAccountId is rejected here before
@@ -146,12 +255,7 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
       if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
       await auditedUpdate("processStepCode", id, async () => {
         await tx.processStepCode.update({ where: { id }, data });
-        if (parsedFields !== undefined) {
-          await tx.processStepFieldDef.deleteMany({ where: { codeId: id } });
-          await tx.processStepFieldDef.createMany({
-            data: parsedFields.map((f) => ({ codeId: id, label: f.label, type: f.type, unit: f.unit ?? null, sort: f.sort })),
-          });
-        }
+        if (parsedFields !== undefined) await syncStepFields(tx, id, parsedFields);
       }, { tx });
-    }, assignsGlAccount ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
+    }, needsSerializable ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
