@@ -46,6 +46,101 @@ export type Fixtures = {
   restrictedPassword: string;
 };
 
+// --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
+// payload) and reapLeftovers() (lookup-driven, for whatever a prior aborted run left behind).
+// Children before parents throughout (CLAUDE.md: deletion is otherwise always soft, but a
+// leftover E2E fixture row has no business surviving in the dev DB). Every step is a no-op on an
+// empty id list, so callers don't need to special-case "nothing to delete".
+
+async function deletePartProcessData(partIds: string[]): Promise<void> {
+  // Sequential, not Promise.all: in practice there is at most one partId (both create()'s single
+  // fixture part and reapLeftovers' "E2E"-prefixed partNumber lookup match only one convention),
+  // and each part's own four deletes are already strictly ordered (children before parent).
+  for (const partId of partIds) {
+    const revisions = await prisma.partProcessRevision.findMany({ where: { partId }, select: { id: true } });
+    const revisionIds = revisions.map((r) => r.id);
+    await prisma.auditLog.deleteMany({ where: { entity: "partProcessRevision", entityId: { in: revisionIds } } });
+    await prisma.partProcessStepValue.deleteMany({ where: { step: { revision: { partId } } } });
+    await prisma.partProcessStep.deleteMany({ where: { revision: { partId } } });
+    await prisma.partProcessRevision.deleteMany({ where: { partId } });
+  }
+}
+
+async function deleteTemplatesAndSteps(templateIds: string[]): Promise<void> {
+  if (templateIds.length === 0) return;
+  await prisma.auditLog.deleteMany({ where: { entity: "processTemplate", entityId: { in: templateIds } } });
+  await prisma.processTemplateStep.deleteMany({ where: { templateId: { in: templateIds } } });
+  await prisma.processTemplate.deleteMany({ where: { id: { in: templateIds } } });
+}
+
+async function deleteStepCodes(stepCodeIds: string[]): Promise<void> {
+  if (stepCodeIds.length === 0) return;
+  // ProcessStepFieldDef cascades from ProcessStepCode (schema onDelete: Cascade) — the values
+  // and steps that would otherwise block that cascade (fieldDefId/codeId are both plain
+  // restrict-on-delete FKs) must already be gone by the time this runs — see
+  // deletePartProcessData/deleteTemplatesAndSteps above, both of which callers run first.
+  await prisma.processStepCode.deleteMany({ where: { id: { in: stepCodeIds } } });
+}
+
+async function deletePartsAndCustomers(partIds: string[], customerIds: string[]): Promise<void> {
+  if (partIds.length > 0) await prisma.part.deleteMany({ where: { id: { in: partIds } } });
+  if (customerIds.length > 0) await prisma.customer.deleteMany({ where: { id: { in: customerIds } } });
+}
+
+async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promise<void> {
+  // Session has no cascade from User (unlike RolePermission/UserPermissionOverride, which do
+  // cascade from Role/User respectively) — it must go first or the User delete below 23503s.
+  if (userIds.length > 0) await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
+  if (userIds.length > 0) await prisma.user.deleteMany({ where: { id: { in: userIds } } });
+  if (roleIds.length > 0) await prisma.role.deleteMany({ where: { id: { in: roleIds } } });
+}
+
+/**
+ * Self-heal: deletes any E2E fixture rows a prior run left behind — a crash, a killed process, or
+ * (before this existed) a Ctrl-C that skipped the finally-block cleanup — by looking them up on
+ * their natural keys rather than trusting any id handed in. Every fixture identifier this file
+ * ever creates is "E2E"-prefixed for exactly this reason (both `create()`'s own rows — customer
+ * code E2ECUST, part number E2E-PART-1, step codes E2E-QNCH/E2E-WASH, "E2E Decoy Template", role
+ * "E2E Restricted Role", username e2e_restricted — and template-build-and-load.mjs's live-created
+ * "E2E Austemper" template, which is why the template lookup matches on the shared prefix instead
+ * of one specific literal name). Called unconditionally at the top of `create()`, so a run started
+ * right after an aborted one heals itself instead of throwing on a unique-constraint conflict and
+ * never reaching the point where `fixtures` gets assigned (which is what previously made the
+ * *next* run's cleanup silently do nothing too — no self-heal, wedged indefinitely).
+ */
+async function reapLeftovers(): Promise<void> {
+  const [templates, parts, stepCodes, customers, users, roles] = await Promise.all([
+    prisma.processTemplate.findMany({ where: { name: { startsWith: "E2E" } }, select: { id: true } }),
+    prisma.part.findMany({ where: { partNumber: { startsWith: "E2E" } }, select: { id: true } }),
+    prisma.processStepCode.findMany({ where: { code: { startsWith: "E2E" } }, select: { id: true } }),
+    prisma.customer.findMany({ where: { code: { startsWith: "E2E" } }, select: { id: true } }),
+    prisma.user.findMany({ where: { username: { startsWith: "e2e" } }, select: { id: true } }),
+    prisma.role.findMany({ where: { name: { startsWith: "E2E" } }, select: { id: true } }),
+  ]);
+  const templateIds = templates.map((t) => t.id);
+  const partIds = parts.map((p) => p.id);
+  const stepCodeIds = stepCodes.map((c) => c.id);
+  const customerIds = customers.map((c) => c.id);
+  const userIds = users.map((u) => u.id);
+  const roleIds = roles.map((r) => r.id);
+
+  const total = templateIds.length + partIds.length + stepCodeIds.length
+    + customerIds.length + userIds.length + roleIds.length;
+  if (total === 0) return;
+
+  console.error(
+    `Reaping leftover E2E fixtures from a prior run: ${templateIds.length} template(s), ` +
+    `${partIds.length} part(s), ${stepCodeIds.length} step code(s), ${customerIds.length} ` +
+    `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s).`,
+  );
+
+  await deletePartProcessData(partIds);
+  await deleteTemplatesAndSteps(templateIds);
+  await deleteStepCodes(stepCodeIds);
+  await deletePartsAndCustomers(partIds, customerIds);
+  await deleteUsersAndRoles(userIds, roleIds);
+}
+
 /**
  * Everything every flow needs already sitting in the dev DB before the browser opens: a
  * customer + part (flows 1-4 build on this one part), two process step codes (one carrying a
@@ -54,9 +149,12 @@ export type Fixtures = {
  * demonstrably narrows something away), and a restricted role/user (parts.view + processes.view
  * only) for the permission-gating and processes-list flows. Everything here is prefixed "E2E" so
  * cleanup() below — and a human skimming the dev DB — can tell fixture rows from real data at a
- * glance.
+ * glance. Self-healing (see reapLeftovers): a prior run's leftovers are cleared first, so this is
+ * idempotent across runs even when the previous one never reached its own cleanup.
  */
 async function create(): Promise<Fixtures> {
+  await reapLeftovers();
+
   const customer = await prisma.customer.create({
     data: { code: "E2ECUST", name: "E2E Test Customer" },
   });
@@ -121,44 +219,21 @@ async function doLockRevision(payload: { partId: string; revisionNumber: number 
 type CleanupPayload = Fixtures & { templateIds: string[] };
 
 /**
- * Deletes every row `create()` and the flows themselves produced, in FK order (children before
- * parents — CLAUDE.md: deletion is otherwise always soft, but a leftover E2E fixture row has no
- * business surviving in the dev DB). `templateIds` carries the id(s) of any template a flow
- * created live through the UI (template-build-and-load's "E2E Austemper") — unknown until that
- * flow runs, unlike everything else `create()` already knows about.
- *
- * Audit rows are removed too, ahead of the data rows they reference (AuditLog carries no real
- * FK — entityId is a bare String column — so this is tidiness, not a constraint requirement).
+ * Deletes every row `create()` and the flows themselves produced. `templateIds` carries the
+ * id(s) of any template a flow created live through the UI (template-build-and-load's
+ * "E2E Austemper") — unknown until that flow runs, unlike everything else `create()` already
+ * knows about. Id-driven (unlike reapLeftovers' lookup-driven scan) because the caller already
+ * has the exact ids from this run's own `create()` result.
  */
 async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   const { partId, customerId, stepCodeA, stepCodeB, restrictedRoleId, restrictedUserId } = payload;
   const templateIds = [...new Set([payload.decoyTemplateId, ...payload.templateIds])];
 
-  const revisions = await prisma.partProcessRevision.findMany({ where: { partId }, select: { id: true } });
-  const revisionIds = revisions.map((r) => r.id);
-
-  await prisma.auditLog.deleteMany({ where: { entity: "partProcessRevision", entityId: { in: revisionIds } } });
-  await prisma.partProcessStepValue.deleteMany({ where: { step: { revision: { partId } } } });
-  await prisma.partProcessStep.deleteMany({ where: { revision: { partId } } });
-  await prisma.partProcessRevision.deleteMany({ where: { partId } });
-
-  await prisma.auditLog.deleteMany({ where: { entity: "processTemplate", entityId: { in: templateIds } } });
-  await prisma.processTemplateStep.deleteMany({ where: { templateId: { in: templateIds } } });
-  await prisma.processTemplate.deleteMany({ where: { id: { in: templateIds } } });
-
-  // ProcessStepFieldDef cascades from ProcessStepCode (schema onDelete: Cascade) — the values
-  // and steps that would otherwise block that cascade (fieldDefId/codeId are both plain
-  // restrict-on-delete FKs) are already gone above.
-  await prisma.processStepCode.deleteMany({ where: { id: { in: [stepCodeA.id, stepCodeB.id] } } });
-
-  await prisma.part.deleteMany({ where: { id: partId } });
-  await prisma.customer.deleteMany({ where: { id: customerId } });
-
-  // Session has no cascade from User (unlike RolePermission/UserPermissionOverride, which do
-  // cascade from Role/User respectively) — it must go first or the User delete below 23503s.
-  await prisma.session.deleteMany({ where: { userId: restrictedUserId } });
-  await prisma.user.deleteMany({ where: { id: restrictedUserId } });
-  await prisma.role.deleteMany({ where: { id: restrictedRoleId } });
+  await deletePartProcessData([partId]);
+  await deleteTemplatesAndSteps(templateIds);
+  await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
+  await deletePartsAndCustomers([partId], [customerId]);
+  await deleteUsersAndRoles([restrictedUserId], [restrictedRoleId]);
 
   return { ok: true };
 }

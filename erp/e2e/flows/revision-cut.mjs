@@ -5,7 +5,7 @@
 // silently cuts a new one (§5.4): the UI must show "Rev 2 · working", and switching back to
 // Rev 1 must show it read-only and untouched by the edit.
 import assert from "node:assert/strict";
-import { waitForValue, waitForChecked } from "../lib/ui.mjs";
+import { waitForValue, waitForChecked, fillReliable } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
 const MIDDOT = "·";
@@ -27,7 +27,11 @@ export async function run(page, shot, ctx) {
   await shot("rev1-locked-current");
 
   const step = section.locator("li", { hasText: stepLabel });
-  await step.getByPlaceholder("Instruction").fill(EDITED_INSTRUCTION);
+  // Settle the initial page load first (confirms no pending drafts-rebuild effect from THIS
+  // navigation remains — the read-side race waitForValue guards against), then fillReliable for
+  // the edit itself (the write-side twin — ui.mjs's doc comment).
+  await waitForValue(step.getByPlaceholder("Instruction"), ORIGINAL_INSTRUCTION);
+  await fillReliable(step.getByPlaceholder("Instruction"), EDITED_INSTRUCTION);
   await step.getByRole("button", { name: "Save step" }).click();
 
   // The PATCH's response carries revisionNumber: 2 (a cut just happened), which

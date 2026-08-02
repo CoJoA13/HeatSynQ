@@ -1,7 +1,7 @@
 // Flow 2: fill a NUMBER field and a CHECKBOX field on the E2E-QNCH step template-build-and-load
 // left on the fixture part's working revision, save, reload the page, and confirm both values
 // render back in their typed inputs — not just persisted server-side.
-import { waitForValue, waitForChecked } from "../lib/ui.mjs";
+import { waitForValue, waitForChecked, fillReliable, checkReliable, waitForSaveSettled } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
 
@@ -24,8 +24,11 @@ export async function run(page, shot, ctx) {
   await waitForValue(temperature, "");
   await waitForChecked(passed, false);
 
-  await temperature.fill("1550");
-  await passed.check();
+  // fillReliable/checkReliable, not bare fill()/check() — see ui.mjs's doc comment: a delayed
+  // effect from this same page's own detail-load can still be scheduled and clobber a value typed
+  // right after the field first appears.
+  await fillReliable(temperature, "1550");
+  await checkReliable(passed, true);
   await shot("filled-before-save");
 
   const saveButton = step.getByRole("button", { name: "Save step" });
@@ -33,15 +36,7 @@ export async function run(page, shot, ctx) {
   // Save round-trips through refreshAfter (reload revisions + detail), which resets the local
   // draft to server truth and flips isDirty back to false — the button disabling itself is a
   // cleaner "the PATCH landed" signal than a fixed sleep.
-  await page.waitForFunction(
-    (label) => {
-      const li = [...document.querySelectorAll("li")].find((el) => el.textContent?.includes(label));
-      const btn = li && [...li.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save step");
-      return Boolean(btn?.disabled);
-    },
-    stepLabel,
-    { timeout: 5000 },
-  );
+  await waitForSaveSettled(page, stepLabel);
   await shot("saved");
 
   await page.reload();

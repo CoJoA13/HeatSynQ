@@ -2,7 +2,7 @@
 // the fixture part from the part detail page's Process steps designer — asserting the
 // confirm-before-replace dialog spec §8/§3.1 requires (Load Template = replace-with-confirm).
 import assert from "node:assert/strict";
-import { armDialog, waitForValue, waitForChecked } from "../lib/ui.mjs";
+import { armDialog, waitForValue, waitForChecked, fillReliable, waitForSaveSettled } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
 const TEMPLATE_NAME = "E2E Austemper";
@@ -35,18 +35,22 @@ export async function run(page, shot, ctx) {
   await page.getByRole("button", { name: "Add step" }).click();
   const templateStep1 = page.locator("li", { hasText: codeOptionLabel(stepCodeA) });
   await templateStep1.waitFor({ state: "visible" });
-  await templateStep1.getByPlaceholder("Boilerplate").fill("Heat to target temperature and hold.");
+  // fillReliable, not a bare fill() — the boilerplate textarea just appeared from addStep's own
+  // reload; that reload's boilerplateDrafts-sync effect can still be scheduled (not yet run) the
+  // instant fill() dispatches its input event, and land a moment later, clobbering the typed text
+  // back to "" (ui.mjs's doc comment — the write-side twin of the waitForValue race below).
+  await fillReliable(templateStep1.getByPlaceholder("Boilerplate"), "Heat to target temperature and hold.");
   await templateStep1.getByRole("button", { name: "Save step" }).click();
-  await page.getByText("Heat to target temperature and hold.").waitFor({ state: "visible" });
+  await waitForSaveSettled(page, codeOptionLabel(stepCodeA));
 
   // Step 2: E2E-WASH with boilerplate
   await addStepSelect.selectOption({ label: codeOptionLabel(stepCodeB) });
   await page.getByRole("button", { name: "Add step" }).click();
   const templateStep2 = page.locator("li", { hasText: codeOptionLabel(stepCodeB) });
   await templateStep2.waitFor({ state: "visible" });
-  await templateStep2.getByPlaceholder("Boilerplate").fill("Rinse and inspect the load.");
+  await fillReliable(templateStep2.getByPlaceholder("Boilerplate"), "Rinse and inspect the load.");
   await templateStep2.getByRole("button", { name: "Save step" }).click();
-  await page.getByText("Rinse and inspect the load.").waitFor({ state: "visible" });
+  await waitForSaveSettled(page, codeOptionLabel(stepCodeB));
   await shot("template-two-steps-with-boilerplate");
 
   // --- Load the template onto the fixture part, asserting the confirm-replace dialog ---

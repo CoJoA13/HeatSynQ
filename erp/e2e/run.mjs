@@ -5,11 +5,14 @@
 // screenshot sequence under e2e-artifacts/<flow>/.
 //
 // `npm run test:e2e` == `node e2e/run.mjs` (package.json). `HEADED=1 npm run test:e2e` runs
-// headed. Exits non-zero if any flow fails; dev-DB fixtures are always cleaned up in a finally
-// block, whether flows pass or not.
+// headed. Exits non-zero if any flow fails; dev-DB fixtures are always cleaned up — normal
+// completion, a flow throwing, or a Ctrl-C mid-run (SIGINT/SIGTERM handlers below run the same
+// teardown) — and a self-heal in db-fixtures.ts's create() means even a run that skipped its own
+// teardown (killed harder than a SIGTERM, or a bug) doesn't wedge the next one.
 import { chromium } from "playwright";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdir, rename, rm } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { login } from "./lib/auth.mjs";
@@ -34,6 +37,12 @@ const FLOWS = [
   { name: "processes-list", as: "restricted", module: "./flows/processes-list.mjs" },
 ];
 
+// Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
+// need to reach whatever's currently been acquired, and a signal can land at any point during
+// main()'s execution — there is no single function-local scope both paths share.
+const state = { devServer: null, browser: null, fixtures: null, created: { templateIds: [] } };
+let teardownPromise = null;
+
 function runDbScript(command, payload) {
   const args = ["tsx", path.join("e2e", "lib", "db-fixtures.ts"), command, JSON.stringify(payload ?? {})];
   const out = execFileSync("npx", args, { cwd: ERP_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -41,9 +50,33 @@ function runDbScript(command, payload) {
   return line ? JSON.parse(line) : null;
 }
 
-async function waitForServer(url, timeoutMs) {
+/** Binds `port` briefly to find out whether something's already listening on it — the standard
+ *  idiomatic Node check (attempting to bind, not attempting to connect, is authoritative: a
+ *  service that's up but not yet accepting connections would otherwise read as "free"). */
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const tester = net.createServer()
+      .once("error", () => resolve(false))
+      .once("listening", () => tester.close(() => resolve(true)))
+      .listen(port, "127.0.0.1");
+  });
+}
+
+async function waitForServer(url, timeoutMs, devServer) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    // next dev silently falls back to the next free port (3101, 3102, ...) instead of failing
+    // when the requested one is taken — polling BASE_URL would then time out after the full
+    // 60s with no clue why. Catch that from its own announced output instead of waiting it out.
+    const portMismatch = devServer.getOutput().match(/Port (\d+) is in use, trying (\d+) instead/);
+    if (portMismatch) {
+      throw new Error(
+        `next dev could not bind port ${portMismatch[1]} (already in use) and fell back to ` +
+        `port ${portMismatch[2]} instead — refusing to continue against the wrong port. Free ` +
+        `port ${PORT} (an orphaned dev server from a previous run? \`fuser -k ${PORT}/tcp\`) ` +
+        `and re-run.`,
+      );
+    }
     try {
       const res = await fetch(url);
       if (res.status < 500) return;
@@ -71,12 +104,78 @@ function startDevServer() {
   return child;
 }
 
-function killDevServer(child) {
-  if (!child || child.killed || child.exitCode !== null) return;
-  try {
-    process.kill(-child.pid, "SIGTERM");
-  } catch {
-    child.kill("SIGTERM");
+/** Sends SIGTERM to the dev server's whole process group and waits (briefly) for it to actually
+ *  exit — not fire-and-forget: the next run's `isPortFree` check runs almost immediately after
+ *  (Ctrl-C, then re-run), and a signal having been *sent* is not the same guarantee as the port
+ *  having actually been *freed*. Falls back to SIGKILL if it hasn't gone within the timeout. */
+function killDevServer(child, timeoutMs = 5000) {
+  if (!child || child.killed || child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onExit = () => resolve();
+    child.once("exit", onExit);
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+    setTimeout(() => {
+      if (child.exitCode === null && !child.killed) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      }
+      resolve();
+    }, timeoutMs).unref();
+  });
+}
+
+/**
+ * The one teardown path — dev server, dev-DB fixtures, browser — shared by main()'s own finally
+ * block AND the SIGINT/SIGTERM handlers below, so a signal that lands mid-run and one that lands
+ * after a clean finish never race each other into doing it twice.
+ *
+ * Single-flight via a cached PROMISE, not a boolean flag: an earlier version used `if (tornDown)
+ * return;` with `tornDown` set synchronously up front, which made a second caller return
+ * immediately without ever awaiting the first caller's in-flight work. In practice that let a
+ * SIGINT during a flow race main()'s own error path: the signal handler's teardown() call "won"
+ * (set the flag first) and started actually closing things, but main()'s interrupted `await` woke
+ * up, propagated an error through runFlow, hit main()'s `finally { await teardown(); }` — which,
+ * seeing the flag already set, returned INSTANTLY rather than waiting — and let main()'s own
+ * rejection settle and the process look "idle" before the signal handler's kill-server/cleanup-
+ * fixtures steps had actually run. Caching the promise itself means every caller awaits the exact
+ * same in-flight (or already-settled) work, so nothing can observe teardown as "done" before it
+ * is. killDevServer and the DB cleanup — the two steps that matter most for not leaking anything
+ * — run before the (slower, less consequential if it lingers a moment) browser.close().
+ */
+function teardown() {
+  if (!teardownPromise) {
+    teardownPromise = (async () => {
+      if (state.devServer) await killDevServer(state.devServer);
+      if (state.fixtures) {
+        console.log("\nCleaning up dev-DB fixtures (erp)...");
+        try {
+          runDbScript("cleanup", { ...state.fixtures, templateIds: state.created.templateIds });
+          console.log("  cleanup ok");
+        } catch (err) {
+          console.error(`  cleanup FAILED — dev DB may still hold E2E fixture rows: ${err}`);
+        }
+      }
+      if (state.browser) await state.browser.close().catch(() => {});
+    })();
+  }
+  return teardownPromise;
+}
+
+function installSignalHandlers() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      console.error(`\nReceived ${signal} — cleaning up (dev server + dev-DB fixtures) before exit...`);
+      teardown()
+        .catch((err) => console.error("Error during signal teardown:", err))
+        .finally(() => process.exit(1));
+    });
   }
 }
 
@@ -139,38 +238,48 @@ async function runFlow(browser, flow, ctx, results) {
 }
 
 async function main() {
-  let devServer = null;
-  let browser = null;
-  let fixtures = null;
-  const created = { templateIds: [] };
   const results = [];
 
   try {
     await rm(ARTIFACTS_DIR, { recursive: true, force: true });
     await mkdir(ARTIFACTS_DIR, { recursive: true });
 
+    if (!(await isPortFree(PORT))) {
+      throw new Error(
+        `Port ${PORT} is already in use — an orphaned dev server from a previous run (a Ctrl-C ` +
+        `before this harness handled signals?) or another process. Free it (\`fuser -k ` +
+        `${PORT}/tcp\` or \`lsof -i:${PORT}\` to find what's holding it) and re-run.`,
+      );
+    }
+
     console.log("Creating dev-DB fixtures (erp)...");
-    fixtures = runDbScript("create");
-    console.log(`  customer ${fixtures.customerCode}, part ${fixtures.partNumber}, ` +
-      `step codes ${fixtures.stepCodeA.code}/${fixtures.stepCodeB.code}, ` +
-      `restricted user ${fixtures.restrictedUsername}`);
+    state.fixtures = runDbScript("create");
+    console.log(`  customer ${state.fixtures.customerCode}, part ${state.fixtures.partNumber}, ` +
+      `step codes ${state.fixtures.stepCodeA.code}/${state.fixtures.stepCodeB.code}, ` +
+      `restricted user ${state.fixtures.restrictedUsername}`);
 
     console.log(`Starting next dev on port ${PORT}...`);
-    devServer = startDevServer();
+    state.devServer = startDevServer();
     try {
-      await waitForServer(`${BASE_URL}/login`, 60000);
+      await waitForServer(`${BASE_URL}/login`, 60000, state.devServer);
     } catch (err) {
-      console.error(`--- next dev output ---\n${devServer.getOutput()}\n-----------------------`);
+      console.error(`--- next dev output ---\n${state.devServer.getOutput()}\n-----------------------`);
       throw err;
     }
     console.log("  dev server is up");
 
-    browser = await chromium.launch({ headless: !HEADED });
+    // handleSIGINT/handleSIGTERM default to true — Playwright would otherwise install its OWN
+    // signal handlers that close the browser (and exit) on Ctrl-C, racing installSignalHandlers()
+    // above: whichever handler's process.exit() lands first wins, and Playwright's has no idea
+    // the dev server needs killing or the dev-DB fixtures need cleaning up first. Disabling both
+    // hands exclusive control of the shutdown sequence to teardown() above, in the order it
+    // chooses (dev server, then fixtures, then browser).
+    state.browser = await chromium.launch({ headless: !HEADED, handleSIGINT: false, handleSIGTERM: false });
 
     const ctx = {
       baseURL: BASE_URL,
-      fixtures,
-      created,
+      fixtures: state.fixtures,
+      created: state.created,
       lockRevision: (partId, revisionNumber) => runDbScript("lock-revision", { partId, revisionNumber }),
     };
 
@@ -178,20 +287,10 @@ async function main() {
     // earlier one left in the dev DB (the template template-build-and-load creates, the values
     // typed-fields saves, the revision revision-cut cuts).
     for (const flow of FLOWS) {
-      await runFlow(browser, flow, ctx, results);
+      await runFlow(state.browser, flow, ctx, results);
     }
   } finally {
-    if (browser) await browser.close().catch(() => {});
-    if (devServer) killDevServer(devServer);
-    if (fixtures) {
-      console.log("\nCleaning up dev-DB fixtures (erp)...");
-      try {
-        runDbScript("cleanup", { ...fixtures, templateIds: created.templateIds });
-        console.log("  cleanup ok");
-      } catch (err) {
-        console.error(`  cleanup FAILED — dev DB may still hold E2E fixture rows: ${err}`);
-      }
-    }
+    await teardown();
   }
 
   console.log("\n=== Results ===");
@@ -205,6 +304,7 @@ async function main() {
   }
 }
 
+installSignalHandlers();
 main().catch((err) => {
   console.error(err);
   process.exitCode = 1;
