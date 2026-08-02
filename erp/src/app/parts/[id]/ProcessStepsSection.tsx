@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
@@ -52,9 +52,17 @@ export function ProcessStepsSection({
   const [templatesReady, setTemplatesReady] = useState(false);
 
   const [drafts, setDrafts] = useState<Map<string, Draft>>(new Map());
-  const [originals, setOriginals] = useState<Map<string, Draft>>(new Map());
+  // Derived, not state: `originals` is by definition whatever the server last returned for this
+  // revision, so deriving it keeps it from drifting out of step with `detail` — and keeps the
+  // drafts effect below free to carry unsaved work forward without having to publish two pieces
+  // of state from one build in a guaranteed order.
+  const originals = useMemo(
+    () => buildStepDrafts(detail?.steps ?? [], codes).originals,
+    [detail, codes],
+  );
 
   const [addCodeId, setAddCodeId] = useState("");
+  const [addingStep, setAddingStep] = useState(false);
   const [templateId, setTemplateId] = useState("");
 
   const canEdit = gate(perms, "processes.edit");
@@ -154,11 +162,12 @@ export function ProcessStepsSection({
   // settlement rather than on `codes` being non-empty keeps this to a single rebuild: waiting for
   // the request either way means the drafts are built once, not built bare and then thrown away
   // (with whatever the user had typed into them) when the codes land a moment later.
+  // Carried through the functional updater, not named as a dependency: the current drafts are an
+  // input to the rebuild, not a trigger for it — depending on them would re-run this on every
+  // keystroke and immediately undo the carry-forward it exists to perform.
   useEffect(() => {
     if (!detail || !codesSettled) return;
-    const { drafts: nextDrafts, originals: nextOriginals } = buildStepDrafts(detail.steps, codes);
-    setDrafts(nextDrafts);
-    setOriginals(nextOriginals);
+    setDrafts((carried) => buildStepDrafts(detail.steps, codes, carried).drafts);
   }, [detail, codesSettled, codes]);
 
   // Every mutation response carries `revisionNumber` (context doc). When it differs from what
@@ -239,8 +248,13 @@ export function ProcessStepsSection({
     } catch (e) { onError((e as Error).message); }
   }
 
+  // One at a time (Codex, PR #22). `addCodeId` is not cleared until the POST returns, and the
+  // button was gated on nothing else, so two quick clicks sent two requests. Repeating a code on
+  // a recipe is legitimate — Wash, Temper, Wash — so the server has no reason to refuse the
+  // second, and the part quietly ended up with a step nobody asked for.
   async function addStepAction() {
-    if (!addCodeId) return;
+    if (!addCodeId || addingStep) return;
+    setAddingStep(true);
     try {
       const res = await api<{ revisionNumber: number; stepId: string }>(`/api/parts/${partId}/process/steps`, {
         method: "POST", body: JSON.stringify({ codeId: addCodeId }),
@@ -248,7 +262,7 @@ export function ProcessStepsSection({
       setAddCodeId("");
       onError(null);
       await refreshAfter(res.revisionNumber);
-    } catch (e) { onError((e as Error).message); }
+    } catch (e) { onError((e as Error).message); } finally { setAddingStep(false); }
   }
 
   async function removeStepAction(stepId: string) {
@@ -344,6 +358,16 @@ export function ProcessStepsSection({
           const code = codes.find((c) => c.id === s.codeId);
           const draft = drafts.get(s.id);
           const dirty = isDirty(s.id);
+          // The code's own field defs when they loaded; otherwise whatever this step already has
+          // recorded, which the revision response carries in full (fieldDefId, label, type, unit,
+          // sort). Restoring the instruction on a failed step-code-fields fetch but not the typed
+          // values left every recorded temperature and pass/fail invisible on the recipe until a
+          // full-page retry succeeded (Codex, PR #22) — worse than the missing instruction, since
+          // the values ARE the recipe. The fallback cannot show a field that has never been set,
+          // having nothing to learn it from, but it never hides one that has.
+          const fields = code?.fields ?? [...s.values]
+            .sort((a, b) => a.sort - b.sort)
+            .map((v) => ({ id: v.fieldDefId, label: v.label, type: v.type, unit: v.unit, sort: v.sort }));
           return (
             <li key={s.id} className="rounded border p-3">
               <div className="mb-2 flex items-center justify-between">
@@ -371,9 +395,9 @@ export function ProcessStepsSection({
                         onChange={(e) => setInstruction(s.id, e.target.value)} rows={2}
                         placeholder="Instruction"
                         className="mb-2 w-full rounded border px-2 py-1 text-sm disabled:bg-slate-50" />
-              {(code?.fields ?? []).length > 0 && (
+              {fields.length > 0 && (
                 <div className="mb-2 grid grid-cols-2 gap-3">
-                  {(code?.fields ?? []).map((f) => {
+                  {fields.map((f) => {
                     const value = draft?.values.get(f.id) ?? "";
                     return (
                       <label key={f.id} className="block text-xs">
@@ -443,10 +467,11 @@ export function ProcessStepsSection({
             <option key={c.id} value={c.id}>{c.code} — {c.name}</option>
           ))}
         </select>
-        <button type="button" onClick={addStepAction} disabled={canEdit.disabled || readOnly || !addCodeId}
-                title={rowTitle}
+        <button type="button" onClick={addStepAction}
+                disabled={canEdit.disabled || readOnly || !addCodeId || addingStep}
+                title={addingStep ? "Adding…" : rowTitle}
                 className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-          Add step
+          {addingStep ? "Adding…" : "Add step"}
         </button>
       </div>
 

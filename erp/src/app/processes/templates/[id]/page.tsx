@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -46,10 +46,20 @@ function Detail({ id }: { id: string }) {
   // `originals` map needed.
   const [boilerplateDrafts, setBoilerplateDrafts] = useState<Map<string, string>>(new Map());
 
+  // Tracks the name the server last returned, so `load()` can tell an untouched draft (adopt the
+  // server's name) from an unsaved rename (keep it). Every step action — add, save, remove,
+  // reorder — calls `load()`, and a blanket reassignment discarded a rename the user had typed
+  // but not yet saved, silently and on an unrelated action (Codex, PR #22). A ref rather than
+  // state: it is bookkeeping for the next load, and nothing renders from it.
+  const lastServerName = useRef<string | null>(null);
+
   const load = useCallback(async () => {
     const t = await api<Template>(`/api/process-templates/${id}`);
     setTemplate(t);
-    setNameDraft(t.name);
+    setNameDraft((cur) => (
+      lastServerName.current === null || cur === lastServerName.current ? t.name : cur
+    ));
+    lastServerName.current = t.name;
     setError(null);
   }, [id]);
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);

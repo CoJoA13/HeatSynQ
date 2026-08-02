@@ -32,9 +32,18 @@ type DraftableCode = { id: string; fields: { id: string }[] };
  *
  * `originals` gets its own `Map` per step, so later edits to a draft never mutate the snapshot
  * the dirty check compares against.
+ *
+ * `previous` carries unsaved work across a rebuild. Adding, removing or reordering a step reloads
+ * the whole revision, and none of those requests carry the text or values a user has typed into
+ * some other step — so without this, a structural action silently discarded that work (Codex,
+ * PR #22). A step whose id survives the reload keeps its draft and, because `originals` is still
+ * rebuilt from the server, correctly keeps reading as dirty with Save still there to click. A
+ * revision cut renumbers every step, so the new ids find no carried draft and take server values,
+ * which is what should happen.
  */
 export function buildStepDrafts(
   steps: readonly DraftableStep[], codes: readonly DraftableCode[],
+  previous?: ReadonlyMap<string, StepDraft>,
 ): { drafts: Map<string, StepDraft>; originals: Map<string, StepDraft> } {
   const drafts = new Map<string, StepDraft>();
   const originals = new Map<string, StepDraft>();
@@ -43,8 +52,18 @@ export function buildStepDrafts(
     const values = new Map<string, string>();
     for (const f of code?.fields ?? []) values.set(f.id, "");
     for (const v of s.values) values.set(v.fieldDefId, v.value);
-    drafts.set(s.id, { instruction: s.instruction, values });
+    // `originals` is always server truth — it is the baseline the dirty check compares against,
+    // so it must never carry a draft forward.
     originals.set(s.id, { instruction: s.instruction, values: new Map(values) });
+    const carried = previous?.get(s.id);
+    if (carried) {
+      // Merged onto the fresh seeds rather than substituted for them, so a field def added to the
+      // step's code since the last build still gets its "" entry and renders.
+      for (const [fieldDefId, value] of carried.values) values.set(fieldDefId, value);
+      drafts.set(s.id, { instruction: carried.instruction, values });
+    } else {
+      drafts.set(s.id, { instruction: s.instruction, values });
+    }
   }
   return { drafts, originals };
 }

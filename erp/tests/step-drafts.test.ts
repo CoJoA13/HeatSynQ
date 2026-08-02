@@ -65,6 +65,41 @@ describe("buildStepDrafts", () => {
     expect(originals.get("s1")?.values.get("f1")).toBe("1550");
   });
 
+  describe("carrying unsaved work across a rebuild", () => {
+    const previous = new Map([["s1", { instruction: "typed but unsaved", values: new Map([["f1", "1700"]]) }]]);
+
+    it("keeps a surviving step's draft while originals still track the server", () => {
+      const { drafts, originals } = buildStepDrafts(
+        [{ id: "s1", codeId: "c1", instruction: "on the server", values: [{ fieldDefId: "f1", value: "1550" }] }],
+        [code("c1", "f1")], previous,
+      );
+      expect(drafts.get("s1")?.instruction).toBe("typed but unsaved");
+      expect(drafts.get("s1")?.values.get("f1")).toBe("1700");
+      // The baseline must not follow the draft, or the step would stop reading as dirty and the
+      // user would lose the Save button that is their only way to keep the work.
+      expect(originals.get("s1")?.instruction).toBe("on the server");
+      expect(originals.get("s1")?.values.get("f1")).toBe("1550");
+    });
+
+    it("gives a step that is new since the last build the server's values", () => {
+      const { drafts } = buildStepDrafts(
+        [{ id: "s2", codeId: "c1", instruction: "fresh", values: [] }],
+        [code("c1", "f1")], previous,
+      );
+      expect(drafts.get("s2")?.instruction).toBe("fresh");
+      expect(drafts.has("s1")).toBe(false);
+    });
+
+    it("still seeds a field def added to the code since the draft was taken", () => {
+      const { drafts } = buildStepDrafts(
+        [{ id: "s1", codeId: "c1", instruction: "x", values: [] }],
+        [code("c1", "f1", "f2")], previous,
+      );
+      expect(drafts.get("s1")?.values.get("f2")).toBe("");
+      expect(drafts.get("s1")?.values.get("f1")).toBe("1700");
+    });
+  });
+
   it("returns empty maps for a revision with no steps", () => {
     const { drafts, originals } = buildStepDrafts([], [code("c1", "f1")]);
     expect(drafts.size).toBe(0);

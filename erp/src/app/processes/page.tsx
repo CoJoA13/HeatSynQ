@@ -50,6 +50,10 @@ export default function ProcessesPage() {
     }
     if (!latest.isCurrent(t)) return;
     setRows(data);
+    // Clear on success, ticket-gated like the failure path above. Without this a banner from an
+    // earlier failed load stayed on screen next to freshly loaded rows, with no way to dismiss it
+    // — the page read as broken while working perfectly (Codex, PR #22).
+    setError(null);
   }, [query, latest]);
   useEffect(() => { void load(); }, [load]);
 
