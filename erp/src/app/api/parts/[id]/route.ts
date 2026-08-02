@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser, HttpError, assertRecord } from "@/server/http";
+import { handle, requireUser, HttpError, assertRecord, reasonFromBody } from "@/server/http";
 import { mustCan, mustDo } from "@/server/permissions";
 import { getPart, updatePart, deletePart } from "@/server/parts";
 import { PRICING_FIELDS } from "@/lib/part-constants";
@@ -28,10 +28,11 @@ export const PATCH = handle(async (req, { params }) => {
 export const DELETE = handle(async (req, { params }) => {
   mustCan(requireUser(), "parts", "delete");
   // A DELETE carrying a body — the reason spec §9 requires for a destructive action. A request
-  // with no body at all is deliberately not a parse error: the service reports the missing
-  // reason as a field-anchored 400 rather than this route failing on malformed JSON. Mirrors
-  // deleteCustomer's route (src/app/api/customers/[id]/route.ts).
-  const body = (await req.json().catch(() => ({}))) as { reason?: unknown };
-  await deletePart((await params).id, typeof body.reason === "string" ? body.reason : "");
+  // with no body at all, or a body that isn't a JSON object (e.g. `null`), is deliberately not a
+  // parse error: the service reports the missing reason as a field-anchored 400 rather than this
+  // route failing on malformed JSON. Mirrors deleteCustomer's route
+  // (src/app/api/customers/[id]/route.ts).
+  const body: unknown = await req.json().catch(() => null);
+  await deletePart((await params).id, reasonFromBody(body));
   return NextResponse.json({ ok: true });
 });

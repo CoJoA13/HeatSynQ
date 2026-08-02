@@ -44,6 +44,27 @@ describe("customer routes", () => {
     expect(del.status).toBe(403);
   });
 
+  // G2: `(await req.json().catch(() => ({}))) as { reason?: unknown }` threw a raw TypeError
+  // reading `.reason` off a JSON body of `null`, escaping handle()'s error mapping as an
+  // unhandled 500 instead of the service's own missing-reason 400. Identical shape to
+  // /api/parts/[id]'s DELETE (parts-routes.test.ts).
+  it("DELETE with a JSON null body is 400, not 500; a valid reason still deletes", async () => {
+    const cookie = await signInWith(["customers.view", "customers.create", "customers.delete"], "del-null-1");
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+
+    const nullBody = await remove(new Request(`http://t/api/customers/${id}`, {
+      method: "DELETE", headers: { cookie, "content-type": "application/json" }, body: "null",
+    }), withId(id));
+    expect(nullBody.status).toBe(400);
+    expect((await nullBody.json()).error).toMatch(/reason/i);
+
+    const ok = await remove(new Request(`http://t/api/customers/${id}`, {
+      method: "DELETE", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ reason: "test reason" }),
+    }), withId(id));
+    expect(ok.status).toBe(200);
+  });
+
   it("round-trips a create through the route and honours search", async () => {
     const cookie = await signInWith(["customers.view", "customers.create"]);
     const res = await create(new Request("http://t/api/customers", {
