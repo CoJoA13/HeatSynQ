@@ -21,6 +21,20 @@ function readableFkField(err: Prisma.PrismaClientKnownRequestError): string | un
   return label.replace(/([A-Z])/g, " $1").trim().toLowerCase();
 }
 
+/**
+ * A serialization failure raised by a RAW query does not arrive as P2034. Prisma wraps anything a
+ * `$queryRaw` throws as P2010 ("Raw query failed") and leaves the Postgres SQLSTATE inside the
+ * driver adapter's own error, so the P2034 branch below never sees it and it would escape as a
+ * 500. The condition is identical — 40001, the transaction was aborted, nothing was written — so
+ * it gets the identical answer. Reached by `workingRevision`'s `SELECT … FOR UPDATE`
+ * (part-process-steps.ts), the one raw query in the app that can lose a serialization race.
+ */
+function isRawSerializationFailure(err: Prisma.PrismaClientKnownRequestError): boolean {
+  if (err.code !== "P2010") return false;
+  const meta = err.meta as { driverAdapterError?: { cause?: { originalCode?: unknown } } } | undefined;
+  return meta?.driverAdapterError?.cause?.originalCode === "40001";
+}
+
 /** Translate the Prisma failures that are expected business outcomes, not bugs. */
 export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
@@ -35,7 +49,7 @@ export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
     // in customers.ts stops two reciprocal parent updates from forming a cycle. Nothing is
     // wrong with the request itself and nothing was written, so the honest answer is "that
     // collided with another change, send it again", not a 500.
-    if (err.code === "P2034") {
+    if (err.code === "P2034" || isRawSerializationFailure(err)) {
       throw new HttpError(409,
         `Another change to that ${opts.entity.toLowerCase()} was saved at the same time — please try again`);
     }

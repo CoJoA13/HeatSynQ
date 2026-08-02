@@ -118,29 +118,32 @@ enum StepFieldType {
 }
 
 model ProcessStepCode {
-  id           String                @id @default(cuid())
-  code         String
-  name         String
-  glAccountId  String?
-  glAccount    GlAccount?            @relation(fields: [glAccountId], references: [id])
-  equipmentTag String                @default("")
-  active       Boolean               @default(true)
-  deletedAt    DateTime?
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
-  fields       ProcessStepFieldDef[]
+  id            String                @id @default(cuid())
+  code          String
+  name          String
+  glAccountId   String?
+  glAccount     GlAccount?            @relation(fields: [glAccountId], references: [id])
+  equipmentTag  String                @default("")
+  active        Boolean               @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  fields        ProcessStepFieldDef[]
+  partSteps     PartProcessStep[]
+  templateSteps ProcessTemplateStep[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
 }
 
 model ProcessStepFieldDef {
-  id     String          @id @default(cuid())
+  id     String                 @id @default(cuid())
   codeId String
-  code   ProcessStepCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+  code   ProcessStepCode        @relation(fields: [codeId], references: [id], onDelete: Cascade)
   label  String
   type   StepFieldType
   unit   String?
   sort   Int
+  values PartProcessStepValue[]
 
   @@unique([codeId, label])
 }
@@ -353,30 +356,31 @@ enum PartFieldType {
 }
 
 model Part {
-  id                    String              @id @default(cuid())
+  id                    String                @id @default(cuid())
   customerId            String
-  customer              Customer            @relation(fields: [customerId], references: [id])
+  customer              Customer              @relation(fields: [customerId], references: [id])
   partNumber            String
-  name                  String              @default("")
-  description           String              @default("")
+  name                  String                @default("")
+  description           String                @default("")
   materialId            String?
-  material              Material?           @relation(fields: [materialId], references: [id])
-  eachWeight            Decimal             @db.Decimal(10, 4) // lbs; required, > 0
+  material              Material?             @relation(fields: [materialId], references: [id])
+  eachWeight            Decimal               @db.Decimal(10, 4) // lbs; required, > 0
   loadQty               Int? // ≥ 1 when present
-  loadWeight            Decimal?            @db.Decimal(10, 2) // lbs; > 0 when present
-  serializationRequired Boolean             @default(false)
-  setupCharge           Decimal?            @db.Decimal(12, 2)
-  unitPrice             Decimal?            @db.Decimal(12, 4)
-  minimumCharge         Decimal?            @db.Decimal(12, 2)
-  pricePer              PricePer            @default(EACH)
-  active                Boolean             @default(true)
+  loadWeight            Decimal?              @db.Decimal(10, 2) // lbs; > 0 when present
+  serializationRequired Boolean               @default(false)
+  setupCharge           Decimal?              @db.Decimal(12, 2)
+  unitPrice             Decimal?              @db.Decimal(12, 4)
+  minimumCharge         Decimal?              @db.Decimal(12, 2)
+  pricePer              PricePer              @default(EACH)
+  active                Boolean               @default(true)
   deletedAt             DateTime?
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
   specifications        PartSpecification[]
   inspections           PartInspection[]
   priceBreaks           PartPriceBreak[]
   fieldValues           PartFieldValue[]
+  processRevisions      PartProcessRevision[]
 
   @@unique([customerId, partNumber], where: raw("\"deletedAt\" IS NULL"))
   @@index([partNumber])
@@ -457,4 +461,71 @@ model PartFieldValue {
 
   @@unique([partId, fieldId])
   @@index([fieldId])
+}
+
+model PartProcessRevision {
+  id             String            @id @default(cuid())
+  partId         String
+  part           Part              @relation(fields: [partId], references: [id])
+  revisionNumber Int
+  lockedAt       DateTime? // set once by lockRevision (Phase 3's order save); null = working
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  steps          PartProcessStep[]
+
+  @@unique([partId, revisionNumber])
+  @@index([partId])
+}
+
+model PartProcessStep {
+  id          String                 @id @default(cuid())
+  revisionId  String
+  revision    PartProcessRevision    @relation(fields: [revisionId], references: [id])
+  position    Int
+  codeId      String
+  code        ProcessStepCode        @relation(fields: [codeId], references: [id])
+  instruction String                 @default("")
+  values      PartProcessStepValue[]
+
+  @@unique([revisionId, position])
+  @@index([revisionId])
+  @@index([codeId])
+}
+
+model PartProcessStepValue {
+  id         String              @id @default(cuid())
+  stepId     String
+  step       PartProcessStep     @relation(fields: [stepId], references: [id])
+  fieldDefId String
+  fieldDef   ProcessStepFieldDef @relation(fields: [fieldDefId], references: [id])
+  value      String
+
+  @@unique([stepId, fieldDefId])
+  @@index([fieldDefId])
+}
+
+model ProcessTemplate {
+  id        String                @id @default(cuid())
+  name      String
+  active    Boolean               @default(true)
+  deletedAt DateTime?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  steps     ProcessTemplateStep[]
+
+  @@unique([name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+model ProcessTemplateStep {
+  id          String          @id @default(cuid())
+  templateId  String
+  template    ProcessTemplate @relation(fields: [templateId], references: [id])
+  position    Int
+  codeId      String
+  code        ProcessStepCode @relation(fields: [codeId], references: [id])
+  boilerplate String          @default("")
+
+  @@unique([templateId, position])
+  @@index([templateId])
+  @@index([codeId])
 }

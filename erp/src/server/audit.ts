@@ -8,7 +8,8 @@ export type AuditableModel =
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
-  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue";
+  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
+  | "partProcessRevision" | "processTemplate";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -48,6 +49,31 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   partFieldDef: undefined,
   // history names the field the value belongs to
   partFieldValue: { field: true },
+  // Steps and values are mutated through the parent revision (part-process-steps.ts wraps every
+  // step/value write in one auditedUpdate against the revision, spec §8) — the revision-level
+  // before/after diff is only meaningful with its steps (ordered), each step's live code
+  // (code/name — renames propagate, spec §3.3), and each value's live field def (label) included.
+  partProcessRevision: {
+    steps: {
+      orderBy: { position: "asc" },
+      include: {
+        code: { select: { code: true, name: true } },
+        // Fix-wave Finding 4 (2026-08-02 final review): no orderBy here meant a snapshot's row
+        // order tracked Postgres's own scan order rather than being deterministic — two snapshots
+        // of otherwise-identical state could render as a spurious diff (HistoryPanel diffs whole
+        // keys via JSON.stringify, which is order-sensitive). Explicit ascending order makes two
+        // snapshots of the same value set always compare equal regardless of insertion history.
+        values: { orderBy: { fieldDefId: "asc" }, include: { fieldDef: { select: { label: true } } } },
+      },
+    },
+  },
+  // Template steps are mutated through the parent template (process-templates.ts wraps every
+  // step write in one auditedUpdate against the template, spec §8) — the template-level
+  // before/after diff is only meaningful with its ordered steps and each step's live code
+  // (code/name — renames propagate, spec §3.3) included.
+  processTemplate: {
+    steps: { orderBy: { position: "asc" }, include: { code: { select: { code: true, name: true } } } },
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

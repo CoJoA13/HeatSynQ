@@ -1,6 +1,14 @@
 import { Prisma } from "../../prisma/generated/prisma/client";
 import { HttpError } from "./errors";
-import { REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
+import { REFERENCE_LABELS, REFERENCE_KINDS, type ReferenceKind } from "../lib/reference-constants";
+import { TARGET_LABELS, type BlockerTarget } from "../lib/reference-links";
+
+/** Whether `kind` is a `ReferenceKind` (as opposed to a non-reference `BlockerTarget` like
+ *  `processStepCode`) — the data-driven membership check that picks which label table to read,
+ *  so no caller ever has to branch on a model name. */
+function isReferenceKind(kind: BlockerTarget): kind is ReferenceKind {
+  return REFERENCE_KINDS.includes(kind as never);
+}
 
 /**
  * Rejects an id that is not a LIVE row of the target kind, reading on the caller's own `tx` so
@@ -13,13 +21,14 @@ import { REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants
  * not invalidate assignment (handoff §5.14).
  */
 export async function assertRefExists(
-  kind: ReferenceKind, id: string, tx: Prisma.TransactionClient,
+  kind: BlockerTarget, id: string, tx: Prisma.TransactionClient,
 ): Promise<void> {
   const delegate = tx[kind] as unknown as {
     findFirst: (a: { where: object; select: object }) => Promise<{ id: string } | null>;
   };
   const row = await delegate.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!row) {
-    throw new HttpError(400, `That ${REFERENCE_LABELS[kind].singular.toLowerCase()} does not exist`);
+    const label = isReferenceKind(kind) ? REFERENCE_LABELS[kind].singular.toLowerCase() : TARGET_LABELS[kind];
+    throw new HttpError(400, `That ${label} does not exist`);
   }
 }

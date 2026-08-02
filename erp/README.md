@@ -30,6 +30,18 @@ Customers → list, search, and open a customer. Each carries a unique code, an 
 one default per kind), and contacts flagged for which documents they receive. The list exports to
 Excel and accepts spreadsheet paste (columns: code, name, default PO, order notes).
 
+## End-to-end tests
+Six owner-reviewable UI flows, driven with the bundled Chromium against a throwaway `next dev`
+on port 3100 (dev DB `erp` — fixtures it creates are cleaned up automatically, even on failure).
+
+1. One-time: `npx playwright install chromium` (no sudo needed).
+2. `npm run test:e2e` — runs all six flows headless, exits non-zero if any fails.
+3. `HEADED=1 npm run test:e2e` — same, but watch it click through live.
+
+Each flow writes numbered checkpoint screenshots and a `video.webm` to
+`e2e-artifacts/<flow>/` (gitignored) for review after the run. This is separate from `npm test`
+(vitest) — it needs a live dev server and isn't part of that gate.
+
 ## Production (single box on the shop network)
 1. Copy `.env.example` → `.env`; set a strong `SESSION_SECRET` and change the db password
    in `docker-compose.yml` + `DATABASE_URL`s together.
