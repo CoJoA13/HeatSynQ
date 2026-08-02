@@ -150,6 +150,14 @@ export async function deletePart(id: string, reason: string): Promise<void> {
   const current = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Part not found");
 
+  // F2: Serializable, pairing with addPartSpec/addPartInspection/addPartBreak, which each read
+  // this part live ON tx (assertPartLive) under Serializable before adding a child. Without both
+  // sides sharing Serializable, a concurrent "add a child to this part" and "delete this part"
+  // can each pass their own pre-check (part still live there, cascade already snapshotted the
+  // child list here) before either commits — a child added mid-delete outlives its now-dead
+  // parent, breaking the invariant findBlockers-style scans over "live children of a live part"
+  // depend on. Postgres aborts whichever side would produce a result no serial ordering could,
+  // surfacing as P2034 and translated by withDbErrors into a 409 telling the caller to retry.
   await withDbErrors({ entity: "Part" }, () => prisma.$transaction(async (tx) => {
     const [specs, inspections, breaks] = await Promise.all([
       tx.partSpecification.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
@@ -160,7 +168,7 @@ export async function deletePart(id: string, reason: string): Promise<void> {
     for (const i of inspections) await auditedSoftDelete("partInspection", i.id, "parent part deleted", tx);
     for (const b of breaks) await auditedSoftDelete("partPriceBreak", b.id, "parent part deleted", tx);
     await auditedSoftDelete("part", id, why, tx);
-  }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 function parseBool(cell: string, column: string): boolean {
