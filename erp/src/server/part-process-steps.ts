@@ -283,20 +283,45 @@ export async function reorderSteps(partId: string, orderedStepIds: string[]): Pr
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
+/** Thrown by `lockRevision`'s own `doIt` to short-circuit `auditedUpdate`'s unconditional write
+ *  when the atomic `updateMany` claimed zero rows — i.e. a concurrent caller already locked this
+ *  revision first. Caught immediately below and turned into a silent, unaudited no-op; never
+ *  escapes this function. */
+class RevisionAlreadyLocked extends Error {}
+
 /**
  * Sets `lockedAt` once (spec §5.5) — idempotent: a second call against an already-locked
  * revision is a silent no-op, not an error, and writes no audit entry. Exported for Phase 3's
  * order save to call inside the order's own transaction; nothing in this phase calls it.
+ *
+ * Concurrency contract: "already locked" is decided by the atomic `updateMany`'s own row count,
+ * not by a prior JS-level read of `lockedAt` — a check-then-act shape (read `lockedAt`, branch,
+ * then write) would let two overlapping callers both read `lockedAt: null`, both conclude "I'm
+ * the one locking it", and both write an audit "update" entry, one of them with before===after
+ * for a lock that never actually happened on the DB. Instead, the `updateMany`'s own
+ * `lockedAt: null` guard runs as the mutation itself, inside `auditedUpdate`'s doIt — so the
+ * before-snapshot is taken before it, and only the caller whose `updateMany` actually claims the
+ * row (`count === 1`) reaches `auditedUpdate`'s write. The loser's `count === 0` throws
+ * `RevisionAlreadyLocked`, which prevents `doIt` from returning normally and therefore prevents
+ * `auditedUpdate` from ever calling `write()` — caught here and turned into the documented
+ * silent no-op.
  */
 export async function lockRevision(
   partId: string, revisionNumber: number, tx: Prisma.TransactionClient,
 ): Promise<void> {
   const existing = await tx.partProcessRevision.findFirst({
-    where: { partId, revisionNumber }, select: { id: true, lockedAt: true },
+    where: { partId, revisionNumber }, select: { id: true },
   });
   if (!existing) throw new HttpError(404, "Revision not found");
-  if (existing.lockedAt) return; // already locked — idempotent no-op, no audit entry
-  await auditedUpdate("partProcessRevision", existing.id, () =>
-    tx.partProcessRevision.updateMany({ where: { id: existing.id, lockedAt: null }, data: { lockedAt: new Date() } }),
-  { tx });
+  try {
+    await auditedUpdate("partProcessRevision", existing.id, async () => {
+      const { count } = await tx.partProcessRevision.updateMany({
+        where: { id: existing.id, lockedAt: null }, data: { lockedAt: new Date() },
+      });
+      if (count === 0) throw new RevisionAlreadyLocked();
+    }, { tx });
+  } catch (err) {
+    if (err instanceof RevisionAlreadyLocked) return; // lost the race — no audit, no error
+    throw err;
+  }
 }

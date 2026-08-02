@@ -97,19 +97,88 @@ describe("part process steps: the revision-cut rule", () => {
     expect(after).toEqual(before);
   });
 
+  // The single-step cut tests above can't distinguish a correct position-keyed copy from a bug
+  // that maps every superseded step id to (say) the last copy — with only one step, any mapping
+  // looks identical. Three steps, editing the MIDDLE one by its rev-1 id, forces the map to be
+  // right per-step: a wrong mapping would either 404 (id not found) or land the edit on the
+  // wrong step.
+  it("cut preserves every step's position and values across the copy; the edit lands on only the targeted step", async () => {
+    const { part, code, fieldDef } = await fixture();
+    const s1 = await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "one", values: [{ fieldDefId: fieldDef.id, value: "100" }],
+    }));
+    const s2 = await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "two", values: [{ fieldDefId: fieldDef.id, value: "200" }],
+    }));
+    const s3 = await asSystem(() => addStep(part.id, {
+      codeId: code.id, instruction: "three", values: [{ fieldDefId: fieldDef.id, value: "300" }],
+    }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+
+    // Named by its rev-1 id — the only id the caller could have, since rev 2 doesn't exist yet.
+    const { revisionNumber } = await asSystem(() => updateStep(part.id, s2.stepId, { instruction: "TWO-edited" }));
+    expect(revisionNumber).toBe(2);
+
+    const rev2 = await getRevision(part.id, 2);
+    expect(rev2.steps).toHaveLength(3);
+    expect(rev2.steps.map((s) => s.position)).toEqual([1, 2, 3]);
+    expect(rev2.steps.map((s) => s.instruction)).toEqual(["one", "TWO-edited", "three"]);
+    expect(rev2.steps.map((s) => s.values.find((v) => v.fieldDefId === fieldDef.id)?.value))
+      .toEqual(["100", "200", "300"]); // every value copied, including the untouched neighbors'
+
+    // rev 1 remains fully intact, not just the one step someone might have thought to check.
+    const rev1 = await getRevision(part.id, 1);
+    expect(rev1.steps.map((s) => s.instruction)).toEqual(["one", "two", "three"]);
+    expect(rev1.steps.map((s) => s.id)).toEqual([s1.stepId, s2.stepId, s3.stepId]);
+  });
+
+  it("reorderSteps resolves rev-1 step ids through the cut immediately after a lock", async () => {
+    const { part, code } = await fixture();
+    const s1 = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "one" }));
+    const s2 = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "two" }));
+    const s3 = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "three" }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+
+    // The working revision (rev 2) doesn't exist until this call — the rev-1 ids are the only
+    // ones the caller could possibly send.
+    const { revisionNumber } = await asSystem(() => reorderSteps(part.id, [s3.stepId, s1.stepId, s2.stepId]));
+    expect(revisionNumber).toBe(2);
+
+    const rev2 = await getRevision(part.id, 2);
+    expect(rev2.steps.map((s) => s.instruction)).toEqual(["three", "one", "two"]);
+    expect(rev2.steps.map((s) => s.position)).toEqual([1, 2, 3]);
+
+    const rev1 = await getRevision(part.id, 1);
+    expect(rev1.steps.map((s) => s.instruction)).toEqual(["one", "two", "three"]);
+  });
+
   it("lockRevision is idempotent and 404s on a missing revision", async () => {
     const { part, code } = await fixture();
     await asSystem(() => addStep(part.id, { codeId: code.id }));
     const revId = (await prisma.partProcessRevision.findFirstOrThrow({ where: { partId: part.id } })).id;
+    // addStep already wrote its own create+update pair against this same entityId, so the
+    // baseline count (not just entries[0]) is what proves the lock itself wrote something.
+    const auditBeforeLock = await readAudit("partProcessRevision", revId);
 
     await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
     const auditAfterFirstLock = await readAudit("partProcessRevision", revId);
-    expect(auditAfterFirstLock[0].action).toBe("update");
+    expect(auditAfterFirstLock).toHaveLength(auditBeforeLock.length + 1);
+    const lockEntry = auditAfterFirstLock[0];
+    expect(lockEntry.action).toBe("update");
+    expect((lockEntry.after as { lockedAt: string | null }).lockedAt).not.toBeNull();
+    const lockedAtAfterFirst =
+      (await prisma.partProcessRevision.findUniqueOrThrow({ where: { id: revId } })).lockedAt;
+    expect(lockedAtAfterFirst).not.toBeNull();
 
-    // A second lock is a silent no-op — no error, no new audit entry.
+    // A second lock is a silent no-op — no error, no new audit entry, and the timestamp itself
+    // is untouched (not just "still non-null" — a re-stamped lockedAt would also pass a weaker
+    // check).
     await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
     const auditAfterSecondLock = await readAudit("partProcessRevision", revId);
     expect(auditAfterSecondLock).toHaveLength(auditAfterFirstLock.length);
+    const lockedAtAfterSecond =
+      (await prisma.partProcessRevision.findUniqueOrThrow({ where: { id: revId } })).lockedAt;
+    expect(lockedAtAfterSecond).toEqual(lockedAtAfterFirst);
 
     await expect(asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 99, tx))))
       .rejects.toMatchObject({ status: 404 });
