@@ -54,9 +54,19 @@ function Detail({ id }: { id: string }) {
   }, [id]);
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
 
+  // Merge, not replace (Codex, PR #22). This effect keys on `template`, and `toggleActive`
+  // optimistically builds a NEW template object whose steps are untouched — so a blanket rebuild
+  // erased every unsaved boilerplate edit on the page the moment the Active box was ticked, with
+  // no warning. Successful name saves and every other `load()` did the same to steps other than
+  // the one being saved. A step that already has a draft keeps it; a step that doesn't (first
+  // load, or one just added) takes the server's text. Steps that are gone drop out, since the map
+  // is rebuilt from `template.steps`. Saving a step reloads it with the text just written, so the
+  // kept draft and the server value agree and it reads as clean.
   useEffect(() => {
     if (!template) return;
-    setBoilerplateDrafts(new Map(template.steps.map((s) => [s.id, s.boilerplate])));
+    setBoilerplateDrafts((cur) => new Map(
+      template.steps.map((s) => [s.id, cur.get(s.id) ?? s.boilerplate]),
+    ));
   }, [template]);
 
   // Session-only read (§5.15 vocabulary rule) — every signed-in user can see which step codes

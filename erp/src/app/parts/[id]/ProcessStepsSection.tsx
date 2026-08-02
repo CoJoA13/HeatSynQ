@@ -168,7 +168,18 @@ export function ProcessStepsSection({
   // number. Same-revision mutations still reload the list (stepCount changed) but only need a
   // detail refetch, not a `selected` change.
   async function refreshAfter(revisionNumber: number) {
-    await loadRevisions().catch(() => {});
+    // The reload's failure used to be swallowed, and the selection moved anyway. That left the
+    // stale list authoritative for `highest`, so the revision just created was classified as
+    // superseded and every control disabled — and `selected` named a revision the picker had no
+    // option for — with nothing on screen saying why (Codex, PR #22). The mutation itself
+    // succeeded, so the honest report is that the view is behind, not that the save failed.
+    try {
+      await loadRevisions();
+    } catch (e) {
+      onError(`Saved, but the revision list could not be reloaded — reload the page to see the ` +
+        `current state. (${(e as Error).message})`);
+      return;
+    }
     if (revisionNumber !== selected) {
       setSelected(revisionNumber);
     } else {

@@ -68,27 +68,44 @@ export default function StepCodesPage() {
   // operations syncStepFields can refuse over existing values) and know which def id/label was
   // targeted; a scalar edit, active toggle, or label/unit rename never triggers that guard, so
   // there is nothing to look up a blocker list for.
-  async function save(id: string, body: object, fieldCtx?: { defId: string; label: string }) {
-    try {
-      await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
-      setError(null); setBlocked(null); setFieldBlocked(null); await load();
-    } catch (e) {
-      await load().catch(() => {});
-      const message = (e as Error).message;
-      setError(message);
-      if (fieldCtx && e instanceof ApiError && e.status === 400 && isFieldGuardMessage(message)) {
-        try {
-          const list = await api<Blocker[]>(`/api/admin/step-codes/field-defs/${fieldCtx.defId}/blockers`);
-          setFieldBlocked({ defId: fieldCtx.defId, label: fieldCtx.label, list });
-        } catch {
-          // The plain error text above already explains the refusal; a failed blocker-list fetch
-          // just means no panel this time, not a worse error to report.
+  // One at a time (Codex, PR #22). Every write here PUTs the code's ENTIRE field array, so two
+  // overlapping saves are last-writer-wins over the whole set — and they overlap on the most
+  // ordinary interaction there is: editing a label and then clicking a control. mousedown blurs
+  // the input, which starts the label save, and the click then starts a second save before the
+  // first has returned. If the label save lands second, its payload — which carries the old order
+  // and the old field set — silently reverts the reorder, type change or removal that was just
+  // clicked, and the two `load()` calls race to leave the grid showing either.
+  //
+  // A queue rather than disabling the controls: disabling on blur would swallow the very click
+  // that caused the blur. Chained on both settle paths so one failure cannot wedge the rest —
+  // `run` handles its own errors, so this is belt and braces.
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+
+  function save(id: string, body: object, fieldCtx?: { defId: string; label: string }): Promise<void> {
+    const run = async () => {
+      try {
+        await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
+        setError(null); setBlocked(null); setFieldBlocked(null); await load();
+      } catch (e) {
+        await load().catch(() => {});
+        const message = (e as Error).message;
+        setError(message);
+        if (fieldCtx && e instanceof ApiError && e.status === 400 && isFieldGuardMessage(message)) {
+          try {
+            const list = await api<Blocker[]>(`/api/admin/step-codes/field-defs/${fieldCtx.defId}/blockers`);
+            setFieldBlocked({ defId: fieldCtx.defId, label: fieldCtx.label, list });
+          } catch {
+            // The plain error text above already explains the refusal; a failed blocker-list fetch
+            // just means no panel this time, not a worse error to report.
+            setFieldBlocked(null);
+          }
+        } else {
           setFieldBlocked(null);
         }
-      } else {
-        setFieldBlocked(null);
       }
-    }
+    };
+    saveQueue.current = saveQueue.current.then(run, run);
+    return saveQueue.current;
   }
 
   async function add() {
