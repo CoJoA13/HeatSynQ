@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:18
     restart: unless-stopped
     environment:
       POSTGRES_USER: erp
@@ -8,7 +8,11 @@ services:
       POSTGRES_DB: erp
     ports: ["127.0.0.1:5432:5432"]
     volumes:
-      - dbdata:/var/lib/postgresql/data
+      # Mounted at /var/lib/postgresql, NOT /var/lib/postgresql/data. Postgres 18+ images store
+      # data in a major-version-specific subdirectory (18/docker/) so `pg_upgrade --link` can work
+      # without crossing a mount boundary, and they refuse to start if they find a mount at the
+      # old path — even an empty one. See docker-library/postgres#1259.
+      - dbdata:/var/lib/postgresql
       - ./db-init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U erp"]
@@ -28,7 +32,7 @@ services:
     profiles: ["prod"]
 
   backup:
-    image: postgres:16
+    image: postgres:18
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp

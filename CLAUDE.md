@@ -22,7 +22,7 @@ The Next.js app is in `erp/` — **all commands below run from there.** The repo
 ```bash
 cd erp
 cp .env.example .env              # first run only
-docker compose up -d db           # Postgres 16; creates erp + erp_test via db-init/
+docker compose up -d db           # Postgres 18; creates erp + erp_test via db-init/
 npm install
 npx prisma generate                # client is gitignored; generate before typechecking or testing
 npx prisma migrate deploy          # dev DB

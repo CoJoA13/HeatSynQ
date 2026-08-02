@@ -220,6 +220,28 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 **Phase 2+ deliverables promised by spec but not yet scheduled:** HTTPS on LAN + `Secure` cookie flag (reverse proxy); practice database mode (Phase 8); backup-now button + configurable folder (Phase 8).
 
+### 6a. Postgres 18 — what the upgrade actually required (2026-08-02)
+
+`postgres:16` → `postgres:18`, done as dump-and-restore because Postgres refuses to start on a data directory from an older major.
+
+**The image also moved its data directory, and this is the part that bites.** Postgres 18+ official images store data in a major-version-specific subdirectory (`18/docker/`) so `pg_upgrade --link` can run without crossing a mount boundary — and they **refuse to start if they find a mount at the old `/var/lib/postgresql/data`, even an empty one**. `docker-compose.yml`'s db volume is therefore mounted at `/var/lib/postgresql`, one level up, with a comment saying why. Changing only the image tag produces a container that restarts forever with a wall of text about `pg_ctlcluster`. See docker-library/postgres#1259.
+
+**Upgrading a real deployment** takes the same shape as the dev upgrade did, and cannot be done by editing the tag:
+
+```bash
+# 1. dump with the NEWER pg_dump (18 against a 16 server is the supported direction)
+docker run --rm --network host -e PGPASSWORD=… postgres:18 \
+  pg_dump -h 127.0.0.1 -U erp -d erp --format=custom --no-owner --no-privileges > erp.dump
+# 2. docker compose down -v          (destroys the 16 volume — dump first, verify, THEN this)
+# 3. bump both `image: postgres:` lines and move the db volume mount to /var/lib/postgresql
+# 4. docker compose up -d --wait db  (db-init recreates erp_test on the fresh cluster)
+# 5. pg_restore --exit-on-error, then diff exact row counts against the pre-upgrade capture
+```
+
+The dev upgrade was verified by exact per-table row counts before and after (identical across both databases), `prisma migrate status` clean on both, 585 tests and 6/6 E2E flows green. The pre-upgrade dumps and count captures are in `~/heatsynq-pg16-preupgrade-2026-08-02/`.
+
+`scripts/backup.sh` needed no change — it calls `pg_dump "$DATABASE_URL"` with no version-specific flags — but the backup service's own `image:` must stay in step with the db service's, since its `pg_dump` has to be at least the server's version.
+
 ## 7. The owner still owes (spec §14 — chase these, none block Phase 2)
 
 1. **Samples of the current printed traveler, shipper, cert, and invoice** — these drive the Phase 3+ document templates and the cert field set. Drop scans/PDFs into the repo or the project folder.
