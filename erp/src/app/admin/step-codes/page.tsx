@@ -1,7 +1,11 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/fetcher";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, ApiError } from "@/lib/fetcher";
 import { STEP_FIELD_TYPES, type StepFieldType } from "@/lib/step-field-constants";
+import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
+import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
+import { HistoryPanel } from "@/components/HistoryPanel";
 
 type Field = { id?: string; label: string; type: StepFieldType; unit: string | null; sort: number };
 type Code = {
@@ -16,23 +20,46 @@ export default function StepCodesPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState({ code: "", name: "" });
   const [error, setError] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState<{ code: Code; list: Blocker[] } | null>(null);
+  const { permissions: perms, error: permsError } = usePermissions();
 
+  // Gated per the permission each route actually enforces (part-fields.tsx / ReferenceTable.tsx
+  // precedent — this page previously gated none of this): create hits POST requiring
+  // admin.create; every scalar edit, active toggle, and field-def change hits PUT requiring
+  // admin.edit (fields are replaced wholesale, id-preserving, through the same PUT — there is no
+  // separate per-field route); delete hits DELETE requiring admin.delete.
+  const canCreate = gate(perms, "admin.create");
+  const canEdit = gate(perms, "admin.edit");
+  const canDelete = gate(perms, "admin.delete");
+
+  // includeInactive=1 always: the Active column IS the reactivation control (part-fields.tsx
+  // precedent), so a code just switched off must stay visible and selectable to be switched back on.
   const load = useCallback(async () => {
     const [c, g] = await Promise.all([
-      api<Code[]>("/api/admin/step-codes"),
+      api<Code[]>("/api/admin/step-codes?includeInactive=1"),
       api<Gl[]>("/api/admin/reference/glAccount"),
     ]);
     setCodes(c); setGls(g);
   }, []);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
+  // A stale blocker panel from a previously selected code must not linger once selection moves on.
+  useEffect(() => { setBlocked(null); }, [selected]);
+
   const current = codes.find((c) => c.id === selected) ?? null;
 
+  // Shared by every scalar/active/field-def edit: rolls back to server truth on failure BEFORE
+  // reporting why (§5.13) — a failed save must not leave a stale, unsaved value in the grid
+  // looking as if it took effect. The reload's own failure is swallowed only because the original
+  // error is what gets reported; it is not silencing that error.
   async function save(id: string, body: object) {
     try {
       await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
-      setError(null); await load();
-    } catch (e) { setError((e as Error).message); }
+      setError(null); setBlocked(null); await load();
+    } catch (e) {
+      await load().catch(() => {});
+      setError((e as Error).message);
+    }
   }
 
   async function add() {
@@ -42,21 +69,96 @@ export default function StepCodesPage() {
     } catch (e) { setError((e as Error).message); }
   }
 
-  function mutateFields(next: Field[]) {
-    if (current) void save(current.id, { fields: next.map((f, i) => ({ ...f, sort: i })) });
+  async function removeCode(code: Code) {
+    if (!confirm(`Delete step code "${code.code} — ${code.name}"?`)) return;
+    try {
+      await api(`/api/admin/step-codes/${code.id}`, { method: "DELETE" });
+      setSelected(null); setError(null); setBlocked(null); await load();
+    } catch (e) {
+      // A refusal is not a dead end (ReferenceTable.tsx / part-fields.tsx precedent): say what's
+      // blocking, and make the list exportable. Only the delete guard's own 400 means a blocker
+      // list exists to fetch — a 500 or network failure is a genuine error, not a refusal.
+      if (e instanceof ApiError && e.status === 400) {
+        try {
+          const list = await api<Blocker[]>(`/api/admin/step-codes/${code.id}/blockers`);
+          if (list.length) { setBlocked({ code, list }); setError(null); return; }
+        } catch (listErr) {
+          setError(`${(e as Error).message} — the list of what's using it could not be loaded ` +
+            `(${(listErr as Error).message}). Try again.`);
+          return;
+        }
+      }
+      setError((e as Error).message);
+    }
+  }
+
+  // Optimistic local edit for a field-def row (label/unit typing), mirroring part-fields.tsx's
+  // `editLocal` — the array index is a stable key while the user is only editing text, since add/
+  // remove/reorder always go straight to the server and reload rather than mutating locally.
+  function editFieldLocal(codeId: string, fieldIdx: number, patch: Partial<Field>) {
+    setCodes((cur) => cur.map((c) => (
+      c.id !== codeId ? c : { ...c, fields: c.fields.map((f, i) => (i === fieldIdx ? { ...f, ...patch } : f)) }
+    )));
+  }
+
+  // Replaces the whole field-def set for one code, id-preserving — every field already carries
+  // its own `id` from listStepCodes, and it is passed straight through, so a relabel or unit edit
+  // keeps pointing at the same PartProcessStepValue rows instead of losing them to a delete+
+  // recreate. `sort` is renumbered to the on-screen order, matching the pre-existing add/remove
+  // behavior this extends to edits.
+  async function saveFields(codeId: string, fields: Field[]) {
+    await save(codeId, { fields: fields.map((f, i) => ({ ...f, sort: i })) });
+  }
+
+  function removeField(codeId: string, fieldIdx: number) {
+    const code = codes.find((c) => c.id === codeId);
+    if (!code) return;
+    void saveFields(codeId, code.fields.filter((_, i) => i !== fieldIdx));
+  }
+
+  // onFocus/onBlur split (part-fields.tsx precedent): typing doesn't hit the network on every
+  // keystroke, and tabbing through a row without changing it writes no no-op audit entry.
+  const focused = useRef<Record<string, string>>({});
+  function noteFocus(key: string, value: string) { focused.current[key] = value; }
+
+  function blurSaveLabel(codeId: string, fieldIdx: number, value: string) {
+    const key = `${codeId}.${fieldIdx}.label`;
+    const before = focused.current[key];
+    const label = value.trim();
+    if (label === before?.trim()) return;
+    if (!label) {
+      void load().catch(() => {});
+      setError("Field label is required");
+      return;
+    }
+    const code = codes.find((c) => c.id === codeId);
+    if (!code) return;
+    void saveFields(codeId, code.fields.map((f, i) => (i === fieldIdx ? { ...f, label } : f)));
+  }
+
+  function blurSaveUnit(codeId: string, fieldIdx: number, value: string) {
+    const key = `${codeId}.${fieldIdx}.unit`;
+    const before = focused.current[key];
+    if (value === before) return;
+    const code = codes.find((c) => c.id === codeId);
+    if (!code) return;
+    void saveFields(codeId, code.fields.map((f, i) => (i === fieldIdx ? { ...f, unit: value || null } : f)));
   }
 
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Process step codes</h1>
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
       <div className="flex gap-6">
         <div className="w-72 shrink-0">
           <ul className="mb-3 divide-y rounded border bg-white text-sm">
             {codes.map((c) => (
               <li key={c.id} onClick={() => setSelected(c.id)}
-                  className={`cursor-pointer px-3 py-2 ${selected === c.id ? "bg-slate-100" : ""}`}>
+                  className={`cursor-pointer px-3 py-2 ${selected === c.id ? "bg-slate-100" : ""} ${c.active ? "" : "text-slate-400"}`}>
                 <span className="font-mono">{c.code}</span> {c.name}
+                {!c.active && <span className="ml-2 rounded bg-slate-200 px-1 text-xs">inactive</span>}
                 {c.needsGlAccount && (
                   <span className="ml-2 rounded bg-amber-100 px-1 text-xs text-amber-800">needs GL</span>
                 )}
@@ -65,19 +167,38 @@ export default function StepCodesPage() {
           </ul>
           <div className="flex gap-1">
             <input value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })}
-                   placeholder="Code" className="w-24 rounded border px-2 py-1 text-sm" />
+                   disabled={canCreate.disabled} title={canCreate.title}
+                   placeholder="Code" className="w-24 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
             <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                   placeholder="Name" className="flex-1 rounded border px-2 py-1 text-sm" />
-            <button onClick={add} className="rounded bg-slate-800 px-3 py-1 text-sm text-white">Add</button>
+                   disabled={canCreate.disabled} title={canCreate.title}
+                   placeholder="Name" className="flex-1 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
+            <button onClick={add} disabled={canCreate.disabled} title={canCreate.title}
+                    className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+              Add
+            </button>
           </div>
         </div>
 
         {current && (
           <div className="flex-1 rounded border bg-white p-4">
-            <h2 className="mb-3 font-medium">{current.code} — {current.name}</h2>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-medium">{current.code} — {current.name}</h2>
+              <button onClick={() => removeCode(current)} disabled={canDelete.disabled} title={canDelete.title}
+                      className="text-sm text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
+                Delete
+              </button>
+            </div>
+
+            <label className="mb-2 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={current.active} disabled={canEdit.disabled} title={canEdit.title}
+                     onChange={(e) => save(current.id, { active: e.target.checked })} />
+              Active
+            </label>
+
             <label className="mb-4 block text-sm">
               GL account
-              <select value={current.glAccountId ?? ""} className="ml-2 rounded border px-2 py-1"
+              <select value={current.glAccountId ?? ""} disabled={canEdit.disabled} title={canEdit.title}
+                      className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100"
                       onChange={(e) => save(current.id, { glAccountId: e.target.value || null })}>
                 <option value="">(needs GL account)</option>
                 {gls.map((g) => <option key={g.id} value={g.id}>{g.name} {g.description}</option>)}
@@ -90,12 +211,33 @@ export default function StepCodesPage() {
               <tbody>
                 {current.fields.map((f, i) => (
                   <tr key={f.id ?? i} className="border-t">
-                    <td className="py-1">{f.label}</td>
-                    <td>{f.type}</td>
-                    <td>{f.unit ?? ""}</td>
+                    <td className="py-1">
+                      <input value={f.label} disabled={canEdit.disabled} title={canEdit.title}
+                             onFocus={(e) => noteFocus(`${current.id}.${i}.label`, e.target.value)}
+                             onChange={(e) => editFieldLocal(current.id, i, { label: e.target.value })}
+                             onBlur={(e) => blurSaveLabel(current.id, i, e.target.value)}
+                             className="w-full rounded border px-2 py-1 disabled:bg-slate-100" />
+                    </td>
+                    <td>
+                      <select value={f.type} disabled={canEdit.disabled} title={canEdit.title}
+                              onChange={(e) => void saveFields(current.id, current.fields.map((ff, j) => (
+                                j === i ? { ...ff, type: e.target.value as StepFieldType } : ff
+                              )))}
+                              className="rounded border px-2 py-1 disabled:bg-slate-100">
+                        {STEP_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <input value={f.unit ?? ""} disabled={canEdit.disabled} title={canEdit.title}
+                             onFocus={(e) => noteFocus(`${current.id}.${i}.unit`, e.target.value)}
+                             onChange={(e) => editFieldLocal(current.id, i, { unit: e.target.value })}
+                             onBlur={(e) => blurSaveUnit(current.id, i, e.target.value)}
+                             className="w-20 rounded border px-2 py-1 disabled:bg-slate-100" />
+                    </td>
                     <td className="text-right">
-                      <button className="text-xs text-red-600"
-                              onClick={() => mutateFields(current.fields.filter((_, j) => j !== i))}>
+                      <button disabled={canEdit.disabled} title={canEdit.title}
+                              className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                              onClick={() => removeField(current.id, i)}>
                         remove
                       </button>
                     </td>
@@ -103,10 +245,28 @@ export default function StepCodesPage() {
                 ))}
               </tbody>
             </table>
-            <AddField onAdd={(f) => mutateFields([...current.fields, f])} />
+            <AddField disabled={canEdit.disabled} title={canEdit.title}
+                      onAdd={(f) => void saveFields(current.id, [...current.fields, f])} />
             <p className="mt-3 text-xs text-slate-500">
               A code with no fields is text-only — that is correct for steps like Hot Wash.
+              Deleting or changing the type of a field that still has recorded values is refused
+              — the error names the field and how many values use it.
             </p>
+
+            {blocked && blocked.code.id === current.id && (
+              <BlockerPanel
+                label="process step code"
+                rowName={`${blocked.code.code} — ${blocked.code.name}`}
+                list={blocked.list}
+                exportHref={`/api/admin/step-codes/${blocked.code.id}/blockers/export`}
+                onDismiss={() => setBlocked(null)}
+              />
+            )}
+
+            <div className="mt-6">
+              <h3 className="mb-2 font-medium">History</h3>
+              <HistoryPanel entity="processStepCode" entityId={current.id} />
+            </div>
           </div>
         )}
       </div>
@@ -114,21 +274,27 @@ export default function StepCodesPage() {
   );
 }
 
-function AddField({ onAdd }: { onAdd: (f: Field) => void }) {
+function AddField({ onAdd, disabled, title }: {
+  onAdd: (f: Field) => void; disabled: boolean; title: string | undefined;
+}) {
   const [label, setLabel] = useState("");
   const [type, setType] = useState<StepFieldType>("NUMBER");
   const [unit, setUnit] = useState("");
   return (
     <div className="flex gap-1">
       <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Field label"
-             className="flex-1 rounded border px-2 py-1 text-sm" />
+             disabled={disabled} title={title}
+             className="flex-1 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
       <select value={type} onChange={(e) => setType(e.target.value as StepFieldType)}
-              className="rounded border px-2 py-1 text-sm">
+              disabled={disabled} title={title}
+              className="rounded border px-2 py-1 text-sm disabled:bg-slate-100">
         {STEP_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
       </select>
       <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="Unit"
-             className="w-20 rounded border px-2 py-1 text-sm" />
-      <button className="rounded bg-slate-800 px-3 py-1 text-sm text-white"
+             disabled={disabled} title={title}
+             className="w-20 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
+      <button disabled={disabled} title={title}
+              className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400"
               onClick={() => { if (label) { onAdd({ label, type, unit: unit || null, sort: 0 }); setLabel(""); setUnit(""); } }}>
         Add field
       </button>
