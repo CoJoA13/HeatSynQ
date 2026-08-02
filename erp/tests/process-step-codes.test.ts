@@ -12,6 +12,8 @@ import { GET as listRoute, POST as createRoute } from "@/app/api/admin/step-code
 import { PUT as updateRoute, DELETE as deleteRoute } from "@/app/api/admin/step-codes/[id]/route";
 import { GET as stepCodeBlockersRoute } from "@/app/api/admin/step-codes/[id]/blockers/route";
 import { GET as stepCodeBlockersExportRoute } from "@/app/api/admin/step-codes/[id]/blockers/export/route";
+import { GET as fieldDefBlockersRoute } from "@/app/api/admin/step-codes/field-defs/[id]/blockers/route";
+import { GET as fieldDefBlockersExportRoute } from "@/app/api/admin/step-codes/field-defs/[id]/blockers/export/route";
 import { signInWith } from "./helpers/auth";
 
 // Shared by the guard-matrix and route-blocker describes below. `part.create` needs
@@ -504,5 +506,94 @@ describe("step-code blocker routes", () => {
     const row = wb.getWorksheet(1)!.getRow(2).values as unknown[];
     expect(row).toContain("Part");
     expect(row).toContain("AC · P-1");
+  });
+});
+
+// Fix-wave Finding 1 (2026-08-02 final review): stepFieldBlockers existed and was tested but
+// nothing consumed it — the admin page's field-save failure path showed only a count, no
+// discoverable blockers (spec §5.14 violation). These routes are the transplanted
+// src/app/api/admin/step-codes/[id]/blockers{,/export} route pair, same gating and toXlsx shape,
+// against stepFieldBlockers(fieldDefId) instead of findBlockers("processStepCode", id).
+describe("step field-def blocker routes", () => {
+  beforeEach(async () => await truncateAll());
+  const idCtx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+  // Mirrors fixtureWithValue from the "step field defs" describe above (that helper is local to
+  // its own describe block) — customer -> part -> step code with one NUMBER field def -> a value
+  // on it, so there's a real blocker to list.
+  async function fieldDefFixture() {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    const part = await prisma.part.create({ data: { customerId: customer.id, partNumber: "P-1", eachWeight: 1 } });
+    const { id: codeId } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await setStepFields(codeId, [{ label: "Temp", type: "NUMBER", sort: 1 }]);
+    const fieldDef = (await listStepCodes()).find((c) => c.id === codeId)!.fields[0];
+    const revision = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    const step = await prisma.partProcessStep.create({
+      data: { revisionId: revision.id, codeId, position: 1, instruction: "" },
+    });
+    const value = await prisma.partProcessStepValue.create({
+      data: { stepId: step.id, fieldDefId: fieldDef.id, value: "1500" },
+    });
+    return { part, codeId, fieldDef, value };
+  }
+
+  it("401s both routes without a session", async () => {
+    const blockers = await fieldDefBlockersRoute(new Request("http://t/x"), idCtx("placeholder"));
+    expect(blockers.status).toBe(401);
+
+    const exported = await fieldDefBlockersExportRoute(new Request("http://t/x"), idCtx("placeholder"));
+    expect(exported.status).toBe(401);
+  });
+
+  it("403s both routes for a session lacking admin.view", async () => {
+    const cookie = await signInWith([], "nobody");
+
+    const blockers = await fieldDefBlockersRoute(new Request("http://t/x", { headers: { cookie } }), idCtx("placeholder"));
+    expect(blockers.status).toBe(403);
+
+    const exported = await fieldDefBlockersExportRoute(
+      new Request("http://t/x", { headers: { cookie } }), idCtx("placeholder"),
+    );
+    expect(exported.status).toBe(403);
+  });
+
+  it("200s the blocker list and a matching xlsx export", async () => {
+    const { part, fieldDef } = await fieldDefFixture();
+    const cookie = await signInWith(["admin.view"]);
+
+    const res = await fieldDefBlockersRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(fieldDef.id));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { entityLabel: "Part", name: "AC · P-1", id: part.id, href: `/parts/${part.id}` },
+    ]);
+
+    const exported = await fieldDefBlockersExportRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(fieldDef.id));
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get("content-type")).toContain("spreadsheetml");
+
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await exported.arrayBuffer()) as unknown as ArrayBuffer);
+    const row = wb.getWorksheet(1)!.getRow(2).values as unknown[];
+    expect(row).toContain("Part");
+    expect(row).toContain("AC · P-1");
+  });
+
+  it("a def with values under a soft-deleted part lists the \"(deleted)\"-suffixed blocker, with no href", async () => {
+    const { part, fieldDef } = await fieldDefFixture();
+    await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
+    const cookie = await signInWith(["admin.view"]);
+
+    const res = await fieldDefBlockersRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(fieldDef.id));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { entityLabel: "Part", name: "AC · P-1 (deleted)", id: part.id, href: null },
+    ]);
+
+    const exported = await fieldDefBlockersExportRoute(new Request("http://t/x", { headers: { cookie } }), idCtx(fieldDef.id));
+    expect(exported.status).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await exported.arrayBuffer()) as unknown as ArrayBuffer);
+    const row = wb.getWorksheet(1)!.getRow(2).values as unknown[];
+    expect(row).toContain("AC · P-1 (deleted)");
   });
 });

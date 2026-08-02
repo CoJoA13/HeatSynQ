@@ -21,6 +21,10 @@ export default function StepCodesPage() {
   const [draft, setDraft] = useState({ code: "", name: "" });
   const [error, setError] = useState<string | null>(null);
   const [blocked, setBlocked] = useState<{ code: Code; list: Blocker[] } | null>(null);
+  // Fix-wave Finding 1 (2026-08-02 final review): stepFieldBlockers existed and was tested but
+  // nothing consumed it — a field-def delete/type-change refusal showed only a count, no
+  // discoverable blockers (spec §5.14). `defId`/`label` name the field the refusal named.
+  const [fieldBlocked, setFieldBlocked] = useState<{ defId: string; label: string; list: Blocker[] } | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
 
   // Gated per the permission each route actually enforces (part-fields.tsx / ReferenceTable.tsx
@@ -44,21 +48,45 @@ export default function StepCodesPage() {
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   // A stale blocker panel from a previously selected code must not linger once selection moves on.
-  useEffect(() => { setBlocked(null); }, [selected]);
+  useEffect(() => { setBlocked(null); setFieldBlocked(null); }, [selected]);
 
   const current = codes.find((c) => c.id === selected) ?? null;
+
+  // The two exact refusal messages syncStepFields (process-step-codes.ts) throws when a field def
+  // still has PartProcessStepValue rows pointing at it — the only two field-save failures a
+  // blocker panel can actually explain.
+  const isFieldGuardMessage = (message: string) =>
+    message.startsWith('Cannot remove field "') || message.startsWith('Cannot change the type of "');
 
   // Shared by every scalar/active/field-def edit: rolls back to server truth on failure BEFORE
   // reporting why (§5.13) — a failed save must not leave a stale, unsaved value in the grid
   // looking as if it took effect. The reload's own failure is swallowed only because the original
   // error is what gets reported; it is not silencing that error.
-  async function save(id: string, body: object) {
+  //
+  // `fieldCtx` is passed only by callers that removed a field or changed a field's type (the two
+  // operations syncStepFields can refuse over existing values) and know which def id/label was
+  // targeted; a scalar edit, active toggle, or label/unit rename never triggers that guard, so
+  // there is nothing to look up a blocker list for.
+  async function save(id: string, body: object, fieldCtx?: { defId: string; label: string }) {
     try {
       await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
-      setError(null); setBlocked(null); await load();
+      setError(null); setBlocked(null); setFieldBlocked(null); await load();
     } catch (e) {
       await load().catch(() => {});
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      setError(message);
+      if (fieldCtx && e instanceof ApiError && e.status === 400 && isFieldGuardMessage(message)) {
+        try {
+          const list = await api<Blocker[]>(`/api/admin/step-codes/field-defs/${fieldCtx.defId}/blockers`);
+          setFieldBlocked({ defId: fieldCtx.defId, label: fieldCtx.label, list });
+        } catch {
+          // The plain error text above already explains the refusal; a failed blocker-list fetch
+          // just means no panel this time, not a worse error to report.
+          setFieldBlocked(null);
+        }
+      } else {
+        setFieldBlocked(null);
+      }
     }
   }
 
@@ -106,14 +134,18 @@ export default function StepCodesPage() {
   // keeps pointing at the same PartProcessStepValue rows instead of losing them to a delete+
   // recreate. `sort` is renumbered to the on-screen order, matching the pre-existing add/remove
   // behavior this extends to edits.
-  async function saveFields(codeId: string, fields: Field[]) {
-    await save(codeId, { fields: fields.map((f, i) => ({ ...f, sort: i })) });
+  async function saveFields(codeId: string, fields: Field[], fieldCtx?: { defId: string; label: string }) {
+    await save(codeId, { fields: fields.map((f, i) => ({ ...f, sort: i })) }, fieldCtx);
   }
 
+  // The removed field is the one a refusal (still-in-use) would name — pass it along so `save` can
+  // fetch its blockers on a 400.
   function removeField(codeId: string, fieldIdx: number) {
     const code = codes.find((c) => c.id === codeId);
     if (!code) return;
-    void saveFields(codeId, code.fields.filter((_, i) => i !== fieldIdx));
+    const field = code.fields[fieldIdx];
+    void saveFields(codeId, code.fields.filter((_, i) => i !== fieldIdx),
+      field.id ? { defId: field.id, label: field.label } : undefined);
   }
 
   // onFocus/onBlur split (part-fields.tsx precedent): typing doesn't hit the network on every
@@ -222,7 +254,7 @@ export default function StepCodesPage() {
                       <select value={f.type} disabled={canEdit.disabled} title={canEdit.title}
                               onChange={(e) => void saveFields(current.id, current.fields.map((ff, j) => (
                                 j === i ? { ...ff, type: e.target.value as StepFieldType } : ff
-                              )))}
+                              )), f.id ? { defId: f.id, label: f.label } : undefined)}
                               className="rounded border px-2 py-1 disabled:bg-slate-100">
                         {STEP_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
@@ -260,6 +292,16 @@ export default function StepCodesPage() {
                 list={blocked.list}
                 exportHref={`/api/admin/step-codes/${blocked.code.id}/blockers/export`}
                 onDismiss={() => setBlocked(null)}
+              />
+            )}
+
+            {fieldBlocked && (
+              <BlockerPanel
+                label="process step field"
+                rowName={fieldBlocked.label}
+                list={fieldBlocked.list}
+                exportHref={`/api/admin/step-codes/field-defs/${fieldBlocked.defId}/blockers/export`}
+                onDismiss={() => setFieldBlocked(null)}
               />
             )}
 
