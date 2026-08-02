@@ -7,7 +7,7 @@
 export type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
 
 export function BlockerPanel({
-  label, rowName, list, exportHref, onDismiss, action = "delete",
+  label, rowName, list, exportHref, onDismiss, action = "delete", note,
 }: {
   /** Lowercase singular noun for the row being blocked, e.g. "material" or "part field". */
   label: string;
@@ -18,6 +18,11 @@ export function BlockerPanel({
   /** Present-tense verb phrase for the blocked action, e.g. "delete" or "change the type of".
    *  Defaults to "delete" — the panel's original and still most common caller. */
   action?: string;
+  /** Optional guidance for callers where the block may be permanent. Naming what is blocking is
+   *  only most of the job: if no action the user can take will ever clear the block, saying so —
+   *  and saying what to do instead — is the difference between a guard and the Visual Shop dead
+   *  end this whole mechanism exists to avoid. */
+  note?: string;
 }) {
   return (
     <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm">
@@ -32,6 +37,7 @@ export function BlockerPanel({
           </li>
         ))}
       </ul>
+      {note && <p className="mb-2 text-slate-700">{note}</p>}
       <div className="flex gap-3">
         <a href={exportHref} className="text-blue-700 underline">Export list to Excel</a>
         <button onClick={onDismiss} className="text-slate-600">dismiss</button>

@@ -373,6 +373,13 @@ export default function StepCodesPage() {
                 list={blocked.list}
                 exportHref={`/api/admin/step-codes/${blocked.code.id}/blockers/export`}
                 onDismiss={() => setBlocked(null)}
+                note={
+                  "A step on a locked revision cannot be removed from it — that recipe is frozen " +
+                  "by design, so a reference from one never goes away. If the parts above use " +
+                  "this code only on superseded revisions, deleting it will never become " +
+                  "possible: switch it to Inactive instead, which leaves the history intact and " +
+                  "stops the code being offered on new steps."
+                }
               />
             )}
 
