@@ -129,11 +129,18 @@ export async function deleteStepCode(id: string): Promise<void> {
  * items carrying an `id` update that def in place (so any `PartProcessStepValue` row pointing at
  * it keeps pointing at the same id); items with no `id` create a new def; an existing def absent
  * from the payload is deleted. Both a delete and a type change are refused with the two exact
- * messages below while any value still references the def — a wholesale delete+recreate (the
- * implementation this replaces) would orphan those value rows or hit the FK's ON DELETE RESTRICT
- * outright, either silently losing history or surfacing a raw DB error instead of a field-named
- * one. Shared by `setStepFields` and `updateStepCodeWithFields` so the PUT route — the one path
- * the admin page actually calls — gets the same id-preserving, value-safe behavior.
+ * messages below while ANY value still references the def — spec §6: "blocked while any
+ * PartProcessStepValue references the def... locked revisions included"; §11 testing item 4:
+ * "including only-historical values." Deliberately UNLIKE `stepFieldBlockers` below (which is
+ * scoped to live parts only) and unlike the `partFieldDefBlockersOn` precedent this otherwise
+ * follows (part-field-defs.ts, where the guard and the listing share one live-filtered query):
+ * `ProcessStepFieldDef` has no `deletedAt` — deleting it here is a genuine hard delete against
+ * `PartProcessStepValue.fieldDefId`'s `ON DELETE RESTRICT` FK, unlike `PartFieldDef`'s soft
+ * delete. A live-filtered guard would let a def whose only reference is a value under a
+ * soft-deleted part slip past this check and then hit that FK directly, trading this function's
+ * field-named 400 for a raw, unhelpful DB error — worse discoverability, not better. See
+ * task-3-report.md's fix-round note for the full trail (this was reverted from a live-filtered
+ * version after a review round proposed it, citing the wrong spec rule).
  */
 async function syncStepFields(
   tx: Prisma.TransactionClient, codeId: string, parsed: z.infer<typeof FIELDS_ARRAY>,
@@ -194,9 +201,16 @@ export async function setStepFields(id: string, fields: StepFieldInput[]): Promi
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
-/** Every LIVE part holding a value for this field def, deduped per part, `CODE · partNumber`
- *  named with an `/parts/[id]` href — the partFieldDefBlockers precedent (part-field-defs.ts),
- *  scoped through step -> revision -> part instead of a direct part relation. */
+/**
+ * Every LIVE part holding a value for this field def, deduped per part, `CODE · partNumber`
+ * named with an `/parts/[id]` href — the partFieldDefBlockers precedent (part-field-defs.ts),
+ * scoped through step -> revision -> part instead of a direct part relation. Deliberately
+ * narrower than `syncStepFields`'s guard above (which counts every value, live or not) — this
+ * lists parts worth a caller's attention (something they could go edit), not every row that
+ * happens to keep the def permanently undeletable. A def whose only reference is a value under
+ * a soft-deleted part legitimately returns `[]` here while the guard still refuses; see the
+ * comment on `syncStepFields` for why that asymmetry is correct rather than a drift bug.
+ */
 export async function stepFieldBlockers(fieldDefId: string): Promise<Blocker[]> {
   const values = await prisma.partProcessStepValue.findMany({
     where: { fieldDefId, step: { revision: { part: { deletedAt: null } } } },

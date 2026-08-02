@@ -293,4 +293,41 @@ describe("step field defs: .strict(), id-preserving edits, value blockers", () =
       entityLabel: "Part", name: "AC · P-1", id: part.id, href: `/parts/${part.id}`,
     });
   });
+
+  // Regression (fix-round correction — task-3-report.md has the full trail). syncStepFields's
+  // guard is deliberately UNfiltered by the owning part's liveness — spec §6 ("blocked while any
+  // PartProcessStepValue references the def... locked revisions included") and §11 testing item 4
+  // ("delete/type-change blocked while values exist, including only-historical values").
+  // `ProcessStepFieldDef` has no `deletedAt`, so its "delete" here is a genuine hard delete
+  // against `PartProcessStepValue.fieldDefId`'s `ON DELETE RESTRICT` FK — it can never safely
+  // ignore a still-existing row, regardless of whether the owning part is soft-deleted.
+  // `stepFieldBlockers`, by contrast, is scoped to live parts only (brief's own spec for that
+  // function) — so the two intentionally disagree on what counts. This locks in both halves: a
+  // value under a soft-deleted part is invisible to the live listing, AND it still produces the
+  // guard's normal field-named 400 (never a raw DB error — a live-filtered guard would let the
+  // code attempt the real hard delete and get an unrelated-sounding "That reference does not
+  // exist" from Postgres instead, which is worse, not better, for discoverability).
+  it("a value under a soft-deleted part is invisible to stepFieldBlockers but still blocks delete/type-change", async () => {
+    const { part, codeId, fieldDef } = await fixtureWithValue();
+    await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
+
+    expect(await stepFieldBlockers(fieldDef.id)).toEqual([]);
+
+    const typeErr = await setStepFields(codeId, [
+      { id: fieldDef.id, label: fieldDef.label, type: "TEXT", sort: 1 },
+    ]).catch((e) => e);
+    expect(typeErr).toBeInstanceOf(HttpError);
+    expect((typeErr as HttpError).status).toBe(400);
+    expect((typeErr as HttpError).message)
+      .toBe(`Cannot change the type of "${fieldDef.label}" — 1 step value(s) use it`);
+
+    const deleteErr = await setStepFields(codeId, []).catch((e) => e);
+    expect(deleteErr).toBeInstanceOf(HttpError);
+    expect((deleteErr as HttpError).status).toBe(400);
+    expect((deleteErr as HttpError).message).toBe(`Cannot remove field "${fieldDef.label}" — 1 step value(s) use it`);
+
+    // Neither refusal partially applied — the def is untouched.
+    const fields = (await listStepCodes()).find((c) => c.id === codeId)!.fields;
+    expect(fields).toEqual([fieldDef]);
+  });
 });
