@@ -34,7 +34,7 @@ npm run dev                       # http://localhost:3000
 Quality gates — all three must stay green:
 
 ```bash
-npm test                          # vitest, 574 integration tests against the real erp_test DB
+npm test                          # vitest, 576 integration tests against the real erp_test DB
 npx tsc --noEmit
 npx eslint src tests
 ```
