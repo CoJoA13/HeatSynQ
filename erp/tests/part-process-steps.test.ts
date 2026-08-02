@@ -201,6 +201,75 @@ describe("part process steps: the revision-cut rule", () => {
     expect(rev1.steps.map((s) => s.instruction)).toEqual(["one", "two", "three"]);
   });
 
+  // A patch that cannot change anything must not reach workingRevision, because reaching it is
+  // what cuts N+1 off a locked revision. `{}` and `{ values: [] }` both satisfy EDIT's shape —
+  // every field is optional and applyValues no-ops on an empty array — so before this guard an
+  // empty request against a locked revision returned `{ revisionNumber: 2 }`, permanently adding
+  // a revision identical to the one it superseded plus a before===after audit entry. The UI never
+  // sends either (saveStep short-circuits), but the route hands the raw body straight through.
+  it("refuses a patch that cannot change anything, instead of cutting a revision", async () => {
+    const { part, code } = await fixture();
+    const { stepId } = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "A" }));
+    await asSystem(() => prisma.$transaction((tx) => lockRevision(part.id, 1, tx)));
+
+    for (const patch of [{}, { values: [] }]) {
+      await expect(asSystem(() => updateStep(part.id, stepId, patch)))
+        .rejects.toMatchObject({ status: 400, message: /nothing to change/i });
+    }
+
+    expect(await getRevisions(part.id)).toHaveLength(1);
+    expect((await getRevision(part.id, 1)).steps[0].instruction).toBe("A");
+  });
+
+  // Regression for the concurrency hole Codex found on PR #22: the mutator read `lockedAt: null`,
+  // a lock committed, and the mutator then wrote a child step of the now-locked revision and
+  // committed clean. Its Serializable isolation did not prevent this — Postgres only gives
+  // serializable guarantees among transactions that are ALL Serializable, and lockRevision's
+  // documented caller (Phase 3's order save) runs at the default isolation, exactly as the E2E
+  // fixture does. The fix is a row lock, which both sides take regardless of isolation, so this
+  // interleaving must now end in either a clean N+1 cut or a 40001 — never a modified lock.
+  it("a lock landing mid-mutation cannot leave the locked revision modified", async () => {
+    const { part, code } = await fixture();
+    const { stepId } = await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "before" }));
+
+    let hasLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { hasLocked = resolve; });
+    let mayCommit!: () => void;
+    const release = new Promise<void>((resolve) => { mayCommit = resolve; });
+
+    // Phase 3's order save, held open: lockRevision has run and holds the revision row, but the
+    // transaction has not committed. Default isolation, exactly as the E2E fixture and the
+    // documented future caller use — the whole point is that the mutator cannot rely on its own
+    // Serializable setting to order against this.
+    const lockTxn = asSystem(() => prisma.$transaction(async (tx) => {
+      await lockRevision(part.id, 1, tx);
+      hasLocked();
+      await release;
+    }, { timeout: 20000 }));
+
+    await locked;
+    // The editor saves into that window. It must not be able to read "unlocked" and go on to
+    // amend revision 1 in place.
+    const mutation = asSystem(() => updateStep(part.id, stepId, { instruction: "after" }));
+    await new Promise((r) => setTimeout(r, 300)); // let the mutation reach the revision row
+    mayCommit();
+    await lockTxn;
+
+    // Either ordering is acceptable — a clean N+1 cut, or a 409 from the serialization failure
+    // with nothing written. A modified locked revision is not.
+    let cutTo: number | null = null;
+    try {
+      cutTo = (await mutation).revisionNumber;
+    } catch (err) {
+      expect(err).toMatchObject({ status: 409 });
+    }
+
+    const rev1 = await getRevision(part.id, 1);
+    expect(rev1.lockedAt).not.toBeNull();
+    expect(rev1.steps.map((s) => s.instruction)).toEqual(["before"]);
+    if (cutTo !== null) expect(cutTo).toBe(2);
+  });
+
   it("lockRevision is idempotent and 404s on a missing revision", async () => {
     const { part, code } = await fixture();
     await asSystem(() => addStep(part.id, { codeId: code.id }));

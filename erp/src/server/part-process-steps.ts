@@ -75,13 +75,38 @@ function validateStepValue(def: { label: string; type: string }, value: string):
  * `stepIdMap` is `null` exactly when no cut happened this call — callers use that to tell "amend
  * in place" (resolve the caller's stepId directly against the returned revision) from "just cut"
  * (resolve it through the map first).
+ *
+ * CONCURRENCY (Codex, PR #22 — regression test "a lock landing mid-mutation cannot leave the
+ * locked revision modified"). The current revision is claimed with `SELECT … FOR UPDATE` before
+ * its `lockedAt` is read, because that read is what decides amend-vs-cut and the answer must not
+ * be able to go stale between here and the child write. The mutators' own Serializable isolation
+ * is NOT sufficient on its own: Postgres gives serializable guarantees only among transactions
+ * that are ALL Serializable, and `lockRevision`'s documented caller — Phase 3's order save —
+ * holds it inside the order's own default-isolation transaction. Without the row lock, a mutator
+ * could read `lockedAt: null`, let that lock commit, then amend the now-locked revision's steps
+ * and commit clean, silently breaking §5's immutability guarantee.
+ *
+ * A row lock is the right instrument precisely because both sides take it at any isolation
+ * (`lockRevision`'s `updateMany` locks the same row). Whichever gets there first wins cleanly: a
+ * mutator that wins amends in place and the lock follows it; a mutator that loses either sees
+ * `lockedAt` set and cuts N+1, or is aborted with 40001, which `withDbErrors` already turns into
+ * a 409 "try again" rather than a 500. There is no ordering in which the locked revision changes.
  */
 async function workingRevision(partId: string, tx: Prisma.TransactionClient):
   Promise<{ rev: { id: string; revisionNumber: number }; stepIdMap: Map<string, string> | null }> {
   const part = await tx.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
   if (!part) throw new HttpError(404, "Part not found");
-  const current = await tx.partProcessRevision.findFirst({
-    where: { partId }, orderBy: { revisionNumber: "desc" },
+  // Raw because Prisma has no `FOR UPDATE`. Id only — the full row and its steps are read back
+  // through the client below, once the lock is held.
+  const claimed = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "PartProcessRevision"
+    WHERE "partId" = ${partId}
+    ORDER BY "revisionNumber" DESC
+    LIMIT 1
+    FOR UPDATE
+  `;
+  const current = claimed.length === 0 ? null : await tx.partProcessRevision.findFirst({
+    where: { id: claimed[0].id },
     include: { steps: { orderBy: { position: "asc" }, include: { values: true } } },
   });
   if (!current) {
@@ -221,6 +246,16 @@ export async function updateStep(
   partId: string, stepId: string, input: { instruction?: string; values?: { fieldDefId: string; value: string }[] },
 ): Promise<{ revisionNumber: number }> {
   const data = EDIT.parse(input);
+  // Before `workingRevision`, deliberately: reaching it is what cuts N+1 off a locked revision,
+  // and a patch that cannot change anything has no business doing that. `{}` and `{ values: [] }`
+  // both satisfy EDIT's shape — every field is optional, and `applyValues` no-ops on an empty
+  // array — so without this an empty request against a locked revision returned success having
+  // permanently added a revision identical to the one it superseded, plus a before===after audit
+  // entry. Shape belongs in the schema; "must actually say something" is a rule about the
+  // request, so it lives here.
+  if (data.instruction === undefined && !data.values?.length) {
+    throw new HttpError(400, "Nothing to change — send an instruction or at least one value");
+  }
   return withDbErrors({ entity: "Process step" }, () =>
     prisma.$transaction(async (tx) => {
       const { rev, stepIdMap } = await workingRevision(partId, tx);
