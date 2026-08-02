@@ -262,7 +262,7 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — Phase 2C-3 (Process Steps + Templates), the last third of Phase 2C.**
+**Next up — Phase 3 (Orders). Phase 2 is complete.**
 
 > Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried backlog. **Phase 2 is complete: 2C-3 merged 2026-08-02, so 2A/2B/2C-1/2C-2/2C-3 are all in `main`.** Next is **Phase 3 (Orders)** per the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`). Brainstorm it (superpowers:brainstorming) against the roadmap and the spec's §3 non-goals and §15 decision log, then write the plan and execute it with subagent-driven-development on a `phase-3-orders` branch. Phase 3 owns the first real caller of `lockRevision` (`src/server/part-process-steps.ts`) — the order save locks the revision it quotes against; read §4a's 2C-3 review lessons before wiring it, because the row lock in `workingRevision` is the guarantee and making the order save Serializable is not a substitute. Two habits worth carrying from 2C-3: when a fix lands on one of a parts/template sibling pair, fix the other in the same commit; and where a page holds an editable copy of server data, keep only what the user typed and compose it with server state at render time. Remember the prime directive: do not assume — ask the owner.
 
