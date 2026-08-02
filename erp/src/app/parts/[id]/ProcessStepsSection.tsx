@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { swapAt } from "@/lib/reorder";
 import { buildStepDrafts, type StepDraft } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 
@@ -254,10 +255,8 @@ export function ProcessStepsSection({
   // `position` if the second write fails).
   async function move(idx: number, dir: -1 | 1) {
     if (!detail) return;
-    const j = idx + dir;
-    if (j < 0 || j >= detail.steps.length) return;
-    const reordered = [...detail.steps];
-    [reordered[idx], reordered[j]] = [reordered[j], reordered[idx]];
+    const reordered = swapAt(detail.steps, idx, dir);
+    if (!reordered) return;
     try {
       const res = await api<{ revisionNumber: number }>(`/api/parts/${partId}/process/reorder`, {
         method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }),

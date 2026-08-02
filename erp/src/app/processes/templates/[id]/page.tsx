@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
+import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
 
 // Local mirrors of src/server/process-templates.ts's exported row types — not imported from
@@ -141,10 +142,8 @@ function Detail({ id }: { id: string }) {
   // the second write fails).
   async function move(idx: number, dir: -1 | 1) {
     if (!template) return;
-    const j = idx + dir;
-    if (j < 0 || j >= template.steps.length) return;
-    const reordered = [...template.steps];
-    [reordered[idx], reordered[j]] = [reordered[j], reordered[idx]];
+    const reordered = swapAt(template.steps, idx, dir);
+    if (!reordered) return;
     try {
       await api(`/api/process-templates/${id}/reorder`, {
         method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }),

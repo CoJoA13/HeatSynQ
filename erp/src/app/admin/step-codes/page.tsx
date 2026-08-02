@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { STEP_FIELD_TYPES, type StepFieldType } from "@/lib/step-field-constants";
 import { gate } from "@/lib/permission-ui";
+import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -138,6 +139,21 @@ export default function StepCodesPage() {
     await save(codeId, { fields: fields.map((f, i) => ({ ...f, sort: i })) }, fieldCtx);
   }
 
+  // Spec §6 lists reorder alongside add/edit/delete as one of the field-def row operations, and
+  // it was the one that never got built (Codex, PR #22). `sort` is what orders the inputs on the
+  // part-detail step editor and the traveler, so without this a field's position was fixed for
+  // good the moment it recorded a value: remove-and-re-add, the only other way to change it, is
+  // exactly what the server refuses once values exist. No `fieldCtx` — reordering touches neither
+  // the set of fields nor any type, so it can't hit that guard. saveFields already renumbers
+  // `sort` to the on-screen order, so handing it a reordered array is the whole operation.
+  function moveField(codeId: string, fieldIdx: number, dir: -1 | 1) {
+    const code = codes.find((c) => c.id === codeId);
+    if (!code) return;
+    const reordered = swapAt(code.fields, fieldIdx, dir);
+    if (!reordered) return;
+    void saveFields(codeId, reordered);
+  }
+
   // The removed field is the one a refusal (still-in-use) would name — pass it along so `save` can
   // fetch its blockers on a 400.
   function removeField(codeId: string, fieldIdx: number) {
@@ -267,11 +283,25 @@ export default function StepCodesPage() {
                              className="w-20 rounded border px-2 py-1 disabled:bg-slate-100" />
                     </td>
                     <td className="text-right">
-                      <button disabled={canEdit.disabled} title={canEdit.title}
-                              className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
-                              onClick={() => removeField(current.id, i)}>
-                        remove
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        <button type="button" onClick={() => moveField(current.id, i, -1)}
+                                disabled={canEdit.disabled || i === 0}
+                                title={canEdit.title} aria-label="Move field up"
+                                className="text-xs disabled:cursor-not-allowed disabled:text-slate-300">
+                          ↑
+                        </button>
+                        <button type="button" onClick={() => moveField(current.id, i, 1)}
+                                disabled={canEdit.disabled || i === current.fields.length - 1}
+                                title={canEdit.title} aria-label="Move field down"
+                                className="text-xs disabled:cursor-not-allowed disabled:text-slate-300">
+                          ↓
+                        </button>
+                        <button disabled={canEdit.disabled} title={canEdit.title}
+                                className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400"
+                                onClick={() => removeField(current.id, i)}>
+                          remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -281,8 +311,9 @@ export default function StepCodesPage() {
                       onAdd={(f) => void saveFields(current.id, [...current.fields, f])} />
             <p className="mt-3 text-xs text-slate-500">
               A code with no fields is text-only — that is correct for steps like Hot Wash.
-              Deleting or changing the type of a field that still has recorded values is refused
-              — the error names the field and how many values use it.
+              The order here is the order the fields are asked for on a process step and printed
+              on the traveler. Deleting or changing the type of a field that still has recorded
+              values is refused — the error names the field and how many values use it.
             </p>
 
             {blocked && blocked.code.id === current.id && (
