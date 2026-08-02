@@ -231,7 +231,14 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ```bash
 # 1. Tooling
-sudo dnf install -y git nodejs22 npm            # or use nvm; Node 22+ required
+sudo dnf install -y git nodejs26 npm            # or use nvm; Node 26 required (Dockerfile + CI pin it)
+# Node 26 ships npm 12, which does NOT run dependency install scripts unless you approve them.
+# `npm ci` prints a warning naming five: @prisma/engines, argon2, esbuild, prisma, unrs-resolver.
+# That warning is EXPECTED and must not be "fixed" with `npm approve-scripts --all`. None of the
+# five are needed: argon2 and esbuild ship prebuilt binaries (argon2's are N-API, so they are
+# ABI-stable across Node majors), and Prisma 7 bundles its engines. Verified on Node 26.5.1 /
+# npm 12.0.2 — all four gates plus `prisma migrate status` pass with every script skipped.
+# Approving them would add supply-chain surface to buy nothing; skipping is npm's secure default.
 # Docker Engine (compose v2 profiles are used; Docker CE recommended over podman):
 sudo dnf -y install dnf-plugins-core
 sudo dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/fedora/docker-ce.repo
