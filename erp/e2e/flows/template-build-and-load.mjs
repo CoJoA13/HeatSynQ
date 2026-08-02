@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { armDialog, waitForValue, waitForChecked, fillReliable, waitForSaveSettled } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
-const TEMPLATE_NAME = "E2E Austemper";
 
 function codeOptionLabel(stepCode) {
   return `${stepCode.code} ${EM_DASH} ${stepCode.name}`;
@@ -13,6 +12,10 @@ function codeOptionLabel(stepCode) {
 
 export async function run(page, shot, ctx) {
   const { fixtures, created } = ctx;
+  // Read off the fixtures payload rather than declared here: db-fixtures.ts's reapLeftovers
+  // matches leftover rows on exact names, so the name this flow types into the UI has to be
+  // the same literal that reaper knows about (FIXTURE.liveTemplateName).
+  const TEMPLATE_NAME = fixtures.liveTemplateName;
   const { stepCodeA, stepCodeB } = fixtures;
 
   // --- Build the template on the Processes list + detail pages ---

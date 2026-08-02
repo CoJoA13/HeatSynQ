@@ -34,7 +34,7 @@ export async function run(page, shot, ctx) {
   await partLink.waitFor({ state: "visible" });
   assert.equal(await partLink.getAttribute("href"), `/parts/${fixtures.partId}`);
 
-  const templateLink = page.getByRole("link", { name: "E2E Austemper" });
+  const templateLink = page.getByRole("link", { name: fixtures.liveTemplateName });
   await templateLink.waitFor({ state: "visible" });
   assert.equal(await templateLink.getAttribute("href"), `/processes/templates/${templateId}`);
 

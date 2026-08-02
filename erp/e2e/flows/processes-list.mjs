@@ -8,13 +8,13 @@ export async function run(page, shot, ctx) {
   const { fixtures } = ctx;
 
   await page.goto(`${ctx.baseURL}/processes`);
-  await page.getByText("E2E Austemper", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText(fixtures.liveTemplateName, { exact: true }).waitFor({ state: "visible" });
   await page.getByText(fixtures.decoyTemplateName, { exact: true }).waitFor({ state: "visible" });
   await shot("list-before-search");
 
   const search = page.getByPlaceholder("Search name");
   await search.fill("Austemper");
-  await page.getByText("E2E Austemper", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText(fixtures.liveTemplateName, { exact: true }).waitFor({ state: "visible" });
   await assert.rejects(
     page.getByText(fixtures.decoyTemplateName, { exact: true }).waitFor({ state: "visible", timeout: 1000 }),
     "decoy template should be filtered out by the search term",

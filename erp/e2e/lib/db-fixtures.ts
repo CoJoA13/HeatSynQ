@@ -15,6 +15,31 @@ import { PrismaClient } from "../../prisma/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "../../src/server/password";
 import { lockRevision } from "../../src/server/part-process-steps";
+import { ALL_PERMISSIONS } from "../../src/server/permissions";
+
+/**
+ * Every natural key this harness ever writes to the dev DB, in one place. `reapLeftovers` looks
+ * rows up by these EXACT values rather than by an "E2E" prefix scan: the dev database is the
+ * developer's own working database, and a `startsWith` sweep that hard-deletes whatever it matches
+ * would take real experiment rows down with it if any happened to share the prefix. Nothing here
+ * needs discovering at runtime — `liveTemplateName` is the name template-build-and-load.mjs builds
+ * through the UI, and it reads that name out of the `Fixtures` payload rather than declaring its
+ * own, so the flow and this reaper cannot drift apart.
+ */
+const FIXTURE = {
+  customerCode: "E2ECUST",
+  partNumber: "E2E-PART-1",
+  stepCodeA: "E2E-QNCH",
+  stepCodeB: "E2E-WASH",
+  decoyTemplateName: "E2E Decoy Template",
+  liveTemplateName: "E2E Austemper",
+  adminRoleName: "E2E Admin Role",
+  adminUsername: "e2e_admin",
+  adminPassword: "e2eAdmin123!",
+  restrictedRoleName: "E2E Restricted Role",
+  restrictedUsername: "e2e_restricted",
+  restrictedPassword: "e2eRestricted123!",
+} as const;
 
 function assertDevDb(url: string): void {
   const dbName = new URL(url).pathname.replace(/^\//, "");
@@ -40,6 +65,11 @@ export type Fixtures = {
   stepCodeB: { id: string; code: string; name: string };
   decoyTemplateId: string;
   decoyTemplateName: string;
+  liveTemplateName: string;
+  adminRoleId: string;
+  adminUserId: string;
+  adminUsername: string;
+  adminPassword: string;
   restrictedRoleId: string;
   restrictedUserId: string;
   restrictedUsername: string;
@@ -98,24 +128,35 @@ async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promis
 /**
  * Self-heal: deletes any E2E fixture rows a prior run left behind — a crash, a killed process, or
  * (before this existed) a Ctrl-C that skipped the finally-block cleanup — by looking them up on
- * their natural keys rather than trusting any id handed in. Every fixture identifier this file
- * ever creates is "E2E"-prefixed for exactly this reason (both `create()`'s own rows — customer
- * code E2ECUST, part number E2E-PART-1, step codes E2E-QNCH/E2E-WASH, "E2E Decoy Template", role
- * "E2E Restricted Role", username e2e_restricted — and template-build-and-load.mjs's live-created
- * "E2E Austemper" template, which is why the template lookup matches on the shared prefix instead
- * of one specific literal name). Called unconditionally at the top of `create()`, so a run started
- * right after an aborted one heals itself instead of throwing on a unique-constraint conflict and
- * never reaching the point where `fixtures` gets assigned (which is what previously made the
- * *next* run's cleanup silently do nothing too — no self-heal, wedged indefinitely).
+ * their natural keys rather than trusting any id handed in. Those keys are matched EXACTLY, from
+ * the single `FIXTURE` list above; an earlier version scanned for the shared "E2E"/"e2e" prefix
+ * instead, which meant a run started in the developer's own dev database would hard-delete any
+ * template, part, step code, customer, user or role that merely began with those letters (Codex
+ * P1, 2026-08-02). Nothing is gained by the looser match: every name this harness produces —
+ * `create()`'s own rows and template-build-and-load.mjs's live-built template alike — is a literal
+ * declared in `FIXTURE`.
+ *
+ * Called unconditionally at the top of `create()`, so a run started right after an aborted one
+ * heals itself instead of throwing on a unique-constraint conflict and never reaching the point
+ * where `fixtures` gets assigned (which is what previously made the *next* run's cleanup silently
+ * do nothing too — no self-heal, wedged indefinitely).
  */
 async function reapLeftovers(): Promise<void> {
   const [templates, parts, stepCodes, customers, users, roles] = await Promise.all([
-    prisma.processTemplate.findMany({ where: { name: { startsWith: "E2E" } }, select: { id: true } }),
-    prisma.part.findMany({ where: { partNumber: { startsWith: "E2E" } }, select: { id: true } }),
-    prisma.processStepCode.findMany({ where: { code: { startsWith: "E2E" } }, select: { id: true } }),
-    prisma.customer.findMany({ where: { code: { startsWith: "E2E" } }, select: { id: true } }),
-    prisma.user.findMany({ where: { username: { startsWith: "e2e" } }, select: { id: true } }),
-    prisma.role.findMany({ where: { name: { startsWith: "E2E" } }, select: { id: true } }),
+    prisma.processTemplate.findMany({
+      where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
+    }),
+    prisma.part.findMany({ where: { partNumber: FIXTURE.partNumber }, select: { id: true } }),
+    prisma.processStepCode.findMany({
+      where: { code: { in: [FIXTURE.stepCodeA, FIXTURE.stepCodeB] } }, select: { id: true },
+    }),
+    prisma.customer.findMany({ where: { code: FIXTURE.customerCode }, select: { id: true } }),
+    prisma.user.findMany({
+      where: { username: { in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername] } }, select: { id: true },
+    }),
+    prisma.role.findMany({
+      where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName] } }, select: { id: true },
+    }),
   ]);
   const templateIds = templates.map((t) => t.id);
   const partIds = parts.map((p) => p.id);
@@ -146,27 +187,35 @@ async function reapLeftovers(): Promise<void> {
  * customer + part (flows 1-4 build on this one part), two process step codes (one carrying a
  * NUMBER + CHECKBOX field, for the typed-fields flow; one plain text-only, for template-build's
  * second step), a second template with no matching name (so processes-list's search
- * demonstrably narrows something away), and a restricted role/user (parts.view + processes.view
- * only) for the permission-gating and processes-list flows. Everything here is prefixed "E2E" so
- * cleanup() below — and a human skimming the dev DB — can tell fixture rows from real data at a
- * glance. Self-healing (see reapLeftovers): a prior run's leftovers are cleared first, so this is
- * idempotent across runs even when the previous one never reached its own cleanup.
+ * demonstrably narrows something away), and two role/user pairs: a full-permission one for flows
+ * 1-4 and a restricted one (parts.view + processes.view only) for the permission-gating and
+ * processes-list flows. Everything here is prefixed "E2E" so cleanup() below — and a human
+ * skimming the dev DB — can tell fixture rows from real data at a glance. Self-healing (see
+ * reapLeftovers): a prior run's leftovers are cleared first, so this is idempotent across runs
+ * even when the previous one never reached its own cleanup.
+ *
+ * The full-permission user exists rather than the flows just signing in as the seeded `admin`
+ * (Codex, 2026-08-02): README §"first run" tells the developer to change that password after
+ * first login, and a harness hardcoding `admin`/`admin` breaks for everyone who follows it. It
+ * also gives cleanup() a user id to delete sessions for — every login writes a Session row, and
+ * `getSessionUser` only rejects expired sessions, it never deletes them, so the four flows that
+ * used to sign in as `admin` leaked four session rows into the dev DB on every single run.
  */
 async function create(): Promise<Fixtures> {
   await reapLeftovers();
 
   const customer = await prisma.customer.create({
-    data: { code: "E2ECUST", name: "E2E Test Customer" },
+    data: { code: FIXTURE.customerCode, name: "E2E Test Customer" },
   });
   const part = await prisma.part.create({
     data: {
-      customerId: customer.id, partNumber: "E2E-PART-1", name: "E2E Test Part",
+      customerId: customer.id, partNumber: FIXTURE.partNumber, name: "E2E Test Part",
       eachWeight: "12.5000",
     },
   });
   const stepCodeA = await prisma.processStepCode.create({
     data: {
-      code: "E2E-QNCH", name: "E2E Quench",
+      code: FIXTURE.stepCodeA, name: "E2E Quench",
       fields: {
         create: [
           { label: "Temperature", type: "NUMBER", unit: "°F", sort: 0 },
@@ -176,22 +225,36 @@ async function create(): Promise<Fixtures> {
     },
   });
   const stepCodeB = await prisma.processStepCode.create({
-    data: { code: "E2E-WASH", name: "E2E Hot Wash" },
+    data: { code: FIXTURE.stepCodeB, name: "E2E Hot Wash" },
   });
   const decoyTemplate = await prisma.processTemplate.create({
-    data: { name: "E2E Decoy Template" },
+    data: { name: FIXTURE.decoyTemplateName },
   });
-  const restrictedPassword = "e2eRestricted123!";
+  // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
+  // both the parts/processes screens and the admin step-codes screen, so anything narrower would
+  // have to be kept in step with them by hand.
+  const adminRole = await prisma.role.create({
+    data: {
+      name: FIXTURE.adminRoleName,
+      permissions: { create: ALL_PERMISSIONS.map((permission) => ({ permission })) },
+    },
+  });
+  const adminUser = await prisma.user.create({
+    data: {
+      username: FIXTURE.adminUsername, displayName: "E2E Admin User",
+      passwordHash: await hashPassword(FIXTURE.adminPassword), roleId: adminRole.id,
+    },
+  });
   const restrictedRole = await prisma.role.create({
     data: {
-      name: "E2E Restricted Role",
+      name: FIXTURE.restrictedRoleName,
       permissions: { create: [{ permission: "parts.view" }, { permission: "processes.view" }] },
     },
   });
   const restrictedUser = await prisma.user.create({
     data: {
-      username: "e2e_restricted", displayName: "E2E Restricted User",
-      passwordHash: await hashPassword(restrictedPassword), roleId: restrictedRole.id,
+      username: FIXTURE.restrictedUsername, displayName: "E2E Restricted User",
+      passwordHash: await hashPassword(FIXTURE.restrictedPassword), roleId: restrictedRole.id,
     },
   });
   return {
@@ -200,8 +263,11 @@ async function create(): Promise<Fixtures> {
     stepCodeA: { id: stepCodeA.id, code: stepCodeA.code, name: stepCodeA.name },
     stepCodeB: { id: stepCodeB.id, code: stepCodeB.code, name: stepCodeB.name },
     decoyTemplateId: decoyTemplate.id, decoyTemplateName: decoyTemplate.name,
+    liveTemplateName: FIXTURE.liveTemplateName,
+    adminRoleId: adminRole.id, adminUserId: adminUser.id,
+    adminUsername: adminUser.username, adminPassword: FIXTURE.adminPassword,
     restrictedRoleId: restrictedRole.id, restrictedUserId: restrictedUser.id,
-    restrictedUsername: restrictedUser.username, restrictedPassword,
+    restrictedUsername: restrictedUser.username, restrictedPassword: FIXTURE.restrictedPassword,
   };
 }
 
@@ -221,19 +287,23 @@ type CleanupPayload = Fixtures & { templateIds: string[] };
 /**
  * Deletes every row `create()` and the flows themselves produced. `templateIds` carries the
  * id(s) of any template a flow created live through the UI (template-build-and-load's
- * "E2E Austemper") — unknown until that flow runs, unlike everything else `create()` already
- * knows about. Id-driven (unlike reapLeftovers' lookup-driven scan) because the caller already
- * has the exact ids from this run's own `create()` result.
+ * `FIXTURE.liveTemplateName`) — its NAME is known up front, but its id only once that flow has
+ * run. Id-driven (unlike reapLeftovers' name-driven lookup) because the caller already has the
+ * exact ids from this run's own `create()` result.
  */
 async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
-  const { partId, customerId, stepCodeA, stepCodeB, restrictedRoleId, restrictedUserId } = payload;
+  const { partId, customerId, stepCodeA, stepCodeB } = payload;
   const templateIds = [...new Set([payload.decoyTemplateId, ...payload.templateIds])];
 
   await deletePartProcessData([partId]);
   await deleteTemplatesAndSteps(templateIds);
   await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
   await deletePartsAndCustomers([partId], [customerId]);
-  await deleteUsersAndRoles([restrictedUserId], [restrictedRoleId]);
+  // Both users, not just the restricted one: deleteUsersAndRoles clears each user's Session rows
+  // first, which is the only thing that clears the sessions the flows' own logins created.
+  await deleteUsersAndRoles(
+    [payload.adminUserId, payload.restrictedUserId], [payload.adminRoleId, payload.restrictedRoleId],
+  );
 
   return { ok: true };
 }

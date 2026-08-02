@@ -206,9 +206,12 @@ async function runFlow(browser, flow, ctx, results) {
   let ok = true;
   let error = null;
   try {
+    // Both sets of credentials come from the fixtures this run created. The full-permission ones
+    // used to be a hardcoded `admin`/`admin` — the seeded pair README §"first run" tells you to
+    // change after first login, so the four flows using them broke for any developer who did.
     const creds = flow.as === "restricted"
       ? { username: ctx.fixtures.restrictedUsername, password: ctx.fixtures.restrictedPassword }
-      : { username: "admin", password: "admin" };
+      : { username: ctx.fixtures.adminUsername, password: ctx.fixtures.adminPassword };
     await login(page, ctx.baseURL, creds.username, creds.password);
     await shot("logged-in");
 
@@ -256,7 +259,7 @@ async function main() {
     state.fixtures = runDbScript("create");
     console.log(`  customer ${state.fixtures.customerCode}, part ${state.fixtures.partNumber}, ` +
       `step codes ${state.fixtures.stepCodeA.code}/${state.fixtures.stepCodeB.code}, ` +
-      `restricted user ${state.fixtures.restrictedUsername}`);
+      `users ${state.fixtures.adminUsername}/${state.fixtures.restrictedUsername}`);
 
     console.log(`Starting next dev on port ${PORT}...`);
     state.devServer = startDevServer();
