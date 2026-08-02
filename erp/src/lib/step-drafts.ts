@@ -94,3 +94,26 @@ export function isStepDirty(original: StepDraft | undefined, edits: StepEdits | 
   const { instruction, values } = pendingChanges(original, edits);
   return instruction !== undefined || values.length > 0;
 }
+
+/**
+ * The overlay a step should keep after a save, given exactly what that save submitted.
+ *
+ * Returns `null` when nothing is left to keep. Anything the user typed WHILE the request was in
+ * flight survives, because it no longer equals what was sent: clearing the whole overlay on
+ * success discarded those newer keystrokes and the reload then displayed the submitted values
+ * over them (Codex, PR #22). The controls stay live during a save deliberately — this is a
+ * per-step editor and blocking the row for a round trip is worse than reconciling afterwards.
+ */
+export function editsAfterSave(
+  edits: StepEdits | undefined, submitted: { instruction?: string; values: { fieldDefId: string; value: string }[] },
+): StepEdits | null {
+  if (!edits) return null;
+  const values = new Map(edits.values);
+  for (const { fieldDefId, value } of submitted.values) {
+    if (values.get(fieldDefId) === value) values.delete(fieldDefId);
+  }
+  const keepInstruction =
+    edits.instruction !== undefined && edits.instruction !== submitted.instruction;
+  if (!keepInstruction && values.size === 0) return null;
+  return { instruction: keepInstruction ? edits.instruction : undefined, values };
+}

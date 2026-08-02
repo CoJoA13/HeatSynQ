@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildStepOriginals, isStepDirty, pendingChanges, shownInstruction, shownValue, type StepEdits,
+  buildStepOriginals, editsAfterSave, isStepDirty, pendingChanges, shownInstruction, shownValue,
+  type StepEdits,
 } from "@/lib/step-drafts";
 
 // The draft model behind ProcessStepsSection, extracted so it can be tested at all: the vitest
@@ -100,5 +101,38 @@ describe("composing server state with the user's own edits", () => {
 
   it("treats a step the server no longer describes as having nothing to send", () => {
     expect(pendingChanges(undefined, edits({ instruction: "" }))).toEqual({ values: [] });
+  });
+});
+
+describe("editsAfterSave", () => {
+  it("drops an overlay whose every field was submitted unchanged", () => {
+    const e = edits({ instruction: "sent", values: new Map([["f1", "1700"]]) });
+    expect(editsAfterSave(e, { instruction: "sent", values: [{ fieldDefId: "f1", value: "1700" }] }))
+      .toBeNull();
+  });
+
+  // The regression: the row stays editable during the PATCH, so anything typed after the request
+  // left must survive the success handler. Clearing the whole overlay discarded it, and the
+  // reload then painted the submitted value over the top.
+  it("keeps an instruction typed after the request went out", () => {
+    const e = edits({ instruction: "typed while saving", values: new Map() });
+    expect(editsAfterSave(e, { instruction: "sent", values: [] }))
+      .toEqual({ instruction: "typed while saving", values: new Map() });
+  });
+
+  it("keeps a field value typed after the request went out", () => {
+    const e = edits({ values: new Map([["f1", "1800"]]) });
+    expect(editsAfterSave(e, { values: [{ fieldDefId: "f1", value: "1700" }] }))
+      .toEqual({ instruction: undefined, values: new Map([["f1", "1800"]]) });
+  });
+
+  it("clears only the fields that were submitted, keeping the rest", () => {
+    const e = edits({ values: new Map([["f1", "1700"], ["f2", "later"]]) });
+    expect(editsAfterSave(e, { values: [{ fieldDefId: "f1", value: "1700" }] }))
+      .toEqual({ instruction: undefined, values: new Map([["f2", "later"]]) });
+  });
+
+  it("is a no-op when there was no overlay", () => {
+    expect(editsAfterSave(undefined, { values: [] })).toBeNull();
   });
 });

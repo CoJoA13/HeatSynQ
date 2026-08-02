@@ -366,6 +366,17 @@ describe("process templates service", () => {
       expect(now.getTime()).toBeGreaterThan(prev.getTime());
     });
   });
+  it("refuses a metadata patch that cannot change anything, writing no audit entry", async () => {
+    const { id } = await asSystem(() => createTemplate({ name: "T1" }));
+    const before = (await readAudit("processTemplate", id)).length;
+
+    await expect(asSystem(() => updateTemplate(id, {})))
+      .rejects.toMatchObject({ status: 400, message: /nothing to change/i });
+
+    expect(await readAudit("processTemplate", id)).toHaveLength(before);
+    expect((await getTemplate(id)).name).toBe("T1");
+  });
+
   // The four step mutations claim the template as live through the same updateMany the metadata
   // path uses, rather than trusting the separate assertTemplateLive read at the top. Codex raised
   // this as a live TOCTOU on PR #22 and the stated failure mode did NOT reproduce — the parent

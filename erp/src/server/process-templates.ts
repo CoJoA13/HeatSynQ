@@ -100,6 +100,14 @@ async function claimLiveAndUpdate(
 
 export async function updateTemplate(id: string, input: { name?: string; active?: boolean }): Promise<void> {
   const data = UPDATE.parse(input);
+  // The sibling of updateStep's guard (part-process-steps.ts): every field of UPDATE is optional,
+  // so `PATCH {}` satisfies the schema and reaches auditedUpdate, which returns success and
+  // appends a before-equals-after entry describing a change that never happened. Audit history is
+  // the record this system is built to be trusted on, so a request that changes nothing must not
+  // be able to write to it (Codex, PR #22).
+  if (data.name === undefined && data.active === undefined) {
+    throw new HttpError(400, "Nothing to change — send a name or an active flag");
+  }
   const current = await prisma.processTemplate.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Template not found");
   await withDbErrors({ entity: "Template", conflictField: "name" }, () =>

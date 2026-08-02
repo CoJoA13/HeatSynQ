@@ -4,7 +4,8 @@ import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import {
-  buildStepOriginals, isStepDirty, pendingChanges, shownInstruction, shownValue, type StepEdits,
+  buildStepOriginals, editsAfterSave, isStepDirty, pendingChanges, shownInstruction, shownValue,
+  type StepEdits,
 } from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 
@@ -213,11 +214,16 @@ export function ProcessStepsSection({
       return next;
     });
   }
-  function clearEdits(stepId: string) {
+  // Only what this save actually submitted, and only where it is still what the user has. The
+  // row stays editable during the PATCH by design, so anything typed after the request left must
+  // survive its success handler (see editsAfterSave).
+  function clearSubmittedEdits(
+    stepId: string, submitted: { instruction?: string; values: { fieldDefId: string; value: string }[] },
+  ) {
     setEdits((cur) => {
-      if (!cur.has(stepId)) return cur;
+      const kept = editsAfterSave(cur.get(stepId), submitted);
       const next = new Map(cur);
-      next.delete(stepId);
+      if (kept) next.set(stepId, kept); else next.delete(stepId);
       return next;
     });
   }
@@ -235,11 +241,10 @@ export function ProcessStepsSection({
       const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "PATCH", body: JSON.stringify(patch) });
       onError(null);
-      // Server truth now. Dropping them keeps the step reading clean without relying on the
-      // reload returning byte-identical text, and stops a saved edit masking a later change to
-      // the same field by someone else. Through the cut mapping, since a save can cut N+1.
-      clearEdits(res.stepIdMap[stepId] ?? stepId);
+      // What was submitted is server truth now; anything typed since is not. Through the cut
+      // mapping, since a save against a locked revision cuts N+1 and renumbers the step.
       remapDrafts(res.stepIdMap);
+      clearSubmittedEdits(res.stepIdMap[stepId] ?? stepId, { instruction, values });
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
   }

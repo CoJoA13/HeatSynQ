@@ -151,15 +151,16 @@ function Detail({ id }: { id: string }) {
   }
 
   async function saveBoilerplate(stepId: string) {
+    // Captured before the request, and only dropped afterwards if it is still what the user has:
+    // the textarea stays editable during the PATCH, so text typed after the request went out must
+    // survive its success handler rather than being painted over by the reload (Codex, PR #22).
+    const submitted = boilerplateEdits.get(stepId) ?? "";
     try {
       await api(`/api/process-templates/${id}/steps/${stepId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ boilerplate: boilerplateEdits.get(stepId) ?? "" }),
+        method: "PATCH", body: JSON.stringify({ boilerplate: submitted }),
       });
-      // Server truth now — dropping the edit keeps the step reading clean without depending on
-      // the reload returning byte-identical text.
       setBoilerplateEdits((cur) => {
-        if (!cur.has(stepId)) return cur;
+        if (cur.get(stepId) !== submitted) return cur; // typed since — keep it
         const next = new Map(cur);
         next.delete(stepId);
         return next;
