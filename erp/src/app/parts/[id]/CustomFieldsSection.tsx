@@ -78,9 +78,25 @@ export function CustomFieldsSection({
           <label key={r.fieldId} className="block text-sm">
             {r.name}{!r.active && " (inactive)"}
             {r.type === "CHECKBOX" ? (
-              <input type="checkbox" checked={r.value === "true"} disabled={!canEdit.allowed} title={canEdit.title}
-                     onChange={(e) => setValue(r.fieldId, e.target.checked ? "true" : "false")}
-                     className="ml-2" />
+              <span className="ml-2 inline-flex items-center gap-2">
+                <input type="checkbox" checked={r.value === "true"} disabled={!canEdit.allowed} title={canEdit.title}
+                       onChange={(e) => setValue(r.fieldId, e.target.checked ? "true" : "false")} />
+                {/* H3 (Codex round 3 review): a checkbox can only ever land on "true" or "false"
+                    once touched, and since "false" is non-empty it counts as usage for the
+                    field-def delete/type-change blockers (setPartFieldValues/partFieldDefBlockers)
+                    — an unresolvable block, since nothing else in this control can ever produce
+                    "". Shown only once there is something to clear, so it isn't dead space on
+                    every already-unset checkbox field. Stages "" the same way every other edit
+                    here does (setValue → dirty diff → Save), no server change needed: "" always
+                    validates regardless of type (validateValue, src/server/part-field-values.ts). */}
+                {r.value !== "" && (
+                  <button type="button" onClick={() => setValue(r.fieldId, "")}
+                          disabled={!canEdit.allowed} title="Clear this field (unset)"
+                          className="text-xs text-slate-600 underline disabled:cursor-not-allowed disabled:text-slate-400">
+                    clear
+                  </button>
+                )}
+              </span>
             ) : r.type === "DATE" ? (
               <input type="date" value={r.value} readOnly={!canEdit.allowed} title={canEdit.title}
                      onChange={(e) => setValue(r.fieldId, e.target.value)}
