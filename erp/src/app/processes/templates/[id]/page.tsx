@@ -35,6 +35,7 @@ function Detail({ id }: { id: string }) {
   const [codes, setCodes] = useState<StepCodeOption[]>([]);
   const [codesReady, setCodesReady] = useState(false);
   const [addCodeId, setAddCodeId] = useState("");
+  const [togglingActive, setTogglingActive] = useState(false);
 
   // Per-step boilerplate draft, keyed by stepId. Rebuilt from server truth (`template.steps`)
   // whenever the template reloads — the ProcessStepsSection.tsx `drafts`/`originals` precedent,
@@ -87,7 +88,14 @@ function Detail({ id }: { id: string }) {
   // persisted. Rolled back to server truth on failure (the customers/[id]/page.tsx `save()`
   // precedent) — reload BEFORE setting the error, since a successful load() resets `error` to
   // null and would otherwise wipe a message set before it (§5.13).
+  //
+  // One at a time (Codex, PR #22): the control stays enabled through the PATCH otherwise, and two
+  // clicks faster than a round trip issue two unordered updates. If the first lands second the
+  // database keeps the first click's value while the checkbox shows the second's — and a
+  // successful toggle deliberately doesn't reload, so nothing would ever reveal the divergence.
   async function toggleActive(active: boolean) {
+    if (togglingActive) return;
+    setTogglingActive(true);
     setTemplate((cur) => (cur ? { ...cur, active } : cur));
     try {
       await api(`/api/process-templates/${id}`, { method: "PATCH", body: JSON.stringify({ active }) });
@@ -95,6 +103,8 @@ function Detail({ id }: { id: string }) {
     } catch (e) {
       await load().catch(() => {});
       setError((e as Error).message);
+    } finally {
+      setTogglingActive(false);
     }
   }
 
@@ -193,7 +203,9 @@ function Detail({ id }: { id: string }) {
       )}
 
       <label className="mb-4 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={template.active} disabled={!canEdit.allowed} title={canEdit.title}
+        <input type="checkbox" checked={template.active}
+               disabled={!canEdit.allowed || togglingActive}
+               title={togglingActive ? "Saving…" : canEdit.title}
                onChange={(e) => toggleActive(e.target.checked)} />
         Active
       </label>
