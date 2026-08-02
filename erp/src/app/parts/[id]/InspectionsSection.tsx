@@ -109,6 +109,11 @@ export function InspectionsSection({
   async function add() {
     if (!draft.inspectionCodeId) return;
     try {
+      // F6: rows.length duplicates a sort value after a mid-list delete — deleting row 0 of 3
+      // leaves rows at sort {1, 2}, and rows.length (now 2) collides with the row still at sort
+      // 2 instead of landing after it. The highest sort actually present, plus one, always lands
+      // strictly after every row on screen regardless of gaps left by earlier deletes.
+      const nextSort = rows.length ? Math.max(...rows.map((r) => r.sort)) + 1 : 0;
       await api(`/api/parts/${partId}/inspections`, {
         method: "POST",
         body: JSON.stringify({
@@ -117,7 +122,7 @@ export function InspectionsSection({
           min: draft.min === "" ? undefined : draft.min,
           max: draft.max === "" ? undefined : draft.max,
           location: draft.location,
-          sort: rows.length,
+          sort: nextSort,
         }),
       });
       setDraft(emptyDraft);
