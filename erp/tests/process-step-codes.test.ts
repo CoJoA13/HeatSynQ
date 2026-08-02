@@ -207,6 +207,48 @@ describe("process step code routes", () => {
     expect(res.status).toBe(400);
   });
 
+  // `fields` is destructured out of `scalars` whatever its type, and `hasFields` only asks whether
+  // it is an array — so a present-but-malformed `fields` used to vanish while the scalar half of
+  // the same PUT applied and returned 200. That is the half-apply the route's atomic contract
+  // exists to prevent, and the caller had no way to tell its field changes were dropped (Codex,
+  // PR #22). Absent `fields` is still a legal scalars-only PUT; JSON cannot carry an `undefined`
+  // value, so "not undefined" is exactly "the key was present".
+  it("rejects a malformed fields value instead of dropping it and applying the scalars", async () => {
+    const cookie = await signInWith(["admin.edit"]);
+
+    for (const malformed of [null, {}, "nope", 7] as const) {
+      const { id } = await createStepCode({ code: `HT-${String(malformed)}`, name: "Austenitize" });
+      await setStepFields(id, [{ label: "Temperature", type: "NUMBER", sort: 1 }]);
+
+      const res = await updateRoute(new Request(`http://t/api/admin/step-codes/${id}`, {
+        method: "PUT", headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Renamed", fields: malformed }),
+      }), idCtx(id));
+      expect(res.status).toBe(400);
+
+      // Neither half applied: the name is untouched and the field set is untouched.
+      const code = (await listStepCodes()).find((c) => c.id === id);
+      expect(code?.name).toBe("Austenitize");
+      expect(code?.fields.map((f) => f.label)).toEqual(["Temperature"]);
+    }
+  });
+
+  it("still accepts a scalars-only PUT that omits fields entirely", async () => {
+    const cookie = await signInWith(["admin.edit"]);
+    const { id } = await createStepCode({ code: "HT-02", name: "Austenitize" });
+    await setStepFields(id, [{ label: "Temperature", type: "NUMBER", sort: 1 }]);
+
+    const res = await updateRoute(new Request(`http://t/api/admin/step-codes/${id}`, {
+      method: "PUT", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Renamed" }),
+    }), idCtx(id));
+    expect(res.status).toBe(200);
+
+    const code = (await listStepCodes()).find((c) => c.id === id);
+    expect(code?.name).toBe("Renamed");
+    expect(code?.fields.map((f) => f.label)).toEqual(["Temperature"]);
+  });
+
   it("a PUT with valid fields and an invalid glAccountId applies neither and writes no audit row", async () => {
     const cookie = await signInWith(["admin.edit"]);
     const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
