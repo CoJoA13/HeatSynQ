@@ -41,11 +41,32 @@ const FIXTURE = {
   restrictedPassword: "e2eRestricted123!",
 } as const;
 
+/**
+ * The database name alone does not identify the dev database. `docker-compose.yml`'s prod profile
+ * runs the app against `postgresql://erp:…@db:5432/erp` — the same name this checks for — so a
+ * guard that only read the pathname would have waved through a production `DATABASE_URL` while
+ * calling itself proof the harness could never touch the wrong database (Codex P1, PR #22).
+ * Everything below this line hard-deletes rows and then writes fixtures, so the guard has to be
+ * the strict one.
+ *
+ * Host is the discriminator that actually holds: the dev database is reached on localhost from
+ * `.env.example`, while every non-dev deployment reaches it by service or hostname. A legitimately
+ * non-local dev database is refused rather than given an escape hatch — an override on a
+ * destructive guard is the kind of thing that gets set once and never unset.
+ */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
 function assertDevDb(url: string): void {
-  const dbName = new URL(url).pathname.replace(/^\//, "");
-  if (dbName !== "erp") {
+  const parsed = new URL(url);
+  const dbName = parsed.pathname.replace(/^\//, "");
+  const host = parsed.hostname;
+  if (dbName !== "erp" || !LOCAL_HOSTS.has(host)) {
     throw new Error(
-      `e2e fixtures must run against the dev database "erp", not "${dbName}" — refusing to touch it.`,
+      `e2e fixtures must run against the LOCAL dev database — expected database "erp" on ` +
+      `localhost, got "${dbName}" on "${host}". Refusing to touch it: this script hard-deletes ` +
+      `fixture rows and then writes more, and the production compose profile uses the database ` +
+      `name "erp" too, so the name on its own proves nothing. Point DATABASE_URL at your local ` +
+      `dev database and re-run.`,
     );
   }
 }
@@ -293,7 +314,18 @@ type CleanupPayload = Fixtures & { templateIds: string[] };
  */
 async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   const { partId, customerId, stepCodeA, stepCodeB } = payload;
-  const templateIds = [...new Set([payload.decoyTemplateId, ...payload.templateIds])];
+  // Name-resolved as well as id-driven (Codex, PR #22). `templateIds` only ever holds a live-built
+  // template's id if its flow got far enough to read it back off the URL — a failure between the
+  // POST and that line leaves the template created but unregistered, and an id-only cleanup walks
+  // straight past it. Its NAME is known up front either way, so resolving it here means the run
+  // that created the row is the run that removes it, instead of leaving it for whenever a later
+  // run's reapLeftovers happens to come along.
+  const byName = await prisma.processTemplate.findMany({
+    where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
+  });
+  const templateIds = [...new Set([
+    payload.decoyTemplateId, ...payload.templateIds, ...byName.map((t) => t.id),
+  ])];
 
   await deletePartProcessData([partId]);
   await deleteTemplatesAndSteps(templateIds);
