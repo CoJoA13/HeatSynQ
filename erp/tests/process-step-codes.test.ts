@@ -233,6 +233,34 @@ describe("process step code routes", () => {
     }
   });
 
+  // A stale tab keeps a deleted code's editor on screen. Its next PUT used to succeed, because
+  // the update matched on `id` alone with no liveness filter — so scalars and field definitions
+  // were mutated under a soft-deleted code, and an `update` audit entry was written after the
+  // delete entry, describing a change to a row nothing can see (Codex, PR #22). The code has no
+  // undelete path, so nothing about that write was ever going to become visible again.
+  it("refuses a PUT against a soft-deleted code instead of mutating it invisibly", async () => {
+    const cookie = await signInWith(["admin.edit"]);
+    const { id } = await createStepCode({ code: "HT-01", name: "Austenitize" });
+    await setStepFields(id, [{ label: "Temperature", type: "NUMBER", sort: 1 }]);
+    await deleteStepCode(id);
+    const auditAfterDelete = (await readAudit("processStepCode", id)).length;
+
+    for (const body of [{ name: "Renamed" }, { fields: [{ label: "Time", type: "NUMBER", sort: 1 }] }]) {
+      const res = await updateRoute(new Request(`http://t/api/admin/step-codes/${id}`, {
+        method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify(body),
+      }), idCtx(id));
+      expect(res.status).toBe(404);
+    }
+
+    const row = await prisma.processStepCode.findUniqueOrThrow({
+      where: { id }, include: { fields: true },
+    });
+    expect(row.name).toBe("Austenitize");
+    expect(row.fields.map((f) => f.label)).toEqual(["Temperature"]);
+    // No audit entry describing a change to a row that is already deleted.
+    expect(await readAudit("processStepCode", id)).toHaveLength(auditAfterDelete);
+  });
+
   it("still accepts a scalars-only PUT that omits fields entirely", async () => {
     const cookie = await signInWith(["admin.edit"]);
     const { id } = await createStepCode({ code: "HT-02", name: "Austenitize" });

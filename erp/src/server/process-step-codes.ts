@@ -298,7 +298,15 @@ export async function updateStepCodeWithFields(id: string, input: StepCodeUpdate
       // so the field definitions are left untouched either way.
       if (data.glAccountId) await assertRefExists("glAccount", data.glAccountId, tx);
       await auditedUpdate("processStepCode", id, async () => {
-        await tx.processStepCode.update({ where: { id }, data });
+        // `deletedAt: null` in the WHERE, not a prior read: it is evaluated as part of the UPDATE
+        // itself, so a concurrent soft delete either loses the row or wins it outright — and a
+        // stale tab whose code was deleted long ago gets the same answer. Without it the update
+        // matched on id alone, so scalars and (via syncStepFields below) field definitions were
+        // mutated under a soft-deleted code and audited as an update after its own delete entry,
+        // describing a change to a row nothing can ever see again (Codex, PR #22). No match is
+        // P2025, which withDbErrors turns into the 404 this deserves; throwing here also stops
+        // auditedUpdate from writing anything.
+        await tx.processStepCode.update({ where: { id, deletedAt: null }, data });
         if (parsedFields !== undefined) await syncStepFields(tx, id, parsedFields);
       }, { tx });
     }, needsSerializable ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
