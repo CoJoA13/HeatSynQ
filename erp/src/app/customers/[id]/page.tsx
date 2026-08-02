@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "@/lib/fetcher";
+import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 
 type Customer = {
   id: string; code: string; name: string; parentId: string | null; parentCode: string | null;
@@ -79,6 +80,12 @@ function CustomerDetail({ id }: { id: string }) {
   const [addingAddress, setAddingAddress] = useState(false);
   const [addingContact, setAddingContact] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // H4 (Codex round 3 review, owner ruling 2026-08-01, amends spec §11): deleteCustomer's parts
+  // refusal used to be a bare count with nothing to click through — §11's "the parts list already
+  // names every blocker" premise didn't hold (no true customer filter, inactive parts hidden by
+  // default). Same shape as part-fields' `blocked` state (admin/part-fields/page.tsx): populated
+  // only from the delete refusal below, cleared on dismiss.
+  const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
   // F4: a failed Terms or parent-options fetch used to report into `error`, the same state
   // `load()` resets to null on every successful customer refresh (below, and again after save()/
   // saveParent()/call() succeed). That refresh runs far more often than these two effects, so the
@@ -318,7 +325,23 @@ function CustomerDetail({ id }: { id: string }) {
       await api(`/api/customers/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
       router.push("/customers");
     } catch (e) {
-      setError((e as Error).message);
+      // H4: a refusal naming live parts is not a dead end (part-fields/page.tsx's blocked-delete
+      // handler precedent) — fetch the list this message's count refers to and make it
+      // exportable, rather than leaving the admin with only a number. Matched on both "still
+      // has" and "part(s)" so the unrelated "still has child customers" refusal (no blockers
+      // route exists for that one) falls straight through to the plain error banner below.
+      const message = (e as Error).message;
+      if (e instanceof ApiError && e.status === 400 && message.includes("still has") && message.includes("part(s)")) {
+        try {
+          const list = await api<Blocker[]>(`/api/customers/${id}/blockers`);
+          if (list.length) { setBlocked({ list }); setError(null); return; }
+        } catch (listErr) {
+          setError(`${message} — the list of what's using it could not be loaded ` +
+            `(${(listErr as Error).message}). Try again.`);
+          return;
+        }
+      }
+      setError(message);
     }
   }
   async function toggleContactFlag(ct: Contact, key: (typeof CONTACT_FLAGS)[number]["key"], value: boolean) {
@@ -414,6 +437,16 @@ function CustomerDetail({ id }: { id: string }) {
           silently misrepresent stored data) until the page is reloaded. */}
       {optionsError && (
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{optionsError}</p>
+      )}
+      {blocked && (
+        <BlockerPanel
+          label="customer"
+          rowName={`${c.code} — ${c.name}`}
+          list={blocked.list}
+          action="delete"
+          exportHref={`/api/customers/${id}/blockers/export`}
+          onDismiss={() => setBlocked(null)}
+        />
       )}
 
       <section className="mb-6 rounded border bg-white p-4">

@@ -80,7 +80,8 @@ describe("customer child-route scoping", () => {
   it("deleteCustomer refuses while live parts exist", async () => {
     const id = (await createCustomer({ code: "ACME", name: "Acme" })).id;
     await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
-    await expect(deleteCustomer(id, "cleanup")).rejects.toThrow("That customer still has parts");
+    // H4 (Codex round 3 review): the refusal now carries the count.
+    await expect(deleteCustomer(id, "cleanup")).rejects.toThrow("That customer still has 1 part(s)");
   });
 
   it("deleteCustomer succeeds once its parts are deleted", async () => {

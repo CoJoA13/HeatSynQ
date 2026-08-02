@@ -3,10 +3,17 @@ import { truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { GET as list, POST as create } from "@/app/api/customers/route";
 import { GET as detail, PUT as update, DELETE as remove } from "@/app/api/customers/[id]/route";
+import { GET as blockersRoute } from "@/app/api/customers/[id]/blockers/route";
+import { GET as blockersExportRoute } from "@/app/api/customers/[id]/blockers/export/route";
 import { createCustomer } from "@/server/customers";
+import { createPart } from "@/server/parts";
 
 const noParams = { params: Promise.resolve({}) };
 const withId = (id: string) => ({ params: Promise.resolve({ id }) });
+
+function getReq(url: string, cookie?: string): Request {
+  return new Request(url, { headers: cookie ? { cookie } : {} });
+}
 
 describe("customer routes", () => {
   beforeEach(async () => await truncateAll());
@@ -86,5 +93,37 @@ describe("customer routes", () => {
     }), noParams);
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/already exists/i);
+  });
+
+  // H4 (Codex round 3 review): mirrors the part-fields blockers/export route tests
+  // (parts-routes.test.ts) — same 401/403/200 shape, same xlsx content-type and disposition.
+  it("blockers and blockers/export: 401, 403, 200 with the part list, xlsx content-type", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    const { id: partId } = await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
+
+    expect((await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`), withId(id))).status).toBe(401);
+    expect((await blockersExportRoute(getReq(`http://t/api/customers/${id}/blockers/export`), withId(id))).status)
+      .toBe(401);
+
+    const viewer = await signInWith(["customers.view"], "cust-blockers-viewer-1");
+    const blockers = await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`, viewer), withId(id));
+    expect(blockers.status).toBe(200);
+    expect(await blockers.json()).toEqual([
+      { entityLabel: "Part", name: "ACME · 12345", id: partId, href: `/parts/${partId}` },
+    ]);
+
+    const wrong = await signInWith(["admin.view"], "cust-blockers-wrong-1");
+    expect((await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`, wrong), withId(id))).status)
+      .toBe(403);
+    expect((await blockersExportRoute(getReq(`http://t/api/customers/${id}/blockers/export`, wrong), withId(id))).status)
+      .toBe(403);
+
+    const exportRes = await blockersExportRoute(
+      getReq(`http://t/api/customers/${id}/blockers/export`, viewer), withId(id));
+    expect(exportRes.status).toBe(200);
+    expect(exportRes.headers.get("content-type")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(exportRes.headers.get("content-disposition")).toContain("attachment");
+    expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
   });
 });

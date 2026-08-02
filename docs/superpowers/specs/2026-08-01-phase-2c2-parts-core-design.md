@@ -457,9 +457,11 @@ assert content, not just status codes.
 
 - **`PartFieldValue` has no soft delete** and `PartSpecification` has no `active` flag — §4's
   rationale; recorded here so a reviewer doesn't read either as an oversight.
-- **`deleteCustomer`'s parts refusal is a count, not a blocker list** — the parts list filtered
+- ~~**`deleteCustomer`'s parts refusal is a count, not a blocker list** — the parts list filtered
   by customer already names every blocker with links; duplicating that into the guard adds
-  machinery without adding discoverability.
+  machinery without adding discoverability.~~ **Amended 2026-08-01 (owner ruling, PR #13
+  review):** the refusal now carries a blocker list — the count-only premise (a customer-filtered
+  parts list) did not hold, and inactive parts blocked deletion while hidden by default.
 - **Breaks are edited only on the detail page** (not in paste, not in export) — child rows
   follow the addresses/contacts boundary everywhere.
 - **`threshold` is `Decimal(12,2)`** — piece counts and pound thresholds both fit; 4 decimals

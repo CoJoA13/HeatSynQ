@@ -10,6 +10,7 @@ import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
 import type { PasteResult } from "./paste";
+import type { Blocker } from "./reference-blockers";
 
 export type CustomerRow = {
   id: string; code: string; name: string;
@@ -206,6 +207,27 @@ export async function updateCustomer(id: string, input: Record<string, unknown>)
 }
 
 /**
+ * Every LIVE part belonging to this customer, regardless of `active` — deliberately unfiltered,
+ * because inactive parts are hidden from the parts list by default but still count against
+ * deleteCustomer's guard below, and because the parts list has no true customer filter to begin
+ * with. Both are exactly the gap that made §11's original "a count, not a blocker list" call
+ * wrong (owner ruling 2026-08-01, PR #13 round 3 review — see the dated note on that bullet).
+ * Ordered by partNumber, named the same way partFieldDefBlockers names a Part blocker: a Part is
+ * (customer, partNumber), never a bare name (2C-1 spec §9) — and since every row here belongs to
+ * THIS one customer, its own code is what every name shares.
+ */
+export async function customerPartBlockers(customerId: string): Promise<Blocker[]> {
+  const parts = await prisma.part.findMany({
+    where: { customerId, deletedAt: null },
+    select: { id: true, partNumber: true, customer: { select: { code: true } } },
+    orderBy: { partNumber: "asc" },
+  });
+  return parts.map((p) => ({
+    entityLabel: "Part", name: `${p.customer.code} · ${p.partNumber}`, id: p.id, href: `/parts/${p.id}`,
+  }));
+}
+
+/**
  * `reason` is required, not optional — spec §9: "destructive-ish actions require a reason". This
  * one qualifies on three counts: it soft-deletes every address and contact along with the row,
  * it frees the `code` for reuse by a future customer that will be unrelated to this one, and it
@@ -240,11 +262,14 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     const children = await tx.customer.count({ where: { parentId: id, deletedAt: null } });
     if (children > 0) throw new HttpError(400, "That customer still has child customers");
 
-    // A count, not a blocker list (spec §11): the parts list filtered by this customer already
-    // names every part with links, so this guard only needs to say no and let that screen answer
-    // "which ones".
+    // The guard itself stays a count, read in-tx exactly as F1 fixed it — only the message
+    // changed (H4, PR #13 round 3 review, amends §11): §11's original call assumed the parts
+    // list already named every blocker with links, but there is no true customer filter on that
+    // list, and inactive parts block deletion while hidden from it by default. The count still
+    // carries the refusal here; `customerPartBlockers` above is the separate, on-demand query
+    // the /blockers route serves so the UI can show what those parts actually are.
     const parts = await tx.part.count({ where: { customerId: id, deletedAt: null } });
-    if (parts > 0) throw new HttpError(400, "That customer still has parts");
+    if (parts > 0) throw new HttpError(400, `That customer still has ${parts} part(s)`);
 
     // Addresses and contacts have no meaning without their parent, so they are soft-deleted
     // alongside it, in the same transaction and through the same audited* helpers as every other
