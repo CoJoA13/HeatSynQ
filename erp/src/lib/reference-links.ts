@@ -1,19 +1,31 @@
 // Pure constants — safe to import from client components (no server imports).
 import type { ReferenceKind } from "./reference-constants";
 
+/** Everything `findBlockers`/`assertRefExists` can be asked about: every `ReferenceKind` plus
+ *  the non-reference targets that share the same delete-guard machinery (Phase 2C-3 adds
+ *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS). */
+export type BlockerTarget = ReferenceKind | "processStepCode";
+
+/** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
+ *  `REFERENCE_LABELS`. Kept separate rather than folded into `REFERENCE_LABELS` because that
+ *  table is typed `Record<ReferenceKind, ...>` and widening it would let a reference kind be
+ *  looked up here by mistake. */
+export const TARGET_LABELS: Record<"processStepCode", string> = { processStepCode: "process step code" };
+
 /** Models that hold a foreign key pointing at a reference table. */
 export type ReferenceLinkModel =
   | "customer" | "processStepCode" | "paymentType" | "inspectionCode"
-  | "part" | "partSpecification" | "partInspection";
+  | "part" | "partSpecification" | "partInspection"
+  | "partProcessStep" | "processTemplateStep";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
   model: ReferenceLinkModel;
   /** The FK column on that model. */
   column: string;
-  /** The reference kind it points at. `ReferenceKind`, NOT `PickListKind` — a link may target
+  /** The target this link points at. `BlockerTarget`, NOT `PickListKind` — a link may target
    *  `glAccount`, which is deliberately not served by the pick-list route. */
-  targetKind: ReferenceKind;
+  targetKind: BlockerTarget;
   /** Column header wherever this FK is displayed or exported. */
   label: string;
   /** How a blocker row names its own kind in the blocked-delete list. */
@@ -32,6 +44,9 @@ export type ReferenceLink = {
    *  parent (partInspection → part) returns the parent's id; href, detailPath and dedupe all
    *  use it. */
   blockerId?: (row: Record<string, unknown>) => string;
+  /** Filter selecting the LIVE blocker rows. Defaults to `{ deletedAt: null }`; models whose
+   *  liveness is inherited from a parent override it. */
+  liveWhere?: Record<string, unknown>;
 };
 
 /** A Part is (customer, partNumber) — never a bare name (2C-1 spec §9). */
@@ -70,11 +85,23 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Inspection code", ...PART_VIA_CHILD },
   { model: "partInspection", column: "scaleId", targetKind: "inspectionScale",
     label: "Scale", ...PART_VIA_CHILD },
+  { model: "partProcessStep", column: "codeId", targetKind: "processStepCode",
+    label: "Step code", entityLabel: "Part", detailPath: (id) => `/parts/${id}`,
+    liveWhere: { revision: { is: { part: { is: { deletedAt: null } } } } },
+    include: { revision: { select: { part: { select: { id: true, partNumber: true, customer: { select: { code: true } } } } } } },
+    blockerId: (r) => String(((r.revision as { part: { id: string } }).part).id),
+    displayName: (r) => partLabel((r.revision as { part: unknown }).part) },
+  { model: "processTemplateStep", column: "codeId", targetKind: "processStepCode",
+    label: "Step code", entityLabel: "Template", detailPath: (id) => `/processes/templates/${id}`,
+    liveWhere: { template: { is: { deletedAt: null } } },
+    include: { template: { select: { id: true, name: true } } },
+    blockerId: (r) => String((r.template as { id: string }).id),
+    displayName: (r) => String((r.template as { name: string }).name) },
 ];
 
-/** Everything pointing AT this kind — the delete guard's direction. */
-export function linksTargeting(kind: ReferenceKind): ReferenceLink[] {
-  return REFERENCE_LINKS.filter((l) => l.targetKind === kind);
+/** Everything pointing AT this target — the delete guard's direction. */
+export function linksTargeting(target: BlockerTarget): ReferenceLink[] {
+  return REFERENCE_LINKS.filter((l) => l.targetKind === target);
 }
 
 /** Everything this model points at — name resolution's direction. */

@@ -1,7 +1,6 @@
 import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
-import { linksTargeting } from "../lib/reference-links";
-import type { ReferenceKind } from "../lib/reference-constants";
+import { linksTargeting, type BlockerTarget } from "../lib/reference-links";
 
 export type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
 
@@ -21,19 +20,22 @@ type Db = Prisma.TransactionClient;
  *
  *  Computed on demand, not cached: blocker sets stay small for years because the system starts
  *  empty, and a stale cache on a data-integrity guard is worse than a query. */
-export async function findBlockers(kind: ReferenceKind, id: string, db: Db = prisma): Promise<Blocker[]> {
+export async function findBlockers(target: BlockerTarget, id: string, db: Db = prisma): Promise<Blocker[]> {
   const out: Blocker[] = [];
   // Declared once, above the links loop: a part reachable through two links of one kind (e.g.
   // two PartInspection rows on the same code, or a part linked via both an inspection and a
   // specification) must still list once.
   const seen = new Set<string>();
-  for (const link of linksTargeting(kind)) {
+  for (const link of linksTargeting(target)) {
     const delegate = db[link.model] as unknown as {
       findMany: (a: object) => Promise<Record<string, unknown>[]>;
     };
     const rows = await delegate.findMany({
-      where: { [link.column]: id, deletedAt: null },
-      orderBy: { createdAt: "asc" },
+      where: { [link.column]: id, ...(link.liveWhere ?? { deletedAt: null }) },
+      // `id` (cuid, monotonic) rather than `createdAt`: every linked model has an id, but
+      // PartProcessStep/ProcessTemplateStep (2C-3) have no createdAt column, and this loop stays
+      // free of per-model branches — the ordering key has to be one every model actually has.
+      orderBy: { id: "asc" },
       ...(link.include ? { include: link.include } : {}),
     });
     for (const row of rows) {

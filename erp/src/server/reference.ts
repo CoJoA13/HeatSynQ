@@ -78,8 +78,14 @@ export async function listReference(
     // Deleted targets resolve to null rather than throwing — rows predating the FK guards exist.
     // Filtered on deletedAt only, never on active: an inactive target still resolves to its
     // name — inactive hides a row from pick lists, it does not invalidate existing assignments.
+    //
+    // `targetKind` widened to `BlockerTarget` in 2C-3 so the same registry can serve
+    // `partProcessStep`/`processTemplateStep` (targetKind "processStepCode", not itself a
+    // ReferenceKind). Only those two non-listable models carry that targetKind; `kind` here is
+    // always a genuine ReferenceKind (asserted above), so every link `linksFrom(kind)` returns
+    // still targets a genuine ReferenceKind too — the cast reflects that, not a new assumption.
     const targets = ids.length
-      ? await delegate(link.targetKind).findMany({ where: { id: { in: ids }, deletedAt: null } })
+      ? await delegate(link.targetKind as ReferenceKind).findMany({ where: { id: { in: ids }, deletedAt: null } })
       : [];
     const byId = new Map(targets.map((t) => [t.id, t.name]));
     for (const row of rows) {
@@ -110,7 +116,9 @@ async function resolveLinkNames(kind: ReferenceKind, input: Record<string, unkno
     const name = String(raw).trim();
     // findFirst, not findUnique: `name` is unique only among live rows, so findUnique would
     // compile and return a soft-deleted row (tests/partial-unique-sweep.test.ts bans it).
-    const target = await delegate(link.targetKind).findFirst({
+    // See the matching cast/comment in listReference above: `kind` is always a genuine
+    // ReferenceKind here, so `linksFrom(kind)` never yields the processStepCode-targeting links.
+    const target = await delegate(link.targetKind as ReferenceKind).findFirst({
       where: { name, deletedAt: null }, select: { id: true },
     });
     if (!target) throw new HttpError(400, `${link.label} "${name}" does not exist`);

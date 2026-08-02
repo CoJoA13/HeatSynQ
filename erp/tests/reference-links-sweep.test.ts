@@ -34,15 +34,28 @@ function toKind(model: string): string {
  *
  *  One limit remains: a bare `materialId String?` scalar with NO `@relation` field has no
  *  DB-level FK at all, so it is invisible to any schema walk, this one included. Only a real
- *  Prisma relation field is caught. */
+ *  Prisma relation field is caught.
+ *
+ *  `onDelete: Cascade` marks an owned-child relation (the row dies with its parent), not a
+ *  usage reference that needs app-level delete protection — e.g. `ProcessStepFieldDef.codeId`
+ *  cascades with its `ProcessStepCode` and is managed entirely by the step-code service
+ *  (`setStepFields`), never by this registry. This is the same distinction the design spec
+ *  draws for the 2C-3 models themselves (no `onDelete: Cascade` anywhere in that chain,
+ *  specifically so cascades stay confined to true ownership). Those relations are skipped here,
+ *  the same as list back-relations. */
 export function schemaLinks(schemaText: string): Map<string, string> {
   const kinds = new Set<string>(REFERENCE_KINDS);
+  // "processStepCode" is a BlockerTarget (src/lib/reference-links.ts), not a ReferenceKind — it
+  // is the one non-reference target the delete guard also covers, so an unregistered FK aimed at
+  // ProcessStepCode (e.g. a future model) must still fail this sweep.
+  kinds.add("processStepCode");
   const out = new Map<string, string>();
 
   for (const [modelName, body] of models(schemaText)) {
     for (const m of body.matchAll(/^\s*\w+\s+(\w+)(\[\])?\??\s+@relation\(([^)]*)\)/gm)) {
       const [, targetModel, isList, args] = m;
       if (isList) continue;                                       // back-relation, holds no FK
+      if (/onDelete:\s*Cascade/.test(args)) continue;               // owned child, not a usage reference
       const fields = /fields:\s*\[([^\]]+)\]/.exec(args);          // order-independent
       if (!fields || !kinds.has(toKind(targetModel))) continue;    // no FK here, or not a reference table
       const column = fields[1].split(",")[0].trim();
@@ -95,14 +108,18 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "part.materialId -> material",
       "partInspection.inspectionCodeId -> inspectionCode",
       "partInspection.scaleId -> inspectionScale",
+      "partProcessStep.codeId -> processStepCode",
       "partSpecification.specificationId -> specification",
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
+      "processTemplateStep.codeId -> processStepCode",
     ]);
   });
 
+  // Local, not the shared `kinds` inside schemaLinks: a BlockerTarget, not just a ReferenceKind
+  // — REFERENCE_LINKS now carries the two processStepCode entries from §7 of the design spec.
   it("every registered link targets a real reference kind", () => {
-    const kinds = new Set<string>(REFERENCE_KINDS);
+    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode"]);
     expect(REFERENCE_LINKS.filter((l) => !kinds.has(l.targetKind)).map((l) => l.targetKind)).toEqual([]);
   });
 
