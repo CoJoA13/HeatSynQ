@@ -224,28 +224,38 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
   const current = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Customer not found");
 
-  // Mirrors deleteRole's "still assigned" guard: orphaning children behind a deleted parent
-  // would leave rows whose parentCode resolves to something no screen can show.
-  const children = await prisma.customer.count({ where: { parentId: id, deletedAt: null } });
-  if (children > 0) throw new HttpError(400, "That customer still has child customers");
-
-  // A count, not a blocker list (spec §11): the parts list filtered by this customer already
-  // names every part with links, so this guard only needs to say no and let that screen answer
-  // "which ones".
-  const parts = await prisma.part.count({ where: { customerId: id, deletedAt: null } });
-  if (parts > 0) throw new HttpError(400, "That customer still has parts");
-
-  // Addresses and contacts have no meaning without their parent, so they are soft-deleted
-  // alongside it, in the same transaction and through the same audited* helpers as every other
-  // mutation — consistent with every other soft-delete cascade in this file, and with what
-  // listAddresses/listContacts already assume (deletedAt: null). A re-used code now produces a
-  // brand new customer row (see createCustomer above), so this is no longer what stops a reused
-  // code from resurrecting the previous occupant's dock and contact onto whoever types that code
-  // next — a new row's id was never attached to the old rows in the first place — but the
-  // cascade is still the correct outcome: a deleted customer's addresses and contacts should not
-  // remain live and undeleted (this was Fix 2 in the final review, back when a reused code did
-  // reuse the row).
+  // F1: the children and parts guard counts run ON tx, inside this same Serializable
+  // transaction — not on the bare `prisma` client before it starts. This pairs with createPart's
+  // Serializable in-tx customer-liveness read (parts.ts): without both halves sharing
+  // Serializable, a concurrent "create a part for this customer" and "delete this customer" can
+  // each pass their own pre-check (0 live parts here, customer still live there) before either
+  // commits, leaving a live part hanging off a customer this same instant deleted — exactly the
+  // orphan the parts guard below exists to prevent, and one no later request can undo (the part's
+  // customer is gone). Serializable makes Postgres abort whichever side would produce a result no
+  // serial ordering could, surfacing as P2034 and translated by withDbErrors into a 409 telling
+  // the caller to retry. Messages and evaluation order (children before parts) are unchanged.
   await withDbErrors({ entity: "Customer" }, () => prisma.$transaction(async (tx) => {
+    // Mirrors deleteRole's "still assigned" guard: orphaning children behind a deleted parent
+    // would leave rows whose parentCode resolves to something no screen can show.
+    const children = await tx.customer.count({ where: { parentId: id, deletedAt: null } });
+    if (children > 0) throw new HttpError(400, "That customer still has child customers");
+
+    // A count, not a blocker list (spec §11): the parts list filtered by this customer already
+    // names every part with links, so this guard only needs to say no and let that screen answer
+    // "which ones".
+    const parts = await tx.part.count({ where: { customerId: id, deletedAt: null } });
+    if (parts > 0) throw new HttpError(400, "That customer still has parts");
+
+    // Addresses and contacts have no meaning without their parent, so they are soft-deleted
+    // alongside it, in the same transaction and through the same audited* helpers as every other
+    // mutation — consistent with every other soft-delete cascade in this file, and with what
+    // listAddresses/listContacts already assume (deletedAt: null). A re-used code now produces a
+    // brand new customer row (see createCustomer above), so this is no longer what stops a reused
+    // code from resurrecting the previous occupant's dock and contact onto whoever types that
+    // code next — a new row's id was never attached to the old rows in the first place — but the
+    // cascade is still the correct outcome: a deleted customer's addresses and contacts should
+    // not remain live and undeleted (this was Fix 2 in the final review, back when a reused code
+    // did reuse the row).
     const [addresses, contacts] = await Promise.all([
       tx.customerAddress.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
       tx.customerContact.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
@@ -253,7 +263,7 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     for (const a of addresses) await auditedSoftDelete("customerAddress", a.id, "parent customer deleted", tx);
     for (const c of contacts) await auditedSoftDelete("customerContact", c.id, "parent customer deleted", tx);
     await auditedSoftDelete("customer", id, why, tx);
-  }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**

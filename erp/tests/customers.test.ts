@@ -6,6 +6,7 @@ import {
 } from "@/server/customers";
 import { addAddress, listAddresses } from "@/server/customer-addresses";
 import { addContact, listContacts } from "@/server/customer-contacts";
+import { createPart } from "@/server/parts";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 
@@ -103,6 +104,21 @@ describe("customers service", () => {
     await deleteCustomer(child.id, "test cleanup");
     await deleteCustomer(parent.id, "test cleanup");
     expect(await listCustomers()).toHaveLength(0);
+  });
+
+  // F1: the children/parts guard counts moved from bare `prisma` reads into the delete
+  // transaction (on `tx`, Serializable) so a concurrent createPart can't slip a live part under a
+  // customer this same instant found "childless and partless". This pins the functional behavior
+  // — both guards still fire, in the same order (children before parts) — that the move must not
+  // disturb, even though the race itself isn't something a sequential test can exercise.
+  it("still refuses on both guards, in order, with the counts read inside the transaction", async () => {
+    const parent = await createCustomer({ code: "ACME", name: "Acme" });
+    await createCustomer({ code: "ACME-OH", name: "Ohio", parentId: parent.id });
+    await createPart({ customerId: parent.id, partNumber: "12345", eachWeight: 1 });
+    // Both guards would fire; the child guard must win, same as before the counts moved.
+    await expect(deleteCustomer(parent.id, "test cleanup")).rejects.toThrow(/child/i);
+    const row = await prisma.customer.findUnique({ where: { id: parent.id } });
+    expect(row?.deletedAt).toBeNull();
   });
 
   it("searches on code and name", async () => {
