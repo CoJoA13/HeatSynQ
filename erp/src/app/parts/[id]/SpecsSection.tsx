@@ -7,11 +7,12 @@ type SpecLink = { id: string; specificationId: string; specificationName: string
 type SpecOption = { id: string; name: string; active: boolean };
 
 export function SpecsSection({
-  partId, perms, onError,
+  partId, perms, onError, onOptionsError,
 }: {
   partId: string;
   perms: string[] | undefined;
   onError: (message: string | null) => void;
+  onOptionsError: (message: string) => void;
 }) {
   const [links, setLinks] = useState<SpecLink[]>([]);
   const [options, setOptions] = useState<SpecOption[]>([]);
@@ -24,11 +25,17 @@ export function SpecsSection({
   }, [partId]);
   useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
 
-  // No `.catch(() => {})` — a failed fetch lands in the page's one error banner.
+  // F9: a failed specification-options fetch used to report through the shared `onError`, which
+  // a later successful save elsewhere on the page resets to null — see IdentitySection's comment
+  // on the same fix. `onOptionsError` writes into the page's persistent `loadError` instead, and
+  // `optionsReady` disables the picker until the fetch actually succeeds.
+  const [optionsReady, setOptionsReady] = useState(false);
   useEffect(() => {
-    api<SpecOption[]>("/api/picklists/specification").then(setOptions)
-      .catch((e) => onError((e as Error).message));
-  }, [onError]);
+    api<SpecOption[]>("/api/picklists/specification").then((data) => {
+      setOptions(data);
+      setOptionsReady(true);
+    }).catch((e) => onOptionsError((e as Error).message));
+  }, [onOptionsError]);
 
   async function add() {
     if (!draft) return;
@@ -69,7 +76,8 @@ export function SpecsSection({
         {/* Already-linked specifications are excluded from the picker — a UX nicety on top of
             the service's own "already on this part" 400, not a replacement for it. */}
         <select value={draft} onChange={(e) => setDraft(e.target.value)}
-                disabled={!canEdit.allowed} title={canEdit.title}
+                disabled={!canEdit.allowed || !optionsReady}
+                title={!optionsReady ? "Options failed to load — reload the page" : canEdit.title}
                 className="rounded border px-2 py-1 text-sm disabled:bg-slate-100">
           <option value="">Add a specification…</option>
           {options

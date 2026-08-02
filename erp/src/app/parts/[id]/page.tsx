@@ -47,6 +47,19 @@ function PartDetail({ id }: { id: string }) {
   const router = useRouter();
   const [part, setPart] = useState<Part | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // F9: a failed pick-list fetch (material, specification, inspectionCode, inspectionScale) used
+  // to report through the shared `error` state above — the same state a later successful field
+  // save resets to null (save() below, and load() itself on every successful refresh). That left
+  // a window where a save on one section silently erased a load failure reported by another,
+  // while the affected select sat enabled with an empty options list — a controlled <select>
+  // whose value matches no <option> renders blank, misrepresenting a real (if now-hidden)
+  // assignment and risking clobbering it on the next interaction. `loadError` is its own state,
+  // written only by `addLoadError` below and never cleared by a section save, rendered as its own
+  // banner. Mirrors customers/[id]/page.tsx's `optionsError`/`addOptionsError` (F4 there).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const addLoadError = useCallback((message: string) => {
+    setLoadError((cur) => (cur ? `${cur} ${message}` : message));
+  }, []);
   const { permissions: perms, error: permsError } = usePermissions();
 
   const load = useCallback(async () => {
@@ -121,7 +134,7 @@ function PartDetail({ id }: { id: string }) {
     }
   }
 
-  if (!part) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
+  if (!part) return <div className="p-6">{error ?? permsError ?? loadError ?? "Loading…"}</div>;
 
   return (
     <div className="p-6">
@@ -131,10 +144,18 @@ function PartDetail({ id }: { id: string }) {
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
       )}
+      {/* F9: its own banner, its own state — a section save (which clears `error` on success)
+          must not be able to silently clear a report that a pick-list failed to load, since the
+          affected select stays disabled (and, before this fix, misrepresented stored data) until
+          the page is reloaded. */}
+      {loadError && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{loadError}</p>
+      )}
 
-      <IdentitySection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError} />
-      <SpecsSection partId={id} perms={perms} onError={setError} />
-      <InspectionsSection partId={id} perms={perms} onError={setError} />
+      <IdentitySection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError}
+                        onOptionsError={addLoadError} />
+      <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
+      <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <PricingSection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
 

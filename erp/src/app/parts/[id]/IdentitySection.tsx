@@ -8,25 +8,36 @@ import type { Part } from "./page";
 type MaterialOption = { id: string; name: string; active: boolean };
 
 export function IdentitySection({
-  part, perms, save, patchDraft, onError,
+  part, perms, save, patchDraft, onError, onOptionsError,
 }: {
   part: Part;
   perms: string[] | undefined;
   save: (patch: Record<string, unknown>) => Promise<boolean>;
   patchDraft: (patch: Partial<Part>) => void;
   onError: (message: string | null) => void;
+  onOptionsError: (message: string) => void;
 }) {
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
+  // F9: a failed material-options fetch used to report through the shared `onError`, the same
+  // state a later successful field save resets to null — so a save elsewhere on this page could
+  // silently erase the warning while the Material select sat enabled with an empty options list
+  // (the customers/[id]/page.tsx F4 precedent this mirrors). `onOptionsError` writes into the
+  // page's own persistent `loadError` instead, which no section save clears, and `materialsReady`
+  // below disables the select until the fetch actually succeeds so a stale/blank assignment can't
+  // be clobbered by a "successful" interaction with an empty list.
+  //
   // includeInactive=1: the assigned material (part.materialId) may since have been marked
   // inactive by an admin — the R3 pattern from customers/[id]/page.tsx's Terms/Parent selects.
   // Without it, a controlled <select> whose value matches no <option> silently falls back to the
   // blank choice, misrepresenting stored data and risking clobbering a real material on the next
-  // interaction. No `.catch(() => {})` — a failed fetch here goes into the page's one error
-  // banner via onError, same as every other fetch on this page.
+  // interaction.
+  const [materialsReady, setMaterialsReady] = useState(false);
   useEffect(() => {
-    api<MaterialOption[]>("/api/picklists/material?includeInactive=1").then(setMaterials)
-      .catch((e) => onError((e as Error).message));
-  }, [onError]);
+    api<MaterialOption[]>("/api/picklists/material?includeInactive=1").then((data) => {
+      setMaterials(data);
+      setMaterialsReady(true);
+    }).catch((e) => onOptionsError((e as Error).message));
+  }, [onOptionsError]);
 
   const canEdit = gate(perms, "parts.edit");
 
@@ -84,7 +95,8 @@ export function IdentitySection({
         </label>
         <label className="block text-sm">
           Material
-          <select value={part.materialId ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+          <select value={part.materialId ?? ""} disabled={!canEdit.allowed || !materialsReady}
+                  title={!materialsReady ? "Options failed to load — reload the page" : canEdit.title}
                   onChange={(e) => void save({ materialId: e.target.value || null })}
                   className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-100">
             <option value="">— none —</option>

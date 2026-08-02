@@ -14,11 +14,12 @@ type ScaleOption = { id: string; name: string; active: boolean };
 const emptyDraft = { inspectionCodeId: "", scaleId: "", min: "", max: "", location: "" };
 
 export function InspectionsSection({
-  partId, perms, onError,
+  partId, perms, onError, onOptionsError,
 }: {
   partId: string;
   perms: string[] | undefined;
   onError: (message: string | null) => void;
+  onOptionsError: (message: string) => void;
 }) {
   const [rows, setRows] = useState<InspRow[]>([]);
   const [codes, setCodes] = useState<CodeOption[]>([]);
@@ -32,25 +33,37 @@ export function InspectionsSection({
   }, [partId]);
   useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
 
+  // F9: a failed code/scale-options fetch used to report through the shared `onError`, which a
+  // later successful save elsewhere on the page resets to null — see IdentitySection's comment on
+  // the same fix. `onOptionsError` writes into the page's persistent `loadError` instead, and
+  // `codesReady`/`scalesReady` disable the affected selects (both the per-row ones and the
+  // add-row draft ones) until their fetch actually succeeds.
+  //
   // includeInactive=1 on both: an inspection row can carry a code or scale that's since been
   // marked inactive (the R3 pattern from customers/[id]/page.tsx's Terms/Parent selects).
   // Without it a controlled <select> bound to that id would match no <option> and silently fall
   // back to blank, misrepresenting stored data and risking clobbering the real value on the next
-  // interaction. No `.catch(() => {})` — failures land in the page's one error banner.
+  // interaction.
   //
   // Note the deliberate gap this section does NOT try to close: the inspection code's default
   // scale (inspectionCode.defaultScaleId) lives on the reference row, but the pick-list
   // projection this route exposes is `{ id, name, active }` only — no default-scale prefill is
   // available to a non-admin screen. The scale select is left blank for the user to choose
   // rather than widening /api/picklists to leak that field; recorded as a papercut in the PR body.
+  const [codesReady, setCodesReady] = useState(false);
+  const [scalesReady, setScalesReady] = useState(false);
   useEffect(() => {
-    api<CodeOption[]>("/api/picklists/inspectionCode?includeInactive=1").then(setCodes)
-      .catch((e) => onError((e as Error).message));
-  }, [onError]);
+    api<CodeOption[]>("/api/picklists/inspectionCode?includeInactive=1").then((data) => {
+      setCodes(data);
+      setCodesReady(true);
+    }).catch((e) => onOptionsError((e as Error).message));
+  }, [onOptionsError]);
   useEffect(() => {
-    api<ScaleOption[]>("/api/picklists/inspectionScale?includeInactive=1").then(setScales)
-      .catch((e) => onError((e as Error).message));
-  }, [onError]);
+    api<ScaleOption[]>("/api/picklists/inspectionScale?includeInactive=1").then((data) => {
+      setScales(data);
+      setScalesReady(true);
+    }).catch((e) => onOptionsError((e as Error).message));
+  }, [onOptionsError]);
 
   function setRowField(id: string, field: "min" | "max" | "location", value: string) {
     setRows((cur) => cur.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
@@ -144,7 +157,8 @@ export function InspectionsSection({
           {rows.map((r, idx) => (
             <tr key={r.id} className="border-t">
               <td className="py-1">
-                <select value={r.inspectionCodeId} disabled={!canEdit.allowed} title={canEdit.title}
+                <select value={r.inspectionCodeId} disabled={!canEdit.allowed || !codesReady}
+                        title={!codesReady ? "Options failed to load — reload the page" : canEdit.title}
                         onChange={(e) => void saveRow(r.id, { inspectionCodeId: e.target.value })}
                         className="rounded border px-1 py-0.5">
                   {codes.map((c) => (
@@ -153,7 +167,8 @@ export function InspectionsSection({
                 </select>
               </td>
               <td>
-                <select value={r.scaleId ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                <select value={r.scaleId ?? ""} disabled={!canEdit.allowed || !scalesReady}
+                        title={!scalesReady ? "Options failed to load — reload the page" : canEdit.title}
                         onChange={(e) => void saveRow(r.id, { scaleId: e.target.value || null })}
                         className="rounded border px-1 py-0.5">
                   <option value="">—</option>
@@ -205,13 +220,15 @@ export function InspectionsSection({
         </tbody>
       </table>
       <div className="flex flex-wrap items-end gap-2">
-        <select value={draft.inspectionCodeId} disabled={!canEdit.allowed} title={canEdit.title}
+        <select value={draft.inspectionCodeId} disabled={!canEdit.allowed || !codesReady}
+                title={!codesReady ? "Options failed to load — reload the page" : canEdit.title}
                 onChange={(e) => setDraft({ ...draft, inspectionCodeId: e.target.value })}
                 className="rounded border px-2 py-1 text-sm">
           <option value="">Code…</option>
           {codes.map((c) => <option key={c.id} value={c.id}>{c.name}{!c.active && " (inactive)"}</option>)}
         </select>
-        <select value={draft.scaleId} disabled={!canEdit.allowed} title={canEdit.title}
+        <select value={draft.scaleId} disabled={!canEdit.allowed || !scalesReady}
+                title={!scalesReady ? "Options failed to load — reload the page" : canEdit.title}
                 onChange={(e) => setDraft({ ...draft, scaleId: e.target.value })}
                 className="rounded border px-2 py-1 text-sm">
           <option value="">Scale…</option>
