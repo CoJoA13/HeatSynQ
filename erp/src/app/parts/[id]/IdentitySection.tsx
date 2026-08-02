@@ -131,7 +131,23 @@ export function IdentitySection({
                    const trimmed = v.trim();
                    if (trimmed === "") { void save({ loadQty: null }); return; }
                    const n = Number(trimmed);
-                   if (!Number.isInteger(n)) { onError("Load qty must be a whole number"); return; }
+                   if (!Number.isInteger(n)) {
+                     // H2 (Codex round 3 review): this branch never reaches save(), so it can't
+                     // rely on save()'s own catch (which rolls back via the page's load() before
+                     // reporting, §5.13) — but leaving the invalid typed text sitting in the
+                     // shared `part` state (patchDraft already echoed it there on every keystroke,
+                     // onChange below) makes it pseudo-server state: a later, unrelated successful
+                     // save elsewhere on this page clears `error` on its own success path while
+                     // the invalid text stays put looking saved. Restore server truth BEFORE
+                     // reporting, same ordering as every other failure path on this page.
+                     // `focusedValue.current` is what this field displayed before THIS edit
+                     // began — the last value it actually loaded/committed — so reverting to it
+                     // is this section's own version of the load()-then-setError idiom the
+                     // empty/valid branches reach via save()'s catch.
+                     patchDraft({ loadQty: focusedValue.current });
+                     onError("Load qty must be a whole number");
+                     return;
+                   }
                    void save({ loadQty: n });
                  })}
                  className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
