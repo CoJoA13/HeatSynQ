@@ -10,6 +10,7 @@ import { GET as listInspections, POST as addInspectionRoute } from "@/app/api/pa
 import {
   PATCH as patchInspectionRoute, DELETE as deleteInspectionRoute,
 } from "@/app/api/parts/[id]/inspections/[inspId]/route";
+import { PUT as reorderInspectionsRoute } from "@/app/api/parts/[id]/inspections/order/route";
 import { GET as listBreaks, POST as addBreakRoute } from "@/app/api/parts/[id]/breaks/route";
 import { PATCH as patchBreakRoute, DELETE as deleteBreakRoute } from "@/app/api/parts/[id]/breaks/[breakId]/route";
 import { GET as getFieldsRoute, PUT as putFieldsRoute } from "@/app/api/parts/[id]/fields/route";
@@ -166,6 +167,19 @@ describe("parts routes", () => {
     expect(entry?.reason).toBe("keyed wrong");
   });
 
+  // G2: `(await req.json().catch(() => ({}))) as { reason?: unknown }` threw a raw TypeError
+  // reading `.reason` off a JSON body of `null` (a body of `{}` or a string/number doesn't crash,
+  // but `null.reason` does), escaping handle()'s error mapping as an unhandled 500 instead of the
+  // service's own missing-reason 400.
+  it("DELETE /api/parts/[id] with a JSON null body is 400, not 500", async () => {
+    const { partId } = await partFixture();
+    const deleter = await signInWith(["parts.delete"], "deleter-null-1");
+    const res = await deletePartRoute(
+      bodyReq(`http://t/api/parts/${partId}`, "DELETE", deleter, null), withParams({ id: partId }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/reason/i);
+  });
+
   it("GET /api/parts/[id] requires parts.view", async () => {
     const { partId } = await partFixture();
     expect((await getPartRoute(getReq(`http://t/api/parts/${partId}`), withParams({ id: partId }))).status).toBe(401);
@@ -244,6 +258,82 @@ describe("parts routes", () => {
       noBodyReq(`http://t/api/parts/${partId}/inspections/${inspId}`, "DELETE", editor),
       withParams({ id: partId, inspId }));
     expect(deleted.status).toBe(200);
+  });
+
+  // G1: the UI used to reorder by two sequential PATCHes swapping a pair of `sort` values — if
+  // the second failed, both rows kept the SAME sort and listPartInspections (sort-only ordering)
+  // rendered nondeterministically, with no way to "swap back" out of a tie. PUT .../order applies
+  // the whole new order in one Serializable transaction instead.
+  it("PUT /api/parts/[id]/inspections/order gates on parts.edit and reorders atomically", async () => {
+    const { partId } = await partFixture();
+    const code = await prisma.inspectionCode.create({ data: { name: "Brinell" } });
+    const editor = await signInWith(["parts.view", "parts.edit"], "reorder-editor-1");
+
+    const addRow = (loc: string) => addInspectionRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections`, "POST", editor,
+        { inspectionCodeId: code.id, sort: 0, location: loc }),
+      withParams({ id: partId }));
+    const a = await (await addRow("a")).json();
+    const b = await (await addRow("b")).json();
+    const c = await (await addRow("c")).json();
+
+    expect((await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", undefined, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(401);
+
+    const wrong = await signInWith(["customers.view"], "reorder-wrong-1");
+    expect((await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", wrong, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(403);
+
+    const ok = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", editor, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(ok.status).toBe(200);
+
+    const rows = await listInspections(getReq(`http://t/api/parts/${partId}/inspections`, editor), withParams({ id: partId }));
+    expect((await rows.json()).map((r: { id: string }) => r.id)).toEqual([c.id, a.id, b.id]);
+
+    // Missing/duplicate/extra id all 400 with the field-anchored message.
+    const missing = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", editor, { orderedIds: [a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toMatch(/exactly once/);
+
+    const duplicate = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", editor, { orderedIds: [a.id, a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(duplicate.status).toBe(400);
+
+    const extra = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", editor,
+        { orderedIds: [a.id, b.id, c.id, "not-a-real-id"] }),
+      withParams({ id: partId }));
+    expect(extra.status).toBe(400);
+
+    // An empty orderedIds array fails the route's own zod .min(1) — a 400 before the service
+    // ever runs.
+    const empty = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections/order`, "PUT", editor, { orderedIds: [] }),
+      withParams({ id: partId }));
+    expect(empty.status).toBe(400);
+  });
+
+  it("PUT .../inspections/order: part B's URL with part A's row ids is the set check's 400, not a 404", async () => {
+    const { partId, otherPartId } = await partFixture();
+    const code = await prisma.inspectionCode.create({ data: { name: "Brinell" } });
+    const editor = await signInWith(["parts.view", "parts.edit"], "reorder-cross-1");
+    const added = await addInspectionRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections`, "POST", editor, { inspectionCodeId: code.id, sort: 0 }),
+      withParams({ id: partId }));
+    const { id: inspId } = await added.json();
+
+    const res = await reorderInspectionsRoute(
+      bodyReq(`http://t/api/parts/${otherPartId}/inspections/order`, "PUT", editor, { orderedIds: [inspId] }),
+      withParams({ id: otherPartId }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/exactly once/);
   });
 
   it("break routes demand change_prices unconditionally", async () => {

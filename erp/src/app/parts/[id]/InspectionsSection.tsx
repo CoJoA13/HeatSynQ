@@ -99,22 +99,27 @@ export function InspectionsSection({
       await load();
     } catch (e) { onError((e as Error).message); }
   }
-  // Renumber by swapping the two affected rows' `sort` values, then reload — listPartInspections
-  // orders by sort ascending, so swapping is enough to move a row up or down one place.
+  // G1: computes the full new order client-side (swap idx/j in the displayed list) and sends it
+  // as ONE call to the atomic reorder route, which writes every changed `sort` inside a single
+  // Serializable transaction. Replaces the old two-PATCH swap of `sort` values: if the second of
+  // those PATCHes failed, both rows kept the SAME sort, and since listPartInspections orders
+  // purely by sort, a tie rendered nondeterministically with no way to "swap back" out of it.
   async function move(idx: number, dir: -1 | 1) {
     const j = idx + dir;
     if (j < 0 || j >= rows.length) return;
-    const a = rows[idx], b = rows[j];
+    const reordered = [...rows];
+    [reordered[idx], reordered[j]] = [reordered[j], reordered[idx]];
     try {
-      await api(`/api/parts/${partId}/inspections/${a.id}`, { method: "PATCH", body: JSON.stringify({ sort: b.sort }) });
-      await api(`/api/parts/${partId}/inspections/${b.id}`, { method: "PATCH", body: JSON.stringify({ sort: a.sort }) });
+      await api(`/api/parts/${partId}/inspections/order`, {
+        method: "PUT",
+        body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
+      });
       onError(null);
       await load();
     } catch (e) {
-      // Roll back to server truth FIRST, then report why (§5.13) — the two PATCHes above are not
-      // atomic, so a failure on the second leaves the server holding only half the swap. Reload
-      // before setting the error, the saveRow() precedent above, so local rows never diverge from
-      // what the server actually has.
+      // Roll back to server truth FIRST, then report why (§5.13) — reload before setting the
+      // error, the saveRow() precedent above, so local rows never diverge from what the server
+      // actually has.
       await load().catch(() => {});
       onError((e as Error).message);
     }

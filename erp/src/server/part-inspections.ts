@@ -127,6 +127,41 @@ export async function updatePartInspection(
     }, iso));
 }
 
+/**
+ * Atomically re-sorts a part's live inspection rows to `orderedIds`' order — the server-side
+ * replacement for the UI's old two-PATCH swap (G1, PR #13 round 2 review). That swap read as two
+ * independent `updatePartInspection` calls: if the second PATCH failed (network blip, a
+ * concurrent edit), the first still committed, leaving both rows holding the SAME sort value —
+ * and since `listPartInspections` orders purely by `sort`, a tie is nondeterministic and a
+ * later attempt to "swap back" can't repair it (swapping two equal values is a no-op). One
+ * transaction makes the whole reorder all-or-nothing.
+ *
+ * Serializable, and the live id set is read on `tx` (the addPartInspection precedent): a
+ * concurrent add/delete of a row on this part between the client's last list-load and this call
+ * must not let a now-stale `orderedIds` silently apply against a set that's since changed shape.
+ */
+export async function reorderPartInspections(partId: string, orderedIds: string[]): Promise<void> {
+  await withDbErrors({ entity: "Inspection" }, () =>
+    prisma.$transaction(async (tx) => {
+      await assertPartLive(partId, tx);
+      const live = await tx.partInspection.findMany({
+        where: { partId, deletedAt: null }, select: { id: true, sort: true },
+      });
+      const liveIds = new Set(live.map((r) => r.id));
+      const noDuplicates = new Set(orderedIds).size === orderedIds.length;
+      const sameSet = noDuplicates && orderedIds.length === liveIds.size &&
+        orderedIds.every((id) => liveIds.has(id));
+      if (!sameSet) {
+        throw new HttpError(400, "The order must list every inspection row exactly once");
+      }
+      const sortById = new Map(live.map((r) => [r.id, r.sort]));
+      for (const [index, id] of orderedIds.entries()) {
+        if (sortById.get(id) === index) continue; // unchanged — no junk audit entry
+        await auditedUpdate("partInspection", id, () => claimLive(tx, id, partId, { sort: index }), { tx });
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
 export async function deletePartInspection(partId: string, inspId: string): Promise<void> {
   const current = await prisma.partInspection.findFirst({
     where: { id: inspId, partId, deletedAt: null }, select: { id: true } });
