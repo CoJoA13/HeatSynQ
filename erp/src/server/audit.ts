@@ -8,7 +8,8 @@ export type AuditableModel =
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
-  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue";
+  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
+  | "partProcessRevision";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -48,6 +49,16 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   partFieldDef: undefined,
   // history names the field the value belongs to
   partFieldValue: { field: true },
+  // Steps and values are mutated through the parent revision (part-process-steps.ts wraps every
+  // step/value write in one auditedUpdate against the revision, spec §8) — the revision-level
+  // before/after diff is only meaningful with its steps (ordered), each step's live code
+  // (code/name — renames propagate, spec §3.3), and each value's live field def (label) included.
+  partProcessRevision: {
+    steps: {
+      orderBy: { position: "asc" },
+      include: { code: { select: { code: true, name: true } }, values: { include: { fieldDef: { select: { label: true } } } } },
+    },
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
