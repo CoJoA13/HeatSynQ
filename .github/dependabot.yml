@@ -1,0 +1,36 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /erp
+    schedule:
+      interval: weekly
+    groups:
+      # prisma, @prisma/client, and @prisma/adapter-pg must move in lockstep.
+      prisma:
+        patterns:
+          - "prisma"
+          - "@prisma/*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - "prisma"
+          - "@prisma/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Covers the app Dockerfile (node base image). The postgres image in
+  # docker-compose.yml is deliberately not auto-bumped: a database major
+  # upgrade needs a data-migration plan, not a dependency PR.
+  - package-ecosystem: docker
+    directory: /erp
+    schedule:
+      interval: weekly
