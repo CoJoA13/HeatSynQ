@@ -10,13 +10,12 @@ import { prisma } from "@/server/db";
  * defs sorted by `sort`. No `.catch(() => {})` — a failed fetch reports, it doesn't go silent.
  */
 export const GET = handle(async () => {
-  // Session-gated only — no mustCan/mustDo (spec §5.15 vocabulary rule). The 401 comes from
-  // the call itself; nothing about the caller beyond "has a session" matters here. Assigned
-  // (not a bare call) so tests/permissions-sweep.test.ts's structural check — every genuine
-  // requireUser() call either feeds mustCan/mustDo or binds a variable — still recognizes this
-  // as authorizing, not a dead import.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const user = requireUser();
+  void user; // Session-only gate: presence of a signed-in user is the whole check, no permission
+  // beyond that. Bound to a variable (not a bare `requireUser();`) because
+  // tests/permissions-sweep.test.ts's "every API route calls requireUser" check requires the
+  // call to feed mustCan/mustDo or be assigned — a discarded bare call is indistinguishable
+  // from a route that imports requireUser but never actually calls it.
   const codes = await prisma.processStepCode.findMany({
     where: { deletedAt: null },
     orderBy: { code: "asc" },
