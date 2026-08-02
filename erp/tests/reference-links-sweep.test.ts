@@ -41,8 +41,12 @@ function toKind(model: string): string {
  *  cascades with its `ProcessStepCode` and is managed entirely by the step-code service
  *  (`setStepFields`), never by this registry. This is the same distinction the design spec
  *  draws for the 2C-3 models themselves (no `onDelete: Cascade` anywhere in that chain,
- *  specifically so cascades stay confined to true ownership). Those relations are skipped here,
- *  the same as list back-relations. */
+ *  specifically so cascades stay confined to true ownership). The exemption is scoped to
+ *  relations TARGETING `processStepCode` only — that is the one target this sweep knows has a
+ *  legitimate owned-child FK today. A cascade relation targeting a genuine `ReferenceKind`
+ *  (`material`, `terms`, ...) is not exempted: that shape is exactly the failure mode this sweep
+ *  exists to catch (a real usage FK slipping in unregistered), so it still fails as
+ *  unregistered — see the bite-proof fixtures below. */
 export function schemaLinks(schemaText: string): Map<string, string> {
   const kinds = new Set<string>(REFERENCE_KINDS);
   // "processStepCode" is a BlockerTarget (src/lib/reference-links.ts), not a ReferenceKind — it
@@ -55,9 +59,12 @@ export function schemaLinks(schemaText: string): Map<string, string> {
     for (const m of body.matchAll(/^\s*\w+\s+(\w+)(\[\])?\??\s+@relation\(([^)]*)\)/gm)) {
       const [, targetModel, isList, args] = m;
       if (isList) continue;                                       // back-relation, holds no FK
-      if (/onDelete:\s*Cascade/.test(args)) continue;               // owned child, not a usage reference
       const fields = /fields:\s*\[([^\]]+)\]/.exec(args);          // order-independent
       if (!fields || !kinds.has(toKind(targetModel))) continue;    // no FK here, or not a reference table
+      // Owned-child exemption, scoped to processStepCode only (see the doc comment above) — a
+      // cascade relation targeting any OTHER kind in `kinds` is a real usage FK and must still
+      // be reported as unregistered.
+      if (toKind(targetModel) === "processStepCode" && /onDelete:\s*Cascade/.test(args)) continue;
       const column = fields[1].split(",")[0].trim();
       out.set(`${toKind(modelName)}.${column}`, toKind(targetModel));
     }
@@ -190,5 +197,42 @@ model Part {
 }
 `;
     expect(unregisteredLinks(fixture, new Set())).toEqual(["part.primaryMaterialId -> material"]);
+  });
+
+  // The onDelete: Cascade exemption in schemaLinks is scoped to relations targeting
+  // `processStepCode` only. A cascade relation targeting a genuine ReferenceKind is exactly the
+  // failure mode the sweep exists to catch (a real usage FK slipping in unregistered) — it must
+  // still be reported, cascade or not.
+  it("still names an unregistered cascade FK when it targets a genuine reference kind (bite-proof fixture)", () => {
+    const fixture = `
+model Material {
+  id   String @id
+}
+
+model Part {
+  id         String    @id
+  materialId String?
+  material   Material? @relation(fields: [materialId], references: [id], onDelete: Cascade)
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual(["part.materialId -> material"]);
+  });
+
+  // The narrow case the exemption exists for: ProcessStepFieldDef.codeId is the real example —
+  // an owned-child FK (dies with its ProcessStepCode) guarded by the step-code service, not this
+  // registry (design spec §6). It must NOT be reported.
+  it("does not name a cascade FK that targets ProcessStepCode (bite-proof fixture)", () => {
+    const fixture = `
+model ProcessStepCode {
+  id   String @id
+}
+
+model ProcessStepFieldDef {
+  id     String          @id
+  codeId String
+  code   ProcessStepCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual([]);
   });
 });
