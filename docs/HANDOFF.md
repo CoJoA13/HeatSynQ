@@ -124,6 +124,10 @@ Round 4's fixes (`047eb51`): `assertTermsExists` closed the last unguarded refer
 
 **The Prisma 7 upgrade is DONE** (owner's ruling, issue #10 — the full record is §5.18). Built on branch `prisma-7-upgrade`: Prisma 6.19.3 → 7.9.1, revival-on-create deleted everywhere it existed (`customer`, `role`, all ten reference kinds, `processStepCode`), all four quality gates green on both databases (258 tests). **Not yet merged to `main`** as of this writing — merge it (or continue on the branch) before starting 2C, since 2C's obligations below assume the removal already happened and no longer carry a "consolidate revival" item.
 
+**The toolchain was brought current on 2026-08-02, after 2C-3 merged.** Five PRs, all verified on all four gates plus the E2E suite before landing: patch bumps with security overrides taking `npm audit` from 5 advisories to 0 (#25), **Node 22 → 26** (#28), **Postgres 16 → 18** (#27), **Next 15 → 16** (#29). The stack is now **Node 26.5.1 · npm 12.0.2 · Next 16.2.12 · React 19.2.8 · Prisma 7.9.1 · PostgreSQL 18.4 · TypeScript 5.9.3 · Vitest 3.2.7**.
+
+Three of those carried a trap that a version bump alone would have walked into, all recorded where they bite: the Postgres 18 image moved its data directory (§6a), npm 12 stopped running install scripts (§8), and Next 16 renamed `middleware` to `proxy` (`src/proxy.ts`, CLAUDE.md). ESLint 10 and TypeScript 7 remain blocked on what `eslint-config-next` vendors — see §6.
+
 **What to do next, in order:**
 1. **Phase 3 — Orders.** Phase 2 is finished: 2A (foundations + reference data), 2B (customers), 2C-1/2C-2/2C-3 (shared foundations, parts, process steps) are all merged. Follow the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`) and brainstorm → spec → plan → subagent execution as before. **Phase 3 owns the first real caller of `lockRevision`** (`src/server/part-process-steps.ts`), which is exported and race-hardened for exactly that: the order save locks the revision it is quoting against. Read the first bullet of the 2C-3 review lessons above before wiring it — the row lock in `workingRevision` is the guarantee, and making the order save Serializable is not a substitute for it.
 2. **No owner decision is pending.** Issue #4 is ruled (binds Phases 4–5); issues #14/#15 are triaged backlog, not blockers.
@@ -158,7 +162,7 @@ Round 4's fixes (`047eb51`): `assertTermsExists` closed the last unguarded refer
 3. **Every mutation through the audit helpers**; extend `AuditableModel` and `SNAPSHOT_INCLUDE` (relations!) for each new entity. Never let a secret-bearing payload reach `write()` — redact() is defense-in-depth, not permission.
 4. **Soft delete only** (`deletedAt`); active flags for hiding; hard delete never (tests excepted).
 5. **Errors**: `HttpError(400/403/404, message)` for expected failures; `handle()` converts HttpError and ZodError to clean JSON; anything else is a bug. Field-anchored validation messages.
-6. **Route handler tests pass ctx**: `handler(request, { params: Promise.resolve({...}) })` — the `Handler` type requires ctx (Next 15 ParamCheck rejects optional).
+6. **Route handler tests pass ctx**: `handler(request, { params: Promise.resolve({...}) })` — the `Handler` type requires ctx (Next's ParamCheck rejects optional; still true on 16).
 7. **Client components must not import from `src/server/**`** (drags node:async_hooks/Prisma into the bundle) — shared constants live in `src/lib/` (see `permission-constants.ts` precedent).
 8. **Server-rendered pages that fetch data must call `requireUser` themselves** — the proxy (`src/proxy.ts`) is a cookie-presence redirect only. (Phase 1 pages are client components hitting guarded APIs, which is also fine.)
 9. Conventional commits, ending with the Co-Authored-By line already used throughout `git log`.
