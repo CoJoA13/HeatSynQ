@@ -56,7 +56,15 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   partProcessRevision: {
     steps: {
       orderBy: { position: "asc" },
-      include: { code: { select: { code: true, name: true } }, values: { include: { fieldDef: { select: { label: true } } } } },
+      include: {
+        code: { select: { code: true, name: true } },
+        // Fix-wave Finding 4 (2026-08-02 final review): no orderBy here meant a snapshot's row
+        // order tracked Postgres's own scan order rather than being deterministic — two snapshots
+        // of otherwise-identical state could render as a spurious diff (HistoryPanel diffs whole
+        // keys via JSON.stringify, which is order-sensitive). Explicit ascending order makes two
+        // snapshots of the same value set always compare equal regardless of insertion history.
+        values: { orderBy: { fieldDefId: "asc" }, include: { fieldDef: { select: { label: true } } } },
+      },
     },
   },
   // Template steps are mutated through the parent template (process-templates.ts wraps every

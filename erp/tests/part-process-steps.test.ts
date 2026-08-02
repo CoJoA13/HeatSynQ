@@ -381,6 +381,54 @@ describe("part process steps: the revision-cut rule", () => {
     expect(before.steps.some((s) => s.instruction === "B")).toBe(false);
   });
 
+  // Fix-wave Finding 4 (2026-08-02 final review, ride-along): SNAPSHOT_INCLUDE.partProcessRevision's
+  // nested `values` include had no `orderBy`, so a snapshot's row order depended on Postgres's own
+  // (unspecified, plan-dependent) scan order rather than being deterministic — two snapshots of
+  // identical state could render as a spurious "steps changed" diff in HistoryPanel, which diffs
+  // whole keys via `JSON.stringify` (order-sensitive). A single step's values happen to come back
+  // index-ordered by `@@unique([stepId, fieldDefId])` regardless, so this reproduces the bug the
+  // way it actually surfaces: two steps, inserts interleaved across them, plus an UPDATE (which
+  // gives one row a new physical/MVCC placement) — verified against pre-fix code to return
+  // `[fieldC, fieldB, fieldA]`-style scrambled order for at least one step; the fix pins every
+  // step's values to ascending fieldDefId regardless.
+  it("audit snapshot orders every step's values by fieldDefId, not scan/insertion order", async () => {
+    const { part, code, fieldDef: fieldA } = await fixture();
+    const fieldB = await prisma.processStepFieldDef.create({
+      data: { codeId: code.id, label: "Passed", type: "CHECKBOX", sort: 2 },
+    });
+    const fieldC = await prisma.processStepFieldDef.create({
+      data: { codeId: code.id, label: "Notes", type: "TEXT", sort: 3 },
+    });
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    const step1 = await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "" },
+    });
+    const step2 = await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 2, codeId: code.id, instruction: "" },
+    });
+
+    // Interleaved across the two steps, deliberately not in fieldDefId order.
+    await prisma.partProcessStepValue.create({ data: { stepId: step2.id, fieldDefId: fieldC.id, value: "x" } });
+    await prisma.partProcessStepValue.create({ data: { stepId: step1.id, fieldDefId: fieldC.id, value: "y" } });
+    await prisma.partProcessStepValue.create({ data: { stepId: step2.id, fieldDefId: fieldA.id, value: "1" } });
+    await prisma.partProcessStepValue.create({ data: { stepId: step1.id, fieldDefId: fieldB.id, value: "true" } });
+    await prisma.partProcessStepValue.create({ data: { stepId: step2.id, fieldDefId: fieldB.id, value: "false" } });
+    await prisma.partProcessStepValue.create({ data: { stepId: step1.id, fieldDefId: fieldA.id, value: "2" } });
+    // An UPDATE gives its row a fresh MVCC tuple version — the mechanism that scrambled scan order
+    // in the repro against pre-fix code.
+    await prisma.partProcessStepValue.updateMany({ where: { stepId: step1.id, fieldDefId: fieldA.id }, data: { value: "2.5" } });
+
+    // Any real mutation on the revision re-snapshots it — the instruction edit itself is
+    // irrelevant, only the resulting `after.steps[].values` order is under test.
+    await asSystem(() => updateStep(part.id, step1.id, { instruction: "touched" }));
+
+    const entries = await readAudit("partProcessRevision", rev.id);
+    const after = entries[0].after as { steps: { position: number; values: { fieldDefId: string }[] }[] };
+    const expected = [fieldA.id, fieldB.id, fieldC.id];
+    expect(after.steps.find((s) => s.position === 1)!.values.map((v) => v.fieldDefId)).toEqual(expected);
+    expect(after.steps.find((s) => s.position === 2)!.values.map((v) => v.fieldDefId)).toEqual(expected);
+  });
+
   it("getRevisions/getRevision 404 on a missing part, a deleted part, or a missing revision number", async () => {
     await expect(getRevisions("nonexistent")).rejects.toMatchObject({ status: 404 });
     await expect(getRevision("nonexistent", 1)).rejects.toMatchObject({ status: 404 });
