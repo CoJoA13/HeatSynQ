@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { PART_FIELD_TYPES, type PartFieldTypeValue } from "@/lib/part-constants";
+import { nextSort } from "@/lib/next-sort";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
@@ -28,8 +29,19 @@ export default function PartFieldsPage() {
   // includeInactive=1 always: unlike the reference grid, there is no separate "show inactive"
   // filter here — the Active column IS the reactivation control, so an inactive def must stay
   // visible to be turned back on.
+  // H1 (Codex round 3 review): the draft's sort used to be seeded once at mount (useState's
+  // `sort: 0` initializer) and reset on a successful add to `rows.length` — a papercut on its
+  // own (issue #14 item 3: the draft goes stale the moment rows change from any OTHER save/
+  // delete, since nothing recomputed it) and a real bug once rows have a gap: two rows sorted
+  // 0, 2 (e.g. after the row that held sort 1 was deleted) give `rows.length` = 2, which
+  // duplicates the live sort-2 row instead of landing after it. Recomputing from the FRESHLY
+  // loaded rows on every load() call — which already runs on mount and after every save/add/
+  // delete — fixes both: the draft's sort default is never stale, and it is always one past the
+  // highest live sort regardless of gaps.
   const load = useCallback(async () => {
-    setRows(await api<FieldDef[]>("/api/admin/part-fields?includeInactive=1"));
+    const data = await api<FieldDef[]>("/api/admin/part-fields?includeInactive=1");
+    setRows(data);
+    setDraft((d) => ({ ...d, sort: nextSort(data) }));
   }, []);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
@@ -103,8 +115,12 @@ export default function PartFieldsPage() {
   async function add() {
     try {
       await api("/api/admin/part-fields", { method: "POST", body: JSON.stringify(draft) });
-      setDraft({ name: "", type: PART_FIELD_TYPES[0], sort: rows.length });
-      setError(null); setBlocked(null); await load();
+      setError(null); setBlocked(null);
+      // load() (above) recomputes the draft's sort from the freshly loaded rows, INCLUDING the
+      // row just added — this reset must only clear name/type and keep that fresh sort, not
+      // reintroduce the same stale rows.length calculation here.
+      await load();
+      setDraft((d) => ({ name: "", type: PART_FIELD_TYPES[0], sort: d.sort }));
     } catch (e) { setError((e as Error).message); }
   }
 
