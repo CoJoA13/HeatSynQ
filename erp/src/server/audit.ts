@@ -9,7 +9,7 @@ export type AuditableModel =
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
   | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
-  | "partProcessRevision";
+  | "partProcessRevision" | "processTemplate";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -58,6 +58,13 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
       orderBy: { position: "asc" },
       include: { code: { select: { code: true, name: true } }, values: { include: { fieldDef: { select: { label: true } } } } },
     },
+  },
+  // Template steps are mutated through the parent template (process-templates.ts wraps every
+  // step write in one auditedUpdate against the template, spec §8) — the template-level
+  // before/after diff is only meaningful with its ordered steps and each step's live code
+  // (code/name — renames propagate, spec §3.3) included.
+  processTemplate: {
+    steps: { orderBy: { position: "asc" }, include: { code: { select: { code: true, name: true } } } },
   },
 };
 
