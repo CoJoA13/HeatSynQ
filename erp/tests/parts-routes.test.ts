@@ -72,6 +72,14 @@ describe("parts routes", () => {
     expect(typeof (await res.json()).id).toBe("string");
   });
 
+  // F8: `PRICING_FIELDS.some((f) => f in body)` threw a raw TypeError for a null (or number)
+  // body before it ever reached zod, escaping handle()'s error mapping as an unhandled 500.
+  it("POST /api/parts with a non-object JSON body is 400, not 500", async () => {
+    const creator = await signInWith(["parts.create"], "non-object-create-1");
+    const res = await createPartRoute(bodyReq("http://t/api/parts", "POST", creator, null), noParams);
+    expect(res.status).toBe(400);
+  });
+
   it("POST with any pricing field present requires change_prices — even pricePer or a null", async () => {
     const { customer } = await partFixture();
     const createOnly = await signInWith(["parts.create"], "create-only-1");
@@ -119,6 +127,18 @@ describe("parts routes", () => {
     const editor = await signInWith(["parts.edit"], "empty-patch-1");
     const res = await patchPart(
       bodyReq(`http://t/api/parts/${partId}`, "PATCH", editor, {}), withParams({ id: partId }));
+    expect(res.status).toBe(400);
+  });
+
+  // F8: a JSON body that parses to something other than a plain record (null, a bare string, a
+  // bare number, an array) used to reach Object.keys/`in` before any shape check, throwing a raw
+  // TypeError that escaped handle()'s ZodError/HttpError mapping and surfaced as an unhandled 500
+  // rather than a clean 400.
+  it("PATCH /api/parts/[id] with a non-object JSON body is 400, not 500", async () => {
+    const { partId } = await partFixture();
+    const editor = await signInWith(["parts.edit"], "non-object-patch-1");
+    const res = await patchPart(
+      bodyReq(`http://t/api/parts/${partId}`, "PATCH", editor, null), withParams({ id: partId }));
     expect(res.status).toBe(400);
   });
 
@@ -394,6 +414,22 @@ describe("parts routes", () => {
     const res = await updateFieldDefRoute(
       bodyReq(`http://t/api/admin/part-fields/${fieldId}`, "PUT", editor, {}), withParams({ id: fieldId }));
     expect(res.status).toBe(400);
+  });
+
+  // F8: unlike the parts routes above, this route already guards `Object.keys(body ?? {})` (not
+  // a bare `Object.keys(body)`), so `null` collapses to `{}` before the empty-body check runs,
+  // and an empty array's Object.keys is also length 0 — both already 400 via the same
+  // "must include at least one change" path rather than crashing. This test pins that existing,
+  // already-correct behavior; it was NOT changed by the F8 pass (see report).
+  it("PUT /api/admin/part-fields/[id] with a non-object JSON body is 400, not 500", async () => {
+    const { id: fieldId } = await createPartFieldDef({ name: "Drawing #", type: "TEXT", sort: 0 });
+    const editor = await signInWith(["admin.view", "admin.edit"], "non-object-patch-1");
+    const nullRes = await updateFieldDefRoute(
+      bodyReq(`http://t/api/admin/part-fields/${fieldId}`, "PUT", editor, null), withParams({ id: fieldId }));
+    expect(nullRes.status).toBe(400);
+    const arrRes = await updateFieldDefRoute(
+      bodyReq(`http://t/api/admin/part-fields/${fieldId}`, "PUT", editor, []), withParams({ id: fieldId }));
+    expect(arrRes.status).toBe(400);
   });
 
   it("blockers export returns an xlsx content-type and disposition", async () => {

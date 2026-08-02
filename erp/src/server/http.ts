@@ -21,6 +21,19 @@ export function requireUser(): SessionUser {
   return user;
 }
 
+/**
+ * Asserts a parsed JSON body is a plain record before a handler inspects its keys.
+ * `await req.json()` happily returns any valid JSON value — `null`, a bare string/number, an
+ * array — and `Object.keys`/the `in` operator throw a raw TypeError for `null` and non-object
+ * primitives. That TypeError is neither a ZodError nor an HttpError, so it escapes `handle`'s
+ * mapping below and surfaces as an unhandled 500 instead of a clean 400 (F8, PR #13 review).
+ */
+export function assertRecord(body: unknown): asserts body is Record<string, unknown> {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "Request body must be a JSON object");
+  }
+}
+
 type Handler = (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
 
 /** Resolves the session ONCE, publishes it on the request context, and maps errors to JSON. */

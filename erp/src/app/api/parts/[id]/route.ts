@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser, HttpError } from "@/server/http";
+import { handle, requireUser, HttpError, assertRecord } from "@/server/http";
 import { mustCan, mustDo } from "@/server/permissions";
 import { getPart, updatePart, deletePart } from "@/server/parts";
 import { PRICING_FIELDS } from "@/lib/part-constants";
@@ -12,7 +12,8 @@ export const GET = handle(async (_req, { params }) => {
 export const PATCH = handle(async (req, { params }) => {
   const user = requireUser();
   mustCan(user, "parts", "edit");
-  const body = (await req.json()) as Record<string, unknown>;
+  const body: unknown = await req.json();
+  assertRecord(body);
   // An empty body changes nothing — report that as an error rather than a no-op 200
   // (step-codes/[id]/route.ts precedent).
   if (Object.keys(body).length === 0) {
