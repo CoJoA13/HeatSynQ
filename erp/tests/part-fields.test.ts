@@ -180,6 +180,21 @@ describe("part field values", () => {
       .rejects.toThrow("is not a valid date");
   });
 
+  // F4: Date.parse rolls a nonexistent calendar date over into the next valid one instead of
+  // rejecting it (Date.parse("2025-02-29") does not return NaN — it silently becomes March 1),
+  // so the regex + Date.parse combination let a shop floor date like "the 29th of a non-leap
+  // February" slip through as valid. 2024 IS a leap year, so 2024-02-29 is genuinely valid and
+  // must still be accepted.
+  it("DATE rejects a rollover date (2025-02-29, not a leap year) but accepts a real leap day", async () => {
+    const { partId } = await fixture();
+    const { id: fieldId } = await asSystem(() =>
+      createPartFieldDef({ name: "Heat date", type: "DATE", sort: 0 }));
+    await expect(asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "2025-02-29" }])))
+      .rejects.toThrow("is not a valid date");
+    await asSystem(() => setPartFieldValues(partId, [{ fieldId, value: "2024-02-29" }]));
+    expect((await listPartFieldValues(partId)).find((r) => r.fieldId === fieldId)!.value).toBe("2024-02-29");
+  });
+
   it("CHECKBOX value must be true or false", async () => {
     const { partId } = await fixture();
     const { id: fieldId } = await asSystem(() =>

@@ -22,11 +22,28 @@ function validateValue(def: { name: string; type: string }, value: string): stri
         throw new HttpError(400, `"${value}" is not a valid number for ${def.name}`);
       }
       return v;
-    case "DATE":
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) {
+    case "DATE": {
+      // F4: Date.parse alone is not enough — it silently rolls a nonexistent calendar date
+      // (2025-02-29, a non-leap year) over into the next valid one (March 1) instead of
+      // rejecting it, so the regex + Date.parse combination let an impossible date slip through
+      // as "valid" and stored the very string that describes a day that never happened. Parsing
+      // the matched groups and round-tripping through Date.UTC catches the rollover: Date.UTC
+      // normalizes an out-of-range day/month the same way Date.parse does, so re-reading the
+      // constructed date's y/m/d back out and comparing against what was submitted exposes any
+      // silent normalization.
+      const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+      if (!match) {
+        throw new HttpError(400, `"${value}" is not a valid date (yyyy-mm-dd) for ${def.name}`);
+      }
+      const [, yStr, mStr, dStr] = match;
+      const y = Number(yStr), m = Number(mStr), d = Number(dStr);
+      const asUtc = new Date(Date.UTC(y, m - 1, d));
+      const rolled = asUtc.getUTCFullYear() !== y || asUtc.getUTCMonth() !== m - 1 || asUtc.getUTCDate() !== d;
+      if (Number.isNaN(asUtc.getTime()) || rolled) {
         throw new HttpError(400, `"${value}" is not a valid date (yyyy-mm-dd) for ${def.name}`);
       }
       return v;
+    }
     case "CHECKBOX":
       if (v !== "true" && v !== "false") {
         throw new HttpError(400, `${def.name} must be true or false`);
