@@ -1,108 +1,104 @@
 import { describe, expect, it } from "vitest";
-import { buildStepDrafts } from "@/lib/step-drafts";
+import {
+  buildStepOriginals, isStepDirty, pendingChanges, shownInstruction, shownValue, type StepEdits,
+} from "@/lib/step-drafts";
 
-// The draft-building half of ProcessStepsSection, extracted so it can be tested at all: the
-// vitest environment is "node" with no DOM, so the component itself is out of reach — the
-// next-sort.ts / permission-ui.ts precedent (UI logic worth asserting lives in src/lib).
+// The draft model behind ProcessStepsSection, extracted so it can be tested at all: the vitest
+// environment is "node" with no DOM, so the component itself is out of reach — the next-sort.ts /
+// permission-ui.ts precedent.
 
 const code = (id: string, ...fieldIds: string[]) => ({ id, fields: fieldIds.map((f) => ({ id: f })) });
+const edits = (e: Partial<StepEdits> = {}): StepEdits => ({ values: new Map(), ...e });
 
-describe("buildStepDrafts", () => {
+describe("buildStepOriginals", () => {
   it("seeds an empty entry for every field def the step's code carries", () => {
-    const { drafts } = buildStepDrafts(
+    const o = buildStepOriginals(
       [{ id: "s1", codeId: "c1", instruction: "Soak 2h", values: [] }],
       [code("c1", "f1", "f2")],
     );
-    expect(drafts.get("s1")).toEqual({
-      instruction: "Soak 2h",
-      values: new Map([["f1", ""], ["f2", ""]]),
-    });
+    expect(o.get("s1")).toEqual({ instruction: "Soak 2h", values: new Map([["f1", ""], ["f2", ""]]) });
   });
 
   it("overwrites the seeds with the values the server actually returned", () => {
-    const { drafts } = buildStepDrafts(
+    const o = buildStepOriginals(
       [{ id: "s1", codeId: "c1", instruction: "", values: [{ fieldDefId: "f2", value: "1550" }] }],
       [code("c1", "f1", "f2")],
     );
-    expect(drafts.get("s1")?.values).toEqual(new Map([["f1", ""], ["f2", "1550"]]));
+    expect(o.get("s1")?.values).toEqual(new Map([["f1", ""], ["f2", "1550"]]));
   });
 
-  // The regression this was extracted for (Codex, PR #22): the effect used to bail out entirely
-  // unless the step-code-fields fetch had succeeded, so a failure there left every step without a
-  // draft — the instruction textarea rendered "" over persisted text and swallowed typing, while
-  // remove/reorder stayed live. The field inputs can't render without the defs, but nothing about
-  // the instruction or the already-persisted values depends on that fetch.
-  it("still drafts a step whose code is missing from the options (failed fetch)", () => {
-    const { drafts, originals } = buildStepDrafts(
+  // A failed step-code-fields fetch must not hide persisted work: the instruction and the values
+  // the server already holds need none of the field definitions.
+  it("still describes a step whose code is missing from the options", () => {
+    const o = buildStepOriginals(
       [{ id: "s1", codeId: "c1", instruction: "Quench in oil", values: [{ fieldDefId: "f1", value: "true" }] }],
       [],
     );
-    expect(drafts.get("s1")).toEqual({
-      instruction: "Quench in oil",
-      values: new Map([["f1", "true"]]),
-    });
-    expect(originals.get("s1")?.instruction).toBe("Quench in oil");
+    expect(o.get("s1")).toEqual({ instruction: "Quench in oil", values: new Map([["f1", "true"]]) });
   });
 
-  it("drafts every step, keyed by step id", () => {
-    const { drafts } = buildStepDrafts(
-      [
-        { id: "s1", codeId: "c1", instruction: "one", values: [] },
-        { id: "s2", codeId: "c2", instruction: "two", values: [] },
-      ],
-      [code("c1", "f1"), code("c2")],
-    );
-    expect([...drafts.keys()]).toEqual(["s1", "s2"]);
-    expect(drafts.get("s2")?.values.size).toBe(0);
+  it("returns an empty map for a revision with no steps", () => {
+    expect(buildStepOriginals([], [code("c1", "f1")]).size).toBe(0);
+  });
+});
+
+describe("composing server state with the user's own edits", () => {
+  const original = { instruction: "on the server", values: new Map([["f1", "1550"], ["f2", ""]]) };
+
+  it("shows the server's text and values when nothing has been typed", () => {
+    expect(shownInstruction(original, undefined)).toBe("on the server");
+    expect(shownValue(original, undefined, "f1")).toBe("1550");
+    expect(isStepDirty(original, undefined)).toBe(false);
   });
 
-  it("gives originals its own value map, so later draft edits never mutate the snapshot", () => {
-    const { drafts, originals } = buildStepDrafts(
-      [{ id: "s1", codeId: "c1", instruction: "", values: [{ fieldDefId: "f1", value: "1550" }] }],
-      [code("c1", "f1")],
-    );
-    drafts.get("s1")?.values.set("f1", "1600");
-    expect(originals.get("s1")?.values.get("f1")).toBe("1550");
+  it("shows what the user typed, over the server's", () => {
+    const e = edits({ instruction: "typed", values: new Map([["f1", "1700"]]) });
+    expect(shownInstruction(original, e)).toBe("typed");
+    expect(shownValue(original, e, "f1")).toBe("1700");
+    expect(shownValue(original, e, "f2")).toBe(""); // untouched -> server's
   });
 
-  describe("carrying unsaved work across a rebuild", () => {
-    const previous = new Map([["s1", { instruction: "typed but unsaved", values: new Map([["f1", "1700"]]) }]]);
-
-    it("keeps a surviving step's draft while originals still track the server", () => {
-      const { drafts, originals } = buildStepDrafts(
-        [{ id: "s1", codeId: "c1", instruction: "on the server", values: [{ fieldDefId: "f1", value: "1550" }] }],
-        [code("c1", "f1")], previous,
-      );
-      expect(drafts.get("s1")?.instruction).toBe("typed but unsaved");
-      expect(drafts.get("s1")?.values.get("f1")).toBe("1700");
-      // The baseline must not follow the draft, or the step would stop reading as dirty and the
-      // user would lose the Save button that is their only way to keep the work.
-      expect(originals.get("s1")?.instruction).toBe("on the server");
-      expect(originals.get("s1")?.values.get("f1")).toBe("1550");
-    });
-
-    it("gives a step that is new since the last build the server's values", () => {
-      const { drafts } = buildStepDrafts(
-        [{ id: "s2", codeId: "c1", instruction: "fresh", values: [] }],
-        [code("c1", "f1")], previous,
-      );
-      expect(drafts.get("s2")?.instruction).toBe("fresh");
-      expect(drafts.has("s1")).toBe(false);
-    });
-
-    it("still seeds a field def added to the code since the draft was taken", () => {
-      const { drafts } = buildStepDrafts(
-        [{ id: "s1", codeId: "c1", instruction: "x", values: [] }],
-        [code("c1", "f1", "f2")], previous,
-      );
-      expect(drafts.get("s1")?.values.get("f2")).toBe("");
-      expect(drafts.get("s1")?.values.get("f1")).toBe("1700");
-    });
+  // The regression this model exists for. An untouched field has no entry in the overlay, so a
+  // refreshed server value simply shows through — there is no stale copy able to overwrite it,
+  // and nothing for a Save to send back. Previously the whole draft was carried forward, so
+  // another user's edit came back correct and was immediately masked by this user's clean copy,
+  // shown as dirty, and revertible with one click of Save.
+  it("adopts another user's change to an untouched field, without marking it dirty", () => {
+    const refreshed = { instruction: "someone else edited this", values: new Map([["f1", "1600"]]) };
+    const e = edits(); // this user typed nothing
+    expect(shownInstruction(refreshed, e)).toBe("someone else edited this");
+    expect(shownValue(refreshed, e, "f1")).toBe("1600");
+    expect(isStepDirty(refreshed, e)).toBe(false);
+    expect(pendingChanges(refreshed, e)).toEqual({ values: [] });
   });
 
-  it("returns empty maps for a revision with no steps", () => {
-    const { drafts, originals } = buildStepDrafts([], [code("c1", "f1")]);
-    expect(drafts.size).toBe(0);
-    expect(originals.size).toBe(0);
+  it("keeps this user's edit when the same field changed underneath, and flags it dirty", () => {
+    const refreshed = { instruction: "someone else edited this", values: new Map([["f1", "1600"]]) };
+    const e = edits({ instruction: "mine" });
+    expect(shownInstruction(refreshed, e)).toBe("mine");
+    expect(isStepDirty(refreshed, e)).toBe(true);
+    expect(pendingChanges(refreshed, e).instruction).toBe("mine");
+  });
+
+  it("sends only what actually differs", () => {
+    const e = edits({ instruction: "on the server", values: new Map([["f1", "1550"], ["f2", "x"]]) });
+    // instruction and f1 were typed back to their original values — nothing to send for either.
+    expect(pendingChanges(original, e)).toEqual({ values: [{ fieldDefId: "f2", value: "x" }] });
+    expect(isStepDirty(original, e)).toBe(true);
+  });
+
+  it("treats typing everything back to the original as clean", () => {
+    const e = edits({ instruction: "on the server", values: new Map([["f1", "1550"]]) });
+    expect(isStepDirty(original, e)).toBe(false);
+  });
+
+  it("counts clearing a set value as a change", () => {
+    const e = edits({ values: new Map([["f1", ""]]) });
+    expect(pendingChanges(original, e)).toEqual({ values: [{ fieldDefId: "f1", value: "" }] });
+    expect(isStepDirty(original, e)).toBe(true);
+  });
+
+  it("treats a step the server no longer describes as having nothing to send", () => {
+    expect(pendingChanges(undefined, edits({ instruction: "" }))).toEqual({ values: [] });
   });
 });

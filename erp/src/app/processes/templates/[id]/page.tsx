@@ -38,14 +38,16 @@ function Detail({ id }: { id: string }) {
   const [addingStep, setAddingStep] = useState(false);
   const [togglingActive, setTogglingActive] = useState(false);
 
-  // Per-step boilerplate draft, keyed by stepId. Rebuilt from server truth (`template.steps`)
-  // whenever the template reloads — the ProcessStepsSection.tsx `drafts`/`originals` precedent,
-  // narrowed to a single field since a template step carries no per-code field values, only
-  // boilerplate text. Because `template` itself is never optimistically mutated for step edits
-  // (every step mutation reloads from the server before updating state), comparing a draft
-  // straight against `template.steps` is enough to know whether it's dirty — no separate
-  // `originals` map needed.
-  const [boilerplateDrafts, setBoilerplateDrafts] = useState<Map<string, string>>(new Map());
+  // ONLY what the user has typed and not yet saved, keyed by stepId — a step absent from this map
+  // shows the server's boilerplate. The ProcessStepsSection.tsx edits-overlay precedent, narrowed
+  // to a single field since a template step carries no per-code values.
+  //
+  // It held a full copy of every step's text before, rebuilt-then-merged on each reload, which
+  // meant a CLEAN copy was carried forward too: another user's edit to a step came back correct
+  // and was immediately masked by this user's untouched stale text, displayed as freshly dirty
+  // and revertible with one click of Save (Codex, PR #22). Keeping only genuine edits makes that
+  // unrepresentable — there is nothing to carry for a step nobody has typed into.
+  const [boilerplateEdits, setBoilerplateEdits] = useState<Map<string, string>>(new Map());
 
   // Tracks the name the server last returned, so `load()` can tell an untouched draft (adopt the
   // server's name) from an unsaved rename (keep it). Every step action — add, save, remove,
@@ -64,21 +66,6 @@ function Detail({ id }: { id: string }) {
     setError(null);
   }, [id]);
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
-
-  // Merge, not replace (Codex, PR #22). This effect keys on `template`, and `toggleActive`
-  // optimistically builds a NEW template object whose steps are untouched — so a blanket rebuild
-  // erased every unsaved boilerplate edit on the page the moment the Active box was ticked, with
-  // no warning. Successful name saves and every other `load()` did the same to steps other than
-  // the one being saved. A step that already has a draft keeps it; a step that doesn't (first
-  // load, or one just added) takes the server's text. Steps that are gone drop out, since the map
-  // is rebuilt from `template.steps`. Saving a step reloads it with the text just written, so the
-  // kept draft and the server value agree and it reads as clean.
-  useEffect(() => {
-    if (!template) return;
-    setBoilerplateDrafts((cur) => new Map(
-      template.steps.map((s) => [s.id, cur.get(s.id) ?? s.boilerplate]),
-    ));
-  }, [template]);
 
   // Session-only read (§5.15 vocabulary rule) — every signed-in user can see which step codes
   // exist, the same pick-list idiom ProcessStepsSection.tsx uses for the part-detail Add-step
@@ -136,14 +123,17 @@ function Detail({ id }: { id: string }) {
   }
 
   function setBoilerplateDraft(stepId: string, value: string) {
-    setBoilerplateDrafts((cur) => {
+    setBoilerplateEdits((cur) => {
       const next = new Map(cur);
       next.set(stepId, value);
       return next;
     });
   }
+  function shownBoilerplate(step: TemplateStep): string {
+    return boilerplateEdits.get(step.id) ?? step.boilerplate;
+  }
   function isBoilerplateDirty(step: TemplateStep): boolean {
-    return (boilerplateDrafts.get(step.id) ?? step.boilerplate) !== step.boilerplate;
+    return shownBoilerplate(step) !== step.boilerplate;
   }
 
   // One at a time, the same guard the part-detail Add step carries (Codex, PR #22): addCodeId is
@@ -163,7 +153,16 @@ function Detail({ id }: { id: string }) {
   async function saveBoilerplate(stepId: string) {
     try {
       await api(`/api/process-templates/${id}/steps/${stepId}`, {
-        method: "PATCH", body: JSON.stringify({ boilerplate: boilerplateDrafts.get(stepId) ?? "" }),
+        method: "PATCH",
+        body: JSON.stringify({ boilerplate: boilerplateEdits.get(stepId) ?? "" }),
+      });
+      // Server truth now — dropping the edit keeps the step reading clean without depending on
+      // the reload returning byte-identical text.
+      setBoilerplateEdits((cur) => {
+        if (!cur.has(stepId)) return cur;
+        const next = new Map(cur);
+        next.delete(stepId);
+        return next;
       });
       setError(null);
       await load();
@@ -269,7 +268,7 @@ function Detail({ id }: { id: string }) {
                     </button>
                   </div>
                 </div>
-                <textarea value={boilerplateDrafts.get(s.id) ?? s.boilerplate} disabled={!canEdit.allowed}
+                <textarea value={shownBoilerplate(s)} disabled={!canEdit.allowed}
                           title={canEdit.title} rows={2} placeholder="Boilerplate"
                           onChange={(e) => setBoilerplateDraft(s.id, e.target.value)}
                           className="mb-2 w-full rounded border px-2 py-1 text-sm disabled:bg-slate-50" />

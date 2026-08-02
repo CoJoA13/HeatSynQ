@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
-import { buildStepDrafts, type StepDraft } from "@/lib/step-drafts";
+import {
+  buildStepOriginals, isStepDirty, pendingChanges, shownInstruction, shownValue, type StepEdits,
+} from "@/lib/step-drafts";
 import { useLatest } from "@/lib/use-latest";
 
 // Local mirrors of src/server/part-process-steps.ts's exported row types — not imported from
@@ -18,11 +20,11 @@ type FieldDefOption = { id: string; label: string; type: string; unit: string | 
 type StepCodeOption = { id: string; code: string; name: string; active: boolean; fields: FieldDefOption[] };
 type TemplateOption = { id: string; name: string; active: boolean; stepCount: number; updatedAt: string };
 
-// Per-step editable draft, keyed by stepId in the two Maps below — the CustomFieldsSection
-// `original`-map diffing pattern, widened to carry both the instruction text and a value-per-
-// fieldDefId map so a per-step Save sends only what actually changed. Built by
-// `buildStepDrafts` (src/lib/step-drafts.ts), where it is `StepDraft`.
-type Draft = StepDraft;
+// What the user has typed and not yet saved, keyed by stepId — ONLY touched fields appear, and
+// everything untouched shows server truth through it (src/lib/step-drafts.ts). Deliberately not a
+// full copy of each step: a full copy has to be carried across every reload, and carrying a CLEAN
+// copy is how another user's change gets masked and then reverted (Codex, PR #22).
+type Edits = StepEdits;
 
 export function ProcessStepsSection({
   partId, perms, onError,
@@ -40,26 +42,21 @@ export function ProcessStepsSection({
   const [viewDenied, setViewDenied] = useState(false);
 
   const [codes, setCodes] = useState<StepCodeOption[]>([]);
-  // Two flags, not one. `codesReady` means the field definitions are in hand — it gates the Add
-  // step picker, which has nothing to offer without them. `codesSettled` means the request is
-  // merely over, success or failure, and gates draft-building: the drafts carry the instruction
-  // text and the already-persisted values, neither of which needs the definitions, so waiting on
-  // `codesReady` there left a failed fetch showing empty textareas over persisted instructions
-  // and silently discarding keystrokes (Codex, PR #22).
+  // Gates the Add step picker, which has nothing to offer without the field definitions. It used
+  // to have a `codesSettled` companion gating draft-building, so a failed fetch could not leave
+  // steps draft-less with empty textareas over persisted instructions. The overlay model removed
+  // the need: `originals` derives straight from the revision detail and simply carries no field
+  // seeds when `codes` is empty, so there is no state left that a failed fetch can withhold.
   const [codesReady, setCodesReady] = useState(false);
-  const [codesSettled, setCodesSettled] = useState(false);
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
   const [templatesReady, setTemplatesReady] = useState(false);
 
-  const [drafts, setDrafts] = useState<Map<string, Draft>>(new Map());
+  const [edits, setEdits] = useState<Map<string, Edits>>(new Map());
   // Derived, not state: `originals` is by definition whatever the server last returned for this
-  // revision, so deriving it keeps it from drifting out of step with `detail` — and keeps the
-  // drafts effect below free to carry unsaved work forward without having to publish two pieces
-  // of state from one build in a guaranteed order.
-  const originals = useMemo(
-    () => buildStepDrafts(detail?.steps ?? [], codes).originals,
-    [detail, codes],
-  );
+  // revision, so deriving it can never drift out of step with `detail`. Nothing needs to carry it
+  // forward or merge into it — the edits overlay above is the only thing that survives a reload,
+  // and it holds only fields the user actually touched.
+  const originals = useMemo(() => buildStepOriginals(detail?.steps ?? [], codes), [detail, codes]);
 
   const [addCodeId, setAddCodeId] = useState("");
   const [addingStep, setAddingStep] = useState(false);
@@ -139,8 +136,7 @@ export function ProcessStepsSection({
     api<StepCodeOption[]>("/api/process/step-code-fields").then((data) => {
       setCodes(data);
       setCodesReady(true);
-    }).catch((e) => onError((e as Error).message))
-      .finally(() => setCodesSettled(true));
+    }).catch((e) => onError((e as Error).message));
   }, [onError]);
   useEffect(() => {
     api<TemplateOption[]>("/api/process-templates").then((data) => {
@@ -157,19 +153,6 @@ export function ProcessStepsSection({
     });
   }, [onError]);
 
-  // Rebuilds the per-step drafts once the revision detail is in hand and the codes request has
-  // settled — see `codesSettled` above for why that is "settled", not "succeeded". Gating on
-  // settlement rather than on `codes` being non-empty keeps this to a single rebuild: waiting for
-  // the request either way means the drafts are built once, not built bare and then thrown away
-  // (with whatever the user had typed into them) when the codes land a moment later.
-  // Carried through the functional updater, not named as a dependency: the current drafts are an
-  // input to the rebuild, not a trigger for it — depending on them would re-run this on every
-  // keystroke and immediately undo the carry-forward it exists to perform.
-  useEffect(() => {
-    if (!detail || !codesSettled) return;
-    setDrafts((carried) => buildStepDrafts(detail.steps, codes, carried).drafts);
-  }, [detail, codesSettled, codes]);
-
   // Every mutation response carries `revisionNumber` (context doc). When it differs from what
   // was selected — the very first step ever added (null -> 1), or a locked current revision
   // silently cut to N+1 (spec §5.4) — reload the revision list and switch to it, which is how
@@ -182,9 +165,9 @@ export function ProcessStepsSection({
   // already prevents, one level harder (Codex, PR #22). Empty mapping = no cut = nothing to do.
   function remapDrafts(stepIdMap: Record<string, string>) {
     if (Object.keys(stepIdMap).length === 0) return;
-    setDrafts((cur) => {
-      const next = new Map<string, Draft>();
-      for (const [stepId, draft] of cur) next.set(stepIdMap[stepId] ?? stepId, draft);
+    setEdits((cur) => {
+      const next = new Map<string, Edits>();
+      for (const [stepId, e] of cur) next.set(stepIdMap[stepId] ?? stepId, e);
       return next;
     });
   }
@@ -209,53 +192,53 @@ export function ProcessStepsSection({
     }
   }
 
+  // No "does a draft exist yet" guard on either setter: an edit is recorded for whatever the user
+  // typed into, whether or not anything has been loaded for that step. That removes the failure
+  // mode where a missing draft silently swallowed keystrokes.
   function setInstruction(stepId: string, instruction: string) {
-    setDrafts((cur) => {
-      const d = cur.get(stepId);
-      if (!d) return cur;
+    setEdits((cur) => {
       const next = new Map(cur);
-      next.set(stepId, { ...d, instruction });
+      const e = cur.get(stepId);
+      next.set(stepId, { instruction, values: e ? e.values : new Map() });
       return next;
     });
   }
   function setValue(stepId: string, fieldDefId: string, value: string) {
-    setDrafts((cur) => {
-      const d = cur.get(stepId);
-      if (!d) return cur;
+    setEdits((cur) => {
       const next = new Map(cur);
-      const values = new Map(d.values);
+      const e = cur.get(stepId);
+      const values = new Map(e?.values ?? []);
       values.set(fieldDefId, value);
-      next.set(stepId, { ...d, values });
+      next.set(stepId, { instruction: e?.instruction, values });
+      return next;
+    });
+  }
+  function clearEdits(stepId: string) {
+    setEdits((cur) => {
+      if (!cur.has(stepId)) return cur;
+      const next = new Map(cur);
+      next.delete(stepId);
       return next;
     });
   }
   function isDirty(stepId: string): boolean {
-    const draft = drafts.get(stepId);
-    const original = originals.get(stepId);
-    if (!draft || !original) return false;
-    if (draft.instruction !== original.instruction) return true;
-    for (const [fieldDefId, value] of draft.values) {
-      if (value !== (original.values.get(fieldDefId) ?? "")) return true;
-    }
-    return false;
+    return isStepDirty(originals.get(stepId), edits.get(stepId));
   }
 
   async function saveStep(stepId: string) {
-    const draft = drafts.get(stepId);
-    const original = originals.get(stepId);
-    if (!draft || !original) return;
+    const { instruction, values } = pendingChanges(originals.get(stepId), edits.get(stepId));
     const patch: { instruction?: string; values?: { fieldDefId: string; value: string }[] } = {};
-    if (draft.instruction !== original.instruction) patch.instruction = draft.instruction;
-    const changedValues: { fieldDefId: string; value: string }[] = [];
-    for (const [fieldDefId, value] of draft.values) {
-      if (value !== (original.values.get(fieldDefId) ?? "")) changedValues.push({ fieldDefId, value });
-    }
-    if (changedValues.length > 0) patch.values = changedValues;
+    if (instruction !== undefined) patch.instruction = instruction;
+    if (values.length > 0) patch.values = values;
     if (patch.instruction === undefined && patch.values === undefined) return;
     try {
       const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "PATCH", body: JSON.stringify(patch) });
       onError(null);
+      // Server truth now. Dropping them keeps the step reading clean without relying on the
+      // reload returning byte-identical text, and stops a saved edit masking a later change to
+      // the same field by someone else. Through the cut mapping, since a save can cut N+1.
+      clearEdits(res.stepIdMap[stepId] ?? stepId);
       remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
     } catch (e) { onError((e as Error).message); }
@@ -370,7 +353,8 @@ export function ProcessStepsSection({
       <ol className="mb-3 space-y-3">
         {(detail?.steps ?? []).map((s, idx) => {
           const code = codes.find((c) => c.id === s.codeId);
-          const draft = drafts.get(s.id);
+          const stepEdits = edits.get(s.id);
+          const original = originals.get(s.id);
           const dirty = isDirty(s.id);
           // The code's own field defs when they loaded; otherwise whatever this step already has
           // recorded, which the revision response carries in full (fieldDefId, label, type, unit,
@@ -405,14 +389,14 @@ export function ProcessStepsSection({
                   </button>
                 </div>
               </div>
-              <textarea value={draft?.instruction ?? ""} disabled={rowDisabled} title={rowTitle}
+              <textarea value={shownInstruction(original, stepEdits)} disabled={rowDisabled} title={rowTitle}
                         onChange={(e) => setInstruction(s.id, e.target.value)} rows={2}
                         placeholder="Instruction"
                         className="mb-2 w-full rounded border px-2 py-1 text-sm disabled:bg-slate-50" />
               {fields.length > 0 && (
                 <div className="mb-2 grid grid-cols-2 gap-3">
                   {fields.map((f) => {
-                    const value = draft?.values.get(f.id) ?? "";
+                    const value = shownValue(original, stepEdits, f.id);
                     return (
                       <label key={f.id} className="block text-xs">
                         {f.label}
@@ -428,10 +412,17 @@ export function ProcessStepsSection({
                                 with nothing in the control able to produce the "" that clears it.
                                 applyValues (part-process-steps.ts) deletes the value row on "",
                                 and "" validates for every type, so no server change is needed.
-                                Shown only when there is something to clear. */}
+                                Shown only when there is something to clear.
+
+                                Its title follows the page's disabled-with-a-reason rule like every
+                                sibling control — a hard-coded description told a user without
+                                processes.edit, or one on a superseded revision, nothing about why
+                                it would not respond (Codex, PR #22). The description moves to
+                                aria-label so it survives for assistive tech either way. */}
                             {value !== "" && (
                               <button type="button" onClick={() => setValue(s.id, f.id, "")}
-                                      disabled={rowDisabled} title="Clear this field (unset)"
+                                      disabled={rowDisabled} aria-label="Clear this field (unset)"
+                                      title={rowDisabled ? rowTitle : "Clear this field (unset)"}
                                       className="text-xs text-slate-600 underline disabled:cursor-not-allowed disabled:text-slate-400">
                                 clear
                               </button>

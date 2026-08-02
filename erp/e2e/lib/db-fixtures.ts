@@ -233,71 +233,87 @@ async function reapLeftovers(): Promise<void> {
 async function create(): Promise<Fixtures> {
   await reapLeftovers();
 
-  const customer = await prisma.customer.create({
-    data: { code: FIXTURE.customerCode, name: "E2E Test Customer" },
-  });
-  const part = await prisma.part.create({
-    data: {
-      customerId: customer.id, partNumber: FIXTURE.partNumber, name: "E2E Test Part",
-      eachWeight: "12.5000",
-    },
-  });
-  const stepCodeA = await prisma.processStepCode.create({
-    data: {
-      code: FIXTURE.stepCodeA, name: "E2E Quench",
-      fields: {
-        create: [
-          { label: "Temperature", type: "NUMBER", unit: "°F", sort: 0 },
-          { label: "Passed", type: "CHECKBOX", sort: 1 },
-        ],
+  // Hashed before the transaction opens: argon2 is deliberately slow, and holding a transaction
+  // open across it for no reason is exactly the wrong place to spend that time.
+  const [adminHash, restrictedHash] = await Promise.all([
+    hashPassword(FIXTURE.adminPassword), hashPassword(FIXTURE.restrictedPassword),
+  ]);
+
+  // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
+  // Sequential creates committed as they went, and a failure after the first one exited with rows
+  // already written — while run.mjs, whose `runDbScript("create")` had thrown, never assigned
+  // `state.fixtures` and so skipped cleanup entirely. The partial set then sat in the developer's
+  // database until some later run's reapLeftovers happened along. All-or-nothing removes the
+  // partial state rather than adding another compensating path to get it wrong.
+  return prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.create({
+      data: { code: FIXTURE.customerCode, name: "E2E Test Customer" },
+    });
+    const part = await tx.part.create({
+      data: {
+        customerId: customer.id, partNumber: FIXTURE.partNumber, name: "E2E Test Part",
+        eachWeight: "12.5000",
       },
-    },
-  });
-  const stepCodeB = await prisma.processStepCode.create({
-    data: { code: FIXTURE.stepCodeB, name: "E2E Hot Wash" },
-  });
-  const decoyTemplate = await prisma.processTemplate.create({
-    data: { name: FIXTURE.decoyTemplateName },
-  });
-  // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
-  // both the parts/processes screens and the admin step-codes screen, so anything narrower would
-  // have to be kept in step with them by hand.
-  const adminRole = await prisma.role.create({
-    data: {
-      name: FIXTURE.adminRoleName,
-      permissions: { create: ALL_PERMISSIONS.map((permission) => ({ permission })) },
-    },
-  });
-  const adminUser = await prisma.user.create({
-    data: {
-      username: FIXTURE.adminUsername, displayName: "E2E Admin User",
-      passwordHash: await hashPassword(FIXTURE.adminPassword), roleId: adminRole.id,
-    },
-  });
-  const restrictedRole = await prisma.role.create({
-    data: {
-      name: FIXTURE.restrictedRoleName,
-      permissions: { create: [{ permission: "parts.view" }, { permission: "processes.view" }] },
-    },
-  });
-  const restrictedUser = await prisma.user.create({
-    data: {
-      username: FIXTURE.restrictedUsername, displayName: "E2E Restricted User",
-      passwordHash: await hashPassword(FIXTURE.restrictedPassword), roleId: restrictedRole.id,
-    },
-  });
-  return {
-    customerId: customer.id, customerCode: customer.code,
-    partId: part.id, partNumber: part.partNumber,
-    stepCodeA: { id: stepCodeA.id, code: stepCodeA.code, name: stepCodeA.name },
-    stepCodeB: { id: stepCodeB.id, code: stepCodeB.code, name: stepCodeB.name },
-    decoyTemplateId: decoyTemplate.id, decoyTemplateName: decoyTemplate.name,
-    liveTemplateName: FIXTURE.liveTemplateName,
-    adminRoleId: adminRole.id, adminUserId: adminUser.id,
-    adminUsername: adminUser.username, adminPassword: FIXTURE.adminPassword,
-    restrictedRoleId: restrictedRole.id, restrictedUserId: restrictedUser.id,
-    restrictedUsername: restrictedUser.username, restrictedPassword: FIXTURE.restrictedPassword,
-  };
+    });
+    const stepCodeA = await tx.processStepCode.create({
+      data: {
+        code: FIXTURE.stepCodeA, name: "E2E Quench",
+        fields: {
+          create: [
+            { label: "Temperature", type: "NUMBER", unit: "°F", sort: 0 },
+            { label: "Passed", type: "CHECKBOX", sort: 1 },
+          ],
+        },
+      },
+    });
+    const stepCodeB = await tx.processStepCode.create({
+      data: { code: FIXTURE.stepCodeB, name: "E2E Hot Wash" },
+    });
+    const decoyTemplate = await tx.processTemplate.create({
+      data: { name: FIXTURE.decoyTemplateName },
+    });
+    // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
+    // both the parts/processes screens and the admin step-codes screen, so anything narrower would
+    // have to be kept in step with them by hand.
+    const adminRole = await tx.role.create({
+      data: {
+        name: FIXTURE.adminRoleName,
+        permissions: { create: ALL_PERMISSIONS.map((permission) => ({ permission })) },
+      },
+    });
+    const adminUser = await tx.user.create({
+      data: {
+        username: FIXTURE.adminUsername, displayName: "E2E Admin User",
+        passwordHash: adminHash, roleId: adminRole.id,
+      },
+    });
+    const restrictedRole = await tx.role.create({
+      data: {
+        name: FIXTURE.restrictedRoleName,
+        permissions: { create: [{ permission: "parts.view" }, { permission: "processes.view" }] },
+      },
+    });
+    const restrictedUser = await tx.user.create({
+      data: {
+        username: FIXTURE.restrictedUsername, displayName: "E2E Restricted User",
+        passwordHash: restrictedHash, roleId: restrictedRole.id,
+      },
+    });
+    return {
+      customerId: customer.id, customerCode: customer.code,
+      partId: part.id, partNumber: part.partNumber,
+      stepCodeA: { id: stepCodeA.id, code: stepCodeA.code, name: stepCodeA.name },
+      stepCodeB: { id: stepCodeB.id, code: stepCodeB.code, name: stepCodeB.name },
+      decoyTemplateId: decoyTemplate.id, decoyTemplateName: decoyTemplate.name,
+      liveTemplateName: FIXTURE.liveTemplateName,
+      adminRoleId: adminRole.id, adminUserId: adminUser.id,
+      adminUsername: adminUser.username, adminPassword: FIXTURE.adminPassword,
+      restrictedRoleId: restrictedRole.id, restrictedUserId: restrictedUser.id,
+      restrictedUsername: restrictedUser.username, restrictedPassword: FIXTURE.restrictedPassword,
+    };
+    // Generous: the admin role alone writes one row per permission, and this runs against a
+    // developer machine that may also be compiling a dev server at the time.
+  }, { timeout: 30000 });
 }
 
 /**
