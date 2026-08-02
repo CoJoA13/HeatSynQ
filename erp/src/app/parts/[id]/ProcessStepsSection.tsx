@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 
 // Local mirrors of src/server/part-process-steps.ts's exported row types — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -48,25 +49,44 @@ export function ProcessStepsSection({
 
   const canEdit = gate(perms, "processes.edit");
 
+  // Stale-response gates (src/lib/use-latest.ts, the parts/page.tsx `load()` precedent): a rapid
+  // revision-picker change can let an older in-flight GET revisions/[n] resolve after a newer
+  // one — without this, the older response could overwrite `detail` for a revision the badge no
+  // longer shows. `revisionsLatest` covers the same class of race on the list itself (mount vs.
+  // a mutation's own `refreshAfter` reload landing out of order).
+  const revisionsLatest = useLatest();
+  const detailLatest = useLatest();
+
   const loadRevisions = useCallback(async (): Promise<RevisionSummary[]> => {
+    const t = revisionsLatest.next();
     try {
       const data = await api<RevisionSummary[]>(`/api/parts/${partId}/process/revisions`);
-      setRevisions(data);
-      setViewDenied(false);
+      if (revisionsLatest.isCurrent(t)) {
+        setRevisions(data);
+        setViewDenied(false);
+      }
       return data;
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
-        setViewDenied(true);
+        if (revisionsLatest.isCurrent(t)) setViewDenied(true);
         return [];
       }
       throw e;
     }
-  }, [partId]);
+  }, [partId, revisionsLatest]);
 
+  // Errors are handled inside (not re-thrown) so every caller — the mount effect, the
+  // `[selected]` effect, and `refreshAfter` — gets consistent reporting without each needing its
+  // own `.catch`, the parts/page.tsx `load()` precedent.
   const loadDetail = useCallback(async (revisionNumber: number) => {
-    const data = await api<RevisionDetail>(`/api/parts/${partId}/process/revisions/${revisionNumber}`);
-    setDetail(data);
-  }, [partId]);
+    const t = detailLatest.next();
+    try {
+      const data = await api<RevisionDetail>(`/api/parts/${partId}/process/revisions/${revisionNumber}`);
+      if (detailLatest.isCurrent(t)) setDetail(data);
+    } catch (e) {
+      if (detailLatest.isCurrent(t)) onError((e as Error).message);
+    }
+  }, [partId, detailLatest, onError]);
 
   // Initial load: revisions first, then default `selected` to the current (highest — newest
   // first) revision. A part with no process steps yet has zero revisions (§5.1 — revision 1 is
@@ -80,8 +100,8 @@ export function ProcessStepsSection({
 
   useEffect(() => {
     if (selected === null) { setDetail(null); return; }
-    loadDetail(selected).catch((e) => onError((e as Error).message));
-  }, [selected, loadDetail, onError]);
+    void loadDetail(selected);
+  }, [selected, loadDetail]);
 
   // Session-only reads (§5.15 vocabulary rule, /api/process/step-code-fields; ordinary
   // processes.view pick-list, /api/process-templates with no query — the route already filters
@@ -98,7 +118,15 @@ export function ProcessStepsSection({
     api<TemplateOption[]>("/api/process-templates").then((data) => {
       setTemplates(data);
       setTemplatesReady(true);
-    }).catch((e) => onError((e as Error).message));
+    }).catch((e) => {
+      // Same processes.view gate as the revisions fetch — a denied user 403s here too. That
+      // denial is already surfaced once, by loadRevisions setting `viewDenied` (the section
+      // frame replaces all data with "Requires processes.view."); reporting it a second time
+      // through the shared `onError` banner would leak a redundant top-page error above that
+      // frame (the bug task-10-view-denied.png accidentally captured).
+      if (e instanceof ApiError && e.status === 403) return;
+      onError((e as Error).message);
+    });
   }, [onError]);
 
   // Rebuilds the per-step drafts once both the revision detail and the live codes are in hand.
@@ -261,6 +289,10 @@ export function ProcessStepsSection({
   const selectedMeta = revisions.find((r) => r.revisionNumber === selected);
   const rowDisabled = canEdit.disabled || readOnly;
   const rowTitle = readOnly ? readOnlyTitle : canEdit.title;
+  // Spec §10: the current revision, when locked, stays fully editable (see `readOnly` above) —
+  // but an edit there silently cuts N+1, so the user is warned before it happens rather than
+  // only finding out via the picker jumping to a new number after the fact.
+  const isCurrentLocked = isCurrent && !!selectedMeta?.lockedAt;
 
   return (
     <section className="mb-6 rounded border bg-white p-4">
@@ -277,6 +309,11 @@ export function ProcessStepsSection({
           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700">
             Rev {selected} · {selectedMeta?.lockedAt ? "locked" : "working"}
           </span>
+          {isCurrentLocked && (
+            <span className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
+              Locked revision — editing will create a new revision
+            </span>
+          )}
         </div>
       ) : (
         <p className="mb-3 text-sm text-slate-500">No steps yet — add the first one below.</p>
