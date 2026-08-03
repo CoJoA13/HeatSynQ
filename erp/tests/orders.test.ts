@@ -1,11 +1,19 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import ExcelJS from "exceljs";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { HttpError } from "@/server/http";
-import { createOrder, getOrder, listOrders, exportOrders } from "@/server/orders";
+import {
+  createOrder, getOrder, listOrders, exportOrders,
+  updateOrder, addLine, updateLine, removeLine,
+  replaceContainers, replaceSerials, replaceCharges,
+  voidOrder, linkOrder, unlinkOrder,
+} from "@/server/orders";
 import { updateStep, getRevision, getRevisions } from "@/server/part-process-steps";
 import { setSetting } from "@/server/settings";
+import { readAudit } from "@/server/audit";
+import { deleteReference } from "@/server/reference";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -1026,5 +1034,591 @@ describe("exportOrders", () => {
     const shown = await sheetOf(await exportOrders({ includeVoided: true, sort: "orderNumber", dir: "asc" }));
     expect(shown.rowCount).toBe(4);
     expect(shown.getRow(3).getCell(16).value).toBe("yes"); // order 1001, the voided one
+  });
+});
+
+describe("updateOrder", () => {
+  beforeEach(truncateAll);
+
+  it("PATCHes poNumber/vsOrderNumber/dates/notes and audits a real diff", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PO-OLD", lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    const { order: after, warnings } = await asSystem(() => updateOrder(order.id, {
+      poNumber: "PO-NEW", vsOrderNumber: "VS-77", notes: "rush it",
+      receivedDate: "2026-08-10", requestDate: "2026-08-17", targetDate: "2026-08-20",
+    }));
+
+    expect(after).toMatchObject({
+      poNumber: "PO-NEW", vsOrderNumber: "VS-77", notes: "rush it",
+      receivedDate: "2026-08-10", requestDate: "2026-08-17", targetDate: "2026-08-20",
+    });
+    expect(warnings).toEqual([]);
+
+    const [entry] = await readAudit("order", order.id);
+    expect(entry.action).toBe("update");
+    const before = entry.before as { poNumber: string };
+    const diffAfter = entry.after as { poNumber: string };
+    expect(before.poNumber).toBe("PO-OLD");
+    expect(diffAfter.poNumber).toBe("PO-NEW");
+  });
+
+  it("leaves targetDate alone when omitted, and clears it on an explicit null", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, targetDate: "2026-09-01",
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    const { order: untouched } = await asSystem(() => updateOrder(order.id, { poNumber: "X" }));
+    expect(untouched.targetDate).toBe("2026-09-01");
+
+    const { order: cleared } = await asSystem(() => updateOrder(order.id, { targetDate: null }));
+    expect(cleared.targetDate).toBeNull();
+  });
+
+  it("rejects an unrecognized key — customerId and status have no input path", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => updateOrder(order.id, { customerId: "nope" }))).rejects.toBeInstanceOf(ZodError);
+    await expect(asSystem(() => updateOrder(order.id, { status: "SHIPPED" }))).rejects.toBeInstanceOf(ZodError);
+  });
+
+  it("rejects a malformed date, naming the field", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => updateOrder(order.id, { requestDate: "13/2026" })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("Request date") });
+  });
+
+  it("404s an unknown order", async () => {
+    await expect(asSystem(() => updateOrder("nope", { poNumber: "X" })))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+});
+
+describe("addLine", () => {
+  beforeEach(truncateAll);
+
+  it("adds a rider at position max+1, validated like createOrder's lines", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    const rider2 = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "3541720C6", name: "Ring gear D", eachWeight: "13.5000" },
+    });
+
+    const { order: after, warnings } = await asSystem(() => addLine(order.id, {
+      partId: rider2.id, qty: 7, weight: "94.50", serials: [{ serial: "EC900" }],
+    }));
+
+    expect(after.lines).toHaveLength(3);
+    expect(after.lines[2]).toMatchObject({ position: 3, partId: rider2.id, revisionNumber: null, qty: 7 });
+    expect(after.lines[2].weight).toBe(94.5);
+    expect(after.serials.filter((s) => s.lineId === after.lines[2].id).map((s) => s.serial)).toEqual(["EC900"]);
+    // The new rider's qty/weight are not reflected in the loads split made at create time.
+    expect(warnings).toEqual(["Loads no longer sum to the order — re-split or edit loads"]);
+  });
+
+  it("rejects a rider belonging to another customer, and writes nothing", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const other = await prisma.customer.create({ data: { code: "OTHR", name: "Other Co" } });
+    const theirs = await prisma.part.create({
+      data: { customerId: other.id, partNumber: "X-9", eachWeight: "1.0000" },
+    });
+
+    await expect(asSystem(() => addLine(order.id, { partId: theirs.id, qty: 1, weight: "1.00" })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("belongs to another customer") });
+    expect(await prisma.orderLine.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it("404s an unknown order", async () => {
+    const { lead } = await fixture();
+    await expect(asSystem(() => addLine("nope", { partId: lead.id, qty: 1, weight: "1.00" })))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+
+  it("shows the new line in the audit entry's after snapshot", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const rider = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "R-1", eachWeight: "1.0000" },
+    });
+
+    await asSystem(() => addLine(order.id, { partId: rider.id, qty: 4, weight: "4.00" }));
+
+    const [entry] = await readAudit("order", order.id);
+    expect(entry.action).toBe("update");
+    const after = entry.after as {
+      lines: { position: number; partId: string; qty: number; part: { partNumber: string } }[];
+    };
+    expect(after.lines).toHaveLength(2);
+    expect(after.lines[1]).toMatchObject({ position: 2, partId: rider.id, qty: 4 });
+    expect(after.lines[1].part).toMatchObject({ partNumber: "R-1" });
+  });
+});
+
+describe("updateLine", () => {
+  beforeEach(truncateAll);
+
+  it("changes qty/weight on the lead line, never partId or revisionNumber", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    const leadLineId = order.lines[0].id;
+
+    const { order: after } = await asSystem(() => updateLine(order.id, leadLineId, { qty: 3500, weight: "47250.00" }));
+    expect(after.lines[0]).toMatchObject({ qty: 3500, partId: lead.id, revisionNumber: 1 });
+    expect(after.lines[0].weight).toBe(47250);
+
+    await expect(asSystem(() => updateLine(order.id, leadLineId, { partId: rider.id })))
+      .rejects.toBeInstanceOf(ZodError);
+    await expect(asSystem(() => updateLine(order.id, leadLineId, { revisionNumber: 2 })))
+      .rejects.toBeInstanceOf(ZodError);
+
+    // Neither rejected patch touched the row.
+    const unchanged = await getOrder(order.id);
+    expect(unchanged.lines[0]).toMatchObject({ partId: lead.id, revisionNumber: 1, qty: 3500 });
+  });
+
+  it("returns the loads-mismatch warning after a qty edit, and clears it once sums match again", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 100, weight: "1350.00" }],
+    }));
+    const lineId = order.lines[0].id;
+    expect(order.loads).toEqual([{ id: expect.any(String), loadNumber: 1, qty: 100, weight: 1350 }]);
+
+    const { warnings: mismatched } =
+      await asSystem(() => updateLine(order.id, lineId, { qty: 150, weight: "2025.00" }));
+    expect(mismatched).toEqual(["Loads no longer sum to the order — re-split or edit loads"]);
+
+    const { warnings: cleared } =
+      await asSystem(() => updateLine(order.id, lineId, { qty: 100, weight: "1350.00" }));
+    expect(cleared).toEqual([]);
+  });
+
+  it("404s an unknown line id", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => updateLine(order.id, "nope", { qty: 2 })))
+      .rejects.toMatchObject({ status: 404, message: "Order line not found" });
+  });
+});
+
+describe("removeLine", () => {
+  beforeEach(truncateAll);
+
+  it("refuses to remove the lead line with the exact message", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    await expect(asSystem(() => removeLine(order.id, order.lines[0].id))).rejects.toMatchObject({
+      status: 400, message: "The lead part cannot be removed — void the order instead",
+    });
+    expect(await prisma.orderLine.count({ where: { orderId: order.id } })).toBe(2);
+  });
+
+  it("closes the position gap when a rider is removed, ascending per-row updates", async () => {
+    const { customer, lead, rider } = await fixture();
+    const rider2 = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "3541720C5", name: "Ring gear C", eachWeight: "13.5000" },
+    });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [
+        { partId: lead.id, qty: 10, weight: "135.00" },
+        { partId: rider.id, qty: 5, weight: "67.50" },
+        { partId: rider2.id, qty: 3, weight: "40.50" },
+      ],
+    }));
+    const middleLineId = order.lines[1].id;
+    const lastLineId = order.lines[2].id;
+
+    const after = await asSystem(() => removeLine(order.id, middleLineId));
+
+    expect(after.lines).toHaveLength(2);
+    expect(after.lines[0]).toMatchObject({ position: 1, partId: lead.id });
+    expect(after.lines[1]).toMatchObject({ position: 2, partId: rider2.id, id: lastLineId });
+  });
+
+  it("removes the line's own serials along with it", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [
+        { partId: lead.id, qty: 1, weight: "13.50" },
+        { partId: rider.id, qty: 1, weight: "13.50", serials: [{ serial: "EC001" }] },
+      ],
+    }));
+    const riderLineId = order.lines[1].id;
+
+    const after = await asSystem(() => removeLine(order.id, riderLineId));
+    expect(after.serials).toEqual([]);
+    expect(await prisma.orderSerial.count({ where: { lineId: riderLineId } })).toBe(0);
+  });
+
+  it("404s an unknown line id", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => removeLine(order.id, "nope")))
+      .rejects.toMatchObject({ status: 404, message: "Order line not found" });
+  });
+});
+
+describe("replaceContainers", () => {
+  beforeEach(truncateAll);
+
+  it("bulk-replaces the order's containers, renumbered from 1", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const crate = await prisma.containerType.create({ data: { name: "Crate" } });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+
+    const after = await asSystem(() => replaceContainers(order.id, [
+      { typeId: crate.id, count: 2, tareWeight: "10.00" },
+      { typeId: containerType.id, count: 1 },
+    ]));
+
+    expect(after.containers).toHaveLength(2);
+    expect(after.containers[0]).toMatchObject({ position: 1, typeId: crate.id, count: 2, tareWeight: 10 });
+    expect(after.containers[1]).toMatchObject({ position: 2, typeId: containerType.id, count: 1 });
+  });
+
+  it("rejects an unknown container type and writes nothing", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+
+    await expect(asSystem(() => replaceContainers(order.id, [{ typeId: "nope", count: 1 }])))
+      .rejects.toMatchObject({ status: 400, message: "That container type does not exist" });
+    expect((await getOrder(order.id)).containers).toHaveLength(1); // unchanged
+  });
+
+  it("clears every container with an empty list", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+    const after = await asSystem(() => replaceContainers(order.id, []));
+    expect(after.containers).toEqual([]);
+  });
+});
+
+describe("replaceContainers: races a concurrent containerType delete", () => {
+  beforeEach(truncateAll);
+
+  // Same mechanism as customers.test.ts's "cannot form a reciprocal parent cycle" race and the
+  // four writers documented in reference.ts's deleteReference doc comment: assertRefExists (here,
+  // inside replaceContainers) and deleteReference's blocker scan both read the containerType row
+  // inside their own Serializable transaction, so Postgres SSI aborts whichever side would leave a
+  // live container pointing at a type that same instant vanished. Looped because the interleaving
+  // is timing-dependent — a single attempt could pass even against a regressed guard.
+  it("never leaves a live container pointing at a soft-deleted container type", async () => {
+    for (let i = 0; i < 10; i++) {
+      await truncateAll();
+      const { customer, lead } = await fixture();
+      const type = await prisma.containerType.create({ data: { name: `Basket ${i}` } });
+      const { order } = await asSystem(() => createOrder({
+        customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      }));
+
+      const results = await Promise.allSettled([
+        asSystem(() => replaceContainers(order.id, [{ typeId: type.id, count: 1 }])),
+        asSystem(() => deleteReference("containerType", type.id)),
+      ]);
+      for (const r of results) {
+        if (r.status === "rejected") {
+          expect(r.reason, `attempt ${i}`).toBeInstanceOf(HttpError);
+          expect((r.reason as HttpError).status, `attempt ${i}`).toBeGreaterThanOrEqual(400);
+        }
+      }
+
+      const [typeRow, containers] = await Promise.all([
+        prisma.containerType.findUniqueOrThrow({ where: { id: type.id } }),
+        prisma.orderContainer.findMany({ where: { typeId: type.id } }),
+      ]);
+      const orphaned = typeRow.deletedAt !== null && containers.length > 0;
+      expect(orphaned, `orphaned container on attempt ${i}`).toBe(false);
+    }
+  });
+});
+
+describe("replaceSerials", () => {
+  beforeEach(truncateAll);
+
+  it("atomically swaps one line's serial set, renumbered from 1", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: lead.id, qty: 2, weight: "27.00", serials: [{ serial: "OLD1" }, { serial: "OLD2" }] }],
+    }));
+    const lineId = order.lines[0].id;
+
+    const after = await asSystem(() => replaceSerials(order.id, lineId, [
+      { serial: "NEW1", description: "heat 1" }, { serial: "NEW2" }, { serial: "NEW3" },
+    ]));
+
+    expect(after.serials.map((s) => s.serial)).toEqual(["NEW1", "NEW2", "NEW3"]);
+    expect(after.serials.map((s) => s.position)).toEqual([1, 2, 3]);
+    expect(after.serials.every((s) => s.lineId === lineId)).toBe(true);
+    expect(after.serials[0].description).toBe("heat 1");
+  });
+
+  it("rejects an in-payload duplicate, naming the serial, and writes nothing", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50", serials: [{ serial: "KEEP" }] }],
+    }));
+    const lineId = order.lines[0].id;
+
+    await expect(asSystem(() => replaceSerials(order.id, lineId, [{ serial: "A" }, { serial: "A" }])))
+      .rejects.toMatchObject({ status: 400, message: 'Serial "A" is entered twice' });
+
+    expect((await getOrder(order.id)).serials.map((s) => s.serial)).toEqual(["KEEP"]);
+  });
+
+  it("clears a line's serials with an empty list", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50", serials: [{ serial: "KEEP" }] }],
+    }));
+    const after = await asSystem(() => replaceSerials(order.id, order.lines[0].id, []));
+    expect(after.serials).toEqual([]);
+  });
+
+  it("404s an unknown line id", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => replaceSerials(order.id, "nope", [])))
+      .rejects.toMatchObject({ status: 404, message: "Order line not found" });
+  });
+});
+
+describe("replaceCharges", () => {
+  beforeEach(truncateAll);
+
+  it("bulk-replaces the order's charges, renumbered from 1", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      charges: [{ description: "Freight", amount: "50.00" }],
+    }));
+
+    const after = await asSystem(() => replaceCharges(order.id, [
+      { description: "Straightening", amount: null }, { description: "Freight", amount: "75.00" },
+    ]));
+
+    expect(after.charges).toEqual([
+      expect.objectContaining({ position: 1, description: "Straightening", amount: null }),
+      expect.objectContaining({ position: 2, description: "Freight", amount: 75 }),
+    ]);
+  });
+
+  it("clears every charge with an empty list", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      charges: [{ description: "Freight", amount: "50.00" }],
+    }));
+    const after = await asSystem(() => replaceCharges(order.id, []));
+    expect(after.charges).toEqual([]);
+  });
+});
+
+describe("voidOrder", () => {
+  beforeEach(truncateAll);
+
+  it("requires a non-blank reason", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => voidOrder(order.id, ""))).rejects.toMatchObject({
+      status: 400, message: "A reason is required to void an order",
+    });
+    await expect(asSystem(() => voidOrder(order.id, "   "))).rejects.toMatchObject({
+      status: 400, message: "A reason is required to void an order",
+    });
+    expect((await getOrder(order.id)).voided).toBe(false);
+  });
+
+  it("soft-deletes with the trimmed reason on the audit entry, and never frees the order number", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    await asSystem(() => voidOrder(order.id, "  wrong part keyed  "));
+
+    const [entry] = await readAudit("order", order.id);
+    expect(entry.action).toBe("delete");
+    expect(entry.reason).toBe("wrong part keyed");
+
+    const detail = await getOrder(order.id); // still readable, not 404
+    expect(detail.voided).toBe(true);
+    expect(detail.orderNumber).toBe(1000);
+
+    expect(await listOrders({})).toEqual([]);
+    const withVoided = await listOrders({ includeVoided: true });
+    expect(withVoided).toHaveLength(1);
+    expect(withVoided[0]).toMatchObject({ orderNumber: 1000, voided: true });
+  });
+
+  it("404s an unknown order", async () => {
+    await expect(asSystem(() => voidOrder("nope", "reason")))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+});
+
+describe("linkOrder / unlinkOrder", () => {
+  beforeEach(truncateAll);
+
+  it("refuses linking orders from two different customers", async () => {
+    const { customer, lead, code } = await fixture();
+    const other = await prisma.customer.create({ data: { code: "OTHR", name: "Other Co" } });
+    const theirPart = await prisma.part.create({
+      data: { customerId: other.id, partNumber: "X-1", eachWeight: "1.0000" },
+    });
+    await giveSteps(theirPart.id, code.id);
+
+    const a = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const b = await asSystem(() => createOrder({
+      customerId: other.id, lines: [{ partId: theirPart.id, qty: 1, weight: "1.00" }],
+    }));
+
+    await expect(asSystem(() => linkOrder(a.order.id, b.order.id))).rejects.toMatchObject({
+      status: 400, message: "Orders can only be linked within one customer",
+    });
+  });
+
+  it("refuses linking an order to itself", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => linkOrder(order.id, order.id))).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("404s when the other side of a link is voided", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    await asSystem(() => voidOrder(b.order.id, "test"));
+
+    await expect(asSystem(() => linkOrder(a.order.id, b.order.id)))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+
+  it("mints a fresh group for two groupless orders; a third joins by linking the already-grouped one", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const c = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+
+    const linked1 = await asSystem(() => linkOrder(a.order.id, b.order.id));
+    expect(linked1.linkGroupId).toBeTruthy();
+    const groupId = linked1.linkGroupId!;
+    expect((await getOrder(b.order.id)).linkGroupId).toBe(groupId);
+
+    // c joins by linking to the ALREADY-grouped b — adopts b's group rather than minting a third.
+    const linked2 = await asSystem(() => linkOrder(c.order.id, b.order.id));
+    expect(linked2.linkGroupId).toBe(groupId);
+
+    const detailA = await getOrder(a.order.id);
+    expect(detailA.linkedOrders.map((o) => o.id).sort()).toEqual([b.order.id, c.order.id].sort());
+    expect(detailA.linkedOrders.some((o) => o.id === a.order.id)).toBe(false); // excludes self
+  });
+
+  it("clears the group on unlink without touching the other members", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const c = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    await asSystem(() => linkOrder(a.order.id, b.order.id));
+    await asSystem(() => linkOrder(c.order.id, b.order.id));
+
+    const unlinked = await asSystem(() => unlinkOrder(a.order.id));
+    expect(unlinked.linkGroupId).toBeNull();
+
+    const detailB = await getOrder(b.order.id);
+    expect(detailB.linkedOrders.map((o) => o.id)).toEqual([c.order.id]);
+  });
+
+  it("404s an unknown order on either side", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await expect(asSystem(() => linkOrder("nope", order.id)))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+    await expect(asSystem(() => linkOrder(order.id, "nope")))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+    await expect(asSystem(() => unlinkOrder("nope")))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+});
+
+describe("every mutator refuses a voided order", () => {
+  beforeEach(truncateAll);
+
+  it("404s update, every line op, every replace op, void again, link and unlink", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: lead.id, qty: 10, weight: "135.00" }, { partId: rider.id, qty: 5, weight: "67.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+    const other = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const lineId = order.lines[0].id;
+
+    await asSystem(() => voidOrder(order.id, "wrong part keyed"));
+
+    const notFound = { status: 404, message: "Order not found" };
+    await expect(asSystem(() => updateOrder(order.id, { poNumber: "X" }))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => addLine(order.id, { partId: rider.id, qty: 1, weight: "13.50" })))
+      .rejects.toMatchObject(notFound);
+    await expect(asSystem(() => updateLine(order.id, lineId, { qty: 2 }))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => removeLine(order.id, lineId))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => replaceContainers(order.id, []))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => replaceSerials(order.id, lineId, []))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => replaceCharges(order.id, []))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => voidOrder(order.id, "again"))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => linkOrder(order.id, other.order.id))).rejects.toMatchObject(notFound);
+    await expect(asSystem(() => unlinkOrder(order.id))).rejects.toMatchObject(notFound);
   });
 });

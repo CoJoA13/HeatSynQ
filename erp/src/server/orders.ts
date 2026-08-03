@@ -3,7 +3,7 @@ import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { auditedCreate } from "./audit";
+import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { currentActor } from "./context";
@@ -74,14 +74,34 @@ export type OrderFilter = {
 };
 
 // Kept in sync with prisma/schema.prisma's @db.Decimal declarations on the order tables.
+//
+// Item shapes shared with Task 5's bulk-replace mutators below (replaceContainers/replaceSerials/
+// replaceCharges each accept `z.array(<ITEM>)` directly — same validation as a line's nested
+// array here, just without an outer CREATE envelope) — extracted once so both paths stay in sync
+// by construction rather than by two hand-kept-identical literals.
+const SERIAL_ITEM = z.object({
+  serial: z.string().trim().min(1).max(120),
+  description: z.string().max(500).default(""),
+}).strict();
+
+const CONTAINER_ITEM = z.object({
+  typeId: z.string().min(1),
+  count: z.number().int().min(1),
+  qty: z.number().int().min(1).nullable().optional(),
+  tareWeight: decimalField(12, 2, { min: "nonnegative" }),
+  grossWeight: decimalField(12, 2, { min: "nonnegative" }),
+}).strict();
+
+const CHARGE_ITEM = z.object({
+  description: z.string().trim().min(1).max(500),
+  amount: decimalField(12, 2, { min: "nonnegative" }),
+}).strict();
+
 const LINE = z.object({
   partId: z.string().min(1),
   qty: z.number().int().min(1),
   weight: decimalField(12, 2, { required: true, min: "positive" }),
-  serials: z.array(z.object({
-    serial: z.string().trim().min(1).max(120),
-    description: z.string().max(500).default(""),
-  }).strict()).max(10_000).default([]),
+  serials: z.array(SERIAL_ITEM).max(10_000).default([]),
 }).strict();
 
 const CREATE = z.object({
@@ -93,17 +113,8 @@ const CREATE = z.object({
   targetDate: z.string().nullable().optional(),
   notes: z.string().max(4000).default(""),
   lines: z.array(LINE).min(1),
-  containers: z.array(z.object({
-    typeId: z.string().min(1),
-    count: z.number().int().min(1),
-    qty: z.number().int().min(1).nullable().optional(),
-    tareWeight: decimalField(12, 2, { min: "nonnegative" }),
-    grossWeight: decimalField(12, 2, { min: "nonnegative" }),
-  }).strict()).default([]),
-  charges: z.array(z.object({
-    description: z.string().trim().min(1).max(500),
-    amount: decimalField(12, 2, { min: "nonnegative" }),
-  }).strict()).default([]),
+  containers: z.array(CONTAINER_ITEM).default([]),
+  charges: z.array(CHARGE_ITEM).default([]),
 }).strict();
 
 type CreateInput = z.infer<typeof CREATE>;
@@ -151,11 +162,16 @@ type ResolvedPart = Prisma.PartGetPayload<{ select: typeof PART_SELECT }>;
  * query for the distinct ids, then a walk in payload order so the FIRST bad line is the one
  * reported and the same part used twice is fetched once.
  *
- * Only `parts[0]`, the lead, goes on to the orderability check: riders are deliberately exempt
- * (spec §12.4) — the recipe an order is built from is the lead's.
+ * Only `parts[0]`, the lead, goes on to the orderability check when called from createOrder:
+ * riders are deliberately exempt (spec §12.4) — the recipe an order is built from is the lead's.
+ *
+ * `base` (default 0, `lineLabel`'s own indexing) lets `addLine` (Task 5) reuse this exact
+ * validation for its one new rider without mislabeling it: a bare 1-element array would otherwise
+ * always read "Line 1" in a rejection, even when the rider lands at position 4 — `base` is that
+ * line's real `position - 1`, so the label names the part actually being rejected.
  */
 async function resolveLineParts(
-  tx: Db, customerId: string, lines: LineInput[],
+  tx: Db, customerId: string, lines: LineInput[], base = 0,
 ): Promise<ResolvedPart[]> {
   const ids = [...new Set(lines.map((l) => l.partId))];
   const found = await tx.part.findMany({ where: { id: { in: ids }, deletedAt: null }, select: PART_SELECT });
@@ -163,11 +179,11 @@ async function resolveLineParts(
 
   return lines.map((line, i) => {
     const part = byId.get(line.partId);
-    if (!part) throw new HttpError(400, `${lineLabel(i)}: that part does not exist`);
+    if (!part) throw new HttpError(400, `${lineLabel(base + i)}: that part does not exist`);
     if (part.customerId !== customerId) {
-      throw new HttpError(400, `${lineLabel(i, part)}: that part belongs to another customer`);
+      throw new HttpError(400, `${lineLabel(base + i, part)}: that part belongs to another customer`);
     }
-    if (!part.active) throw new HttpError(400, `${lineLabel(i, part)}: that part is inactive`);
+    if (!part.active) throw new HttpError(400, `${lineLabel(base + i, part)}: that part is inactive`);
     return part;
   });
 }
@@ -204,13 +220,16 @@ function buildWarnings(
  * collided, never which VALUE did, and on a keyed-or-pasted serial list naming the value is the
  * entire point — so the payload is re-walked here, in entry order, to find the repeat the
  * database just refused. Only ever runs on the failure path, so the happy path pays nothing.
+ *
+ * `base` (default 0) is `resolveLineParts`'s same label-offset, forwarded from `createSerials` so
+ * `addLine`'s one new rider is named by its real position too.
  */
-function duplicateSerialError(lines: LineInput[], parts: ResolvedPart[]): HttpError {
+function duplicateSerialError(lines: LineInput[], parts: ResolvedPart[], base = 0): HttpError {
   for (const [i, line] of lines.entries()) {
     const seen = new Set<string>();
     for (const { serial } of line.serials) {
       if (seen.has(serial)) {
-        return new HttpError(400, `${lineLabel(i, parts[i])}: serial "${serial}" is entered twice`);
+        return new HttpError(400, `${lineLabel(base + i, parts[i])}: serial "${serial}" is entered twice`);
       }
       seen.add(serial);
     }
@@ -219,9 +238,10 @@ function duplicateSerialError(lines: LineInput[], parts: ResolvedPart[]): HttpEr
 }
 
 /** Serials hang off lines, so they cannot be part of the order's nested create — they are
- *  written once the line ids exist, keyed by the line's position in the payload. */
+ *  written once the line ids exist, keyed by the line's position in the payload. `base` (default
+ *  0) is forwarded to `duplicateSerialError` — see `resolveLineParts`'s comment on it. */
 async function createSerials(
-  tx: Db, orderId: string, lineIds: string[], lines: LineInput[], parts: ResolvedPart[],
+  tx: Db, orderId: string, lineIds: string[], lines: LineInput[], parts: ResolvedPart[], base = 0,
 ): Promise<void> {
   const rows = lines.flatMap((line, i) => line.serials.map((s, index) => ({
     orderId, lineId: lineIds[i], position: index + 1, serial: s.serial, description: s.description,
@@ -231,7 +251,7 @@ async function createSerials(
     await tx.orderSerial.createMany({ data: rows });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      throw duplicateSerialError(lines, parts);
+      throw duplicateSerialError(lines, parts, base);
     }
     throw err;
   }
@@ -644,4 +664,361 @@ export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
     voided: r.voided ? "yes" : "no",
   }));
   return toXlsx("Orders", BOARD_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
+}
+
+// -------------------------------------------------------------------------------------------
+// Edits, void, and linked orders (Task 5, spec §5a/§5c/§5d). Every mutator below shares one
+// shape: `withDbErrors` wraps a Serializable `$transaction` (uniform with createOrder's own, even
+// where nothing here assigns a registered FK — global-constraints: "the whole order save runs
+// Serializable for uniformity") that resolves the order with `findFirst({ id, deletedAt: null })`
+// — 404 "Order not found" catches both an unknown id and a voided one, since a voided order is
+// read-only (spec §5a/§5c) — then writes through `auditedUpdate("order", id, ...)` so history
+// carries a real before/after diff on the order's own row. `SNAPSHOT_INCLUDE.order` (audit.ts)
+// already pulls every child collection, ordered, so no mutator here hand-builds a snapshot the
+// way createOrder's `auditPayload` does for the create entry — the automatic one is enough.
+// -------------------------------------------------------------------------------------------
+
+const UPDATE_ORDER = z.object({
+  poNumber: z.string().max(200).optional(),
+  vsOrderNumber: z.string().max(60).optional(),
+  receivedDate: z.string().optional(),
+  requestDate: z.string().optional(),
+  targetDate: z.string().nullable().optional(),
+  notes: z.string().max(4000).optional(),
+}).strict();
+
+// qty/weight only — partId and revisionNumber have no key in this shape at all, so `.strict()`
+// itself is the immutability guard (spec §5a: "Customer and lead part/revision are immutable").
+const UPDATE_LINE = z.object({
+  qty: z.number().int().min(1).optional(),
+  weight: decimalField(12, 2, { required: true, min: "positive" }).optional(),
+}).strict();
+
+const REPLACE_CONTAINERS = z.array(CONTAINER_ITEM);
+const REPLACE_SERIALS = z.array(SERIAL_ITEM).max(10_000);
+const REPLACE_CHARGES = z.array(CHARGE_ITEM);
+
+/**
+ * Recomputed from the order's CURRENT state, not from what a particular edit changed — so any
+ * mutator whose signature carries `warnings` (updateOrder, addLine, updateLine) reports the true
+ * relationship even when this call didn't touch qty/weight at all, and an edit that restores the
+ * match reports `[]` again rather than remembering it once didn't (spec §5a/§5b). Compared in
+ * cents, not the rounded-back-to-dollars quotient: two totals that both divide out to the same
+ * float are only guaranteed equal when the integer cents behind them already are, so comparing
+ * the cents directly (lineTotals' own technique, inlined here for the loads side too) sidesteps
+ * any IEEE754 doubt entirely rather than trusting it.
+ */
+function loadsMismatchWarnings(order: OrderDetail): OrderWarnings {
+  const lineQty = order.lines.reduce((sum, l) => sum + l.qty, 0);
+  const lineCents = order.lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
+  const loadQty = order.loads.reduce((sum, l) => sum + (l.qty ?? 0), 0);
+  const loadCents = order.loads.reduce((sum, l) => sum + Math.round((l.weight ?? 0) * 100), 0);
+  return lineQty === loadQty && lineCents === loadCents
+    ? []
+    : ["Loads no longer sum to the order — re-split or edit loads"];
+}
+
+/** PATCH of poNumber/vsOrderNumber/dates/notes — nothing else (spec §5a: customer and the lead
+ *  part/revision are immutable; a wrong-part order is voided and re-keyed, not patched). Fields
+ *  are all `.optional()` rather than `.default()`, so an omitted key is a true no-op; `targetDate`
+ *  is `.nullable()` too, so an explicit `null` clears it, distinct from omitting the key. */
+export async function updateOrder(
+  id: string, input: unknown,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
+  const data = UPDATE_ORDER.parse(input);
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const target = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!target) throw new HttpError(404, "Order not found");
+
+    const patch: Prisma.OrderUpdateInput = {
+      ...(data.poNumber !== undefined ? { poNumber: data.poNumber } : {}),
+      ...(data.vsOrderNumber !== undefined ? { vsOrderNumber: data.vsOrderNumber } : {}),
+      ...(data.receivedDate !== undefined ? { receivedDate: parseDate(data.receivedDate, "Received date") } : {}),
+      ...(data.requestDate !== undefined ? { requestDate: parseDate(data.requestDate, "Request date") } : {}),
+      ...(data.targetDate !== undefined
+        ? { targetDate: data.targetDate === null ? null : parseDate(data.targetDate, "Target date") }
+        : {}),
+      ...(data.notes !== undefined ? { notes: data.notes } : {}),
+    };
+
+    await auditedUpdate("order", id, () => tx.order.update({ where: { id }, data: patch }), { tx });
+
+    const order = await readDetail(tx, id, traffic);
+    return { order, warnings: loadsMismatchWarnings(order) };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Adds one rider at position max+1 (spec §5a) — never the lead; a fresh order's own lead comes
+ *  only from createOrder. Validated exactly like every line createOrder resolves (live, active,
+ *  owned by the order's customer) via the same `resolveLineParts` helper. */
+export async function addLine(
+  orderId: string, input: unknown,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
+  const data = LINE.parse(input);
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({
+      where: { id: orderId, deletedAt: null }, select: { id: true, customerId: true },
+    });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const { _max } = await tx.orderLine.aggregate({ where: { orderId }, _max: { position: true } });
+    const position = (_max.position ?? 0) + 1;
+    const [part] = await resolveLineParts(tx, order.customerId, [data], position - 1);
+
+    await auditedUpdate("order", orderId, async () => {
+      const line = await tx.orderLine.create({
+        data: {
+          orderId, position, partId: data.partId, revisionNumber: null, qty: data.qty, weight: data.weight,
+        },
+      });
+      await createSerials(tx, orderId, [line.id], [data], [part], position - 1);
+    }, { tx });
+
+    const detail = await readDetail(tx, orderId, traffic);
+    return { order: detail, warnings: loadsMismatchWarnings(detail) };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** qty/weight only (spec §5a) — works on any line, lead included, but `UPDATE_LINE`'s shape has
+ *  no `partId`/`revisionNumber` key at all, so those stay immutable by construction. */
+export async function updateLine(
+  orderId: string, lineId: string, input: unknown,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
+  const data = UPDATE_LINE.parse(input);
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
+    if (!line) throw new HttpError(404, "Order line not found");
+
+    const patch: Prisma.OrderLineUpdateInput = {
+      ...(data.qty !== undefined ? { qty: data.qty } : {}),
+      ...(data.weight !== undefined ? { weight: data.weight } : {}),
+    };
+
+    await auditedUpdate("order", orderId, () => tx.orderLine.update({ where: { id: lineId }, data: patch }), { tx });
+
+    const detail = await readDetail(tx, orderId, traffic);
+    return { order: detail, warnings: loadsMismatchWarnings(detail) };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Position 1 (the lead) refuses outright — spec §5a: a wrong-part order is voided and re-keyed,
+ *  never edited down to its lead. Any rider closes the position gap it leaves behind: per-row
+ *  updates in ascending position order, each shift vacating the slot the next update needs — the
+ *  `removeStep` precedent (part-process-steps.ts), against `@@unique([orderId, position])`. */
+export async function removeLine(orderId: string, lineId: string): Promise<OrderDetail> {
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const line = await tx.orderLine.findFirst({
+      where: { id: lineId, orderId }, select: { id: true, position: true },
+    });
+    if (!line) throw new HttpError(404, "Order line not found");
+    if (line.position === 1) {
+      throw new HttpError(400, "The lead part cannot be removed — void the order instead");
+    }
+
+    await auditedUpdate("order", orderId, async () => {
+      // OrderSerial -> OrderLine is ON DELETE RESTRICT (migration.sql) — its rows have no meaning
+      // once the line is gone, so they go first, in the same transaction.
+      await tx.orderSerial.deleteMany({ where: { lineId } });
+      await tx.orderLine.delete({ where: { id: lineId } });
+      const rest = await tx.orderLine.findMany({
+        where: { orderId, position: { gt: line.position } },
+        orderBy: { position: "asc" },
+      });
+      for (const l of rest) {
+        await tx.orderLine.update({ where: { id: l.id }, data: { position: l.position - 1 } });
+      }
+    }, { tx });
+
+    return readDetail(tx, orderId, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Bulk PUT of the order's containers: delete-then-recreate at positions 1..n (spec §5a), one
+ *  `assertRefExists("containerType", …)` per DISTINCT incoming typeId, on this transaction's own
+ *  `tx` — the writer-side half of the reference-delete TOCTOU (reference-guards.ts's doc comment),
+ *  the same registered-FK pattern createOrder itself already runs for `containers[].typeId`. */
+export async function replaceContainers(orderId: string, input: unknown): Promise<OrderDetail> {
+  const data = REPLACE_CONTAINERS.parse(input);
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const typeIds = [...new Set(data.map((c) => c.typeId))];
+    for (const typeId of typeIds) await assertRefExists("containerType", typeId, tx);
+
+    await auditedUpdate("order", orderId, async () => {
+      await tx.orderContainer.deleteMany({ where: { orderId } });
+      if (data.length > 0) {
+        await tx.orderContainer.createMany({
+          data: data.map((c, i) => ({
+            orderId, position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
+            tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+          })),
+        });
+      }
+    }, { tx });
+
+    return readDetail(tx, orderId, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Bulk PUT of ONE line's serials: delete-then-recreate at positions 1..n (spec §5a). In-payload
+ *  duplicates are named and refused before the transaction even opens — the `duplicateSerialError`
+ *  shape, scoped to just this line's own replacement set (no part/customer label needed: the
+ *  caller already named the line via `lineId`). The `@@unique([lineId, serial])` P2002 mapping
+ *  below is the fallback for a value that collides for a reason the in-payload scan cannot see
+ *  (e.g. a genuine race with another write to this same line). */
+export async function replaceSerials(orderId: string, lineId: string, input: unknown): Promise<OrderDetail> {
+  const data = REPLACE_SERIALS.parse(input);
+
+  const seen = new Set<string>();
+  for (const { serial } of data) {
+    if (seen.has(serial)) throw new HttpError(400, `Serial "${serial}" is entered twice`);
+    seen.add(serial);
+  }
+
+  const traffic = await trafficSettings();
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
+    if (!line) throw new HttpError(404, "Order line not found");
+
+    await auditedUpdate("order", orderId, async () => {
+      await tx.orderSerial.deleteMany({ where: { lineId } });
+      if (data.length > 0) {
+        try {
+          await tx.orderSerial.createMany({
+            data: data.map((s, i) => (
+              { orderId, lineId, position: i + 1, serial: s.serial, description: s.description })),
+          });
+        } catch (err) {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+            throw new HttpError(400, "That serial is already on this line");
+          }
+          throw err;
+        }
+      }
+    }, { tx });
+
+    return readDetail(tx, orderId, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Bulk PUT of the order's charges: delete-then-recreate at positions 1..n (spec §5a/§7.5.3 — a
+ *  null amount is a legitimate "needs price"). No registered FK on this table, so no
+ *  `assertRefExists`, but the transaction stays Serializable for uniformity with every mutator
+ *  in this file. */
+export async function replaceCharges(orderId: string, input: unknown): Promise<OrderDetail> {
+  const data = REPLACE_CHARGES.parse(input);
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    await auditedUpdate("order", orderId, async () => {
+      await tx.orderCharge.deleteMany({ where: { orderId } });
+      if (data.length > 0) {
+        await tx.orderCharge.createMany({
+          data: data.map((c, i) => (
+            { orderId, position: i + 1, description: c.description, amount: c.amount ?? null })),
+        });
+      }
+    }, { tx });
+
+    return readDetail(tx, orderId, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/**
+ * `mustDo(user, "void_order")` is the route's job; the reason is required and trimmed HERE so no
+ * future caller can bypass it (the `deleteCustomer` precedent, customers.ts) — spec §5c: voiding
+ * carries the order's lines/loads/serials/charges away from every list and never frees the order
+ * number, so the reason is the only record of why. `auditedSoftDelete` writes the "delete" audit
+ * entry with that reason; the pre-check above it is what makes a second void of the same order
+ * read "Order not found" rather than the generic "That record has already been deleted" every
+ * other mutator in this file would also say for a voided target.
+ */
+export async function voidOrder(id: string, reason: string): Promise<void> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to void an order");
+
+  await withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+    await auditedSoftDelete("order", id, why, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/**
+ * Links two live orders of the SAME customer (spec §5d) — reference-only in Phase 3, no
+ * scheduling/consolidation behaviour hangs off it yet. Adopts the OTHER side's existing
+ * `linkGroupId` when it has one; mints a fresh `crypto.randomUUID()` for both otherwise (the
+ * column is a plain `String?` with no default — any opaque unique string works, and this needs no
+ * new dependency). Each order's own row is audited separately (`deleteCustomer`'s cascade-audit
+ * precedent: one action touching two rows gets one entry per row, not one entry naming both), so
+ * either order's own history shows the link.
+ */
+export async function linkOrder(id: string, otherId: string): Promise<OrderDetail> {
+  if (otherId === id) throw new HttpError(400, "An order cannot be linked to itself");
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({
+      where: { id, deletedAt: null }, select: { id: true, customerId: true },
+    });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    const other = await tx.order.findFirst({
+      where: { id: otherId, deletedAt: null }, select: { id: true, customerId: true, linkGroupId: true },
+    });
+    if (!other) throw new HttpError(404, "Order not found");
+
+    if (other.customerId !== order.customerId) {
+      throw new HttpError(400, "Orders can only be linked within one customer");
+    }
+
+    const groupId = other.linkGroupId ?? crypto.randomUUID();
+
+    await auditedUpdate("order", id, () =>
+      tx.order.update({ where: { id }, data: { linkGroupId: groupId } }), { tx });
+    await auditedUpdate("order", otherId, () =>
+      tx.order.update({ where: { id: otherId }, data: { linkGroupId: groupId } }), { tx });
+
+    return readDetail(tx, id, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Clears just this order's own `linkGroupId` (spec §5d) — a group of one left behind is
+ *  harmless and collapses on the next link, so no cascade to the other members is needed. */
+export async function unlinkOrder(id: string): Promise<OrderDetail> {
+  const traffic = await trafficSettings();
+
+  return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
+    const order = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!order) throw new HttpError(404, "Order not found");
+
+    await auditedUpdate("order", id, () =>
+      tx.order.update({ where: { id }, data: { linkGroupId: null } }), { tx });
+
+    return readDetail(tx, id, traffic);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
