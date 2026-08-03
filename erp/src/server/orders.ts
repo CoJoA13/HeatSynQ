@@ -9,7 +9,7 @@ import { decimalField } from "./decimal-field";
 import { currentActor } from "./context";
 import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
-import { lockCurrentRevision } from "./part-process-steps";
+import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
@@ -97,9 +97,15 @@ const CHARGE_ITEM = z.object({
   amount: decimalField(12, 2, { min: "nonnegative" }),
 }).strict();
 
+// Fix-wave R2 finding 3: a sanity bound on any one line's qty, independent of (and reached
+// BEFORE, since zod parses ahead of any transaction) the separate load-COUNT cap `runSplitLoads`
+// enforces below — a fat-fingered extra zero is refused as a clean validation error rather than
+// riding all the way to the split-count check.
+const LINE_QTY = z.number().int().min(1).max(10_000_000);
+
 const LINE = z.object({
   partId: z.string().min(1),
-  qty: z.number().int().min(1),
+  qty: LINE_QTY,
   weight: decimalField(12, 2, { required: true, min: "positive" }),
   serials: z.array(SERIAL_ITEM).max(10_000).default([]),
 }).strict();
@@ -204,6 +210,24 @@ export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty
   const totalQty = lines.reduce((sum, l) => sum + l.qty, 0);
   const cents = lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
   return { totalQty, totalWeight: cents / 100 };
+}
+
+/**
+ * `splitLoads` (fix-wave R2 finding 3) throws a plain `Error` when the split would exceed
+ * `MAX_LOADS` — it lives in src/lib and has no server import, so it cannot throw `HttpError`
+ * itself. This is the one seam that translates that refusal into the field-anchored 400 every
+ * other boundary in this service uses, the same shape `parseDate` gives `parseDateOnly`'s plain
+ * throw. Exported for order-loads.ts's `resplitLoads`, the only other caller of `splitLoads` — a
+ * live loadQty/loadWeight cap can be edited down against an existing large order exactly as
+ * easily as a create-time one can carry a tiny cap from the start, so both call sites need the
+ * identical guard.
+ */
+export function runSplitLoads(input: Parameters<typeof splitLoads>[0]): ReturnType<typeof splitLoads> {
+  try {
+    return splitLoads(input);
+  } catch (err) {
+    throw new HttpError(400, (err as Error).message);
+  }
 }
 
 /** Non-blocking notices returned alongside the saved order (spec §5.5). Neither of these ever
@@ -461,8 +485,9 @@ export async function createOrder(input: unknown): Promise<{ order: OrderDetail;
 
       // The lead part's caps, passed straight through — splitLoads trusts pre-validated input
       // (a zero loadQty would not terminate), and parts.ts already enforces loadQty ≥ 1 and
-      // loadWeight > 0 when present, so nothing is synthesized here.
-      const loads = splitLoads({
+      // loadWeight > 0 when present, so nothing is synthesized here. `runSplitLoads`, not
+      // `splitLoads` directly: translates a >MAX_LOADS refusal into a clean 400 (finding 3).
+      const loads = runSplitLoads({
         ...lineTotals(data.lines),
         loadQty: lead.loadQty,
         loadWeight: lead.loadWeight === null ? null : lead.loadWeight.toNumber(),
@@ -746,7 +771,7 @@ const UPDATE_ORDER = z.object({
 // qty/weight only — partId and revisionNumber have no key in this shape at all, so `.strict()`
 // itself is the immutability guard (spec §5a: "Customer and lead part/revision are immutable").
 const UPDATE_LINE = z.object({
-  qty: z.number().int().min(1).optional(),
+  qty: LINE_QTY.optional(),
   weight: decimalField(12, 2, { required: true, min: "positive" }).optional(),
 }).strict();
 
@@ -872,8 +897,19 @@ export async function updateLine(
 /** Position 1 (the lead) refuses outright — spec §5a: a wrong-part order is voided and re-keyed,
  *  never edited down to its lead. Any rider closes the position gap it leaves behind: per-row
  *  updates in ascending position order, each shift vacating the slot the next update needs — the
- *  `removeStep` precedent (part-process-steps.ts), against `@@unique([orderId, position])`. */
-export async function removeLine(orderId: string, lineId: string): Promise<OrderDetail> {
+ *  `removeStep` precedent (part-process-steps.ts), against `@@unique([orderId, position])`.
+ *
+ *  Fix-wave R2 finding 6: used to return the bare `OrderDetail`, like the three bulk replaces and
+ *  link/unlink — but unlike those, a removal changes the order's own totals (Σqty/Σweight over
+ *  the remaining lines) while leaving the loads collection untouched, exactly the shape
+ *  `loadsMismatchWarnings` exists to catch. Returning it bare meant the hub's `applyMutation`
+ *  (page.tsx) — which clears the warnings banner whenever a mutation's response carries no
+ *  `warnings` key, since there is no way to tell whether a stale warning still applies — cleared
+ *  the banner exactly when a removal had just caused (or, equally, just resolved) a mismatch. Now
+ *  matches addLine/updateLine's own shape. */
+export async function removeLine(
+  orderId: string, lineId: string,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
@@ -902,7 +938,8 @@ export async function removeLine(orderId: string, lineId: string): Promise<Order
       }
     }, { tx });
 
-    return readDetail(tx, orderId, traffic);
+    const detail = await readDetail(tx, orderId, traffic);
+    return { order: detail, warnings: loadsMismatchWarnings(detail) };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
@@ -1151,4 +1188,39 @@ export async function unlinkOrder(id: string): Promise<OrderDetail> {
 
     return readDetail(tx, id, traffic);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/**
+ * The order's frozen recipe (spec §5.3/§11), for the hub's Process section — `GET
+ * /api/orders/[id]/process`, gated `orders.view` alone (Task 14's `processes.view` gate no longer
+ * applies: this is now an order-scoped historical read, not a live parts-process one).
+ *
+ * Fix-wave R2 finding 7: parts are deletable once every order referencing them is voided
+ * (parts.ts's deletePart), but ProcessSection used to read the part directly
+ * (`getRevision`/`GET /api/parts/[id]/process/revisions/[n]`), which 404s "Part not found" the
+ * moment that happens — exactly backwards for a voided order's own paperwork, which spec §5c
+ * requires to stay readable. Resolved two ways from every other mutator in this file:
+ *   - no `deletedAt` filter on the order lookup — a voided order is fully readable here, only a
+ *     truly missing order id 404s (spec §5c: reads work on a voided order).
+ *   - the content read goes through `getRevisionContentUnchecked` (part-process-steps.ts), NOT
+ *     `getRevision` — deliberately skipping that function's live-part gate. The order's own
+ *     stored (partId, revisionNumber) pair on its lead line is the authority for this read, not
+ *     whatever the part's current liveness happens to be; the caller having `orders.view` (this
+ *     function's own route gate) is what makes reading the order's history legitimate at all.
+ */
+export async function getLockedRevision(orderId: string): Promise<RevisionDetail> {
+  const order = await prisma.order.findFirst({ where: { id: orderId }, select: { id: true } });
+  if (!order) throw new HttpError(404, "Order not found");
+
+  const lead = await prisma.orderLine.findFirst({
+    where: { orderId, position: 1 }, select: { partId: true, revisionNumber: true },
+  });
+  // Defensive, not expected (ProcessSection.tsx's own prior comment on this same invariant):
+  // every order's lead line gets a real revisionNumber at create time (createOrder locks it via
+  // lockCurrentRevision, which itself refuses a part with zero steps) — this only fires if that
+  // invariant were somehow violated.
+  if (!lead || lead.revisionNumber === null) {
+    throw new HttpError(404, "This order has no locked revision on file");
+  }
+  return getRevisionContentUnchecked(lead.partId, lead.revisionNumber);
 }

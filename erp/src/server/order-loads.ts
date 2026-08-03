@@ -5,10 +5,9 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedUpdate } from "./audit";
 import { decimalField } from "./decimal-field";
-import { splitLoads } from "../lib/load-split";
 import {
   type OrderDetail, type OrderWarnings,
-  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals,
+  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads,
 } from "./orders";
 
 // -------------------------------------------------------------------------------------------
@@ -169,7 +168,7 @@ export async function resplitLoads(orderId: string): Promise<{ order: OrderDetai
     // toDetail() is what normally does this conversion, but re-reading the full detail just to
     // get line totals would be wasteful, so it happens here on this narrow select instead.
     const lines = order.lines.map((l) => ({ qty: l.qty, weight: l.weight.toNumber() }));
-    const computed = splitLoads({
+    const computed = runSplitLoads({
       ...lineTotals(lines),
       loadQty: lead.loadQty,
       loadWeight: lead.loadWeight === null ? null : lead.loadWeight.toNumber(),

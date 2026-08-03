@@ -244,6 +244,23 @@ describe("resplitLoads", () => {
     expect(warnings).not.toContain("Loads no longer sum to the order — re-split or edit loads");
   });
 
+  // Fix-wave R2 finding 3: resplitLoads reads the part's LIVE cap (the very next test's point),
+  // which means a cap edited down to something tiny against a large order is exactly the shape
+  // that used to allocate an unbounded number of Load objects. Same clean-400 contract as
+  // createOrder's own mapping, not a hang or a 500.
+  it("maps a re-split that would exceed 10,000 loads to a clean 400, naming the count", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id, 100, "1000.00");
+
+    await prisma.part.update({ where: { id: lead.id }, data: { loadQty: 1 } });
+    await asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 10_001, weight: "10001.00" }));
+
+    await expect(asSystem(() => resplitLoads(order.id))).rejects.toMatchObject({
+      status: 400,
+      message: "This split would produce 10001 loads (max 10,000) — check the part's load quantity",
+    });
+  });
+
   it("uses the part's LIVE loadQty cap, not whatever it was at order-creation time", async () => {
     const { customer, lead } = await fixture(); // loadQty cap: 40 at creation
     const order = await baseOrder(lead.id, customer.id, 250, "2500.00"); // -> six loads at creation

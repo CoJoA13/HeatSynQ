@@ -8,12 +8,13 @@ import {
   createOrder, getOrder, listOrders, exportOrders,
   updateOrder, addLine, updateLine, removeLine,
   replaceContainers, replaceSerials, replaceCharges,
-  voidOrder, linkOrder, unlinkOrder,
+  voidOrder, linkOrder, unlinkOrder, getLockedRevision,
 } from "@/server/orders";
 import { updateStep, getRevision, getRevisions } from "@/server/part-process-steps";
 import { setSetting } from "@/server/settings";
 import { readAudit } from "@/server/audit";
 import { deleteReference } from "@/server/reference";
+import { deletePart } from "@/server/parts";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -171,6 +172,34 @@ describe("createOrder: the two-line sibling order", () => {
 
     expect(order.loads).toHaveLength(1);
     expect(order.loads[0]).toMatchObject({ loadNumber: 1, qty: 40, weight: 540 });
+  });
+
+  // Fix-wave R2 finding 3: nothing used to stop a huge qty under a tiny loadQty cap from
+  // synchronously allocating one Load row per piece — createOrder must surface load-split's own
+  // refusal as a clean 400, not let it (or a resulting 500) leak through, and nothing should be
+  // written when it does.
+  it("maps a split that would exceed 10,000 loads to a clean 400 naming the count, and writes nothing", async () => {
+    const { customer, code } = await fixture();
+    const tinyCapPart = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "TINY-1", name: "Tiny-cap part", eachWeight: "1.0000", loadQty: 1 },
+    });
+    await giveSteps(tinyCapPart.id, code.id);
+
+    await expect(asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: tinyCapPart.id, qty: 10_001, weight: "10001.00" }],
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "This split would produce 10001 loads (max 10,000) — check the part's load quantity",
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("rejects a line qty above 10,000,000 — the zod cap, independent of and ahead of the load-count check", async () => {
+    const { customer, lead } = await fixture();
+    await expect(asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 10_000_001, weight: "1.00" }],
+    }))).rejects.toBeInstanceOf(ZodError);
+    expect(await prisma.order.count()).toBe(0);
   });
 
   it("stores containers and charges in payload order with 1-based positions", async () => {
@@ -1194,6 +1223,18 @@ describe("updateLine", () => {
     expect(unchanged.lines[0]).toMatchObject({ partId: lead.id, revisionNumber: 1, qty: 3500 });
   });
 
+  // Fix-wave R2 finding 3's zod layer applies here too — updateLine's qty is the same field type
+  // as a create-time line, and the same absurd value should be refused at parse time regardless
+  // of which mutator is asked to set it.
+  it("rejects a qty patch above 10,000,000 (zod cap)", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    await expect(asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 10_000_001 })))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
   it("returns the loads-mismatch warning after a qty edit, and clears it once sums match again", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({
@@ -1251,7 +1292,7 @@ describe("removeLine", () => {
     const middleLineId = order.lines[1].id;
     const lastLineId = order.lines[2].id;
 
-    const after = await asSystem(() => removeLine(order.id, middleLineId));
+    const { order: after } = await asSystem(() => removeLine(order.id, middleLineId));
 
     expect(after.lines).toHaveLength(2);
     expect(after.lines[0]).toMatchObject({ position: 1, partId: lead.id });
@@ -1269,7 +1310,7 @@ describe("removeLine", () => {
     }));
     const riderLineId = order.lines[1].id;
 
-    const after = await asSystem(() => removeLine(order.id, riderLineId));
+    const { order: after } = await asSystem(() => removeLine(order.id, riderLineId));
     expect(after.serials).toEqual([]);
     expect(await prisma.orderSerial.count({ where: { lineId: riderLineId } })).toBe(0);
   });
@@ -1281,6 +1322,25 @@ describe("removeLine", () => {
     }));
     await expect(asSystem(() => removeLine(order.id, "nope")))
       .rejects.toMatchObject({ status: 404, message: "Order line not found" });
+  });
+
+  // Fix-wave R2 finding 6: removeLine used to return the bare OrderDetail, so removing a rider
+  // that desynced the order's totals from its (untouched) loads collection reported no warning at
+  // all — the hub's `applyMutation` treats a warnings-less response as "clear the banner", exactly
+  // backwards from what a freshly-mismatched order needs. addLine/updateLine already return
+  // { order, warnings }; removeLine now matches.
+  it("returns the loads-mismatch warning when removing a rider desyncs an auto-split order's totals", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    expect(order.loads).toHaveLength(14); // auto-split against the totals BEFORE the removal below
+
+    const riderLineId = order.lines[1].id;
+    const { order: after, warnings } = await asSystem(() => removeLine(order.id, riderLineId));
+
+    expect(after.lines).toHaveLength(1);
+    expect(warnings).toEqual(["Loads no longer sum to the order — re-split or edit loads"]);
   });
 });
 
@@ -1765,5 +1825,57 @@ describe("every mutator refuses a voided order", () => {
     await expect(asSystem(() => voidOrder(order.id, "again"))).rejects.toMatchObject(notFound);
     await expect(asSystem(() => linkOrder(order.id, other.order.id))).rejects.toMatchObject(notFound);
     await expect(asSystem(() => unlinkOrder(order.id))).rejects.toMatchObject(notFound);
+  });
+});
+
+// Fix-wave R2 finding 7: parts are deletable once every order referencing them is voided
+// (parts.ts's deletePart), but the hub's Process section read the LIVE part (getRevision's own
+// part-liveness gate) to show a voided order's locked recipe — 404ing "Part not found" instead of
+// showing paperwork that is, by spec, supposed to stay readable forever. `getLockedRevision`
+// resolves the order (voided included — reads never lock out on a voided order, spec §5c), takes
+// the lead line's own stored (partId, revisionNumber) pair, and reads the revision content through
+// `getRevisionContentUnchecked` (part-process-steps.ts) — the same tables/shape `getRevision`
+// itself reads, deliberately without that function's live-part gate, because the order's own
+// stored reference — not the part's current liveness — is what this read is anchored on.
+describe("getLockedRevision", () => {
+  beforeEach(truncateAll);
+
+  it("returns the same content getRevision itself would, for a normal (non-voided) order", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 10, weight: "135.00" }],
+    }));
+
+    const viaOrder = await asSystem(() => getLockedRevision(order.id));
+    const viaPart = await getRevision(lead.id, 1);
+    expect(viaOrder).toEqual(viaPart);
+    expect(viaOrder.steps).toHaveLength(1);
+    expect(viaOrder.steps[0]).toMatchObject({ instruction: "Austenitize at 1650F." });
+  });
+
+  it("stays readable (200 with the locked content) after the order is voided AND the lead part is later soft-deleted", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 10, weight: "135.00" }],
+    }));
+
+    await asSystem(() => voidOrder(order.id, "wrong customer"));
+    // Only legal because the order referencing it is now voided — deletePart's own "live order"
+    // guard (parts.ts) would otherwise refuse this.
+    await asSystem(() => deletePart(lead.id, "superseded by a corrected part"));
+
+    const detail = await asSystem(() => getLockedRevision(order.id));
+    expect(detail.revisionNumber).toBe(1);
+    expect(detail.steps).toHaveLength(1);
+    expect(detail.steps[0]).toMatchObject({ instruction: "Austenitize at 1650F." });
+
+    // Confirms this is genuinely testing the deliberate exception, not something getRevision
+    // would already have returned: the ordinary, live-part-gated read now 404s on this same part.
+    await expect(getRevision(lead.id, 1)).rejects.toMatchObject({ status: 404, message: "Part not found" });
+  });
+
+  it("404s an unknown order id", async () => {
+    await expect(asSystem(() => getLockedRevision("nope")))
+      .rejects.toMatchObject({ status: 404, message: "Order not found" });
   });
 });

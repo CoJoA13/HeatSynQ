@@ -1,11 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
-import { api, ApiError } from "@/lib/fetcher";
-import type { Gate } from "@/lib/permission-ui";
+import { api } from "@/lib/fetcher";
 
 // Local mirror of src/server/part-process-steps.ts's `RevisionDetail`/`StepRow`/`StepValueRow`,
-// narrowed to what this READ-ONLY render needs — the OrderLineCard.tsx precedent (entry page),
-// which fetches the identical endpoint for its own lead-part preview.
+// narrowed to what this READ-ONLY render needs.
 type RevisionStepValue = { fieldDefId: string; label: string; unit: string | null; value: string };
 type RevisionStep = {
   id: string; position: number; code: string; codeName: string; instruction: string;
@@ -13,46 +11,46 @@ type RevisionStep = {
 };
 type RevisionDetail = { revisionNumber: number; steps: RevisionStep[] };
 
-type Status = "loading" | "ok" | "denied" | "error";
+type Status = "loading" | "ok" | "error";
 
 /**
  * Read-only render of the order's LOCKED recipe (spec §5.3/§11) — no editing, no revision picker
  * (unlike ProcessStepsSection on the part page): the order locked exactly one revision at save
  * and that is the only one this order's paperwork ever describes, whatever the part's process
- * looks like today. Fetches `GET /api/parts/[id]/process/revisions/[n]` — the 2C-3 route, no new
- * endpoint (task-14-brief.md).
+ * looks like today.
+ *
+ * Fetches `GET /api/orders/[id]/process` — Fix-wave R2 finding 7, replacing the original
+ * `GET /api/parts/[id]/process/revisions/[n]` (task-14-brief.md's 2C-3 route). That route reads
+ * the LIVE part (`getRevision`'s own liveness gate) and 404s "Part not found" the instant the
+ * part is soft-deleted — legal once every order referencing it is voided (parts.ts's deletePart)
+ * — which turned a voided order's own historical paperwork unreadable. The new route is gated
+ * `orders.view` alone (no separate `processes.view` check here: this is an order-scoped read of
+ * the order's own frozen recipe, not a live parts-process one, and every caller reaching this
+ * component already holds `orders.view` — it is what loaded `order` in the first place,
+ * page.tsx's own `if (!order) return …` gate) and reads the order's stored (partId,
+ * revisionNumber) reference without gating on the part's current liveness
+ * (`getLockedRevision`/`getRevisionContentUnchecked`, orders.ts / part-process-steps.ts).
  */
-export function ProcessSection({
-  leadPartId, revisionNumber, processesGate,
-}: {
-  leadPartId: string;
-  /** Null only if the create-time invariant were somehow violated — defensive, not expected. */
-  revisionNumber: number | null;
-  processesGate: Gate;
-}) {
+export function ProcessSection({ orderId }: { orderId: string }) {
   const [status, setStatus] = useState<Status>("loading");
   const [detail, setDetail] = useState<RevisionDetail | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (revisionNumber === null) { setStatus("error"); setMessage("This order has no locked revision on file."); return; }
-    if (!processesGate.allowed) { setStatus("denied"); return; }
     setStatus("loading");
-    api<RevisionDetail>(`/api/parts/${leadPartId}/process/revisions/${revisionNumber}`)
+    api<RevisionDetail>(`/api/orders/${orderId}/process`)
       .then((d) => { setDetail(d); setStatus("ok"); })
       .catch((e) => {
-        if (e instanceof ApiError && e.status === 403) { setStatus("denied"); return; }
         setStatus("error");
         setMessage((e as Error).message);
       });
-  }, [leadPartId, revisionNumber, processesGate.allowed]);
+  }, [orderId]);
 
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Process</h2>
 
       {status === "loading" && <p className="text-sm text-slate-500">Loading…</p>}
-      {status === "denied" && <p className="text-sm text-slate-500">Requires processes.view.</p>}
       {status === "error" && <p className="text-sm text-red-700">{message ?? "Could not load the locked process."}</p>}
 
       {status === "ok" && detail && (

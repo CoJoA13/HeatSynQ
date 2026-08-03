@@ -190,11 +190,26 @@ export async function getRevisions(partId: string): Promise<RevisionSummary[]> {
   }));
 }
 
-/** Full content of one revision: ordered steps, each with the live code (code/name — renames
- *  propagate, spec §3.3) and values joined to their live defs, sorted by the def's own `sort`. */
-export async function getRevision(partId: string, revisionNumber: number): Promise<RevisionDetail> {
-  const part = await prisma.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
-  if (!part) throw new HttpError(404, "Part not found");
+/**
+ * Full content of one revision: ordered steps, each with the live code (code/name — renames
+ * propagate, spec §3.3) and values joined to their live defs, sorted by the def's own `sort`.
+ * NOT part-liveness-gated — that gate is `getRevision`'s job (below), the general part-scoped
+ * read. This is the shared include-tree + mapping the two callers split on: `getRevision` runs
+ * its own liveness check first and then delegates here; `orders.ts`'s `getLockedRevision` calls
+ * this directly, deliberately bypassing that gate.
+ *
+ * Fix-wave R2 finding 7: a part is deletable once every order referencing it is voided
+ * (parts.ts's deletePart), but an order's own locked recipe (spec §5.3/§11 — the (partId,
+ * revisionNumber) pair frozen onto the order's lead line at save time) has to stay readable
+ * forever regardless — a voided order's paperwork is exactly the kind of record that must not
+ * 404 just because the part it named has since been cleaned up. Restricted to callers already
+ * anchored on a stored (partId, revisionNumber) pair they have independent authority to read
+ * (i.e. they already resolved, and are allowed to see, the entity that captured it) — this is
+ * NOT a general-purpose unchecked read, and must not be exposed as one.
+ */
+export async function getRevisionContentUnchecked(
+  partId: string, revisionNumber: number,
+): Promise<RevisionDetail> {
   const rev = await prisma.partProcessRevision.findFirst({
     where: { partId, revisionNumber },
     include: {
@@ -222,6 +237,14 @@ export async function getRevision(partId: string, revisionNumber: number): Promi
         .sort((a, b) => a.sort - b.sort),
     })),
   };
+}
+
+/** The general, part-scoped read: live-part-gated, then delegates to `getRevisionContentUnchecked`
+ *  for the actual content. */
+export async function getRevision(partId: string, revisionNumber: number): Promise<RevisionDetail> {
+  const part = await prisma.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+  if (!part) throw new HttpError(404, "Part not found");
+  return getRevisionContentUnchecked(partId, revisionNumber);
 }
 
 /** The old-step-id -> new-step-id mapping a revision cut produced, or `{}` when no cut happened.

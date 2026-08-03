@@ -96,4 +96,73 @@ describe("splitLoads", () => {
       expect(sumWeight(loads)).toBe(c.totalWeight);
     }
   });
+
+  // Fix-wave R2 finding 2: independently rounding each non-final load's share to the cent can
+  // consume more cents than the total actually holds, and the last load — which just absorbs
+  // whatever rounding left over — goes negative to make the books balance. This is the exact
+  // counter-example from the finding: 5 pieces, 3 cents total, capped at 1/load. The old
+  // per-chunk rounding rounds every one of the first four loads' 0.6-cent share UP to a full
+  // cent (4 cents spent on 4 loads), leaving the fifth load to absorb totalCents(3) - used(4) =
+  // -1 cent.
+  it("counter-example: totalQty=5, totalWeight=0.03, loadWeight cap 0.01 never goes negative", () => {
+    const loads = splitLoads({ totalQty: 5, totalWeight: 0.03, loadQty: null, loadWeight: 0.01 });
+    expect(loads.map((l) => l.qty)).toEqual([1, 1, 1, 1, 1]);
+    expect(loads.every((l) => l.weight >= 0)).toBe(true);
+    expect(sumQty(loads)).toBe(5);
+    expect(sumWeight(loads)).toBeCloseTo(0.03, 10);
+    // Cumulative rounding's own exact contract for this case (0.6 cents/load, banked
+    // cumulatively): 1, 0, 1, 0, 1 cents -> 0.01, 0, 0.01, 0, 0.01.
+    expect(loads.map((l) => l.weight)).toEqual([0.01, 0, 0.01, 0, 0.01]);
+  });
+
+  it("no load's weight is ever negative and no load exceeds its proportional share by more than a cent (property check over many odd ratios)", () => {
+    const cases: { totalQty: number; totalWeight: number; loadQty: number | null; loadWeight: number | null }[] = [];
+    for (let totalQty = 1; totalQty <= 23; totalQty++) {
+      for (let cents = 1; cents <= 47; cents++) {
+        cases.push({ totalQty, totalWeight: cents / 100, loadQty: Math.max(1, Math.floor(totalQty / 3)) || 1, loadWeight: null });
+      }
+    }
+    for (const c of cases) {
+      const loads = splitLoads(c);
+      const perLoadQty = c.loadQty ?? c.totalQty;
+      const idealCentsPerLoad = (Math.round(c.totalWeight * 100) * perLoadQty) / c.totalQty;
+      for (const l of loads) {
+        expect(l.weight).toBeGreaterThanOrEqual(0);
+      }
+      // Every load's cents are within 1 cent of its ideal proportional share (cumulative
+      // rounding's own guarantee) — checked on every load, not just the ones at perLoadQty.
+      for (const l of loads) {
+        const idealForThisLoad = (Math.round(c.totalWeight * 100) * l.qty) / c.totalQty;
+        expect(Math.abs(Math.round(l.weight * 100) - idealForThisLoad)).toBeLessThanOrEqual(1);
+      }
+      expect(sumQty(loads)).toBe(c.totalQty);
+      expect(loads.reduce((s, l) => s + Math.round(l.weight * 100), 0)).toBe(Math.round(c.totalWeight * 100));
+      void idealCentsPerLoad;
+    }
+  });
+
+  // Fix-wave R2 finding 3: nothing capped how many loads a split could produce — a huge qty with
+  // a tiny loadQty cap synchronously allocates one object per load before ever returning, and did
+  // so unboundedly (the finding's own repro: 10,000,000 pcs at 1/load).
+  describe("the 10,000-load cap", () => {
+    it("throws instead of allocating 10,000,000 load objects, naming the count and the cap", () => {
+      expect(() => splitLoads({ totalQty: 10_000_000, totalWeight: 10_000_000, loadQty: 1, loadWeight: null }))
+        .toThrow("This split would produce 10000000 loads (max 10,000) — check the part's load quantity");
+    });
+
+    it("boundary: exactly 10,000 loads is allowed; 10,001 is refused", () => {
+      const atCap = splitLoads({ totalQty: 10_000, totalWeight: 10_000, loadQty: 1, loadWeight: null });
+      expect(atCap).toHaveLength(10_000);
+
+      expect(() => splitLoads({ totalQty: 10_001, totalWeight: 10_001, loadQty: 1, loadWeight: null }))
+        .toThrow("This split would produce 10001 loads (max 10,000) — check the part's load quantity");
+    });
+
+    it("the weight-cap path is bounded the same way (loadQty derived from loadWeight, not just loadQty itself)", () => {
+      // eachWeight 1, loadWeight cap 1 -> perLoadQty 1 -> same 10,001-load overflow, reached
+      // through the OTHER cap this time.
+      expect(() => splitLoads({ totalQty: 10_001, totalWeight: 10_001, loadQty: null, loadWeight: 1 }))
+        .toThrow("This split would produce 10001 loads (max 10,000) — check the part's load quantity");
+    });
+  });
 });

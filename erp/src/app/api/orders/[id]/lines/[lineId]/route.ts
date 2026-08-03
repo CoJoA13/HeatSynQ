@@ -19,5 +19,6 @@ export const PATCH = handle(async (req, { params }) => {
 export const DELETE = handle(async (_req, { params }) => {
   mustCan(requireUser(), "orders", "edit");
   const { id, lineId } = await params;
+  // Fix-wave R2 finding 6: removeLine now returns { order, warnings }, matching PATCH above.
   return NextResponse.json(await removeLine(id, lineId));
 });

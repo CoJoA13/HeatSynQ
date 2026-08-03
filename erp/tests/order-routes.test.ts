@@ -2,12 +2,14 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createOrder } from "@/server/orders";
+import { createOrder, voidOrder } from "@/server/orders";
+import { deletePart } from "@/server/parts";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 import { GET as listRoute, POST as createRoute } from "@/app/api/orders/route";
 import { GET as exportRoute } from "@/app/api/orders/export/route";
 import { GET as getRoute, PATCH as patchRoute, DELETE as voidRoute } from "@/app/api/orders/[id]/route";
+import { GET as processRoute } from "@/app/api/orders/[id]/process/route";
 import { POST as addLineRoute } from "@/app/api/orders/[id]/lines/route";
 import { PATCH as patchLineRoute, DELETE as removeLineRoute } from "@/app/api/orders/[id]/lines/[lineId]/route";
 import { PUT as replaceSerialsRoute } from "@/app/api/orders/[id]/lines/[lineId]/serials/route";
@@ -338,7 +340,13 @@ describe("order routes", () => {
       noBodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "DELETE", editor),
       withParams({ id: order.id, lineId }));
     expect(removed.status).toBe(200);
-    expect((await removed.json()).lines).toHaveLength(1);
+    const removedBody = await removed.json();
+    expect(removedBody.order.lines).toHaveLength(1);
+    // Fix-wave R2 finding 6: removeLine now returns { order, warnings } like addLine/updateLine —
+    // this particular removal (the rider just added above, back down to the fixture's single
+    // lead-only line) leaves no caps-vs-loads mismatch, so warnings is present and empty, not
+    // absent.
+    expect(removedBody.warnings).toEqual([]);
   });
 
   it("PATCH/DELETE .../lines/[lineId] 404 a line that belongs to a different order", async () => {
@@ -652,5 +660,50 @@ describe("order routes", () => {
       noParams);
     expect(bad.status).toBe(400);
     expect((await bad.json()).error).toMatch(/Received date/);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // GET .../process — Fix-wave R2 finding 7
+  // ---------------------------------------------------------------------------------------
+
+  it("GET /api/orders/[id]/process requires orders.view, renders the locked recipe, and stays 200 after the order voids and the part is soft-deleted", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    expect((await processRoute(
+      getReq(`http://t/api/orders/${order.id}/process`), withParams({ id: order.id }))).status).toBe(401);
+
+    const wrong = await signInWith(["customers.view"], "process-wrong-1");
+    expect((await processRoute(
+      getReq(`http://t/api/orders/${order.id}/process`, wrong), withParams({ id: order.id }))).status).toBe(403);
+
+    const viewer = await signInWith(["orders.view"], "process-viewer-1");
+    const ok = await processRoute(
+      getReq(`http://t/api/orders/${order.id}/process`, viewer), withParams({ id: order.id }));
+    expect(ok.status).toBe(200);
+    const detail = await ok.json();
+    expect(detail.revisionNumber).toBe(1);
+    expect(detail.steps).toHaveLength(1);
+    expect(detail.steps[0]).toMatchObject({ instruction: "Austenitize at 1650F." });
+
+    // Void the order, then delete the lead part outright (legal only because its one referencing
+    // order is now voided) — the locked recipe must still render, not 404 "Part not found".
+    await asSystem(() => voidOrder(order.id, "wrong PO"));
+    await asSystem(() => deletePart(lead.id, "superseded"));
+
+    const afterVoidAndDelete = await processRoute(
+      getReq(`http://t/api/orders/${order.id}/process`, viewer), withParams({ id: order.id }));
+    expect(afterVoidAndDelete.status).toBe(200);
+    const afterBody = await afterVoidAndDelete.json();
+    expect(afterBody.revisionNumber).toBe(1);
+    expect(afterBody.steps).toHaveLength(1);
+  });
+
+  it("GET /api/orders/[id]/process 404s an unknown order id", async () => {
+    const viewer = await signInWith(["orders.view"], "process-viewer-2");
+    const res = await processRoute(getReq("http://t/api/orders/nope/process", viewer), withParams({ id: "nope" }));
+    expect(res.status).toBe(404);
   });
 });

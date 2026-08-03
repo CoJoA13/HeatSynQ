@@ -67,11 +67,14 @@ export type OrderDetail = {
   linkedOrders: { id: string; orderNumber: number }[];
 };
 
-/** Every mutation route on this order returns EITHER the bare fresh `OrderDetail` (removeLine,
- *  replaceContainers/Serials/Charges, linkOrder, unlinkOrder) or `{ order, warnings }` (updateOrder,
- *  addLine, updateLine, replaceLoads, resplitLoads) — verified route by route against
- *  src/app/api/orders/**\/route.ts. `unwrapMutation` below is the one place that distinction is
- *  resolved, so nothing downstream needs to know which shape a given endpoint happens to use. */
+/** Every mutation route on this order returns EITHER the bare fresh `OrderDetail`
+ *  (replaceContainers/Serials/Charges, linkOrder, unlinkOrder) or `{ order, warnings }`
+ *  (updateOrder, addLine, updateLine, removeLine, replaceLoads, resplitLoads) — verified route by
+ *  route against src/app/api/orders/**\/route.ts. `unwrapMutation` below is the one place that
+ *  distinction is resolved, so nothing downstream needs to know which shape a given endpoint
+ *  happens to use. Fix-wave R2 finding 6: removeLine moved from the first group to the second — a
+ *  removal changes the order's totals against an unchanged loads collection exactly like
+ *  addLine/updateLine do, so it needed the same warnings-bearing shape. */
 export type OrderMutationResult = OrderDetail | { order: OrderDetail; warnings: string[] };
 
 /** `GET /api/parts`'s `PartRow` (src/server/parts.ts), narrowed to what this page's rider picker
@@ -161,10 +164,10 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
 
   /** Applies whichever shape a mutation response actually is — the one place every action on this
    *  page (Overview/Notes/Lines/Containers/Serials/Charges/Loads/Link/Unlink) reports its result.
-   *  An endpoint with no `warnings` key (removeLine, the three bulk replaces, link/unlink) clears
-   *  the banner rather than leaving a PREVIOUS mutation's warnings displayed against data they no
-   *  longer describe — there is no server signal after one of these to say whether the old
-   *  warning still applies, and showing a stale claim is worse than showing none. */
+   *  An endpoint with no `warnings` key (the three bulk replaces, link/unlink) clears the banner
+   *  rather than leaving a PREVIOUS mutation's warnings displayed against data they no longer
+   *  describe — there is no server signal after one of these to say whether the old warning still
+   *  applies, and showing a stale claim is worse than showing none. */
   const applyMutation = useCallback((res: OrderMutationResult) => {
     const { order: fresh, warnings: w } = unwrapMutation(res);
     setOrder(fresh);
@@ -173,7 +176,6 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
-  const processesGate = gate(perms, "processes.view");
   const auditGate = gate(perms, "admin.view");
   const editGate = voidLocked(gate(perms, "orders.edit"), order?.voided ?? false);
   const voidGate = order?.voided
@@ -364,8 +366,6 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
 
   if (!order) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
 
-  const lead = order.lines[0] as OrderLine | undefined;
-
   return (
     <div className="p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -481,9 +481,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         applyMutation={applyMutation} onError={setError}
       />
 
-      {lead && (
-        <ProcessSection leadPartId={lead.partId} revisionNumber={lead.revisionNumber} processesGate={processesGate} />
-      )}
+      <ProcessSection orderId={id} />
 
       <ContainersSection
         orderId={id} containers={order.containers} containerTypes={containerTypes} editGate={editGate}
