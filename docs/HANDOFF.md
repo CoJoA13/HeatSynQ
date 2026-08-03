@@ -141,8 +141,8 @@ behind issues #5/#15 and several PR #22 findings, and Phase 3 added more pages i
 always runs before merge. All four gates green plus the E2E harness: **904 tests** (73 files),
 `tsc` clean, `eslint` clean, `npm run build` clean, and **`npm run test:e2e` 10/10** — the original
 six 2C-3 flows unchanged, plus four new order flows (`order-entry-full`, `board-search-scan`,
-`loads-after-print`, `void-order`), run twice consecutively to confirm stability. Spec:
-`docs/superpowers/specs/2026-08-02-phase-3-orders-design.md` (§3 records nine owner decisions from
+`loads-after-print`, `void-order`), run three times consecutively to confirm stability. Spec:
+`docs/superpowers/specs/2026-08-02-phase-3-orders-design.md` (§3 records ten owner decisions from
 the design session, with two dated 2026-08-03 amendments closing the traveler samples gate — see
 below; §16 is Phase 4's own inheritance list, quoted in §9's kickoff prompt). Plan:
 `docs/superpowers/plans/2026-08-02-phase-3-orders.md`. Owner-facing walkthrough with screenshots:
@@ -429,6 +429,10 @@ Fedora-specific notes:
 >   `OrderAttachment` alongside the pre-existing `PartAttachment`.
 > - **`linkGroupId` is reference-only in Phase 3** — build "ship together" affordances on it if
 >   wanted; nothing today forces that.
+> - **The traveler's per-load render is the precedent for the shipper/BOL documents' own
+>   per-load/per-shipment render** — same `pdfmake` + stored-bytes shape (spec §16), new layouts;
+>   this is a render/layout-approach inheritance, distinct from `StoredDocument` as the storage
+>   pattern above.
 > - **Cert-required columns are explicitly deferred to Phase 4** (spec §15 non-goals) — Phase 3
 >   carries no cert-readiness flag anywhere; that schema is this phase's to add.
 > - **The §3.9 sampleQty/inspection-image questions are settled, not open.**
