@@ -197,11 +197,12 @@ export async function updateReference(kind: string, id: string, input: Record<st
  * withDbErrors already maps Serializable's P2034 abort to a 409 asking the caller to retry.
  *
  * This closes the race only where the *concurrent writer's own transaction* also reads the
- * target row — Postgres's SSI aborts on a genuine read-write cycle, not on a one-sided read. All
- * four registered FK writers (customer.termsId, processStepCode.glAccountId,
- * paymentType.glAccountId, inspectionCode.defaultScaleId) now validate their target via
- * assertRefExists on their own Serializable transaction whenever they assign a non-null value to
- * a registered FK column, so the read-write cycle SSI needs to abort the race can actually form:
+ * target row — Postgres's SSI aborts on a genuine read-write cycle, not on a one-sided read.
+ * Every registered FK writer — every entry in src/lib/reference-links.ts's REFERENCE_LINKS, not
+ * just the original four (customer.termsId, processStepCode.glAccountId, paymentType.glAccountId,
+ * inspectionCode.defaultScaleId) — now validates its target via assertRefExists on its own
+ * Serializable transaction whenever it assigns a non-null value to a registered FK column, so the
+ * read-write cycle SSI needs to abort the race can actually form:
  * a concurrent delete's blocker scan and a concurrent writer's assertRefExists both read the same
  * row inside their own Serializable transactions, and Postgres aborts whichever one would commit
  * a result no serial ordering of the two could produce. This guard is live, not merely

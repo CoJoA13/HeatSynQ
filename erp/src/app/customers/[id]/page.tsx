@@ -547,8 +547,9 @@ function CustomerDetail({ id }: { id: string }) {
                    readOnly={!canEdit.allowed} title={canEdit.title}
                    onChange={(e) => setC({ ...c, requestDaysOverride: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => {
-                     if (v === "") { void save({ requestDaysOverride: null }); return; }
-                     const n = Number(v);
+                     const trimmed = v.trim();
+                     if (trimmed === "") { void save({ requestDaysOverride: null }); return; }
+                     const n = Number(trimmed);
                      if (!Number.isInteger(n)) {
                        setC((cur) => (cur ? { ...cur, requestDaysOverride: focusedValue.current } : cur));
                        setError("Request days override must be a whole number.");

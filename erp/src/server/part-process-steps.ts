@@ -79,12 +79,15 @@ function validateStepValue(def: { label: string; type: string }, value: string):
  * CONCURRENCY (Codex, PR #22 — regression test "a lock landing mid-mutation cannot leave the
  * locked revision modified"). The current revision is claimed with `SELECT … FOR UPDATE` before
  * its `lockedAt` is read, because that read is what decides amend-vs-cut and the answer must not
- * be able to go stale between here and the child write. The mutators' own Serializable isolation
- * is NOT sufficient on its own: Postgres gives serializable guarantees only among transactions
- * that are ALL Serializable, and `lockRevision`'s documented caller — Phase 3's order save —
- * holds it inside the order's own default-isolation transaction. Without the row lock, a mutator
- * could read `lockedAt: null`, let that lock commit, then amend the now-locked revision's steps
- * and commit clean, silently breaking §5's immutability guarantee.
+ * be able to go stale between here and the child write. Serializable isolation is NOT the
+ * guarantee here, even on both sides: `lockRevision`'s documented caller — Phase 3's order save —
+ * holds it inside a Serializable transaction of its own (orders.ts:522), same as the mutators in
+ * this file, but that pairing is never what's relied on. Postgres's serializable guarantees only
+ * hold among transactions that stay ALL Serializable, a property no caller here is required to
+ * preserve; what actually protects `lockedAt` is the row lock, which blocks at ANY caller
+ * isolation regardless. Without it, a mutator could read `lockedAt: null`, let that lock commit,
+ * then amend the now-locked revision's steps and commit clean, silently breaking §5's
+ * immutability guarantee.
  *
  * A row lock is the right instrument precisely because both sides take it at any isolation
  * (`lockRevision`'s `updateMany` locks the same row). Whichever gets there first wins cleanly: a
@@ -377,7 +380,10 @@ export async function lockRevision(
 
 /** Same claim SQL as workingRevision — this file is the only home of that `FOR UPDATE` (HANDOFF
  *  §4a: the row lock is the guarantee at ANY caller isolation, not the transaction's own level).
- *  Exported for Phase 3's order save to call inside its own default-isolation transaction. */
+ *  Exported for Phase 3's order save to call inside its own Serializable transaction
+ *  (orders.ts:522). Caveat: the `ORDER BY … DESC LIMIT 1` target is chosen before blocking and
+ *  isn't re-picked on wake; benign today because new revisions are only ever cut through
+ *  workingRevision's own claim on this same row. */
 export async function lockCurrentRevision(
   partId: string, tx: Prisma.TransactionClient,
 ): Promise<{ revisionNumber: number }> {
