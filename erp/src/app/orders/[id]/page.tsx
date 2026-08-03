@@ -12,8 +12,8 @@
 // (Containers/Serials/Charges/Loads) additionally keep only EDITED cells/rows locally
 // (src/lib/bulk-grid.ts) rather than a full mutable copy of the server array, for the same reason
 // ProcessStepsSection's step editor does — see that file's own top comment.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
@@ -28,6 +28,7 @@ import { ContainersSection } from "./ContainersSection";
 import { SerialsSection } from "./SerialsSection";
 import { ChargesSection } from "./ChargesSection";
 import { LoadsSection } from "./LoadsSection";
+import { DocumentsSection } from "./DocumentsSection";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/orders.ts's exported row shapes — not imported from
@@ -104,16 +105,29 @@ function voidLocked(g: Gate, voided: boolean): Gate {
   return voided ? { allowed: false, disabled: true, title: "Order is voided" } : g;
 }
 
+/** `useSearchParams` suspends during prerender, and Next refuses to build a page that reads it
+ *  outside a Suspense boundary — hence this thin wrapper around the real route component. */
 export default function OrderHubPage() {
+  return (
+    <Suspense fallback={<div className="p-6">Loading…</div>}>
+      <OrderHubRoute />
+    </Suspense>
+  );
+}
+
+function OrderHubRoute() {
   const { id } = useParams<{ id: string }>();
+  // `?print=1` is how order entry's "Save & Print" asks the hub to print once on arrival — read
+  // here, above the keyed body, so it travels with the same id the body remounts on.
+  const autoPrint = useSearchParams().get("print") === "1";
   // Next reuses this route's component instance across /orders/A -> /orders/B (only the param
   // changes, no remount). Keying the body by id forces a fresh instance per order, so no state
   // below (bulk-grid overlays included) can carry one order's unsaved edits onto another order's
   // id (handoff §5.12 — cost a Critical in 2B).
-  return <OrderHub key={id} id={id} />;
+  return <OrderHub key={id} id={id} autoPrint={autoPrint} />;
 }
 
-function OrderHub({ id }: { id: string }) {
+function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   const { permissions: perms, error: permsError } = usePermissions();
 
   const [order, setOrder] = useState<OrderDetail | null>(null);
@@ -508,10 +522,10 @@ function OrderHub({ id }: { id: string }) {
 
       <AttachmentsSection owner="order" ownerId={id} canEdit={attachmentsCanEdit} />
 
-      <section className="mb-6 rounded border bg-white p-4">
-        <h2 className="mb-2 font-medium">Documents</h2>
-        <p className="text-sm text-slate-500">No documents yet — traveler printing arrives shortly.</p>
-      </section>
+      <DocumentsSection
+        orderId={id} loads={order.loads} voided={voided} viewGate={gate(perms, "orders.view")}
+        autoPrint={autoPrint}
+      />
 
       <div className="mb-6">
         <HistoryPanel entity="order" entityId={id} />

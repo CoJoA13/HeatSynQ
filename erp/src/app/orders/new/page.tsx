@@ -211,7 +211,8 @@ export default function NewOrderPage() {
   // silently" ruling (HANDOFF issue #4 heritage) means a credit-hold or serialization notice
   // returned alongside a successful save must not vanish behind an immediate navigate. Zero
   // warnings still navigates immediately (below); this state exists only for the other case.
-  const [savedOrder, setSavedOrder] = useState<{ id: string; orderNumber: number; warnings: string[] } | null>(null);
+  const [savedOrder, setSavedOrder] =
+    useState<{ id: string; orderNumber: number; warnings: string[]; print: boolean } | null>(null);
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
@@ -466,7 +467,17 @@ export default function NewOrderPage() {
     });
   }
 
-  async function handleSave() {
+  /**
+   * `print` is Save & Print (spec §11). The traveler is NOT rendered from here: the order has to
+   * exist before it can be printed, and the hub is where prints live (the button, the per-load
+   * menu, the archive). So Save & Print saves, then hands the hub a one-shot `?print=1`, which
+   * DocumentsSection honours exactly once on arrival. Two shapes were considered and rejected —
+   * printing inline before navigating (a second failure mode on the save path, and the resulting
+   * PDF's own window would be lost across the navigation), and printing from the warnings panel
+   * (which would print BEFORE the user has read the warnings). With warnings present the panel
+   * still shows first; `print` rides on it and fires when the user clicks through to the order.
+   */
+  async function handleSave(print = false) {
     const problem = validate();
     if (problem) { setError(problem); return; }
     setError(null);
@@ -512,11 +523,13 @@ export default function NewOrderPage() {
         // successful save must be SEEN, not raced past by an immediate navigate. Zero warnings
         // keeps the immediate navigate below; this is the one case that doesn't.
         setSaving(false);
-        setSavedOrder({ id: result.order.id, orderNumber: result.order.orderNumber, warnings: result.warnings });
+        setSavedOrder({
+          id: result.order.id, orderNumber: result.order.orderNumber, warnings: result.warnings, print,
+        });
       } else {
         // createOrder clears the caller's draft inside the SAME transaction as the save — a
         // second, client-side DELETE here would be redundant and racy against that clear.
-        router.push(`/orders/${result.order.id}`);
+        router.push(`/orders/${result.order.id}${print ? "?print=1" : ""}`);
       }
     } catch (e) {
       // §5.13: no reload after an error. Every field above is left exactly as typed so the user
@@ -552,9 +565,10 @@ export default function NewOrderPage() {
           <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-amber-800">
             {savedOrder.warnings.map((w, i) => <li key={i}>{w}</li>)}
           </ul>
-          <button type="button" onClick={() => router.push(`/orders/${savedOrder.id}`)}
+          <button type="button"
+                  onClick={() => router.push(`/orders/${savedOrder.id}${savedOrder.print ? "?print=1" : ""}`)}
                   className="rounded bg-slate-800 px-4 py-2 text-sm text-white">
-            Go to order
+            {savedOrder.print ? "Go to order and print" : "Go to order"}
           </button>
         </div>
       ) : (
@@ -735,8 +749,9 @@ export default function NewOrderPage() {
                         className="rounded bg-slate-800 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
                   {saving ? "Saving…" : "Save"}
                 </button>
-                <button type="button" disabled title="Traveler arrives later this phase"
-                        className="cursor-not-allowed rounded border px-4 py-2 text-sm text-slate-400">
+                <button type="button" onClick={() => void handleSave(true)} disabled={saving || saveGate.disabled}
+                        title={saveGate.title}
+                        className="rounded border border-slate-800 px-4 py-2 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
                   Save &amp; Print
                 </button>
               </div>
