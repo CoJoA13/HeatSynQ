@@ -302,6 +302,30 @@ describe("parts routes", () => {
     expect(deleted.status).toBe(200);
   });
 
+  // Fix-wave R2 finding 1: InspectionsSection.tsx's add-row POST body omitted `draft.sampleQty`
+  // entirely, so every inspection added through the UI silently lost the typed sample quantity
+  // (the server has no way to distinguish "the field was left blank" from "the field was never
+  // sent" — both parse to the schema's own "" default). The service-level round-trip
+  // (part-inspections.test.ts) already covers the field in isolation; this exercises the actual
+  // add path (POST) end to end with a GET read-back, the shape a client-side regression here
+  // would otherwise slip past.
+  it("POST /api/parts/[id]/inspections persists sampleQty, confirmed by a GET read-back", async () => {
+    const { partId } = await partFixture();
+    const code = await prisma.inspectionCode.create({ data: { name: "Brinell" } });
+    const editor = await signInWith(["parts.view", "parts.edit"], "insp-sampleqty-1");
+
+    const added = await addInspectionRoute(
+      bodyReq(`http://t/api/parts/${partId}/inspections`, "POST", editor,
+        { inspectionCodeId: code.id, sort: 0, sampleQty: "8" }),
+      withParams({ id: partId }));
+    expect(added.status).toBe(200); // addPartInspection returns only { id } — the read-back below is the actual assertion
+
+    const listed = await listInspections(getReq(`http://t/api/parts/${partId}/inspections`, editor), withParams({ id: partId }));
+    const rows = await listed.json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sampleQty).toBe("8");
+  });
+
   // G1: the UI used to reorder by two sequential PATCHes swapping a pair of `sort` values — if
   // the second failed, both rows kept the SAME sort and listPartInspections (sort-only ordering)
   // rendered nondeterministically, with no way to "swap back" out of a tie. PUT .../order applies

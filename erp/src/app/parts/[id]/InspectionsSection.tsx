@@ -146,6 +146,10 @@ export function InspectionsSection({
           scaleId: draft.scaleId || null,
           min: draft.min === "" ? undefined : draft.min,
           max: draft.max === "" ? undefined : draft.max,
+          // Fix-wave R2 finding 1: this was missing entirely, so every add silently dropped
+          // whatever the operator typed into Sample qty (the server's own default, "", is
+          // indistinguishable from "the field was never sent").
+          sampleQty: draft.sampleQty,
           location: draft.location,
           sort: nextSort,
         }),
