@@ -185,6 +185,10 @@ describe("order routes", () => {
       bodyReq(`http://t/api/orders/${order.id}`, "PATCH", undefined, { notes: "x" }),
       withParams({ id: order.id }))).status).toBe(401);
 
+    const wrong = await signInWith(["customers.view"], "detail-wrong-1");
+    expect((await getRoute(getReq(`http://t/api/orders/${order.id}`, wrong), withParams({ id: order.id })))
+      .status).toBe(403);
+
     const viewOnly = await signInWith(["orders.view"], "detail-view-1");
     expect((await getRoute(getReq(`http://t/api/orders/${order.id}`, viewOnly), withParams({ id: order.id })))
       .status).toBe(200);
@@ -221,13 +225,18 @@ describe("order routes", () => {
   // DELETE /api/orders/[id] (void) — mustDo("void_order"), never orders.* CRUD
   // ---------------------------------------------------------------------------------------
 
-  it("DELETE /api/orders/[id]: void_order is required even with the full orders CRUD set", async () => {
+  it("DELETE /api/orders/[id]: void_order is required even with all four orders.* CRUD grants", async () => {
     const { order } = await orderFixture();
 
     expect((await voidRoute(
       noBodyReq(`http://t/api/orders/${order.id}`, "DELETE"), withParams({ id: order.id }))).status).toBe(401);
 
-    const fullCrud = await signInWith(["orders.view", "orders.create", "orders.edit"], "void-fullcrud-1");
+    // All four CRUD actions — view/create/edit/delete — none of which is the SPECIAL action void
+    // actually requires. orders.delete in particular is the one most likely to be mistaken for
+    // "the void permission" since DELETE is the HTTP verb; proving it still 403s here is the
+    // discrimination this sweep exists to demonstrate.
+    const fullCrud = await signInWith(
+      ["orders.view", "orders.create", "orders.edit", "orders.delete"], "void-fullcrud-1");
     const denied = await voidRoute(
       bodyReq(`http://t/api/orders/${order.id}`, "DELETE", fullCrud, { reason: "wrong part" }),
       withParams({ id: order.id }));
@@ -305,11 +314,19 @@ describe("order routes", () => {
     expect((await patchLineRoute(
       bodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "PATCH", viewOnly, { qty: 6 }),
       withParams({ id: order.id, lineId }))).status).toBe(403);
+    expect((await removeLineRoute(
+      noBodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "DELETE", viewOnly),
+      withParams({ id: order.id, lineId }))).status).toBe(403);
 
     const emptyPatch = await patchLineRoute(
       bodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "PATCH", editor, {}),
       withParams({ id: order.id, lineId }));
     expect(emptyPatch.status).toBe(400);
+
+    const nullPatch = await patchLineRoute(
+      bodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "PATCH", editor, null),
+      withParams({ id: order.id, lineId }));
+    expect(nullPatch.status).toBe(400);
 
     const patched = await patchLineRoute(
       bodyReq(`http://t/api/orders/${order.id}/lines/${lineId}`, "PATCH", editor, { qty: 6 }),
@@ -371,6 +388,21 @@ describe("order routes", () => {
       withParams({ id: order.id, lineId }));
     expect(res.status).toBe(200);
     expect((await res.json()).serials.map((s: { serial: string }) => s.serial)).toEqual(["EC001", "EC002"]);
+  });
+
+  it("PUT .../lines/[lineId]/serials 404s a line that belongs to a different order", async () => {
+    const { order, customer, lead } = await orderFixture();
+    const lineId = order.lines[0].id;
+    const editor = await signInWith(["orders.edit"], "serials-cross-1");
+
+    const { order: otherOrder } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    const res = await replaceSerialsRoute(
+      bodyReq(`http://t/api/orders/${otherOrder.id}/lines/${lineId}/serials`, "PUT", editor, [{ serial: "EC010" }]),
+      withParams({ id: otherOrder.id, lineId }));
+    expect(res.status).toBe(404);
   });
 
   it("PUT .../containers requires orders.edit and replaces the order's containers", async () => {

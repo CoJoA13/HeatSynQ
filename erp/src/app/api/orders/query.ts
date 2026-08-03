@@ -18,9 +18,11 @@ const STATUS_VALUES = new Set<string>(Object.values(OrderStatus));
  * An absent query param and a blank one ("...&receivedFrom=&...", what an empty date/text input
  * serializes to) must both mean "not set" — never forwarded into `parseDate` as a literal empty
  * string, which the service would otherwise reject as a malformed date rather than treat as no
- * filter at all (Task 9 review note, task-9-brief.md's date-params callout).
+ * filter at all (Task 9 review note, task-9-brief.md's date-params callout). Exported so
+ * `entry-defaults/route.ts` — the one other route with this exact "blank means absent" rule for a
+ * query param — reuses it rather than keeping its own copy in sync by hand.
  */
-function orUndefined(value: string | null): string | undefined {
+export function orUndefined(value: string | null): string | undefined {
   return value === null || value === "" ? undefined : value;
 }
 
