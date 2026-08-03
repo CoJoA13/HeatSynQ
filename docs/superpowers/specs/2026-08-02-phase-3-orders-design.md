@@ -332,6 +332,8 @@ model StoredDocument {
   loadNumber Int?         // null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
   createdAt  DateTime     @default(now())
+
+  @@index([orderId])
 }
 ```
 

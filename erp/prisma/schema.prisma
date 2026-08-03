@@ -725,4 +725,10 @@ model StoredDocument {
   loadNumber Int? // null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
   createdAt  DateTime     @default(now())
+
+  // Fix-wave R3 finding 4: every order detail read checks document existence by orderId
+  // (orders.ts's DETAIL_INCLUDE.documents), and the archive endpoint filters and orders by
+  // orderId too (traveler.ts's listDocuments) — this permanent, append-only table had no
+  // supporting index, so both scans got slower with every traveler ever printed, anywhere.
+  @@index([orderId])
 }
