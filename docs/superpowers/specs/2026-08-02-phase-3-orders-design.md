@@ -410,8 +410,11 @@ voided orders leave the board (toggle to see them), render read-only, block noth
 remain listable and reprintable — the record of what was actually produced never closes.
 
 **5d. Linked orders**: `linkOrder(id, otherId)` — same customer enforced; joins the target's
-existing group or mints a `linkGroupId` for both. `unlinkOrder(id)` clears it (a group of one
-surviving is harmless and collapses on next link). Reference-only in Phase 3.
+existing group or mints a `linkGroupId` for both. `unlinkOrder(id)` clears it, cascading to the
+last remaining member's own `linkGroupId` too when that would drop the group to size one
+(corrected 2026-08-03, code review PR #39: a group of one is NOT harmless — it still reads
+"linked" on the board while its own linkedOrders panel comes back empty). Reference-only in
+Phase 3.
 
 **Amended 2026-08-02 (owner ruling during Task 5 review):** linking unions groups — a groupless
 side joins the other's existing group, two distinct groups merge whole into one (onto the

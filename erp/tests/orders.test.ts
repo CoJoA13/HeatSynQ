@@ -1623,6 +1623,42 @@ describe("linkOrder / unlinkOrder", () => {
     expect(details.map((o) => o.linkGroupId)).toEqual([groupAB, groupAB, groupAB, groupAB]);
   });
 
+  // Fix-wave finding 10: the merge's own findMany (scanning `other`'s group for members to move)
+  // had no `deletedAt` filter, so a voided groupmate — read-only by spec §5c/§5a — got its
+  // linkGroupId updated (and an audit entry written) right alongside its live siblings. A voided
+  // order must stay untouched by ANY mutator, merges included.
+  it("excludes a voided member of the absorbed group from the merge — it keeps its old groupId and gets no new audit entry", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const c = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const d = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+
+    await asSystem(() => linkOrder(a.order.id, b.order.id));
+    const cd = await asSystem(() => linkOrder(c.order.id, d.order.id));
+    const groupCD = cd.linkGroupId!;
+
+    // d, a member of the group about to be absorbed, is voided BEFORE the merge — its own group
+    // membership must survive the merge unchanged, exactly like every other order-child mutator
+    // already refuses to touch a voided order (the "every mutator refuses a voided order" suite
+    // below covers the mutator's own target being voided; this covers a voided BYSTANDER dragged
+    // in only because it shares a group with the actual target).
+    await asSystem(() => voidOrder(d.order.id, "test: voided before merge"));
+    const auditCountBefore = (await readAudit("order", d.order.id)).length;
+
+    const merged = await asSystem(() => linkOrder(a.order.id, c.order.id));
+    const groupAB = merged.linkGroupId!;
+
+    // c joined a's group, exactly as the unconditional case above does...
+    expect((await getOrder(c.order.id)).linkGroupId).toBe(groupAB);
+    // ...but d, voided, is untouched: still carries its OLD groupId (groupCD, never reassigned to
+    // groupAB), and got no new audit entry from this merge.
+    const dRow = await prisma.order.findUnique({ where: { id: d.order.id }, select: { linkGroupId: true } });
+    expect(dRow?.linkGroupId).toBe(groupCD);
+    expect((await readAudit("order", d.order.id)).length).toBe(auditCountBefore);
+  });
+
   it("400s re-linking two orders already in the same group, in either direction", async () => {
     const { customer, lead } = await fixture();
     const line = { partId: lead.id, qty: 1, weight: "13.50" };
@@ -1638,7 +1674,9 @@ describe("linkOrder / unlinkOrder", () => {
     });
   });
 
-  it("clears the group on unlink without touching the other members", async () => {
+  // Fix-wave finding 9: unlinking down to a group that would STILL hold two or more members
+  // leaves them untouched — only the singleton case (below) needs the cascade.
+  it("unlink from a trio leaves two linked: the remaining pair keeps its shared groupId untouched", async () => {
     const { customer, lead } = await fixture();
     const line = { partId: lead.id, qty: 1, weight: "13.50" };
     const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
@@ -1652,6 +1690,36 @@ describe("linkOrder / unlinkOrder", () => {
 
     const detailB = await getOrder(b.order.id);
     expect(detailB.linkedOrders.map((o) => o.id)).toEqual([c.order.id]);
+    // b and c both still carry the SAME shared groupId — genuinely still linked, not merely
+    // both non-null by coincidence.
+    expect((await getOrder(c.order.id)).linkGroupId).toBe(detailB.linkGroupId);
+  });
+
+  // Fix-wave finding 9: unlinking a PAIR down to one remaining member used to leave that
+  // survivor's own linkGroupId untouched — a "group of one" that still read `linked: true` on
+  // the board (orders.ts's `linked: row.linkGroupId !== null`) while its OWN linkedOrders panel
+  // was empty (readDetail finds no other row sharing that groupId), the exact "guard that says no
+  // without naming what's blocking" shape this ERP is built to avoid. The survivor's own group
+  // membership must collapse right along with the order that just left it.
+  it("unlinking a PAIR clears both sides — a lone survivor is not left wearing a linked badge over an empty panel", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    await asSystem(() => linkOrder(a.order.id, b.order.id));
+
+    const unlinked = await asSystem(() => unlinkOrder(a.order.id));
+    expect(unlinked.linkGroupId).toBeNull();
+
+    const detailB = await getOrder(b.order.id);
+    expect(detailB.linkGroupId).toBeNull();
+    expect(detailB.linkedOrders).toEqual([]);
+
+    // Both sides carry a real, distinct audit entry for the clear — b's own history shows it,
+    // not just a's.
+    const [entryB] = await readAudit("order", b.order.id);
+    expect(entryB.action).toBe("update");
+    expect((entryB.after as { linkGroupId: string | null }).linkGroupId).toBeNull();
   });
 
   it("404s an unknown order on either side", async () => {

@@ -1082,11 +1082,16 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
       groupId = other.linkGroupId;
       toUpdate = [id];
     } else if (order.linkGroupId && other.linkGroupId) {
-      // Different groups (same-group already 400'd above): id's group survives, and every
-      // member of other's group — other itself included — moves onto it.
+      // Different groups (same-group already 400'd above): id's group survives, and every LIVE
+      // member of other's group — other itself included — moves onto it. `deletedAt: null` here
+      // (fix-wave finding 10) is not optional: without it a voided groupmate — read-only by spec
+      // §5a/§5c, exactly like the order being merged itself — got its linkGroupId reassigned and
+      // an audit entry written right alongside its live siblings, merely for sharing a group with
+      // the actual merge target. A voided order keeps whatever groupId it had at the moment it
+      // was voided; only its live groupmates move.
       groupId = order.linkGroupId;
       const othersGroup = await tx.order.findMany({
-        where: { linkGroupId: other.linkGroupId }, select: { id: true },
+        where: { linkGroupId: other.linkGroupId, deletedAt: null }, select: { id: true },
       });
       toUpdate = othersGroup.map((o) => o.id);
     } else {
@@ -1103,17 +1108,46 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
-/** Clears just this order's own `linkGroupId` (spec §5d) — a group of one left behind is
- *  harmless and collapses on the next link, so no cascade to the other members is needed. */
+/**
+ * Clears this order's own `linkGroupId` (spec §5d) and — fix-wave finding 9 — cascades to the
+ * LAST remaining member's own `linkGroupId` too when doing so would drop the group to size one.
+ * A group of one is NOT harmless: the board's `linked` flag is bare `linkGroupId !== null`
+ * (`listOrders`), so the lone survivor would still read "linked" there while its own detail
+ * view's `linkedOrders` panel came back empty (`readDetail` finds no one else sharing that
+ * groupId) — a badge with nothing behind it, the exact "guard that doesn't name what's blocking"
+ * shape this app is built to avoid. Any group still holding two or more members after this unlink
+ * is left untouched, exactly as before.
+ */
 export async function unlinkOrder(id: string): Promise<OrderDetail> {
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    const order = await tx.order.findFirst({
+      where: { id, deletedAt: null }, select: { id: true, linkGroupId: true },
+    });
     if (!order) throw new HttpError(404, "Order not found");
+
+    // Every OTHER member of this order's CURRENT group, read before this order's own row is
+    // cleared below — empty when this order was never grouped in the first place, in which case
+    // there is nothing to cascade to and the write below is the same no-op it always was. Counted
+    // regardless of voided status (membership itself is never deletedAt-filtered anywhere in this
+    // file — readDetail's own linkedOrders lookup lists a voided groupmate too), but the actual
+    // write just below only ever touches the survivor when it is live: a voided order stays
+    // read-only under every mutator (spec §5a/§5c), the same rule finding 10's merge fix applies.
+    const groupmates = order.linkGroupId
+      ? await tx.order.findMany({
+        where: { linkGroupId: order.linkGroupId, id: { not: id } }, select: { id: true, deletedAt: true },
+      })
+      : [];
 
     await auditedUpdate("order", id, () =>
       tx.order.update({ where: { id }, data: { linkGroupId: null } }), { tx });
+
+    if (groupmates.length === 1 && groupmates[0].deletedAt === null) {
+      const survivorId = groupmates[0].id;
+      await auditedUpdate("order", survivorId, () =>
+        tx.order.update({ where: { id: survivorId }, data: { linkGroupId: null } }), { tx });
+    }
 
     return readDetail(tx, id, traffic);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
