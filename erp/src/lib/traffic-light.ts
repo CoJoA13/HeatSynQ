@@ -17,6 +17,16 @@ export const LIGHT_LABELS: Record<TrafficLight, string> = {
   on_target: "On target",
 };
 
+/** The dot's fill colour, co-located with the label it is never allowed to stand in for alone.
+ *  Tailwind class names, not raw colour values — safe for the board (and anything else that ever
+ *  renders this dot) to consume directly. */
+export const LIGHT_DOT_CLASS: Record<TrafficLight, string> = {
+  did_miss: "bg-red-600",
+  will_miss: "bg-amber-500",
+  may_miss: "bg-yellow-400",
+  on_target: "bg-green-600",
+};
+
 /**
  * Classifies how close an order's request date is to today, most-urgent-first: `did_miss`
  * (strictly past — a request date arriving today has not been missed yet) → `will_miss` (within
