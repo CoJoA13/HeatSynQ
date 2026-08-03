@@ -425,6 +425,10 @@ model PartInspection {
   scale            InspectionScale? @relation(fields: [scaleId], references: [id])
   min              Decimal?         @db.Decimal(10, 4)
   max              Decimal?         @db.Decimal(10, 4)
+  // Free text, not a number, on purpose (owner ruling 2026-08-03, design spec §3.9): the
+  // mockup's Key-Characteristic Quantity column holds "8" on one row and "100%" on the next.
+  // Prints verbatim on the traveler; no arithmetic is ever done on it.
+  sampleQty        String           @default("")
   location         String           @default("") // "Brinell @ flange OD"
   sort             Int
   deletedAt        DateTime?

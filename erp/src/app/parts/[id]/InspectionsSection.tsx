@@ -6,12 +6,15 @@ import { gate } from "@/lib/permission-ui";
 type InspRow = {
   id: string; inspectionCodeId: string; inspectionCodeName: string;
   scaleId: string | null; scaleName: string | null;
-  min: number | string | null; max: number | string | null; location: string; sort: number;
+  min: number | string | null; max: number | string | null; sampleQty: string; location: string; sort: number;
 };
+/** The free-text/decimal cells this grid edits in place (the two <select>s save directly).
+ *  `sampleQty` is deliberately a string, not a number — owner ruling 2026-08-03, spec §3.9. */
+type TextField = "min" | "max" | "sampleQty" | "location";
 type CodeOption = { id: string; name: string; active: boolean };
 type ScaleOption = { id: string; name: string; active: boolean };
 
-const emptyDraft = { inspectionCodeId: "", scaleId: "", min: "", max: "", location: "" };
+const emptyDraft = { inspectionCodeId: "", scaleId: "", min: "", max: "", sampleQty: "", location: "" };
 
 export function InspectionsSection({
   partId, perms, onError, onOptionsError,
@@ -65,7 +68,7 @@ export function InspectionsSection({
     }).catch((e) => onOptionsError((e as Error).message));
   }, [onOptionsError]);
 
-  function setRowField(id: string, field: "min" | "max" | "location", value: string) {
+  function setRowField(id: string, field: TextField, value: string) {
     setRows((cur) => cur.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   }
   // Optimistic (mirrors customers/[id]/page.tsx's saveAddressField): the row already shows the
@@ -86,10 +89,14 @@ export function InspectionsSection({
   }
   const focusedValue = useRef("");
   const noteFocus = (e: React.FocusEvent<HTMLInputElement>) => { focusedValue.current = e.target.value; };
-  function blurSave(e: React.FocusEvent<HTMLInputElement>, id: string, field: "min" | "max" | "location") {
+  function blurSave(e: React.FocusEvent<HTMLInputElement>, id: string, field: TextField) {
     const value = e.target.value;
     if (value === focusedValue.current) return;
-    void saveRow(id, { [field]: field === "location" ? value : (value === "" ? null : value) });
+    // min/max are nullable decimals — blanking one means "no bound", which the service reads as
+    // null. sampleQty and location are plain strings whose empty value IS "" (their column
+    // default); sending null there would fail the zod string parse rather than clear the field.
+    const numeric = field === "min" || field === "max";
+    void saveRow(id, { [field]: numeric ? (value === "" ? null : value) : value });
   }
 
   async function removeRow(id: string) {
@@ -155,7 +162,8 @@ export function InspectionsSection({
       <table className="mb-2 w-full text-sm">
         <thead>
           <tr className="text-left">
-            <th className="py-1">Code</th><th>Scale</th><th>Min</th><th>Max</th><th>Location</th><th /><th />
+            <th className="py-1">Code</th><th>Scale</th><th>Min</th><th>Max</th><th>Sample qty</th>
+            <th>Location</th><th /><th />
           </tr>
         </thead>
         <tbody>
@@ -195,6 +203,13 @@ export function InspectionsSection({
                        onChange={(e) => setRowField(r.id, "max", e.target.value)}
                        onBlur={(e) => blurSave(e, r.id, "max")}
                        className="w-16 rounded border px-1 py-0.5 read-only:bg-slate-50" />
+              </td>
+              <td>
+                <input value={r.sampleQty} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
+                       aria-label="Sample quantity"
+                       onChange={(e) => setRowField(r.id, "sampleQty", e.target.value)}
+                       onBlur={(e) => blurSave(e, r.id, "sampleQty")}
+                       className="w-24 rounded border px-1 py-0.5 read-only:bg-slate-50" />
               </td>
               <td>
                 <input value={r.location} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
@@ -245,6 +260,9 @@ export function InspectionsSection({
         <input value={draft.max} placeholder="Max" inputMode="decimal" disabled={!canEdit.allowed}
                onChange={(e) => setDraft({ ...draft, max: e.target.value })}
                className="w-16 rounded border px-2 py-1 text-sm" />
+        <input value={draft.sampleQty} placeholder="Sample qty" disabled={!canEdit.allowed}
+               onChange={(e) => setDraft({ ...draft, sampleQty: e.target.value })}
+               className="w-24 rounded border px-2 py-1 text-sm" />
         <input value={draft.location} placeholder="Location" disabled={!canEdit.allowed}
                onChange={(e) => setDraft({ ...draft, location: e.target.value })}
                className="w-28 rounded border px-2 py-1 text-sm" />

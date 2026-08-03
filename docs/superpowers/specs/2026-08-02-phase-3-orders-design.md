@@ -74,6 +74,17 @@ tracking, duplication, per-order step edits, pricing display.
    are settled at task time from the samples: the inspection block's **sample-quantity
    column** and the **inspection-location image** (neither exists on `PartInspection` today;
    no columns are added on a hunch).
+
+   **Amended 2026-08-03 (owner ruling closing the Task 16 samples gate).** Three rulings, all
+   binding: (a) **the 2025 mockup IS the build target** — no further samples are coming and
+   none gate the traveler; build the layout to mirror it. (b) The sample-quantity column maps
+   to a new **`PartInspection.sampleQty`, optional free text** (`String @default("")`,
+   validated `.max(60)` as display text, never a number — the mockup carries "8" on one
+   inspection row and "100%" on the next); it is editable on the part page's inspections grid
+   and prints verbatim in the traveler's Key Characteristic Quantity column. (c) **No
+   inspection-location images in Phase 3** — the mockup's `{Inspection Location.bmp}` slot
+   renders nothing; Phase 4/7 owns image handling. `PartInspection.location` (text) still
+   prints.
 10. **PDF stack: pdfmake + bwip-js** (both pure JS). Templates are JSON document definitions
     — the spec §11 "templates are data, not code" architecture and the substrate Phase 7's
     designer will edit. @react-pdf/renderer (templates become React code) and headless
