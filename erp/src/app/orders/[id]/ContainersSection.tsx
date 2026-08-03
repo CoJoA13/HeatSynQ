@@ -88,6 +88,9 @@ export function ContainersSection({
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Containers</h2>
+      {grid.orphanWarning && (
+        <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{grid.orphanWarning}</p>
+      )}
       {rows.length === 0 && <p className="mb-2 text-sm text-slate-500">None.</p>}
       {rows.map((row, i) => {
         const net = netWeight(row.grossWeight, row.tareWeight);

@@ -96,6 +96,9 @@ function LineSerialsEditor({
           </span>
         )}
       </div>
+      {grid.orphanWarning && (
+        <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{grid.orphanWarning}</p>
+      )}
       <label className="mb-2 block text-sm">
         Add serial(s)
         <input value={rangeInput} disabled={!editGate.allowed} title={editGate.title}

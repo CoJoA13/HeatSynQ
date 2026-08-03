@@ -177,7 +177,7 @@ export function LinesSection({
               <td className="font-mono">{line.part.customer.code} · {line.part.partNumber} <span className="font-sans text-slate-500">— {line.part.name}</span></td>
               <td>
                 <input value={shown(line, "qty")} inputMode="numeric" onFocus={noteFocus}
-                       disabled={!editGate.allowed} title={editGate.title}
+                       disabled={editGate.disabled} title={editGate.title}
                        onChange={(e) => setDraft(line.id, { qty: e.target.value })}
                        onBlur={(e) => onBlurField(e, line, "qty")}
                        aria-label={`${lineLabel(line)} quantity`}
@@ -185,7 +185,7 @@ export function LinesSection({
               </td>
               <td>
                 <input value={shown(line, "weight")} inputMode="decimal" onFocus={noteFocus}
-                       disabled={!editGate.allowed} title={editGate.title}
+                       disabled={editGate.disabled} title={editGate.title}
                        onChange={(e) => setDraft(line.id, { weight: e.target.value })}
                        onBlur={(e) => onBlurField(e, line, "weight")}
                        aria-label={`${lineLabel(line)} weight`}
@@ -225,7 +225,9 @@ export function LinesSection({
                  aria-label="Add rider weight" className="mt-1 w-24 rounded border px-2 py-1 disabled:bg-slate-50" />
         </label>
         {addWeightOverride !== null && (
-          <button type="button" onClick={() => setAddWeightOverride(null)} className="text-xs text-blue-700 underline">
+          <button type="button" onClick={() => setAddWeightOverride(null)}
+                  disabled={editGate.disabled || !partsGate.allowed} title={addTitle}
+                  className="text-xs text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
             Reset to computed
           </button>
         )}

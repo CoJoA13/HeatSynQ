@@ -18,6 +18,22 @@
 // state). None of the three can go stale: if the server array is unrelated-refreshed (e.g. the
 // Overview section saves a PO change, which re-fetches the whole order), `compose` just re-runs
 // against the new (in this case unchanged) server rows with the exact same overlay.
+//
+// Fix round 1 (Important finding): three of this hook's four callers — Containers/Charges/
+// per-line Serials — sit on DELETE-THEN-RECREATE mutators (replaceContainers/replaceSerials/
+// replaceCharges each delete every row and reinsert at positions 1..n, so EVERY row gets a fresh
+// id on EVERY save, whoever saves it). Loads is the one exception (`applyLoads` matches existing
+// rows by array position and updates them in place, so ids survive a save) — the review's own
+// "Loads is immune" note, which is why LoadsSection.tsx never reads `orphanWarning`. Composing an
+// edit keyed on a row id that another actor's save already replaced used to just silently produce
+// nothing: `compose` looked up `edits.get(r.id)` for each CURRENT row, found no match for the
+// stale id, and the edit — real, unsaved, user-typed content — vanished with no trace, the moment
+// ANY mutation anywhere on the page (not necessarily this grid's own) next refreshed `order` and
+// therefore this grid's `serverRows` prop. `detectOrphans` below catches exactly this: it
+// remembers the last set of row ids `compose` saw, and the moment that set changes out from under
+// a NON-EMPTY `edits` map, it clears the entries that no longer match anything live and records a
+// warning for the section to render — never silently, and never by guessing which new row an old
+// edit "must" belong to.
 import { useState } from "react";
 
 /** The server row shape every grid's rows need at minimum — a stable id to key edits/removal by. */
@@ -26,6 +42,10 @@ export type BulkRow = { id: string };
 /** One row as `compose` renders it: either an existing server row (`isNew: false`, keyed by its
  *  real id) or a not-yet-saved local addition (`isNew: true`, keyed by a client-generated id). */
 export type ComposedRow<Fields> = { key: string; isNew: boolean } & Fields;
+
+const ORPHAN_WARNING =
+  "This list changed on the server while you were editing — your unsaved changes here were " +
+  "set aside; please re-check.";
 
 /**
  * `Fields` is the flat, string-valued shape a grid's inputs are bound to (e.g. containers'
@@ -37,6 +57,17 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   const [edits, setEdits] = useState<Map<string, Partial<Fields>>>(new Map());
   const [added, setAdded] = useState<({ clientId: string } & Fields)[]>([]);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
+  // The row-id set `compose`/`detectOrphans` last saw, and the standing "your edits were set
+  // aside" notice. Both `useState`, not `useRef`: `detectOrphans` below updates them by calling
+  // their setters DURING RENDER — react.dev's own documented "adjust state when a prop changes"
+  // technique (compare an incoming value against a remembered one, conditionally setState; React
+  // reruns the component immediately, before painting, rather than needing a separate effect plus
+  // an extra visible frame where the grid still shows the about-to-vanish edit with no warning
+  // posted yet). That pattern is specified to use `useState` for the remembered value, not a ref —
+  // mutating a ref directly during render is exactly what React's own rules forbid, and is also
+  // what StrictMode's deliberate double-render-in-dev exists to catch.
+  const [lastLiveIds, setLastLiveIds] = useState<Set<string> | null>(null);
+  const [orphanWarning, setOrphanWarning] = useState<string | null>(null);
 
   /** Patches one EXISTING row's overlay — only the fields actually passed are recorded, so a
    *  field nobody touched keeps showing server truth via `compose` below. */
@@ -73,17 +104,55 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   }
 
   /** Clears every local edit — called after a Save actually succeeds, once the server's fresh
-   *  rows already reflect exactly what was just sent, so there is nothing left to overlay. */
+   *  rows already reflect exactly what was just sent, so there is nothing left to overlay. Also
+   *  clears any standing orphan notice: a fresh, successful save of THIS user's own edits
+   *  supersedes it. */
   function reset() {
     setEdits(new Map());
     setAdded([]);
     setRemovedIds(new Set());
+    setOrphanWarning(null);
   }
 
   /** Whether there is anything a Save button would actually send that differs from server state
    *  as loaded — an empty overlay (nothing edited, added, or removed) means the button has
    *  nothing to do yet. */
   const dirty = edits.size > 0 || added.length > 0 || removedIds.size > 0;
+
+  /**
+   * Detects edits whose row id is no longer present among the CURRENT server rows, clears exactly
+   * those entries, and records the standing warning `compose`'s caller renders. Deliberately never
+   * reattaches an orphaned edit's values to some OTHER row by array position instead of identity —
+   * that would just be the 2C-3 masked-edit bug in reverse, forcing one row's unsaved values onto
+   * a DIFFERENT row's real content because they happened to land at the same index after someone
+   * else's delete-then-recreate save. `added` (keyed by client id, never a server id — it cannot
+   * orphan) and `removedIds` (a removal intent against a row that's already gone is moot, not a
+   * loss of anything the user typed) are left untouched.
+   *
+   * Runs unconditionally on every call — i.e. every render `compose` (below) is part of, since
+   * `compose` is only ever called from a section's own render body — comparing the incoming row
+   * ids against the previous set purely by CONTENT (never by array/Set reference), so an unrelated
+   * mutation that refreshes `order` without actually changing THIS grid's rows is a no-op here,
+   * not a false alarm.
+   */
+  function detectOrphans(serverRows: readonly BulkRow[]): void {
+    const liveIds = new Set(serverRows.map((r) => r.id));
+    const unchanged = lastLiveIds !== null
+      && liveIds.size === lastLiveIds.size
+      && [...liveIds].every((id) => lastLiveIds.has(id));
+    if (unchanged) return;
+
+    const priorIds = lastLiveIds; // null on this hook instance's very first call — nothing to compare against yet
+    setLastLiveIds(liveIds);
+    if (priorIds === null || edits.size === 0) return;
+
+    const orphanedKeys = [...edits.keys()].filter((id) => !liveIds.has(id));
+    if (orphanedKeys.length === 0) return;
+    const next = new Map(edits);
+    for (const key of orphanedKeys) next.delete(key);
+    setEdits(next);
+    setOrphanWarning(ORPHAN_WARNING);
+  }
 
   /**
    * The composed, render-ready row list: live server rows (skipping any marked removed, each
@@ -95,6 +164,7 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   function compose<Row extends BulkRow>(
     serverRows: readonly Row[], toFields: (row: Row) => Fields,
   ): ComposedRow<Fields>[] {
+    detectOrphans(serverRows);
     const existing: ComposedRow<Fields>[] = serverRows
       .filter((r) => !removedIds.has(r.id))
       .map((r) => ({ key: r.id, isNew: false, ...toFields(r), ...(edits.get(r.id) ?? {}) }));
@@ -103,7 +173,7 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
   }
 
   return {
-    edits, added, removedIds, dirty,
+    edits, added, removedIds, dirty, orphanWarning,
     updateExisting, updateAdded, removeExisting, removeAdded, addRow, reset, compose,
   };
 }

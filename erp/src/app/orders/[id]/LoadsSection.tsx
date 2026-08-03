@@ -16,6 +16,11 @@ type Fields = { loadNumber: string; qty: string; weight: string };
  * Renumber is purely local (not itself a save): it reassigns every composed row's `loadNumber` to
  * its current display position, 1..N, so closing a gap left by a removed row — or fixing a typo —
  * does not mean retyping every other row by hand. `Save loads` still has to be clicked afterward.
+ *
+ * Deliberately never reads `grid.orphanWarning` (bulk-grid.ts's fix-round-1 addition): unlike
+ * replaceContainers/replaceSerials/replaceCharges, `applyLoads` (order-loads.ts) matches existing
+ * rows by array position and updates them IN PLACE, so a Load's id survives every save — there is
+ * no delete-then-recreate here for an edit to be orphaned by.
  */
 export function LoadsSection({
   orderId, loads, editGate, applyMutation, onError,
