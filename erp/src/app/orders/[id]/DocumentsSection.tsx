@@ -36,6 +36,12 @@ const KIND_LABELS: Record<string, string> = { TRAVELER: "Traveler" };
  * block was indistinguishable from success. The feature string is gone and the opener is severed
  * on the returned handle instead; the URL is a same-origin blob, so dropping `noopener` costs
  * nothing, and `null` now means what it is read as.
+ *
+ * Fix-wave finding 6: the `blocked` (null-return) branch itself never revoked the object URL at
+ * all — a real popup block (not just fix round 1's false-positive one) leaked a blob every time.
+ * The revocation now runs unconditionally after the open attempt, opened or blocked: the blocked
+ * banner's own fallback link re-fetches the archived bytes from `/api/documents/:id`, never this
+ * blob, so there is nothing lost by revoking it on the same delay either way.
  */
 export function DocumentsSection({
   orderId, loads, voided, viewGate, autoPrint,
@@ -85,11 +91,15 @@ export function DocumentsSection({
           id: documentId,
           label: loadNumber === undefined ? "the traveler" : `the load ${loadNumber} traveler`,
         });
-      } else {
-        // Revoking immediately would race the new tab's own load; one minute is far longer than
-        // any tab needs and still bounds how long the blob is pinned in memory.
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
       }
+      // Revoked on the same delay either way (fix-wave finding 6): the blocked banner's own
+      // fallback link re-fetches the archived bytes from /api/documents/:id, the ARCHIVE
+      // endpoint, not this blob — so this URL is never used once blocked, but it still pins the
+      // bytes in memory until revoked. The null-return branch above used to skip this entirely,
+      // leaking one blob per blocked print. Revoking immediately (in the opened case) would race
+      // the new tab's own load; one minute is far longer than any tab needs and still bounds how
+      // long the blob is pinned in memory either way.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setError(null);
       await load();
     } catch (e) {

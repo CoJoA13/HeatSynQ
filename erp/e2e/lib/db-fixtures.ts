@@ -187,6 +187,20 @@ async function deleteOrdersAndChildren(customerIds: string[]): Promise<void> {
   if (orderIds.length === 0) return;
 
   await prisma.auditLog.deleteMany({ where: { entity: "order", entityId: { in: orderIds } } });
+  // Fix-wave finding 12: StoredDocument's own audit rows are keyed by the DOCUMENT's id, not the
+  // order's (traveler.ts's `auditedCreate("storedDocument", meta, ...)` — audit.ts's AuditableModel
+  // entity is "storedDocument", entityId is the document row's own id). The "order" deleteMany
+  // above never reaches them, so every e2e run that prints a traveler (loads-after-print.mjs,
+  // order-entry-full.mjs's Save & Print) left one permanent orphaned audit row behind per print,
+  // forever, in the developer's own dev database. Collect the document ids before deleting the
+  // rows themselves, and delete their audit rows the same way the order's own are deleted above.
+  const documents = await prisma.storedDocument.findMany({
+    where: { orderId: { in: orderIds } }, select: { id: true },
+  });
+  const documentIds = documents.map((d) => d.id);
+  if (documentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "storedDocument", entityId: { in: documentIds } } });
+  }
   await prisma.storedDocument.deleteMany({ where: { orderId: { in: orderIds } } });
   await prisma.orderAttachment.deleteMany({ where: { orderId: { in: orderIds } } });
   await prisma.orderSerial.deleteMany({ where: { orderId: { in: orderIds } } });
