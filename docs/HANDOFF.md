@@ -425,8 +425,8 @@ Fedora-specific notes:
 >   required, no serials yet" lives at order entry; shipping likely needs its own version.
 > - **The attachment story is one parameterized service already built for this**
 >   (`src/server/attachments.ts` + `AttachmentsSection.tsx`) — add `ShipperAttachment`/
->   `CertAttachment` etc. as thin clones over the shared service, the same way Phase 3 added
->   `OrderAttachment` alongside the pre-existing `PartAttachment`.
+>   `CertAttachment` etc. as thin clones over the shared service, the same way Phase 3 built
+>   `PartAttachment` and `OrderAttachment` as two thin owners of one implementation.
 > - **`linkGroupId` is reference-only in Phase 3** — build "ship together" affordances on it if
 >   wanted; nothing today forces that.
 > - **The traveler's per-load render is the precedent for the shipper/BOL documents' own
