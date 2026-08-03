@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { handle, requireUser, assertRecord } from "@/server/http";
+import { handle, requireUser, assertRecord, HttpError } from "@/server/http";
 import { getDraft, putDraft, clearDraft } from "@/server/order-drafts";
 
 // Session-only, deliberately: every read/write below is scoped to `user.id` — the caller's OWN
@@ -18,9 +18,13 @@ export const PUT = handle(async (req) => {
   const user = requireUser();
   const body: unknown = await req.json();
   assertRecord(body);
-  // `{ payload: <opaque json> }` — an envelope, not the payload itself, so a bare array/string
-  // body (already rejected by assertRecord above) can't be mistaken for a payload of `{}`
-  // shape, and `putDraft` owns both the 256 KB cap and the null/undefined-payload handling.
+  // `{ payload: <opaque json> }` — an envelope, not the payload itself. The `payload` key must
+  // be PRESENT, even when its value is `null`: a client that does `JSON.stringify({ payload:
+  // undefined })` gets a body with the key silently dropped, and treating that the same as an
+  // explicit "store null" would wipe an existing draft under a 200 — exactly the crash-or-
+  // closed-tab loss spec §12 promises never happens. An explicit `{ payload: null }` still means
+  // "store null" (a deliberate clear has its own endpoint: DELETE).
+  if (!("payload" in body)) throw new HttpError(400, "payload is required");
   await putDraft(user.id, body.payload);
   return NextResponse.json({ ok: true });
 });

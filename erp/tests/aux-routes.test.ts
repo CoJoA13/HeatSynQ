@@ -80,6 +80,35 @@ describe("order-drafts routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("PUT with an empty body (no `payload` key) is 400 and never wipes an existing draft", async () => {
+    const cookie = await signInWith([], "draft-nopayload-1");
+    const payload = { customerId: "c1", lines: [{ partId: "p1", qty: 5 }] };
+    await putDraftRoute(bodyReq("http://t/api/order-drafts", "PUT", cookie, { payload }), noParams);
+
+    // `{}` — the exact shape `JSON.stringify({ payload: undefined })` produces (the key is
+    // dropped, not sent as `null`) — must 400, naming the missing field.
+    const res = await putDraftRoute(bodyReq("http://t/api/order-drafts", "PUT", cookie, {}), noParams);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/payload is required/);
+
+    // The point of the fix: the malformed request must never have touched the earlier draft.
+    const got = await getDraftRoute(getReq("http://t/api/order-drafts", cookie), noParams);
+    expect((await got.json()).payload).toEqual(payload);
+  });
+
+  it("PUT with an explicit `{ payload: null }` still succeeds — that is a deliberate store-null", async () => {
+    const cookie = await signInWith([], "draft-explicitnull-1");
+    await putDraftRoute(
+      bodyReq("http://t/api/order-drafts", "PUT", cookie, { payload: { customerId: "c1" } }), noParams);
+
+    const res = await putDraftRoute(
+      bodyReq("http://t/api/order-drafts", "PUT", cookie, { payload: null }), noParams);
+    expect(res.status).toBe(200);
+
+    const got = await getDraftRoute(getReq("http://t/api/order-drafts", cookie), noParams);
+    expect((await got.json()).payload).toBeNull();
+  });
+
   it("isolates drafts per user THROUGH THE ROUTE: user A's PUT is invisible to user B's GET", async () => {
     const a = await signInWith([], "draft-a-1");
     const b = await signInWith([], "draft-b-1");
@@ -147,6 +176,12 @@ describe("saved-views routes", () => {
 
     const listed = await listViewsRoute(getReq("http://t/api/saved-views", viewer), noParams);
     expect((await listed.json()).map((v: { id: string }) => v.id)).toEqual([body.id]);
+  });
+
+  it("POST with a non-object JSON body is 400, not 500 (the service's own zod parse)", async () => {
+    const viewer = await signInWith(["orders.view"], "views-create-badbody-1");
+    const res = await createViewRoute(bodyReq("http://t/api/saved-views", "POST", viewer, null), noParams);
+    expect(res.status).toBe(400);
   });
 
   it("GET only ever returns the caller's own rows, never another user's", async () => {
