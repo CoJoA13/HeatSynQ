@@ -390,8 +390,9 @@ existing group or mints a `linkGroupId` for both. `unlinkOrder(id)` clears it (a
 surviving is harmless and collapses on next link). Reference-only in Phase 3.
 
 **Amended 2026-08-02 (owner ruling during Task 5 review):** linking unions groups — a groupless
-side joins the other's existing group, two distinct groups merge whole into one, and same-group
-re-links 400. No order is ever silently detached by linking; only unlinkOrder removes membership.
+side joins the other's existing group, two distinct groups merge whole into one (onto the
+SOURCE order's surviving groupId), and same-group re-links 400. No order is ever silently
+detached by linking; only unlinkOrder removes membership.
 
 **5e. Delete-guard extensions** (§5.14 shape, service-level like `deleteCustomer`'s
 parts scan — parts/customers are not registry targets): `deletePart` refuses while live
