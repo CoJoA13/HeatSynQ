@@ -85,7 +85,14 @@ live row goes untouched.`).toEqual([]);
     // deleteUser (or a user DELETE route) ever lands, this allowlist entry is exactly what would
     // hide the resulting regression — remove it and give User.username the same partial-unique
     // treatment as everything else the day that happens.
-    const ALLOWED = new Set(["User.username"]);
+    //
+    // Order.orderNumber is deliberately excluded too: voided orders keep their number forever;
+    // numbers are allocation-only and never reused or re-entered (spec §4). Unlike every other
+    // partial-unique candidate, a voided order's number must NOT free up for a later order to
+    // claim — that reuse is exactly the double-billing adjacency the no-duplication rule exists
+    // to prevent (design spec §4, HANDOFF §5.11's revival-on-create precedent, deliberately not
+    // applied here). Do not "fix" this by giving orderNumber the partial-unique treatment.
+    const ALLOWED = new Set(["User.username", "Order.orderNumber"]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
     // way the field-level match below used to (see comment there) — a schema reformat that

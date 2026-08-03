@@ -9,7 +9,8 @@ export type AuditableModel =
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
   | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
-  | "partProcessRevision" | "processTemplate";
+  | "partProcessRevision" | "processTemplate"
+  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -74,13 +75,37 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   processTemplate: {
     steps: { orderBy: { position: "asc" }, include: { code: { select: { code: true, name: true } } } },
   },
+  // Order's children (lines/containers/serials/loads/charges) have no deletedAt of their own —
+  // editing them IS editing the order (design spec §4), audited as the order's own before/after
+  // diff, never as a separate entity. Every collection below is explicitly orderBy'd (issue #24:
+  // an unordered collection makes two snapshots of identical data compare as a spurious diff,
+  // since HistoryPanel's whole-key JSON.stringify comparison is order-sensitive) and each line's
+  // live part number / each container's live type name is pulled in so the diff reads "P-1002",
+  // not a cuid.
+  order: {
+    lines: { orderBy: { position: "asc" }, include: { part: { select: { partNumber: true } } } },
+    containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
+    serials: { orderBy: [{ lineId: "asc" }, { position: "asc" }] },
+    loads: { orderBy: { loadNumber: "asc" } },
+    charges: { orderBy: { position: "asc" } },
+  },
+  // Attachments and saved views are audited as their own rows, not through a parent — no
+  // relations to include. fileData never enters an attachment's own snapshot as a *relation*
+  // either way (it's a scalar column pulled in by the bare findUnique), which is exactly why
+  // redact()'s sensitiveKeyPatterns gets "filedata" below rather than relying on this table.
+  partAttachment: undefined,
+  orderAttachment: undefined,
+  savedView: undefined,
+  // Permanent, create-only (design spec §4: "no delete path at all") — snapshots are metadata
+  // only, fileData redacted the same way as the attachment tables.
+  storedDocument: undefined,
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
-  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage"];
+  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage", "filedata"];
 
   function redactRecursive(obj: unknown): unknown {
     if (obj === null || obj === undefined) return obj;
