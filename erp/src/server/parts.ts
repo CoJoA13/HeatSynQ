@@ -234,14 +234,21 @@ export async function deletePart(id: string, reason: string): Promise<void> {
     const orders = await tx.order.count({ where: { deletedAt: null, lines: { some: { partId: id } } } });
     if (orders > 0) throw new HttpError(400, `That part is used by ${orders} live order(s)`);
 
-    const [specs, inspections, breaks] = await Promise.all([
+    // Fix-wave R3 finding 5: attachments join the cascade exactly like every other child —
+    // without this, a deleted part's attachment rows stayed live (deletedAt null) yet
+    // permanently unreachable behind the live-part guard every attachment operation requires
+    // (assertOwnerVisible, attachments.ts), and the parent's deletion never showed up in the
+    // attachment's own history.
+    const [specs, inspections, breaks, attachments] = await Promise.all([
       tx.partSpecification.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partInspection.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partPriceBreak.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
+      tx.partAttachment.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
     ]);
     for (const s of specs) await auditedSoftDelete("partSpecification", s.id, "parent part deleted", tx);
     for (const i of inspections) await auditedSoftDelete("partInspection", i.id, "parent part deleted", tx);
     for (const b of breaks) await auditedSoftDelete("partPriceBreak", b.id, "parent part deleted", tx);
+    for (const a of attachments) await auditedSoftDelete("partAttachment", a.id, "parent part deleted", tx);
     await auditedSoftDelete("part", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

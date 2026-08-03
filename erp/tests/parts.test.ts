@@ -6,6 +6,7 @@ import {
   createPart, updatePart, deletePart, getPart, listParts, partOrderBlockers,
 } from "@/server/parts";
 import { createOrder, voidOrder } from "@/server/orders";
+import { addAttachment } from "@/server/attachments";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -108,12 +109,25 @@ describe("parts core", () => {
     const spec = await prisma.specification.create({ data: { name: "ASTM A536" } });
     const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "D", eachWeight: 1 }));
     await prisma.partSpecification.create({ data: { partId: id, specificationId: spec.id } });
+    // Fix-wave R3 finding 5: the cascade used to soft-delete specifications/inspections/price
+    // breaks but not attachments — rows stayed live yet unreachable behind the live-part guard
+    // every attachment operation requires (assertOwnerVisible, attachments.ts). Include an
+    // attachment here so this same "cascades children in one transaction" test also pins it.
+    const { id: attId } = await asSystem(() => addAttachment("part", id, {
+      filename: "drawing.pdf", mimeType: "application/pdf", data: Buffer.from("pdf-bytes"),
+    }));
     await expect(asSystem(() => deletePart(id, "  "))).rejects.toThrow("A reason is required");
     await asSystem(() => deletePart(id, "keyed wrong"));
     expect((await prisma.part.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
     expect((await prisma.partSpecification.findFirst({ where: { partId: id } }))!.deletedAt).not.toBeNull();
+    const attachment = await prisma.partAttachment.findFirst({ where: { id: attId } });
+    expect(attachment!.deletedAt).not.toBeNull();
     const entry = await prisma.auditLog.findFirst({ where: { entity: "part", entityId: id, action: "delete" } });
     expect(entry!.reason).toBe("keyed wrong");
+    const attEntry = await prisma.auditLog.findFirst({
+      where: { entity: "partAttachment", entityId: attId, action: "delete" },
+    });
+    expect(attEntry!.reason).toBe("parent part deleted");
   });
 
   it("search matches part number, customer code, and customer name", async () => {
