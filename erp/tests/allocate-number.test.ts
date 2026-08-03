@@ -21,9 +21,11 @@ describe("allocateNumber", () => {
     expect(second).toBe(1001);
   });
 
-  // Fired without awaiting between starts — the FOR UPDATE claim inside allocateNumber is what
-  // has to serialize these, not JS call order, so the assertion is on distinctness and
-  // consecutiveness, not on which promise resolves to which number.
+  // Fired without awaiting between starts, so which transaction actually reaches Postgres first
+  // is not controlled by JS call order. This proves the outcome (two concurrent allocations never
+  // collide or skip), not the mechanism — it does not by itself isolate the FOR UPDATE claim as
+  // the cause, so the assertion is on distinctness and consecutiveness, not on which promise
+  // resolves to which number.
   it("two concurrent transactions each allocating get distinct, consecutive numbers", async () => {
     const p1 = prisma.$transaction((tx) => allocateNumber("order_number_next", tx));
     const p2 = prisma.$transaction((tx) => allocateNumber("order_number_next", tx));

@@ -710,6 +710,27 @@ describe("part process steps: lockCurrentRevision", () => {
       .rejects.toMatchObject({ status: 400, message: "This part has no process steps" });
   });
 
+  // Fix round 1 (Task 3 review, Finding 2): lockCurrentRevision omitted the part-existence/
+  // soft-delete guard every sibling in this file opens with (workingRevision's own first line).
+  it('404s "Part not found" for an unknown partId', async () => {
+    await expect(asSystem(() => prisma.$transaction((tx) => lockCurrentRevision("nonexistent", tx))))
+      .rejects.toMatchObject({ status: 404, message: "Part not found" });
+  });
+
+  it("404s a soft-deleted part with a step-bearing revision, and never locks it", async () => {
+    const { part, code } = await fixture();
+    await asSystem(() => addStep(part.id, { codeId: code.id }));
+    await prisma.part.update({ where: { id: part.id }, data: { deletedAt: new Date() } });
+
+    await expect(asSystem(() => prisma.$transaction((tx) => lockCurrentRevision(part.id, tx))))
+      .rejects.toMatchObject({ status: 404, message: "Part not found" });
+
+    // getRevision itself 404s on a soft-deleted part (by design), so read the row directly to
+    // prove the guard fired before the claim ever touched it.
+    const rev = await prisma.partProcessRevision.findFirstOrThrow({ where: { partId: part.id } });
+    expect(rev.lockedAt).toBeNull();
+  });
+
   it("returns the highest revisionNumber and sets lockedAt", async () => {
     const { part, code } = await fixture();
     await asSystem(() => addStep(part.id, { codeId: code.id, instruction: "rev1" }));
@@ -827,5 +848,72 @@ describe("part process steps: lockCurrentRevision", () => {
       // updateStep's Serializable transaction lost to a 409 — nothing it did committed.
       expect(rev1.steps.map((s) => s.instruction)).toEqual(["before"]);
     }
+  });
+
+  // Fix round 1 (Task 3 review, Finding 1): neither race test above can detect the FOR UPDATE
+  // being deleted from lockCurrentRevision's own claim — ordering A only proves lockRevision's
+  // updateMany serializes (true with or without the claim's own lock), and ordering B is
+  // deterministic-sequential per the 12/12 evidence in the task report.
+  //
+  // A first replacement attempt (holder takes the claim's exact row lock and just sits on it,
+  // lockCurrentRevision raced in, asserted "not settled within 200ms") was tried and DISCARDED —
+  // empirically, it passes even with the FOR UPDATE deleted, because lockRevision's own
+  // `updateMany` targets the same row and blocks on the holder regardless of whether the claim
+  // itself took a lock first. That write only ever checks `lockedAt: null`, so blocking there
+  // doesn't depend on — and can't discriminate — the claim's own lock. Full evidence in the task
+  // report's Fix round 1 section.
+  //
+  // This version instead has the holder delete the revision's only step *while holding the claim
+  // lock*, then release. A genuine FOR UPDATE claim cannot read past the holder until it commits,
+  // so lockCurrentRevision's step-count check necessarily runs on the fresh, post-delete state and
+  // correctly refuses. A plain SELECT (the regression) reads the step count *before* the holder's
+  // delete is visible, decides "has steps" on stale data, and — because lockRevision's own write
+  // only guards on `lockedAt`, never on step count — goes on to lock a revision that, by the time
+  // that write actually lands, has none. That is an observable, not just a timing, difference.
+  it("lockCurrentRevision cannot lock a revision that loses its last step while the claim is held", async () => {
+    const { part, code } = await fixture();
+    const { stepId } = await asSystem(() => addStep(part.id, { codeId: code.id }));
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // Same claim SQL workingRevision/lockCurrentRevision use, run directly here since
+    // workingRevision is private to the module.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "PartProcessRevision"
+        WHERE "partId" = ${part.id} ORDER BY "revisionNumber" DESC LIMIT 1 FOR UPDATE`;
+      hasClaimed();
+      await release;
+      // Only now, still inside the same held transaction: remove the last step before committing
+      // (and releasing the row lock).
+      await tx.partProcessStep.delete({ where: { id: stepId } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const lockCall = asSystem(() => prisma.$transaction((tx) => lockCurrentRevision(part.id, tx)));
+
+    // Not itself the discriminator (see above) — its job is to guarantee lockCurrentRevision's
+    // claim has actually been dispatched, and in the correct implementation is genuinely blocked
+    // on the holder, before the holder is released — otherwise the stale-vs-fresh read below
+    // would be a coincidence of scheduling rather than a real test of the claim.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      lockCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: with the FOR UPDATE genuinely in effect, lockCurrentRevision cannot
+    // decide "has steps" until after the holder's delete has committed, so it must see zero steps
+    // and refuse — the revision is never locked.
+    await expect(lockCall).rejects.toMatchObject({ status: 400, message: "This part has no process steps" });
+    const rev1 = await prisma.partProcessRevision.findFirstOrThrow({ where: { partId: part.id } });
+    expect(rev1.lockedAt).toBeNull();
   });
 });

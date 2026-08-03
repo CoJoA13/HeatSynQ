@@ -381,6 +381,8 @@ export async function lockRevision(
 export async function lockCurrentRevision(
   partId: string, tx: Prisma.TransactionClient,
 ): Promise<{ revisionNumber: number }> {
+  const part = await tx.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+  if (!part) throw new HttpError(404, "Part not found");
   const claimed = await tx.$queryRaw<{ id: string; revisionNumber: number }[]>`
     SELECT "id", "revisionNumber" FROM "PartProcessRevision"
     WHERE "partId" = ${partId} ORDER BY "revisionNumber" DESC LIMIT 1 FOR UPDATE`;
