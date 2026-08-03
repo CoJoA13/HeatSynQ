@@ -39,6 +39,17 @@ const FIXTURE = {
   restrictedRoleName: "E2E Restricted Role",
   restrictedUsername: "e2e_restricted",
   restrictedPassword: "e2eRestricted123!",
+  // Phase 3 (Task 17): a SEPARATE customer/parts from the process-suite's own E2ECUST/E2E-PART-1
+  // above, rather than reusing them — the process flows (template-build-and-load/revision-cut)
+  // mutate E2E-PART-1's own revision history over the course of a run (cutting Rev 2, locking
+  // Rev 1), and coupling the order flows to that same part would make them depend on exactly
+  // where in that history the earlier flows left it. `orderCustomer` carries `creditHold: true`
+  // so order-entry-full's save deterministically produces a non-empty `warnings[]` (the
+  // save-with-warnings panel, spec's "visibly, never silently" ruling) without depending on
+  // whether the rider's serials happened to be entered yet.
+  orderCustomerCode: "E2EORDCUST",
+  orderLeadPartNumber: "E2E-ORD-LEAD",
+  orderRiderPartNumber: "E2E-ORD-RIDER",
 } as const;
 
 /**
@@ -95,6 +106,17 @@ export type Fixtures = {
   restrictedUserId: string;
   restrictedUsername: string;
   restrictedPassword: string;
+  /** Task 17's own customer/parts (see FIXTURE's comment on why these are separate from the
+   *  process suite's customer/part above). The lead part already carries a working revision with
+   *  one step, so it is orderable (`hasProcessSteps`) from the moment the harness starts — the
+   *  order-entry-full flow's own save is what exercises the REAL `lockCurrentRevision` path
+   *  against it, through the actual app, not this fixture script. */
+  orderCustomerId: string;
+  orderCustomerCode: string;
+  orderLeadPartId: string;
+  orderLeadPartNumber: string;
+  orderRiderPartId: string;
+  orderRiderPartNumber: string;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -138,9 +160,54 @@ async function deletePartsAndCustomers(partIds: string[], customerIds: string[])
   if (customerIds.length > 0) await prisma.customer.deleteMany({ where: { id: { in: customerIds } } });
 }
 
+/**
+ * Task 17: every order the E2E flows create, scoped through the fixture order-customer's id —
+ * the same "customer is the gate" reasoning `reapLeftovers`' own comment already gives for parts
+ * (an order's natural key is really `(customerId, orderNumber)`; nothing here ever matches on a
+ * bare orderNumber, which — unlike a part number — isn't even scoped to a customer at all, so a
+ * number-based lookup would risk sweeping up a real shop order that happened to share one).
+ * `Order.deletedAt` is NOT filtered here: the void-order flow's whole point is to leave the order
+ * voided, and a leftover voided fixture order is exactly as unwelcome in the dev DB as a live one.
+ *
+ * This intentionally does what the app itself never does — hard-delete an `Order` and its
+ * `StoredDocument` rows (§4/§5b: a real traveler print has no delete path and an order's number is
+ * never reused) — for the same reason `deleteTemplatesAndSteps`/`deleteStepCodes` above already
+ * hard-delete rows the app only ever soft-deletes: a leftover E2E fixture row has no business
+ * surviving in the developer's own database, and this script is not a user of the app's UI.
+ *
+ * FK order matters: every order-child table (StoredDocument/OrderAttachment/OrderSerial/
+ * OrderCharge/Load/OrderContainer/OrderLine) references `orderId` with no cascade, so all of them
+ * must go before the `Order` row itself; `OrderLine.partId` is a plain restrict-on-delete FK too,
+ * which is why `deletePartsAndCustomers` (parts) must run AFTER this, not before.
+ */
+async function deleteOrdersAndChildren(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const orders = await prisma.order.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const orderIds = orders.map((o) => o.id);
+  if (orderIds.length === 0) return;
+
+  await prisma.auditLog.deleteMany({ where: { entity: "order", entityId: { in: orderIds } } });
+  await prisma.storedDocument.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.orderAttachment.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.orderSerial.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.orderCharge.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.load.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.orderContainer.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.orderLine.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
+}
+
 async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promise<void> {
-  // Session has no cascade from User (unlike RolePermission/UserPermissionOverride, which do
-  // cascade from Role/User respectively) — it must go first or the User delete below 23503s.
+  // Session, OrderDraft, and SavedView all have `ON DELETE RESTRICT` from User (verified against
+  // the generated migration SQL, not assumed from schema.prisma's silence on the point) — every
+  // one of them must go first or the User delete below 23503s. OrderDraft/SavedView are new here
+  // (Task 17): no flow before Phase 3 ever wrote to either table, so this gap was latent, not
+  // exercised, until order-entry-full's own autosave started giving e2e_admin a real OrderDraft
+  // row. `createOrder`'s save only ever NULLS a draft's payload (spec §5.5's "same transaction as
+  // the save" clearing) — the row itself, keyed uniquely by userId, survives a successful save,
+  // so a leftover row is the NORMAL case here, not an edge case.
+  if (userIds.length > 0) await prisma.orderDraft.deleteMany({ where: { userId: { in: userIds } } });
+  if (userIds.length > 0) await prisma.savedView.deleteMany({ where: { userId: { in: userIds } } });
   if (userIds.length > 0) await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
   if (userIds.length > 0) await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   if (roleIds.length > 0) await prisma.role.deleteMany({ where: { id: { in: roleIds } } });
@@ -163,7 +230,7 @@ async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promis
  * do nothing too — no self-heal, wedged indefinitely).
  */
 async function reapLeftovers(): Promise<void> {
-  const [templates, parts, stepCodes, customers, users, roles] = await Promise.all([
+  const [templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
     }),
@@ -186,13 +253,25 @@ async function reapLeftovers(): Promise<void> {
     prisma.role.findMany({
       where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName] } }, select: { id: true },
     }),
+    // Task 17's own customer, looked up the same way as the process suite's above — its id is
+    // ALSO the gate for that customer's orders below, since Order.customerId is a real scope
+    // (unlike a template, which has no owning customer at all).
+    prisma.customer.findMany({ where: { code: FIXTURE.orderCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: {
+        partNumber: { in: [FIXTURE.orderLeadPartNumber, FIXTURE.orderRiderPartNumber] },
+        customer: { code: FIXTURE.orderCustomerCode },
+      },
+      select: { id: true },
+    }),
   ]);
   const templateIds = templates.map((t) => t.id);
-  const partIds = parts.map((p) => p.id);
+  const partIds = [...parts.map((p) => p.id), ...orderParts.map((p) => p.id)];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  const customerIds = customers.map((c) => c.id);
+  const customerIds = [...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id)];
   const userIds = users.map((u) => u.id);
   const roleIds = roles.map((r) => r.id);
+  const orderCustomerIds = orderCustomers.map((c) => c.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
     + customerIds.length + userIds.length + roleIds.length;
@@ -204,6 +283,10 @@ async function reapLeftovers(): Promise<void> {
     `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s).`,
   );
 
+  // Before parts: OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order
+  // (voided by a prior run's void-order flow, or left live by a crash before it) must be gone
+  // before deletePartsAndCustomers below can touch E2E-ORD-LEAD/E2E-ORD-RIDER.
+  await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
   await deleteTemplatesAndSteps(templateIds);
   await deleteStepCodes(stepCodeIds);
@@ -218,10 +301,12 @@ async function reapLeftovers(): Promise<void> {
  * second step), a second template with no matching name (so processes-list's search
  * demonstrably narrows something away), and two role/user pairs: a full-permission one for flows
  * 1-4 and a restricted one (parts.view + processes.view only) for the permission-gating and
- * processes-list flows. Everything here is prefixed "E2E" so cleanup() below — and a human
- * skimming the dev DB — can tell fixture rows from real data at a glance. Self-healing (see
- * reapLeftovers): a prior run's leftovers are cleared first, so this is idempotent across runs
- * even when the previous one never reached its own cleanup.
+ * processes-list flows. Plus (Task 17, Phase 3) a SEPARATE customer + lead/rider part pair for the
+ * order flows (order-entry-full/board-search-scan/loads-after-print/void-order), the lead already
+ * carrying one process step so it is orderable from the start. Everything here is prefixed "E2E"
+ * so cleanup() below — and a human skimming the dev DB — can tell fixture rows from real data at a
+ * glance. Self-healing (see reapLeftovers): a prior run's leftovers are cleared first, so this is
+ * idempotent across runs even when the previous one never reached its own cleanup.
  *
  * The full-permission user exists rather than the flows just signing in as the seeded `admin`
  * (Codex, 2026-08-02): README §"first run" tells the developer to change that password after
@@ -272,6 +357,45 @@ async function create(): Promise<Fixtures> {
     const decoyTemplate = await tx.processTemplate.create({
       data: { name: FIXTURE.decoyTemplateName },
     });
+
+    // Task 17 (Phase 3): a customer + two parts for the order flows, independent of the process
+    // suite's own customer/part above — see FIXTURE's comment. `creditHold: true` is what makes
+    // order-entry-full's save deterministically return a non-empty `warnings[]` (the "visibly,
+    // never silently" save-with-warnings panel), and the lead part's revision/step below are
+    // written directly (not through `lockCurrentRevision`/`workingRevision`) because this is
+    // fixture SETUP, exactly like every other row in this transaction — the order-entry-full flow
+    // itself is what exercises the real, audited lock at order save, through the actual app.
+    const orderCustomer = await tx.customer.create({
+      data: { code: FIXTURE.orderCustomerCode, name: "E2E Order Flow Customer", creditHold: true },
+    });
+    const orderLeadPart = await tx.part.create({
+      data: {
+        customerId: orderCustomer.id, partNumber: FIXTURE.orderLeadPartNumber, name: "E2E Order Lead Part",
+        eachWeight: "10.0000",
+      },
+    });
+    const orderRiderPart = await tx.part.create({
+      data: {
+        customerId: orderCustomer.id, partNumber: FIXTURE.orderRiderPartNumber, name: "E2E Order Rider Part",
+        eachWeight: "2.5000", serializationRequired: true,
+      },
+    });
+    const orderLeadRevision = await tx.partProcessRevision.create({
+      data: { partId: orderLeadPart.id, revisionNumber: 1 },
+    });
+    // Reuses stepCodeB (E2E-WASH) rather than declaring a third fixture step code — a step code is
+    // shared reference vocabulary, not owned by any one part, so two unrelated parts' revisions
+    // referencing the same code is normal, not a fixture-scoping risk. Deliberately NOT stepCodeA:
+    // blocked-code-delete.mjs asserts an EXACT blocker count ("2 record(s) use it") for stepCodeA
+    // — E2E-PART-1's step and the E2E Austemper template's step — and a third live reference would
+    // silently break that flow's own assertion.
+    await tx.partProcessStep.create({
+      data: {
+        revisionId: orderLeadRevision.id, position: 1, codeId: stepCodeB.id,
+        instruction: "E2E order flow: heat to target temperature and hold.",
+      },
+    });
+
     // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
     // both the parts/processes screens and the admin step-codes screen, so anything narrower would
     // have to be kept in step with them by hand.
@@ -310,6 +434,9 @@ async function create(): Promise<Fixtures> {
       adminUsername: adminUser.username, adminPassword: FIXTURE.adminPassword,
       restrictedRoleId: restrictedRole.id, restrictedUserId: restrictedUser.id,
       restrictedUsername: restrictedUser.username, restrictedPassword: FIXTURE.restrictedPassword,
+      orderCustomerId: orderCustomer.id, orderCustomerCode: orderCustomer.code,
+      orderLeadPartId: orderLeadPart.id, orderLeadPartNumber: orderLeadPart.partNumber,
+      orderRiderPartId: orderRiderPart.id, orderRiderPartNumber: orderRiderPart.partNumber,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -337,7 +464,7 @@ type CleanupPayload = Fixtures & { templateIds: string[] };
  * exact ids from this run's own `create()` result.
  */
 async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
-  const { partId, customerId, stepCodeA, stepCodeB } = payload;
+  const { partId, customerId, stepCodeA, stepCodeB, orderCustomerId, orderLeadPartId, orderRiderPartId } = payload;
   // Name-resolved as well as id-driven (Codex, PR #22). `templateIds` only ever holds a live-built
   // template's id if its flow got far enough to read it back off the URL — a failure between the
   // POST and that line leaves the template created but unregistered, and an id-only cleanup walks
@@ -351,12 +478,21 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     payload.decoyTemplateId, ...payload.templateIds, ...byName.map((t) => t.id),
   ])];
 
-  await deletePartProcessData([partId]);
+  // Task 17: unlike templates, an order's own id is never known up front by this script — it's
+  // created live, through the entry page, by order-entry-full.mjs — so there is nothing to thread
+  // through `CleanupPayload` the way `templateIds` is threaded. Scoping through `orderCustomerId`
+  // (known from `create()`'s own result, exactly like every other id-driven delete below) finds
+  // every order the flows produced regardless of whether the run that created one ever recorded
+  // its id anywhere, and regardless of whether void-order got to it — `deleteOrdersAndChildren`
+  // doesn't filter on `deletedAt`. Before parts, same FK reason as `reapLeftovers`' own comment.
+  await deleteOrdersAndChildren([orderCustomerId]);
+  await deletePartProcessData([partId, orderLeadPartId]);
   await deleteTemplatesAndSteps(templateIds);
   await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
-  await deletePartsAndCustomers([partId], [customerId]);
-  // Both users, not just the restricted one: deleteUsersAndRoles clears each user's Session rows
-  // first, which is the only thing that clears the sessions the flows' own logins created.
+  await deletePartsAndCustomers([partId, orderLeadPartId, orderRiderPartId], [customerId, orderCustomerId]);
+  // Both users, not just the restricted one: deleteUsersAndRoles clears each user's Session (and,
+  // as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears the
+  // per-user rows the flows' own logins and the order-entry-full autosave created.
   await deleteUsersAndRoles(
     [payload.adminUserId, payload.restrictedUserId], [payload.adminRoleId, payload.restrictedRoleId],
   );

@@ -18,6 +18,45 @@ export function armDialog(page) {
 }
 
 /**
+ * Same shape as `armDialog` above, for a `window.prompt(...)` (Task 17's void-order flow, the
+ * only prompt() in the app — order hub's void reason). `dialog.accept(responseText)` supplies the
+ * typed answer; a bare `accept()` (what `armDialog` calls) would submit prompt()'s empty default,
+ * which is indistinguishable from a user who typed nothing — voidOrder's own service rejects that
+ * with a 400 ("A reason is required to void an order"), so this needs its own helper rather than
+ * reusing armDialog with a second optional parameter that every OTHER caller would have to ignore.
+ */
+export function armPrompt(page, responseText) {
+  return new Promise((resolve) => {
+    page.on("dialog", async (dialog) => {
+      const message = dialog.message();
+      await dialog.accept(responseText);
+      resolve(message);
+    });
+  });
+}
+
+/**
+ * Drives one of this app's hand-built Combobox components (src/app/orders/new/Combobox.tsx) —
+ * the customer and part pickers on order entry/the hub, none of which are a plain `<select>`
+ * (spec §11 calls for free-text autocomplete, which a native select can't do). `labelText` locates
+ * the combobox's own `<input>` by its `aria-label` (every instance carries one — "Customer",
+ * "Line 1 part", etc.); `filterText` is typed to narrow the dropdown to the option intended;
+ * `optionNamePattern` matches that option's rendered button by its accessible name (a regex
+ * anchored on the option's own leading text, e.g. `/^E2E-ORD-LEAD/`, is normally enough — the
+ * label also carries a trailing `— name` or `· name` this doesn't need to match).
+ *
+ * `.click()` before `.fill()` is not strictly required (Playwright's `.fill()` focuses the element
+ * itself, and this component opens its dropdown `onFocus`) but mirrors how a real user would
+ * interact with it, and costs nothing extra.
+ */
+export async function pickCombobox(page, labelText, filterText, optionNamePattern) {
+  const input = page.getByLabel(labelText, { exact: true });
+  await input.click();
+  await input.fill(filterText);
+  await page.getByRole("button", { name: optionNamePattern }).click();
+}
+
+/**
  * Polls `locator.inputValue()` until it equals `expected` or `timeoutMs` elapses.
  *
  * Why this exists: a step's `<li>` becomes visible (and matches a `hasText` locator) as soon as
