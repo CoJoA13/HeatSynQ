@@ -370,8 +370,14 @@ model Part {
   materialId            String?
   material              Material?             @relation(fields: [materialId], references: [id])
   eachWeight            Decimal               @db.Decimal(10, 4) // lbs; required, > 0
-  loadQty               Int? // ≥ 1 when present
-  loadWeight            Decimal?              @db.Decimal(10, 2) // lbs; > 0 when present
+  // ≥ 1 when present, app-enforced by parts.ts's zod schema AND, as a backstop against anything
+  // that bypasses it, a DB-level CHECK ("loadQty" IS NULL OR "loadQty" >= 1) — Prisma's schema
+  // language has no native check-constraint syntax (no `@@check`, verified against the Prisma
+  // docs), so the constraint lives only in migrations/<ts>_part_load_cap_checks/migration.sql.
+  // Guards splitLoads (src/lib/load-split.ts), whose loop divides by this value and would hang on 0.
+  loadQty               Int?
+  // lbs; > 0 when present — same app + DB CHECK pairing as loadQty above, same migration.
+  loadWeight            Decimal?              @db.Decimal(10, 2)
   requestDaysOverride   Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
   serializationRequired Boolean               @default(false)
   setupCharge           Decimal?              @db.Decimal(12, 2)

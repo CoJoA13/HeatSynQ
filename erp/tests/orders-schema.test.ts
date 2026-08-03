@@ -116,3 +116,76 @@ describe("orders schema", () => {
     ).rejects.toThrow();
   });
 });
+
+// Folded into Task 6 from the Task 4 review (progress.md: "CHECK constraint on Part.loadQty
+// (hang class) -> fold into T6"). splitLoads (src/lib/load-split.ts) loops `while (remainingQty >
+// 0)`, dividing the totals by a piece count derived from loadQty/loadWeight each iteration — a
+// loadQty of 0 (or a non-positive loadWeight) would never shrink remainingQty and hang the
+// request forever. parts.ts's zod schema already refuses 0/negative at the app layer, so these
+// CHECK constraints are a DB-level backstop against anything that bypasses it (a raw SQL script,
+// a future migration, a manual edit) — not something normal operation is expected to trip.
+describe("Part load-cap CHECK constraints (defense-in-depth for splitLoads)", () => {
+  beforeEach(truncateAll);
+
+  it("rejects loadQty = 0 at the database level, bypassing the app layer entirely", async () => {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    const part = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "P-CHK-1", eachWeight: "1.0000", loadQty: 5 },
+    });
+
+    await expect(
+      prisma.$executeRaw`UPDATE "Part" SET "loadQty" = 0 WHERE "id" = ${part.id}`,
+    ).rejects.toMatchObject({
+      code: "P2010",
+      meta: expect.objectContaining({
+        driverAdapterError: expect.objectContaining({
+          cause: expect.objectContaining({ originalCode: "23514" }),
+        }),
+      }),
+    });
+    // Nothing was written — the failed statement did not silently partially apply.
+    expect((await prisma.part.findFirstOrThrow({ where: { id: part.id } })).loadQty).toBe(5);
+  });
+
+  it("accepts a null loadQty (no cap) but rejects a negative one", async () => {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    const part = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "P-CHK-2", eachWeight: "1.0000" }, // loadQty null
+    });
+    expect(part.loadQty).toBeNull(); // NULL passes the CHECK (IS NULL OR ...) — no cap is legal
+
+    await expect(
+      prisma.$executeRaw`UPDATE "Part" SET "loadQty" = -1 WHERE "id" = ${part.id}`,
+    ).rejects.toMatchObject({ code: "P2010" });
+  });
+
+  it("rejects loadWeight <= 0 at the database level, bypassing the app layer entirely", async () => {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    const part = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "P-CHK-3", eachWeight: "1.0000", loadWeight: "10.00" },
+    });
+
+    await expect(
+      prisma.$executeRaw`UPDATE "Part" SET "loadWeight" = 0 WHERE "id" = ${part.id}`,
+    ).rejects.toMatchObject({
+      code: "P2010",
+      meta: expect.objectContaining({
+        driverAdapterError: expect.objectContaining({
+          cause: expect.objectContaining({ originalCode: "23514" }),
+        }),
+      }),
+    });
+    await expect(
+      prisma.$executeRaw`UPDATE "Part" SET "loadWeight" = -5.00 WHERE "id" = ${part.id}`,
+    ).rejects.toMatchObject({ code: "P2010" });
+  });
+
+  it("an INSERT (not just UPDATE) attempting loadQty = 0 is rejected the same way", async () => {
+    const customer = await prisma.customer.create({ data: { code: "AC", name: "Acme" } });
+    await expect(prisma.$executeRaw`
+      INSERT INTO "Part" ("id", "customerId", "partNumber", "eachWeight", "loadQty", "updatedAt")
+      VALUES ('chk-insert-1', ${customer.id}, 'P-CHK-4', 1.0000, 0, now())
+    `).rejects.toMatchObject({ code: "P2010" });
+    expect(await prisma.part.findFirst({ where: { id: "chk-insert-1" } })).toBeNull();
+  });
+});
