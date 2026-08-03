@@ -38,11 +38,17 @@ export default function OrdersPage() {
   const router = useRouter();
   const { permissions: perms, error: permsError } = usePermissions();
 
-  const initial = defaultViewConfig();
   const [rows, setRows] = useState<BoardRow[]>([]);
-  const [columns, setColumns] = useState<ColumnState[]>(initial.columns);
-  const [filters, setFilters] = useState<BoardFilters>(initial.filters);
-  const [sort, setSort] = useState<SortState>({ sort: initial.sort, dir: initial.dir });
+  // Lazy initializers (the use-latest.ts precedent): `defaultViewConfig()` only ever needs to run
+  // once, on mount. A plain `defaultViewConfig()` call in the render body would recompute it on
+  // every render just to throw the result away — `useState` only reads its argument on the FIRST
+  // render, so passing a function defers the call to exactly that render instead.
+  const [columns, setColumns] = useState<ColumnState[]>(() => defaultViewConfig().columns);
+  const [filters, setFilters] = useState<BoardFilters>(() => defaultViewConfig().filters);
+  const [sort, setSort] = useState<SortState>(() => {
+    const d = defaultViewConfig();
+    return { sort: d.sort, dir: d.dir };
+  });
   const [error, setError] = useState<string | null>(null);
 
   const [customers, setCustomers] = useState<CustomerOption[]>([]);

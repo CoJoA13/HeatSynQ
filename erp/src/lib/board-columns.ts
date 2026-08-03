@@ -123,6 +123,13 @@ function normalizeFilters(input: unknown): BoardFilters {
   };
 }
 
+// Every `sortKey` any column actually declares — the server's own `SORTABLE` map (orders.ts) is
+// this same set by construction (each entry above was copied from it). Used to validate a saved
+// view's stored `sort` before ever handing it to `GET /api/orders`: an unrecognized value there
+// is a field-anchored 400 ("Cannot sort orders by ..."), not a silent no-op, so a stale or
+// hand-edited saved view would otherwise break every time it was applied instead of falling back.
+const SORT_KEYS = new Set(BOARD_COLUMNS.map((c) => c.sortKey).filter((k): k is string => k !== undefined));
+
 export type SortState = { sort: string; dir: "asc" | "desc" };
 
 /** `orderNumber` desc — the same fallback `orders.ts`'s `orderByFor` applies when the `sort`/`dir`
@@ -146,7 +153,7 @@ export function normalizeViewConfig(input: unknown): ViewConfig {
   return {
     columns: normalizeColumnState(obj.columns),
     filters: normalizeFilters(obj.filters),
-    sort: typeof obj.sort === "string" ? obj.sort : fallback.sort,
+    sort: typeof obj.sort === "string" && SORT_KEYS.has(obj.sort) ? obj.sort : fallback.sort,
     dir: obj.dir === "asc" ? "asc" : "desc",
   };
 }

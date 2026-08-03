@@ -79,23 +79,32 @@ export function Shell({ children }: { children: React.ReactNode }) {
   // superseded request's rejection landing after a newer request already succeeded must not
   // overwrite fresh results with a stale failure message, and a superseded success must not
   // overwrite a newer one either.
-  const runSearch = useCallback(async (term: string): Promise<SearchResults> => {
+  //
+  // Resolves to `null` on failure rather than rethrowing. The debounce timer below fires this
+  // with `void runSearch(term)` and attaches no `.catch` — `void` only tells the linter this
+  // promise is deliberately not awaited, it does not attach a rejection handler, so a rethrow
+  // here would be a genuine unhandled promise rejection at runtime for any search that fails
+  // before the Enter path ever calls it. Returning `null` after recording `searchError` keeps
+  // this function's promise always-resolving, so no caller needs to remember to catch it —
+  // `onSearchKeyDown` below checks the result instead of using try/catch.
+  const runSearch = useCallback(async (term: string): Promise<SearchResults | null> => {
     const t = latest.next();
+    let data: SearchResults;
     try {
-      const data = await api<SearchResults>(`/api/search?q=${encodeURIComponent(term)}`);
-      if (latest.isCurrent(t)) {
-        setResults(data);
-        setOpen(true);
-        setSearchError(null);
-      }
-      return data;
+      data = await api<SearchResults>(`/api/search?q=${encodeURIComponent(term)}`);
     } catch (e) {
       if (latest.isCurrent(t)) {
         setSearchError((e as Error).message);
         setOpen(false);
       }
-      throw e;
+      return null;
     }
+    if (latest.isCurrent(t)) {
+      setResults(data);
+      setOpen(true);
+      setSearchError(null);
+    }
+    return data;
   }, [latest]);
 
   // Debounced 250ms dropdown (design spec §11). A blank query means nothing to search — clears
@@ -128,12 +137,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
     const term = query.trim();
     if (!term) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    let data: SearchResults;
-    try {
-      data = await runSearch(term);
-    } catch {
-      return; // runSearch already recorded the failure via searchError
-    }
+    const data = await runSearch(term);
+    if (!data) return; // runSearch already recorded the failure via searchError
     if (data.exactOrderId) {
       setOpen(false);
       setQuery("");
