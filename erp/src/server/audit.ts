@@ -85,7 +85,11 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   order: {
     lines: { orderBy: { position: "asc" }, include: { part: { select: { partNumber: true } } } },
     containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
-    serials: { orderBy: [{ lineId: "asc" }, { position: "asc" }] },
+    // lineId is an opaque cuid — ordering by it made snapshot order arbitrary with respect to the
+    // order the operator actually entered lines in, so a later line insert could produce a
+    // spurious diff (issue #24's class of bug). Order by the line's own position instead, which
+    // agrees with DETAIL_INCLUDE.serials (orders.ts) and the create-path auditPayload below.
+    serials: { orderBy: [{ line: { position: "asc" } }, { position: "asc" }] },
     loads: { orderBy: { loadNumber: "asc" } },
     charges: { orderBy: { position: "asc" } },
   },
