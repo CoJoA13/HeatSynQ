@@ -84,10 +84,17 @@ const SERIAL_ITEM = z.object({
   description: z.string().max(500).default(""),
 }).strict();
 
+// Fix-wave R3 finding 2: both columns behind these fields (OrderContainer.count/qty,
+// schema.prisma) are Postgres `INTEGER` — a value above this reached the nested create or the
+// bulk replace unchecked and failed with an unmapped database range error (a 500) rather than
+// this schema's own field-anchored 400. Bounding both here catches it before the transaction
+// even opens, the same role `LINE_QTY`'s own `.max()` plays for a line's qty just below.
+const INT4_MAX = 2_147_483_647;
+
 const CONTAINER_ITEM = z.object({
   typeId: z.string().min(1),
-  count: z.number().int().min(1),
-  qty: z.number().int().min(1).nullable().optional(),
+  count: z.number().int().min(1).max(INT4_MAX),
+  qty: z.number().int().min(1).max(INT4_MAX).nullable().optional(),
   tareWeight: decimalField(12, 2, { min: "nonnegative" }),
   grossWeight: decimalField(12, 2, { min: "nonnegative" }),
 }).strict();

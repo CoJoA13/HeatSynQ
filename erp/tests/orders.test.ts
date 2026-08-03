@@ -487,6 +487,36 @@ describe("createOrder: rejections", () => {
       containers: [{ typeId: containerType.id, count: 1 }],
     }))).rejects.toMatchObject({ status: 400, message: "That container type does not exist" });
   });
+
+  // Fix-wave R3 finding 2: `count`/`qty` are destined for PostgreSQL `INTEGER` columns
+  // (OrderContainer.count/qty, schema.prisma). A value above the Int4 range used to pass this
+  // schema, reach the nested create, and fail with an unmapped database range error — a 500 —
+  // instead of a field-anchored 400 like every other bad input on this endpoint. Both fields are
+  // capped to the Int4 max, so the rejection happens at zod, before the transaction ever opens.
+  it("rejects container count/qty above the Postgres Int4 range with a field-anchored 400, not a 500", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const base = { customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }] };
+
+    let overCount: unknown;
+    try {
+      await asSystem(() => createOrder({
+        ...base, containers: [{ typeId: containerType.id, count: 2_147_483_648 }],
+      }));
+    } catch (e) { overCount = e; }
+    expect(overCount).toBeInstanceOf(ZodError);
+    expect((overCount as ZodError).issues[0].path).toEqual(["containers", 0, "count"]);
+
+    let overQty: unknown;
+    try {
+      await asSystem(() => createOrder({
+        ...base, containers: [{ typeId: containerType.id, count: 1, qty: 2_147_483_648 }],
+      }));
+    } catch (e) { overQty = e; }
+    expect(overQty).toBeInstanceOf(ZodError);
+    expect((overQty as ZodError).issues[0].path).toEqual(["containers", 0, "qty"]);
+
+    expect(await prisma.order.count()).toBe(0);
+  });
 });
 
 describe("createOrder: serials", () => {
