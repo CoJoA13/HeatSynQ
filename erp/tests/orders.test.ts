@@ -1540,25 +1540,102 @@ describe("linkOrder / unlinkOrder", () => {
       .rejects.toMatchObject({ status: 404, message: "Order not found" });
   });
 
-  it("mints a fresh group for two groupless orders; a third joins by linking the already-grouped one", async () => {
+  // Union semantics (owner ruling 2026-08-02, superseding spec §5d's original literal wording —
+  // see the doc comment on linkOrder). The four cases below are exhaustive and mutually
+  // exclusive on (order.linkGroupId, other.linkGroupId): (null, null), (set, null), (null, set),
+  // (set, set-and-equal), (set, set-and-different).
+
+  it("mints a fresh group for two groupless orders", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+
+    const linked = await asSystem(() => linkOrder(a.order.id, b.order.id));
+    expect(linked.linkGroupId).toBeTruthy();
+    expect((await getOrder(b.order.id)).linkGroupId).toBe(linked.linkGroupId);
+  });
+
+  it("audits both sides of a simple link with the real before/after linkGroupId", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+
+    const linked = await asSystem(() => linkOrder(a.order.id, b.order.id));
+    const groupId = linked.linkGroupId!;
+
+    const [entryA] = await readAudit("order", a.order.id);
+    expect(entryA.action).toBe("update");
+    expect((entryA.before as { linkGroupId: string | null }).linkGroupId).toBeNull();
+    expect((entryA.after as { linkGroupId: string | null }).linkGroupId).toBe(groupId);
+
+    const [entryB] = await readAudit("order", b.order.id);
+    expect(entryB.action).toBe("update");
+    expect((entryB.before as { linkGroupId: string | null }).linkGroupId).toBeNull();
+    expect((entryB.after as { linkGroupId: string | null }).linkGroupId).toBe(groupId);
+  });
+
+  it("the groupless side joins the OTHER side's existing group — both directions — without orphaning its groupmates", async () => {
     const { customer, lead } = await fixture();
     const line = { partId: lead.id, qty: 1, weight: "13.50" };
     const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
     const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
     const c = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const d = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
 
-    const linked1 = await asSystem(() => linkOrder(a.order.id, b.order.id));
-    expect(linked1.linkGroupId).toBeTruthy();
-    const groupId = linked1.linkGroupId!;
-    expect((await getOrder(b.order.id)).linkGroupId).toBe(groupId);
+    // A and B are already linked. Direction 1: `id` (A) is the grouped side, `otherId` (C) is
+    // groupless — C joins, and B (not a party to this call at all) must NOT be detached.
+    const ab = await asSystem(() => linkOrder(a.order.id, b.order.id));
+    const group = ab.linkGroupId!;
+    await asSystem(() => linkOrder(a.order.id, c.order.id));
+    expect((await getOrder(a.order.id)).linkGroupId).toBe(group);
+    expect((await getOrder(b.order.id)).linkGroupId).toBe(group); // not orphaned
+    expect((await getOrder(c.order.id)).linkGroupId).toBe(group); // joined
 
-    // c joins by linking to the ALREADY-grouped b — adopts b's group rather than minting a third.
-    const linked2 = await asSystem(() => linkOrder(c.order.id, b.order.id));
-    expect(linked2.linkGroupId).toBe(groupId);
+    // Direction 2: `id` (D) is groupless, `otherId` (A) is the grouped side — D joins A's group,
+    // and B/C (again, not a party to this call) stay put.
+    await asSystem(() => linkOrder(d.order.id, a.order.id));
+    expect((await getOrder(d.order.id)).linkGroupId).toBe(group); // joined
+    expect((await getOrder(b.order.id)).linkGroupId).toBe(group); // still not orphaned
+    expect((await getOrder(c.order.id)).linkGroupId).toBe(group); // still not orphaned
+  });
 
-    const detailA = await getOrder(a.order.id);
-    expect(detailA.linkedOrders.map((o) => o.id).sort()).toEqual([b.order.id, c.order.id].sort());
-    expect(detailA.linkedOrders.some((o) => o.id === a.order.id)).toBe(false); // excludes self
+  it("merges two distinct groups into one when both sides are already grouped", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const c = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const d = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+
+    const ab = await asSystem(() => linkOrder(a.order.id, b.order.id));
+    const groupAB = ab.linkGroupId!;
+    const cd = await asSystem(() => linkOrder(c.order.id, d.order.id));
+    const groupCD = cd.linkGroupId!;
+    expect(groupAB).not.toBe(groupCD);
+
+    // id's (a's) group is the documented survivor.
+    const merged = await asSystem(() => linkOrder(a.order.id, c.order.id));
+    expect(merged.linkGroupId).toBe(groupAB);
+
+    const details = await Promise.all([a, b, c, d].map((o) => getOrder(o.order.id)));
+    expect(details.map((o) => o.linkGroupId)).toEqual([groupAB, groupAB, groupAB, groupAB]);
+  });
+
+  it("400s re-linking two orders already in the same group, in either direction", async () => {
+    const { customer, lead } = await fixture();
+    const line = { partId: lead.id, qty: 1, weight: "13.50" };
+    const a = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    const b = await asSystem(() => createOrder({ customerId: customer.id, lines: [line] }));
+    await asSystem(() => linkOrder(a.order.id, b.order.id));
+
+    await expect(asSystem(() => linkOrder(a.order.id, b.order.id))).rejects.toMatchObject({
+      status: 400, message: "Those orders are already linked",
+    });
+    await expect(asSystem(() => linkOrder(b.order.id, a.order.id))).rejects.toMatchObject({
+      status: 400, message: "Those orders are already linked",
+    });
   });
 
   it("clears the group on unlink without touching the other members", async () => {

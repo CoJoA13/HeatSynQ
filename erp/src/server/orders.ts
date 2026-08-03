@@ -969,13 +969,26 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
 }
 
 /**
- * Links two live orders of the SAME customer (spec §5d) — reference-only in Phase 3, no
- * scheduling/consolidation behaviour hangs off it yet. Adopts the OTHER side's existing
- * `linkGroupId` when it has one; mints a fresh `crypto.randomUUID()` for both otherwise (the
- * column is a plain `String?` with no default — any opaque unique string works, and this needs no
- * new dependency). Each order's own row is audited separately (`deleteCustomer`'s cascade-audit
- * precedent: one action touching two rows gets one entry per row, not one entry naming both), so
- * either order's own history shows the link.
+ * Links two live orders of the SAME customer (spec §5d, **amended 2026-08-02 by owner ruling
+ * during the Task 5 review** — the ruling supersedes §5d's original literal wording, which this
+ * function followed before the fix: "adopt the OTHER side's group, else mint one for both" could
+ * silently detach `id` from a group it already belonged to). Reference-only in Phase 3, no
+ * scheduling/consolidation behaviour hangs off it yet.
+ *
+ * UNIONS the two sides' groups — no order is ever silently detached by linking (only
+ * `unlinkOrder` removes membership):
+ *   - neither side grouped -> mint one fresh `crypto.randomUUID()` for both (the column is a
+ *     plain `String?` with no default — any opaque unique string works, no new dependency);
+ *   - exactly one side already grouped -> the groupless side joins it, whichever side that is;
+ *   - both grouped in DIFFERENT groups -> merge whole: every order carrying `other`'s groupId
+ *     (itself included) moves onto `order`'s groupId, which survives;
+ *   - both already in the SAME group -> 400, there is nothing to do.
+ *
+ * Only rows whose `linkGroupId` VALUE actually changes are audited — the "identical value: skip —
+ * no junk audit rows" rule `setPartFieldValues`/`updateStep` already follow, generalized to a
+ * per-row loop because a merge can touch more than two rows at once (groups are small per the
+ * ruling, so an unbounded loop of individually-audited updates is the honest, not the expensive,
+ * choice — and it is what makes either affected order's own history show the link/merge).
  */
 export async function linkOrder(id: string, otherId: string): Promise<OrderDetail> {
   if (otherId === id) throw new HttpError(400, "An order cannot be linked to itself");
@@ -983,7 +996,7 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({
-      where: { id, deletedAt: null }, select: { id: true, customerId: true },
+      where: { id, deletedAt: null }, select: { id: true, customerId: true, linkGroupId: true },
     });
     if (!order) throw new HttpError(404, "Order not found");
 
@@ -995,13 +1008,37 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
     if (other.customerId !== order.customerId) {
       throw new HttpError(400, "Orders can only be linked within one customer");
     }
+    if (order.linkGroupId !== null && order.linkGroupId === other.linkGroupId) {
+      throw new HttpError(400, "Those orders are already linked");
+    }
 
-    const groupId = other.linkGroupId ?? crypto.randomUUID();
+    // The survivor groupId, and exactly the rows that need to move onto it — anything NOT
+    // listed here already carries the right value and gets no audit entry for this call.
+    let groupId: string;
+    let toUpdate: string[];
+    if (order.linkGroupId && !other.linkGroupId) {
+      groupId = order.linkGroupId;
+      toUpdate = [otherId];
+    } else if (!order.linkGroupId && other.linkGroupId) {
+      groupId = other.linkGroupId;
+      toUpdate = [id];
+    } else if (order.linkGroupId && other.linkGroupId) {
+      // Different groups (same-group already 400'd above): id's group survives, and every
+      // member of other's group — other itself included — moves onto it.
+      groupId = order.linkGroupId;
+      const othersGroup = await tx.order.findMany({
+        where: { linkGroupId: other.linkGroupId }, select: { id: true },
+      });
+      toUpdate = othersGroup.map((o) => o.id);
+    } else {
+      groupId = crypto.randomUUID();
+      toUpdate = [id, otherId];
+    }
 
-    await auditedUpdate("order", id, () =>
-      tx.order.update({ where: { id }, data: { linkGroupId: groupId } }), { tx });
-    await auditedUpdate("order", otherId, () =>
-      tx.order.update({ where: { id: otherId }, data: { linkGroupId: groupId } }), { tx });
+    for (const memberId of toUpdate) {
+      await auditedUpdate("order", memberId, () =>
+        tx.order.update({ where: { id: memberId }, data: { linkGroupId: groupId } }), { tx });
+    }
 
     return readDetail(tx, id, traffic);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
