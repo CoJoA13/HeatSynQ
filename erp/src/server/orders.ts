@@ -193,8 +193,14 @@ async function resolveLineParts(
  * has already bounded every line to two decimal places, so the cents are exact and the single
  * division back to pounds is the only floating step — load-split.ts's reasoning applied one
  * level up, and what keeps the split's own sums landing on the totals exactly.
+ *
+ * Typed structurally (`{ qty; weight }[]`, not `LineInput[]`) and exported so Task 6's
+ * `resplitLoads` (order-loads.ts) can reuse the exact cents-sum technique against a PERSISTED
+ * order's lines (mapped to plain numbers first — Prisma returns `weight` as a `Decimal` off a raw
+ * select) rather than re-deriving it — every existing call site already satisfies the narrower
+ * shape, so this is a widening, not a breaking change.
  */
-function lineTotals(lines: LineInput[]): { totalQty: number; totalWeight: number } {
+export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty: number; totalWeight: number } {
   const totalQty = lines.reduce((sum, l) => sum + l.qty, 0);
   const cents = lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
   return { totalQty, totalWeight: cents / 100 };
@@ -330,8 +336,9 @@ type DetailRow = Prisma.OrderGetPayload<{ include: typeof DETAIL_INCLUDE }>;
 type Traffic = { mayMissDays: number; willMissDays: number };
 
 /** Both windows in ONE pair of reads per call — the board computes a light for every row and
- *  must not fan a settings query out across them (spec §6). */
-async function trafficSettings(): Promise<Traffic> {
+ *  must not fan a settings query out across them (spec §6). Exported for order-loads.ts (Task 6),
+ *  whose mutators need the same `readDetail` call this file's own mutators do. */
+export async function trafficSettings(): Promise<Traffic> {
   const [mayMissDays, willMissDays] = await Promise.all([
     getSetting("traffic_may_miss_days"),
     getSetting("traffic_will_miss_days"),
@@ -378,8 +385,12 @@ function toDetail(
  * hub renders it read-only rather than pretending it never existed. Linked siblings are listed
  * the same way, voided or not; a group member that has been voided is exactly the kind of thing
  * the panel exists to show.
+ *
+ * Exported for order-loads.ts (Task 6): its mutators end every write the same way every mutator
+ * in THIS file does — read the fresh detail back inside the same `tx` — and re-deriving that read
+ * would just be a second, easy-to-drift copy of `DETAIL_INCLUDE`/`toDetail`.
  */
-async function readDetail(db: Db, id: string, traffic: Traffic): Promise<OrderDetail> {
+export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<OrderDetail> {
   const row = await db.order.findFirst({ where: { id }, include: DETAIL_INCLUDE });
   if (!row) throw new HttpError(404, "Order not found");
   const linkedOrders = row.linkGroupId
@@ -707,8 +718,11 @@ const REPLACE_CHARGES = z.array(CHARGE_ITEM);
  * float are only guaranteed equal when the integer cents behind them already are, so comparing
  * the cents directly (lineTotals' own technique, inlined here for the loads side too) sidesteps
  * any IEEE754 doubt entirely rather than trusting it.
+ *
+ * Exported for order-loads.ts (Task 6) — `replaceLoads`/`resplitLoads` report the identical
+ * mismatch string on the identical condition, reused rather than retyped.
  */
-function loadsMismatchWarnings(order: OrderDetail): OrderWarnings {
+export function loadsMismatchWarnings(order: OrderDetail): OrderWarnings {
   const lineQty = order.lines.reduce((sum, l) => sum + l.qty, 0);
   const lineCents = order.lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
   const loadQty = order.loads.reduce((sum, l) => sum + (l.qty ?? 0), 0);
