@@ -5,7 +5,7 @@ import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { expandSerialRange } from "@/lib/serial-range";
 import { findDuplicateSerials } from "../new/OrderLineCard";
-import type { OrderLine, OrderMutationResult, OrderSerial, PartOption } from "./page";
+import type { OrderLine, OrderMutationResult, OrderSerial } from "./page";
 
 type Fields = { serial: string; description: string };
 
@@ -146,15 +146,17 @@ function LineSerialsEditor({
 }
 
 /** One sub-grid per order line (lead and every rider alike — serialization is a per-part-number
- *  concern, spec §3.1: "billing and certs stay per part number"). `partsById` supplies the
- *  serialization-required flag `OrderLineDetail.part` itself doesn't carry (task-14-brief.md). */
+ *  concern, spec §3.1: "billing and certs stay per part number"). The serialization-required flag
+ *  comes straight off `line.part.serializationRequired` (fix-wave R3 finding 6) rather than a
+ *  separate parts-catalog lookup: a caller with `orders.view` but not `parts.view` still gets a
+ *  correct warning, since order creation reports this requirement independently of catalog access
+ *  and the order hub's own fetch of `OrderDetail` already carries it. */
 export function SerialsSection({
-  orderId, lines, serials, partsById, editGate, applyMutation, onError,
+  orderId, lines, serials, editGate, applyMutation, onError,
 }: {
   orderId: string;
   lines: OrderLine[];
   serials: OrderSerial[];
-  partsById: Map<string, PartOption>;
   editGate: Gate;
   applyMutation: (res: OrderMutationResult) => void;
   onError: (message: string | null) => void;
@@ -166,7 +168,7 @@ export function SerialsSection({
         <LineSerialsEditor
           key={line.id} orderId={orderId} line={line}
           serials={serials.filter((s) => s.lineId === line.id)}
-          requiresSerials={partsById.get(line.partId)?.serializationRequired ?? false}
+          requiresSerials={line.part.serializationRequired}
           editGate={editGate} applyMutation={applyMutation} onError={onError}
         />
       ))}

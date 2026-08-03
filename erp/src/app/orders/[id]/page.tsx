@@ -12,7 +12,7 @@
 // (Containers/Serials/Charges/Loads) additionally keep only EDITED cells/rows locally
 // (src/lib/bulk-grid.ts) rather than a full mutable copy of the server array, for the same reason
 // ProcessStepsSection's step editor does — see that file's own top comment.
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
@@ -41,7 +41,11 @@ import { DocumentsSection } from "./DocumentsSection";
 export type OrderLine = {
   id: string; position: number; partId: string; revisionNumber: number | null;
   qty: number; weight: number;
-  part: { id: string; partNumber: string; name: string; customer: { code: string } };
+  // serializationRequired (fix-wave R3 finding 6) rides on the line's own part payload so
+  // SerialsSection's warning is governed by orders.view, not a separate parts.view fetch.
+  part: {
+    id: string; partNumber: string; name: string; customer: { code: string }; serializationRequired: boolean;
+  };
 };
 export type OrderContainer = {
   id: string; position: number; typeId: string; count: number; qty: number | null;
@@ -197,11 +201,10 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
 
   // The customer's full part catalog (active AND inactive — includeInactive=1), filtered
   // client-side the way the entry page's own customerParts is (GET /api/parts has no customerId
-  // filter — verified against src/app/api/parts/route.ts). Serves two purposes: the rider-add
-  // picker (LinesSection, active parts only — an inactive part cannot be added, per
-  // resolveLineParts) and the per-line "serialization required, no serials" warning
-  // (SerialsSection, which deliberately also needs an already-inactive part's flag, since an
-  // existing line can reference one).
+  // filter — verified against src/app/api/parts/route.ts). Feeds the rider-add picker only
+  // (LinesSection, active parts only — an inactive part cannot be added, per resolveLineParts).
+  // SerialsSection's serialization warning no longer needs this fetch at all (fix-wave R3 finding
+  // 6): `line.part.serializationRequired` rides on OrderDetail itself, gated by orders.view.
   useEffect(() => {
     if (!customerId || !partsGate.allowed) return;
     api<PartOption[]>("/api/parts?includeInactive=1")
@@ -234,8 +237,6 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       })
       .catch(() => setVoidReason(undefined));
   }, [voided, auditGate.allowed, id]);
-
-  const partsById = useMemo(() => new Map(parts.map((p) => [p.id, p])), [parts]);
 
   // ---- Overview + Notes: optimistic scalar PATCH (customers/[id]/page.tsx `save()` precedent) ----
 
@@ -489,7 +490,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       />
 
       <SerialsSection
-        orderId={id} lines={order.lines} serials={order.serials} partsById={partsById} editGate={editGate}
+        orderId={id} lines={order.lines} serials={order.serials} editGate={editGate}
         applyMutation={applyMutation} onError={setError}
       />
 

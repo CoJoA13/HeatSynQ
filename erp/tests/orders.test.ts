@@ -125,6 +125,29 @@ describe("createOrder: the two-line sibling order", () => {
     expect(locked.lockedAt).not.toBeNull();
   });
 
+  // Fix-wave R3 finding 6: a user with orders.view but not parts.view gets no serialization
+  // warning on the hub, because SerialsSection.tsx used to derive `serializationRequired` from a
+  // separate parts-catalog fetch it never even attempts without that permission. The line itself
+  // already carries the flag independent of any catalog grant — this pins that OrderDetail's own
+  // line/part payload exposes it, both from createOrder's own response and from getOrder's
+  // separate read (the hub's actual fetch), so SerialsSection can read it straight off the line.
+  it("exposes each line's serializationRequired flag on its part, independent of a parts.view fetch", async () => {
+    const { customer, lead, rider } = await fixture();
+    await prisma.part.update({ where: { id: rider.id }, data: { serializationRequired: true } });
+
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    expect(order.lines[0].part.serializationRequired).toBe(false);
+    expect(order.lines[1].part.serializationRequired).toBe(true);
+
+    // getOrder is the hub's own independent read (GET /api/orders/[id]) — the flag must survive
+    // that round trip too, not just createOrder's own response.
+    const fetched = await getOrder(order.id);
+    expect(fetched.lines[0].part.serializationRequired).toBe(false);
+    expect(fetched.lines[1].part.serializationRequired).toBe(true);
+  });
+
   it("auto-splits the mockup order into 14 loads whose weights sum exactly", async () => {
     const { customer, lead, rider } = await fixture();
 

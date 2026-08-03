@@ -19,7 +19,10 @@ export type OrderWarnings = string[];
 export type OrderLineDetail = {
   id: string; position: number; partId: string; revisionNumber: number | null;
   qty: number; weight: number;
-  part: { id: string; partNumber: string; name: string; customer: { code: string } };
+  // Fix-wave R3 finding 6: `serializationRequired` rides on the line's OWN part payload — not a
+  // second, caller-supplied parts-catalog lookup — so the hub's serialization warning is governed
+  // by `orders.view` (this DTO's own gate) rather than an unrelated `parts.view` grant.
+  part: { id: string; partNumber: string; name: string; customer: { code: string }; serializationRequired: boolean };
 };
 export type OrderContainerDetail = {
   id: string; position: number; typeId: string; count: number; qty: number | null;
@@ -350,7 +353,12 @@ const DETAIL_INCLUDE = {
   lines: {
     orderBy: { position: "asc" },
     include: {
-      part: { select: { id: true, partNumber: true, name: true, customer: { select: { code: true } } } },
+      part: {
+        select: {
+          id: true, partNumber: true, name: true, serializationRequired: true,
+          customer: { select: { code: true } },
+        },
+      },
     },
   },
   containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
