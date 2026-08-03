@@ -54,6 +54,38 @@ const ORPHAN_WARNING =
   "This list changed on the server while you were editing — your unsaved changes here were " +
   "set aside; please re-check.";
 
+/** What one call to `detectOrphans` (below) decided, given the live id set and what's pending —
+ *  pulled out as a pure function (fix-wave R2 finding 5) so the id-churn matrix is unit-testable
+ *  without a component-test harness (this codebase has none). `"unchanged"`: the live id set is
+ *  the same content as last time (by CONTENT, not Set identity) — a true no-op, nothing recorded.
+ *  `"first-seen"`: this hook instance's very first call — there is no prior set to compare
+ *  against, so nothing can have "orphaned" yet, only a baseline to remember. `"churned"`: the live
+ *  set actually changed since last time, carrying whichever edit keys and/or removedIds entries no
+ *  longer match any current row. */
+export type OrphanChurn =
+  | { kind: "unchanged" }
+  | { kind: "first-seen" }
+  | { kind: "churned"; orphanedEditKeys: string[]; orphanedRemovedIds: string[] };
+
+export function computeOrphanChurn(params: {
+  liveIds: ReadonlySet<string>;
+  /** `null` on the very first call — there is nothing yet to have churned away from. */
+  priorLiveIds: ReadonlySet<string> | null;
+  editKeys: Iterable<string>;
+  removedIds: ReadonlySet<string>;
+}): OrphanChurn {
+  const { liveIds, priorLiveIds, editKeys, removedIds } = params;
+  const unchanged = priorLiveIds !== null
+    && liveIds.size === priorLiveIds.size
+    && [...liveIds].every((id) => priorLiveIds.has(id));
+  if (unchanged) return { kind: "unchanged" };
+  if (priorLiveIds === null) return { kind: "first-seen" };
+
+  const orphanedEditKeys = [...editKeys].filter((id) => !liveIds.has(id));
+  const orphanedRemovedIds = [...removedIds].filter((id) => !liveIds.has(id));
+  return { kind: "churned", orphanedEditKeys, orphanedRemovedIds };
+}
+
 /**
  * `Fields` is the flat, string-valued shape a grid's inputs are bound to (e.g. containers'
  * `{ typeId, count, qty, tareWeight, grossWeight }` — every value a plain string, same wire-shape
@@ -133,8 +165,17 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
    * that would just be the 2C-3 masked-edit bug in reverse, forcing one row's unsaved values onto
    * a DIFFERENT row's real content because they happened to land at the same index after someone
    * else's delete-then-recreate save. `added` (keyed by client id, never a server id — it cannot
-   * orphan) and `removedIds` (a removal intent against a row that's already gone is moot, not a
-   * loss of anything the user typed) are left untouched.
+   * orphan) is left untouched.
+   *
+   * Fix-wave R2 finding 5: `removedIds` is NOT left untouched, unlike the comment this replaced
+   * used to claim — "a removal intent against a row that's already gone is moot" turned out to be
+   * wrong. A removedIds entry names a SERVER row the user marked for deletion; if that id vanishes
+   * from a churn (someone else's delete-then-recreate save, same as the edits case above), the
+   * row the user meant to remove hasn't actually gone anywhere from their point of view — it
+   * reappears in `compose`'s output, because the filter `!removedIds.has(r.id)` no longer matches
+   * the row's new id — while the stale entry lingers in `removedIds` doing nothing. That is the
+   * exact same "unsaved work silently set aside with no trace" shape `edits` is already protected
+   * against, so it gets the identical treatment: cleared, and folded into the same warning.
    *
    * Runs unconditionally on every call — i.e. every render `compose` (below) is part of, since
    * `compose` is only ever called from a section's own render body — comparing the incoming row
@@ -144,20 +185,25 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
    */
   function detectOrphans(serverRows: readonly BulkRow[]): void {
     const liveIds = new Set(serverRows.map((r) => r.id));
-    const unchanged = lastLiveIds !== null
-      && liveIds.size === lastLiveIds.size
-      && [...liveIds].every((id) => lastLiveIds.has(id));
-    if (unchanged) return;
+    const decision = computeOrphanChurn({ liveIds, priorLiveIds: lastLiveIds, editKeys: edits.keys(), removedIds });
+    if (decision.kind === "unchanged") return;
 
-    const priorIds = lastLiveIds; // null on this hook instance's very first call — nothing to compare against yet
     setLastLiveIds(liveIds);
-    if (priorIds === null || edits.size === 0) return;
+    if (decision.kind === "first-seen") return;
 
-    const orphanedKeys = [...edits.keys()].filter((id) => !liveIds.has(id));
-    if (orphanedKeys.length === 0) return;
-    const next = new Map(edits);
-    for (const key of orphanedKeys) next.delete(key);
-    setEdits(next);
+    const { orphanedEditKeys, orphanedRemovedIds } = decision;
+    if (orphanedEditKeys.length === 0 && orphanedRemovedIds.length === 0) return;
+
+    if (orphanedEditKeys.length > 0) {
+      const next = new Map(edits);
+      for (const key of orphanedEditKeys) next.delete(key);
+      setEdits(next);
+    }
+    if (orphanedRemovedIds.length > 0) {
+      const next = new Set(removedIds);
+      for (const id of orphanedRemovedIds) next.delete(id);
+      setRemovedIds(next);
+    }
     setOrphanWarning(ORPHAN_WARNING);
   }
 
