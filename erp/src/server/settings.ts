@@ -3,6 +3,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { currentActor } from "./context";
 import { auditSettingChange } from "./audit";
+import type { Prisma } from "../../prisma/generated/prisma/client";
 
 const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min(min).max(max);
 
@@ -45,6 +46,20 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
     create: { key, value: parsed.data as unknown as object, updatedBy: actor.name },
   });
   await auditSettingChange(key, before?.value ?? def.default, parsed.data);
+}
+
+// Allocation is deliberately unaudited: the consuming entity's own create entry records the
+// number; owner edits to the seed still flow through setSetting + auditSettingChange.
+export async function allocateNumber(key: SettingKey, tx: Prisma.TransactionClient): Promise<number> {
+  if (!Object.hasOwn(SETTINGS, key)) throw new HttpError(400, `Unknown setting: ${key}`);
+  const def = SETTINGS[key];
+  await tx.setting.upsert({ where: { key }, create: { key, value: def.default as number }, update: {} });
+  const [row] = await tx.$queryRaw<{ value: unknown }[]>`
+    SELECT "value" FROM "Setting" WHERE "key" = ${key} FOR UPDATE`;
+  const parsed = def.schema.safeParse(row.value);
+  const current = (parsed.success ? parsed.data : def.default) as number;
+  await tx.setting.update({ where: { key }, data: { value: current + 1 } });
+  return current;
 }
 
 export async function allSettings() {

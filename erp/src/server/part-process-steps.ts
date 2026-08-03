@@ -375,6 +375,22 @@ export async function lockRevision(
   }
 }
 
+/** Same claim SQL as workingRevision — this file is the only home of that `FOR UPDATE` (HANDOFF
+ *  §4a: the row lock is the guarantee at ANY caller isolation, not the transaction's own level).
+ *  Exported for Phase 3's order save to call inside its own default-isolation transaction. */
+export async function lockCurrentRevision(
+  partId: string, tx: Prisma.TransactionClient,
+): Promise<{ revisionNumber: number }> {
+  const claimed = await tx.$queryRaw<{ id: string; revisionNumber: number }[]>`
+    SELECT "id", "revisionNumber" FROM "PartProcessRevision"
+    WHERE "partId" = ${partId} ORDER BY "revisionNumber" DESC LIMIT 1 FOR UPDATE`;
+  if (claimed.length === 0) throw new HttpError(400, "This part has no process steps");
+  const stepCount = await tx.partProcessStep.count({ where: { revisionId: claimed[0].id } });
+  if (stepCount === 0) throw new HttpError(400, "This part has no process steps");
+  await lockRevision(partId, claimed[0].revisionNumber, tx);
+  return { revisionNumber: claimed[0].revisionNumber };
+}
+
 /**
  * Loads a template's blank structure onto the part's working revision — REPLACE, not merge
  * (spec §8 / owner ruling §3.1): every existing step and value of the working revision is
