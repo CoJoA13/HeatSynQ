@@ -492,7 +492,7 @@ Authorize → parse → delegate, ctx always passed. Area: `orders`.
 | `/api/orders/[id]` | PATCH | `orders.edit` |
 | `/api/orders/[id]` | DELETE (reason in body) | `mustDo("void_order")` |
 | `/api/orders/[id]/lines` + `[lineId]` | POST / PATCH / DELETE | `orders.edit` |
-| `/api/orders/[id]/containers`, `/serials`, `/charges` (+ children) | POST / PATCH / DELETE | `orders.edit` |
+| `/api/orders/[id]/containers`, `/serials`, `/charges` (+ children) | PUT (replace) | `orders.edit` |
 | `/api/orders/[id]/loads` | PUT (replace), POST `/resplit` | `orders.edit` |
 | `/api/orders/[id]/link`, `/unlink` | POST | `orders.edit` |
 | `/api/orders/[id]/traveler` (`?load=N`) | POST | `orders.view` (see below) |
