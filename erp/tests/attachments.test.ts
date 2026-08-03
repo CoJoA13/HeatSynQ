@@ -3,7 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createPart, deletePart } from "@/server/parts";
-import { createOrder } from "@/server/orders";
+import { createOrder, voidOrder } from "@/server/orders";
 import {
   listAttachments, getAttachment, addAttachment, deleteAttachment, contentDisposition, type AttachmentOwner,
 } from "@/server/attachments";
@@ -164,6 +164,31 @@ describe("attachments service — one implementation, two owners", () => {
       filename: "b.png", mimeType: "image/png", data: Buffer.from("y"),
     }))).rejects.toThrow("Part not found");
     await expect(asSystem(() => deleteAttachment("part", partId, attId))).rejects.toThrow("Part not found");
+  });
+
+  // Fix round 1: a voided order (deletedAt set, spec §5c) is NOT the same as a genuinely deleted
+  // owner — orders.ts's `readDetail` deliberately keeps a voided order readable, and every
+  // order-child mutator (addLine/replaceContainers/etc.) deliberately still blocks on it. This
+  // pins the same split for attachments: reads survive a void, writes don't.
+  it("a voided order keeps its attachments readable, but blocks new writes", async () => {
+    const orderId = await orderOwnerFixture();
+    const { id: attId } = await asSystem(() => addAttachment("order", orderId, {
+      filename: "packing-slip.pdf", mimeType: "application/pdf", data: Buffer.from("pdf-bytes"),
+    }));
+    await asSystem(() => voidOrder(orderId, "wrong customer PO"));
+
+    // Reads: unaffected by the void.
+    const listed = await listAttachments("order", orderId);
+    expect(listed).toHaveLength(1);
+    expect(listed[0].id).toBe(attId);
+    const got = await getAttachment("order", orderId, attId);
+    expect(got.fileData.equals(Buffer.from("pdf-bytes"))).toBe(true);
+
+    // Writes: still live-only, exactly like every other order-child mutator.
+    await expect(asSystem(() => addAttachment("order", orderId, {
+      filename: "b.pdf", mimeType: "application/pdf", data: Buffer.from("y"),
+    }))).rejects.toThrow("Order not found");
+    await expect(asSystem(() => deleteAttachment("order", orderId, attId))).rejects.toThrow("Order not found");
   });
 
   it("cross-owner isolation: an order id can't reach a part's attachment", async () => {

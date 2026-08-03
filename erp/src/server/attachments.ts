@@ -50,23 +50,38 @@ function ownerFilter(owner: AttachmentOwner, ownerId: string): Record<string, st
   return { [OWNER_COLUMN[owner]]: ownerId };
 }
 
+type OwnerAccessMode = "read" | "write";
+
 /**
- * `findFirst({ id, deletedAt: null })` on the owner model, per owner kind (brief: "owner row must
- * be live (404 otherwise)"). Applied uniformly below to every exported function, reads included.
+ * Whether `assertOwnerVisible` (below) requires `deletedAt: null`, per owner kind × access mode.
+ * The one asymmetry: an order stays readable once voided — orders.ts's `readDetail` deliberately
+ * skips the same filter for the same reason ("a voided order is still readable", spec §5c) — while
+ * a part has no equivalent "gone but still visible" state (`getPart` 404s a deleted part outright).
+ * Mutations on EITHER owner stay live-only regardless: mirrors every order-child mutator in
+ * orders.ts (addLine/updateLine/removeLine/replaceContainers/etc., all of which re-check
+ * `deletedAt: null` before writing — spec §5a, "a wrong-part order is voided and re-keyed, not
+ * patched") and every part-child mutator (assertPartLive precedent, part-specifications.ts et al).
  *
- * This deliberately does NOT mirror orders.ts's `readDetail`, which skips the `deletedAt` filter
- * because a voided order stays readable (spec §5c) — nor `deletePart`'s cascade, which soft-deletes
- * a part's specifications/inspections/price breaks alongside it, so those children's own `list`
- * queries (filtered on their OWN `deletedAt`) already read empty without needing an owner check.
- * Attachments get neither a cascade from `deletePart`/`voidOrder` nor an exemption from this
- * check, so this guard is what keeps a dead owner's files from staying visible/downloadable
- * forever. One uniform rule for both owners, per the brief's own unqualified wording — not a
- * copy-paste of either existing precedent.
+ * Adjudicated in Task 11 fix round 1: review flagged this exact read/write, part/order asymmetry;
+ * the owner confirmed order READS follow `readDetail`'s exemption, order WRITES and every part
+ * path stay live-only.
  */
-async function assertOwnerLive(owner: AttachmentOwner, ownerId: string, db: Db): Promise<void> {
+const REQUIRES_LIVE: Record<AttachmentOwner, Record<OwnerAccessMode, boolean>> = {
+  part: { read: true, write: true },
+  order: { read: false, write: true },
+};
+
+async function assertOwnerVisible(
+  owner: AttachmentOwner, ownerId: string, mode: OwnerAccessMode, db: Db,
+): Promise<void> {
+  const mustBeLive = REQUIRES_LIVE[owner][mode];
   const live = owner === "part"
-    ? await db.part.findFirst({ where: { id: ownerId, deletedAt: null }, select: { id: true } })
-    : await db.order.findFirst({ where: { id: ownerId, deletedAt: null }, select: { id: true } });
+    ? await db.part.findFirst({
+      where: mustBeLive ? { id: ownerId, deletedAt: null } : { id: ownerId }, select: { id: true },
+    })
+    : await db.order.findFirst({
+      where: mustBeLive ? { id: ownerId, deletedAt: null } : { id: ownerId }, select: { id: true },
+    });
   if (!live) throw new HttpError(404, `${OWNER_LABEL[owner]} not found`);
 }
 
@@ -86,7 +101,7 @@ function delegate(owner: AttachmentOwner, db: Db = prisma): AttachmentDelegate {
 }
 
 export async function listAttachments(owner: AttachmentOwner, ownerId: string): Promise<AttachmentMeta[]> {
-  await assertOwnerLive(owner, ownerId, prisma);
+  await assertOwnerVisible(owner, ownerId, "read", prisma);
   // fileData excluded via `select` — a list of N attachments has no reason to pull N files'
   // worth of bytes into memory just to render a filename/size/date row.
   return delegate(owner).findMany({
@@ -99,7 +114,7 @@ export async function listAttachments(owner: AttachmentOwner, ownerId: string): 
 export async function getAttachment(
   owner: AttachmentOwner, ownerId: string, attId: string,
 ): Promise<AttachmentMeta & { fileData: Buffer }> {
-  await assertOwnerLive(owner, ownerId, prisma);
+  await assertOwnerVisible(owner, ownerId, "read", prisma);
   // Scoped to `ownerId` in the same `where` as the id lookup — this is what makes cross-owner
   // access (an order id paired with a part attachment's id, or vice versa) 404 rather than leak:
   // the two owner kinds are different Prisma models entirely, so an id from one table simply
@@ -126,7 +141,7 @@ export async function addAttachment(
 
   const row = await withDbErrors({ entity: OWNER_LABEL[owner] }, () =>
     prisma.$transaction(async (tx) => {
-      await assertOwnerLive(owner, ownerId, tx);
+      await assertOwnerVisible(owner, ownerId, "write", tx);
       const meta = { filename: file.filename, mimeType: file.mimeType, size: file.data.byteLength };
       const data = { ...ownerFilter(owner, ownerId), ...meta, fileData: file.data };
       // Audit payload is metadata only — fileData is never handed to the audit layer for a
@@ -141,7 +156,7 @@ export async function addAttachment(
 }
 
 export async function deleteAttachment(owner: AttachmentOwner, ownerId: string, attId: string): Promise<void> {
-  await assertOwnerLive(owner, ownerId, prisma);
+  await assertOwnerVisible(owner, ownerId, "write", prisma);
   const current = await delegate(owner).findFirst({
     where: { id: attId, ...ownerFilter(owner, ownerId), deletedAt: null },
   });
