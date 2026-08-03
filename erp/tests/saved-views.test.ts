@@ -160,4 +160,64 @@ describe("saved views", () => {
     const view = await createView(u.id, { name: "  Spaced  ", config: {} });
     expect(view.name).toBe("Spaced");
   });
+
+  // Fix-wave finding 2: at the default (READ COMMITTED) isolation this ran under before, two
+  // concurrent promotions could each read "the live default is still ORIG" (neither write had
+  // committed yet), and both go on to commit their own isDefault:true — two defaults surviving
+  // at once, the textbook write-skew shape (Postgres's own "two doctors take themselves off call"
+  // example). Genuine overlap isn't guaranteed by firing two promises without an await between
+  // them alone — a fast local database can just process the two close enough to sequentially
+  // that each one's fresh read already sees the other's prior commit, masking the race — so this
+  // forces the interleaving deterministically via a rendezvous on `auditedUpdate` (the same spy
+  // point "rolls the whole create back" above already uses), the way `allocateNumber`'s own
+  // concurrency test gets guaranteed overlap from a real `SELECT … FOR UPDATE` lock rather than
+  // from timing luck. Bounded by a short timeout rather than a bare await, so a run where the two
+  // truly don't overlap fails loud (a wrong-count assertion) instead of hanging.
+  it("two concurrent promotions to default never both survive — exactly one default remains", async () => {
+    const u = await user("op1");
+    const orig = await createView(u.id, { name: "Orig", config: {}, isDefault: true });
+    const x = await createView(u.id, { name: "X", config: {} });
+    const y = await createView(u.id, { name: "Y", config: {} });
+
+    const realAuditedUpdate = audit.auditedUpdate;
+    let calls = 0;
+    let releaseFirst: (() => void) | undefined;
+    const secondArrived = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+    const spy = vi.spyOn(audit, "auditedUpdate").mockImplementation(async (model, id, doIt, opts) => {
+      if (model === "savedView") {
+        calls++;
+        if (calls === 1) {
+          // The FIRST transaction to reach its own promotion write waits — briefly, and only
+          // until the second transaction reaches ITS first write too (or 500ms passes, whichever
+          // is first) — so both have read the pre-write "orig is still default" state before
+          // either commits.
+          await Promise.race([secondArrived, new Promise((r) => setTimeout(r, 500))]);
+        } else if (calls === 2) {
+          releaseFirst?.();
+        }
+      }
+      return realAuditedUpdate(model, id, doIt, opts);
+    });
+
+    async function promoteWithRetry(id: string) {
+      try {
+        return await updateView(u.id, id, { isDefault: true });
+      } catch (err) {
+        expect(err).toMatchObject({ status: 409 });
+        return updateView(u.id, id, { isDefault: true });
+      }
+    }
+
+    try {
+      await Promise.all([promoteWithRetry(x.id), promoteWithRetry(y.id)]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rows = await listViews(u.id);
+    const defaults = rows.filter((r) => r.isDefault);
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].id).not.toBe(orig.id); // orig really was demoted, not merely outnumbered
+  });
 });

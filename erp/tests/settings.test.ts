@@ -74,6 +74,17 @@ describe("settings", () => {
     expect(await getSetting("request_days_default")).toBe(3650);
   });
 
+  // Fix-wave finding 8: Order.orderNumber (and every other *_number_next consumer) is a Postgres
+  // INTEGER (int4) column — a stored value past 2147483647 makes every allocation against it fail
+  // at the database rather than being refused where the setting is actually entered.
+  it.each([
+    "order_number_next", "shipper_number_next", "invoice_number_next", "cert_number_next", "quote_number_next",
+  ] as const)("rejects %s above Int4 max (2147483647), and allows exactly the boundary", async (key) => {
+    await expect(setSetting(key, 2_147_483_648)).rejects.toThrow(HttpError);
+    await setSetting(key, 2_147_483_647);
+    expect(await getSetting(key)).toBe(2_147_483_647);
+  });
+
   it("allSettings consistency: invalid stored value falls back to default", async () => {
     await prisma.setting.create({
       data: { key: "request_days_default", value: "garbage" },

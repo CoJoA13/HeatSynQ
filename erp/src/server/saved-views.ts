@@ -85,11 +85,15 @@ export async function createView(userId: string, input: unknown): Promise<SavedV
   };
   const row = await withDbErrors({ entity: "Saved view", conflictField: "name" }, () =>
     prisma.$transaction(async (tx) => {
-      // Default isolation (no registered-FK write here, no revision claim) — Serializable is for
-      // the order save's own reasons, not a pattern to cargo-cult onto every transaction.
+      // Serializable (fix-wave finding 2): two concurrent promotions to default are exactly the
+      // Postgres "two doctors take themselves off call" write-skew example — each reads "no
+      // OTHER live default exists yet" (neither write has committed), demotes nothing, and both
+      // commit their own isDefault:true, leaving two defaults. Default (READ COMMITTED) isolation
+      // does not catch this (it is disjoint-row writes, not a same-row conflict); Serializable
+      // does, surfacing as the retryable 409 `withDbErrors` already maps 40001 to.
       if (data.isDefault) await demoteOtherDefaults(tx, userId);
       return auditedCreate("savedView", data, () => tx.savedView.create({ data }), { tx });
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return toRow(row);
 }
 
@@ -104,6 +108,8 @@ export async function updateView(userId: string, id: string, input: unknown): Pr
 
   const updated = await withDbErrors({ entity: "Saved view", conflictField: "name" }, () =>
     prisma.$transaction(async (tx) => {
+      // Serializable — see the identical comment on createView's own transaction above; the same
+      // concurrent-promotion write-skew reaches this path via updateView just as easily.
       if (data.isDefault === true) await demoteOtherDefaults(tx, userId, id);
       return auditedUpdate("savedView", id, async () => {
         // `updateMany` with `deletedAt: null` (and `userId`) in the WHERE, not a plain `update`
@@ -121,7 +127,7 @@ export async function updateView(userId: string, id: string, input: unknown): Pr
         if (count === 0) throw new HttpError(404, "Saved view not found");
         return tx.savedView.findUniqueOrThrow({ where: { id } });
       }, { tx });
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   return toRow(updated);
 }
 

@@ -50,4 +50,34 @@ describe("allocateNumber", () => {
     const err = await prisma.$transaction((tx) => allocateNumber("bogus_key" as SettingKey, tx)).catch((e) => e);
     expect(err).toBeInstanceOf(HttpError);
   });
+
+  // Fix-wave finding 8: Order.orderNumber is a Postgres INTEGER (int4) column, so a value past
+  // 2147483647 can never be written there — allocating one anyway would only fail later, deep
+  // inside the order-create transaction, as an opaque database error rather than this clean 400.
+  describe("Int4 overflow", () => {
+    it("allocates the last valid value (Int4 max) without refusing", async () => {
+      await prisma.setting.create({ data: { key: "order_number_next", value: 2_147_483_647 } });
+      const n = await prisma.$transaction((tx) => allocateNumber("order_number_next", tx));
+      expect(n).toBe(2_147_483_647);
+    });
+
+    it("refuses to allocate past Int4 max, naming the setting, and writes nothing further", async () => {
+      // One past Int4 max: reachable in practice because allocateNumber's own increment (above)
+      // stores `current + 1` in the Json `value` column, which happily holds 2147483648 even
+      // though that value could never be handed out as an actual orderNumber.
+      await prisma.setting.create({ data: { key: "order_number_next", value: 2_147_483_648 } });
+
+      const err = await prisma.$transaction((tx) => allocateNumber("order_number_next", tx)).catch((e) => e);
+      expect(err).toBeInstanceOf(HttpError);
+      expect((err as HttpError).status).toBe(400);
+      expect((err as HttpError).message).toContain("order_number_next");
+
+      // Refused BEFORE the increment write — the stored value is untouched, not quietly bumped
+      // to 2147483649 or reset back to the seed default (either of which would risk reissuing an
+      // already-used order number on the next call).
+      const row = await prisma.setting.findUnique({ where: { key: "order_number_next" } });
+      expect(row?.value).toBe(2_147_483_648);
+      expect(await prisma.auditLog.count()).toBe(0);
+    });
+  });
 });
