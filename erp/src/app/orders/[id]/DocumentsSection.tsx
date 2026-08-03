@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import type { OrderLoad } from "./page";
@@ -27,6 +28,14 @@ const KIND_LABELS: Record<string, string> = { TRAVELER: "Traveler" };
  * (and always will for the `?print=1` auto-print, which has no click at all). That is detected —
  * `window.open` returns null — and reported with a link the user can click themselves. It is
  * never silently swallowed; the print HAPPENED and is archived either way, and the panel says so.
+ *
+ * Fix round 1: that detection was broken. The call passed `"noopener"` as the feature string,
+ * and `window.open` with noopener ALWAYS returns null — by specification, since the whole point
+ * is that the opener gets no handle on the new window. So the "blocked" banner fired on every
+ * successful print, `revokeObjectURL` never ran (a leaked blob per print), and a genuine popup
+ * block was indistinguishable from success. The feature string is gone and the opener is severed
+ * on the returned handle instead; the URL is a same-origin blob, so dropping `noopener` costs
+ * nothing, and `null` now means what it is read as.
  */
 export function DocumentsSection({
   orderId, loads, voided, viewGate, autoPrint,
@@ -69,7 +78,8 @@ export function DocumentsSection({
       }
       const documentId = res.headers.get("x-document-id") ?? "";
       const url = URL.createObjectURL(await res.blob());
-      const opened = window.open(url, "_blank", "noopener");
+      const opened = window.open(url, "_blank");
+      if (opened) opened.opener = null;
       if (opened === null) {
         setBlocked({
           id: documentId,
@@ -90,14 +100,24 @@ export function DocumentsSection({
   }, [orderId, load]);
 
   // Save & Print (src/app/orders/new/page.tsx) saves, then lands here with `?print=1`. Honored
-  // exactly ONCE per page instance: the ref is what stops a re-render — or React 19's development
-  // double-effect — from printing (and archiving) the same traveler twice.
+  // exactly ONCE — and the one-shot lives in the URL, not only in a ref.
+  //
+  // The ref alone (fix round 1) guarded only THIS component instance: React 19's development
+  // double-effect, yes, but not a reload, a Back to this URL, or a bookmark of it. Every one of
+  // those remounts with `?print=1` still on the address bar and would print again — silently
+  // archiving a duplicate StoredDocument plus its audit row, for a document that is permanent and
+  // has no delete path. `router.replace(pathname)` strips the parameter the instant the print
+  // fires, so the URL that could re-trigger it no longer exists. `replace`, not `push`, so Back
+  // still leaves the hub rather than landing on the print-again URL.
+  const router = useRouter();
+  const pathname = usePathname();
   const autoPrinted = useRef(false);
   useEffect(() => {
     if (!autoPrint || autoPrinted.current || !printGate.allowed) return;
     autoPrinted.current = true;
+    router.replace(pathname);
     void print();
-  }, [autoPrint, printGate.allowed, print]);
+  }, [autoPrint, printGate.allowed, print, router, pathname]);
 
   return (
     <section className="mb-6 rounded border bg-white p-4">

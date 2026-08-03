@@ -85,6 +85,19 @@ tracking, duplication, per-order step edits, pricing display.
    inspection-location images in Phase 3** — the mockup's `{Inspection Location.bmp}` slot
    renders nothing; Phase 4/7 owns image handling. `PartInspection.location` (text) still
    prints.
+
+   **Further amended 2026-08-03 (owner ruling during Task 16 review).** (d) The traveler's
+   **`Process:` cell renders BLANK in Phase 3** — Phase 7's template designer owns that slot.
+   The mockup prints a process NAME there ("Austemper") and no such field exists on this data
+   model; every stand-in considered (the lead part's name, a name assembled from step codes,
+   the locked revision "Rev N" — which Task 16 first shipped) was rejected. **Material** and
+   **Process ID** are unaffected and still print.
+
+   Recorded observations from the same review, for the owner's demo notes — **no code change**:
+   *Process ID* prints the lead part number (`3541719C3`) where the mockup shows a masked
+   family number (`35417XXC3`), so a sibling order names its lead rather than the family; and
+   the load's weight prints as a small grey sub-line under *Load Quantity*, which is an
+   addition to the mockup (real `Load.weight` data with no column of its own there).
 10. **PDF stack: pdfmake + bwip-js** (both pure JS). Templates are JSON document definitions
     — the spec §11 "templates are data, not code" architecture and the substrate Phase 7's
     designer will edit. @react-pdf/renderer (templates become React code) and headless

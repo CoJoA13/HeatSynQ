@@ -73,8 +73,9 @@ export type TravelerData = {
   /** The lead part number: the shop's process identity for this order (spec §3.1/§10). */
   processId: string;
   inspections: TravelerInspection[];
-  /** The LOCKED revision — historical, never the part's current working revision. Prints in the
-   *  Process cell (see `processRow`) and governs `steps`. */
+  /** The LOCKED revision — historical, never the part's current working revision. Governs
+   *  `steps`; deliberately NOT printed (owner ruling 2026-08-03, see `processRow`), and kept on
+   *  the payload because it is what makes `steps` interpretable to any future template. */
   revisionNumber: number | null;
   steps: TravelerStep[];
   sheets: TravelerSheet[];
@@ -243,22 +244,22 @@ function quantityTable(d: TravelerData, sheet: TravelerSheet): Content {
 /**
  * Process / Material / Process ID.
  *
- * **Process prints the locked revision ("Rev 3"), not a process name.** The mockup prints a NAME
- * there ("Austemper") and this data model has no such field. The two alternatives were both
- * worse: the lead part's `name` is a PART name ("U Bolt Rear Spr Plate"), already in the lines
- * table above and actively misleading under a "Process:" label; and a name assembled from step
- * codes would be invented. Spec §3.1/§10 define process identity as "the lead part + the locked
- * revision" — Process ID is the part, so Process is the revision. It is real, it is the one
- * thing a reprinted traveler most needs to assert, and it claims nothing the data does not say.
- * A genuine process-name field is an owner question, raised in the task report, not guessed here.
+ * **Process renders BLANK in Phase 3 — owner ruling, 2026-08-03 (spec §3.9 amendment).** The
+ * mockup prints a process NAME there ("Austemper") and this data model has no such field. The
+ * candidates were all wrong in different ways: the lead part's `name` is a PART name ("U Bolt
+ * Rear Spr Plate"), already in the lines table above and actively misleading under a "Process:"
+ * label; a name assembled from step codes would be invented; and the locked revision ("Rev 3"),
+ * which this first shipped, answers a different question than the label asks. The owner's call:
+ * the slot stays empty and Phase 7's template designer owns it. Material and Process ID are
+ * unaffected. The locked revision is still carried on TravelerData (and governs `steps`) — it is
+ * simply not printed here.
  */
 function processRow(d: TravelerData): Content {
   return {
     table: {
       widths: [50, "*", 50, "*", 56, "*"],
       body: [[
-        { text: "Process:", bold: true, alignment: "center" },
-        cell(d.revisionNumber === null ? "" : `Rev ${d.revisionNumber}`),
+        { text: "Process:", bold: true, alignment: "center" }, cell(""),
         { text: "Material:", bold: true, alignment: "center" }, cell(d.materialName),
         { text: "Process ID:", bold: true, alignment: "center" }, cell(d.processId),
       ]],

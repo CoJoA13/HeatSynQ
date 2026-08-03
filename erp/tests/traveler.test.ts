@@ -3,6 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, voidOrder } from "@/server/orders";
+import { replaceLoads } from "@/server/order-loads";
 import { updateStep } from "@/server/part-process-steps";
 import { addPartInspection } from "@/server/part-inspections";
 import { setSetting } from "@/server/settings";
@@ -180,10 +181,9 @@ describe("buildTravelerDefinition", () => {
     expect(text).toContain("4,500");
     expect(text).toContain("Drop Pan");
 
-    // Process / Material / Process ID — Process prints the LOCKED revision (this model has no
-    // process-name field; see processRow's comment).
+    // Process / Material / Process ID. The Process label prints; its VALUE is deliberately blank
+    // in Phase 3 (owner ruling 2026-08-03, spec §3.9) — Phase 7's template designer owns the slot.
     expect(text).toContain("Process:");
-    expect(text).toContain("Rev 1");
     expect(text).toContain("Material:");
     expect(text).toContain("Ductile Iron");
     expect(text).toContain("Process ID:");
@@ -217,6 +217,23 @@ describe("buildTravelerDefinition", () => {
     expect(text).toContain("FAIL");
     expect(text).toContain("Tested By:");
     expect(text).toContain("OK to Ship:");
+  });
+
+  // Owner ruling 2026-08-03 (spec §3.9): the Process cell renders nothing in Phase 3. The locked
+  // revision is still carried on the payload (it governs `steps`) — it is simply not printed, and
+  // neither is any other stand-in for the mockup's process name.
+  it("leaves the Process cell blank while still knowing the locked revision", async () => {
+    const { order } = await orderFixture();
+    // ONE load, so each part name can be counted per sheet rather than times fourteen.
+    const data = await asSystem(() => collectTravelerData(order.id, 1));
+    expect(data.revisionNumber).toBe(1);
+
+    const text = allText(buildTravelerDefinition(data)).join("\n");
+    expect(text).toContain("Process:");
+    expect(text).not.toContain("Rev ");
+    // Nor the lead part's NAME as a stand-in — it belongs to the lines table, not to "Process:",
+    // so it appears exactly once on the sheet.
+    expect(text.match(/U Bolt Rear Spr Plate/g)).toHaveLength(1);
   });
 
   // Owner ruling 2026-08-03 (spec §3.9c): the mockup's {Inspection Location.bmp} slot is Phase
@@ -313,6 +330,37 @@ describe("printTraveler", () => {
     const docs = await listDocuments(order.id);
     expect(docs.map((d) => d.id)).toEqual([documentId]);
     expect(Buffer.compare((await getDocument(documentId)).fileData, pdf)).toBe(0);
+  });
+
+  /**
+   * The §5b hazard the service's own comments cite: loads stay EDITABLE after a traveler prints
+   * (owner ruling §3.3), so a re-render after such an edit legitimately produces a different
+   * document. What must never happen is the earlier print changing under the shop's feet — the
+   * paper on the floor and the archived file have to keep saying the same thing. Hence
+   * `getDocument` streams stored bytes and never re-renders.
+   */
+  it("a load edit after printing changes the NEXT print, never the stored one", async () => {
+    const { order } = await orderFixture();
+    const first = await asSystem(() => printTraveler(order.id));
+    const archived = await getDocument(first.documentId);
+    expect(Buffer.compare(archived.fileData, first.pdf)).toBe(0);
+
+    // Fourteen auto-split loads collapsed to two by hand — a legal post-print edit.
+    await asSystem(() => replaceLoads(order.id, [
+      { loadNumber: 1, qty: 2500, weight: "33750.00" },
+      { loadNumber: 2, qty: 2000, weight: "27000.00" },
+    ]));
+
+    const second = await asSystem(() => printTraveler(order.id));
+    expect(second.documentId).not.toBe(first.documentId);
+    // A genuinely different document: two sheets now, not fourteen.
+    expect(Buffer.compare(second.pdf, first.pdf)).not.toBe(0);
+    expect((await asSystem(() => collectTravelerData(order.id))).sheets).toHaveLength(2);
+
+    // …and the FIRST print is byte-for-byte what it always was.
+    expect(Buffer.compare((await getDocument(first.documentId)).fileData, archived.fileData)).toBe(0);
+    expect((await listDocuments(order.id)).map((d) => d.id))
+      .toEqual([second.documentId, first.documentId]);
   });
 
   it("audits the store as a storedDocument create carrying metadata, never bytes", async () => {
