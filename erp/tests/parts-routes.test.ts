@@ -4,6 +4,8 @@ import { signInWith } from "./helpers/auth";
 
 import { GET as listParts, POST as createPartRoute } from "@/app/api/parts/route";
 import { GET as getPartRoute, PATCH as patchPart, DELETE as deletePartRoute } from "@/app/api/parts/[id]/route";
+import { GET as blockersRoute } from "@/app/api/parts/[id]/blockers/route";
+import { GET as blockersExportRoute } from "@/app/api/parts/[id]/blockers/export/route";
 import { GET as listSpecs, POST as addSpecRoute } from "@/app/api/parts/[id]/specifications/route";
 import { DELETE as removeSpecRoute } from "@/app/api/parts/[id]/specifications/[linkId]/route";
 import { GET as listInspections, POST as addInspectionRoute } from "@/app/api/parts/[id]/inspections/route";
@@ -23,6 +25,7 @@ import { GET as fieldDefBlockersExportRoute } from "@/app/api/admin/part-fields/
 import { createPart } from "@/server/parts";
 import { createPartFieldDef } from "@/server/part-field-defs";
 import { setPartFieldValues } from "@/server/part-field-values";
+import { createOrder } from "@/server/orders";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -178,6 +181,45 @@ describe("parts routes", () => {
       bodyReq(`http://t/api/parts/${partId}`, "DELETE", deleter, null), withParams({ id: partId }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/reason/i);
+  });
+
+  // Task 15: mirrors customer-routes.test.ts's "blockers and blockers/export" test — same
+  // 401/403/200 shape, same xlsx content-type and disposition, now for parts' own new
+  // live-order blocker list.
+  it("blockers and blockers/export: 401, 403, 200 with the order list, xlsx content-type", async () => {
+    const { customer, partId } = await partFixture();
+    const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austenitize" } });
+    const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
+    await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "x" },
+    });
+    const { order } = await createOrder({ customerId: customer.id, lines: [{ partId, qty: 1, weight: "10.00" }] });
+
+    expect((await blockersRoute(getReq(`http://t/api/parts/${partId}/blockers`), withParams({ id: partId }))).status)
+      .toBe(401);
+    expect((await blockersExportRoute(
+      getReq(`http://t/api/parts/${partId}/blockers/export`), withParams({ id: partId }))).status).toBe(401);
+
+    const viewer = await signInWith(["parts.view"], "part-blockers-viewer-1");
+    const blockers = await blockersRoute(getReq(`http://t/api/parts/${partId}/blockers`, viewer), withParams({ id: partId }));
+    expect(blockers.status).toBe(200);
+    expect(await blockers.json()).toEqual([
+      { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
+    ]);
+
+    const wrong = await signInWith(["admin.view"], "part-blockers-wrong-1");
+    expect((await blockersRoute(getReq(`http://t/api/parts/${partId}/blockers`, wrong), withParams({ id: partId }))).status)
+      .toBe(403);
+    expect((await blockersExportRoute(
+      getReq(`http://t/api/parts/${partId}/blockers/export`, wrong), withParams({ id: partId }))).status).toBe(403);
+
+    const exportRes = await blockersExportRoute(
+      getReq(`http://t/api/parts/${partId}/blockers/export`, viewer), withParams({ id: partId }));
+    expect(exportRes.status).toBe(200);
+    expect(exportRes.headers.get("content-type")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(exportRes.headers.get("content-disposition")).toContain("attachment");
+    expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
   });
 
   it("GET /api/parts/[id] requires parts.view", async () => {

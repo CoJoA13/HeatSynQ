@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { createPart, updatePart, deletePart, getPart, listParts } from "@/server/parts";
+import {
+  createPart, updatePart, deletePart, getPart, listParts, partOrderBlockers,
+} from "@/server/parts";
+import { createOrder, voidOrder } from "@/server/orders";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -10,6 +14,18 @@ async function twoCustomers() {
   const acme = await prisma.customer.create({ data: { code: "ACME", name: "Acme Foundry" } });
   const beta = await prisma.customer.create({ data: { code: "BETA", name: "Beta Co" } });
   return { acme, beta };
+}
+
+/** Gives a part revision 1 with one step — createOrder's orderability precondition for whichever
+ *  part is the LEAD of an order (spec §5.3), same fixture shape as orders.test.ts's own
+ *  `giveSteps`, built with raw prisma so this file's fixtures don't depend on the process-steps
+ *  service. */
+async function giveSteps(partId: string) {
+  const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austenitize" } });
+  const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
+  await prisma.partProcessStep.create({
+    data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Austenitize at 1650F." },
+  });
 }
 
 describe("parts core", () => {
@@ -155,5 +171,73 @@ describe("parts core", () => {
     // getPart (single-part path) must agree with the list path.
     expect((await getPart(withSteps)).hasProcessSteps).toBe(true);
     expect((await getPart(none)).hasProcessSteps).toBe(false);
+  });
+
+  // Task 15: live orders block part deletion (spec-driven, roadmap Phase 3 Task 15).
+  describe("deletePart is guarded by live orders", () => {
+    it("refuses while a live order's line references the part — lead or rider — with a "
+      + "discoverable, exported blocker list; a voided order blocks neither", async () => {
+      const { acme } = await twoCustomers();
+      const { id: lead } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "LEAD1", eachWeight: 1 }));
+      await giveSteps(lead);
+      const { id: rider } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "RIDER1", eachWeight: 1 }));
+
+      const { order } = await asSystem(() => createOrder({
+        customerId: acme.id,
+        lines: [
+          { partId: lead, qty: 10, weight: "100.00" },
+          { partId: rider, qty: 5, weight: "50.00" },
+        ],
+      }));
+
+      // The RIDER, not the lead — "any line, lead or rider" is the point of this guard.
+      await expect(asSystem(() => deletePart(rider, "cleanup"))).rejects.toThrow(/live order/i);
+      expect(await partOrderBlockers(rider)).toEqual([
+        { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
+      ]);
+      // The lead too — the guard does not special-case position 1.
+      await expect(asSystem(() => deletePart(lead, "cleanup"))).rejects.toThrow(/live order/i);
+
+      await asSystem(() => voidOrder(order.id, "test cleanup"));
+      // Voided (deletedAt set) blocks nothing — both parts are now freely deletable.
+      await asSystem(() => deletePart(rider, "cleanup"));
+      await asSystem(() => deletePart(lead, "cleanup"));
+      expect((await prisma.part.findFirst({ where: { id: rider } }))!.deletedAt).not.toBeNull();
+      expect((await prisma.part.findFirst({ where: { id: lead } }))!.deletedAt).not.toBeNull();
+      expect(await partOrderBlockers(rider)).toEqual([]);
+    });
+  });
+
+  describe("requestDaysOverride", () => {
+    it("round-trips through create and update, clears to null, and rejects a negative value", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({
+        customerId: acme.id, partNumber: "RD1", eachWeight: 1, requestDaysOverride: 10,
+      }));
+      expect((await getPart(id)).requestDaysOverride).toBe(10);
+
+      await asSystem(() => updatePart(id, { requestDaysOverride: 3 }));
+      expect((await getPart(id)).requestDaysOverride).toBe(3);
+
+      await asSystem(() => updatePart(id, { requestDaysOverride: null }));
+      expect((await getPart(id)).requestDaysOverride).toBeNull();
+
+      await expect(asSystem(() => createPart({
+        customerId: acme.id, partNumber: "RD2", eachWeight: 1, requestDaysOverride: -1,
+      }))).rejects.toBeInstanceOf(ZodError);
+      const { id: id2 } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "RD3", eachWeight: 1 }));
+      await expect(asSystem(() => updatePart(id2, { requestDaysOverride: -5 }))).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it("shows in the update audit diff", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "RD4", eachWeight: 1 }));
+      await asSystem(() => updatePart(id, { requestDaysOverride: 7 }));
+      const entry = await prisma.auditLog.findFirst({ where: { entity: "part", entityId: id, action: "update" } });
+      const before = entry!.before as { requestDaysOverride: number | null };
+      const after = entry!.after as { requestDaysOverride: number | null };
+      expect(before.requestDaysOverride).toBeNull();
+      expect(after.requestDaysOverride).toBe(7);
+    });
   });
 });

@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { handle, requireUser } from "@/server/http";
 import { mustCan } from "@/server/permissions";
-import { customerPartBlockers, customerOrderBlockers } from "@/server/customers";
+import { partOrderBlockers } from "@/server/parts";
 import { toXlsx } from "@/server/excel";
 
 export const GET = handle(async (_req, { params }) => {
-  mustCan(requireUser(), "customers", "view");
-  const { id } = await params;
-  const [parts, orders] = await Promise.all([customerPartBlockers(id), customerOrderBlockers(id)]);
-  const blockers = [...parts, ...orders];
+  mustCan(requireUser(), "parts", "view");
+  const blockers = await partOrderBlockers((await params).id);
   const buf = await toXlsx("Blockers",
     [{ key: "entityLabel", header: "Type" }, { key: "name", header: "Name" }, { key: "href", header: "Link" }],
     blockers as unknown as Record<string, unknown>[]);

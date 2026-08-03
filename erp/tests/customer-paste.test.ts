@@ -46,7 +46,9 @@ describe("customer paste", () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(Buffer.from(await res.arrayBuffer()) as unknown as ArrayBuffer);
     const sheet = wb.getWorksheet("Customers")!;
-    expect(sheet.getRow(1).values).toEqual([undefined, "Code", "Name", "Default PO", "Order notes", "Active"]);
+    expect(sheet.getRow(1).values).toEqual([
+      undefined, "Code", "Name", "Default PO", "Order notes", "Request days override", "Active",
+    ]);
     expect((sheet.getRow(2).values as ExcelJS.CellValue[])[1]).toBe("ACME");
   });
 

@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { api } from "@/lib/fetcher";
+import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import type { PricePerValue } from "@/lib/part-constants";
+import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { IdentitySection } from "./IdentitySection";
 import { SpecsSection } from "./SpecsSection";
 import { InspectionsSection } from "./InspectionsSection";
@@ -28,6 +29,7 @@ export type Part = {
   eachWeight: number | string;
   loadQty: number | string | null;
   loadWeight: number | string | null;
+  requestDaysOverride: number | string | null;
   serializationRequired: boolean;
   setupCharge: number | string | null;
   unitPrice: number | string | null;
@@ -62,6 +64,11 @@ function PartDetail({ id }: { id: string }) {
   const addLoadError = useCallback((message: string) => {
     setLoadError((cur) => (cur ? `${cur} ${message}` : message));
   }, []);
+  // Task 15: deletePart now refuses while a live order's line references it (lead or rider) —
+  // the customers/[id]/page.tsx "blocked" precedent, populated only from the delete refusal
+  // below and cleared on dismiss, so the refusal names what's actually using the part instead of
+  // leaving a bare count with nothing to click through.
+  const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
 
   const load = useCallback(async () => {
@@ -132,7 +139,21 @@ function PartDetail({ id }: { id: string }) {
       await api(`/api/parts/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
       router.push("/parts");
     } catch (e) {
-      setError((e as Error).message);
+      // Matched on "live order(s)" — deletePart's one and only refusal reason (parts.ts) other
+      // than a missing/empty reason, which never reaches this far — the customers/[id]/page.tsx
+      // removeCustomer() precedent for turning a bare-count refusal into a discoverable list.
+      const message = (e as Error).message;
+      if (e instanceof ApiError && e.status === 400 && message.includes("live order(s)")) {
+        try {
+          const list = await api<Blocker[]>(`/api/parts/${id}/blockers`);
+          if (list.length) { setBlocked({ list }); setError(null); return; }
+        } catch (listErr) {
+          setError(`${message} — the list of what's using it could not be loaded ` +
+            `(${(listErr as Error).message}). Try again.`);
+          return;
+        }
+      }
+      setError(message);
     }
   }
 
@@ -152,6 +173,16 @@ function PartDetail({ id }: { id: string }) {
           the page is reloaded. */}
       {loadError && (
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{loadError}</p>
+      )}
+      {blocked && (
+        <BlockerPanel
+          label="part"
+          rowName={`${part.customerCode} · ${part.partNumber}`}
+          list={blocked.list}
+          action="delete"
+          exportHref={`/api/parts/${id}/blockers/export`}
+          onDismiss={() => setBlocked(null)}
+        />
       )}
 
       <IdentitySection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError}

@@ -2,13 +2,31 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import {
-  listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, customerPartBlockers,
+  listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
+  customerPartBlockers, customerOrderBlockers,
 } from "@/server/customers";
 import { addAddress, listAddresses } from "@/server/customer-addresses";
 import { addContact, listContacts } from "@/server/customer-contacts";
 import { createPart, deletePart } from "@/server/parts";
+import { createOrder, voidOrder } from "@/server/orders";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
+
+/** Gives a part revision 1 with one step — createOrder's orderability precondition for the LEAD
+ *  of an order (spec §5.3), the orders.test.ts/parts.test.ts `giveSteps` shape, built with raw
+ *  prisma so this file's fixtures don't depend on the process-steps service. The step code is
+ *  keyed off `partId` (a cuid, unique by construction) rather than a fixed literal, since this
+ *  test file's own guard test calls `giveSteps` twice against two different parts and a fixed
+ *  code would collide on ProcessStepCode's unique `code` column the second time. */
+async function giveSteps(partId: string) {
+  const code = await prisma.processStepCode.create({
+    data: { code: `HT-${partId.slice(0, 10)}`, name: "Austenitize" },
+  });
+  const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
+  await prisma.partProcessStep.create({
+    data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Austenitize at 1650F." },
+  });
+}
 
 describe("customers service", () => {
   beforeEach(async () => await truncateAll());
@@ -368,5 +386,77 @@ describe("customers service", () => {
     await updateCustomer(live.id, { code: "OLD" });
 
     expect((await getCustomer(live.id)).code).toBe("OLD");
+  });
+
+  // Task 15: deleteCustomer is now ALSO guarded by a direct Order.customerId scan, independent of
+  // the pre-existing live-parts guard above — a live order can outlive every part it references.
+  describe("deleteCustomer is guarded by live orders", () => {
+    it("refuses on a live order even with zero live parts, and the blocker list names it "
+      + "alongside any blocking parts; a voided order blocks neither the part nor the customer", async () => {
+      const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+      const { id: partId } = await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
+      await giveSteps(partId);
+      const { order } = await createOrder({
+        customerId: id, lines: [{ partId, qty: 10, weight: "100.00" }],
+      });
+
+      // Simulate the part having gone away by some path OTHER than deletePart (e.g. data older
+      // than deletePart's own Task 15 order-guard, which would otherwise refuse this exact
+      // delete) — the point here is deleteCustomer's OWN order guard, independent of its
+      // pre-existing parts guard, so the part count must read zero going in.
+      await prisma.part.update({ where: { id: partId }, data: { deletedAt: new Date() } });
+
+      await expect(deleteCustomer(id, "test cleanup")).rejects.toThrow(/live order/i);
+      expect(await customerOrderBlockers(id)).toEqual([
+        { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
+      ]);
+      // The combined blockers fetch (the customers/[id]/blockers route) shows both categories
+      // together regardless of which guard actually threw — customerPartBlockers still reports
+      // the (now soft-deleted) part as gone, so only the order blocker survives here.
+      expect(await customerPartBlockers(id)).toEqual([]);
+
+      // Now the "voided blocks nothing" half, on a fresh customer/order so the part is still
+      // live — deleteCustomer here is refused by the (unrelated, pre-existing) live-parts guard
+      // first, so it's deletePart's own order-guard (parts.ts) that is under test on this half.
+      const { id: id2 } = await createCustomer({ code: "BETA", name: "Beta" });
+      const { id: partId2 } = await createPart({ customerId: id2, partNumber: "999", eachWeight: 1 });
+      await giveSteps(partId2);
+      const { order: order2 } = await createOrder({
+        customerId: id2, lines: [{ partId: partId2, qty: 1, weight: "10.00" }],
+      });
+      await expect(deletePart(partId2, "test cleanup")).rejects.toThrow(/live order/i);
+
+      await voidOrder(order2.id, "test cleanup");
+      await deletePart(partId2, "test cleanup"); // no longer blocked, by the same rule
+      await deleteCustomer(id2, "test cleanup"); // zero live parts, zero live orders now
+      expect((await prisma.customer.findFirst({ where: { id: id2 } }))!.deletedAt).not.toBeNull();
+    });
+  });
+
+  describe("requestDaysOverride", () => {
+    it("round-trips through create and update, clears to null, and rejects a negative value", async () => {
+      const { id } = await createCustomer({ code: "ACME", name: "Acme", requestDaysOverride: 10 });
+      expect((await getCustomer(id)).requestDaysOverride).toBe(10);
+
+      await updateCustomer(id, { requestDaysOverride: 3 });
+      expect((await getCustomer(id)).requestDaysOverride).toBe(3);
+
+      await updateCustomer(id, { requestDaysOverride: null });
+      expect((await getCustomer(id)).requestDaysOverride).toBeNull();
+
+      await expect(createCustomer({ code: "BAD", name: "Bad", requestDaysOverride: -1 }))
+        .rejects.toBeInstanceOf(ZodError);
+      await expect(updateCustomer(id, { requestDaysOverride: -5 })).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it("shows in the update audit diff", async () => {
+      const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+      await updateCustomer(id, { requestDaysOverride: 7 });
+      const entry = await prisma.auditLog.findFirst({ where: { entity: "customer", entityId: id, action: "update" } });
+      const before = entry!.before as { requestDaysOverride: number | null };
+      const after = entry!.after as { requestDaysOverride: number | null };
+      expect(before.requestDaysOverride).toBeNull();
+      expect(after.requestDaysOverride).toBe(7);
+    });
   });
 });

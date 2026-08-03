@@ -17,10 +17,15 @@ type Fields = { loadNumber: string; qty: string; weight: string };
  * its current display position, 1..N, so closing a gap left by a removed row — or fixing a typo —
  * does not mean retyping every other row by hand. `Save loads` still has to be clicked afterward.
  *
- * Deliberately never reads `grid.orphanWarning` (bulk-grid.ts's fix-round-1 addition): unlike
- * replaceContainers/replaceSerials/replaceCharges, `applyLoads` (order-loads.ts) matches existing
- * rows by array position and updates them IN PLACE, so a Load's id survives every save — there is
- * no delete-then-recreate here for an edit to be orphaned by.
+ * Task 15 (T14 review rider): DOES still read `grid.orphanWarning`, same as the other three grid
+ * sections, despite `applyLoads` (order-loads.ts) matching existing rows by array position and
+ * updating them IN PLACE rather than delete-then-recreating them — the shrink path is the
+ * exception. When a save (this section's own, or a Re-split producing fewer loads than before)
+ * shortens the array, `applyLoads` hard-deletes the trailing rows beyond the new length, so an
+ * edit still pending against one of THOSE ids goes stale exactly like it would under
+ * replaceContainers/replaceSerials/replaceCharges — `detectOrphans` (bulk-grid.ts) already runs
+ * unconditionally inside `compose` for every grid instance, this one included; only the render was
+ * missing.
  */
 export function LoadsSection({
   orderId, loads, editGate, applyMutation, onError,
@@ -106,6 +111,9 @@ export function LoadsSection({
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Loads</h2>
+      {grid.orphanWarning && (
+        <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{grid.orphanWarning}</p>
+      )}
       {rows.length === 0 && <p className="mb-2 text-sm text-slate-500">None.</p>}
       <table className="mb-2 w-full text-sm">
         <thead>

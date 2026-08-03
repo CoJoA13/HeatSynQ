@@ -16,6 +16,7 @@ export const GET = handle(async (req) => {
     { key: "name", header: "Name" },
     { key: "defaultPo", header: "Default PO" },
     { key: "orderNotes", header: "Order notes" },
+    { key: "requestDaysOverride", header: "Request days override" },
     { key: "active", header: "Active" },
   ];
   const buf = await toXlsx("Customers", columns, rows as unknown as Record<string, unknown>[]);

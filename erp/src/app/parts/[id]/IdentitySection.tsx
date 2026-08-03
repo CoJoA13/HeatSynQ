@@ -160,6 +160,31 @@ export function IdentitySection({
                  onBlur={(e) => onBlurSave(e, {}, (v) => void save({ loadWeight: v === "" ? null : v }))}
                  className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
         </label>
+        <label className="block text-sm">
+          Request days override
+          {/* Same real-int shape (and the same client-side parse-before-send reasoning) as Load
+              qty above — the server's requestDaysOverride is z.number().int(), not a
+              decimalField's number-or-decimal-string, so the typed text is parsed to a number
+              here rather than forwarded as-is. Blank clears the override, falling back to the
+              customer's own override, then the plant default (spec §7.1's most-specific-wins
+              chain — orders.ts). */}
+          <input value={part.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocus}
+                 readOnly={!canEdit.allowed} title={canEdit.title}
+                 onChange={(e) => patchDraft({ requestDaysOverride: e.target.value })}
+                 onBlur={(e) => onBlurSave(e, {}, (v) => {
+                   const trimmed = v.trim();
+                   if (trimmed === "") { void save({ requestDaysOverride: null }); return; }
+                   const n = Number(trimmed);
+                   if (!Number.isInteger(n)) {
+                     patchDraft({ requestDaysOverride: focusedValue.current });
+                     onError("Request days override must be a whole number");
+                     return;
+                   }
+                   void save({ requestDaysOverride: n });
+                 })}
+                 className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
+          <span className="mt-1 block text-xs text-slate-500">Blank uses the plant/customer default.</span>
+        </label>
       </div>
       <div className="mt-3 flex gap-4 text-sm">
         <label className="flex items-center gap-2">

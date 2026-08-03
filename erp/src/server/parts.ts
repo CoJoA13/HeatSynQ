@@ -10,12 +10,14 @@ import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
 import type { PasteResult } from "./paste";
+import type { Blocker } from "./reference-blockers";
 
 export type PartRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
   partNumber: string; name: string; description: string;
   materialId: string | null; materialName: string | null;
   eachWeight: number; loadQty: number | null; loadWeight: number | null;
+  requestDaysOverride: number | null;
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
@@ -38,6 +40,7 @@ const FIELDS = {
   eachWeight: decimalField(10, 4, { required: true, min: "positive" }),
   loadQty: z.number().int().min(1).nullable().optional(),
   loadWeight: decimalField(10, 2, { min: "positive" }),
+  requestDaysOverride: z.number().int().min(0).nullable().optional(),
   serializationRequired: z.boolean().optional(),
   setupCharge: decimalField(12, 2, { min: "nonnegative" }),
   unitPrice: decimalField(12, 4, { min: "nonnegative" }),
@@ -50,7 +53,7 @@ const UPDATE = z.object(FIELDS).partial().strict();   // no customerId — immut
 
 const SELECT = {
   id: true, customerId: true, partNumber: true, name: true, description: true,
-  materialId: true, eachWeight: true, loadQty: true, loadWeight: true,
+  materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
   serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
   pricePer: true, active: true,
   customer: { select: { code: true, name: true } },
@@ -175,6 +178,35 @@ export async function updatePart(id: string, input: Record<string, unknown>): Pr
     }, iso));
 }
 
+/**
+ * Every LIVE order carrying a line — lead or rider, `OrderLine` draws no distinction — whose
+ * `partId` is this part. The direct analogue of `customerPartBlockers` above, scoped to
+ * Order/OrderLine instead of Part/Customer, and named the same way `reference-links.ts`'s own
+ * `orderContainer -> containerType` entry already names an Order blocker elsewhere in the app:
+ * "#1042 · ACME", never a bare order number, since a number alone means nothing without knowing
+ * whose it is. A part referenced twice within the SAME order (two lines, same partId — the
+ * schema has no constraint against it) must still list that order once, hence the dedupe by
+ * order id rather than a bare row-per-line map.
+ */
+export async function partOrderBlockers(partId: string): Promise<Blocker[]> {
+  const lines = await prisma.orderLine.findMany({
+    where: { partId, order: { deletedAt: null } },
+    select: { order: { select: { id: true, orderNumber: true, customer: { select: { code: true } } } } },
+    orderBy: { order: { orderNumber: "asc" } },
+  });
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const { order } of lines) {
+    if (seen.has(order.id)) continue;
+    seen.add(order.id);
+    out.push({
+      entityLabel: "Order", name: `#${order.orderNumber} · ${order.customer.code}`,
+      id: order.id, href: `/orders/${order.id}`,
+    });
+  }
+  return out;
+}
+
 export async function deletePart(id: string, reason: string): Promise<void> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to delete a part");
@@ -189,7 +221,17 @@ export async function deletePart(id: string, reason: string): Promise<void> {
   // parent, breaking the invariant findBlockers-style scans over "live children of a live part"
   // depend on. Postgres aborts whichever side would produce a result no serial ordering could,
   // surfacing as P2034 and translated by withDbErrors into a 409 telling the caller to retry.
+  // The same Serializable sharing now also pairs this guard with createOrder/addLine (orders.ts),
+  // both of which resolve their lines' parts live, under Serializable, before writing.
   await withDbErrors({ entity: "Part" }, () => prisma.$transaction(async (tx) => {
+    // Task 15: a part still doing work on a live order cannot be deleted out from under it — a
+    // voided order (deletedAt set) does not count, matching every other "voided blocks nothing"
+    // rule in this app (global constraints). Counting live ORDERS (not lines) is what
+    // `partOrderBlockers` above also dedupes to, so the refusal's count and the panel's list
+    // never disagree about how many rows are actually blocking.
+    const orders = await tx.order.count({ where: { deletedAt: null, lines: { some: { partId: id } } } });
+    if (orders > 0) throw new HttpError(400, `That part is used by ${orders} live order(s)`);
+
     const [specs, inspections, breaks] = await Promise.all([
       tx.partSpecification.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partInspection.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),

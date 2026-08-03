@@ -22,11 +22,18 @@
 // Fix round 1 (Important finding): three of this hook's four callers — Containers/Charges/
 // per-line Serials — sit on DELETE-THEN-RECREATE mutators (replaceContainers/replaceSerials/
 // replaceCharges each delete every row and reinsert at positions 1..n, so EVERY row gets a fresh
-// id on EVERY save, whoever saves it). Loads is the one exception (`applyLoads` matches existing
-// rows by array position and updates them in place, so ids survive a save) — the review's own
-// "Loads is immune" note, which is why LoadsSection.tsx never reads `orphanWarning`. Composing an
-// edit keyed on a row id that another actor's save already replaced used to just silently produce
-// nothing: `compose` looked up `edits.get(r.id)` for each CURRENT row, found no match for the
+// id on EVERY save, whoever saves it). Loads is the partial exception: `applyLoads` matches
+// existing rows by array position and updates them in place, so ids survive a save that keeps the
+// SAME row count — the review's own "Loads is immune" note, which is why LoadsSection.tsx
+// originally never rendered `orphanWarning`. That immunity does not extend to a save that
+// SHRINKS the array (this section's own remove, or a Re-split landing on fewer loads than
+// before): `applyLoads` hard-deletes the trailing rows beyond the new, shorter length, so an edit
+// still pending against one of those now-gone ids orphans exactly like it would under the other
+// three sections — Task 15 (the shrink-path residual) made LoadsSection.tsx render the warning
+// too, since `detectOrphans` below has always run for every caller regardless of which ones
+// render its result. Composing an edit keyed on a row id that another actor's save already
+// replaced used to just silently produce nothing: `compose` looked up `edits.get(r.id)` for each
+// CURRENT row, found no match for the
 // stale id, and the edit — real, unsaved, user-typed content — vanished with no trace, the moment
 // ANY mutation anywhere on the page (not necessarily this grid's own) next refreshed `order` and
 // therefore this grid's `serverRows` prop. `detectOrphans` below catches exactly this: it

@@ -21,6 +21,7 @@ export const GET = handle(async (req) => {
     { key: "eachWeight", header: "Each wt" },
     { key: "loadQty", header: "Load qty" },
     { key: "loadWeight", header: "Load wt" },
+    { key: "requestDaysOverride", header: "Request days override" },
     { key: "serializationRequired", header: "Serialization" },
     { key: "setupCharge", header: "Setup" },
     { key: "unitPrice", header: "Unit price" },

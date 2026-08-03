@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { truncateAll } from "./helpers/db";
+import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { GET as list, POST as create } from "@/app/api/customers/route";
 import { GET as detail, PUT as update, DELETE as remove } from "@/app/api/customers/[id]/route";
@@ -7,6 +7,7 @@ import { GET as blockersRoute } from "@/app/api/customers/[id]/blockers/route";
 import { GET as blockersExportRoute } from "@/app/api/customers/[id]/blockers/export/route";
 import { createCustomer } from "@/server/customers";
 import { createPart } from "@/server/parts";
+import { createOrder } from "@/server/orders";
 
 const noParams = { params: Promise.resolve({}) };
 const withId = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -97,9 +98,18 @@ describe("customer routes", () => {
 
   // H4 (Codex round 3 review): mirrors the part-fields blockers/export route tests
   // (parts-routes.test.ts) — same 401/403/200 shape, same xlsx content-type and disposition.
-  it("blockers and blockers/export: 401, 403, 200 with the part list, xlsx content-type", async () => {
+  // Task 15 extends this to the COMBINED part+order list: the route now unions
+  // customerPartBlockers with the new customerOrderBlockers (customers.ts) so a refusal is never
+  // discoverable for only half of what's blocking it.
+  it("blockers and blockers/export: 401, 403, 200 with the combined part+order list, xlsx content-type", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
     const { id: partId } = await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
+    const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austenitize" } });
+    const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
+    await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "x" },
+    });
+    const { order } = await createOrder({ customerId: id, lines: [{ partId, qty: 1, weight: "10.00" }] });
 
     expect((await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`), withId(id))).status).toBe(401);
     expect((await blockersExportRoute(getReq(`http://t/api/customers/${id}/blockers/export`), withId(id))).status)
@@ -110,6 +120,7 @@ describe("customer routes", () => {
     expect(blockers.status).toBe(200);
     expect(await blockers.json()).toEqual([
       { entityLabel: "Part", name: "ACME · 12345", id: partId, href: `/parts/${partId}` },
+      { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
     ]);
 
     const wrong = await signInWith(["admin.view"], "cust-blockers-wrong-1");
