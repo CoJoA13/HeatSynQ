@@ -526,6 +526,44 @@ export async function getOrder(id: string): Promise<OrderDetail> {
   return readDetail(prisma, id, await trafficSettings());
 }
 
+/**
+ * The §6 chain (`part.requestDaysOverride ?? customer.requestDaysOverride ??
+ * request_days_default`) applied to TODAY, for `GET /api/orders/entry-defaults` — the entry
+ * page's prefill preview before an order exists at all. `createOrder` runs this identical chain
+ * inline against the order's own (possibly backdated) `receivedDate`; there is no saved order
+ * here yet, so this reuses it against `todayDateOnly()` — the same default `createOrder` itself
+ * falls back to when `receivedDate` is omitted (spec §5.1), since a fresh order is, by
+ * construction, received today.
+ *
+ * Existence-checked (a bogus id must 400, not crash reading `.requestDaysOverride` off `null`)
+ * and cross-checked when both ids are given (a part from another customer would silently preview
+ * a number that could never be saved), but deliberately NOT active-checked: this is a preview,
+ * never a commitment, and `createOrder` is what actually refuses to save against an inactive
+ * customer or part.
+ */
+export async function defaultRequestDate(customerId: string, partId?: string): Promise<string> {
+  if (!customerId) throw new HttpError(400, "customerId is required");
+
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: { requestDaysOverride: true },
+  });
+  if (!customer) throw new HttpError(400, "That customer does not exist");
+
+  let partOverride: number | null = null;
+  if (partId) {
+    const part = await prisma.part.findFirst({
+      where: { id: partId, deletedAt: null }, select: { customerId: true, requestDaysOverride: true },
+    });
+    if (!part) throw new HttpError(400, "That part does not exist");
+    if (part.customerId !== customerId) throw new HttpError(400, "That part belongs to another customer");
+    partOverride = part.requestDaysOverride;
+  }
+
+  const defaultRequestDays = await getSetting("request_days_default");
+  const days = partOverride ?? customer.requestDaysOverride ?? defaultRequestDays;
+  return formatDateOnly(addBusinessDays(todayDateOnly(), days));
+}
+
 const BOARD_SELECT = {
   id: true, orderNumber: true, poNumber: true, vsOrderNumber: true,
   receivedDate: true, requestDate: true, targetDate: true, status: true,
