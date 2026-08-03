@@ -332,6 +332,64 @@ describe("printTraveler", () => {
     expect(Buffer.compare((await getDocument(documentId)).fileData, pdf)).toBe(0);
   });
 
+  // Fix-wave R2 finding 4: the in-tx re-check (`live = await tx.order.findFirst(...)`) used to
+  // read the order's deletedAt WITHOUT taking any lock on the row, so a void committing in the
+  // gap between that read and the storedDocument insert could land unnoticed — a print archiving
+  // against an order that is, by the time anyone looks, already voided. The fix claims the Order
+  // row with `SELECT … FOR UPDATE` before the re-check, inside the same transaction, so it can
+  // never observe deletedAt as `null` while a concurrent void is either committing or about to.
+  //
+  // The discriminating shape is tests/part-process-steps.test.ts's holder pattern: a holder
+  // transaction takes the exact same row lock, signals it has claimed it, and only performs the
+  // void (mirroring voidOrder's own update, which blocks on the same row at any isolation) WHILE
+  // STILL HOLDING that lock, releasing (committing) only once told to. A genuine `FOR UPDATE`
+  // claim inside printTraveler cannot proceed past the holder until the holder's void has
+  // committed, so the re-check necessarily runs on the fresh, post-void row and correctly refuses.
+  // A plain (unlocked) re-check — the regression — would read the STALE pre-void row instead,
+  // since nothing makes it wait for the holder at all, and would archive a document it should not.
+  it("a void committing while a print is in flight cannot let the print through (row-lock race)", async () => {
+    const { order } = await orderFixture();
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      // Only now, still inside the same held transaction: void the order (the exact write
+      // voidOrder's own transaction performs) before committing (and releasing the row lock).
+      await tx.order.update({ where: { id: order.id }, data: { deletedAt: new Date() } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const printCall = asSystem(() => printTraveler(order.id));
+
+    // Not itself the discriminator (see above) — its job is to guarantee printTraveler's own
+    // claim has actually been dispatched, and in the correct implementation is genuinely blocked
+    // on the holder, before the holder is released — otherwise the stale-vs-fresh read below
+    // would be a coincidence of scheduling rather than a real test of the claim.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      printCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: with the FOR UPDATE genuinely in effect, printTraveler cannot decide
+    // "not voided" until after the holder's void has committed, so it must see the order voided
+    // and refuse — no document is ever archived against it.
+    await expect(printCall).rejects.toMatchObject({
+      status: 400, message: "Cannot print a traveler for a voided order",
+    });
+    expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
   /**
    * The §5b hazard the service's own comments cite: loads stay EDITABLE after a traveler prints
    * (owner ruling §3.3), so a re-render after such an edit legitimately produces a different

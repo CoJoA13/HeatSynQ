@@ -549,6 +549,20 @@ const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
  * self-inflicted lock. The void check therefore runs twice — once up front so a refusal costs
  * nothing, and once inside the transaction, which is the one that actually decides, closing the
  * window where an order is voided mid-render.
+ *
+ * Fix-wave R2 finding 4: the in-tx re-check alone still raced a concurrent void. It read
+ * `deletedAt` with a plain (unlocked) SELECT, which under Postgres MVCC never blocks on anything
+ * — so a `voidOrder` call whose own UPDATE committed in the gap between this read and the
+ * `storedDocument` insert below went unnoticed, and the print archived against an order that was,
+ * by the time anyone looked, already voided. Claiming the row with `SELECT … FOR UPDATE` BEFORE
+ * the re-check closes that gap: `voidOrder`'s own `tx.order.update(...)` (via `auditedSoftDelete`)
+ * takes a write lock on the same row at ANY isolation level, the same "a row lock is the right
+ * instrument because both sides take it regardless of isolation" guarantee `workingRevision`
+ * documents for the process-steps revision claim (part-process-steps.ts). Whichever side gets
+ * there first wins cleanly: if this claim wins, `voidOrder` blocks until this transaction commits
+ * or rolls back; if `voidOrder` wins (already committed, or committing while this is blocked),
+ * this claim cannot proceed until it does, so the re-check that follows is guaranteed to see the
+ * fresh, post-void row rather than a stale pre-void one.
  */
 export async function printTraveler(
   orderId: string, loadNumber?: number,
@@ -562,6 +576,9 @@ export async function printTraveler(
 
   const row = await withDbErrors({ entity: "Order" }, () =>
     prisma.$transaction(async (tx) => {
+      // Raw because Prisma has no `FOR UPDATE`. Id only — not used for anything beyond the lock
+      // itself; the full row is read back through the client just below, once the lock is held.
+      await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
       const live = await tx.order.findFirst({ where: { id: orderId }, select: { deletedAt: true } });
       if (!live) throw new HttpError(404, "Order not found");
       if (live.deletedAt !== null) throw new HttpError(400, VOIDED);
