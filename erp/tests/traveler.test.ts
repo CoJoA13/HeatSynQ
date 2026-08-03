@@ -45,6 +45,24 @@ function allText(node: unknown, out: string[] = []): string[] {
 }
 
 /**
+ * The PDF's own page count, read off its `/Type /Pages /Count N` object — present, uncompressed,
+ * near the top of every PDF pdfmake/pdfkit produces (its own page-tree root), and NOT subject to
+ * the render-to-render byte noise a full `Buffer.compare` between two SEPARATE `renderPdf` calls
+ * would hit: `renderPdf`'s own deflate compression is not byte-stable across repeat calls even
+ * against the byte-identical `TDocumentDefinitions` input (verified separately — this suite never
+ * asserts exact-byte equality between two independently rendered PDFs, only ever between a stored
+ * blob and itself, e.g. "a reprint streams the stored bytes untouched"). One sheet-set is one page
+ * (`buildTravelerDefinition`'s own `pageBreak` before every sheet but the first), so this is
+ * exactly `TravelerData.sheets.length` once rendered — the one signal a race test can check
+ * without re-rendering anything itself.
+ */
+function pageCount(pdf: Buffer): number {
+  const match = pdf.toString("latin1").match(/\/Type\s*\/Pages[^>]*\/Count\s+(\d+)/);
+  if (!match) throw new Error("Could not find a /Type /Pages /Count marker in the rendered PDF");
+  return Number(match[1]);
+}
+
+/**
  * The mockup-shaped sibling order (docs/samples/2025-aht-orderform-mockup.pdf, spec §12.2), built
  * with raw prisma for the reference/part/step rows the same way orders.test.ts builds its own —
  * the traveler service under test must not depend on the parts or process-steps services to
@@ -388,6 +406,122 @@ describe("printTraveler", () => {
       status: 400, message: "Cannot print a traveler for a voided order",
     });
     expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  // Fix-wave R3 finding 1: `collectTravelerData` (the read that decides what the PDF says) used
+  // to run BEFORE printTraveler ever took ANY lock at all — the OLD claim (above) only wrapped
+  // the final archive-commit. A child mutation committing during that unlocked window left the
+  // archived traveler describing pre-edit state, with no warning possible: nothing about the
+  // archive itself was wrong, the document simply didn't exist yet when the stale read happened.
+  // The fix moves the claim to the FRONT of printTraveler: it now claims (via the shared
+  // `claimOrder`, orders.ts — the same helper every order-family mutator opens with) BEFORE it
+  // ever calls `collectTravelerData`, and holds it through render and archive. A load that
+  // changes while this claim is held cannot be missed by a print that started before the change
+  // committed — the print simply cannot read anything until the change (and the claim it needed)
+  // is out of the way.
+  //
+  // Discriminating shape: a holder takes the exact row lock `claimOrder` gives every mutator,
+  // then — still holding it — performs the SAME kind of write `replaceLoads` makes (a direct
+  // Load rewrite), standing in for "an edit landed while the row was claimed" the same way round
+  // 2's holder stands in for voidOrder's own update. printTraveler is only STARTED once the
+  // holder confirms its claim, so the fixed implementation cannot read anything until the holder
+  // releases; the regression (claim taken only at the very end) would already have captured the
+  // pre-edit snapshot long before this point, and the holder's later edit would have no way to
+  // change what gets archived.
+  it("an edit that lands while the row is claimed is what the archived traveler ends up describing (edit wins the claim race)", async () => {
+    const { order } = await orderFixture(); // 14 auto-split loads -> 14 sheets/pages
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      // Still holding the claim: the edit itself — collapsing every load into one, the same
+      // shape replaceLoads' own two-phase `applyLoads` rewrite produces (order-loads.ts) —
+      // committed only when this transaction commits, right below.
+      const loads = await tx.load.findMany({ where: { orderId: order.id }, orderBy: { loadNumber: "asc" } });
+      await tx.load.update({ where: { id: loads[0].id }, data: { qty: 4500, weight: "60750.00" } });
+      await tx.load.deleteMany({ where: { id: { in: loads.slice(1).map((l) => l.id) } } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const printCall = asSystem(() => printTraveler(order.id));
+
+    // Not itself the discriminator (see above) — its job is to guarantee printTraveler's own
+    // claim attempt has actually been dispatched, and in the correct implementation is genuinely
+    // blocked on the holder, before the holder is released.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      printCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+    const { pdf } = await printCall;
+
+    // The discriminator: what got archived must show exactly ONE page (the collapsed load) —
+    // proof printTraveler's own content read happened strictly AFTER the holder's edit committed,
+    // never against the 14-sheet snapshot that existed when this test started. A regression
+    // (claim taken only at the very end, after the stale read+render already happened) would
+    // archive 14 pages here instead.
+    expect(pageCount(pdf)).toBe(1);
+  });
+
+  // The opposite ordering: the (simulated) print's claim wins the race — it reaches the row
+  // first — so a concurrent edit must wait for its ENTIRE operation to finish, archive included;
+  // once unblocked, the edit lands cleanly and the archived traveler is left showing the
+  // snapshot exactly as it stood before the edit ever started.
+  it("a print that claims first is undisturbed by a concurrent edit, which lands only afterward", async () => {
+    const { order } = await orderFixture();
+    const preEditData = await asSystem(() => collectTravelerData(order.id));
+    expect(preEditData.sheets).toHaveLength(14);
+    const preEditPdf = await renderPdf(buildTravelerDefinition(preEditData));
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // Holder stands in for printTraveler having already won the claim race and rendered — it
+    // archives the SAME bytes a real print would have produced off this pre-edit state, then
+    // releases only once told to (mirroring round 2's holder standing in for voidOrder's write).
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      const meta = { orderId: order.id, kind: "TRAVELER" as const, loadNumber: null };
+      await tx.storedDocument.create({ data: { ...meta, fileData: new Uint8Array(preEditPdf) } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const replaceCall = asSystem(() => replaceLoads(order.id, [{ loadNumber: 1, qty: 4500, weight: "60750.00" }]));
+
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      replaceCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+    const { order: afterEdit } = await replaceCall;
+
+    // The edit landed, but only after the print's own archive was already committed.
+    expect(afterEdit.loads).toHaveLength(1);
+    expect(afterEdit.loads[0]).toMatchObject({ qty: 4500, weight: 60750 });
+
+    // ...and the archived traveler is untouched — still exactly the pre-edit snapshot.
+    const docs = await listDocuments(order.id);
+    expect(docs).toHaveLength(1);
+    const archived = await getDocument(docs[0].id);
+    expect(Buffer.compare(archived.fileData, preEditPdf)).toBe(0);
   });
 
   /**

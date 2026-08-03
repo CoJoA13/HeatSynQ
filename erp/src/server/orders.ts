@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
+import { Prisma, type OrderStatus, type Order } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
@@ -428,6 +428,37 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
 }
 
 /**
+ * Claims the Order row for the rest of the caller's OWN transaction — the ONE shared instrument
+ * every order-family mutator below, order-loads.ts's two mutators, attachments.ts's order-owner
+ * writes, and traveler.ts's `printTraveler` now open their order-resolution step with.
+ *
+ * Fix-wave R3 finding 1: before this helper existed, only `printTraveler`'s own inline claim (and,
+ * incidentally, `voidOrder`'s own row UPDATE) ever took a lock here — every child mutator
+ * (`replaceLoads`, `addLine`, `replaceContainers`, …) resolved the order with a plain, UNLOCKED
+ * `findFirst`. That let a child edit commit in the gap between `printTraveler`'s content read
+ * (`collectTravelerData`) and its archive commit, so the stored traveler could describe pre-edit
+ * state with no warning possible — from the archive's own point of view nothing was wrong, the
+ * document simply didn't exist yet when the stale read happened.
+ *
+ * Raw because Prisma has no `FOR UPDATE` of its own (the `workingRevision` precedent,
+ * part-process-steps.ts) — id only, since the full row is read back through the ordinary client
+ * immediately below, once the lock is actually held. A row lock is the right instrument
+ * regardless of isolation level (restated here for the Order row, generalizing `workingRevision`'s
+ * own reasoning): whichever caller — a print, or any edit below — reaches this claim first makes
+ * every other one wait until it commits or rolls back, so a child mutation can never commit
+ * invisibly while a traveler render is reading this same order, and a print can never archive a
+ * stale, pre-edit snapshot while an edit is mid-flight either. Returns the full row (or `null` for
+ * an id that does not exist) so every call site can read off whatever scalar it needs —
+ * `deletedAt`, `customerId`, `linkGroupId`, … — without a second round trip; callers still decide
+ * for themselves whether a voided (`deletedAt !== null`) row counts as "not found" for their own
+ * purpose, exactly as every mutator already did with its own `findFirst({ deletedAt: null })`.
+ */
+export async function claimOrder(tx: Db, orderId: string): Promise<Order | null> {
+  await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
+  return tx.order.findFirst({ where: { id: orderId } });
+}
+
+/**
  * The order save (spec §5). One `withDbErrors` → Serializable `$transaction`, in this order:
  * validate → allocate → lock → assert container types → split → write → clear the draft.
  *
@@ -751,12 +782,13 @@ export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
 // Edits, void, and linked orders (Task 5, spec §5a/§5c/§5d). Every mutator below shares one
 // shape: `withDbErrors` wraps a Serializable `$transaction` (uniform with createOrder's own, even
 // where nothing here assigns a registered FK — global-constraints: "the whole order save runs
-// Serializable for uniformity") that resolves the order with `findFirst({ id, deletedAt: null })`
-// — 404 "Order not found" catches both an unknown id and a voided one, since a voided order is
-// read-only (spec §5a/§5c) — then writes through `auditedUpdate("order", id, ...)` so history
-// carries a real before/after diff on the order's own row. `SNAPSHOT_INCLUDE.order` (audit.ts)
-// already pulls every child collection, ordered, so no mutator here hand-builds a snapshot the
-// way createOrder's `auditPayload` does for the create entry — the automatic one is enough.
+// Serializable for uniformity") that resolves the order with `claimOrder` (fix-wave R3 finding 1)
+// — 404 "Order not found" catches both an unknown id and a voided (`deletedAt !== null`) one,
+// since a voided order is read-only (spec §5a/§5c) — then writes through `auditedUpdate("order",
+// id, ...)` so history carries a real before/after diff on the order's own row. `SNAPSHOT_INCLUDE.
+// order` (audit.ts) already pulls every child collection, ordered, so no mutator here hand-builds
+// a snapshot the way createOrder's `auditPayload` does for the create entry — the automatic one
+// is enough.
 // -------------------------------------------------------------------------------------------
 
 const UPDATE_ORDER = z.object({
@@ -813,8 +845,8 @@ export async function updateOrder(
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const target = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
-    if (!target) throw new HttpError(404, "Order not found");
+    const target = await claimOrder(tx, id);
+    if (!target || target.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const patch: Prisma.OrderUpdateInput = {
       ...(data.poNumber !== undefined ? { poNumber: data.poNumber } : {}),
@@ -844,10 +876,8 @@ export async function addLine(
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({
-      where: { id: orderId, deletedAt: null }, select: { id: true, customerId: true },
-    });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const { _max } = await tx.orderLine.aggregate({ where: { orderId }, _max: { position: true } });
     const position = (_max.position ?? 0) + 1;
@@ -876,8 +906,8 @@ export async function updateLine(
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
     if (!line) throw new HttpError(404, "Order line not found");
@@ -913,8 +943,8 @@ export async function removeLine(
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const line = await tx.orderLine.findFirst({
       where: { id: lineId, orderId }, select: { id: true, position: true },
@@ -952,8 +982,8 @@ export async function replaceContainers(orderId: string, input: unknown): Promis
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const typeIds = [...new Set(data.map((c) => c.typeId))];
     for (const typeId of typeIds) await assertRefExists("containerType", typeId, tx);
@@ -991,8 +1021,8 @@ export async function replaceSerials(orderId: string, lineId: string, input: unk
 
   const traffic = await trafficSettings();
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
     if (!line) throw new HttpError(404, "Order line not found");
@@ -1027,8 +1057,8 @@ export async function replaceCharges(orderId: string, input: unknown): Promise<O
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     await auditedUpdate("order", orderId, async () => {
       await tx.orderCharge.deleteMany({ where: { orderId } });
@@ -1058,8 +1088,8 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
   if (!why) throw new HttpError(400, "A reason is required to void an order");
 
   await withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, id);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
     await auditedSoftDelete("order", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -1091,15 +1121,24 @@ export async function linkOrder(id: string, otherId: string): Promise<OrderDetai
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({
-      where: { id, deletedAt: null }, select: { id: true, customerId: true, linkGroupId: true },
-    });
-    if (!order) throw new HttpError(404, "Order not found");
+    // Both sides are claimed through claimOrder, but in a FIXED (sorted) order rather than
+    // argument order: `id` and `otherId` are two independent locks on two different Order rows,
+    // and claiming them in ARGUMENT order would let a concurrent `linkOrder(A, B)` and
+    // `linkOrder(B, A)` pair each hold one row while waiting on the other's — a genuine Postgres
+    // deadlock (40P01), which — unlike the 40001 every OTHER pair of transactions racing on ONE
+    // shared row gets (db-errors.ts's `isRawSerializationFailure`) — has no mapping here and would
+    // surface as an unmapped 500, exactly what this fix wave refuses to let happen elsewhere
+    // (finding 2). Sorting first makes every caller agree on lock order, so the second claim can
+    // only ever wait, never deadlock.
+    const firstId = id < otherId ? id : otherId;
+    const secondId = id < otherId ? otherId : id;
+    const first = await claimOrder(tx, firstId);
+    const second = await claimOrder(tx, secondId);
+    const order = firstId === id ? first : second;
+    const other = firstId === id ? second : first;
 
-    const other = await tx.order.findFirst({
-      where: { id: otherId, deletedAt: null }, select: { id: true, customerId: true, linkGroupId: true },
-    });
-    if (!other) throw new HttpError(404, "Order not found");
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+    if (!other || other.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     if (other.customerId !== order.customerId) {
       throw new HttpError(400, "Orders can only be linked within one customer");
@@ -1159,10 +1198,8 @@ export async function unlinkOrder(id: string): Promise<OrderDetail> {
   const traffic = await trafficSettings();
 
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({
-      where: { id, deletedAt: null }, select: { id: true, linkGroupId: true },
-    });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, id);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     // Every OTHER member of this order's CURRENT group, read before this order's own row is
     // cleared below — empty when this order was never grouped in the first place, in which case

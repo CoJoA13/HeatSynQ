@@ -7,7 +7,7 @@ import { auditedUpdate } from "./audit";
 import { decimalField } from "./decimal-field";
 import {
   type OrderDetail, type OrderWarnings,
-  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads,
+  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads, claimOrder,
 } from "./orders";
 
 // -------------------------------------------------------------------------------------------
@@ -122,8 +122,8 @@ export async function replaceLoads(
 
   const traffic = await trafficSettings();
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({ where: { id: orderId, deletedAt: null }, select: { id: true } });
-    if (!order) throw new HttpError(404, "Order not found");
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     await auditedUpdate("order", orderId, () => applyLoads(tx, orderId, loads), { tx });
 
@@ -145,19 +145,17 @@ export async function replaceLoads(
 export async function resplitLoads(orderId: string): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
   const traffic = await trafficSettings();
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirst({
-      where: { id: orderId, deletedAt: null },
-      select: {
-        id: true,
-        lines: { orderBy: { position: "asc" }, select: { partId: true, qty: true, weight: true } },
-      },
+    const order = await claimOrder(tx, orderId);
+    if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+
+    const orderLines = await tx.orderLine.findMany({
+      where: { orderId }, orderBy: { position: "asc" }, select: { partId: true, qty: true, weight: true },
     });
-    if (!order) throw new HttpError(404, "Order not found");
 
     // Position 1 is always the lead (createOrder's own invariant; removeLine refuses to remove
     // it) — its loadQty/loadWeight are the caps every split (auto or re-) honors, never a rider's.
     const lead = await tx.part.findFirst({
-      where: { id: order.lines[0].partId }, select: { loadQty: true, loadWeight: true },
+      where: { id: orderLines[0].partId }, select: { loadQty: true, loadWeight: true },
     });
     // Unreachable in practice — OrderLine.partId is ON DELETE RESTRICT, so the row can never be
     // hard-deleted out from under a line, only soft-deleted, and this lookup has no `deletedAt`
@@ -167,7 +165,7 @@ export async function resplitLoads(orderId: string): Promise<{ order: OrderDetai
     // Prisma returns a raw select's Decimal column as `Decimal`, not `number` — readDetail's
     // toDetail() is what normally does this conversion, but re-reading the full detail just to
     // get line totals would be wasteful, so it happens here on this narrow select instead.
-    const lines = order.lines.map((l) => ({ qty: l.qty, weight: l.weight.toNumber() }));
+    const lines = orderLines.map((l) => ({ qty: l.qty, weight: l.weight.toNumber() }));
     const computed = runSplitLoads({
       ...lineTotals(lines),
       loadQty: lead.loadQty,

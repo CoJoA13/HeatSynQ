@@ -86,6 +86,44 @@ describe("replaceLoads", () => {
     ]);
   });
 
+  // Fix-wave R3 finding 3: cumulative-rounding auto-splits legitimately produce 0-weight loads
+  // (load-split.test.ts's own counter-example, restated here) whenever a load carries qty ≥ 1 —
+  // but this validator rejected weight === 0 unconditionally, so a legal auto-split could never be
+  // re-saved once loaded back into the editor. A weight-ONLY row (qty null) still needs weight > 0
+  // — there is nothing else on that row for a positive weight to describe.
+  it("round-trips the load-split counter-example's zero-weight rows (qty ≥ 1 on every row)", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    const { order: after } = await asSystem(() => replaceLoads(order.id, [
+      { loadNumber: 1, qty: 1, weight: "0.01" },
+      { loadNumber: 2, qty: 1, weight: "0" },
+      { loadNumber: 3, qty: 1, weight: "0.01" },
+      { loadNumber: 4, qty: 1, weight: "0" },
+      { loadNumber: 5, qty: 1, weight: "0.01" },
+    ]));
+    expect(after.loads.map((l) => ({ qty: l.qty, weight: l.weight }))).toEqual([
+      { qty: 1, weight: 0.01 }, { qty: 1, weight: 0 }, { qty: 1, weight: 0.01 },
+      { qty: 1, weight: 0 }, { qty: 1, weight: 0.01 },
+    ]);
+  });
+
+  it("still rejects a weight-only row (qty null) whose weight is zero", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    await expect(asSystem(() => replaceLoads(order.id, [{ loadNumber: 1, qty: null, weight: "0" }])))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
+  it("still rejects a negative weight even when the row carries a qty", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    await expect(asSystem(() => replaceLoads(order.id, [{ loadNumber: 1, qty: 1, weight: "-1.00" }])))
+      .rejects.toBeInstanceOf(ZodError);
+  });
+
   it("rejects an unrecognized key on a load row (.strict())", async () => {
     const { customer, lead } = await fixture();
     const order = await baseOrder(lead.id, customer.id);

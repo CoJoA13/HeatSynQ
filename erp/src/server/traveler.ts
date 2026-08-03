@@ -23,7 +23,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate } from "./audit";
-import { getOrder } from "./orders";
+import { getOrder, claimOrder } from "./orders";
 import { getRevision } from "./part-process-steps";
 import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
@@ -544,44 +544,63 @@ const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
  * Voided orders refuse a NEW print (spec §5c) but keep every earlier print listable and
  * reprintable — `listDocuments`/`getDocument` below deliberately do not filter on `deletedAt`.
  *
- * The render happens OUTSIDE the transaction: it is ~100 ms of pure CPU with nothing to roll
- * back, and holding a write transaction open across it for a 14-load order would be a
- * self-inflicted lock. The void check therefore runs twice — once up front so a refusal costs
- * nothing, and once inside the transaction, which is the one that actually decides, closing the
- * window where an order is voided mid-render.
+ * Fix-wave R3 finding 1: the ENTIRE operation — claim, content read, render, archive — now runs
+ * inside ONE transaction, claimed with the shared `claimOrder` (orders.ts) before anything else
+ * happens. Before this, the claim only wrapped the final archive commit (fix-wave R2 finding 4,
+ * below): `collectTravelerData` (the read that decides what the PDF says) and `renderPdf` (~100 ms
+ * of pure CPU) both ran BEFORE any lock was taken, so a child mutator — `replaceLoads`,
+ * `replaceContainers`, a line/serial/charge edit — could claim the SAME row, write, and commit
+ * entirely within that unlocked window, and the archive commit that followed would still see the
+ * order as "not voided" (the only thing the old claim re-checked) and happily archive the STALE,
+ * pre-edit snapshot already rendered. No warning was possible either: from the archive's own
+ * point of view nothing was wrong, the document simply didn't exist yet when the stale read
+ * happened.
  *
- * Fix-wave R2 finding 4: the in-tx re-check alone still raced a concurrent void. It read
- * `deletedAt` with a plain (unlocked) SELECT, which under Postgres MVCC never blocks on anything
- * — so a `voidOrder` call whose own UPDATE committed in the gap between this read and the
- * `storedDocument` insert below went unnoticed, and the print archived against an order that was,
- * by the time anyone looked, already voided. Claiming the row with `SELECT … FOR UPDATE` BEFORE
- * the re-check closes that gap: `voidOrder`'s own `tx.order.update(...)` (via `auditedSoftDelete`)
+ * `claimOrder`'s row lock now brackets the read too, and every order-family mutator (orders.ts,
+ * order-loads.ts, attachments.ts's order-owner writes) opens with the SAME claim on its own
+ * transaction — so the two sides properly serialize: whichever gets here first forces the other to
+ * wait for its FULL transaction, not just its final write, to finish. A print that wins the race
+ * archives the pre-edit state, and the edit — blocked until the print commits — lands cleanly
+ * right after, affecting only the next print ("a load edit after printing changes the NEXT print,
+ * never the stored one", below). An edit that wins the race commits first, and the print — blocked
+ * until the edit commits — reads and archives the POST-edit state once it can proceed. Either way
+ * the archived bytes always describe a real, fully-committed state; a torn, mid-edit snapshot is
+ * no longer reachable.
+ *
+ * This does mean the Order row's lock is now held across the render, not just the final insert —
+ * accepted deliberately: correctness (no torn snapshot) matters more here than shaving the
+ * occasional wait a concurrent claimant on the SAME order might see, and two prints (or a print
+ * and an edit) of the same order overlapping in time is not a case this app needs to run fast. The
+ * single check below (claim, then decide) also replaces the OLD two-tier check — an unlocked
+ * pre-check before the transaction opened, plus the locked re-check inside it — with one: the
+ * expensive work (collectTravelerData, renderPdf) still only ever runs after the order is known to
+ * exist and be live, so a refusal is exactly as cheap as it always was.
+ *
+ * Fix-wave R2 finding 4 (superseded in shape, not in substance, by the above): the original in-tx
+ * re-check read `deletedAt` with a plain (unlocked) SELECT, which under Postgres MVCC never blocks
+ * on anything — so a `voidOrder` call whose own UPDATE committed in the gap between that read and
+ * the `storedDocument` insert went unnoticed, and the print archived against an order that was, by
+ * the time anyone looked, already voided. Claiming the row with `SELECT … FOR UPDATE` before the
+ * re-check closed that gap: `voidOrder`'s own `tx.order.update(...)` (via `auditedSoftDelete`)
  * takes a write lock on the same row at ANY isolation level, the same "a row lock is the right
  * instrument because both sides take it regardless of isolation" guarantee `workingRevision`
- * documents for the process-steps revision claim (part-process-steps.ts). Whichever side gets
- * there first wins cleanly: if this claim wins, `voidOrder` blocks until this transaction commits
- * or rolls back; if `voidOrder` wins (already committed, or committing while this is blocked),
- * this claim cannot proceed until it does, so the re-check that follows is guaranteed to see the
- * fresh, post-void row rather than a stale pre-void one.
+ * documents for the process-steps revision claim (part-process-steps.ts) — `claimOrder` is that
+ * same claim, generalized into the one instrument every order-family caller now shares.
  */
 export async function printTraveler(
   orderId: string, loadNumber?: number,
 ): Promise<{ documentId: string; orderNumber: number; loadNumber: number | null; pdf: Buffer }> {
-  const pre = await prisma.order.findFirst({ where: { id: orderId }, select: { deletedAt: true } });
-  if (!pre) throw new HttpError(404, "Order not found");
-  if (pre.deletedAt !== null) throw new HttpError(400, VOIDED);
-
-  const data = await collectTravelerData(orderId, loadNumber);
-  const pdf = await renderPdf(buildTravelerDefinition(data));
-
-  const row = await withDbErrors({ entity: "Order" }, () =>
+  const { row, orderNumber, pdf } = await withDbErrors({ entity: "Order" }, () =>
     prisma.$transaction(async (tx) => {
-      // Raw because Prisma has no `FOR UPDATE`. Id only — not used for anything beyond the lock
-      // itself; the full row is read back through the client just below, once the lock is held.
-      await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
-      const live = await tx.order.findFirst({ where: { id: orderId }, select: { deletedAt: true } });
+      const live = await claimOrder(tx, orderId);
       if (!live) throw new HttpError(404, "Order not found");
       if (live.deletedAt !== null) throw new HttpError(400, VOIDED);
+
+      // Only now, with the claim held: the read that decides what the PDF says, and the render
+      // itself. Nothing else touching this order's traveler-relevant children can commit until
+      // this whole transaction ends — see the fix-wave R3 finding 1 comment above.
+      const data = await collectTravelerData(orderId, loadNumber);
+      const pdf = await renderPdf(buildTravelerDefinition(data));
 
       const meta = {
         orderId, kind: "TRAVELER" as const, loadNumber: loadNumber ?? null,
@@ -589,16 +608,17 @@ export async function printTraveler(
       // Metadata only in the audit payload — the bytes are never handed to the audit layer
       // (CLAUDE.md: redact() is defense in depth, not the mechanism keeping them out). The
       // attachments service does exactly this for the same reason.
-      return auditedCreate("storedDocument", meta,
+      const row = await auditedCreate("storedDocument", meta,
         // `new Uint8Array(pdf)`, not the Buffer itself: Prisma's `Bytes` input is typed
         // `Uint8Array<ArrayBuffer>`, and Node's Buffer is `Uint8Array<ArrayBufferLike>`, which
         // that does not accept.
         () => tx.storedDocument.create({ data: { ...meta, fileData: new Uint8Array(pdf) } }), { tx });
+      return { row, orderNumber: data.orderNumber, pdf };
     }));
 
   // `orderNumber`/`loadNumber` ride along purely so the route can name the download without a
   // second read — `getDocument` would pull the whole PDF back out of the database to learn them.
-  return { documentId: row.id, orderNumber: data.orderNumber, loadNumber: loadNumber ?? null, pdf };
+  return { documentId: row.id, orderNumber, loadNumber: loadNumber ?? null, pdf };
 }
 
 /** Newest first. Never selects `fileData` — a list of N prints has no reason to pull N PDFs into

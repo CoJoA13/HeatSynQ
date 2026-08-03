@@ -3,6 +3,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedSoftDelete } from "./audit";
+import { claimOrder } from "./orders";
 
 export type AttachmentOwner = "part" | "order";
 export type AttachmentMeta = { id: string; filename: string; mimeType: string; size: number; createdAt: Date };
@@ -115,6 +116,21 @@ const REQUIRES_LIVE: Record<AttachmentOwner, Record<OwnerAccessMode, boolean>> =
 async function assertOwnerVisible(
   owner: AttachmentOwner, ownerId: string, mode: OwnerAccessMode, db: Db,
 ): Promise<void> {
+  // Fix-wave R3 finding 1: an order-owned WRITE (addAttachment/deleteAttachment) claims the Order
+  // row through the SAME `claimOrder` (orders.ts) every other order-family mutator now opens
+  // with, instead of the plain, unlocked check below — so an attachment add/delete can no longer
+  // commit invisibly while a traveler print is mid-render (traveler.ts's own claim on this same
+  // row). Reads (`listAttachments`/`getAttachment`) stay on the unlocked check: `REQUIRES_LIVE`
+  // already keeps order reads live-agnostic (a voided order stays readable, spec §5c), and a pure
+  // read has nothing to serialize against — only a WRITE can be the thing racing a render. `db`
+  // is always the caller's own `tx` in write mode (both call sites below pass it), never the
+  // top-level client, so this claim always lands inside the SAME transaction as the write itself.
+  if (owner === "order" && mode === "write") {
+    const claimed = await claimOrder(db, ownerId);
+    if (!claimed || claimed.deletedAt !== null) throw new HttpError(404, `${OWNER_LABEL.order} not found`);
+    return;
+  }
+
   const mustBeLive = REQUIRES_LIVE[owner][mode];
   const live = owner === "part"
     ? await db.part.findFirst({
