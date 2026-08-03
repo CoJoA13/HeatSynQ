@@ -12,6 +12,7 @@ import { InspectionsSection } from "./InspectionsSection";
 import { PricingSection } from "./PricingSection";
 import { CustomFieldsSection } from "./CustomFieldsSection";
 import { ProcessStepsSection } from "./ProcessStepsSection";
+import { AttachmentsSection } from "@/components/AttachmentsSection";
 
 // Local row type mirrors src/server/parts.ts's PartRow — not imported from src/server/**, since
 // a client component pulling from there drags node:async_hooks and Prisma into the browser
@@ -159,6 +160,7 @@ function PartDetail({ id }: { id: string }) {
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <PricingSection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
+      <AttachmentsSection owner="part" ownerId={id} canEdit={gate(perms, "parts.edit").allowed} />
       <ProcessStepsSection partId={id} perms={perms} onError={setError} />
 
       <div className="mb-6">

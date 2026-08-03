@@ -50,6 +50,32 @@ export function reasonFromBody(body: unknown): string {
   return typeof reason === "string" ? reason : "";
 }
 
+/**
+ * Reads a single `file` field out of a multipart form body — the shape every file-upload POST
+ * route uses (currently both attachment owners, parts and orders; src/server/attachments.ts
+ * stays free of any Request/FormData-shaped code the same way orders.ts/parts.ts stay free of
+ * JSON-body parsing, which lives in the route handler instead). `req.formData()` itself only
+ * throws for a body that isn't parseable as multipart at all — folded into the same 400 as a
+ * well-formed body missing the field entirely, since both are equally "no file was sent" from the
+ * caller's point of view.
+ */
+export async function parseUploadFile(req: Request): Promise<{ filename: string; mimeType: string; data: Buffer }> {
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    throw new HttpError(400, "A file is required");
+  }
+  const entry = form.get("file");
+  if (!(entry instanceof Blob)) throw new HttpError(400, "A file is required");
+  // A plain Blob (no filename given to FormData.set/append) still satisfies the Blob check above,
+  // but only a File carries `.name` — the multipart spec itself defaults a nameless Blob entry to
+  // a File named "blob" (WHATWG FormData §mutation), so this branch is a defensive fallback, not
+  // the expected path for a real browser upload or this repo's own test helper.
+  const filename = entry instanceof File ? entry.name : "upload";
+  return { filename, mimeType: entry.type, data: Buffer.from(await entry.arrayBuffer()) };
+}
+
 type Handler = (req: Request, ctx: { params: Promise<Record<string, string>> }) => Promise<NextResponse>;
 
 /** Resolves the session ONCE, publishes it on the request context, and maps errors to JSON. */
