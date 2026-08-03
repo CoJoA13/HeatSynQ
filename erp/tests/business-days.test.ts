@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest";
+import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
+
+// Pure module, no DB: date-only parsing/formatting and Mon–Fri business-day math over
+// UTC-midnight Dates (matches @db.Date column semantics). The anchor dates below are real,
+// verified calendar days (2026-08-06 = Thursday, 2026-08-07 = Friday, 2026-08-03 = Monday).
+
+describe("parseDateOnly", () => {
+  it("parses a valid date to UTC midnight", () => {
+    const d = parseDateOnly("2026-08-06");
+    expect(d.getUTCFullYear()).toBe(2026);
+    expect(d.getUTCMonth()).toBe(7); // 0-indexed: August
+    expect(d.getUTCDate()).toBe(6);
+    expect(d.getUTCHours()).toBe(0);
+    expect(d.getUTCMinutes()).toBe(0);
+  });
+
+  it("rejects 2025-02-29 — the leap-year rollover guard (2025 is not a leap year)", () => {
+    expect(() => parseDateOnly("2025-02-29")).toThrow();
+  });
+
+  it("accepts the real leap day in an actual leap year, as a control on the guard above", () => {
+    expect(formatDateOnly(parseDateOnly("2024-02-29"))).toBe("2024-02-29");
+  });
+
+  it("rejects an out-of-range month (2025-13-01)", () => {
+    expect(() => parseDateOnly("2025-13-01")).toThrow();
+  });
+
+  it("rejects malformed input", () => {
+    expect(() => parseDateOnly("not-a-date")).toThrow();
+    expect(() => parseDateOnly("2025/06/15")).toThrow();
+    expect(() => parseDateOnly("")).toThrow();
+  });
+});
+
+describe("formatDateOnly", () => {
+  it("round-trips through parseDateOnly, including single-digit month/day padding", () => {
+    for (const s of ["2026-01-05", "2026-08-06", "2026-12-31"]) {
+      expect(formatDateOnly(parseDateOnly(s))).toBe(s);
+    }
+  });
+});
+
+describe("todayDateOnly", () => {
+  it("returns today's date at UTC midnight", () => {
+    const now = new Date();
+    const today = todayDateOnly();
+    expect(today.getUTCFullYear()).toBe(now.getUTCFullYear());
+    expect(today.getUTCMonth()).toBe(now.getUTCMonth());
+    expect(today.getUTCDate()).toBe(now.getUTCDate());
+    expect(today.getUTCHours()).toBe(0);
+    expect(today.getUTCMinutes()).toBe(0);
+    expect(today.getUTCSeconds()).toBe(0);
+    expect(today.getUTCMilliseconds()).toBe(0);
+  });
+});
+
+describe("addBusinessDays", () => {
+  it("Thu + 5 business days = the following Thu", () => {
+    const start = parseDateOnly("2026-08-06"); // Thursday
+    expect(formatDateOnly(addBusinessDays(start, 5))).toBe("2026-08-13"); // following Thursday
+  });
+
+  it("Fri + 1 business day = Mon", () => {
+    const start = parseDateOnly("2026-08-07"); // Friday
+    expect(formatDateOnly(addBusinessDays(start, 1))).toBe("2026-08-10"); // Monday
+  });
+
+  it("Mon + 0 business days = Mon, unchanged", () => {
+    const start = parseDateOnly("2026-08-03"); // Monday
+    expect(formatDateOnly(addBusinessDays(start, 0))).toBe("2026-08-03");
+  });
+
+  it("skips a full weekend crossed mid-count, not just when landing on one", () => {
+    // Wed 2026-08-05 + 3 business days: Thu, Fri, (skip Sat/Sun), Mon = 2026-08-10.
+    const start = parseDateOnly("2026-08-05");
+    expect(formatDateOnly(addBusinessDays(start, 3))).toBe("2026-08-10");
+  });
+
+  it("rejects a negative n", () => {
+    expect(() => addBusinessDays(parseDateOnly("2026-08-03"), -1)).toThrow();
+  });
+
+  it("rejects a non-integer n", () => {
+    expect(() => addBusinessDays(parseDateOnly("2026-08-03"), 1.5)).toThrow();
+  });
+});
