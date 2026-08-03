@@ -3,7 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder } from "@/server/orders";
-import { addBusinessDays, formatDateOnly, todayDateOnly } from "@/lib/business-days";
+import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 import { GET as listRoute, POST as createRoute } from "@/app/api/orders/route";
 import { GET as exportRoute } from "@/app/api/orders/export/route";
@@ -621,5 +621,36 @@ describe("order routes", () => {
     const mismatched = await entryDefaultsRoute(
       getReq(`http://t/api/orders/entry-defaults?customerId=${other.id}&partId=${lead.id}`, viewer), noParams);
     expect(mismatched.status).toBe(400);
+  });
+
+  // Fix-wave finding 1: the untouched preview used to always compute from TODAY, even after the
+  // operator backdated the received date — createOrder itself computes from the SAVED
+  // (possibly-overridden) receivedDate, so the two could disagree. An optional `receivedDate`
+  // param lets the preview use the exact same base date a save would.
+  it("GET .../entry-defaults?receivedDate=... bases the preview on that date instead of today, and validates it", async () => {
+    const { customer } = await fixture();
+    await prisma.customer.update({ where: { id: customer.id }, data: { requestDaysOverride: 7 } });
+    const viewer = await signInWith(["orders.view"], "entry-viewer-3");
+
+    const backdated = await entryDefaultsRoute(
+      getReq(`http://t/api/orders/entry-defaults?customerId=${customer.id}&receivedDate=2026-01-05`, viewer),
+      noParams);
+    expect(backdated.status).toBe(200);
+    expect((await backdated.json()).requestDate).toBe(formatDateOnly(addBusinessDays(parseDateOnly("2026-01-05"), 7)));
+
+    // A blank receivedDate ("...&receivedDate=") is absent, same house rule as partId/the board
+    // filters (query.ts's orUndefined) — falls back to today, not a parse error.
+    const blank = await entryDefaultsRoute(
+      getReq(`http://t/api/orders/entry-defaults?customerId=${customer.id}&receivedDate=`, viewer), noParams);
+    expect(blank.status).toBe(200);
+    expect((await blank.json()).requestDate).toBe(formatDateOnly(addBusinessDays(todayDateOnly(), 7)));
+
+    // Malformed is a clean field-anchored 400, validated the same way every other date on this
+    // service is (parseDate's own message shape).
+    const bad = await entryDefaultsRoute(
+      getReq(`http://t/api/orders/entry-defaults?customerId=${customer.id}&receivedDate=not-a-date`, viewer),
+      noParams);
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/Received date/);
   });
 });

@@ -85,4 +85,16 @@ describe("addBusinessDays", () => {
   it("rejects a non-integer n", () => {
     expect(() => addBusinessDays(parseDateOnly("2026-08-03"), 1.5)).toThrow();
   });
+
+  // Fix-wave finding 5: nothing capped `n` before this — a huge day offset (a bad
+  // requestDaysOverride, or historical data predating the zod caps added alongside this fix)
+  // iterates the day-at-a-time loop that many times, stalling the event loop rather than
+  // rejecting cleanly. 3650 days (~10 years) is far beyond any legitimate request-date lead time.
+  it("rejects n > 3650, naming the cap", () => {
+    expect(() => addBusinessDays(parseDateOnly("2026-08-03"), 3651)).toThrow(/3650/);
+  });
+
+  it("allows exactly 3650 — the boundary, not just a big blowout", () => {
+    expect(() => addBusinessDays(parseDateOnly("2026-08-03"), 3650)).not.toThrow();
+  });
 });

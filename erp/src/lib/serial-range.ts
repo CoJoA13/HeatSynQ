@@ -48,6 +48,18 @@ export function expandSerialRange(input: string): string[] {
   const [, startStr, endStr] = bounds;
   const start = Number(startStr);
   const end = Number(endStr);
+  // Checked BEFORE any arithmetic on `start`/`end` — a bound past Number.MAX_SAFE_INTEGER (e.g.
+  // "{99999999999999999999-100000000000000000025}") loses precision in the `Number(...)` above,
+  // so both bounds can round to the SAME float, `count` computes to 1, and the loop below's
+  // `n <= end` stays true forever because `n++` is a no-op at that magnitude (adding 1 to a
+  // float this large doesn't change its value) — not a slow expansion, an unbounded loop that
+  // only stops when the `rows` array hits the engine's own max-length limit. Relying on the
+  // MAX_EXPANSION check further down to catch this is not enough: it only works when the
+  // (already-imprecise) `count` happens to come out huge, which is exactly what this same
+  // precision loss can quietly avoid, as the case above demonstrates.
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+    throw new Error(`"${trimmed}" is not a valid serial range — bounds must be safe integers (≤ ${Number.MAX_SAFE_INTEGER})`);
+  }
   if (start > end) {
     throw new Error(`"${trimmed}" is not a valid serial range — start (${startStr}) is after end (${endStr})`);
   }

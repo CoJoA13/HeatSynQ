@@ -449,6 +449,18 @@ describe("customers service", () => {
       await expect(updateCustomer(id, { requestDaysOverride: -5 })).rejects.toBeInstanceOf(ZodError);
     });
 
+    // Fix-wave finding 5: unbounded, this feeds straight into addBusinessDays' own day-at-a-time
+    // loop (src/lib/business-days.ts), which now caps at 3650 — bounding it here too means the
+    // rejection is a clean 400 at the customer edit itself, not a generic error surfaced later at
+    // order entry.
+    it("rejects a value above the 3650-day cap, and allows exactly the boundary", async () => {
+      await expect(createCustomer({ code: "CAP1", name: "Cap Co", requestDaysOverride: 3651 }))
+        .rejects.toBeInstanceOf(ZodError);
+      const { id } = await createCustomer({ code: "CAP2", name: "Cap Co 2", requestDaysOverride: 3650 });
+      expect((await getCustomer(id)).requestDaysOverride).toBe(3650);
+      await expect(updateCustomer(id, { requestDaysOverride: 3651 })).rejects.toBeInstanceOf(ZodError);
+    });
+
     it("shows in the update audit diff", async () => {
       const { id } = await createCustomer({ code: "ACME", name: "Acme" });
       await updateCustomer(id, { requestDaysOverride: 7 });

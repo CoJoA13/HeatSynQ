@@ -47,7 +47,9 @@ const CREATE = z.object({
   invoiceNotes: z.string().max(4000).optional(),
   surchargeOptOut: z.boolean().optional(),
   financeChargeRate: financeChargeRateField,
-  requestDaysOverride: z.number().int().min(0).nullable().optional(),
+  // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
+  // this value feeds straight into its day-at-a-time loop as the customer's own override.
+  requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
   active: z.boolean().optional(),
 }).strict();
 

@@ -40,7 +40,9 @@ const FIELDS = {
   eachWeight: decimalField(10, 4, { required: true, min: "positive" }),
   loadQty: z.number().int().min(1).nullable().optional(),
   loadWeight: decimalField(10, 2, { min: "positive" }),
-  requestDaysOverride: z.number().int().min(0).nullable().optional(),
+  // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
+  // this value feeds straight into its day-at-a-time loop as the lead part's own override.
+  requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
   serializationRequired: z.boolean().optional(),
   setupCharge: decimalField(12, 2, { min: "nonnegative" }),
   unitPrice: decimalField(12, 4, { min: "nonnegative" }),

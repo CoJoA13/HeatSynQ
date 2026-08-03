@@ -54,4 +54,22 @@ describe("expandSerialRange", () => {
     expect(expandSerialRange("{1-10000}")).toHaveLength(10_000);
     expect(() => expandSerialRange("{1-10001}")).toThrow(/10,000/);
   });
+
+  // Fix-wave finding 4: bounds past Number.MAX_SAFE_INTEGER lose precision (both parse to
+  // ~1e20), so `count = end - start + 1` can pass the 10,000 cap on a completely bogus value, and
+  // the expansion loop's `n++` then no-ops forever once `n` is past 2^53 — a hang, not a slow
+  // path. Both bounds are checked, and the boundary at MAX_SAFE_INTEGER itself is still allowed
+  // (rejected only by the existing 10,000-row cap above, not by the safe-integer guard).
+  it("rejects a start bound past Number.MAX_SAFE_INTEGER instead of hanging", () => {
+    expect(() => expandSerialRange("{99999999999999999999-100000000000000000025}")).toThrow(/safe integer/i);
+  });
+
+  it("rejects an end bound past Number.MAX_SAFE_INTEGER instead of hanging", () => {
+    expect(() => expandSerialRange("{1-99999999999999999999}")).toThrow(/safe integer/i);
+  });
+
+  it("boundary sanity: a single-row range AT Number.MAX_SAFE_INTEGER is not rejected by the safe-integer guard", () => {
+    const n = String(Number.MAX_SAFE_INTEGER);
+    expect(expandSerialRange(`{${n}-${n}}`)).toEqual([n]);
+  });
 });

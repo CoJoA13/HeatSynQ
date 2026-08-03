@@ -528,12 +528,18 @@ export async function getOrder(id: string): Promise<OrderDetail> {
 
 /**
  * The §6 chain (`part.requestDaysOverride ?? customer.requestDaysOverride ??
- * request_days_default`) applied to TODAY, for `GET /api/orders/entry-defaults` — the entry
- * page's prefill preview before an order exists at all. `createOrder` runs this identical chain
- * inline against the order's own (possibly backdated) `receivedDate`; there is no saved order
- * here yet, so this reuses it against `todayDateOnly()` — the same default `createOrder` itself
- * falls back to when `receivedDate` is omitted (spec §5.1), since a fresh order is, by
+ * request_days_default`) applied to a base date, for `GET /api/orders/entry-defaults` — the
+ * entry page's prefill preview before an order exists at all. `createOrder` runs this identical
+ * chain inline against the order's own (possibly backdated) `receivedDate`; `receivedDate` here
+ * is that SAME optional override, so the preview and the eventual save agree — omitted (or
+ * blank), this falls back to `todayDateOnly()`, the identical default `createOrder` itself uses
+ * when `receivedDate` is omitted (spec §5.1), since a fresh, not-yet-backdated order is, by
  * construction, received today.
+ *
+ * Fix-wave finding 1: before `receivedDate` existed here, the preview always computed from today
+ * even after the operator backdated the received date on the entry form, so an order saved with
+ * an overridden `receivedDate` could show a request date at save time that never matched what
+ * the preview showed moments before. Passing the same override through closes that gap.
  *
  * Existence-checked (a bogus id must 400, not crash reading `.requestDaysOverride` off `null`)
  * and cross-checked when both ids are given (a part from another customer would silently preview
@@ -541,7 +547,7 @@ export async function getOrder(id: string): Promise<OrderDetail> {
  * never a commitment, and `createOrder` is what actually refuses to save against an inactive
  * customer or part.
  */
-export async function defaultRequestDate(customerId: string, partId?: string): Promise<string> {
+export async function defaultRequestDate(customerId: string, partId?: string, receivedDate?: string): Promise<string> {
   if (!customerId) throw new HttpError(400, "customerId is required");
 
   const customer = await prisma.customer.findFirst({
@@ -561,7 +567,8 @@ export async function defaultRequestDate(customerId: string, partId?: string): P
 
   const defaultRequestDays = await getSetting("request_days_default");
   const days = partOverride ?? customer.requestDaysOverride ?? defaultRequestDays;
-  return formatDateOnly(addBusinessDays(todayDateOnly(), days));
+  const base = receivedDate ? parseDate(receivedDate, "Received date") : todayDateOnly();
+  return formatDateOnly(addBusinessDays(base, days));
 }
 
 const BOARD_SELECT = {

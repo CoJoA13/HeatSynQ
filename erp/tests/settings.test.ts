@@ -65,6 +65,15 @@ describe("settings", () => {
     expect(await getSetting("session_timeout_minutes")).toBe(5);
   });
 
+  // Fix-wave finding 5: request_days_default feeds addBusinessDays' own day-at-a-time loop
+  // (src/lib/business-days.ts), which now caps at 3650 days — bounded here too so a bad plant
+  // default is refused at the settings page, not surfaced later as a generic order-entry error.
+  it("rejects request_days_default above the 3650-day cap, and allows exactly the boundary", async () => {
+    await expect(setSetting("request_days_default", 3651)).rejects.toThrow(HttpError);
+    await setSetting("request_days_default", 3650);
+    expect(await getSetting("request_days_default")).toBe(3650);
+  });
+
   it("allSettings consistency: invalid stored value falls back to default", async () => {
     await prisma.setting.create({
       data: { key: "request_days_default", value: "garbage" },

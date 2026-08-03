@@ -229,6 +229,23 @@ describe("parts core", () => {
       await expect(asSystem(() => updatePart(id2, { requestDaysOverride: -5 }))).rejects.toBeInstanceOf(ZodError);
     });
 
+    // Fix-wave finding 5: unbounded, this feeds straight into addBusinessDays' own day-at-a-time
+    // loop (src/lib/business-days.ts), which now caps at 3650 — bounding it here too means the
+    // rejection is a clean 400 at the part edit itself, not a generic error surfaced later at
+    // order entry.
+    it("rejects a value above the 3650-day cap, and allows exactly the boundary", async () => {
+      const { acme } = await twoCustomers();
+      await expect(asSystem(() => createPart({
+        customerId: acme.id, partNumber: "RD5", eachWeight: 1, requestDaysOverride: 3651,
+      }))).rejects.toBeInstanceOf(ZodError);
+
+      const { id } = await asSystem(() => createPart({
+        customerId: acme.id, partNumber: "RD6", eachWeight: 1, requestDaysOverride: 3650,
+      }));
+      expect((await getPart(id)).requestDaysOverride).toBe(3650);
+      await expect(asSystem(() => updatePart(id, { requestDaysOverride: 3651 }))).rejects.toBeInstanceOf(ZodError);
+    });
+
     it("shows in the update audit diff", async () => {
       const { acme } = await twoCustomers();
       const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "RD4", eachWeight: 1 }));

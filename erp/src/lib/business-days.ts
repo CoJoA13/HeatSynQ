@@ -46,6 +46,13 @@ export function todayDateOnly(): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
+// ~10 calendar years — far beyond any legitimate request-date lead time (spec §7.1's chain tops
+// out at a plant default measured in single-digit days). The day-at-a-time loop below is O(n);
+// nothing upstream capped `n` before this fix, so a bad requestDaysOverride/request_days_default
+// (or historical data predating the zod caps added alongside this) could stall the event loop
+// rather than fail cleanly.
+const MAX_OFFSET_DAYS = 3650;
+
 /**
  * Advances `start` by `n` business days (Mon–Fri; no holiday calendar — spec §3.4/§6). Each of
  * the `n` steps moves one calendar day and only counts it toward `n` if it lands on a weekday,
@@ -55,6 +62,9 @@ export function todayDateOnly(): Date {
 export function addBusinessDays(start: Date, n: number): Date {
   if (!Number.isInteger(n) || n < 0) {
     throw new Error(`addBusinessDays: n must be a non-negative integer, got ${n}`);
+  }
+  if (n > MAX_OFFSET_DAYS) {
+    throw new Error(`Request-day offsets are capped at ${MAX_OFFSET_DAYS}`);
   }
   let result = start.getTime();
   let remaining = n;

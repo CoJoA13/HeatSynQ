@@ -251,21 +251,33 @@ export default function NewOrderPage() {
       .catch((e) => addLoadError((e as Error).message));
   }, [addLoadError]);
 
-  // ---- entry-defaults (request date) — refetched whenever the customer or the LEAD part changes ----
+  // ---- entry-defaults (request date) — refetched whenever the customer, the LEAD part, or the
+  // operator's own received-date override changes (fix-wave finding 1: the untouched preview
+  // used to always compute from TODAY even after the received date was backdated on this same
+  // form, so it could show a request date the eventual save — which computes from the OVERRIDDEN
+  // received date, exactly like createOrder itself — would not agree with). ----
 
   const customerId = draft.customerId;
   const leadPartId = draft.lines[0]?.partId ?? null;
+  const receivedDateOverride = draft.receivedDateOverride;
   const entryDefaultsLatest = useLatest();
   useEffect(() => {
     if (!customerId) { setEntryDefaultRequestDate(null); return; }
     const t = entryDefaultsLatest.next();
-    const qs = new URLSearchParams({ customerId, ...(leadPartId ? { partId: leadPartId } : {}) });
+    const qs = new URLSearchParams({
+      customerId,
+      ...(leadPartId ? { partId: leadPartId } : {}),
+      // Omitted while untouched — same "not overridden yet" shape as buildCreateBody's own
+      // `receivedDate: draft.receivedDateOverride ?? undefined` — so the server bases the preview
+      // on ITS OWN today, identically to what an unbackdated save would do.
+      ...(receivedDateOverride ? { receivedDate: receivedDateOverride } : {}),
+    });
     api<{ requestDate: string }>(`/api/orders/entry-defaults?${qs}`).then((r) => {
       if (entryDefaultsLatest.isCurrent(t)) setEntryDefaultRequestDate(r.requestDate);
     }).catch((e) => {
       if (entryDefaultsLatest.isCurrent(t)) addLoadError((e as Error).message);
     });
-  }, [customerId, leadPartId, entryDefaultsLatest, addLoadError]);
+  }, [customerId, leadPartId, receivedDateOverride, entryDefaultsLatest, addLoadError]);
 
   // ---- autosave: 2s debounce PUT, gated until the resume/discard question is answered ----
 

@@ -16,7 +16,9 @@ export const SETTINGS = {
   invoice_number_next: { schema: int(1), default: 1000, label: "Next invoice number", group: "Numbering" },
   cert_number_next: { schema: int(1), default: 1000, label: "Next certification number", group: "Numbering" },
   quote_number_next: { schema: int(1), default: 1000, label: "Next quote number", group: "Numbering" },
-  request_days_default: { schema: int(0), default: 5, label: "Default request days", group: "Dates" },
+  // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
+  // this value feeds straight into its day-at-a-time loop as the plant-wide default.
+  request_days_default: { schema: int(0, 3650), default: 5, label: "Default request days", group: "Dates" },
   traffic_may_miss_days: { schema: int(0), default: 5, label: "May-miss window (days)", group: "Dates" },
   traffic_will_miss_days: { schema: int(0), default: 3, label: "Will-miss window (days)", group: "Dates" },
   session_timeout_minutes: { schema: int(5, 1440), default: 480, label: "Session timeout (minutes)", group: "System" },
