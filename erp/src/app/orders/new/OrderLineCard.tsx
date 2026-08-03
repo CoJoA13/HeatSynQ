@@ -33,8 +33,11 @@ export function computeLineWeight(part: PartOption | undefined, qty: number): nu
 }
 
 /** Exact-match dupes within ONE line, mirroring the server's `@@unique([lineId, serial])` scope
- *  (a serial repeated across two DIFFERENT lines is not flagged — the server allows it too). */
-function findDuplicateSerials(serials: SerialDraft[]): Set<string> {
+ *  (a serial repeated across two DIFFERENT lines is not flagged — the server allows it too).
+ *  Exported so page.tsx's validate() gates Save on the exact same check this card displays live —
+ *  the live inline warning was previously advisory only, so a duplicate could still reach the
+ *  server (which does reject it, just after a wasted round trip and a less specific message). */
+export function findDuplicateSerials(serials: SerialDraft[]): Set<string> {
   const seen = new Set<string>();
   const dupes = new Set<string>();
   for (const s of serials) {
@@ -108,7 +111,14 @@ export function OrderLineCard({
     });
   }, [isLead, line.partId, processesGate.allowed, latest, checkLead, onLeadValidity]);
 
-  const partOptions: ComboboxOption[] = parts.map((p) => ({ value: p.id, label: `${p.partNumber} — ${p.name}` }));
+  // Spec §11: the picker shows step-status up front rather than only after a pick — but only for
+  // the LEAD slot. Riders never lock a revision (resolveLineParts exempts them from the
+  // orderability check server-side too), so a steps-less part is perfectly valid there.
+  const partOptions: ComboboxOption[] = parts.map((p) => ({
+    value: p.id, label: `${p.partNumber} — ${p.name}`,
+    disabled: isLead && !p.hasProcessSteps,
+    disabledReason: isLead && !p.hasProcessSteps ? "No process steps" : undefined,
+  }));
   const dupes = findDuplicateSerials(line.serials);
 
   function addRange() {

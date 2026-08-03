@@ -19,6 +19,12 @@ export type PartRow = {
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
+  /** Whether the part's CURRENT (highest-numbered) process revision carries at least one step —
+   *  the same "orderable" check `lockCurrentRevision` performs at order-save time
+   *  (part-process-steps.ts), read here so order entry's lead-part picker can show it up front
+   *  (design spec §11) instead of only learning it after a pick. A part with no revision at all
+   *  is `false`, matching `lockCurrentRevision`'s own "claimed.length === 0" branch. */
+  hasProcessSteps: boolean;
 };
 
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
@@ -52,7 +58,7 @@ const SELECT = {
 } as const;
 
 type Raw = Prisma.PartGetPayload<{ select: typeof SELECT }>;
-function toRow(r: Raw): PartRow {
+function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
   const { customer, material, eachWeight, loadWeight, setupCharge, unitPrice, minimumCharge, ...rest } = r;
   return {
     ...rest, customerCode: customer.code, customerName: customer.name,
@@ -60,7 +66,30 @@ function toRow(r: Raw): PartRow {
     eachWeight: eachWeight.toNumber(), loadWeight: num(loadWeight),
     setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
     pricePer: r.pricePer as PricePerValue,
+    hasProcessSteps,
   };
+}
+
+/**
+ * For each given part id, whether its current (highest-numbered) `PartProcessRevision` carries
+ * at least one step. ONE additional query for the whole batch — not N+1 — ordered so the FIRST
+ * row encountered per `partId` is that part's highest revision (mirrors `lockCurrentRevision`'s
+ * own `ORDER BY revisionNumber DESC LIMIT 1`, just read for many parts instead of one). A part
+ * with a lower, superseded revision that once had steps must still read false if its CURRENT
+ * revision has none — the same rule `lockCurrentRevision` enforces at save time.
+ */
+async function hasProcessStepsByPart(partIds: string[]): Promise<Map<string, boolean>> {
+  if (partIds.length === 0) return new Map();
+  const revisions = await prisma.partProcessRevision.findMany({
+    where: { partId: { in: partIds } },
+    orderBy: [{ partId: "asc" }, { revisionNumber: "desc" }],
+    select: { partId: true, _count: { select: { steps: true } } },
+  });
+  const result = new Map<string, boolean>();
+  for (const rev of revisions) {
+    if (!result.has(rev.partId)) result.set(rev.partId, rev._count.steps > 0);
+  }
+  return result;
 }
 
 export async function listParts(opts?: { includeInactive?: boolean; search?: string }): Promise<PartRow[]> {
@@ -78,13 +107,15 @@ export async function listParts(opts?: { includeInactive?: boolean; search?: str
     select: SELECT,
     orderBy: [{ customer: { code: "asc" } }, { partNumber: "asc" }],
   });
-  return rows.map(toRow);
+  const stepsByPart = await hasProcessStepsByPart(rows.map((r) => r.id));
+  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false));
 }
 
 export async function getPart(id: string): Promise<PartRow> {
   const row = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: SELECT });
   if (!row) throw new HttpError(404, "Part not found");
-  return toRow(row);
+  const stepsByPart = await hasProcessStepsByPart([id]);
+  return toRow(row, stepsByPart.get(id) ?? false);
 }
 
 export async function createPart(input: Record<string, unknown>): Promise<{ id: string }> {

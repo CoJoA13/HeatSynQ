@@ -18,7 +18,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { Combobox, type ComboboxOption } from "./Combobox";
-import { OrderLineCard, computeLineWeight } from "./OrderLineCard";
+import { OrderLineCard, computeLineWeight, findDuplicateSerials } from "./OrderLineCard";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Exported so the colocated components (Combobox.tsx, OrderLineCard.tsx) can import the
@@ -35,6 +35,10 @@ export type CustomerOption = {
 export type PartOption = {
   id: string; customerId: string; partNumber: string; name: string;
   eachWeight: number; serializationRequired: boolean;
+  /** Whether the part's current process revision carries ≥1 step — surfaced by listParts
+   *  (src/server/parts.ts) so the lead-part picker can show this up front (spec §11) rather than
+   *  only after a pick. Irrelevant for riders, which never lock a revision. */
+  hasProcessSteps: boolean;
 };
 
 type ContainerTypeOption = { id: string; name: string };
@@ -203,6 +207,11 @@ export default function NewOrderPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Set only when a save SUCCEEDS with non-empty warnings — the owner's standing "visibly, never
+  // silently" ruling (HANDOFF issue #4 heritage) means a credit-hold or serialization notice
+  // returned alongside a successful save must not vanish behind an immediate navigate. Zero
+  // warnings still navigates immediately (below); this state exists only for the other case.
+  const [savedOrder, setSavedOrder] = useState<{ id: string; orderNumber: number; warnings: string[] } | null>(null);
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
@@ -262,22 +271,47 @@ export default function NewOrderPage() {
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // A ref, not state: handleSave below needs to suppress the NEXT scheduling synchronously (a
   // state flag would not be visible until a re-render), closing the common case of the autosave
-  // debounce firing while (or just after) a real save is in flight and re-writing a draft the
-  // save's own transaction just cleared. See handleSave's comment for the residual narrow window
-  // this does not close.
+  // debounce firing while a save is in flight and re-writing a draft the save's own transaction
+  // is about to clear.
   const savingRef = useRef(false);
-  // Single-flight queue for the PUT itself (the parts/[id]/page.tsx `serial()` precedent, reduced
-  // to one key since there is only one draft): chaining onto the previous attempt's settlement,
-  // rather than firing a second PUT while one is still in flight, guarantees two autosaves can
-  // never race each other out of order at the database. Debounce alone only cancels a timer that
-  // HASN'T fired yet — it can't stop a request already dispatched.
+  // Set once, permanently, the moment a save actually SUCCEEDS — distinct from savingRef (which
+  // only spans one attempt and resets on failure so autosave resumes for a retry). Nothing this
+  // page instance does after a successful save should ever touch the draft row again: the
+  // create transaction already cleared it, and (fix round 1) a successful save no longer always
+  // navigates away immediately (see the warnings panel below), so the component can stay mounted
+  // — and therefore keep re-running this effect — well past the point autosave must stop for good.
+  const savedRef = useRef(false);
+  // Tracks whether the draft has EVER held real content this page instance, independent of what
+  // it holds right now — the untouched-blank guard below (isDraftEmpty) needs to tell "never
+  // typed anything" apart from "typed something, then cleared it back to blank", which look
+  // identical from isDraftEmpty(draft) alone.
+  const hasEverBeenNonEmpty = useRef(false);
+  // Single-flight queue for the actual request (the parts/[id]/page.tsx `serial()` precedent,
+  // reduced to one key since there is only one draft): each attempt is wrapped in a thunk and
+  // chained onto the previous attempt's settlement, so a second request never fires while one is
+  // still in flight — two autosaves can never race each other out of order at the database.
+  // Debounce alone only cancels a timer that HASN'T fired yet; it can't stop a request already
+  // dispatched, which is exactly the gap handleSave's own `await autosaveChain.current` closes.
   const autosaveChain = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
-    if (!draftReady || savingRef.current || isDraftEmpty(draft)) return;
+    if (!draftReady || savingRef.current || savedRef.current) return;
+    const empty = isDraftEmpty(draft);
+    // Simply visiting the page and leaving — without typing anything — must not leave behind a
+    // draft that greets the next visit with a "Resume a draft?" prompt for nothing (caught live
+    // in this task's own dev-server smoke test). Once the draft HAS held content, though, clearing
+    // it back to blank must actively clear the server-side row too (fix round 1) — otherwise the
+    // last non-empty snapshot lingers there and resurrects the very same stale-prompt problem for
+    // content the user deliberately discarded.
+    if (empty && !hasEverBeenNonEmpty.current) return;
+    if (!empty) hasEverBeenNonEmpty.current = true;
+
     const timer = setTimeout(() => {
       const payload = draft; // this timer's own snapshot, sent once it's this queue entry's turn
+      const attempt = () => (empty
+        ? api("/api/order-drafts", { method: "DELETE" })
+        : api("/api/order-drafts", { method: "PUT", body: JSON.stringify({ payload }) }));
       autosaveChain.current = autosaveChain.current
-        .then(() => api("/api/order-drafts", { method: "PUT", body: JSON.stringify({ payload }) }))
+        .then(attempt)
         .then(() => setAutosaveError(null))
         .catch((e) => setAutosaveError(`Draft autosave failed: ${(e as Error).message}`));
     }, 2000);
@@ -362,6 +396,11 @@ export default function NewOrderPage() {
       const part = parts.find((p) => p.id === line.partId);
       const weight = line.weightOverride !== null ? Number(line.weightOverride) : computeLineWeight(part, qty);
       if (weight === null || !(weight > 0)) return `${label}: enter a weight greater than zero.`;
+      // The live inline "Duplicate serial" warning was previously advisory only — a duplicate
+      // could still reach the server, which does reject it, just after a wasted round trip and a
+      // less specific message than this one.
+      const dupes = findDuplicateSerials(line.serials);
+      if (dupes.size > 0) return `${label}: serial "${[...dupes][0]}" is entered twice.`;
     }
     if (leadValid === false) return "Lead line: this part has no process steps — choose a different lead part.";
     for (const [i, c] of draft.containers.entries()) {
@@ -396,7 +435,10 @@ export default function NewOrderPage() {
       lines: draft.lines.map((l) => {
         const part = parts.find((p) => p.id === l.partId);
         const qty = Number(l.qty);
-        const weight = l.weightOverride !== null ? l.weightOverride.trim() : (computeLineWeight(part, qty) ?? 0);
+        // Same trimmed-string wire shape either way (matching containers'/charges' decimal
+        // fields below) — validate() has already confirmed this resolves to a real number > 0,
+        // so String(...) here is never "NaN" or an empty string in practice.
+        const weight = l.weightOverride !== null ? l.weightOverride.trim() : String(computeLineWeight(part, qty) ?? 0);
         return {
           partId: l.partId,
           qty,
@@ -419,7 +461,7 @@ export default function NewOrderPage() {
   }
 
   async function submitOnce(body: unknown) {
-    return api<{ order: { id: string }; warnings: string[] }>("/api/orders", {
+    return api<{ order: { id: string; orderNumber: number }; warnings: string[] }>("/api/orders", {
       method: "POST", body: JSON.stringify(body),
     });
   }
@@ -428,20 +470,26 @@ export default function NewOrderPage() {
     const problem = validate();
     if (problem) { setError(problem); return; }
     setError(null);
-    // Cancel any pending autosave and suppress scheduling a new one until this attempt settles —
-    // closes the common case of a debounced PUT landing after createOrder's own transaction has
-    // already cleared the draft on success, which would otherwise resurrect a "Resume?" prompt
-    // for an order that already saved. A PUT that was already IN FLIGHT (network round trip
-    // already dispatched) the instant Save was clicked is not covered by this — a genuinely rare
-    // sub-2-second race whose only consequence is a spurious, harmless resume prompt next visit
-    // (the order itself is unaffected either way), noted here rather than solved with request
-    // cancellation for what is, day to day, a 1–5 user shop-floor tool.
+    // Cancel any pending (not-yet-fired) autosave timer, and stop the debounce effect from
+    // scheduling a new one — savingRef is checked there synchronously (a state flag would not be
+    // visible until a re-render).
     if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
     savingRef.current = true;
     setSaving(true);
     const body = buildCreateBody();
     try {
-      let result: { order: { id: string }; warnings: string[] };
+      // Fix round 1: AWAIT any autosave request already dispatched (network round trip in
+      // flight) before proceeding. Cancelling the timer above only stops a NEW one from being
+      // scheduled — it does nothing about a PUT that already left the browser. Without this
+      // await, that PUT can land after createOrder's own transaction clears the draft, upserting
+      // it back to non-null: the next visit to this page would offer to "Resume" a draft for an
+      // order that already saved, and an operator who clicked Resume and then Save again would
+      // create a genuine duplicate order — exactly the outcome the no-duplication rule (spec
+      // §15) exists to prevent. Awaiting the chain (rather than e.g. an AbortController) also
+      // means the in-flight request still completes and reports its own real outcome, instead of
+      // being silently cut off.
+      await autosaveChain.current;
+      let result: { order: { id: string; orderNumber: number }; warnings: string[] };
       try {
         result = await submitOnce(body);
       } catch (e) {
@@ -454,9 +502,22 @@ export default function NewOrderPage() {
           throw e;
         }
       }
-      // createOrder clears the caller's draft inside the SAME transaction as the save — a
-      // second, client-side DELETE here would be redundant and racy against that clear.
-      router.push(`/orders/${result.order.id}`);
+      // Permanently stop autosaving this page instance — belt to savingRef's suspenders. Matters
+      // more than it did before fix round 1: a successful save with warnings no longer navigates
+      // away immediately (below), so the component can stay mounted well past this point.
+      savedRef.current = true;
+      if (result.warnings.length > 0) {
+        // Owner ruling, applied (HANDOFF issue #4 heritage: skipped/degraded outcomes are named
+        // visibly, never silently) — a credit-hold or serialization warning returned alongside a
+        // successful save must be SEEN, not raced past by an immediate navigate. Zero warnings
+        // keeps the immediate navigate below; this is the one case that doesn't.
+        setSaving(false);
+        setSavedOrder({ id: result.order.id, orderNumber: result.order.orderNumber, warnings: result.warnings });
+      } else {
+        // createOrder clears the caller's draft inside the SAME transaction as the save — a
+        // second, client-side DELETE here would be redundant and racy against that clear.
+        router.push(`/orders/${result.order.id}`);
+      }
     } catch (e) {
       // §5.13: no reload after an error. Every field above is left exactly as typed so the user
       // can fix the one thing that was wrong and retry without losing anything else.
@@ -480,187 +541,207 @@ export default function NewOrderPage() {
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{loadError ?? autosaveError}</p>
       )}
 
-      {!draftReady && !draftPrompt && <p className="text-sm text-slate-500">Loading…</p>}
-
-      {draftPrompt && (
-        <div className="mb-4 rounded border border-blue-300 bg-blue-50 p-3 text-sm">
-          <p className="mb-2">
-            Draft from{" "}
-            {new Date(draftPrompt.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </p>
-          <div className="flex gap-3">
-            <button type="button" onClick={resumeDraft} className="rounded bg-slate-800 px-3 py-1 text-white">
-              Resume
-            </button>
-            <button type="button" onClick={() => void discardDraft()} className="rounded border px-3 py-1">
-              Discard
-            </button>
-          </div>
+      {savedOrder ? (
+        // Owner ruling, applied (HANDOFF issue #4 heritage — a degraded/flagged outcome is named
+        // visibly, never silently): a save that succeeded WITH warnings stops here instead of
+        // navigating straight past them. The form is gone (not merely disabled) — draft state is
+        // never touched again post-save (savedRef above), so there is nothing left to autosave
+        // regardless, and there is nothing here for a stray keystroke to land in.
+        <div className="rounded border border-green-300 bg-green-50 p-4">
+          <p className="mb-2 font-medium">Order #{savedOrder.orderNumber} saved.</p>
+          <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-amber-800">
+            {savedOrder.warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+          <button type="button" onClick={() => router.push(`/orders/${savedOrder.id}`)}
+                  className="rounded bg-slate-800 px-4 py-2 text-sm text-white">
+            Go to order
+          </button>
         </div>
-      )}
-
-      {draftReady && (
+      ) : (
         <>
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Customer</h2>
-            <Combobox value={draft.customerId} options={customerOptions} onSelect={(id) => patch({ customerId: id })}
-                       disabled={!customersGate.allowed} title={customersGate.allowed ? undefined : customersGate.title}
-                       placeholder="Customer code or name" ariaLabel="Customer" />
-            {/* A resumed draft's customerId can outlive the customer it names (deactivated —
-                listCustomers is active-only by default — or deleted between autosave and resume,
-                caught live while re-verifying this task's own fix for the analogous part case
-                below). Without this the picker just goes silently blank, the exact
-                misrepresenting-stored-data shape this codebase's history keeps flagging as
-                Critical; naming it matches OrderLineCard's "not in this customer's catalog" note. */}
-            {draft.customerId && !selectedCustomer && customers.length > 0 && (
-              <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
-                This customer is no longer available — pick a different one.
+          {!draftReady && !draftPrompt && <p className="text-sm text-slate-500">Loading…</p>}
+
+          {draftPrompt && (
+            <div className="mb-4 rounded border border-blue-300 bg-blue-50 p-3 text-sm">
+              <p className="mb-2">
+                Draft from{" "}
+                {new Date(draftPrompt.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
               </p>
-            )}
-            {selectedCustomer?.creditHold && (
-              <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
-                ⚠ {selectedCustomer.code} is on credit hold — orders can be entered; shipping will require release.
-              </p>
-            )}
-            {selectedCustomer?.orderNotes && (
-              <p className="mt-2 rounded bg-blue-50 p-2 text-sm text-blue-800">
-                Standing order notes: {selectedCustomer.orderNotes}
-              </p>
-            )}
-          </section>
-
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Reference &amp; dates</h2>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <label className="block">
-                PO number
-                <input value={displayedPo} onChange={(e) => patch({ poOverride: e.target.value })}
-                       className="mt-1 w-full rounded border px-2 py-1" />
-              </label>
-              <label className="block">
-                VS order #
-                <input value={draft.vsOrderNumber} onChange={(e) => patch({ vsOrderNumber: e.target.value })}
-                       className="mt-1 w-full rounded border px-2 py-1" />
-              </label>
-              <label className="block">
-                Received date
-                <input type="date" value={displayedReceivedDate}
-                       onChange={(e) => patch({ receivedDateOverride: e.target.value })}
-                       className="mt-1 w-full rounded border px-2 py-1" />
-              </label>
-              <label className="block">
-                Request date
-                <input type="date" value={displayedRequestDate}
-                       onChange={(e) => patch({ requestDateOverride: e.target.value })}
-                       className="mt-1 w-full rounded border px-2 py-1" />
-              </label>
-              <label className="block">
-                Target date
-                <input type="date" value={draft.targetDate ?? ""}
-                       onChange={(e) => patch({ targetDate: e.target.value || null })}
-                       className="mt-1 w-full rounded border px-2 py-1" />
-              </label>
-            </div>
-          </section>
-
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Containers</h2>
-            {draft.containers.length === 0 && <p className="text-sm text-slate-500">None.</p>}
-            {draft.containers.map((c, i) => {
-              const net = netWeight(c.grossWeight, c.tareWeight);
-              return (
-                <div key={c.id} className="mb-2 grid grid-cols-6 items-end gap-2 text-sm">
-                  <label className="block">
-                    Type
-                    <select value={c.typeId ?? ""} onChange={(e) => patchContainer(c.id, { typeId: e.target.value || null })}
-                            aria-label={`Container ${i + 1} type`}
-                            className="mt-1 w-full rounded border px-2 py-1">
-                      <option value="">— choose —</option>
-                      {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
-                  </label>
-                  <label className="block">
-                    Count
-                    <input value={c.count} inputMode="numeric" onChange={(e) => patchContainer(c.id, { count: e.target.value })}
-                           aria-label={`Container ${i + 1} count`} className="mt-1 w-full rounded border px-2 py-1" />
-                  </label>
-                  <label className="block">
-                    Qty/container
-                    <input value={c.qty} inputMode="numeric" onChange={(e) => patchContainer(c.id, { qty: e.target.value })}
-                           aria-label={`Container ${i + 1} quantity`} className="mt-1 w-full rounded border px-2 py-1" />
-                  </label>
-                  <label className="block">
-                    Tare
-                    <input value={c.tareWeight} inputMode="decimal" onChange={(e) => patchContainer(c.id, { tareWeight: e.target.value })}
-                           aria-label={`Container ${i + 1} tare weight`} className="mt-1 w-full rounded border px-2 py-1" />
-                  </label>
-                  <label className="block">
-                    Gross
-                    <input value={c.grossWeight} inputMode="decimal" onChange={(e) => patchContainer(c.id, { grossWeight: e.target.value })}
-                           aria-label={`Container ${i + 1} gross weight`} className="mt-1 w-full rounded border px-2 py-1" />
-                  </label>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-slate-600">Net: {net ?? "—"}</span>
-                    <button type="button" onClick={() => removeContainer(c.id)} className="text-xs text-red-600">Remove</button>
-                  </div>
-                </div>
-              );
-            })}
-            <button type="button" onClick={addContainer} className="text-sm text-blue-700 underline">Add container</button>
-          </section>
-
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Part lines</h2>
-            {!draft.customerId && <p className="mb-2 text-sm text-slate-500">Pick a customer to add part lines.</p>}
-            {draft.lines.map((line, i) => (
-              <OrderLineCard key={line.id} index={i} isLead={i === 0} line={line} parts={customerParts}
-                             customerChosen={!!draft.customerId} partsGate={partsGate} processesGate={processesGate}
-                             onChange={(p) => patchLine(line.id, p)}
-                             onRemove={draft.lines.length > 1 ? () => removeLine(line.id) : undefined}
-                             onLeadValidity={i === 0 ? onLeadValidity : undefined} />
-            ))}
-            <button type="button" onClick={addLine} className="text-sm text-blue-700 underline">Add part line</button>
-          </section>
-
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Charges</h2>
-            {draft.charges.length === 0 && <p className="text-sm text-slate-500">None.</p>}
-            {draft.charges.map((c, i) => (
-              <div key={c.id} className="mb-2 flex items-end gap-2 text-sm">
-                <label className="block flex-1">
-                  Description
-                  <input value={c.description} onChange={(e) => patchCharge(c.id, { description: e.target.value })}
-                         aria-label={`Charge ${i + 1} description`} className="mt-1 w-full rounded border px-2 py-1" />
-                </label>
-                <label className="block w-40">
-                  Amount
-                  <input value={c.amount} inputMode="decimal" placeholder="needs price"
-                         onChange={(e) => patchCharge(c.id, { amount: e.target.value })}
-                         aria-label={`Charge ${i + 1} amount`} className="mt-1 w-full rounded border px-2 py-1" />
-                </label>
-                <button type="button" onClick={() => removeCharge(c.id)} className="text-xs text-red-600">Remove</button>
+              <div className="flex gap-3">
+                <button type="button" onClick={resumeDraft} className="rounded bg-slate-800 px-3 py-1 text-white">
+                  Resume
+                </button>
+                <button type="button" onClick={() => void discardDraft()} className="rounded border px-3 py-1">
+                  Discard
+                </button>
               </div>
-            ))}
-            <button type="button" onClick={addCharge} className="text-sm text-blue-700 underline">Add charge</button>
-          </section>
+            </div>
+          )}
 
-          <section className="mb-6 rounded border bg-white p-4">
-            <h2 className="mb-2 font-medium">Notes</h2>
-            <textarea value={draft.notes} onChange={(e) => patch({ notes: e.target.value })} rows={3}
-                      className="w-full rounded border p-2 text-sm" />
-          </section>
+          {draftReady && (
+            <>
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Customer</h2>
+                <Combobox value={draft.customerId} options={customerOptions} onSelect={(id) => patch({ customerId: id })}
+                           disabled={!customersGate.allowed} title={customersGate.allowed ? undefined : customersGate.title}
+                           placeholder="Customer code or name" ariaLabel="Customer" />
+                {/* A resumed draft's customerId can outlive the customer it names (deactivated —
+                    listCustomers is active-only by default — or deleted between autosave and
+                    resume, caught live while re-verifying this task's own fix for the analogous
+                    part case below). Without this the picker just goes silently blank, the exact
+                    misrepresenting-stored-data shape this codebase's history keeps flagging as
+                    Critical; naming it matches OrderLineCard's "not in this customer's catalog". */}
+                {draft.customerId && !selectedCustomer && customers.length > 0 && (
+                  <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
+                    This customer is no longer available — pick a different one.
+                  </p>
+                )}
+                {selectedCustomer?.creditHold && (
+                  <p className="mt-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
+                    ⚠ {selectedCustomer.code} is on credit hold — orders can be entered; shipping will require release.
+                  </p>
+                )}
+                {selectedCustomer?.orderNotes && (
+                  <p className="mt-2 rounded bg-blue-50 p-2 text-sm text-blue-800">
+                    Standing order notes: {selectedCustomer.orderNotes}
+                  </p>
+                )}
+              </section>
 
-          <div className="mb-10 flex items-center gap-3">
-            <button type="button" onClick={() => void handleSave()} disabled={saving || saveGate.disabled}
-                    title={saveGate.title}
-                    className="rounded bg-slate-800 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-              {saving ? "Saving…" : "Save"}
-            </button>
-            <button type="button" disabled title="Traveler arrives later this phase"
-                    className="cursor-not-allowed rounded border px-4 py-2 text-sm text-slate-400">
-              Save &amp; Print
-            </button>
-          </div>
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Reference &amp; dates</h2>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <label className="block">
+                    PO number
+                    <input value={displayedPo} onChange={(e) => patch({ poOverride: e.target.value })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                  <label className="block">
+                    VS order #
+                    <input value={draft.vsOrderNumber} onChange={(e) => patch({ vsOrderNumber: e.target.value })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                  <label className="block">
+                    Received date
+                    <input type="date" value={displayedReceivedDate}
+                           onChange={(e) => patch({ receivedDateOverride: e.target.value })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                  <label className="block">
+                    Request date
+                    <input type="date" value={displayedRequestDate}
+                           onChange={(e) => patch({ requestDateOverride: e.target.value })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                  <label className="block">
+                    Target date
+                    <input type="date" value={draft.targetDate ?? ""}
+                           onChange={(e) => patch({ targetDate: e.target.value || null })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                </div>
+              </section>
+
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Containers</h2>
+                {draft.containers.length === 0 && <p className="text-sm text-slate-500">None.</p>}
+                {draft.containers.map((c, i) => {
+                  const net = netWeight(c.grossWeight, c.tareWeight);
+                  return (
+                    <div key={c.id} className="mb-2 grid grid-cols-6 items-end gap-2 text-sm">
+                      <label className="block">
+                        Type
+                        <select value={c.typeId ?? ""} onChange={(e) => patchContainer(c.id, { typeId: e.target.value || null })}
+                                aria-label={`Container ${i + 1} type`}
+                                className="mt-1 w-full rounded border px-2 py-1">
+                          <option value="">— choose —</option>
+                          {containerTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                      </label>
+                      <label className="block">
+                        Count
+                        <input value={c.count} inputMode="numeric" onChange={(e) => patchContainer(c.id, { count: e.target.value })}
+                               aria-label={`Container ${i + 1} count`} className="mt-1 w-full rounded border px-2 py-1" />
+                      </label>
+                      <label className="block">
+                        Qty/container
+                        <input value={c.qty} inputMode="numeric" onChange={(e) => patchContainer(c.id, { qty: e.target.value })}
+                               aria-label={`Container ${i + 1} quantity`} className="mt-1 w-full rounded border px-2 py-1" />
+                      </label>
+                      <label className="block">
+                        Tare
+                        <input value={c.tareWeight} inputMode="decimal" onChange={(e) => patchContainer(c.id, { tareWeight: e.target.value })}
+                               aria-label={`Container ${i + 1} tare weight`} className="mt-1 w-full rounded border px-2 py-1" />
+                      </label>
+                      <label className="block">
+                        Gross
+                        <input value={c.grossWeight} inputMode="decimal" onChange={(e) => patchContainer(c.id, { grossWeight: e.target.value })}
+                               aria-label={`Container ${i + 1} gross weight`} className="mt-1 w-full rounded border px-2 py-1" />
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-600">Net: {net ?? "—"}</span>
+                        <button type="button" onClick={() => removeContainer(c.id)} className="text-xs text-red-600">Remove</button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button type="button" onClick={addContainer} className="text-sm text-blue-700 underline">Add container</button>
+              </section>
+
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Part lines</h2>
+                {!draft.customerId && <p className="mb-2 text-sm text-slate-500">Pick a customer to add part lines.</p>}
+                {draft.lines.map((line, i) => (
+                  <OrderLineCard key={line.id} index={i} isLead={i === 0} line={line} parts={customerParts}
+                                 customerChosen={!!draft.customerId} partsGate={partsGate} processesGate={processesGate}
+                                 onChange={(p) => patchLine(line.id, p)}
+                                 onRemove={draft.lines.length > 1 ? () => removeLine(line.id) : undefined}
+                                 onLeadValidity={i === 0 ? onLeadValidity : undefined} />
+                ))}
+                <button type="button" onClick={addLine} className="text-sm text-blue-700 underline">Add part line</button>
+              </section>
+
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Charges</h2>
+                {draft.charges.length === 0 && <p className="text-sm text-slate-500">None.</p>}
+                {draft.charges.map((c, i) => (
+                  <div key={c.id} className="mb-2 flex items-end gap-2 text-sm">
+                    <label className="block flex-1">
+                      Description
+                      <input value={c.description} onChange={(e) => patchCharge(c.id, { description: e.target.value })}
+                             aria-label={`Charge ${i + 1} description`} className="mt-1 w-full rounded border px-2 py-1" />
+                    </label>
+                    <label className="block w-40">
+                      Amount
+                      <input value={c.amount} inputMode="decimal" placeholder="needs price"
+                             onChange={(e) => patchCharge(c.id, { amount: e.target.value })}
+                             aria-label={`Charge ${i + 1} amount`} className="mt-1 w-full rounded border px-2 py-1" />
+                    </label>
+                    <button type="button" onClick={() => removeCharge(c.id)} className="text-xs text-red-600">Remove</button>
+                  </div>
+                ))}
+                <button type="button" onClick={addCharge} className="text-sm text-blue-700 underline">Add charge</button>
+              </section>
+
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Notes</h2>
+                <textarea value={draft.notes} onChange={(e) => patch({ notes: e.target.value })} rows={3}
+                          className="w-full rounded border p-2 text-sm" />
+              </section>
+
+              <div className="mb-10 flex items-center gap-3">
+                <button type="button" onClick={() => void handleSave()} disabled={saving || saveGate.disabled}
+                        title={saveGate.title}
+                        className="rounded bg-slate-800 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+                  {saving ? "Saving…" : "Save"}
+                </button>
+                <button type="button" disabled title="Traveler arrives later this phase"
+                        className="cursor-not-allowed rounded border px-4 py-2 text-sm text-slate-400">
+                  Save &amp; Print
+                </button>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

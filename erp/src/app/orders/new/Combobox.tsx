@@ -5,7 +5,13 @@ import { useState } from "react";
 // pickers (customer by code/name; part by number)" requirement (no substring filter as you type),
 // so this is a small self-built combobox rather than a native control. Reused for both the
 // customer picker and every line's part picker (orders/new/page.tsx, OrderLineCard.tsx).
-export type ComboboxOption = { value: string; label: string };
+//
+// `disabled`/`disabledReason` per option (not the same as the whole-combobox `disabled` prop
+// below): a disabled OPTION is still visible and findable by search — §5.16's "say why, never
+// hide" rule applied to a single choice rather than the whole control — it just can't be
+// committed. Used by OrderLineCard to show "No process steps" on a part in the LEAD slot (spec
+// §11) while leaving it perfectly selectable as a rider.
+export type ComboboxOption = { value: string; label: string; disabled?: boolean; disabledReason?: string };
 
 export function Combobox({
   value, options, onSelect, placeholder, disabled, title, ariaLabel,
@@ -27,6 +33,9 @@ export function Combobox({
   const filtered = normalized ? options.filter((o) => o.label.toLowerCase().includes(normalized)) : options;
 
   function commit(opt: ComboboxOption) {
+    if (opt.disabled) return; // belt to the native `disabled` attribute below, which already
+    // blocks the mouse path — this closes the keyboard path (Enter on a highlighted-but-disabled
+    // option calls commit() directly, with no per-element disabled check of its own).
     onSelect(opt.value);
     setQuery("");
     setOpen(false);
@@ -72,10 +81,13 @@ export function Combobox({
             <li key={opt.value}>
               {/* onMouseDown + preventDefault, not onClick: preventing the mousedown's default
                   stops the input from ever blurring, so there is no blur-closes-before-click race
-                  to work around with a timer. */}
-              <button type="button" onMouseDown={(e) => { e.preventDefault(); commit(opt); }}
-                      className={`block w-full px-2 py-1 text-left ${i === highlight ? "bg-slate-100" : ""}`}>
-                {opt.label}
+                  to work around with a timer. A native `disabled` button fires neither mousedown
+                  nor click in the first place — commit()'s own `if (opt.disabled) return` above
+                  is what closes the keyboard (Enter) path, which never touches this element. */}
+              <button type="button" disabled={opt.disabled} title={opt.disabled ? opt.disabledReason : undefined}
+                      onMouseDown={(e) => { e.preventDefault(); commit(opt); }}
+                      className={`block w-full px-2 py-1 text-left ${i === highlight ? "bg-slate-100" : ""} ${opt.disabled ? "cursor-not-allowed text-slate-400" : ""}`}>
+                {opt.label}{opt.disabled && opt.disabledReason ? ` — ${opt.disabledReason}` : ""}
               </button>
             </li>
           ))}

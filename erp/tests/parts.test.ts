@@ -125,4 +125,35 @@ describe("parts core", () => {
     expect(await listParts()).toHaveLength(0);
     expect(await listParts({ includeInactive: true })).toHaveLength(1);
   });
+
+  it("hasProcessSteps reflects the CURRENT revision only, batched (not N+1) across the list", async () => {
+    const { acme } = await twoCustomers();
+    const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austemper" } });
+    const { id: none } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "NONE", eachWeight: 1 }));
+    const { id: emptyRev } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "EMPTY", eachWeight: 1 }));
+    const { id: withSteps } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "STEPPED", eachWeight: 1 }));
+
+    // emptyRev: a revision exists but carries zero steps — still false, same as no revision at all.
+    await prisma.partProcessRevision.create({ data: { partId: emptyRev, revisionNumber: 1 } });
+
+    // withSteps: revision 1 had a step, but the CURRENT revision is 2 with none — must read false,
+    // the same "superseded revision's steps don't count" rule lockCurrentRevision enforces.
+    const rev1 = await prisma.partProcessRevision.create({ data: { partId: withSteps, revisionNumber: 1 } });
+    await prisma.partProcessStep.create({ data: { revisionId: rev1.id, position: 1, codeId: code.id, instruction: "old" } });
+    const rev2 = await prisma.partProcessRevision.create({ data: { partId: withSteps, revisionNumber: 2 } });
+
+    let rows = await listParts();
+    const byNumber = (n: string) => rows.find((r) => r.partNumber === n)!;
+    expect(byNumber("NONE").hasProcessSteps).toBe(false);
+    expect(byNumber("EMPTY").hasProcessSteps).toBe(false);
+    expect(byNumber("STEPPED").hasProcessSteps).toBe(false); // current rev (2) has no steps yet
+
+    await prisma.partProcessStep.create({ data: { revisionId: rev2.id, position: 1, codeId: code.id, instruction: "new" } });
+    rows = await listParts();
+    expect(byNumber("STEPPED").hasProcessSteps).toBe(true);
+
+    // getPart (single-part path) must agree with the list path.
+    expect((await getPart(withSteps)).hasProcessSteps).toBe(true);
+    expect((await getPart(none)).hasProcessSteps).toBe(false);
+  });
 });
