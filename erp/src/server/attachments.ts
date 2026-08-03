@@ -20,20 +20,61 @@ const ALLOWED_TYPES = new Set<string>([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
 ]);
 
-/** Strips control characters (CR/LF header-injection defense) and escapes backslash/quote for the
- *  quoted-string form (RFC 6266 / RFC 2616 §2.2). `filename` is whatever the browser sent as the
- *  original upload name and lands verbatim in a raw response header otherwise. */
-function escapeDispositionFilename(name: string): string {
-  return name.replace(/[\x00-\x1f\x7f]/g, "").replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+/** Strips control characters (CR/LF header-injection defense) — shared by both the quoted-string
+ *  and RFC 5987 forms below, neither of which is safe to build from a raw, unfiltered upload
+ *  name. `filename` is whatever the browser sent as the original upload name. */
+function stripControlChars(name: string): string {
+  return name.replace(/[\x00-\x1f\x7f]/g, "");
 }
 
-/** `Content-Disposition` value for a GET-bytes response: `inline` for anything a browser tab can
- *  render on its own (images, PDF), `attachment` (forces a download) for everything else on the
- *  allowlist (csv/plain text/office docs) — shared by both owners' byte-serving routes so the
- *  inline/attachment split and the filename escaping live in exactly one place. */
+/** Escapes backslash/quote for the quoted-string form (RFC 6266 / RFC 2616 §2.2). */
+function escapeQuoted(name: string): string {
+  return name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+/**
+ * ASCII-only approximation of `name` for the legacy `filename=` parameter: every codepoint
+ * outside printable ASCII (0x20-0x7e) becomes "_". Fix-wave finding 7: a raw non-ASCII codepoint
+ * here is not a quoting problem `escapeQuoted` can fix — `Headers`/`NextResponse` require header
+ * values to be Latin1/ByteString, and constructing the response for an attachment named e.g.
+ * "測定.pdf" threw outright, so the file could be uploaded but never downloaded again.
+ * `rfc5987Encode` below carries the real name for every current browser, which all read it in
+ * preference to this one; this is only the fallback for a client that understands neither.
+ */
+function asciiFallback(name: string): string {
+  return name.replace(/[^\x20-\x7e]/g, "_");
+}
+
+/**
+ * RFC 5987 `ext-value` percent-encoding for the `filename*=UTF-8''...` parameter.
+ * `encodeURIComponent` already escapes everything the grammar's `attr-char` set excludes except
+ * `* ' ( )` (which it deliberately leaves literal, since all four are legal inside a URI
+ * component) — those four are escaped by hand on top so the result is valid `attr-char`-only
+ * percent-encoding. Also collapses any CR/LF that survived as raw bytes into their own %-encoded
+ * form, so this half of the header is immune to header injection independent of the stripping
+ * `contentDisposition` already does up front.
+ */
+function rfc5987Encode(name: string): string {
+  return encodeURIComponent(name).replace(/[*'()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/**
+ * `Content-Disposition` value for a GET-bytes response: `inline` for anything a browser tab can
+ * render on its own (images, PDF), `attachment` (forces a download) for everything else on the
+ * allowlist (csv/plain text/office docs) — shared by both owners' byte-serving routes so the
+ * inline/attachment split and the filename encoding live in exactly one place. Carries BOTH an
+ * ASCII-sanitized `filename=` fallback and the faithful RFC 5987 `filename*=UTF-8''...` form
+ * (RFC 6266 §4.3's own recommendation, sent unconditionally rather than only when the name
+ * happens to need it — one code path, not an ASCII/non-ASCII fork) — every current browser reads
+ * the latter, so an attachment named e.g. "測定.pdf" still downloads under its real name; only a
+ * client that understands neither parameter would ever see the sanitized fallback.
+ */
 export function contentDisposition(mimeType: string, filename: string): string {
   const kind = INLINE_TYPES.has(mimeType) ? "inline" : "attachment";
-  return `${kind}; filename="${escapeDispositionFilename(filename)}"`;
+  const stripped = stripControlChars(filename);
+  const quoted = escapeQuoted(asciiFallback(stripped));
+  const encoded = rfc5987Encode(stripped);
+  return `${kind}; filename="${quoted}"; filename*=UTF-8''${encoded}`;
 }
 
 type Db = typeof prisma | Prisma.TransactionClient;
@@ -146,21 +187,34 @@ export async function addAttachment(
       const data = { ...ownerFilter(owner, ownerId), ...meta, fileData: file.data };
       // Audit payload is metadata only — fileData is never handed to the audit layer for a
       // create (CLAUDE.md: redact() is defense in depth, not the mechanism that's supposed to
-      // keep bytes out in the first place). The soft-delete path below can't make the same
-      // promise: auditedSoftDelete's own "before" snapshot is a bare findUnique with no column
-      // projection, so THAT path leans on redact()'s "filedata" pattern (Task 1) instead.
+      // keep bytes out in the first place). The soft-delete path below makes the same promise a
+      // different way: auditedSoftDelete's own "before" snapshot now runs through audit.ts's
+      // SNAPSHOT_SELECT for this model (fix-wave finding 3), which excludes fileData at the query
+      // itself rather than leaning on redact()'s "filedata" pattern to scrub it afterward.
       const auditPayload = { ...ownerFilter(owner, ownerId), ...meta };
       return auditedCreate(AUDIT_MODEL[owner], auditPayload, () => delegate(owner, tx).create({ data }), { tx });
     }));
   return { id: row.id, filename: row.filename, mimeType: row.mimeType, size: row.size, createdAt: row.createdAt };
 }
 
+/**
+ * Fix-wave finding 11: the owner-liveness check and the attachment's own existence check now run
+ * on THIS transaction's own `tx` — the addAttachment "house mutator shape" above already uses —
+ * rather than as two standalone statements on the top-level `prisma` client before this
+ * transaction even opened. Before this, a concurrent void/delete of the owner landing in that gap
+ * would commit unnoticed: nothing about auditedSoftDelete's own atomic updateMany re-checks the
+ * OWNER's liveness, only the attachment row's own. Moving both onto `tx` narrows that window to
+ * "however long this one transaction takes" instead of "however long between two independent
+ * round trips".
+ */
 export async function deleteAttachment(owner: AttachmentOwner, ownerId: string, attId: string): Promise<void> {
-  await assertOwnerVisible(owner, ownerId, "write", prisma);
-  const current = await delegate(owner).findFirst({
-    where: { id: attId, ...ownerFilter(owner, ownerId), deletedAt: null },
-  });
-  if (!current) throw new HttpError(404, "Attachment not found");
   await withDbErrors({ entity: OWNER_LABEL[owner] }, () =>
-    prisma.$transaction((tx) => auditedSoftDelete(AUDIT_MODEL[owner], attId, undefined, tx)));
+    prisma.$transaction(async (tx) => {
+      await assertOwnerVisible(owner, ownerId, "write", tx);
+      const current = await delegate(owner, tx).findFirst({
+        where: { id: attId, ...ownerFilter(owner, ownerId), deletedAt: null },
+      });
+      if (!current) throw new HttpError(404, "Attachment not found");
+      await auditedSoftDelete(AUDIT_MODEL[owner], attId, undefined, tx);
+    }));
 }

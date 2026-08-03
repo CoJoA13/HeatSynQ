@@ -94,15 +94,46 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
     charges: { orderBy: { position: "asc" } },
   },
   // Attachments and saved views are audited as their own rows, not through a parent — no
-  // relations to include. fileData never enters an attachment's own snapshot as a *relation*
-  // either way (it's a scalar column pulled in by the bare findUnique), which is exactly why
-  // redact()'s sensitiveKeyPatterns gets "filedata" below rather than relying on this table.
+  // relations to include. `undefined` here just means "no relations"; SNAPSHOT_SELECT below (not
+  // this record) is what actually keeps fileData out of these three models' snapshots — see its
+  // own comment.
   partAttachment: undefined,
   orderAttachment: undefined,
   savedView: undefined,
   // Permanent, create-only (design spec §4: "no delete path at all") — snapshots are metadata
-  // only, fileData redacted the same way as the attachment tables.
+  // only, fileData excluded the same way as the attachment tables (SNAPSHOT_SELECT below).
   storedDocument: undefined,
+};
+
+/**
+ * Per-model `select` override for `snapshot()` below — used INSTEAD of `include` (never both;
+ * Prisma rejects a query carrying both) for any model whose own bytes column must never be
+ * pulled into a before/after snapshot in the first place. Fix-wave finding 3: before this, the
+ * three models below were audited via the bare `include`-driven `findUnique` at the bottom of
+ * this file, which has no column projection at all — a soft-delete's own "before" snapshot
+ * (`auditedSoftDelete`) fetched up to a 20MB `fileData` column, JSON-round-tripped it
+ * (`JSON.parse(JSON.stringify(...))` inside `redact()`), and only THEN scrubbed the key to
+ * `"[redacted]"` — real memory pressure on every attachment delete, for a value nothing ever
+ * needed in the first place. Listing every scalar except the bytes column here means the bytes
+ * never leave Postgres for this codepath at all; `redact()` stays defense-in-depth (CLAUDE.md),
+ * not the mechanism relied on to keep them out.
+ *
+ * Relations are deliberately omitted (these three are audited as their own rows, matching
+ * SNAPSHOT_INCLUDE's own comment above them). `storedDocument` has no update/delete path today
+ * (`auditedCreate` never calls `snapshot()` — see its own doc comment), so this entry is
+ * currently unreached; it is defined anyway so the exclusion already exists the moment that
+ * changes, rather than being something a future phase has to remember to add.
+ */
+const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
+  partAttachment: {
+    id: true, partId: true, filename: true, mimeType: true, size: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true,
+  },
+  orderAttachment: {
+    id: true, orderId: true, filename: true, mimeType: true, size: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true,
+  },
+  storedDocument: { id: true, orderId: true, kind: true, loadNumber: true, createdAt: true },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
@@ -164,9 +195,12 @@ type Db = typeof prisma | Prisma.TransactionClient;
 async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
   const client = db[model] as unknown as {
-    findUnique: (a: { where: { id: string }; include?: object }) => Promise<unknown>;
+    findUnique: (a: { where: { id: string }; select?: object; include?: object }) => Promise<unknown>;
   };
-  return client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
+  const select = SNAPSHOT_SELECT[model];
+  return select
+    ? client.findUnique({ where: { id }, select })
+    : client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
 }
 
 async function write(entry: {

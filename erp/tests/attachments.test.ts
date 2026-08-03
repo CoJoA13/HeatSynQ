@@ -191,6 +191,58 @@ describe("attachments service — one implementation, two owners", () => {
     await expect(asSystem(() => deleteAttachment("order", orderId, attId))).rejects.toThrow("Order not found");
   });
 
+  // Fix-wave finding 11: deleteAttachment used to run the owner-liveness check (assertOwnerVisible)
+  // and the attachment's own existence check on the top-level `prisma` client, as two statements
+  // BEFORE the delete's own `prisma.$transaction` even opened — a real gap in which a concurrent
+  // void/delete of the owner could commit without deleteAttachment ever seeing it, since nothing
+  // about auditedSoftDelete's own atomic updateMany re-checks the OWNER's liveness. The fix moves
+  // both checks onto the delete's own `tx` (the addAttachment "house mutator shape" already
+  // uses), closing the gap to "however long this one transaction takes" instead of "however long
+  // between two independent round trips". A race test is optional once this structural change is
+  // in place (the underlying assertOwnerVisible/current-row logic is unchanged, only which client
+  // it runs on) — this instead proves the checks really did move, by intercepting the TOP-LEVEL
+  // delegates' own methods and asserting neither is reached during a delete.
+  //
+  // Deliberately NOT `vi.spyOn` here: on this Prisma Client's model delegates, `mockRestore()`
+  // does not restore the original method (verified live against this exact client — the property
+  // comes back `undefined`, breaking every later test that touches the same model for the rest of
+  // the run, since `prisma` is a process-wide singleton, tests/helpers/db.ts). A plain
+  // save-reassign-restore of the property sidesteps whatever about that delegate's shape trips up
+  // vi's restore logic, without that risk.
+  it.each(["part", "order"] as const)(
+    "runs the owner-liveness check and attachment resolution on the delete's own tx, not the top-level client (%s)",
+    async (owner) => {
+      const ownerId = owner === "part" ? await partOwnerFixture() : await orderOwnerFixture();
+      const { id: attId } = await asSystem(() => addAttachment(owner, ownerId, {
+        filename: "drawing.png", mimeType: "image/png", data: Buffer.from("x"),
+      }));
+
+      const ownerModel = (owner === "part" ? prisma.part : prisma.order) as unknown as Record<string, unknown>;
+      const attModel = (owner === "part" ? prisma.partAttachment : prisma.orderAttachment) as
+        unknown as Record<string, unknown>;
+      const realOwnerFindFirst = ownerModel.findFirst as (...a: unknown[]) => unknown;
+      const realAttFindFirst = attModel.findFirst as (...a: unknown[]) => unknown;
+      let ownerCalls = 0;
+      let attCalls = 0;
+      ownerModel.findFirst = (...args: unknown[]) => { ownerCalls++; return realOwnerFindFirst(...args); };
+      attModel.findFirst = (...args: unknown[]) => { attCalls++; return realAttFindFirst(...args); };
+
+      try {
+        await asSystem(() => deleteAttachment(owner, ownerId, attId));
+      } finally {
+        ownerModel.findFirst = realOwnerFindFirst;
+        attModel.findFirst = realAttFindFirst;
+      }
+
+      // Neither ran on the top-level client — a call recorded here would only be possible if the
+      // check ran on `prisma` rather than the delete's own `tx`.
+      expect(ownerCalls).toBe(0);
+      expect(attCalls).toBe(0);
+
+      // And the delete still genuinely happened — this isn't just "nothing ran".
+      expect(await listAttachments(owner, ownerId)).toHaveLength(0);
+    });
+
   it("cross-owner isolation: an order id can't reach a part's attachment", async () => {
     const partId = await partOwnerFixture();
     const orderId = await orderOwnerFixture();
@@ -222,26 +274,37 @@ describe("attachments service — one implementation, two owners", () => {
     }
   });
 
-  it("audits filename/mimeType/size but never the file bytes", async () => {
-    const partId = await partOwnerFixture();
+  it.each(["part", "order"] as const)(
+    "audits filename/mimeType/size but never the file bytes ($owner)", async (owner) => {
+    const ownerId = owner === "part" ? await partOwnerFixture() : await orderOwnerFixture();
     const marker = "TOTALLY-SECRET-BYTE-MARKER-XYZ";
-    const { id: attId } = await asSystem(() => addAttachment("part", partId, {
+    const { id: attId } = await asSystem(() => addAttachment(owner, ownerId, {
       filename: "drawing.png", mimeType: "text/plain", data: Buffer.from(marker),
     }));
-    await asSystem(() => deleteAttachment("part", partId, attId));
+    await asSystem(() => deleteAttachment(owner, ownerId, attId));
 
     const entries = await prisma.auditLog.findMany({
-      where: { entity: "partAttachment", entityId: attId }, orderBy: [{ at: "asc" }, { id: "asc" }],
+      where: { entity: owner === "part" ? "partAttachment" : "orderAttachment", entityId: attId },
+      orderBy: [{ at: "asc" }, { id: "asc" }],
     });
     expect(entries.map((e) => e.action)).toEqual(["create", "delete"]);
 
-    // The delete's "before" snapshot is a bare findUnique (audit.ts) that DOES pull the fileData
-    // column — redact()'s "filedata" pattern (Task 1) is what keeps the marker out of what's
-    // actually persisted, and this is the end-to-end proof it works for this new resource.
+    // Belt: the marker never appears in what's persisted, whatever the mechanism.
     for (const entry of entries) {
       const blob = JSON.stringify([entry.before, entry.after]);
       expect(blob).not.toContain(marker);
     }
+
+    // Suspenders (fix-wave finding 3): the delete's "before" snapshot now comes from a `select`
+    // that never asks for `fileData` in the first place — the key itself is absent, not merely
+    // redacted to a placeholder string. redact() staying a no-op here (nothing left for it to
+    // scrub) is the proof the exclusion happens upstream of it, at the query, exactly as
+    // CLAUDE.md requires ("don't hand a secret-bearing payload to the audit layer in the first
+    // place"). The delete entry still carries the metadata an operator would want in history.
+    const deleteEntry = entries[1];
+    expect(deleteEntry.before).not.toHaveProperty("fileData");
+    expect(deleteEntry.before).toMatchObject({ filename: "drawing.png", mimeType: "text/plain" });
+
     const created = entries[0].after as { filename: string; mimeType: string; size: number };
     expect(created.filename).toBe("drawing.png");
     expect(created.mimeType).toBe("text/plain");
@@ -249,22 +312,52 @@ describe("attachments service — one implementation, two owners", () => {
   });
 
   it("Content-Disposition: inline for images/PDF, attachment otherwise, filename escaped", () => {
-    expect(contentDisposition("image/png", "drawing.png")).toBe('inline; filename="drawing.png"');
-    expect(contentDisposition("application/pdf", "cert.pdf")).toBe('inline; filename="cert.pdf"');
-    expect(contentDisposition("text/csv", "data.csv")).toBe('attachment; filename="data.csv"');
+    // Fix-wave finding 7: every case below now also carries a trailing RFC 5987
+    // `filename*=UTF-8''...` parameter (RFC 6266 §4.3's own recommendation — sent alongside
+    // `filename=` even for a plain-ASCII name, so there is exactly one code path rather than an
+    // ASCII/non-ASCII fork). For an all-ASCII name the percent-encoded form is identical to the
+    // plain name, since none of its characters need escaping.
+    expect(contentDisposition("image/png", "drawing.png"))
+      .toBe("inline; filename=\"drawing.png\"; filename*=UTF-8''drawing.png");
+    expect(contentDisposition("application/pdf", "cert.pdf"))
+      .toBe("inline; filename=\"cert.pdf\"; filename*=UTF-8''cert.pdf");
+    expect(contentDisposition("text/csv", "data.csv"))
+      .toBe("attachment; filename=\"data.csv\"; filename*=UTF-8''data.csv");
 
     // Quote/backslash escaped for the quoted-string form — an unescaped quote in the filename
     // would otherwise terminate the parameter early and let the rest of the name (or worse, a
     // crafted suffix) read as new header syntax.
-    expect(contentDisposition("text/plain", 'weird"name.txt')).toBe('attachment; filename="weird\\"name.txt"');
-    expect(contentDisposition("text/plain", "a\\b.txt")).toBe('attachment; filename="a\\\\b.txt"');
+    expect(contentDisposition("text/plain", 'weird"name.txt'))
+      .toBe("attachment; filename=\"weird\\\"name.txt\"; filename*=UTF-8''weird%22name.txt");
+    expect(contentDisposition("text/plain", "a\\b.txt"))
+      .toBe("attachment; filename=\"a\\\\b.txt\"; filename*=UTF-8''a%5Cb.txt");
 
     // CR/LF stripped — a filename is attacker-controlled input landing in a raw response header,
     // so this is the header-injection defense (a filename of `x\r\nSet-Cookie: evil=1` must not
-    // be able to inject a second header).
+    // be able to inject a second header). Checked on the whole header, not just the quoted param.
     const injected = contentDisposition("text/plain", "name\r\nX-Injected: 1.txt");
     expect(injected).not.toMatch(/[\r\n]/);
-    expect(injected).toBe('attachment; filename="nameX-Injected: 1.txt"');
+    expect(injected).toBe(
+      "attachment; filename=\"nameX-Injected: 1.txt\"; filename*=UTF-8''nameX-Injected%3A%201.txt");
+  });
+
+  // Fix-wave finding 7: raw non-ASCII in a `Content-Disposition` value is outside the Latin1/
+  // ByteString range `Headers`/`NextResponse` require — before this fix, constructing the
+  // response for an attachment named e.g. "測定.pdf" threw, so the file could be UPLOADED but
+  // never DOWNLOADED again. The ASCII fallback plus RFC 5987 `filename*=` fixes that; this checks
+  // the encoding function directly (an em dash, purely for a name that is non-ASCII but has no
+  // header-syntax characters to also worry about escaping).
+  it("non-ASCII filenames get an ASCII-sanitized fallback AND a faithful RFC 5987 filename*=, both present", () => {
+    const header = contentDisposition("application/pdf", "測定.pdf");
+    // One "_" per non-ASCII codepoint (測, 定) in the legacy quoted parameter — an approximation,
+    // never the value a modern client actually reads.
+    expect(header).toContain('filename="__.pdf"');
+    expect(header).toContain("filename*=UTF-8''");
+    const match = /filename\*=UTF-8''([^;]+)/.exec(header);
+    expect(match).not.toBeNull();
+    // Round-trips to the exact original name — this parameter, not the sanitized fallback, is
+    // what every current browser actually reads.
+    expect(decodeURIComponent(match![1])).toBe("測定.pdf");
   });
 });
 
@@ -383,5 +476,32 @@ describe.each(CONFIGS)("$owner attachment routes", (cfg) => {
     expect(res.headers.get("content-type")).toBe(mimeType);
     expect(res.headers.get("content-disposition")).toContain(expectedKind);
     expect(res.headers.get("content-disposition")).toContain('filename="f.bin"');
+  });
+
+  // Fix-wave finding 7: before the RFC 5987 fix, constructing this GET response for a filename
+  // outside Latin1/ByteString range threw inside `new NextResponse(...)` — the upload above would
+  // still succeed (nothing about the write path touches Content-Disposition), but every download
+  // attempt would fail. Exercised at the ROUTE level, not just contentDisposition() directly,
+  // because that constructor call is exactly where the old code broke.
+  it("uploads and downloads an attachment with a non-ASCII filename (RFC 5987)", async () => {
+    const ownerId = await cfg.fixture();
+    const base = cfg.path(ownerId);
+    const editor = await signInWith([`${cfg.area}.view`, `${cfg.area}.edit`], `unicode-${cfg.owner}`);
+
+    const uploaded = await cfg.add(
+      uploadReq(base, editor, "測定.pdf", "application/pdf", new Uint8Array([1, 2, 3])),
+      withParams({ id: ownerId }));
+    expect(uploaded.status).toBe(200);
+    const { id: attId } = await uploaded.json();
+
+    const res = await cfg.get(getReq(`${base}/${attId}`, editor), withParams({ id: ownerId, attId }));
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    const disposition = res.headers.get("content-disposition") ?? "";
+    expect(disposition).toContain('filename="');
+    expect(disposition).toContain("filename*=UTF-8''");
+    const match = /filename\*=UTF-8''([^;]+)/.exec(disposition);
+    expect(match).not.toBeNull();
+    expect(decodeURIComponent(match![1])).toBe("測定.pdf");
   });
 });
