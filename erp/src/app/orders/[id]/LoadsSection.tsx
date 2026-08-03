@@ -71,7 +71,15 @@ export function LoadsSection({
     for (const [i, r] of parsed.entries()) {
       if (!Number.isInteger(r.loadNumber) || r.loadNumber < 1) { onError(`Load ${i + 1}: load # must be a whole number of at least 1.`); return null; }
       if (r.qty !== null && (!Number.isInteger(r.qty) || r.qty < 1)) { onError(`Load ${i + 1}: quantity must be a whole number of at least 1.`); return null; }
-      if (r.weight !== null && !(Number(r.weight) > 0)) { onError(`Load ${i + 1}: weight must be greater than zero.`); return null; }
+      // Fix-wave R3 finding 3: a load carrying a qty may legitimately weigh 0 (cumulative
+      // rounding on an auto-split — load-split.test.ts's counter-example); only a WEIGHT-ONLY row
+      // (no qty at all) still needs a strictly positive weight, mirroring order-loads.ts's own
+      // LOAD_ITEM schema exactly.
+      if (r.weight !== null) {
+        const weight = Number(r.weight);
+        if (r.qty === null && !(weight > 0)) { onError(`Load ${i + 1}: weight must be greater than zero.`); return null; }
+        if (r.qty !== null && weight < 0) { onError(`Load ${i + 1}: weight cannot be negative.`); return null; }
+      }
       if (r.qty === null && r.weight === null) { onError(`Load ${i + 1}: needs a quantity, a weight, or both.`); return null; }
     }
     const numbers = new Set(parsed.map((r) => r.loadNumber));

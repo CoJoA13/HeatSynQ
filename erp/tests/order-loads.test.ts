@@ -241,6 +241,52 @@ describe("replaceLoads", () => {
       .rejects.toMatchObject({ status: 404, message: "Order not found" });
   });
 
+  // Fix-wave R3 finding 1: replaceLoads used to resolve the order with a plain, UNLOCKED
+  // findFirst, so it never serialized against anything else holding a claim on the same row —
+  // in particular, printTraveler's own `SELECT … FOR UPDATE` (traveler.ts). The discriminating
+  // shape is the same holder pattern round 2's print-vs-void race test uses (traveler.test.ts):
+  // a holder takes the EXACT row lock `claimOrder` (orders.ts) now gives every order-family
+  // mutator and just sits on it. A genuine claim inside replaceLoads cannot proceed past the
+  // holder until it releases; a plain (unlocked) resolve — the regression — would sail straight
+  // through and never even notice the holder is there.
+  it("blocks on a concurrent claim of the order row until it releases (row-lock discipline)", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id); // 3 loads: 40/40/20
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+    }, { timeout: 20000 });
+
+    await claimed;
+    const replaceCall = asSystem(() => replaceLoads(order.id, [{ loadNumber: 1, qty: 100, weight: "1000.00" }]));
+
+    // Not itself the discriminator (see above) — its job is to guarantee replaceLoads' own claim
+    // attempt has actually been dispatched, and in the correct implementation is genuinely
+    // blocked on the holder, before the holder is released.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      replaceCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: replaceLoads could not decide anything about this order until AFTER the
+    // holder released, and then proceeded and landed normally.
+    const { order: after } = await replaceCall;
+    expect(after.loads).toHaveLength(1);
+    expect(after.loads[0]).toMatchObject({ qty: 100, weight: 1000 });
+  });
+
   it("audits a real before/after diff of the loads collection", async () => {
     const { customer, lead } = await fixture();
     const order = await baseOrder(lead.id, customer.id, 40, "400.00"); // single load: 40/400

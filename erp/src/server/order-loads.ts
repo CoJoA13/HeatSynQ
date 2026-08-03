@@ -27,12 +27,28 @@ import {
  */
 export type LoadInput = { loadNumber: number; qty: number | null; weight: number | null };
 
+// Fix-wave R3 finding 3: `weight` is bounded `nonnegative`, not `positive` — cumulative-rounding
+// auto-splits legitimately produce 0-weight loads whenever the row also carries a qty (spec
+// §5.4's own splitLoads, load-split.test.ts's counter-example: totalQty=5/totalWeight=0.03 at a
+// 1-piece cap rounds to per-load weights [0.01, 0, 0.01, 0, 0.01]). Rejecting weight === 0
+// unconditionally meant that legal auto-split could never be re-saved once loaded back into the
+// bulk editor. The `superRefine` below still refuses a WEIGHT-ONLY row (qty null) at exactly
+// zero — there is nothing else on that row for a positive weight to describe.
 const LOAD_ITEM = z.object({
   loadNumber: z.number().int().min(1),
   qty: z.number().int().min(1).nullable().optional(),
-  weight: decimalField(12, 2, { min: "positive" }),
-}).strict().refine((row) => row.qty != null || row.weight != null, {
-  message: "Each load needs a qty, a weight, or both",
+  weight: decimalField(12, 2, { min: "nonnegative" }),
+}).strict().superRefine((row, ctx) => {
+  if (row.qty == null && row.weight == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Each load needs a qty, a weight, or both" });
+    return;
+  }
+  if (row.qty == null && row.weight === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ["weight"],
+      message: "A weight-only load needs a weight greater than zero",
+    });
+  }
 });
 
 const REPLACE_LOADS = z.array(LOAD_ITEM).min(1);
