@@ -8,8 +8,9 @@ import { decimalField } from "./decimal-field";
 import { MAX_LOADS } from "../lib/load-split";
 import {
   type OrderDetail, type OrderWarnings, INT4_MAX,
-  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads, claimOrder,
+  readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads,
 } from "./orders";
+import { claimOrder } from "./order-locks";
 
 // -------------------------------------------------------------------------------------------
 // Task 6: the loads service — bulk load edit/renumber and re-split (spec §5.4/§12.9). Both

@@ -3,7 +3,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedSoftDelete } from "./audit";
-import { claimOrder } from "./orders";
+import { claimOrder } from "./order-locks";
 
 export type AttachmentOwner = "part" | "order";
 export type AttachmentMeta = { id: string; filename: string; mimeType: string; size: number; createdAt: Date };

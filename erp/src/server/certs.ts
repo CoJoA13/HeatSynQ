@@ -6,11 +6,13 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { toXlsx } from "./excel";
 import { getSetting } from "./settings";
-// Circular by design: orders.ts's own `createOrder` calls THIS file's `createCert` for the
-// ORDER-scope case (spec §6.2), and `createCert` below claims the order's row through orders.ts's
-// `claimOrder` (spec §5.3) — both references are used only inside function bodies, never at
-// module-evaluation time, so the cycle resolves fine under Node/webpack's ESM live bindings.
-import { claimOrder } from "./orders";
+// orders.ts's own `createOrder` calls THIS file's `createCert` for the ORDER-scope case (spec
+// §6.2). That used to be a genuine bidirectional cycle — `claimOrder` lived in orders.ts, so
+// certs.ts imported it from there while orders.ts imported `createCert` back — safe only because
+// every crossing export was a hoisted `function` declaration. Task 7 broke it at the root:
+// `claimOrder` now lives in the leaf `order-locks.ts` (the `errors.ts` precedent), so this import
+// no longer points back at orders.ts at all.
+import { claimOrder } from "./order-locks";
 import { seedRequirements } from "./cert-results";
 import { formatDateOnly } from "../lib/business-days";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
