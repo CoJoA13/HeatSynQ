@@ -582,7 +582,9 @@ it("refuses a results edit after printing without the special action", async () 
 - Consumes: Task 2's `ShipperLine`/`ShipperOrder`.
 - Produces:
 ```ts
-// src/server/orders.ts — beside claimOrder, so the claim SQL exists once
+// src/server/order-locks.ts — a NEW leaf module (see the extraction note below)
+/** Moved here from orders.ts, unchanged. */
+export async function claimOrder(tx: Db, orderId: string): Promise<Order | null>;
 /** Claims every order row FOR UPDATE in ASCENDING ID ORDER. Sorting is what stops two
  *  multi-order saves over {A,B} and {B,A} deadlocking — never claim in caller order. */
 export async function claimOrdersInOrder(tx: Db, orderIds: string[]): Promise<Order[]>;
@@ -663,7 +665,11 @@ ordering directly instead: export the sort as `sortedClaimIds(ids: string[]): st
 concurrent test is the one that matters — do not skip it in favour of the unit test alone.**
 
 - [ ] **Step 2: Run to verify failure.**
-- [ ] **Step 3: Implement `claimOrdersInOrder`** in `orders.ts` — `[...new Set(orderIds)].sort()`, then one `SELECT "id" FROM "Order" WHERE "id" = ANY($1) ORDER BY "id" FOR UPDATE`, then `findMany`. A single ordered statement is both the sort and the claim.
+- [ ] **Step 3a: Extract the claims into `src/server/order-locks.ts` FIRST — added 2026-08-04 after Task 5's review.** Task 5 created a genuine bidirectional module cycle: `certs.ts` imports `claimOrder` from `orders.ts`, and `orders.ts` imports `resolveCertSettings`/`createCert` from `certs.ts`. It is safe today only because every crossing export is a hoisted `function` declaration, and this task and Task 8 are both about to widen it (`shippers.ts` needs `claimOrdersInOrder` **and** `createCert`, and `orders.ts` needs `shipmentBlockers` back from `shippers.ts` for §5.5). This codebase already has the precedent and the reasoning: Phase 2A extracted `HttpError` into a zero-import `src/server/errors.ts` specifically to break a `settings → http → sessions → settings` cycle, and `tests/errors.test.ts` asserts that file imports nothing.
+
+  Move `claimOrder` verbatim from `orders.ts` into a new leaf `src/server/order-locks.ts` (importing only `db` and Prisma types — nothing from another service), re-point every existing caller (`orders.ts`, `certs.ts`, `attachments.ts`, `order-loads.ts`, `traveler.ts`), and confirm the cycle is gone. **A moved function with no behaviour change needs no new tests** — the existing suites covering each caller are the proof, and they must stay green untouched.
+
+- [ ] **Step 3b: Implement `claimOrdersInOrder`** in `src/server/order-locks.ts` beside it — `[...new Set(orderIds)].sort()`, then one `SELECT "id" FROM "Order" WHERE "id" = ANY($1) ORDER BY "id" FOR UPDATE`, then `findMany`. A single ordered statement is both the sort and the claim.
 - [ ] **Step 4: Implement `ship-ledger.ts`** exactly per §5.1/§5.2/§5.3. `recomputeOrderStatus` skips orders with `deletedAt !== null` (voidedness is orthogonal to status) and never writes `INVOICED` or `REOPENED`. `nextShipmentSequence` runs `_max` over `shipperOrder` for the order with **no live filter** — a voided shipment's sequence is already on a customer's paperwork.
 - [ ] **Step 5: Hook the order line mutators** — `addLine`, `updateLine` and `removeLine` in `orders.ts` call `recomputeOrderStatus(tx, [orderId])` at the end of their existing transactions.
 - [ ] **Step 6: Run the tests** — PASS.
