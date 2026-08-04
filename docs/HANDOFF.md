@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-03. **Phase 3 (Orders & Loads) is complete on branch `phase-3-orders`** — all 17 tasks done, all four quality gates green, the E2E harness 10/10 — **pending the final whole-branch review and merge**. The last actually-merged phase is still 2C-2 (Parts core, PR #13 squashed as `aeed372`), on top of 2C-1 (PR #12, `47d6d0a`), the Prisma 7 upgrade (PR #11, `22e0dd3`), and Phase 2B (PR #2, `32f7f9d`) — 2C-3 (PR #22) and the 2026-08-02 toolchain PRs merged after that; see §4a for the full chain. Next work, once Phase 3 merges, is **Phase 4 (Certifications & Shipping)**. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-08-03 (late). **Phase 3 (Orders & Loads) is complete and MERGED to `main`** — squash-merged as `12a17f9` (PR #39, 56 commits). All 17 tasks done, five Codex review rounds (rounds 1–4: 34 findings fixed on the branch; round 5: 6 findings triaged to issues #41–#46 by owner ruling — the round was not converging), final whole-branch review passed with its fix wave applied. Verified after merge: the squashed tree is byte-identical to the branch tip (`56063b6`), `main` green on **1010 tests**, `tsc`, `eslint`, and the E2E harness 10/10; both databases migrated. Next work is **Phase 4 (Certifications & Shipping)** — kickoff prompt in §9. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
 
 ---
 
@@ -73,7 +73,7 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — state as of 2026-08-03, Phase 3 (Orders & Loads) complete on branch, pending merge
+### 4a. RESUME HERE — state as of 2026-08-03, Phase 3 (Orders & Loads) MERGED to main
 
 **Phase 2C was split into three branches** (owner ruling, 2026-08-01) because as originally framed it was ~11 new models and ~30 tasks, roughly 3× Phase 2B: **2C-1 shared foundations** (done), **2C-2 Parts core** (next), **2C-3 Process Steps + Templates**.
 
@@ -136,12 +136,17 @@ is overridden in `eslint.config.mjs` for a defensible reason, but the rule point
 behind issues #5/#15 and several PR #22 findings, and Phase 3 added more pages in that same style
 — Phase 4 will add more still, in whichever style is eventually chosen.
 
-**Phase 3 (Orders & Loads) is complete on `phase-3-orders`** (17 tasks, `5a93325` kickoff through
-`125ea43`), **not yet merged** — pending the final whole-branch review this project's process
-always runs before merge. All four gates green plus the E2E harness: **904 tests** (73 files),
-`tsc` clean, `eslint` clean, `npm run build` clean, and **`npm run test:e2e` 10/10** — the original
-six 2C-3 flows unchanged, plus four new order flows (`order-entry-full`, `board-search-scan`,
-`loads-after-print`, `void-order`), run three times consecutively to confirm stability. Spec:
+**Phase 3 (Orders & Loads) is complete and MERGED to `main`** — squash-merged 2026-08-03 as
+`12a17f9` (PR #39, 56 commits: 17 tasks `5a93325`–`125ea43`, then four Codex fix-round waves and
+docs). The final whole-branch review ran on the strongest model (verdict: with-fixes; wave applied)
+before the PR opened; Codex then posted five rounds — rounds 1–4's 34 findings all fixed on the
+branch with regression tests, round 5's 6 findings triaged to issues #41–#46 by owner ruling
+(2026-08-03: the round was not converging; no further code on the branch). Verified after merge:
+squashed tree byte-identical to the branch tip (`56063b6`); `main` green on **1010 tests**
+(85 files), `tsc` clean, `eslint` clean, `npm run build` clean, **`npm run test:e2e` 10/10** — the
+original six 2C-3 flows unchanged, plus four new order flows (`order-entry-full`,
+`board-search-scan`, `loads-after-print`, `void-order`), run three times consecutively to confirm
+stability. Spec:
 `docs/superpowers/specs/2026-08-02-phase-3-orders-design.md` (§3 records ten owner decisions from
 the design session, with two dated 2026-08-03 amendments closing the traveler samples gate — see
 below; §16 is Phase 4's own inheritance list, quoted in §9's kickoff prompt). Plan:
@@ -392,7 +397,7 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — Phase 4 (Certifications & Shipping), once Phase 3 merges.**
+**Next up — Phase 4 (Certifications & Shipping). Phase 3 is merged (`12a17f9`, PR #39).**
 
 > Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
 > backlog. **Phase 3 (Orders & Loads) is complete** (§4a — 17 tasks, all four gates green, the
