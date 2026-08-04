@@ -1,14 +1,22 @@
-// The Order row lock, alone in its own leaf module (the `errors.ts` precedent — Phase 2A pulled
+// Order-row locks, alone in their own leaf module (the `errors.ts` precedent — Phase 2A pulled
 // `HttpError` out here for the identical reason: `settings.ts` -> `http.ts` -> `sessions.ts` ->
 // `settings.ts` was a real cycle, safe only because every crossing export was a hoisted `function`
 // declaration). Task 5 created the same shape between `orders.ts` and `certs.ts`
 // (`certs.ts` imports `claimOrder`; `orders.ts` imports `resolveCertSettings`/`createCert` back)
 // and Tasks 7/8 were both about to widen it further (`shippers.ts` needs `claimOrdersInOrder` AND
 // `createCert`; `orders.ts` needs `shipmentBlockers` back from `shippers.ts` for spec §5.5). Moving
-// the claim itself here — importing nothing but the db types — means every order-family service
-// (`orders.ts`, `certs.ts`, `attachments.ts`, `order-loads.ts`, `traveler.ts`, and Task 8's
-// `shippers.ts`) can depend on the lock without depending on each other through it.
+// the claim itself here — importing nothing but the db types and the zero-import `errors.ts` leaf —
+// means every order-family service (`orders.ts`, `certs.ts`, `attachments.ts`, `order-loads.ts`,
+// `traveler.ts`, and Task 8's `shippers.ts`) can depend on the lock without depending on each
+// other through it.
+//
+// Task 7 review (2026-08-04) found the identical shape one file over: `cert-results.ts` imported
+// `claimCertsOrder`/`readCertDetail` from `certs.ts`, while `certs.ts` imported `seedRequirements`
+// back — safe only because every crossing export was, again, a hoisted `function`. `claimCertsOrder`
+// moved here (a lock helper belongs beside the lock it wraps); `readCertDetail` moved into
+// `cert-results.ts` itself instead, since certs.ts is no longer in a position to host it.
 import type { Prisma, Order } from "../../prisma/generated/prisma/client";
+import { HttpError } from "./errors";
 
 type Db = Prisma.TransactionClient;
 
@@ -80,4 +88,27 @@ export async function claimOrdersInOrder(tx: Db, orderIds: string[]): Promise<Or
 
   await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ANY(${ids}) ORDER BY "id" FOR UPDATE`;
   return tx.order.findMany({ where: { id: { in: ids } }, orderBy: { id: "asc" } });
+}
+
+/**
+ * Resolves the order a cert belongs to and claims IT (spec §5.3) before a cert mutator reads or
+ * writes the cert's own state — `orderId` itself is safe to read with a bare, unlocked `findFirst`
+ * first, because it never changes once a cert exists (no update path touches it); the state a
+ * caller actually acts on (`deletedAt`, `freeform`, …) is always re-read after the claim, under
+ * the lock, never trusted from this stub.
+ *
+ * Used by certs.ts's `updateCert`/`voidCert` and cert-results.ts's `replaceReadings` — every cert
+ * mutator needs the identical claim discipline before it reads or writes a requirement's readings
+ * or the cert's own fields. Two concurrent calls on the SAME cert serialize through the Order row
+ * lock taken here.
+ *
+ * Moved here from certs.ts (Task 7 review, 2026-08-04, this file's own header comment) — a lock
+ * helper belongs beside the lock it wraps, and doing so is what breaks the certs.ts <-> cert-
+ * results.ts cycle the same way `claimOrder`'s own move broke orders.ts <-> certs.ts.
+ */
+export async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId: string }> {
+  const stub = await tx.cert.findFirst({ where: { id: certId }, select: { orderId: true } });
+  if (!stub) throw new HttpError(404, "Certification not found");
+  await claimOrder(tx, stub.orderId);
+  return stub;
 }

@@ -10,11 +10,13 @@ import { getSetting } from "./settings";
 // §6.2). That used to be a genuine bidirectional cycle — `claimOrder` lived in orders.ts, so
 // certs.ts imported it from there while orders.ts imported `createCert` back — safe only because
 // every crossing export was a hoisted `function` declaration. Task 7 broke it at the root:
-// `claimOrder` now lives in the leaf `order-locks.ts` (the `errors.ts` precedent), so this import
-// no longer points back at orders.ts at all.
-import { claimOrder } from "./order-locks";
-import { seedRequirements } from "./cert-results";
-import { formatDateOnly } from "../lib/business-days";
+// `claimOrder`/`claimCertsOrder` now live in the leaf `order-locks.ts` (the `errors.ts`
+// precedent), so this import no longer points back at orders.ts at all.
+import { claimOrder, claimCertsOrder } from "./order-locks";
+// `readCertDetail` used to live in THIS file and cert-results.ts imported it back (alongside
+// `claimCertsOrder`, above) — the identical bidirectional-cycle shape, found and broken in the
+// same Task 7 review. It now lives in cert-results.ts itself, so this import is one-directional.
+import { seedRequirements, readCertDetail } from "./cert-results";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 
 // Either the top-level client or a `tx` — the `readDetail` precedent (orders.ts): callers pass a
@@ -122,8 +124,6 @@ export type CertRequirementDetail = {
   min: number | null; max: number | null; sampleQty: string; location: string;
   readings: CertReadingDetail[];
 };
-
-const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
 const CREATE_CERT = z.object({
   orderId: z.string().min(1),
@@ -353,104 +353,11 @@ export async function exportCerts(filter: CertFilter): Promise<Buffer> {
   return toXlsx("Certifications", CERT_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
 }
 
-const DETAIL_INCLUDE = {
-  order: {
-    select: {
-      orderNumber: true, poNumber: true, receivedDate: true,
-      customer: { select: { code: true, name: true } },
-      // The LEAD line only — `material` prints the lead part's material (spec §10.3), the same
-      // lead-line-only precedent `resolveCertSettings` follows for scope.
-      lines: {
-        where: { position: 1 }, take: 1,
-        select: { part: { select: { material: { select: { name: true } } } } },
-      },
-    },
-  },
-  shipper: { select: { shipperNumber: true } },
-  requirements: {
-    orderBy: { position: "asc" },
-    include: {
-      orderLine: { select: { position: true, part: { select: { partNumber: true, name: true } } } },
-      inspectionCode: { select: { name: true } },
-      scale: { select: { name: true } },
-      readings: { orderBy: { position: "asc" } },
-    },
-  },
-} satisfies Prisma.CertInclude;
-
-type DetailRow = Prisma.CertGetPayload<{ include: typeof DETAIL_INCLUDE }>;
-
-function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
-  const readings = row.requirements.flatMap((r) => r.readings);
-  return {
-    id: row.id, orderId: row.orderId, orderNumber: row.order.orderNumber, sequence,
-    customerCode: row.order.customer.code, customerName: row.order.customer.name,
-    scope: row.scope as CertScopeValue,
-    loadNumber: row.loadNumber, shipperId: row.shipperId,
-    shipperNumber: row.shipper?.shipperNumber ?? null,
-    printedAt: row.printedAt ? row.printedAt.toISOString() : null,
-    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
-    readingCount: readings.length,
-    failCount: readings.filter((r) => r.passed === false).length,
-    freeform: row.freeform, internalNotes: row.internalNotes,
-    poNumber: row.order.poNumber,
-    material: row.order.lines[0]?.part.material?.name ?? "",
-    receivedDate: formatDateOnly(row.order.receivedDate),
-    requirements: row.requirements.map((r) => ({
-      id: r.id, orderLineId: r.orderLineId, linePosition: r.orderLine.position,
-      partNumber: r.orderLine.part.partNumber, partName: r.orderLine.part.name,
-      position: r.position, inspectionCodeId: r.inspectionCodeId, inspectionCodeName: r.inspectionCode.name,
-      scaleId: r.scaleId, scaleName: r.scale?.name ?? null,
-      min: num(r.min), max: num(r.max), sampleQty: r.sampleQty, location: r.location,
-      readings: r.readings.map((rd) => ({
-        id: rd.id, position: rd.position, value: num(rd.value),
-        passed: rd.passed, overridden: rd.overridden, note: rd.note,
-      })),
-    })),
-  };
-}
-
-/**
- * Deliberately NOT filtered on `deletedAt` — a voided cert is still readable (spec §5.6: "Stored
- * cert PDFs survive; new prints refused"), the exact `readDetail` precedent orders.ts follows for
- * a voided order.
- *
- * Exported for Task 6's `replaceReadings` (cert-results.ts) — it builds its own return value from
- * the SAME `tx` its writes just landed on, the `updateCert`/`createCertInTx` precedent, rather
- * than opening a second read against `prisma` after commit.
- */
-export async function readCertDetail(db: Db, id: string): Promise<CertDetail> {
-  const row = await db.cert.findFirst({ where: { id }, include: DETAIL_INCLUDE });
-  if (!row) throw new HttpError(404, "Certification not found");
-
-  const sequence = row.shipperId === null ? null
-    : (await sequenceMap(db, [{ shipperId: row.shipperId, orderId: row.orderId }]))
-      .get(`${row.shipperId}:${row.orderId}`) ?? null;
-
-  return toCertDetail(row, sequence);
-}
-
+/** Moved into cert-results.ts (Task 7 review, 2026-08-04 — order-locks.ts's own header comment
+ *  explains why): `readCertDetail`, its `DETAIL_INCLUDE`/`toCertDetail`/`num` helpers. Imported
+ *  from there below (alongside `seedRequirements`), one-directional. */
 export async function getCert(id: string): Promise<CertDetail> {
   return readCertDetail(prisma, id);
-}
-
-/**
- * Resolves the order a cert belongs to and claims IT (spec §5.3) before any mutator below reads
- * or writes the cert's own state — `orderId` itself is safe to read with a bare, unlocked
- * `findFirst` first, because it never changes once a cert exists (no update path touches it); the
- * state a caller actually acts on (`deletedAt`, `freeform`, …) is always re-read after the claim,
- * under the lock, never trusted from this stub.
- *
- * Exported for Task 6's `replaceReadings` (cert-results.ts) — another cert mutator that needs the
- * identical claim discipline before it reads or writes a requirement's readings. Two concurrent
- * `replaceReadings` calls on the SAME cert serialize through the Order row lock taken here, the
- * same guarantee `updateCert`/`voidCert` already lean on.
- */
-export async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId: string }> {
-  const stub = await tx.cert.findFirst({ where: { id: certId }, select: { orderId: true } });
-  if (!stub) throw new HttpError(404, "Certification not found");
-  await claimOrder(tx, stub.orderId);
-  return stub;
 }
 
 const UPDATE_CERT = z.object({

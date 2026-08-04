@@ -7,9 +7,19 @@ import { auditedUpdate } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { computePassed } from "../lib/pass-fail";
-import { claimCertsOrder, readCertDetail, type CertDetail } from "./certs";
+import { claimCertsOrder } from "./order-locks";
+// `CertDetail` (and nothing else) still comes from certs.ts, but as an `import type` — erased
+// entirely at compile time, so it creates no runtime edge and is NOT part of the certs.ts <->
+// cert-results.ts cycle Task 7's review found and this file's own `readCertDetail` (below) exists
+// to break. Confirmed the same way context.ts's `import type { SessionUser }` was confirmed not to
+// be part of ITS OWN cycle with sessions.ts: a value-import graph walk finds no edge here at all.
+import type { CertDetail } from "./certs";
+import { formatDateOnly } from "../lib/business-days";
+import type { CertScopeValue } from "../lib/cert-constants";
 
 type Db = Prisma.TransactionClient;
+
+const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
 /**
  * Spec §6.3: one `CertRequirement` per LIVE `PartInspection` of each order line's part, lines in
@@ -64,6 +74,98 @@ export async function seedRequirements(tx: Db, certId: string): Promise<void> {
       });
     }
   }
+}
+
+// -------------------------------------------------------------------------------------------
+// The cert detail read (moved here from certs.ts, Task 7 review, 2026-08-04 — see order-locks.ts's
+// header comment for why): certs.ts's `getCert`/`createCertInTx`/`updateCert` now import
+// `readCertDetail` from HERE instead of the reverse, which is what makes the two files' import
+// graph one-directional (certs.ts -> cert-results.ts, never back).
+// -------------------------------------------------------------------------------------------
+
+const DETAIL_INCLUDE = {
+  order: {
+    select: {
+      orderNumber: true, poNumber: true, receivedDate: true,
+      customer: { select: { code: true, name: true } },
+      // The LEAD line only — `material` prints the lead part's material (spec §10.3), the same
+      // lead-line-only precedent `resolveCertSettings` follows for scope.
+      lines: {
+        where: { position: 1 }, take: 1,
+        select: { part: { select: { material: { select: { name: true } } } } },
+      },
+    },
+  },
+  shipper: { select: { shipperNumber: true } },
+  requirements: {
+    orderBy: { position: "asc" },
+    include: {
+      orderLine: { select: { position: true, part: { select: { partNumber: true, name: true } } } },
+      inspectionCode: { select: { name: true } },
+      scale: { select: { name: true } },
+      readings: { orderBy: { position: "asc" } },
+    },
+  },
+} satisfies Prisma.CertInclude;
+
+type DetailRow = Prisma.CertGetPayload<{ include: typeof DETAIL_INCLUDE }>;
+
+function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
+  const readings = row.requirements.flatMap((r) => r.readings);
+  return {
+    id: row.id, orderId: row.orderId, orderNumber: row.order.orderNumber, sequence,
+    customerCode: row.order.customer.code, customerName: row.order.customer.name,
+    scope: row.scope as CertScopeValue,
+    loadNumber: row.loadNumber, shipperId: row.shipperId,
+    shipperNumber: row.shipper?.shipperNumber ?? null,
+    printedAt: row.printedAt ? row.printedAt.toISOString() : null,
+    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+    readingCount: readings.length,
+    failCount: readings.filter((r) => r.passed === false).length,
+    freeform: row.freeform, internalNotes: row.internalNotes,
+    poNumber: row.order.poNumber,
+    material: row.order.lines[0]?.part.material?.name ?? "",
+    receivedDate: formatDateOnly(row.order.receivedDate),
+    requirements: row.requirements.map((r) => ({
+      id: r.id, orderLineId: r.orderLineId, linePosition: r.orderLine.position,
+      partNumber: r.orderLine.part.partNumber, partName: r.orderLine.part.name,
+      position: r.position, inspectionCodeId: r.inspectionCodeId, inspectionCodeName: r.inspectionCode.name,
+      scaleId: r.scaleId, scaleName: r.scale?.name ?? null,
+      min: num(r.min), max: num(r.max), sampleQty: r.sampleQty, location: r.location,
+      readings: r.readings.map((rd) => ({
+        id: rd.id, position: rd.position, value: num(rd.value),
+        passed: rd.passed, overridden: rd.overridden, note: rd.note,
+      })),
+    })),
+  };
+}
+
+/**
+ * Deliberately NOT filtered on `deletedAt` — a voided cert is still readable (spec §5.6: "Stored
+ * cert PDFs survive; new prints refused"), the exact `readDetail` precedent orders.ts follows for
+ * a voided order.
+ *
+ * `replaceReadings` below builds its own return value from the SAME `tx` its writes just landed
+ * on, the `updateCert`/`createCertInTx` precedent (certs.ts), rather than opening a second read
+ * against `prisma` after commit.
+ *
+ * The sequence lookup here is a single, un-batched query — deliberately NOT certs.ts's own
+ * `sequenceMap`, which batches the identical lookup across many rows for `listCerts`/
+ * `certsForOrder` (worth it there: one query per list, not one per row). Reusing it here would
+ * mean importing it back from certs.ts, recreating exactly the cycle this function was just
+ * pulled out of certs.ts to break. A single cert's own detail view only ever needs one pair, so a
+ * direct query is both simpler and the right shape for this call site.
+ */
+export async function readCertDetail(db: Db, id: string): Promise<CertDetail> {
+  const row = await db.cert.findFirst({ where: { id }, include: DETAIL_INCLUDE });
+  if (!row) throw new HttpError(404, "Certification not found");
+
+  const sequence = row.shipperId === null ? null
+    : (await db.shipperOrder.findFirst({
+      where: { shipperId: row.shipperId, orderId: row.orderId }, select: { sequence: true },
+    }))?.sequence ?? null;
+
+  return toCertDetail(row, sequence);
 }
 
 // -------------------------------------------------------------------------------------------
