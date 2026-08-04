@@ -81,6 +81,27 @@ describe("part inspections", () => {
     expect(rows[0].max).toBe(20);
   });
 
+  // Owner ruling 2026-08-03 (design spec §3.9): the mockup's Key-Characteristic Quantity column
+  // holds "8" on one row and "100%" on the next, so the field is free text and prints verbatim.
+  it("sampleQty round-trips as free text, defaults blank, and caps at 60 chars", async () => {
+    const { code, partId } = await fixture();
+    const { id } = await asSystem(() => addPartInspection(partId, {
+      inspectionCodeId: code.id, sort: 0, sampleQty: "8",
+    }));
+    const { id: bare } = await asSystem(() => addPartInspection(partId, {
+      inspectionCodeId: code.id, sort: 1,
+    }));
+    expect((await listPartInspections(partId)).map((r) => r.sampleQty)).toEqual(["8", ""]);
+
+    await asSystem(() => updatePartInspection(partId, id, { sampleQty: "100%" }));
+    await asSystem(() => updatePartInspection(partId, bare, { sampleQty: "3 per basket" }));
+    expect((await listPartInspections(partId)).map((r) => r.sampleQty)).toEqual(["100%", "3 per basket"]);
+
+    await expect(asSystem(() => addPartInspection(partId, {
+      inspectionCodeId: code.id, sort: 2, sampleQty: "x".repeat(61),
+    }))).rejects.toThrow();
+  });
+
   it("rejects soft-deleted code and scale", async () => {
     const { code, partId } = await fixture();
     const deadCode = await prisma.inspectionCode.create({ data: { name: "Gone", deletedAt: new Date() } });

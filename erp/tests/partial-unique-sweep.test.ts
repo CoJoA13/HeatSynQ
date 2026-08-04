@@ -56,6 +56,23 @@ describe("partial unique sweep", () => {
     const partial = partialUniqueColumns();
     expect(partial.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
 
+    // `partialUniqueColumns()` collects bare column NAMES across the whole schema, not scoped to
+    // the model that declares them — necessarily so, since this is a text sweep with no type
+    // information tying a given `.findUnique(...)` call site back to which model it targets. That
+    // makes it column-name-only, and two unrelated models can share a column name: SavedView's
+    // `@@unique([userId, name], where: ...)` (Task 7) contributes the bare name "userId" to this
+    // set, which also (mis)matches OrderDraft.userId — a plain `@unique` on a model with no
+    // `deletedAt` at all (OrderDraft is not soft-deletable, so it cannot have this bug by
+    // construction). Rewriting order-drafts.ts to avoid findUnique/upsert there would trade away
+    // real correctness for nothing: `upsert` is what keeps concurrent autosaves from two tabs of
+    // the same user race-free, an atomicity `findFirst` + branch cannot reproduce. Two exact call
+    // sites allowlisted below rather than weakening the detection regex itself, which risks
+    // silently missing a real offender reached through some other receiver shape.
+    const ALLOWED_CALLS = new Set([
+      "src/server/order-drafts.ts: .findUnique({ where: { userId … } })",
+      "src/server/order-drafts.ts: .upsert({ where: { userId … } })",
+    ]);
+
     const files = [...tsFiles(join(process.cwd(), "src")), join(process.cwd(), "prisma/seed.ts")];
     const offenders: string[] = [];
 
@@ -63,7 +80,8 @@ describe("partial unique sweep", () => {
       const src = readFileSync(file, "utf8");
       for (const m of src.matchAll(/\.(findUnique|findUniqueOrThrow|upsert|update|delete)\(\s*\{\s*where:\s*\{\s*(\w+)/g)) {
         if (partial.has(m[2])) {
-          offenders.push(`${file.replace(process.cwd() + "/", "")}: .${m[1]}({ where: { ${m[2]} … } })`);
+          const label = `${file.replace(process.cwd() + "/", "")}: .${m[1]}({ where: { ${m[2]} … } })`;
+          if (!ALLOWED_CALLS.has(label)) offenders.push(label);
         }
       }
     }
@@ -85,7 +103,23 @@ live row goes untouched.`).toEqual([]);
     // deleteUser (or a user DELETE route) ever lands, this allowlist entry is exactly what would
     // hide the resulting regression — remove it and give User.username the same partial-unique
     // treatment as everything else the day that happens.
-    const ALLOWED = new Set(["User.username"]);
+    //
+    // Order.orderNumber is deliberately excluded too: voided orders keep their number forever;
+    // numbers are allocation-only and never reused or re-entered (spec §4). Unlike every other
+    // partial-unique candidate, a voided order's number must NOT free up for a later order to
+    // claim — that reuse is exactly the double-billing adjacency the no-duplication rule exists
+    // to prevent (design spec §4, HANDOFF §5.11's revival-on-create precedent, deliberately not
+    // applied here). Do not "fix" this by giving orderNumber the partial-unique treatment.
+    //
+    // Order.clientRequestId sits beside it for the identical reason (fix-wave R4 finding 5). It is
+    // the entry form's idempotency nonce: the whole point is that the request which created an
+    // order owns that nonce PERMANENTLY, so a replay of it resolves to the order it already made
+    // rather than making another. Freeing the value up when the order is voided would hand the
+    // nonce back to a retry and re-create precisely the duplicate the column exists to stop — the
+    // same no-revival rationale as orderNumber, one step earlier in the sequence. NULLs never
+    // collide in a Postgres unique index, so historic rows and every caller that sends no nonce
+    // are unaffected without needing the partial-index treatment at all.
+    const ALLOWED = new Set(["User.username", "Order.orderNumber", "Order.clientRequestId"]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
     // way the field-level match below used to (see comment there) — a schema reformat that

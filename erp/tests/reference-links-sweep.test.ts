@@ -112,6 +112,7 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
     expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
       "customer.termsId -> terms",
       "inspectionCode.defaultScaleId -> inspectionScale",
+      "orderContainer.typeId -> containerType",
       "part.materialId -> material",
       "partInspection.inspectionCodeId -> inspectionCode",
       "partInspection.scaleId -> inspectionScale",

@@ -18,7 +18,8 @@ export type CustomerRow = {
   termsId: string | null;
   creditLimit: number | null; creditHold: boolean; cod: boolean; taxable: boolean;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string;
-  surchargeOptOut: boolean; financeChargeRate: number | null; active: boolean;
+  surchargeOptOut: boolean; financeChargeRate: number | null; requestDaysOverride: number | null;
+  active: boolean;
 };
 
 // Prisma returns Decimal objects, which serialize to JSON as an opaque shape rather than a
@@ -46,6 +47,9 @@ const CREATE = z.object({
   invoiceNotes: z.string().max(4000).optional(),
   surchargeOptOut: z.boolean().optional(),
   financeChargeRate: financeChargeRateField,
+  // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
+  // this value feeds straight into its day-at-a-time loop as the customer's own override.
+  requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
   active: z.boolean().optional(),
 }).strict();
 
@@ -53,7 +57,7 @@ const SELECT = {
   id: true, code: true, name: true, parentId: true, termsId: true,
   creditLimit: true, creditHold: true, cod: true, taxable: true,
   defaultPo: true, orderNotes: true, shippingNotes: true, invoiceNotes: true,
-  surchargeOptOut: true, financeChargeRate: true, active: true,
+  surchargeOptOut: true, financeChargeRate: true, requestDaysOverride: true, active: true,
   parent: { select: { code: true } },
 } as const;
 
@@ -228,6 +232,28 @@ export async function customerPartBlockers(customerId: string): Promise<Blocker[
 }
 
 /**
+ * Every LIVE order whose OWN `customerId` is this customer — deliberately independent of
+ * `customerPartBlockers` above: an order can outlive every part it references (a part deleted by
+ * some path other than `deletePart`'s own new order-guard — e.g. data older than that guard — or
+ * simply because no part of this customer is live any more while an order still is), so a
+ * customer with zero live parts can still carry a live order that blocks it (Task 15). Named and
+ * linked exactly the way `partOrderBlockers` (parts.ts) names an Order blocker — "#1042 · ACME",
+ * `/orders/[id]` — for the same reason `customerPartBlockers` names a Part the way
+ * `partFieldDefBlockers` does: one shared convention for how an entity kind names itself in every
+ * blocker list it ever appears in.
+ */
+export async function customerOrderBlockers(customerId: string): Promise<Blocker[]> {
+  const orders = await prisma.order.findMany({
+    where: { customerId, deletedAt: null },
+    select: { id: true, orderNumber: true, customer: { select: { code: true } } },
+    orderBy: { orderNumber: "asc" },
+  });
+  return orders.map((o) => ({
+    entityLabel: "Order", name: `#${o.orderNumber} · ${o.customer.code}`, id: o.id, href: `/orders/${o.id}`,
+  }));
+}
+
+/**
  * `reason` is required, not optional — spec §9: "destructive-ish actions require a reason". This
  * one qualifies on three counts: it soft-deletes every address and contact along with the row,
  * it frees the `code` for reuse by a future customer that will be unrelated to this one, and it
@@ -270,6 +296,14 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     // the /blockers route serves so the UI can show what those parts actually are.
     const parts = await tx.part.count({ where: { customerId: id, deletedAt: null } });
     if (parts > 0) throw new HttpError(400, `That customer still has ${parts} part(s)`);
+
+    // Task 15: a direct scan on Order.customerId, independent of the parts guard above — a live
+    // order survives even after every part it references has gone (see customerOrderBlockers'
+    // own doc comment), so this must be its own check rather than something the parts count
+    // already covers. Voided orders (deletedAt set) do not count, matching deletePart's identical
+    // guard (parts.ts) and every other "voided blocks nothing" rule in this app.
+    const orders = await tx.order.count({ where: { customerId: id, deletedAt: null } });
+    if (orders > 0) throw new HttpError(400, `That customer still has ${orders} live order(s)`);
 
     // Addresses and contacts have no meaning without their parent, so they are soft-deleted
     // alongside it, in the same transaction and through the same audited* helpers as every other

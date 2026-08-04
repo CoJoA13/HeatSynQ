@@ -10,7 +10,7 @@ import { decimalField } from "./decimal-field";
 export type InspectionRow = {
   id: string; inspectionCodeId: string; inspectionCodeName: string;
   scaleId: string | null; scaleName: string | null;
-  min: number | null; max: number | null; location: string; sort: number;
+  min: number | null; max: number | null; sampleQty: string; location: string; sort: number;
 };
 
 // Kept in sync with prisma/schema.prisma's @db.Decimal declarations on PartInspection.
@@ -19,6 +19,11 @@ const FIELDS = {
   scaleId: z.string().nullable().optional(),
   min: decimalField(10, 4),
   max: decimalField(10, 4),
+  // Display text, deliberately not a number (owner ruling 2026-08-03, design spec §3.9): the
+  // traveler's Key-Characteristic Quantity column carries "8" on one row and "100%" on the
+  // next, so anything numeric here would reject half of the real values. 60 chars is a column
+  // width, not a domain rule — it exists so a paste of a paragraph can't blow the PDF's layout.
+  sampleQty: z.string().max(60).optional(),
   location: z.string().max(200).optional(),
   sort: z.number().int().min(0),
 };
@@ -36,8 +41,10 @@ async function assertPartLive(partId: string, tx: Prisma.TransactionClient): Pro
   if (!part) throw new HttpError(404, "Part not found");
 }
 
-export async function listPartInspections(partId: string): Promise<InspectionRow[]> {
-  const rows = await prisma.partInspection.findMany({
+export async function listPartInspections(
+  partId: string, db: Prisma.TransactionClient = prisma,
+): Promise<InspectionRow[]> {
+  const rows = await db.partInspection.findMany({
     where: { partId, deletedAt: null },
     include: { inspectionCode: { select: { name: true } }, scale: { select: { name: true } } },
     orderBy: { sort: "asc" },
@@ -50,6 +57,7 @@ export async function listPartInspections(partId: string): Promise<InspectionRow
     scaleName: r.scale?.name ?? null,
     min: r.min?.toNumber() ?? null,
     max: r.max?.toNumber() ?? null,
+    sampleQty: r.sampleQty,
     location: r.location,
     sort: r.sort,
   }));

@@ -10,15 +10,23 @@ import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
 import type { PasteResult } from "./paste";
+import type { Blocker } from "./reference-blockers";
 
 export type PartRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
   partNumber: string; name: string; description: string;
   materialId: string | null; materialName: string | null;
   eachWeight: number; loadQty: number | null; loadWeight: number | null;
+  requestDaysOverride: number | null;
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
+  /** Whether the part's CURRENT (highest-numbered) process revision carries at least one step —
+   *  the same "orderable" check `lockCurrentRevision` performs at order-save time
+   *  (part-process-steps.ts), read here so order entry's lead-part picker can show it up front
+   *  (design spec §11) instead of only learning it after a pick. A part with no revision at all
+   *  is `false`, matching `lockCurrentRevision`'s own "claimed.length === 0" branch. */
+  hasProcessSteps: boolean;
 };
 
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
@@ -32,6 +40,9 @@ const FIELDS = {
   eachWeight: decimalField(10, 4, { required: true, min: "positive" }),
   loadQty: z.number().int().min(1).nullable().optional(),
   loadWeight: decimalField(10, 2, { min: "positive" }),
+  // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
+  // this value feeds straight into its day-at-a-time loop as the lead part's own override.
+  requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
   serializationRequired: z.boolean().optional(),
   setupCharge: decimalField(12, 2, { min: "nonnegative" }),
   unitPrice: decimalField(12, 4, { min: "nonnegative" }),
@@ -44,7 +55,7 @@ const UPDATE = z.object(FIELDS).partial().strict();   // no customerId — immut
 
 const SELECT = {
   id: true, customerId: true, partNumber: true, name: true, description: true,
-  materialId: true, eachWeight: true, loadQty: true, loadWeight: true,
+  materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
   serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
   pricePer: true, active: true,
   customer: { select: { code: true, name: true } },
@@ -52,7 +63,7 @@ const SELECT = {
 } as const;
 
 type Raw = Prisma.PartGetPayload<{ select: typeof SELECT }>;
-function toRow(r: Raw): PartRow {
+function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
   const { customer, material, eachWeight, loadWeight, setupCharge, unitPrice, minimumCharge, ...rest } = r;
   return {
     ...rest, customerCode: customer.code, customerName: customer.name,
@@ -60,7 +71,30 @@ function toRow(r: Raw): PartRow {
     eachWeight: eachWeight.toNumber(), loadWeight: num(loadWeight),
     setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
     pricePer: r.pricePer as PricePerValue,
+    hasProcessSteps,
   };
+}
+
+/**
+ * For each given part id, whether its current (highest-numbered) `PartProcessRevision` carries
+ * at least one step. ONE additional query for the whole batch — not N+1 — ordered so the FIRST
+ * row encountered per `partId` is that part's highest revision (mirrors `lockCurrentRevision`'s
+ * own `ORDER BY revisionNumber DESC LIMIT 1`, just read for many parts instead of one). A part
+ * with a lower, superseded revision that once had steps must still read false if its CURRENT
+ * revision has none — the same rule `lockCurrentRevision` enforces at save time.
+ */
+async function hasProcessStepsByPart(partIds: string[]): Promise<Map<string, boolean>> {
+  if (partIds.length === 0) return new Map();
+  const revisions = await prisma.partProcessRevision.findMany({
+    where: { partId: { in: partIds } },
+    orderBy: [{ partId: "asc" }, { revisionNumber: "desc" }],
+    select: { partId: true, _count: { select: { steps: true } } },
+  });
+  const result = new Map<string, boolean>();
+  for (const rev of revisions) {
+    if (!result.has(rev.partId)) result.set(rev.partId, rev._count.steps > 0);
+  }
+  return result;
 }
 
 export async function listParts(opts?: { includeInactive?: boolean; search?: string }): Promise<PartRow[]> {
@@ -78,13 +112,15 @@ export async function listParts(opts?: { includeInactive?: boolean; search?: str
     select: SELECT,
     orderBy: [{ customer: { code: "asc" } }, { partNumber: "asc" }],
   });
-  return rows.map(toRow);
+  const stepsByPart = await hasProcessStepsByPart(rows.map((r) => r.id));
+  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false));
 }
 
 export async function getPart(id: string): Promise<PartRow> {
   const row = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: SELECT });
   if (!row) throw new HttpError(404, "Part not found");
-  return toRow(row);
+  const stepsByPart = await hasProcessStepsByPart([id]);
+  return toRow(row, stepsByPart.get(id) ?? false);
 }
 
 export async function createPart(input: Record<string, unknown>): Promise<{ id: string }> {
@@ -144,6 +180,35 @@ export async function updatePart(id: string, input: Record<string, unknown>): Pr
     }, iso));
 }
 
+/**
+ * Every LIVE order carrying a line — lead or rider, `OrderLine` draws no distinction — whose
+ * `partId` is this part. The direct analogue of `customerPartBlockers` above, scoped to
+ * Order/OrderLine instead of Part/Customer, and named the same way `reference-links.ts`'s own
+ * `orderContainer -> containerType` entry already names an Order blocker elsewhere in the app:
+ * "#1042 · ACME", never a bare order number, since a number alone means nothing without knowing
+ * whose it is. A part referenced twice within the SAME order (two lines, same partId — the
+ * schema has no constraint against it) must still list that order once, hence the dedupe by
+ * order id rather than a bare row-per-line map.
+ */
+export async function partOrderBlockers(partId: string): Promise<Blocker[]> {
+  const lines = await prisma.orderLine.findMany({
+    where: { partId, order: { deletedAt: null } },
+    select: { order: { select: { id: true, orderNumber: true, customer: { select: { code: true } } } } },
+    orderBy: { order: { orderNumber: "asc" } },
+  });
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const { order } of lines) {
+    if (seen.has(order.id)) continue;
+    seen.add(order.id);
+    out.push({
+      entityLabel: "Order", name: `#${order.orderNumber} · ${order.customer.code}`,
+      id: order.id, href: `/orders/${order.id}`,
+    });
+  }
+  return out;
+}
+
 export async function deletePart(id: string, reason: string): Promise<void> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to delete a part");
@@ -158,15 +223,32 @@ export async function deletePart(id: string, reason: string): Promise<void> {
   // parent, breaking the invariant findBlockers-style scans over "live children of a live part"
   // depend on. Postgres aborts whichever side would produce a result no serial ordering could,
   // surfacing as P2034 and translated by withDbErrors into a 409 telling the caller to retry.
+  // The same Serializable sharing now also pairs this guard with createOrder/addLine (orders.ts),
+  // both of which resolve their lines' parts live, under Serializable, before writing.
   await withDbErrors({ entity: "Part" }, () => prisma.$transaction(async (tx) => {
-    const [specs, inspections, breaks] = await Promise.all([
+    // Task 15: a part still doing work on a live order cannot be deleted out from under it — a
+    // voided order (deletedAt set) does not count, matching every other "voided blocks nothing"
+    // rule in this app (global constraints). Counting live ORDERS (not lines) is what
+    // `partOrderBlockers` above also dedupes to, so the refusal's count and the panel's list
+    // never disagree about how many rows are actually blocking.
+    const orders = await tx.order.count({ where: { deletedAt: null, lines: { some: { partId: id } } } });
+    if (orders > 0) throw new HttpError(400, `That part is used by ${orders} live order(s)`);
+
+    // Fix-wave R3 finding 5: attachments join the cascade exactly like every other child —
+    // without this, a deleted part's attachment rows stayed live (deletedAt null) yet
+    // permanently unreachable behind the live-part guard every attachment operation requires
+    // (assertOwnerVisible, attachments.ts), and the parent's deletion never showed up in the
+    // attachment's own history.
+    const [specs, inspections, breaks, attachments] = await Promise.all([
       tx.partSpecification.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partInspection.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partPriceBreak.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
+      tx.partAttachment.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
     ]);
     for (const s of specs) await auditedSoftDelete("partSpecification", s.id, "parent part deleted", tx);
     for (const i of inspections) await auditedSoftDelete("partInspection", i.id, "parent part deleted", tx);
     for (const b of breaks) await auditedSoftDelete("partPriceBreak", b.id, "parent part deleted", tx);
+    for (const a of attachments) await auditedSoftDelete("partAttachment", a.id, "parent part deleted", tx);
     await auditedSoftDelete("part", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

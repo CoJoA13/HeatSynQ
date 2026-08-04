@@ -16,6 +16,10 @@ type Customer = {
   // for it, sent to the server as-is (the server's `money` schema accepts a decimal string).
   creditLimit: number | string | null;
   financeChargeRate: number | string | null;
+  // number|null once loaded, string mid-edit — same reason as creditLimit above. Unlike
+  // creditLimit this is a real int server-side (z.number().int(), not decimalField), so the
+  // commit path (below) parses it to a number itself rather than forwarding the typed text.
+  requestDaysOverride: number | string | null;
   creditHold: boolean; cod: boolean; taxable: boolean; surchargeOptOut: boolean;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string; active: boolean;
 };
@@ -327,11 +331,16 @@ function CustomerDetail({ id }: { id: string }) {
     } catch (e) {
       // H4: a refusal naming live parts is not a dead end (part-fields/page.tsx's blocked-delete
       // handler precedent) — fetch the list this message's count refers to and make it
-      // exportable, rather than leaving the admin with only a number. Matched on both "still
-      // has" and "part(s)" so the unrelated "still has child customers" refusal (no blockers
-      // route exists for that one) falls straight through to the plain error banner below.
+      // exportable, rather than leaving the admin with only a number. Matched on "still has" plus
+      // either "part(s)" or "live order(s)" (Task 15's own direct-orders guard, customers.ts) so
+      // the unrelated "still has child customers" refusal (no blockers route exists for that one)
+      // still falls straight through to the plain error banner below. The blockers route itself
+      // always returns the UNION of both live parts and live orders (route comment,
+      // src/app/api/customers/[id]/blockers/route.ts), so whichever guard fired first, the panel
+      // still shows everything blocking the delete — never just the half that happened to throw.
       const message = (e as Error).message;
-      if (e instanceof ApiError && e.status === 400 && message.includes("still has") && message.includes("part(s)")) {
+      if (e instanceof ApiError && e.status === 400 && message.includes("still has")
+        && (message.includes("part(s)") || message.includes("live order(s)"))) {
         try {
           const list = await api<Blocker[]>(`/api/customers/${id}/blockers`);
           if (list.length) { setBlocked({ list }); setError(null); return; }
@@ -527,6 +536,29 @@ function CustomerDetail({ id }: { id: string }) {
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
+          </label>
+          <label className="block text-sm">
+            Request days override
+            {/* A real int server-side (z.number().int()), unlike the decimal fields above — the
+                typed text is parsed to a number before save() ever sees it, the parts/[id]/
+                IdentitySection.tsx Load qty/Request days override precedent. Blank clears the
+                override, falling back to the plant default (spec §7.1's chain — orders.ts). */}
+            <input value={c.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocus}
+                   readOnly={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => setC({ ...c, requestDaysOverride: e.target.value })}
+                   onBlur={(e) => onBlurSave(e, {}, (v) => {
+                     const trimmed = v.trim();
+                     if (trimmed === "") { void save({ requestDaysOverride: null }); return; }
+                     const n = Number(trimmed);
+                     if (!Number.isInteger(n)) {
+                       setC((cur) => (cur ? { ...cur, requestDaysOverride: focusedValue.current } : cur));
+                       setError("Request days override must be a whole number.");
+                       return;
+                     }
+                     void save({ requestDaysOverride: n });
+                   })}
+                   className="ml-2 w-20 rounded border px-2 py-1 read-only:bg-slate-50" />
+            <span className="ml-2 text-xs text-slate-500">Blank uses the plant default.</span>
           </label>
         </div>
       </section>

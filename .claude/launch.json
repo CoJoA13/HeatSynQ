@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "erp-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-lc",
+        "cd /home/cojoa13/Desktop/HeatSynQ/erp && source ~/.nvm/nvm.sh && nvm use 26 >/dev/null 2>&1 && npm run dev"
+      ],
+      "port": 3000
+    }
+  ]
+}

@@ -16,7 +16,7 @@ export const TARGET_LABELS: Record<"processStepCode", string> = { processStepCod
 export type ReferenceLinkModel =
   | "customer" | "processStepCode" | "paymentType" | "inspectionCode"
   | "part" | "partSpecification" | "partInspection"
-  | "partProcessStep" | "processTemplateStep";
+  | "partProcessStep" | "processTemplateStep" | "orderContainer";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -97,6 +97,13 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     include: { template: { select: { id: true, name: true } } },
     blockerId: (r) => String((r.template as { id: string }).id),
     displayName: (r) => String((r.template as { name: string }).name) },
+  { model: "orderContainer", column: "typeId", targetKind: "containerType",
+    label: "Container", entityLabel: "Order", detailPath: (id) => `/orders/${id}`,
+    liveWhere: { order: { is: { deletedAt: null } } },
+    include: { order: { select: { id: true, orderNumber: true, customer: { select: { code: true } } } } },
+    blockerId: (r) => String((r.order as { id: string }).id),
+    displayName: (r) => { const o = r.order as { orderNumber: number; customer: { code: string } };
+      return `#${o.orderNumber} · ${o.customer.code}`; } },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

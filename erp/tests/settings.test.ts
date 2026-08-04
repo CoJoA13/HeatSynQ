@@ -65,6 +65,26 @@ describe("settings", () => {
     expect(await getSetting("session_timeout_minutes")).toBe(5);
   });
 
+  // Fix-wave finding 5: request_days_default feeds addBusinessDays' own day-at-a-time loop
+  // (src/lib/business-days.ts), which now caps at 3650 days — bounded here too so a bad plant
+  // default is refused at the settings page, not surfaced later as a generic order-entry error.
+  it("rejects request_days_default above the 3650-day cap, and allows exactly the boundary", async () => {
+    await expect(setSetting("request_days_default", 3651)).rejects.toThrow(HttpError);
+    await setSetting("request_days_default", 3650);
+    expect(await getSetting("request_days_default")).toBe(3650);
+  });
+
+  // Fix-wave finding 8: Order.orderNumber (and every other *_number_next consumer) is a Postgres
+  // INTEGER (int4) column — a stored value past 2147483647 makes every allocation against it fail
+  // at the database rather than being refused where the setting is actually entered.
+  it.each([
+    "order_number_next", "shipper_number_next", "invoice_number_next", "cert_number_next", "quote_number_next",
+  ] as const)("rejects %s above Int4 max (2147483647), and allows exactly the boundary", async (key) => {
+    await expect(setSetting(key, 2_147_483_648)).rejects.toThrow(HttpError);
+    await setSetting(key, 2_147_483_647);
+    expect(await getSetting(key)).toBe(2_147_483_647);
+  });
+
   it("allSettings consistency: invalid stored value falls back to default", async () => {
     await prisma.setting.create({
       data: { key: "request_days_default", value: "garbage" },

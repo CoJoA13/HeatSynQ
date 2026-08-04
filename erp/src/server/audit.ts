@@ -9,7 +9,8 @@ export type AuditableModel =
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
   | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
-  | "partProcessRevision" | "processTemplate";
+  | "partProcessRevision" | "processTemplate"
+  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -74,13 +75,72 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   processTemplate: {
     steps: { orderBy: { position: "asc" }, include: { code: { select: { code: true, name: true } } } },
   },
+  // Order's children (lines/containers/serials/loads/charges) have no deletedAt of their own —
+  // editing them IS editing the order (design spec §4), audited as the order's own before/after
+  // diff, never as a separate entity. Every collection below is explicitly orderBy'd (issue #24:
+  // an unordered collection makes two snapshots of identical data compare as a spurious diff,
+  // since HistoryPanel's whole-key JSON.stringify comparison is order-sensitive) and each line's
+  // live part number / each container's live type name is pulled in so the diff reads "P-1002",
+  // not a cuid.
+  order: {
+    lines: { orderBy: { position: "asc" }, include: { part: { select: { partNumber: true } } } },
+    containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
+    // lineId is an opaque cuid — ordering by it made snapshot order arbitrary with respect to the
+    // order the operator actually entered lines in, so a later line insert could produce a
+    // spurious diff (issue #24's class of bug). Order by the line's own position instead, which
+    // agrees with DETAIL_INCLUDE.serials (orders.ts) and the create-path auditPayload below.
+    serials: { orderBy: [{ line: { position: "asc" } }, { position: "asc" }] },
+    loads: { orderBy: { loadNumber: "asc" } },
+    charges: { orderBy: { position: "asc" } },
+  },
+  // Attachments and saved views are audited as their own rows, not through a parent — no
+  // relations to include. `undefined` here just means "no relations"; SNAPSHOT_SELECT below (not
+  // this record) is what actually keeps fileData out of these three models' snapshots — see its
+  // own comment.
+  partAttachment: undefined,
+  orderAttachment: undefined,
+  savedView: undefined,
+  // Permanent, create-only (design spec §4: "no delete path at all") — snapshots are metadata
+  // only, fileData excluded the same way as the attachment tables (SNAPSHOT_SELECT below).
+  storedDocument: undefined,
+};
+
+/**
+ * Per-model `select` override for `snapshot()` below — used INSTEAD of `include` (never both;
+ * Prisma rejects a query carrying both) for any model whose own bytes column must never be
+ * pulled into a before/after snapshot in the first place. Fix-wave finding 3: before this, the
+ * three models below were audited via the bare `include`-driven `findUnique` at the bottom of
+ * this file, which has no column projection at all — a soft-delete's own "before" snapshot
+ * (`auditedSoftDelete`) fetched up to a 20MB `fileData` column, JSON-round-tripped it
+ * (`JSON.parse(JSON.stringify(...))` inside `redact()`), and only THEN scrubbed the key to
+ * `"[redacted]"` — real memory pressure on every attachment delete, for a value nothing ever
+ * needed in the first place. Listing every scalar except the bytes column here means the bytes
+ * never leave Postgres for this codepath at all; `redact()` stays defense-in-depth (CLAUDE.md),
+ * not the mechanism relied on to keep them out.
+ *
+ * Relations are deliberately omitted (these three are audited as their own rows, matching
+ * SNAPSHOT_INCLUDE's own comment above them). `storedDocument` has no update/delete path today
+ * (`auditedCreate` never calls `snapshot()` — see its own doc comment), so this entry is
+ * currently unreached; it is defined anyway so the exclusion already exists the moment that
+ * changes, rather than being something a future phase has to remember to add.
+ */
+const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
+  partAttachment: {
+    id: true, partId: true, filename: true, mimeType: true, size: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true,
+  },
+  orderAttachment: {
+    id: true, orderId: true, filename: true, mimeType: true, size: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true,
+  },
+  storedDocument: { id: true, orderId: true, kind: true, loadNumber: true, createdAt: true },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
-  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage"];
+  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage", "filedata"];
 
   function redactRecursive(obj: unknown): unknown {
     if (obj === null || obj === undefined) return obj;
@@ -135,9 +195,12 @@ type Db = typeof prisma | Prisma.TransactionClient;
 async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
   const client = db[model] as unknown as {
-    findUnique: (a: { where: { id: string }; include?: object }) => Promise<unknown>;
+    findUnique: (a: { where: { id: string }; select?: object; include?: object }) => Promise<unknown>;
   };
-  return client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
+  const select = SNAPSHOT_SELECT[model];
+  return select
+    ? client.findUnique({ where: { id }, select })
+    : client.findUnique({ where: { id }, include: SNAPSHOT_INCLUDE[model] });
 }
 
 async function write(entry: {

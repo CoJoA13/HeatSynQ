@@ -79,12 +79,15 @@ function validateStepValue(def: { label: string; type: string }, value: string):
  * CONCURRENCY (Codex, PR #22 — regression test "a lock landing mid-mutation cannot leave the
  * locked revision modified"). The current revision is claimed with `SELECT … FOR UPDATE` before
  * its `lockedAt` is read, because that read is what decides amend-vs-cut and the answer must not
- * be able to go stale between here and the child write. The mutators' own Serializable isolation
- * is NOT sufficient on its own: Postgres gives serializable guarantees only among transactions
- * that are ALL Serializable, and `lockRevision`'s documented caller — Phase 3's order save —
- * holds it inside the order's own default-isolation transaction. Without the row lock, a mutator
- * could read `lockedAt: null`, let that lock commit, then amend the now-locked revision's steps
- * and commit clean, silently breaking §5's immutability guarantee.
+ * be able to go stale between here and the child write. Serializable isolation is NOT the
+ * guarantee here, even on both sides: `lockRevision`'s documented caller — Phase 3's order save —
+ * holds it inside a Serializable transaction of its own (orders.ts:522), same as the mutators in
+ * this file, but that pairing is never what's relied on. Postgres's serializable guarantees only
+ * hold among transactions that stay ALL Serializable, a property no caller here is required to
+ * preserve; what actually protects `lockedAt` is the row lock, which blocks at ANY caller
+ * isolation regardless. Without it, a mutator could read `lockedAt: null`, let that lock commit,
+ * then amend the now-locked revision's steps and commit clean, silently breaking §5's
+ * immutability guarantee.
  *
  * A row lock is the right instrument precisely because both sides take it at any isolation
  * (`lockRevision`'s `updateMany` locks the same row). Whichever gets there first wins cleanly: a
@@ -187,12 +190,27 @@ export async function getRevisions(partId: string): Promise<RevisionSummary[]> {
   }));
 }
 
-/** Full content of one revision: ordered steps, each with the live code (code/name — renames
- *  propagate, spec §3.3) and values joined to their live defs, sorted by the def's own `sort`. */
-export async function getRevision(partId: string, revisionNumber: number): Promise<RevisionDetail> {
-  const part = await prisma.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
-  if (!part) throw new HttpError(404, "Part not found");
-  const rev = await prisma.partProcessRevision.findFirst({
+/**
+ * Full content of one revision: ordered steps, each with the live code (code/name — renames
+ * propagate, spec §3.3) and values joined to their live defs, sorted by the def's own `sort`.
+ * NOT part-liveness-gated — that gate is `getRevision`'s job (below), the general part-scoped
+ * read. This is the shared include-tree + mapping the two callers split on: `getRevision` runs
+ * its own liveness check first and then delegates here; `orders.ts`'s `getLockedRevision` calls
+ * this directly, deliberately bypassing that gate.
+ *
+ * Fix-wave R2 finding 7: a part is deletable once every order referencing it is voided
+ * (parts.ts's deletePart), but an order's own locked recipe (spec §5.3/§11 — the (partId,
+ * revisionNumber) pair frozen onto the order's lead line at save time) has to stay readable
+ * forever regardless — a voided order's paperwork is exactly the kind of record that must not
+ * 404 just because the part it named has since been cleaned up. Restricted to callers already
+ * anchored on a stored (partId, revisionNumber) pair they have independent authority to read
+ * (i.e. they already resolved, and are allowed to see, the entity that captured it) — this is
+ * NOT a general-purpose unchecked read, and must not be exposed as one.
+ */
+export async function getRevisionContentUnchecked(
+  partId: string, revisionNumber: number, db: Prisma.TransactionClient = prisma,
+): Promise<RevisionDetail> {
+  const rev = await db.partProcessRevision.findFirst({
     where: { partId, revisionNumber },
     include: {
       steps: {
@@ -219,6 +237,21 @@ export async function getRevision(partId: string, revisionNumber: number): Promi
         .sort((a, b) => a.sort - b.sort),
     })),
   };
+}
+
+/** The general, part-scoped read: live-part-gated, then delegates to `getRevisionContentUnchecked`
+ *  for the actual content.
+ *
+ *  `db` defaults to the top-level client, so every existing caller is unchanged; a caller already
+ *  inside a transaction passes its own `tx` so BOTH reads join that transaction rather than
+ *  taking a second pooled connection while the first is held (fix-wave R4 finding 8 —
+ *  traveler.ts's print does exactly this). */
+export async function getRevision(
+  partId: string, revisionNumber: number, db: Prisma.TransactionClient = prisma,
+): Promise<RevisionDetail> {
+  const part = await db.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+  if (!part) throw new HttpError(404, "Part not found");
+  return getRevisionContentUnchecked(partId, revisionNumber, db);
 }
 
 /** The old-step-id -> new-step-id mapping a revision cut produced, or `{}` when no cut happened.
@@ -373,6 +406,27 @@ export async function lockRevision(
     if (err instanceof RevisionAlreadyLocked) return; // lost the race — no audit, no error
     throw err;
   }
+}
+
+/** Same claim SQL as workingRevision — this file is the only home of that `FOR UPDATE` (HANDOFF
+ *  §4a: the row lock is the guarantee at ANY caller isolation, not the transaction's own level).
+ *  Exported for Phase 3's order save to call inside its own Serializable transaction
+ *  (orders.ts:522). Caveat: the `ORDER BY … DESC LIMIT 1` target is chosen before blocking and
+ *  isn't re-picked on wake; benign today because new revisions are only ever cut through
+ *  workingRevision's own claim on this same row. */
+export async function lockCurrentRevision(
+  partId: string, tx: Prisma.TransactionClient,
+): Promise<{ revisionNumber: number }> {
+  const part = await tx.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+  if (!part) throw new HttpError(404, "Part not found");
+  const claimed = await tx.$queryRaw<{ id: string; revisionNumber: number }[]>`
+    SELECT "id", "revisionNumber" FROM "PartProcessRevision"
+    WHERE "partId" = ${partId} ORDER BY "revisionNumber" DESC LIMIT 1 FOR UPDATE`;
+  if (claimed.length === 0) throw new HttpError(400, "This part has no process steps");
+  const stepCount = await tx.partProcessStep.count({ where: { revisionId: claimed[0].id } });
+  if (stepCount === 0) throw new HttpError(400, "This part has no process steps");
+  await lockRevision(partId, claimed[0].revisionNumber, tx);
+  return { revisionNumber: claimed[0].revisionNumber };
 }
 
 /**

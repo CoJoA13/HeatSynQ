@@ -163,8 +163,8 @@ describe("parts paste and export", () => {
     expect(sheet.getRow(1).values).toEqual([
       undefined,
       "Customer code", "Customer name", "Part number", "Name", "Description", "Material",
-      "Each wt", "Load qty", "Load wt", "Serialization", "Setup", "Unit price", "Min charge",
-      "Price per", "Active",
+      "Each wt", "Load qty", "Load wt", "Request days override", "Serialization", "Setup", "Unit price",
+      "Min charge", "Price per", "Active",
     ]);
     const dataRow = sheet.getRow(2).values as ExcelJS.CellValue[];
     expect(dataRow).toContain("Ductile iron");

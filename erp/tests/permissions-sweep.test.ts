@@ -99,6 +99,11 @@ describe("permission sweep", () => {
       "audit.ts",    // owns the helpers; legitimately writes audit rows itself
       "db.ts",       // the client
       "sessions.ts", // sliding session expiry is not a business mutation and writes no audit row
+      // order-drafts.ts — THE documented unaudited exception (design spec §4, Phase 3): drafts
+      // are pre-entity scratch, the real order save is the audited event, and auditing a 2s
+      // autosave cadence would flood the log with junk. Full authorization quote in the file's
+      // own header comment.
+      "order-drafts.ts",
     ]);
     const offenders = readdirSync(join(process.cwd(), "src/server"))
       .filter((f) => f.endsWith(".ts") && !EXCEPT.has(f))

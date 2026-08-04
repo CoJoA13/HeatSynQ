@@ -28,6 +28,8 @@ model User {
   updatedAt      DateTime                 @updatedAt
   sessions       Session[]
   overrides      UserPermissionOverride[]
+  orderDraft     OrderDraft?
+  savedViews     SavedView[]
 }
 
 model Session {
@@ -188,12 +190,13 @@ model InspectionCode {
 }
 
 model ContainerType {
-  id        String    @id @default(cuid())
-  name      String
-  active    Boolean   @default(true)
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id              String           @id @default(cuid())
+  name            String
+  active          Boolean          @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  orderContainers OrderContainer[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -260,37 +263,39 @@ model Specification {
 }
 
 model Customer {
-  id                String            @id @default(cuid())
-  code              String
-  name              String
-  parentId          String?
-  parent            Customer?         @relation("CustomerHierarchy", fields: [parentId], references: [id])
-  children          Customer[]        @relation("CustomerHierarchy")
-  termsId           String?
-  terms             Terms?            @relation(fields: [termsId], references: [id])
+  id                  String            @id @default(cuid())
+  code                String
+  name                String
+  parentId            String?
+  parent              Customer?         @relation("CustomerHierarchy", fields: [parentId], references: [id])
+  children            Customer[]        @relation("CustomerHierarchy")
+  termsId             String?
+  terms               Terms?            @relation(fields: [termsId], references: [id])
   // Decimal(12, 2): 10 integer digits, 2 fractional (max 9999999999.99). Validated to this exact
   // precision/scale by decimalField(12, 2) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  creditLimit       Decimal?          @db.Decimal(12, 2)
-  creditHold        Boolean           @default(false)
-  cod               Boolean           @default(false)
-  taxable           Boolean           @default(true)
-  defaultPo         String            @default("")
-  orderNotes        String            @default("")
-  shippingNotes     String            @default("")
-  invoiceNotes      String            @default("")
-  surchargeOptOut   Boolean           @default(false)
+  creditLimit         Decimal?          @db.Decimal(12, 2)
+  creditHold          Boolean           @default(false)
+  cod                 Boolean           @default(false)
+  taxable             Boolean           @default(true)
+  defaultPo           String            @default("")
+  orderNotes          String            @default("")
+  shippingNotes       String            @default("")
+  invoiceNotes        String            @default("")
+  surchargeOptOut     Boolean           @default(false)
   // Decimal(6, 4): 2 integer digits, 4 fractional (max 99.9999). Validated to this exact
   // precision/scale by decimalField(6, 4) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  financeChargeRate Decimal?          @db.Decimal(6, 4)
-  active            Boolean           @default(true)
-  deletedAt         DateTime?
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  addresses         CustomerAddress[]
-  contacts          CustomerContact[]
-  parts             Part[]
+  financeChargeRate   Decimal?          @db.Decimal(6, 4)
+  requestDaysOverride Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
+  active              Boolean           @default(true)
+  deletedAt           DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  addresses           CustomerAddress[]
+  contacts            CustomerContact[]
+  parts               Part[]
+  orders              Order[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -365,8 +370,15 @@ model Part {
   materialId            String?
   material              Material?             @relation(fields: [materialId], references: [id])
   eachWeight            Decimal               @db.Decimal(10, 4) // lbs; required, > 0
-  loadQty               Int? // ≥ 1 when present
-  loadWeight            Decimal?              @db.Decimal(10, 2) // lbs; > 0 when present
+  // ≥ 1 when present, app-enforced by parts.ts's zod schema AND, as a backstop against anything
+  // that bypasses it, a DB-level CHECK ("loadQty" IS NULL OR "loadQty" >= 1) — Prisma's schema
+  // language has no native check-constraint syntax (no `@@check`, verified against the Prisma
+  // docs), so the constraint lives only in migrations/<ts>_part_load_cap_checks/migration.sql.
+  // Guards splitLoads (src/lib/load-split.ts), whose loop divides by this value and would hang on 0.
+  loadQty               Int?
+  // lbs; > 0 when present — same app + DB CHECK pairing as loadQty above, same migration.
+  loadWeight            Decimal?              @db.Decimal(10, 2)
+  requestDaysOverride   Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
   serializationRequired Boolean               @default(false)
   setupCharge           Decimal?              @db.Decimal(12, 2)
   unitPrice             Decimal?              @db.Decimal(12, 4)
@@ -381,6 +393,8 @@ model Part {
   priceBreaks           PartPriceBreak[]
   fieldValues           PartFieldValue[]
   processRevisions      PartProcessRevision[]
+  orderLines            OrderLine[]
+  attachments           PartAttachment[]
 
   @@unique([customerId, partNumber], where: raw("\"deletedAt\" IS NULL"))
   @@index([partNumber])
@@ -411,6 +425,10 @@ model PartInspection {
   scale            InspectionScale? @relation(fields: [scaleId], references: [id])
   min              Decimal?         @db.Decimal(10, 4)
   max              Decimal?         @db.Decimal(10, 4)
+  // Free text, not a number, on purpose (owner ruling 2026-08-03, design spec §3.9): the
+  // mockup's Key-Characteristic Quantity column holds "8" on one row and "100%" on the next.
+  // Prints verbatim on the traveler; no arithmetic is ever done on it.
+  sampleQty        String           @default("")
   location         String           @default("") // "Brinell @ flange OD"
   sort             Int
   deletedAt        DateTime?
@@ -528,4 +546,197 @@ model ProcessTemplateStep {
   @@unique([templateId, position])
   @@index([templateId])
   @@index([codeId])
+}
+
+enum OrderStatus {
+  OPEN
+  PARTIAL_SHIPPED // reserved — Phase 4
+  SHIPPED // reserved — Phase 4
+  INVOICED // reserved — Phase 5
+  REOPENED // reserved — Phase 4 (reversing shipment)
+}
+
+model Order {
+  id              String            @id @default(cuid())
+  orderNumber     Int               @unique
+  /// The entry form's own idempotency nonce for the save that created this order (spec §5.5).
+  /// Nullable: every order written before this column existed has none, and any caller that does
+  /// not send one keeps the old behaviour exactly (NULLs never collide in a Postgres unique
+  /// index, so an omitted nonce opts out rather than conflicting). Plain @unique, deliberately
+  /// NOT live-rows-only — see tests/partial-unique-sweep.test.ts's exemption: a voided order
+  /// keeps its request id forever, so a retry of the request that created it can never be
+  /// mistaken for a brand-new order.
+  clientRequestId String?           @unique
+  customerId      String
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  poNumber        String            @default("")
+  vsOrderNumber   String            @default("")
+  receivedDate    DateTime          @db.Date
+  requestDate     DateTime          @db.Date
+  targetDate      DateTime?         @db.Date
+  status          OrderStatus       @default(OPEN)
+  notes           String            @default("")
+  linkGroupId     String?
+  deletedAt       DateTime? // set = VOIDED (reason required, void_order permission)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  lines           OrderLine[]
+  containers      OrderContainer[]
+  serials         OrderSerial[]
+  loads           Load[]
+  charges         OrderCharge[]
+  attachments     OrderAttachment[]
+  documents       StoredDocument[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([receivedDate])
+  @@index([requestDate])
+  @@index([poNumber])
+  @@index([vsOrderNumber])
+  @@index([linkGroupId])
+}
+
+model OrderLine {
+  id             String        @id @default(cuid())
+  orderId        String
+  order          Order         @relation(fields: [orderId], references: [id])
+  position       Int // 1 = lead part
+  partId         String
+  part           Part          @relation(fields: [partId], references: [id])
+  revisionNumber Int? // lead line only: the locked PartProcessRevision number
+  qty            Int
+  weight         Decimal       @db.Decimal(12, 2)
+  serials        OrderSerial[]
+
+  @@unique([orderId, position])
+  @@index([partId])
+}
+
+model OrderContainer {
+  id          String        @id @default(cuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id])
+  position    Int
+  typeId      String
+  type        ContainerType @relation(fields: [typeId], references: [id])
+  count       Int
+  qty         Int?
+  tareWeight  Decimal?      @db.Decimal(12, 2)
+  grossWeight Decimal?      @db.Decimal(12, 2)
+
+  @@unique([orderId, position])
+  @@index([typeId])
+}
+
+model OrderSerial {
+  id          String    @id @default(cuid())
+  orderId     String
+  order       Order     @relation(fields: [orderId], references: [id])
+  lineId      String
+  line        OrderLine @relation(fields: [lineId], references: [id])
+  position    Int
+  serial      String
+  description String    @default("") // heat/lot number, prints on cert (Phase 4)
+
+  @@unique([lineId, serial])
+  @@unique([lineId, position])
+  @@index([serial])
+  @@index([orderId])
+}
+
+model Load {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  loadNumber Int
+  qty        Int?
+  weight     Decimal? @db.Decimal(12, 2)
+
+  @@unique([orderId, loadNumber])
+}
+
+model OrderCharge {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id])
+  position    Int
+  description String
+  amount      Decimal? @db.Decimal(12, 2) // null = "needs price" (spec §7.5.3); Phase 5 bills
+
+  @@unique([orderId, position])
+}
+
+model PartAttachment {
+  id        String    @id @default(cuid())
+  partId    String
+  part      Part      @relation(fields: [partId], references: [id])
+  filename  String
+  mimeType  String
+  size      Int
+  fileData  Bytes
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([partId])
+}
+
+model OrderAttachment {
+  id        String    @id @default(cuid())
+  orderId   String
+  order     Order     @relation(fields: [orderId], references: [id])
+  filename  String
+  mimeType  String
+  size      Int
+  fileData  Bytes
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([orderId])
+}
+
+model OrderDraft {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  payload   Json?
+  updatedAt DateTime @updatedAt
+}
+
+model SavedView {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  name      String
+  config    Json // columns (order/visibility), filters, sort
+  isDefault Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([userId, name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+enum DocumentKind {
+  TRAVELER // Phase 4+ widens (SHIPPER, CERT, …) or adds sibling tables — its call
+}
+
+model StoredDocument {
+  id         String       @id @default(cuid())
+  orderId    String
+  order      Order        @relation(fields: [orderId], references: [id])
+  kind       DocumentKind
+  loadNumber Int? // null = full set (one sheet-set per load in one PDF)
+  fileData   Bytes
+  createdAt  DateTime     @default(now())
+
+  // Fix-wave R3 finding 4: every order detail read checks document existence by orderId
+  // (orders.ts's DETAIL_INCLUDE.documents), and the archive endpoint filters and orders by
+  // orderId too (traveler.ts's listDocuments) — this permanent, append-only table had no
+  // supporting index, so both scans got slower with every traveler ever printed, anywhere.
+  @@index([orderId])
 }

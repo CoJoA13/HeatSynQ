@@ -28,9 +28,9 @@ const EDIT = z.object(FIELDS).partial().strict();
 const KIND_ORDER: Record<AddressKind, number> = { SHIP_TO: 0, BILL_TO: 1, RECEIVED_FROM: 2 };
 
 export async function listAddresses(
-  customerId: string, opts?: { includeInactive?: boolean },
+  customerId: string, opts?: { includeInactive?: boolean }, db: Prisma.TransactionClient = prisma,
 ): Promise<AddressRow[]> {
-  const rows = await prisma.customerAddress.findMany({
+  const rows = await db.customerAddress.findMany({
     where: { customerId, deletedAt: null, ...(opts?.includeInactive ? {} : { active: true }) },
     orderBy: { name: "asc" },
   });

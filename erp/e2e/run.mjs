@@ -28,6 +28,12 @@ const HEADED = Boolean(process.env.HEADED);
 // template and its two steps from template-build-and-load are what typed-fields, revision-cut
 // and blocked-code-delete all go on to use), and the last two run as the restricted user rather
 // than admin.
+//
+// Task 17 (Phase 3) adds the last four, all as admin (the restricted fixture user holds only
+// parts.view/processes.view — none of orders.*/void_order): order-entry-full creates the one
+// order the other three all operate on (its id/number travel via `ctx.created`, set at the end of
+// that flow), board-search-scan and loads-after-print both need it live, and void-order runs last
+// because voiding it leaves nothing for a later flow to build on.
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -35,13 +41,19 @@ const FLOWS = [
   { name: "blocked-code-delete", as: "admin", module: "./flows/blocked-code-delete.mjs" },
   { name: "permission-gating", as: "restricted", module: "./flows/permission-gating.mjs" },
   { name: "processes-list", as: "restricted", module: "./flows/processes-list.mjs" },
+  { name: "order-entry-full", as: "admin", module: "./flows/order-entry-full.mjs" },
+  { name: "board-search-scan", as: "admin", module: "./flows/board-search-scan.mjs" },
+  { name: "loads-after-print", as: "admin", module: "./flows/loads-after-print.mjs" },
+  { name: "void-order", as: "admin", module: "./flows/void-order.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
 // need to reach whatever's currently been acquired, and a signal can land at any point during
 // main()'s execution — there is no single function-local scope both paths share.
 const state = {
-  devServer: null, browser: null, fixtures: null, created: { templateIds: [] }, cleanupFailed: null,
+  devServer: null, browser: null, fixtures: null,
+  created: { templateIds: [], orderId: null, orderNumber: null },
+  cleanupFailed: null,
 };
 let teardownPromise = null;
 
