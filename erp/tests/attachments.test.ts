@@ -30,13 +30,24 @@ function noBodyReq(url: string, method: string, cookie?: string): Request {
 }
 /** Builds a real multipart body via the platform's own FormData/Blob — the same shape a browser's
  *  `<input type=file>` submission or `fetch(url, { body: formData })` produces, so the route's own
- *  `req.formData()` call is exercised end to end rather than mocked. */
+ *  `req.formData()` call is exercised end to end rather than mocked.
+ *
+ *  `content-length` is set by hand: a browser always declares the serialized body's length on a
+ *  multipart POST, but undici's `new Request(url, { body: formData })` does NOT (verified — it
+ *  leaves the header null and streams the body instead), so without this every request built here
+ *  would look like an undeclared-length upload to `parseUploadFile`'s pre-parse guard
+ *  (src/server/http.ts, fix-wave R4 finding 1). `declaredLength` overrides it for the tests that
+ *  are specifically about that guard; otherwise it is the payload plus a generous allowance for
+ *  the multipart framing around it, standing in for the exact figure a browser computes. */
 function uploadReq(
   url: string, cookie: string | undefined, filename: string, mimeType: string, bytes: Uint8Array<ArrayBuffer>,
+  declaredLength?: string | null,
 ): Request {
   const form = new FormData();
   form.set("file", new Blob([bytes], { type: mimeType }), filename);
-  return new Request(url, { method: "POST", headers: cookie ? { cookie } : {}, body: form });
+  const length = declaredLength === undefined ? String(bytes.byteLength + 1024) : declaredLength;
+  const headers: Record<string, string> = { ...(cookie ? { cookie } : {}), ...(length === null ? {} : { "content-length": length }) };
+  return new Request(url, { method: "POST", headers, body: form });
 }
 
 /** One live customer + part — the plain "part" owner fixture. `suffix` disambiguates codes/part
@@ -454,10 +465,56 @@ describe.each(CONFIGS)("$owner attachment routes", (cfg) => {
     const ownerId = await cfg.fixture();
     const base = cfg.path(ownerId);
     const editor = await signInWith([`${cfg.area}.view`, `${cfg.area}.edit`], `nofile-${cfg.owner}-1`);
-    const empty = new Request(base, { method: "POST", headers: { cookie: editor }, body: new FormData() });
+    const empty = new Request(base, {
+      method: "POST", headers: { cookie: editor, "content-length": "1024" }, body: new FormData(),
+    });
     const res = await cfg.add(empty, withParams({ id: ownerId }));
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/file is required/);
   });
+
+  // Fix-wave R4 finding 1: the 20 MB cap used to be enforced only on `file.data.byteLength`
+  // (attachments.ts) — i.e. only AFTER `req.formData()` had already buffered the ENTIRE body into
+  // memory. A client that posted a multi-gigabyte body still got its whole payload read before
+  // anything measured it, so the cap bounded what could be STORED but not what could be
+  // ALLOCATED. `parseUploadFile` now reads the declared `Content-Length` and refuses before it
+  // parses anything at all.
+  //
+  // Discriminating shape: the body here is three bytes of a perfectly allowed type — it would
+  // upload successfully (200) under the old code and under any check that still runs post-parse.
+  // The ONLY thing wrong with it is the size it DECLARES, which nothing but a pre-parse guard can
+  // possibly notice.
+  it("413s an upload whose declared Content-Length is over the bound, before the body is parsed", async () => {
+    const ownerId = await cfg.fixture();
+    const base = cfg.path(ownerId);
+    const editor = await signInWith([`${cfg.area}.view`, `${cfg.area}.edit`], `declared-${cfg.owner}-1`);
+
+    const res = await cfg.add(
+      uploadReq(base, editor, "small.png", "image/png", new Uint8Array([1, 2, 3]), "21000001"),
+      withParams({ id: ownerId }));
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toMatch(/20 MB/);
+    // Nothing was stored — the refusal happened before the body was ever read.
+    const after = await cfg.list(getReq(base, editor), withParams({ id: ownerId }));
+    expect(await after.json()).toEqual([]);
+  });
+
+  // The other half of the same guard: a body whose length is not declared at all (or is declared
+  // as garbage) cannot be bounded up front, so it is refused rather than buffered and measured
+  // afterwards. Named explicitly in the refusal — a caller has to be able to tell WHY.
+  it.each([["missing", null], ["not a number", "lots"], ["negative", "-1"]])(
+    "400s an upload whose Content-Length is %s", async (_label, declared) => {
+      const ownerId = await cfg.fixture();
+      const base = cfg.path(ownerId);
+      const editor = await signInWith(
+        [`${cfg.area}.view`, `${cfg.area}.edit`], `undeclared-${cfg.owner}-${_label.replace(/\W/g, "")}`);
+
+      const res = await cfg.add(
+        uploadReq(base, editor, "small.png", "image/png", new Uint8Array([1, 2, 3]), declared),
+        withParams({ id: ownerId }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/Content-Length/);
+    });
 
   it.each([
     ["image/png", "inline"], ["application/pdf", "inline"], ["text/csv", "attachment"],
