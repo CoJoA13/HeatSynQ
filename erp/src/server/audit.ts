@@ -18,7 +18,11 @@ export type AuditableModel =
 // model row itself. `undefined` means "no relations" — snapshot() falls back to a bare
 // findUnique for that model. These relations carry no sensitive fields (permission/mode keys
 // only), so redact() doesn't need new patterns to keep snapshots safe.
-const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
+// Exported for tests/certs-schema.test.ts's smoke test: this map is typed `object | undefined`
+// per entry (Prisma's own `include` shape has no useful common supertype), so a wrong relation
+// name or `orderBy` field compiles cleanly and would otherwise only explode at the first
+// `audited*` call against that model, in whatever later task happens to be the first to touch it.
+export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   role: { permissions: true },
   user: { overrides: true },
   setting: undefined,

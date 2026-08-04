@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
+import { SNAPSHOT_INCLUDE, type AuditableModel } from "@/server/audit";
 
 /** Everything the cert and shipment graphs hang off: a customer with a ship-to address, a part,
  *  an order with one line / container / serial, a carrier, and an inspection code + scale. */
@@ -343,5 +344,39 @@ describe("StoredDocument kind/owner CHECK constraint", () => {
     await expect(insertDocument("bad-9", "SHIPPER", { shipperId: shipper.id, certId: cert.id }))
       .rejects.toMatchObject(checkViolation);
     expect(await prisma.storedDocument.count()).toBe(0);
+  });
+
+  // Task 2's review flagged this combination as untested: the SHIPPER branch is deliberately
+  // LOOSER than the other three (orderId is a legal sub-scope, not just an alternate owner — see
+  // the migration's own comment), which is exactly the shape a future "tightening" could get
+  // wrong in the other direction and silently start allowing this. shipperId is still the one
+  // column that MUST be set for a SHIPPER row regardless of whether orderId also is.
+  it("rejects a SHIPPER document that names an order but no shipment", async () => {
+    const { order } = await owners();
+    await expect(insertDocument("bad-10", "SHIPPER", { orderId: order.id }))
+      .rejects.toMatchObject(checkViolation);
+    expect(await prisma.storedDocument.count()).toBe(0);
+  });
+});
+
+// Fix-wave review of Task 2: `SNAPSHOT_INCLUDE` (audit.ts) is typed `Record<AuditableModel,
+// object | undefined>` — plain `object` per entry, because Prisma's own `include` shape has no
+// useful common supertype across models. That means a wrong relation name or `orderBy` field
+// compiles cleanly; nothing catches it until the first `audited*` call against that model, in
+// whatever task happens to touch it first. `cert` and `shipper` are this phase's two new entries,
+// so this phase's own task closes the gap for every entry, not just its own two.
+describe("SNAPSHOT_INCLUDE is a valid Prisma include for every audited model", () => {
+  beforeEach(truncateAll);
+
+  it("issues one findFirst({ include }) per AuditableModel without throwing", async () => {
+    for (const model of Object.keys(SNAPSHOT_INCLUDE) as AuditableModel[]) {
+      const client = prisma[model] as unknown as {
+        findFirst: (a: { include?: object }) => Promise<unknown>;
+      };
+      // No fixture rows exist (truncateAll above) — the point is proving Prisma accepts the
+      // INCLUDE shape, not that it finds anything. A bad relation name or orderBy field throws
+      // here regardless of whether any row matches.
+      await client.findFirst({ include: SNAPSHOT_INCLUDE[model] });
+    }
   });
 });
