@@ -79,10 +79,52 @@ describe("settings", () => {
   // at the database rather than being refused where the setting is actually entered.
   it.each([
     "order_number_next", "shipper_number_next", "invoice_number_next", "cert_number_next", "quote_number_next",
+    "bol_number_next",
   ] as const)("rejects %s above Int4 max (2147483647), and allows exactly the boundary", async (key) => {
     await expect(setSetting(key, 2_147_483_648)).rejects.toThrow(HttpError);
     await setSetting(key, 2_147_483_647);
     expect(await getSetting(key)).toBe(2_147_483_647);
+  });
+
+  // Phase 4: the five new settings this task adds (bol_number_next, cert_required_default,
+  // cert_scope_default, cert_statement, shipper_liability_text) — each round-trips through
+  // getSetting/setSetting, and the two enum-shaped ones reject values outside their schema.
+  it("round-trips bol_number_next", async () => {
+    expect(await getSetting("bol_number_next")).toBe(1000);
+    await setSetting("bol_number_next", 2000);
+    expect(await getSetting("bol_number_next")).toBe(2000);
+  });
+
+  it("round-trips cert_required_default and rejects a non-boolean value", async () => {
+    expect(await getSetting("cert_required_default")).toBe(false);
+    await setSetting("cert_required_default", true);
+    expect(await getSetting("cert_required_default")).toBe(true);
+    await expect(setSetting("cert_required_default", "yes")).rejects.toThrow(HttpError);
+  });
+
+  it("round-trips cert_scope_default and rejects a value outside CERT_SCOPES", async () => {
+    expect(await getSetting("cert_scope_default")).toBe("ORDER");
+    await setSetting("cert_scope_default", "SHIPMENT");
+    expect(await getSetting("cert_scope_default")).toBe("SHIPMENT");
+    const err = await setSetting("cert_scope_default", "ORDERS").catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+  });
+
+  it("round-trips cert_statement, defaulting to the transcribed certification statement", async () => {
+    const initial = await getSetting("cert_statement");
+    expect(initial).toMatch(/^We certify that the listed Parts \/ Materials were heat treated/);
+    expect(initial).toContain("American Heat Treating - Alabama, LLC");
+    await setSetting("cert_statement", "Custom statement text");
+    expect(await getSetting("cert_statement")).toBe("Custom statement text");
+  });
+
+  it("round-trips shipper_liability_text, defaulting to the transcribed liability text", async () => {
+    const initial = await getSetting("shipper_liability_text");
+    expect(initial).toMatch(/^Above pricing is based on American Heat Treating - Alabama/);
+    expect(initial).toContain("STATEMENT OF LIMITED LIABILITY");
+    await setSetting("shipper_liability_text", "Custom liability text");
+    expect(await getSetting("shipper_liability_text")).toBe("Custom liability text");
   });
 
   it("allSettings consistency: invalid stored value falls back to default", async () => {

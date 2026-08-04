@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll, prisma } from "./helpers/db";
-import { allocateNumber, type SettingKey } from "@/server/settings";
+import { allocateNumber, type NumberSettingKey } from "@/server/settings";
 import { HttpError } from "@/server/http";
 
 describe("allocateNumber", () => {
@@ -41,14 +41,30 @@ describe("allocateNumber", () => {
   });
 
   it("rejects an unknown key", async () => {
-    await expect(prisma.$transaction((tx) => allocateNumber("bogus_key" as SettingKey, tx)))
+    await expect(prisma.$transaction((tx) => allocateNumber("bogus_key" as NumberSettingKey, tx)))
       .rejects.toMatchObject({ status: 400 });
     expect(await prisma.auditLog.count()).toBe(0);
   });
 
   it("rejects an unknown key with an HttpError instance", async () => {
-    const err = await prisma.$transaction((tx) => allocateNumber("bogus_key" as SettingKey, tx)).catch((e) => e);
+    const err = await prisma.$transaction((tx) => allocateNumber("bogus_key" as NumberSettingKey, tx))
+      .catch((e) => e);
     expect(err).toBeInstanceOf(HttpError);
+  });
+
+  it("allocates from a new numbering key", async () => {
+    const n = await prisma.$transaction((tx) => allocateNumber("bol_number_next", tx));
+    expect(n).toBe(1000);
+    const again = await prisma.$transaction((tx) => allocateNumber("bol_number_next", tx));
+    expect(again).toBe(1001);
+  });
+
+  it("refuses a non-numbering key at runtime", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        // @ts-expect-error — NumberSettingKey excludes this; the runtime guard is the backstop
+        allocateNumber("company_name", tx)),
+    ).rejects.toThrow(/not a numbering key/i);
   });
 
   // Fix-wave finding 8: Order.orderNumber is a Postgres INTEGER (int4) column, so a value past

@@ -3,6 +3,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { currentActor } from "./context";
 import { auditSettingChange } from "./audit";
+import { CERT_SCOPES } from "@/lib/cert-constants";
 import type { Prisma } from "../../prisma/generated/prisma/client";
 
 const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min(min).max(max);
@@ -14,6 +15,28 @@ const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min
 const INT4_MAX = 2_147_483_647;
 const numberSeed = int(1, INT4_MAX);
 
+// Transcribed verbatim from the owner's printed sample (docs/samples/Certification Sample.pdf) —
+// this is the contract text customers see on every certification, not decorative boilerplate.
+const CERT_STATEMENT_DEFAULT =
+  "We certify that the listed Parts / Materials were heat treated in accordance with " +
+  "American Heat Treating - Alabama, LLC. Quality Assurance Manual 08/01/22 and customer " +
+  "requirements as follows:";
+
+// Transcribed verbatim from the owner's printed sample (docs/samples/Shipping Ticket Sample.pdf),
+// including its "AMERICAN HEAT TREAT - ALABAMA" (missing "ING") wording in the middle paragraph —
+// that is how it prints on the source document, not a transcription error to silently "fix".
+const SHIPPER_LIABILITY_DEFAULT =
+  "Above pricing is based on American Heat Treating - Alabama STATEMENT OF LIMITED LIABILITY " +
+  "which is sent with our quotation. If quoted pricing is accepted by the customer these terms " +
+  "are in effect. IMPORTANT NOTICE: PURCHASE ORDERS ARE SUBJECT TO THE AMERICAN HEAT TREAT - " +
+  "ALABAMA TERMS AND CONDITIONS AS GENERALLY ADOPTED BY THE METAL TREATING INSTITUTE. A COPY OF " +
+  "THESE TERMS AND CONDITIONS IS ON THE LEAD SHEET OF THIS FAX. IF ADDITIONAL LIABILITY (IN " +
+  "EXCESS OF OUR LIMITS) IS REQUESTED, WE MUST KNOW THE VALUE OF YOUR PARTS PRIOR TO PROCESSING. " +
+  "AN ADDITIONAL CHARGE MAY BE ASSESSED TO COMPENSATE FOR THE INCREASED EXPOSURE.\n\n" +
+  "NO ADDITIONAL LIABILITY WILL BE IMPOSED UPON AMERICAN HEAT TREATING - ALABAMA, IN THE " +
+  "ABSENCE OF A WRITTEN AGREEMENT SPECIFICALLY COVERING SAME SIGNED BY A PRINCIPAL OWNER OF " +
+  "AMERICAN HEAT TREATING - ALABAMA.";
+
 export const SETTINGS = {
   company_name: { schema: z.string(), default: "", label: "Company name", group: "Company" },
   company_address: { schema: z.string(), default: "", label: "Company address", group: "Company" },
@@ -21,8 +44,24 @@ export const SETTINGS = {
   order_number_next: { schema: numberSeed, default: 1000, label: "Next order number", group: "Numbering" },
   shipper_number_next: { schema: numberSeed, default: 1000, label: "Next shipper number", group: "Numbering" },
   invoice_number_next: { schema: numberSeed, default: 1000, label: "Next invoice number", group: "Numbering" },
+  // Intentionally unused for the rest of the project (spec §3.19: certifications carry no number
+  // of their own). Left in place rather than removed; do not wire this up to anything.
   cert_number_next: { schema: numberSeed, default: 1000, label: "Next certification number", group: "Numbering" },
   quote_number_next: { schema: numberSeed, default: 1000, label: "Next quote number", group: "Numbering" },
+  bol_number_next: { schema: numberSeed, default: 1000, label: "Next bill-of-lading number", group: "Numbering" },
+  cert_required_default: {
+    schema: z.boolean(), default: false, label: "Certification required by default", group: "Certifications",
+  },
+  cert_scope_default: {
+    schema: z.enum(CERT_SCOPES), default: "ORDER", label: "Default certification scope", group: "Certifications",
+  },
+  cert_statement: {
+    schema: z.string(), default: CERT_STATEMENT_DEFAULT, label: "Certification statement", group: "Certifications",
+  },
+  shipper_liability_text: {
+    schema: z.string(), default: SHIPPER_LIABILITY_DEFAULT,
+    label: "Shipping ticket liability text", group: "Shipping",
+  },
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the plant-wide default.
   request_days_default: { schema: int(0, 3650), default: 5, label: "Default request days", group: "Dates" },
@@ -57,10 +96,22 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
   await auditSettingChange(key, before?.value ?? def.default, parsed.data);
 }
 
+// Every *_number_next key holds a number; every other SettingKey doesn't. Narrowing here (issue
+// #34) stops a non-numeric key from reaching the string-concatenating increment below at the
+// type level — before Phase 4 multiplies allocateNumber's call sites (shipper numbers, BOL
+// numbers) on top of the one Phase 3 already has (order numbers).
+export type NumberSettingKey = Extract<SettingKey, `${string}_number_next`>;
+
 // Allocation is deliberately unaudited: the consuming entity's own create entry records the
 // number; owner edits to the seed still flow through setSetting + auditSettingChange.
-export async function allocateNumber(key: SettingKey, tx: Prisma.TransactionClient): Promise<number> {
+export async function allocateNumber(key: NumberSettingKey, tx: Prisma.TransactionClient): Promise<number> {
   if (!Object.hasOwn(SETTINGS, key)) throw new HttpError(400, `Unknown setting: ${key}`);
+  // The template-literal type above is the real guard; this is the backstop for a caller that
+  // reached here through a cast or an `any`. A non-numeric default would make the increment
+  // below string-concatenate ("" + 1 → "1") and silently reissue numbers (issue #34).
+  if (typeof SETTINGS[key].default !== "number") {
+    throw new HttpError(400, `"${key}" is not a numbering key`);
+  }
   const def = SETTINGS[key];
   await tx.setting.upsert({ where: { key }, create: { key, value: def.default as number }, update: {} });
   const [row] = await tx.$queryRaw<{ value: unknown }[]>`
