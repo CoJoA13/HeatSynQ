@@ -897,6 +897,29 @@ describe("createOrder: audit", () => {
     expect((after.containers as Record<string, unknown>[])[0]).toMatchObject({ customerContainerId: "CUST-1" });
   });
 
+  // Task 4 review round 2 (Important): `customerContainerId` is `.optional()`, so an omitted key
+  // parses to `undefined` — and `redact()`'s `JSON.parse(JSON.stringify(value))` round-trip DROPS
+  // a key whose value is `undefined` rather than keeping it. `auditPayload` must therefore fall
+  // back to `""` explicitly (matching every sibling optional field in that same object literal),
+  // or the audit entry loses the key entirely for the ordinary (omitted) case — silently
+  // disagreeing in SHAPE with every later snapshot (readDetail/SNAPSHOT_INCLUDE both always
+  // return the DB row's `""`), the inconsistent-representation class issue #24 exists for.
+  // `toMatchObject` alone would NOT catch a missing key, so this asserts presence directly.
+  it("still carries the customerContainerId key (as \"\") in the create audit entry when the container omits it", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }], // no customerContainerId
+    }));
+
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entity: "order", entityId: order.id, action: "create" },
+    });
+    const after = entry.after as { containers: Record<string, unknown>[] };
+    expect(Object.hasOwn(after.containers[0], "customerContainerId")).toBe(true);
+    expect(after.containers[0].customerContainerId).toBe("");
+  });
+
   it("puts no fileData-shaped key anywhere in the create snapshot", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({

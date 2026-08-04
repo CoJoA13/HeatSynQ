@@ -370,7 +370,12 @@ function auditPayload(args: {
       position: i + 1, typeId: c.typeId, typeName: containerTypeNames.get(c.typeId) ?? null,
       count: c.count, qty: c.qty ?? null,
       tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
-      customerContainerId: c.customerContainerId,
+      // `.optional()`, not `.default("")` (the brief's exact shape) — an omitted key parses to
+      // `undefined`, and `redact()`'s `JSON.stringify` round-trip DROPS a key whose value is
+      // `undefined` rather than keeping it, so the audit snapshot would silently lose this column
+      // for the ordinary (omitted) case without this fallback. `?? ""` matches both the column's
+      // own DB default and every sibling optional field in this same object literal.
+      customerContainerId: c.customerContainerId ?? "",
     })),
     serials: data.lines.flatMap((line, i) => line.serials.map((s, index) => ({
       linePosition: i + 1, position: index + 1, serial: s.serial, description: s.description,
