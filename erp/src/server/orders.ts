@@ -109,7 +109,10 @@ const CONTAINER_ITEM = z.object({
   grossWeight: decimalField(12, 2, { min: "nonnegative" }),
   // §3.22: the ticket's "Cust Cont Id" column — the customer's own identifier for this bin, not
   // one this shop assigns. Built with no present-day user on the owner's explicit instruction.
-  customerContainerId: z.string().max(60).default(""),
+  // `.optional()`, not `.default("")`: an omitted key stays omitted through to the Prisma create,
+  // which is what lets the column's own DB default ("") apply — functionally identical to
+  // `.default("")` here, but the brief's exact schema shape is binding.
+  customerContainerId: z.string().max(60).optional(),
 }).strict();
 
 const CHARGE_ITEM = z.object({

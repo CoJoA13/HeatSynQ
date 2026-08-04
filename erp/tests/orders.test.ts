@@ -873,6 +873,30 @@ describe("createOrder: audit", () => {
       .toMatchObject({ position: 1, description: "Freight", amount: 125 });
   });
 
+  // Task 4 review (Minor): the create snapshot must carry the RESOLVED certRequired/certScope —
+  // not the caller's own input, since none was given here — proving resolveCertSettings actually
+  // ran inside this save rather than the columns merely holding their schema defaults. The lead's
+  // scope (LOAD) has to win over the rider's disagreeing one (SHIPMENT) in the audit content too,
+  // the same way it already does in the saved order's own projection (a different test, above).
+  it("records the RESOLVED certRequired/certScope in the create audit entry, plus customerJobNo/customerContainerId", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: true, certScope: "LOAD" } });
+    await prisma.part.update({ where: { id: rider.id }, data: { certScope: "SHIPMENT" } });
+
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-77",
+      lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1, customerContainerId: "CUST-1" }],
+    }));
+
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entity: "order", entityId: order.id, action: "create" },
+    });
+    const after = entry.after as Record<string, unknown>;
+    expect(after).toMatchObject({ customerJobNo: "JOB-77", certRequired: true, certScope: "LOAD" });
+    expect((after.containers as Record<string, unknown>[])[0]).toMatchObject({ customerContainerId: "CUST-1" });
+  });
+
   it("puts no fileData-shaped key anywhere in the create snapshot", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({

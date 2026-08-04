@@ -72,9 +72,20 @@ export const SETTINGS = {
 
 export type SettingKey = keyof typeof SETTINGS;
 
-export async function getSetting<K extends SettingKey>(key: K): Promise<z.infer<(typeof SETTINGS)[K]["schema"]>> {
+/**
+ * `db` defaults to the top-level `prisma` client — every existing caller that reads a setting
+ * outside a transaction (the overwhelming majority) is unaffected. A caller mid-transaction (e.g.
+ * `resolveCertSettings`, certs.ts) passes its own `tx` instead, so this read runs on that same
+ * connection rather than borrowing a second one from the pool — the `readTravelerData`/
+ * `readDetail` precedent (traveler.ts/orders.ts) of threading `db` through every read a
+ * transaction-scoped function makes, generalized to settings (fix-wave R4 finding 8 fixed the
+ * identical pool-starvation shape for `printTraveler`'s own reads).
+ */
+export async function getSetting<K extends SettingKey>(
+  key: K, db: Prisma.TransactionClient = prisma,
+): Promise<z.infer<(typeof SETTINGS)[K]["schema"]>> {
   if (!Object.hasOwn(SETTINGS, key)) throw new HttpError(400, `Unknown setting: ${key}`);
-  const row = await prisma.setting.findUnique({ where: { key } });
+  const row = await db.setting.findUnique({ where: { key } });
   const def = SETTINGS[key];
   const raw = row ? row.value : def.default;
   const parsed = def.schema.safeParse(raw);

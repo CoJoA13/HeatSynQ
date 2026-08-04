@@ -27,34 +27,40 @@ export type CertResolution = { certRequired: boolean; certScope: CertScopeValue 
  * which resolves to "inherit from the next link in the chain" exactly as a genuinely absent
  * override would.
  *
- * The two plant defaults are read via `getSetting`, which always goes through the top-level
- * `prisma` client (settings.ts has no `tx`-accepting variant) — so a caller passing `tx` here
- * (createOrder's own transaction) still has this function's OTHER two reads (`customer`, `part`)
- * run ON that same `tx`; only the plant-default reads open a second connection while that `tx` is
- * in flight, the general shape `createOrder`'s own settings-read comment cautions against. This is
- * a deliberate, narrower case of it: `cert_required_default`/`cert_scope_default` are two Setting
- * rows nothing ever locks (no `allocateNumber` call touches either key), so they cannot be the
- * `FOR UPDATE` `order_number_next` is separately claimed against in that same transaction — but
- * the interface this function has to expose (self-contained, `tx`-or-`prisma`, no pre-fetched
- * settings parameter — Task 5 depends on the exact signature) leaves no way to route this read
- * through `tx` instead, the way `createOrder` routes its OWN plant-setting reads by fetching them
- * before the transaction opens.
+ * EVERY read this function makes — customer, parts, and the two plant defaults — runs on `db`,
+ * the caller's own client. `getSetting` takes the same optional `db` (settings.ts) for exactly
+ * this reason: a caller passing `tx` (createOrder's own transaction) never has this function open
+ * a second, competing connection from the pool while that `tx` is held open. That is the
+ * pool-starvation shape fix-wave R4 finding 8 fixed for `printTraveler`'s reads
+ * (`readTravelerData`, traveler.ts) — `createOrder` is a hotter path than traveler printing, so
+ * the same fix applies here from the start rather than after the fact.
+ *
+ * The four reads run SEQUENTIALLY, not `Promise.all`'d — `readTravelerData`'s own precedent
+ * (traveler.ts) for the same reason: on a `tx`, every one of these queries shares ONE physical
+ * connection regardless, and issuing them concurrently is what makes @prisma/adapter-pg's
+ * `performIO` overlap calls on that single connection and emit node-postgres' own deprecation
+ * warning (tests/helpers/setup.ts documents the identical threshold for `readDetail`'s relation
+ * loads).
  */
 export async function resolveCertSettings(
   db: Db, customerId: string, partIds: string[],
 ): Promise<CertResolution> {
-  const [customer, parts, requiredDefault, scopeDefault] = await Promise.all([
-    db.customer.findFirst({
-      where: { id: customerId, deletedAt: null },
-      select: { certRequiredDefault: true, certScopeDefault: true },
-    }),
-    db.part.findMany({
-      where: { id: { in: partIds }, deletedAt: null },
-      select: { id: true, certRequired: true, certScope: true },
-    }),
-    getSetting("cert_required_default"),
-    getSetting("cert_scope_default"),
-  ]);
+  // `saveNewOrder` (orders.ts) already holds the FULL customer row a few lines above this call —
+  // re-querying just these two columns is one redundant round trip. Left as-is rather than adding
+  // a "pass the row you already have" parameter: the interface Task 5 depends on is exactly
+  // `resolveCertSettings(db, customerId, partIds)`, and now that this read runs on `db` (the
+  // caller's own connection, never a second one), the cost is one extra query on an
+  // already-open connection — not the pool-starvation shape the Important finding was about.
+  const customer = await db.customer.findFirst({
+    where: { id: customerId, deletedAt: null },
+    select: { certRequiredDefault: true, certScopeDefault: true },
+  });
+  const parts = await db.part.findMany({
+    where: { id: { in: partIds }, deletedAt: null },
+    select: { id: true, certRequired: true, certScope: true },
+  });
+  const requiredDefault = await getSetting("cert_required_default", db);
+  const scopeDefault = await getSetting("cert_scope_default", db);
 
   const byId = new Map(parts.map((p) => [p.id, p]));
 
