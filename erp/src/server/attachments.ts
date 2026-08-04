@@ -139,7 +139,7 @@ async function assertOwnerVisible(
   owner: AttachmentOwner, ownerId: string, mode: OwnerAccessMode, db: Db,
 ): Promise<void> {
   // Fix-wave R3 finding 1: an order-owned WRITE (addAttachment/deleteAttachment) claims the Order
-  // row through the SAME `claimOrder` (orders.ts) every other order-family mutator now opens
+  // row through the SAME `claimOrder` (order-locks.ts) every other order-family mutator now opens
   // with, instead of the plain, unlocked check below — so an attachment add/delete can no longer
   // commit invisibly while a traveler print is mid-render (traveler.ts's own claim on this same
   // row). Reads (`listAttachments`/`getAttachment`) stay on the unlocked check: `REQUIRES_LIVE`

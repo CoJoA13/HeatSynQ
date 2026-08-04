@@ -287,7 +287,7 @@ describe("claimOrdersInOrder", () => {
   // RED on its own) — with that delay it deadlocked 3/3 hand-verified runs. Reverting to the
   // single ordered statement below turns it GREEN again, delay or no delay, because that
   // statement has no window between claims for the other side to land a competing lock in.
-  it("claims two orders concurrently in either caller order without deadlocking", async () => {
+  it("claims two orders concurrently in either caller order without deadlocking (not a deterministic row-lock regression guard — see comment)", async () => {
     const [a, b] = await savedOrderIds(2);
 
     const [claimedAB, claimedBA] = await Promise.all([

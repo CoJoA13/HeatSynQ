@@ -592,8 +592,8 @@ export async function collectTravelerData(orderId: string, loadNumber?: number):
  * (documents.ts's own doc comment).
  *
  * Fix-wave R3 finding 1: the ENTIRE operation — claim, content read, render, archive — now runs
- * inside ONE transaction, claimed with the shared `claimOrder` (orders.ts) before anything else
- * happens. Before this, the claim only wrapped the final archive commit (fix-wave R2 finding 4,
+ * inside ONE transaction, claimed with the shared `claimOrder` (order-locks.ts) before anything
+ * else happens. Before this, the claim only wrapped the final archive commit (fix-wave R2 finding 4,
  * below): `collectTravelerData` (the read that decides what the PDF says) and `renderPdf` (~100 ms
  * of pure CPU) both ran BEFORE any lock was taken, so a child mutator — `replaceLoads`,
  * `replaceContainers`, a line/serial/charge edit — could claim the SAME row, write, and commit
@@ -603,16 +603,16 @@ export async function collectTravelerData(orderId: string, loadNumber?: number):
  * point of view nothing was wrong, the document simply didn't exist yet when the stale read
  * happened.
  *
- * `claimOrder`'s row lock now brackets the read too, and every order-family mutator (orders.ts,
- * order-loads.ts, attachments.ts's order-owner writes) opens with the SAME claim on its own
- * transaction — so the two sides properly serialize: whichever gets here first forces the other to
- * wait for its FULL transaction, not just its final write, to finish. A print that wins the race
- * archives the pre-edit state, and the edit — blocked until the print commits — lands cleanly
- * right after, affecting only the next print ("a load edit after printing changes the NEXT print,
- * never the stored one", below). An edit that wins the race commits first, and the print — blocked
- * until the edit commits — reads and archives the POST-edit state once it can proceed. Either way
- * the archived bytes always describe a real, fully-committed state; a torn, mid-edit snapshot is
- * no longer reachable.
+ * `claimOrder`'s (order-locks.ts) row lock now brackets the read too, and every order-family
+ * mutator (orders.ts, order-loads.ts, attachments.ts's order-owner writes) opens with the SAME
+ * claim on its own transaction — so the two sides properly serialize: whichever gets here first
+ * forces the other to wait for its FULL transaction, not just its final write, to finish. A print
+ * that wins the race archives the pre-edit state, and the edit — blocked until the print commits —
+ * lands cleanly right after, affecting only the next print ("a load edit after printing changes
+ * the NEXT print, never the stored one", below). An edit that wins the race commits first, and the
+ * print — blocked until the edit commits — reads and archives the POST-edit state once it can
+ * proceed. Either way the archived bytes always describe a real, fully-committed state; a torn,
+ * mid-edit snapshot is no longer reachable.
  *
  * This does mean the Order row's lock is now held across the render, not just the final insert —
  * accepted deliberately: correctness (no torn snapshot) matters more here than shaving the

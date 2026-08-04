@@ -488,7 +488,7 @@ describe("printTraveler", () => {
   // archived traveler describing pre-edit state, with no warning possible: nothing about the
   // archive itself was wrong, the document simply didn't exist yet when the stale read happened.
   // The fix moves the claim to the FRONT of printTraveler: it now claims (via the shared
-  // `claimOrder`, orders.ts — the same helper every order-family mutator opens with) BEFORE it
+  // `claimOrder`, order-locks.ts — the same helper every order-family mutator opens with) BEFORE it
   // ever calls `collectTravelerData`, and holds it through render and archive. A load that
   // changes while this claim is held cannot be missed by a print that started before the change
   // committed — the print simply cannot read anything until the change (and the claim it needed)

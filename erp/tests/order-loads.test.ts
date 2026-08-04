@@ -282,7 +282,7 @@ describe("replaceLoads", () => {
   // findFirst, so it never serialized against anything else holding a claim on the same row —
   // in particular, printTraveler's own `SELECT … FOR UPDATE` (traveler.ts). The discriminating
   // shape is the same holder pattern round 2's print-vs-void race test uses (traveler.test.ts):
-  // a holder takes the EXACT row lock `claimOrder` (orders.ts) now gives every order-family
+  // a holder takes the EXACT row lock `claimOrder` (order-locks.ts) now gives every order-family
   // mutator and just sits on it. A genuine claim inside replaceLoads cannot proceed past the
   // holder until it releases; a plain (unlocked) resolve — the regression — would sail straight
   // through and never even notice the holder is there.
