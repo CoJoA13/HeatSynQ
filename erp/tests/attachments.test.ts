@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { Prisma } from "../prisma/generated/prisma/client";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -369,6 +370,121 @@ describe("attachments service — one implementation, two owners", () => {
     // Round-trips to the exact original name — this parameter, not the sanitized fallback, is
     // what every current browser actually reads.
     expect(decodeURIComponent(match![1])).toBe("測定.pdf");
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // Fix-wave R4 finding 2: attachment writes pair with deletePart's Serializable cascade scan.
+  //
+  // `deletePart` (parts.ts) runs Serializable specifically so a child added mid-delete cannot
+  // outlive its parent — F2's own reasoning, already shared by addPartSpec/addPartInspection/
+  // addPartBreak, every one of which reads the part live on `tx` under Serializable before adding
+  // a child. Attachments joined the cascade in R3 finding 5 but never joined that pairing: their
+  // transactions ran at the default isolation, and a disjoint INSERT into PartAttachment does not
+  // conflict with anything deletePart does under READ COMMITTED. So the cascade could snapshot
+  // "these are the live attachments", soft-delete exactly those, and commit — while a concurrent
+  // upload's owner check (part still live, from its own older snapshot) passed and its bytes
+  // landed live under a part that is now deleted. Unreachable behind every guard afterwards, and
+  // invisible to the parent's own history: precisely the invariant F2 exists to hold.
+  // -------------------------------------------------------------------------------------------
+
+  /** Records the options every `prisma.$transaction` call receives while `fn` runs.
+   *
+   *  Deliberately NOT `vi.spyOn` — the file's own warning above applies to the client just as it
+   *  does to its delegates: a plain save-reassign-restore is the technique this suite trusts. */
+  async function transactionOptions(fn: () => Promise<unknown>): Promise<unknown[]> {
+    const client = prisma as unknown as Record<string, unknown>;
+    const real = client.$transaction as (...a: unknown[]) => unknown;
+    const seen: unknown[] = [];
+    client.$transaction = (...args: unknown[]) => { seen.push(args[1]); return real.apply(prisma, args); };
+    try {
+      await fn();
+    } finally {
+      client.$transaction = real;
+    }
+    return seen;
+  }
+
+  it.each(["part", "order"] as const)(
+    "addAttachment and deleteAttachment both open Serializable transactions (%s owner)", async (owner) => {
+      const ownerId = owner === "part" ? await partOwnerFixture() : await orderOwnerFixture();
+
+      let attId = "";
+      const addOpts = await transactionOptions(async () => {
+        ({ id: attId } = await asSystem(() => addAttachment(owner, ownerId, {
+          filename: "drawing.png", mimeType: "image/png", data: Buffer.from("x"),
+        })));
+      });
+      const delOpts = await transactionOptions(() => asSystem(() => deleteAttachment(owner, ownerId, attId)));
+
+      // One transaction each, and both at Serializable — uniform across owners, so neither the
+      // pairing nor the 40001 -> 409 mapping depends on remembering which owner is which.
+      expect(addOpts).toEqual([{ isolationLevel: "Serializable" }]);
+      expect(delOpts).toEqual([{ isolationLevel: "Serializable" }]);
+    });
+
+  // The behavioural half, with the interleaving FORCED rather than left to chance.
+  //
+  // The holder reproduces deletePart's own read/write set on the part (the live-part check, the
+  // live-attachment cascade scan, then the part's own soft delete) inside one Serializable
+  // transaction — the real thing minus its audit rows, which play no part in the conflict. It
+  // also takes `SELECT … FOR UPDATE` on the Part row FIRST, which is what makes the interleaving
+  // deterministic: a concurrent INSERT into PartAttachment must take FOR KEY SHARE on the
+  // referenced Part row to check its foreign key, and FOR KEY SHARE conflicts with FOR UPDATE. So
+  // the real `addAttachment` below gets its owner check through (the part is genuinely still live
+  // at that point) and is then pinned at exactly the moment the finding describes — after the
+  // check, before the insert — until the holder's delete has committed.
+  //
+  // The assertion is the invariant, not one particular loser: whether the upload is aborted
+  // (40001 -> the retryable 409) or somehow lands, what must never be true afterwards is a LIVE
+  // attachment hanging off a deleted part. Before this fix the upload simply succeeded — its
+  // insert conflicted with nothing — and left exactly that.
+  it("an upload cannot land live under a part whose delete commits between its check and its insert", async () => {
+    const partId = await partOwnerFixture();
+
+    let hasScanned!: () => void;
+    const scanned = new Promise<void>((resolve) => { hasScanned = resolve; });
+    let mayDelete!: () => void;
+    const release = new Promise<void>((resolve) => { mayDelete = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Part" WHERE "id" = ${partId} FOR UPDATE`;
+      await tx.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+      await tx.partAttachment.findMany({ where: { partId, deletedAt: null }, select: { id: true } });
+      hasScanned();
+      await release;
+      await tx.part.update({ where: { id: partId }, data: { deletedAt: new Date() } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 20000 });
+
+    await scanned;
+    const upload = asSystem(() => addAttachment("part", partId, {
+      filename: "drawing.png", mimeType: "image/png", data: Buffer.from("late"),
+    }));
+
+    // Confirms the upload really is pinned mid-transaction (owner check done, insert blocked on
+    // the holder's row lock) before the delete is allowed to commit — the traveler.test.ts
+    // print-race precedent. Not itself the discriminator.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      upload.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayDelete();
+    await holder;
+    const settled = await Promise.allSettled([upload]);
+
+    // A refusal is fine, and is the expected outcome — but only as a mapped HttpError (the
+    // retryable 409, or the 404 an already-dead owner earns). Never an unmapped escape.
+    if (settled[0].status === "rejected") {
+      expect(settled[0].reason).toMatchObject({ status: expect.any(Number) });
+      expect([404, 409]).toContain((settled[0].reason as { status: number }).status);
+    }
+
+    // The invariant, whichever way it went.
+    const part = await prisma.part.findUniqueOrThrow({ where: { id: partId }, select: { deletedAt: true } });
+    expect(part.deletedAt).not.toBeNull();
+    expect(await prisma.partAttachment.count({ where: { partId, deletedAt: null } })).toBe(0);
   });
 });
 

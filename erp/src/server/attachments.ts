@@ -78,6 +78,28 @@ export function contentDisposition(mimeType: string, filename: string): string {
   return `${kind}; filename="${quoted}"; filename*=UTF-8''${encoded}`;
 }
 
+/**
+ * Fix-wave R4 finding 2: both attachment MUTATORS run Serializable, for BOTH owners.
+ *
+ * The in-transaction owner check (`assertOwnerVisible` below) was only ever half of a guard. Its
+ * other half is the deleting side's own scan, and `deletePart` (parts.ts) does that scan
+ * Serializable precisely so a child added mid-delete cannot outlive its parent — the F2 pairing
+ * `addPartSpec`/`addPartInspection`/`addPartBreak` already hold up from their end. Attachments
+ * joined the delete cascade (R3 finding 5) without joining that pairing: at the default isolation
+ * a disjoint `INSERT INTO "PartAttachment"` conflicts with nothing `deletePart` does, so the
+ * cascade could snapshot the live attachments, soft-delete exactly those, and commit, while a
+ * concurrent upload — whose owner check legitimately saw a live part on its own older snapshot —
+ * inserted bytes that ended up LIVE under a part that is now deleted: permanently unreachable
+ * behind every guard here, and absent from the parent's own history. Both sides Serializable is
+ * what lets Postgres abort whichever one would produce a state no serial ordering could.
+ *
+ * Applied uniformly rather than part-only. The order owner already serializes through
+ * `claimOrder`'s row lock, so this is belt-and-braces there — but a per-owner isolation split
+ * would be one more thing to remember correctly at every future call site, and `withDbErrors`
+ * already maps the resulting 40001/P2034 to the retryable 409 on both paths.
+ */
+const SERIALIZABLE = { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } as const;
+
 type Db = typeof prisma | Prisma.TransactionClient;
 
 const OWNER_LABEL: Record<AttachmentOwner, string> = { part: "Part", order: "Order" };
@@ -209,7 +231,7 @@ export async function addAttachment(
       // itself rather than leaning on redact()'s "filedata" pattern to scrub it afterward.
       const auditPayload = { ...ownerFilter(owner, ownerId), ...meta };
       return auditedCreate(AUDIT_MODEL[owner], auditPayload, () => delegate(owner, tx).create({ data }), { tx });
-    }));
+    }, SERIALIZABLE));
   return { id: row.id, filename: row.filename, mimeType: row.mimeType, size: row.size, createdAt: row.createdAt };
 }
 
@@ -232,5 +254,5 @@ export async function deleteAttachment(owner: AttachmentOwner, ownerId: string, 
       });
       if (!current) throw new HttpError(404, "Attachment not found");
       await auditedSoftDelete(AUDIT_MODEL[owner], attId, undefined, tx);
-    }));
+    }, SERIALIZABLE));
 }
