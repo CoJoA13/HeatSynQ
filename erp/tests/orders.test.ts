@@ -316,6 +316,138 @@ describe("createOrder: numbering", () => {
   });
 });
 
+/**
+ * Fix-wave R4 finding 5 — the double-create this project exists to prevent.
+ *
+ * Two tabs resume the SAME autosaved draft; both Save. The save runs Serializable and
+ * `allocateNumber` is a write-write conflict, so the loser aborts with 40001 -> the retryable 409
+ * — and the entry page retries it automatically, because the documented contract is that a 409
+ * wrote nothing and consumed no number. That retry is a FRESH request: before this fix it created
+ * a SECOND order carrying the next number, for the one job the operator did once. `orderNumber`
+ * being unique never helped — the retry legitimately allocates its own.
+ *
+ * `clientRequestId` is what makes the two submissions recognizable as one intent: the nonce is
+ * minted when a fresh entry form mounts and lives INSIDE the draft payload, so two tabs resuming
+ * the same draft carry the same one.
+ */
+describe("createOrder: clientRequestId idempotency", () => {
+  beforeEach(truncateAll);
+
+  const NONCE = "3f6a1b2c-1111-4d22-8e33-9f0a1b2c3d4e";
+
+  it("the same clientRequestId twice creates ONE order — the second call returns the first", async () => {
+    const { customer, lead } = await fixture();
+    const input = {
+      customerId: customer.id, clientRequestId: NONCE,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    };
+
+    const first = await asSystem(() => createOrder(input));
+    const second = await asSystem(() => createOrder(input));
+
+    expect(second.order.id).toBe(first.order.id);
+    expect(second.order.orderNumber).toBe(first.order.orderNumber);
+    // The client has to be able to tell a replay from a fresh save — this is that signal.
+    expect(second.deduped).toBe(true);
+    expect(second.warnings).toEqual([]);
+    // The first save is the only one that was ever a save: one order, one number consumed.
+    expect(await prisma.order.count()).toBe(1);
+    expect((await prisma.setting.findUniqueOrThrow({ where: { key: "order_number_next" } })).value).toBe(1001);
+  });
+
+  it("a fresh save carries no `deduped` flag — the response shape is unchanged for every old caller", async () => {
+    const { customer, lead } = await fixture();
+    const result = await asSystem(() => createOrder({
+      customerId: customer.id, clientRequestId: NONCE,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    expect(result.deduped).toBeUndefined();
+    expect(Object.keys(result).sort()).toEqual(["order", "warnings"]);
+  });
+
+  it("different clientRequestIds are different intents — two orders, two numbers", async () => {
+    const { customer, lead } = await fixture();
+    const base = { customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }] };
+
+    const a = await asSystem(() => createOrder({ ...base, clientRequestId: NONCE }));
+    const b = await asSystem(() => createOrder({
+      ...base, clientRequestId: "aaaaaaaa-2222-4d22-8e33-9f0a1b2c3d4e",
+    }));
+
+    expect(b.order.id).not.toBe(a.order.id);
+    expect([a.order.orderNumber, b.order.orderNumber]).toEqual([1000, 1001]);
+    expect(await prisma.order.count()).toBe(2);
+  });
+
+  it("omitting clientRequestId keeps the old behaviour exactly — nothing dedupes", async () => {
+    const { customer, lead } = await fixture();
+    const input = { customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }] };
+
+    const a = await asSystem(() => createOrder(input));
+    const b = await asSystem(() => createOrder(input));
+
+    expect(b.order.id).not.toBe(a.order.id);
+    expect(await prisma.order.count()).toBe(2);
+    // NULLs never collide in a Postgres unique index — that is what makes the opt-out free.
+    expect(await prisma.order.count({ where: { clientRequestId: null } })).toBe(2);
+  });
+
+  // The real shape: two tabs firing at once, then the loser's automatic 409 retry — exactly what
+  // src/app/orders/new/page.tsx's handleSave does, with the SAME body (nonce included) it built
+  // once before the first attempt.
+  it("two concurrent saves of the same intent settle on exactly ONE order, retry included", async () => {
+    const { customer, lead } = await fixture();
+    const input = {
+      customerId: customer.id, clientRequestId: NONCE,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    };
+
+    const settled = await Promise.allSettled([
+      asSystem(() => createOrder(input)), asSystem(() => createOrder(input)),
+    ]);
+
+    const ids = new Set<string>();
+    for (const result of settled) {
+      if (result.status === "fulfilled") { ids.add(result.value.order.id); continue; }
+      // A Serializable loser is told to retry — the only acceptable failure here, and the very
+      // thing that used to double-create.
+      expect(result.reason).toMatchObject({ status: 409 });
+      const retried = await asSystem(() => createOrder(input));
+      ids.add(retried.order.id);
+    }
+
+    expect(ids.size).toBe(1);
+    expect(await prisma.order.count()).toBe(1);
+  });
+
+  it("rejects a clientRequestId that is not a uuid", async () => {
+    const { customer, lead } = await fixture();
+    await expect(asSystem(() => createOrder({
+      customerId: customer.id, clientRequestId: "not-a-uuid",
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }))).rejects.toBeInstanceOf(ZodError);
+  });
+
+  // A voided order keeps its request id forever, exactly as it keeps its number (spec §4). A
+  // replay of the request that created it therefore still resolves to it — never to a brand-new
+  // order re-using the nonce, which is the revival-on-create shape handoff §5.18 rules out.
+  it("a voided order still owns its request id — a replay returns the voided order, not a new one", async () => {
+    const { customer, lead } = await fixture();
+    const input = {
+      customerId: customer.id, clientRequestId: NONCE,
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    };
+    const first = await asSystem(() => createOrder(input));
+    await asSystem(() => voidOrder(first.order.id, "wrong customer"));
+
+    const replay = await asSystem(() => createOrder(input));
+    expect(replay.order.id).toBe(first.order.id);
+    expect(replay.order.voided).toBe(true);
+    expect(replay.deduped).toBe(true);
+    expect(await prisma.order.count()).toBe(1);
+  });
+});
+
 describe("createOrder: dates", () => {
   beforeEach(truncateAll);
 

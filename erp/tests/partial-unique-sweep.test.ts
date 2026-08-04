@@ -110,7 +110,16 @@ live row goes untouched.`).toEqual([]);
     // claim — that reuse is exactly the double-billing adjacency the no-duplication rule exists
     // to prevent (design spec §4, HANDOFF §5.11's revival-on-create precedent, deliberately not
     // applied here). Do not "fix" this by giving orderNumber the partial-unique treatment.
-    const ALLOWED = new Set(["User.username", "Order.orderNumber"]);
+    //
+    // Order.clientRequestId sits beside it for the identical reason (fix-wave R4 finding 5). It is
+    // the entry form's idempotency nonce: the whole point is that the request which created an
+    // order owns that nonce PERMANENTLY, so a replay of it resolves to the order it already made
+    // rather than making another. Freeing the value up when the order is voided would hand the
+    // nonce back to a retry and re-create precisely the duplicate the column exists to stop — the
+    // same no-revival rationale as orderNumber, one step earlier in the sequence. NULLs never
+    // collide in a Postgres unique index, so historic rows and every caller that sends no nonce
+    // are unaffected without needing the partial-index treatment at all.
+    const ALLOWED = new Set(["User.username", "Order.orderNumber", "Order.clientRequestId"]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
     // way the field-level match below used to (see comment there) — a schema reformat that

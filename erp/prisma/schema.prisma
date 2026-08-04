@@ -557,28 +557,36 @@ enum OrderStatus {
 }
 
 model Order {
-  id            String            @id @default(cuid())
-  orderNumber   Int               @unique
-  customerId    String
-  customer      Customer          @relation(fields: [customerId], references: [id])
-  poNumber      String            @default("")
-  vsOrderNumber String            @default("")
-  receivedDate  DateTime          @db.Date
-  requestDate   DateTime          @db.Date
-  targetDate    DateTime?         @db.Date
-  status        OrderStatus       @default(OPEN)
-  notes         String            @default("")
-  linkGroupId   String?
-  deletedAt     DateTime? // set = VOIDED (reason required, void_order permission)
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  lines         OrderLine[]
-  containers    OrderContainer[]
-  serials       OrderSerial[]
-  loads         Load[]
-  charges       OrderCharge[]
-  attachments   OrderAttachment[]
-  documents     StoredDocument[]
+  id              String            @id @default(cuid())
+  orderNumber     Int               @unique
+  /// The entry form's own idempotency nonce for the save that created this order (spec §5.5).
+  /// Nullable: every order written before this column existed has none, and any caller that does
+  /// not send one keeps the old behaviour exactly (NULLs never collide in a Postgres unique
+  /// index, so an omitted nonce opts out rather than conflicting). Plain @unique, deliberately
+  /// NOT live-rows-only — see tests/partial-unique-sweep.test.ts's exemption: a voided order
+  /// keeps its request id forever, so a retry of the request that created it can never be
+  /// mistaken for a brand-new order.
+  clientRequestId String?           @unique
+  customerId      String
+  customer        Customer          @relation(fields: [customerId], references: [id])
+  poNumber        String            @default("")
+  vsOrderNumber   String            @default("")
+  receivedDate    DateTime          @db.Date
+  requestDate     DateTime          @db.Date
+  targetDate      DateTime?         @db.Date
+  status          OrderStatus       @default(OPEN)
+  notes           String            @default("")
+  linkGroupId     String?
+  deletedAt       DateTime? // set = VOIDED (reason required, void_order permission)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  lines           OrderLine[]
+  containers      OrderContainer[]
+  serials         OrderSerial[]
+  loads           Load[]
+  charges         OrderCharge[]
+  attachments     OrderAttachment[]
+  documents       StoredDocument[]
 
   @@index([customerId])
   @@index([status])

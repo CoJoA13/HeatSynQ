@@ -12,10 +12,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, ApiError } from "@/lib/fetcher";
+import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
+import { normalizeRequestNonce, submitWithConflictRetry } from "@/lib/idempotent-save";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { OrderLineCard, computeLineWeight, findDuplicateSerials } from "./OrderLineCard";
@@ -64,6 +65,15 @@ export type ChargeDraft = { id: string; description: string; amount: string };
 /** Exactly what gets PUT to /api/order-drafts as `{ payload }`, and exactly what a resumed draft
  *  hydrates back into state — typed values and override flags only, never a server default. */
 export type OrderDraftState = {
+  /**
+   * This draft's idempotency nonce (fix-wave R4 finding 5), minted when a fresh form mounts and
+   * carried through every autosave. It lives INSIDE the payload deliberately: that is what makes
+   * two tabs resuming the same draft — and the automatic 409 retry of either one's save — the
+   * same request as far as `createOrder` is concerned, so they settle on ONE order instead of two.
+   * Not something the user types, so `isDraftEmpty` ignores it exactly as it ignores the
+   * synthetic row ids.
+   */
+  clientRequestId: string;
   customerId: string | null;
   /** null = show the selected customer's defaultPo; non-null = the user's own text. */
   poOverride: string | null;
@@ -94,6 +104,7 @@ function blankCharge(): ChargeDraft {
 }
 function blankDraft(): OrderDraftState {
   return {
+    clientRequestId: crypto.randomUUID(),
     customerId: null, poOverride: null, vsOrderNumber: "",
     receivedDateOverride: null, requestDateOverride: null, targetDate: null,
     notes: "", lines: [blankLine()], containers: [], charges: [],
@@ -139,6 +150,10 @@ function normalizeDraft(raw: unknown): OrderDraftState {
   const r = rec(raw);
   const lines = arr(r.lines).map(normalizeLine);
   return {
+    // KEPT, not regenerated: a resumed draft carrying the same nonce is precisely how the second
+    // tab's save is recognized as the first tab's request rather than a new order. A draft
+    // autosaved before this field existed gets a fresh one (normalizeRequestNonce).
+    clientRequestId: normalizeRequestNonce(r.clientRequestId),
     customerId: strOrNull(r.customerId),
     poOverride: strOrNull(r.poOverride),
     vsOrderNumber: str(r.vsOrderNumber),
@@ -152,8 +167,9 @@ function normalizeDraft(raw: unknown): OrderDraftState {
   };
 }
 
-/** True for the untouched blank starting state (ignoring the synthetic local `id` fields, which
- *  are never equal to a freshly-generated blank's own ids). Gates autosave so that simply
+/** True for the untouched blank starting state (ignoring the synthetic local `id` fields and the
+ *  draft's own `clientRequestId` nonce, none of which is anything the user typed and all of which
+ *  differ from a freshly-generated blank's by construction). Gates autosave so that simply
  *  visiting this page and leaving — without typing anything — does not leave behind a draft that
  *  greets the next visit with a "Resume a draft?" prompt for nothing (caught live in this task's
  *  own dev-server smoke test, not a hypothetical). A draft that WAS resumed or edited and is then
@@ -436,6 +452,9 @@ export default function NewOrderPage() {
   function buildCreateBody() {
     return {
       customerId: draft.customerId,
+      // The draft's own nonce (R4 finding 5) — sent on the first attempt AND, because handleSave
+      // builds this body once and hands the SAME object to the retry, on the 409 retry too.
+      clientRequestId: draft.clientRequestId,
       poNumber: displayedPo,
       vsOrderNumber: draft.vsOrderNumber,
       // Omitted (not frozen to the client's preview) while untouched — the server computes its
@@ -473,10 +492,15 @@ export default function NewOrderPage() {
     };
   }
 
+  /** `deduped` (fix-wave R4 finding 5) marks a response that is the order this same request
+   *  already created — the retry's own first attempt, or the other tab's. It arrives with no
+   *  warnings and is treated exactly like any other success below: navigate to the order. */
+  type CreateResult = {
+    order: { id: string; orderNumber: number }; warnings: string[]; deduped?: true;
+  };
+
   async function submitOnce(body: unknown) {
-    return api<{ order: { id: string; orderNumber: number }; warnings: string[] }>("/api/orders", {
-      method: "POST", body: JSON.stringify(body),
-    });
+    return api<CreateResult>("/api/orders", { method: "POST", body: JSON.stringify(body) });
   }
 
   /**
@@ -512,19 +536,13 @@ export default function NewOrderPage() {
       // means the in-flight request still completes and reports its own real outcome, instead of
       // being silently cut off.
       await autosaveChain.current;
-      let result: { order: { id: string; orderNumber: number }; warnings: string[] };
-      try {
-        result = await submitOnce(body);
-      } catch (e) {
-        // The T4-measured concurrent-save behavior: a 409 means the transaction wrote NOTHING
-        // and consumed no order number (src/server/orders.ts), so retrying the identical body is
-        // the documented-safe response, not a guess.
-        if (e instanceof ApiError && e.status === 409) {
-          result = await submitOnce(body);
-        } else {
-          throw e;
-        }
-      }
+      // The T4-measured concurrent-save behavior: a 409 means the transaction wrote NOTHING and
+      // consumed no order number (src/server/orders.ts), so retrying the identical body is the
+      // documented-safe response, not a guess. `body` was built ONCE above and is handed through
+      // by reference — fix-wave R4 finding 5: rebuilding it would mint a new `clientRequestId`,
+      // and the retry would then create a SECOND order rather than being recognized as the same
+      // request the first attempt already committed under another tab's (or its own) save.
+      const result = await submitWithConflictRetry(body, submitOnce);
       // Permanently stop autosaving this page instance — belt to savingRef's suspenders. Matters
       // more than it did before fix round 1: a successful save with warnings no longer navigates
       // away immediately (below), so the component can stay mounted well past this point.

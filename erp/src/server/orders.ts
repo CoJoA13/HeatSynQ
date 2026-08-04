@@ -124,6 +124,17 @@ const LINE = z.object({
 
 const CREATE = z.object({
   customerId: z.string().min(1),
+  /**
+   * Fix-wave R4 finding 5: the entry form's idempotency nonce, minted when a FRESH entry form
+   * mounts and carried inside the autosaved draft payload — so two tabs resuming the SAME draft
+   * submit the SAME nonce, and the automatic 409 retry re-submits the identical one.
+   *
+   * Optional: omitting it keeps the pre-existing behaviour byte for byte (Postgres NULLs never
+   * collide in a unique index), which is what makes every non-browser caller — the tests, a
+   * future import — unaffected. `uuid()` rather than a free string so a caller cannot accidentally
+   * pin a constant and silently make every one of its saves a replay of the first.
+   */
+  clientRequestId: z.string().uuid().optional(),
   poNumber: z.string().max(200).default(""),
   vsOrderNumber: z.string().max(60).default(""),
   receivedDate: z.string().optional(),
@@ -476,6 +487,34 @@ export async function claimOrder(tx: Db, orderId: string): Promise<Order | null>
 }
 
 /**
+ * Whether `err` is a unique violation on `Order.clientRequestId` specifically — never on
+ * `orderNumber`, which shares the P2002 code and means something else entirely (a genuine
+ * numbering collision, still a 400 through `withDbErrors`). Getting this discrimination wrong in
+ * the permissive direction would turn a numbering bug into a silent wrong-order response, so the
+ * check names the column rather than assuming "the only unique on Order".
+ *
+ * `meta.target` is EMPTY on this stack — measured, not assumed: under Prisma 7's pg driver adapter
+ * a P2002 arrives as `meta = { modelName, driverAdapterError: { cause: { originalCode: "23505",
+ * constraint: { fields: ['"clientRequestId"'] }, originalMessage } } }`, with no `target` key at
+ * all (which is also why db-errors.ts's own P2002 branch always falls through to its
+ * `conflictField` fallback). So the adapter's own `constraint.fields` is what actually carries the
+ * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
+ * is still consulted first, so this keeps working if a future adapter populates it; the driver's
+ * message is the last resort. Field names arrive quoted, hence substring rather than equality.
+ */
+function isDuplicateClientRequestId(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
+  const meta = err.meta as {
+    target?: unknown;
+    driverAdapterError?: { cause?: { constraint?: { fields?: unknown }; originalMessage?: unknown } };
+  } | undefined;
+  const cause = meta?.driverAdapterError?.cause;
+  return [meta?.target, cause?.constraint?.fields, cause?.originalMessage]
+    .flat()
+    .some((candidate) => typeof candidate === "string" && candidate.includes("clientRequestId"));
+}
+
+/**
  * The order save (spec §5). One `withDbErrors` → Serializable `$transaction`, in this order:
  * validate → allocate → lock → assert container types → split → write → clear the draft.
  *
@@ -488,8 +527,22 @@ export async function claimOrder(tx: Db, orderId: string): Promise<Order | null>
  * A serialization failure — two saves colliding on the number sequence or on the same part's
  * revision — surfaces as the retryable 409 `withDbErrors` already maps 40001 to. Nothing is
  * written, and no order number is consumed.
+ *
+ * Fix-wave R4 finding 5 (the idempotency half): if the INSERT collides on `clientRequestId`, this
+ * exact request has already been saved — by the other tab, or by this same tab's first attempt
+ * before a 409 sent it back for a retry. The honest answer is the order that request already
+ * created, not a second order carrying the next number: THAT is the double-billing adjacency the
+ * no-duplication rule exists to prevent (spec §15), and it was reachable through the entry page's
+ * own automatic 409 retry, which resubmits the identical intent by design.
+ *
+ * The replay response is deliberately warning-free and flagged `deduped: true`. Warnings describe
+ * a save that is happening; this one already happened, and its warnings were part of the
+ * response the winning submission got. `deduped` is what lets the client tell the two apart —
+ * added, never substituted, so every existing caller reading `{ order, warnings }` is untouched.
  */
-export async function createOrder(input: unknown): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
+export async function createOrder(
+  input: unknown,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings; deduped?: true }> {
   const data = CREATE.parse(input);
 
   // Settings are read-only and take no `tx`. Reading them BEFORE the transaction opens keeps a
@@ -498,101 +551,132 @@ export async function createOrder(input: unknown): Promise<{ order: OrderDetail;
   const defaultRequestDays = await getSetting("request_days_default");
   const traffic = await trafficSettings();
 
-  return withDbErrors({ entity: "Order", conflictField: "order number" }, () =>
-    prisma.$transaction(async (tx) => {
-      const customer = await tx.customer.findFirst({ where: { id: data.customerId, deletedAt: null } });
-      if (!customer) throw new HttpError(400, "That customer does not exist");
-      if (!customer.active) throw new HttpError(400, "That customer is inactive");
-
-      const parts = await resolveLineParts(tx, customer.id, data.lines);
-      const lead = parts[0];
-
-      const receivedDate = data.receivedDate
-        ? parseDate(data.receivedDate, "Received date")
-        : todayDateOnly();
-      // Most-specific-wins and silent (spec §6): the LEAD part's override, else the customer's,
-      // else the plant default — never a rider's.
-      const requestDate = data.requestDate
-        ? parseDate(data.requestDate, "Request date")
-        : addBusinessDays(receivedDate,
-          lead.requestDaysOverride ?? customer.requestDaysOverride ?? defaultRequestDays);
-      const targetDate = data.targetDate ? parseDate(data.targetDate, "Target date") : null;
-
-      const orderNumber = await allocateNumber("order_number_next", tx);
-      const { revisionNumber } = await lockCurrentRevision(lead.id, tx); // the row lock IS the guarantee
-
-      // Two reads per distinct type, deliberately. `assertRefExists` is the mandated writer-side
-      // half of the reference-delete TOCTOU guard and returns nothing; the names are for the
-      // audit payload, which must read "Basket" rather than a cuid. No `deletedAt` filter on the
-      // second read — the assert above has already refused every id that is not live.
-      const typeIds = [...new Set(data.containers.map((c) => c.typeId))];
-      for (const typeId of typeIds) await assertRefExists("containerType", typeId, tx);
-      const containerTypeNames = new Map(typeIds.length === 0 ? [] :
-        (await tx.containerType.findMany({ where: { id: { in: typeIds } }, select: { id: true, name: true } }))
-          .map((t) => [t.id, t.name] as const));
-
-      // The lead part's caps, passed straight through — splitLoads trusts pre-validated input
-      // (a zero loadQty would not terminate), and parts.ts already enforces loadQty ≥ 1 and
-      // loadWeight > 0 when present, so nothing is synthesized here. `runSplitLoads`, not
-      // `splitLoads` directly: translates a >MAX_LOADS refusal into a clean 400 (finding 3).
-      const loads = runSplitLoads({
-        ...lineTotals(data.lines),
-        loadQty: lead.loadQty,
-        loadWeight: lead.loadWeight === null ? null : lead.loadWeight.toNumber(),
+  return withDbErrors({ entity: "Order", conflictField: "order number" }, async () => {
+    try {
+      return await saveNewOrder(data, defaultRequestDays, traffic);
+    } catch (err) {
+      // The replay. Deliberately INSIDE withDbErrors' callback and OUTSIDE the transaction: by the
+      // time this runs the failed attempt has fully rolled back (no number consumed), and the
+      // winning order is committed and readable. Anything that is not this exact collision falls
+      // straight through to withDbErrors' own translation, unchanged.
+      if (!data.clientRequestId || !isDuplicateClientRequestId(err)) throw err;
+      const existing = await prisma.order.findFirst({
+        where: { clientRequestId: data.clientRequestId }, select: { id: true },
       });
+      // Unreachable in practice — the collision IS the proof a row holds this nonce — but a
+      // missing row is not something to invent an answer for: report the original failure.
+      if (!existing) throw err;
+      return { order: await readDetail(prisma, existing.id, traffic), warnings: [], deduped: true };
+    }
+  });
+}
 
-      const order = await auditedCreate(
-        "order",
-        auditPayload({
-          orderNumber, customer, data, parts, receivedDate, requestDate, targetDate,
-          revisionNumber, loads, containerTypeNames,
-        }),
-        () => tx.order.create({
-          data: {
-            orderNumber, customerId: customer.id,
-            poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
-            receivedDate, requestDate, targetDate, notes: data.notes,
-            lines: {
-              create: data.lines.map((line, i) => ({
-                position: i + 1, partId: line.partId,
-                // Non-null on position 1 and nowhere else — the order's locked recipe is the
-                // pair (lines[0].partId, lines[0].revisionNumber). Spec §4.
-                revisionNumber: i === 0 ? revisionNumber : null,
-                qty: line.qty, weight: line.weight,
-              })),
-            },
-            containers: {
-              create: data.containers.map((c, i) => ({
-                position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
-                tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
-              })),
-            },
-            loads: { create: loads.map((l, i) => ({ loadNumber: i + 1, qty: l.qty, weight: l.weight })) },
-            charges: {
-              create: data.charges.map((c, i) => ({
-                position: i + 1, description: c.description, amount: c.amount ?? null,
-              })),
-            },
+/**
+ * The save transaction itself, unchanged in substance — split out of `createOrder` only so the
+ * idempotent-replay catch above wraps ONE call rather than being threaded through a 100-line
+ * transaction body. Everything about the ordering, the isolation level and the rollback
+ * guarantees documented on `createOrder` describes this function.
+ */
+async function saveNewOrder(
+  data: CreateInput, defaultRequestDays: number, traffic: Traffic,
+): Promise<{ order: OrderDetail; warnings: OrderWarnings }> {
+  return prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.findFirst({ where: { id: data.customerId, deletedAt: null } });
+    if (!customer) throw new HttpError(400, "That customer does not exist");
+    if (!customer.active) throw new HttpError(400, "That customer is inactive");
+
+    const parts = await resolveLineParts(tx, customer.id, data.lines);
+    const lead = parts[0];
+
+    const receivedDate = data.receivedDate
+      ? parseDate(data.receivedDate, "Received date")
+      : todayDateOnly();
+    // Most-specific-wins and silent (spec §6): the LEAD part's override, else the customer's,
+    // else the plant default — never a rider's.
+    const requestDate = data.requestDate
+      ? parseDate(data.requestDate, "Request date")
+      : addBusinessDays(receivedDate,
+        lead.requestDaysOverride ?? customer.requestDaysOverride ?? defaultRequestDays);
+    const targetDate = data.targetDate ? parseDate(data.targetDate, "Target date") : null;
+
+    const orderNumber = await allocateNumber("order_number_next", tx);
+    const { revisionNumber } = await lockCurrentRevision(lead.id, tx); // the row lock IS the guarantee
+
+    // Two reads per distinct type, deliberately. `assertRefExists` is the mandated writer-side
+    // half of the reference-delete TOCTOU guard and returns nothing; the names are for the
+    // audit payload, which must read "Basket" rather than a cuid. No `deletedAt` filter on the
+    // second read — the assert above has already refused every id that is not live.
+    const typeIds = [...new Set(data.containers.map((c) => c.typeId))];
+    for (const typeId of typeIds) await assertRefExists("containerType", typeId, tx);
+    const containerTypeNames = new Map(typeIds.length === 0 ? [] :
+      (await tx.containerType.findMany({ where: { id: { in: typeIds } }, select: { id: true, name: true } }))
+        .map((t) => [t.id, t.name] as const));
+
+    // The lead part's caps, passed straight through — splitLoads trusts pre-validated input
+    // (a zero loadQty would not terminate), and parts.ts already enforces loadQty ≥ 1 and
+    // loadWeight > 0 when present, so nothing is synthesized here. `runSplitLoads`, not
+    // `splitLoads` directly: translates a >MAX_LOADS refusal into a clean 400 (finding 3).
+    const loads = runSplitLoads({
+      ...lineTotals(data.lines),
+      loadQty: lead.loadQty,
+      loadWeight: lead.loadWeight === null ? null : lead.loadWeight.toNumber(),
+    });
+
+    const order = await auditedCreate(
+      "order",
+      auditPayload({
+        orderNumber, customer, data, parts, receivedDate, requestDate, targetDate,
+        revisionNumber, loads, containerTypeNames,
+      }),
+      () => tx.order.create({
+        data: {
+          orderNumber, customerId: customer.id,
+          // The nonce rides on the row itself: a replay of this same request collides HERE, on
+          // the unique index, rather than quietly allocating the next number (R4 finding 5).
+          clientRequestId: data.clientRequestId ?? null,
+          poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
+          receivedDate, requestDate, targetDate, notes: data.notes,
+          lines: {
+            create: data.lines.map((line, i) => ({
+              position: i + 1, partId: line.partId,
+              // Non-null on position 1 and nowhere else — the order's locked recipe is the
+              // pair (lines[0].partId, lines[0].revisionNumber). Spec §4.
+              revisionNumber: i === 0 ? revisionNumber : null,
+              qty: line.qty, weight: line.weight,
+            })),
           },
-          select: { id: true, lines: { select: { id: true }, orderBy: { position: "asc" } } },
-        }),
-        { tx },
-      );
+          containers: {
+            create: data.containers.map((c, i) => ({
+              position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
+              tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+            })),
+          },
+          loads: { create: loads.map((l, i) => ({ loadNumber: i + 1, qty: l.qty, weight: l.weight })) },
+          charges: {
+            create: data.charges.map((c, i) => ({
+              position: i + 1, description: c.description, amount: c.amount ?? null,
+            })),
+          },
+        },
+        select: { id: true, lines: { select: { id: true }, orderBy: { position: "asc" } } },
+      }),
+      { tx },
+    );
 
-      await createSerials(tx, order.id, order.lines.map((l) => l.id), data.lines, parts);
+    await createSerials(tx, order.id, order.lines.map((l) => l.id), data.lines, parts);
 
-      // Same transaction as the save (spec §5.5): the scratch draft dies exactly when the order
-      // it became is committed, and survives untouched if anything above rolled back.
-      const actor = currentActor();
-      if (actor.id) {
-        await tx.orderDraft.updateMany({ where: { userId: actor.id }, data: { payload: Prisma.DbNull } });
-      }
+    // Same transaction as the save (spec §5.5): the scratch draft dies exactly when the order
+    // it became is committed, and survives untouched if anything above rolled back.
+    const actor = currentActor();
+    if (actor.id) {
+      await tx.orderDraft.updateMany({ where: { userId: actor.id }, data: { payload: Prisma.DbNull } });
+    }
 
-      return {
-        order: await readDetail(tx, order.id, traffic),
-        warnings: buildWarnings(customer, parts, data.lines),
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    return {
+      order: await readDetail(tx, order.id, traffic),
+      warnings: buildWarnings(customer, parts, data.lines),
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 export async function getOrder(id: string): Promise<OrderDetail> {
