@@ -5,7 +5,17 @@ import {
   storeDocument, listDocumentsForOrder, listDocumentsForShipper, listDocumentsForCert,
   getDocument, documentFilename, type DocumentMeta,
 } from "@/server/documents";
+import type { PermUser } from "@/server/permissions";
 import { GET as documentRoute } from "@/app/api/documents/[docId]/route";
+import { GET as orderDocumentsRoute } from "@/app/api/orders/[id]/documents/route";
+
+/** A minimal `PermUser` carrying exactly the given `area.action` permissions — for exercising
+ *  `listDocumentsForOrder`'s per-kind filtering directly, without a real session/role/DB round
+ *  trip the way `signInWith` needs for a route-level call. */
+const permUser = (permissions: string[]): PermUser => ({
+  role: { permissions: permissions.map((permission) => ({ permission })) },
+  overrides: [],
+});
 
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
 const req = (url: string, method: string, cookie?: string) =>
@@ -63,6 +73,19 @@ async function oneCert() {
 }
 
 const pdf = (marker: string) => Buffer.from(`%PDF-1.4 ${marker}`);
+
+/** One order (`orderA`, part of a two-order shipment) carrying all three per-kind-relevant
+ *  documents at once — a TRAVELER of its own, a BOL via its shipment, and a CERT of its own —
+ *  the shape both the filename regression test and the permission-filtering tests need. */
+async function orderWithAllKinds() {
+  const { shipper, orderA, orderB } = await twoOrderShipment();
+  const cert = await prisma.cert.create({ data: { orderId: orderA.id, scope: "ORDER" } });
+  const traveler = await prisma.$transaction((tx) =>
+    storeDocument(tx, { kind: "TRAVELER", orderId: orderA.id, loadNumber: null }, pdf("t")));
+  const bol = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+  const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
+  return { shipper, orderA, orderB, cert, traveler, bol, certDoc };
+}
 
 describe("storeDocument / listDocumentsForOrder", () => {
   beforeEach(truncateAll);
@@ -183,9 +206,10 @@ describe("documentFilename", () => {
     expect(documentFilename({ ...meta, orderId: "ord1" }, 71246, 72826)).toBe("ticket-72826-order-71246.pdf");
   });
 
-  it("names a BOL by shipper and a CERT by cert id", async () => {
+  it("names a BOL by shipper, and a CERT by its owning order's number (falling back to the cert id)", async () => {
     expect(documentFilename({ ...base, kind: "BOL", shipperId: "shp1" }, undefined, 72826)).toBe("bol-72826.pdf");
     expect(documentFilename({ ...base, kind: "CERT", certId: "cert1" })).toBe("cert-cert1.pdf");
+    expect(documentFilename({ ...base, kind: "CERT", certId: "cert1" }, 72036)).toBe("cert-72036.pdf");
   });
 
   it("falls back to the raw id when no friendly number is supplied", async () => {
@@ -236,5 +260,121 @@ describe("GET /api/documents/[docId] gates on the owning entity's area", () => {
     const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
     const res = await documentRoute(req(`http://t/x`, "GET"), withParams({ docId: certDoc.id }));
     expect(res.status).toBe(401);
+  });
+});
+
+// Review round 2, Important 1: the initial extraction called the synchronous `documentFilename`
+// with no number argument at the route, so every download regressed to a raw-cuid filename. These
+// assert the actual `Content-Disposition` header string — not just status/content-type/"inline" —
+// which is exactly the gap that let the regression through undetected the first time.
+describe("GET /api/documents/[docId] names the download with a friendly filename", () => {
+  beforeEach(truncateAll);
+
+  it("names a TRAVELER download by the order's real number, not its id", async () => {
+    const { order } = await oneOrder();
+    const doc = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "TRAVELER", orderId: order.id, loadNumber: null }, pdf("t")));
+    const cookie = await signInWith(["orders.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="traveler-${order.orderNumber}.pdf"`);
+  });
+
+  it("appends the load number for a per-load TRAVELER download", async () => {
+    const { order } = await oneOrder();
+    const doc = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "TRAVELER", orderId: order.id, loadNumber: 3 }, pdf("t")));
+    const cookie = await signInWith(["orders.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="traveler-${order.orderNumber}-load-3.pdf"`);
+  });
+
+  it("names a whole-set SHIPPER ticket download by the shipper's packing-list number", async () => {
+    const { shipper } = await twoOrderShipment();
+    const doc = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("s")));
+    const cookie = await signInWith(["shipping.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="ticket-${shipper.shipperNumber}.pdf"`);
+  });
+
+  it("names a single-order SHIPPER ticket download by both the shipper's and the order's numbers", async () => {
+    const { shipper, orderA } = await twoOrderShipment();
+    const doc = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: orderA.id }, pdf("s")));
+    const cookie = await signInWith(["shipping.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.headers.get("content-disposition"))
+      .toBe(`inline; filename="ticket-${shipper.shipperNumber}-order-${orderA.orderNumber}.pdf"`);
+  });
+
+  it("names a BOL download by the shipper's packing-list number", async () => {
+    const { shipper } = await twoOrderShipment();
+    const doc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    const cookie = await signInWith(["shipping.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="bol-${shipper.shipperNumber}.pdf"`);
+  });
+
+  it("names a CERT download by its owning order's number", async () => {
+    const { order, cert } = await oneCert();
+    const doc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
+    const cookie = await signInWith(["certs.view"]);
+    const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="cert-${order.orderNumber}.pdf"`);
+  });
+});
+
+// Review round 2, Important 2 — owner ruling 2026-08-04: listing an order's documents must show
+// only the kinds the viewer may actually open, never disclose that a shipment's BOL or a
+// certification exists to someone lacking shipping.view/certs.view.
+describe("listDocumentsForOrder drops kinds the caller may not view", () => {
+  beforeEach(truncateAll);
+
+  it("service-level: filters per kind against the given PermUser, or returns nothing for none", async () => {
+    const { orderA, traveler, bol, certDoc } = await orderWithAllKinds();
+
+    const ordersOnly = await listDocumentsForOrder(orderA.id, permUser(["orders.view"]));
+    expect(ordersOnly.map((d) => d.id)).toEqual([traveler.id]);
+
+    const all = await listDocumentsForOrder(orderA.id, permUser(["orders.view", "shipping.view", "certs.view"]));
+    expect(new Set(all.map((d) => d.id))).toEqual(new Set([traveler.id, bol.id, certDoc.id]));
+
+    const none = await listDocumentsForOrder(orderA.id, permUser([]));
+    expect(none).toEqual([]);
+  });
+
+  it("service-level: an omitted viewer stays unfiltered, for trusted/internal callers", async () => {
+    const { orderA, traveler, bol, certDoc } = await orderWithAllKinds();
+    const docs = await listDocumentsForOrder(orderA.id);
+    expect(new Set(docs.map((d) => d.id))).toEqual(new Set([traveler.id, bol.id, certDoc.id]));
+  });
+
+  it("GET /api/orders/[id]/documents: an orders.view-only session sees the traveler and not the BOL or the cert", async () => {
+    const { orderA, traveler } = await orderWithAllKinds();
+    const cookie = await signInWith(["orders.view"]);
+    const res = await orderDocumentsRoute(
+      req(`http://t/api/orders/${orderA.id}/documents`, "GET", cookie), withParams({ id: orderA.id }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string }[];
+    expect(body.map((d) => d.id)).toEqual([traveler.id]);
+  });
+
+  it("GET /api/orders/[id]/documents: a session holding all three areas sees every kind", async () => {
+    const { orderA, traveler, bol, certDoc } = await orderWithAllKinds();
+    const cookie = await signInWith(["orders.view", "shipping.view", "certs.view"]);
+    const res = await orderDocumentsRoute(
+      req(`http://t/api/orders/${orderA.id}/documents`, "GET", cookie), withParams({ id: orderA.id }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string }[];
+    expect(new Set(body.map((d) => d.id))).toEqual(new Set([traveler.id, bol.id, certDoc.id]));
+  });
+
+  it("GET /api/orders/[id]/documents: 403s without orders.view even if the caller holds shipping.view/certs.view", async () => {
+    const { orderA } = await orderWithAllKinds();
+    const cookie = await signInWith(["shipping.view", "certs.view"]);
+    const res = await orderDocumentsRoute(
+      req(`http://t/api/orders/${orderA.id}/documents`, "GET", cookie), withParams({ id: orderA.id }));
+    expect(res.status).toBe(403);
   });
 });

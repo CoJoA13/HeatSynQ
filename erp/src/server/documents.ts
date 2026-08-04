@@ -16,6 +16,20 @@ import { Prisma, type DocumentKind } from "../../prisma/generated/prisma/client"
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { auditedCreate } from "./audit";
+import { can, type Area, type PermUser } from "./permissions";
+
+/**
+ * The area that gates each kind (design spec §9): a traveler behind `orders.view`, a shipping
+ * ticket or bill of lading behind `shipping.view`, a certification behind `certs.view`. The one
+ * source of truth for that mapping — both `GET /api/documents/[docId]`'s permission gate and
+ * `listDocumentsForOrder`'s per-kind filtering (below) read this same map, so the two can never
+ * silently drift onto different answers for the same kind. `Record<DocumentKind, Area>`, not
+ * `Record<string, Area>`: a fifth kind added to the enum without an entry here is a compile
+ * error, not a runtime fail-closed 403 discovered later.
+ */
+export const AREA_FOR_KIND: Record<DocumentKind, Area> = {
+  TRAVELER: "orders", SHIPPER: "shipping", BOL: "shipping", CERT: "certs",
+};
 
 /**
  * What a document belongs to, and how it was printed.
@@ -99,16 +113,38 @@ export async function storeDocument(
  *
  * Never filters on any owner's `deletedAt`: a voided order/shipper/cert keeps every earlier print
  * listable and reprintable forever (spec §5.6).
+ *
+ * `viewer`, when given, drops any kind the caller may not view — the owner's ruling (2026-08-04,
+ * Task 3 review round 2): listing an order's documents must not disclose that a shipment's BOL or
+ * a certification exists to someone who cannot open it. Filtered per kind against `AREA_FOR_KIND`,
+ * the same shape `globalSearch` (search.ts) already uses for its own permission-filtered groups —
+ * a kind the caller cannot view is silently dropped from the array, never a 403 for the whole
+ * call: the caller asked to list an ORDER's documents, and is entitled to that, just not to every
+ * kind of document filed against it.
+ *
+ * `viewer` is OPTIONAL: this function has trusted, non-request callers too (this file's
+ * `listDocuments` alias is called directly and unfiltered throughout tests/traveler.test.ts, which
+ * is testing print/archive plumbing, not authorization), and omitting `viewer` there keeps every
+ * kind visible exactly as before. `src/app/api/orders/[id]/documents/route.ts` — the one place
+ * this reaches an actual HTTP caller — is the one call site that MUST always pass it.
  */
-export async function listDocumentsForOrder(orderId: string): Promise<DocumentMeta[]> {
+export async function listDocumentsForOrder(orderId: string, viewer?: PermUser): Promise<DocumentMeta[]> {
   const order = await prisma.order.findFirst({ where: { id: orderId }, select: { id: true } });
   if (!order) throw new HttpError(404, "Order not found");
+
+  const allowedKinds = (Object.keys(AREA_FOR_KIND) as DocumentKind[])
+    .filter((kind) => viewer === undefined || can(viewer, AREA_FOR_KIND[kind], "view"));
+  if (allowedKinds.length === 0) return [];
+
   return prisma.storedDocument.findMany({
-    where: { OR: [
-      { orderId },
-      { cert: { orderId } },
-      { shipper: { orders: { some: { orderId } } } },
-    ] },
+    where: {
+      kind: { in: allowedKinds },
+      OR: [
+        { orderId },
+        { cert: { orderId } },
+        { shipper: { orders: { some: { orderId } } } },
+      ],
+    },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: DOCUMENT_SELECT,
   });
@@ -153,13 +189,16 @@ export async function getDocument(docId: string): Promise<DocumentMeta & { fileD
 
 /**
  * `traveler-71246.pdf`, `traveler-71246-load-3.pdf`, `ticket-72826.pdf`, `bol-72826.pdf`,
- * `cert-<id>.pdf` — what the browser tab and any save-as dialog show.
+ * `cert-72036.pdf` — what the browser tab and any save-as dialog show. A cert has no number of
+ * its own (spec §3.19), so its friendly name is its owning order's number instead — the same
+ * number spec §10.3's cert layout itself prints under "Order No.".
  *
  * `orderNumber`/`shipperNumber` are the CALLER's to supply, exactly as `printTraveler` already
- * carried `orderNumber` alongside (never inside) its document metadata: this module never joins
- * to another table just to learn a friendly number for a filename. A caller that already has one
- * on hand (it just created or looked up the order/shipment) passes it through; one that doesn't
- * falls back to the raw id — still a unique, safe filename, just not a pretty one.
+ * carried `orderNumber` alongside (never inside) its document metadata: this function itself
+ * performs no lookups. A caller that already has a friendly number on hand (it just created or
+ * looked up the order/shipment) passes it through; one that doesn't falls back to the raw id —
+ * still a unique, safe filename, just not a pretty one. `resolveDocumentFilename` below is the
+ * one caller that doesn't already have one and fetches it first.
  */
 export function documentFilename(meta: DocumentMeta, orderNumber?: number, shipperNumber?: number): string {
   switch (meta.kind) {
@@ -174,6 +213,51 @@ export function documentFilename(meta: DocumentMeta, orderNumber?: number, shipp
     case "BOL":
       return `bol-${shipperNumber ?? meta.shipperId}.pdf`;
     case "CERT":
-      return `cert-${meta.certId}.pdf`;
+      return `cert-${orderNumber ?? meta.certId}.pdf`;
+  }
+}
+
+/**
+ * `documentFilename`, but for the one caller that does NOT already have a friendly number on
+ * hand: the download route (`src/app/api/documents/[docId]/route.ts`). Every other consumer of
+ * this module already knows its own order/shipper (`printTraveler` does) and calls
+ * `documentFilename` directly rather than pay for a lookup nothing else needs.
+ *
+ * Regression note (Task 3 review round 2): the pre-extraction `traveler.ts` joined
+ * `order: { select: { orderNumber: true } }` into its own document-select query specifically so
+ * the download route could name the file `traveler-71246.pdf` rather than a raw cuid. The initial
+ * extraction dropped that join without adding a substitute at the one call site that needed it,
+ * so every downloaded filename regressed to `traveler-<cuid>.pdf`. This function is that
+ * substitute, generalized to all four kinds — one extra, targeted read per download, never one
+ * per list entry.
+ */
+export async function resolveDocumentFilename(meta: DocumentMeta): Promise<string> {
+  switch (meta.kind) {
+    case "TRAVELER": {
+      const order = meta.orderId === null ? null
+        : await prisma.order.findFirst({ where: { id: meta.orderId }, select: { orderNumber: true } });
+      return documentFilename(meta, order?.orderNumber);
+    }
+    case "SHIPPER": {
+      const [shipper, order] = await Promise.all([
+        meta.shipperId === null ? null
+          : prisma.shipper.findFirst({ where: { id: meta.shipperId }, select: { shipperNumber: true } }),
+        meta.orderId === null ? null
+          : prisma.order.findFirst({ where: { id: meta.orderId }, select: { orderNumber: true } }),
+      ]);
+      return documentFilename(meta, order?.orderNumber, shipper?.shipperNumber);
+    }
+    case "BOL": {
+      const shipper = meta.shipperId === null ? null
+        : await prisma.shipper.findFirst({ where: { id: meta.shipperId }, select: { shipperNumber: true } });
+      return documentFilename(meta, undefined, shipper?.shipperNumber);
+    }
+    case "CERT": {
+      const cert = meta.certId === null ? null
+        : await prisma.cert.findFirst({ where: { id: meta.certId }, select: { orderId: true } });
+      const order = cert === null ? null
+        : await prisma.order.findFirst({ where: { id: cert.orderId }, select: { orderNumber: true } });
+      return documentFilename(meta, order?.orderNumber);
+    }
   }
 }

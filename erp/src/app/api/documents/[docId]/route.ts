@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 import { handle, requireUser } from "@/server/http";
-import { mustCan, type Area } from "@/server/permissions";
-import { getDocument, documentFilename } from "@/server/documents";
-
-/** `kind` decides the gate: a traveler behind `orders.view`, a shipping ticket or bill of lading
- *  behind `shipping.view`, a certification behind `certs.view` (design spec §9). */
-const AREA_BY_KIND: Record<string, Area> = {
-  TRAVELER: "orders", SHIPPER: "shipping", BOL: "shipping", CERT: "certs",
-};
+import { mustCan } from "@/server/permissions";
+import { getDocument, resolveDocumentFilename, AREA_FOR_KIND } from "@/server/documents";
 
 /**
  * Streams a stored document's bytes EXACTLY as they were archived (spec §8/§10) — a reprint is a
@@ -20,21 +14,28 @@ const AREA_BY_KIND: Record<string, Area> = {
  *
  * Phase 4 Task 3 widened this gate: with four document kinds behind three different areas, the
  * permission cannot be chosen until the row's `kind` is known, so the metadata read comes first
- * and `mustCan` runs against it — never before it. `getDocument` returns the bytes in the same
- * read rather than a separate metadata-only fetch (documents.ts has no such split, and this route
- * is not the place to add one), but nothing in this response reaches the caller until the
- * permission check clears.
+ * and `mustCan` runs against it — never before it, against `AREA_FOR_KIND` (documents.ts — the one
+ * source of truth this route shares with `listDocumentsForOrder`'s own per-kind filtering).
+ * `getDocument` returns the bytes in the same read rather than a separate metadata-only fetch
+ * (documents.ts has no such split, and this route is not the place to add one), but nothing in
+ * this response reaches the caller until the permission check clears.
+ *
+ * The download filename comes from `resolveDocumentFilename` (documents.ts), which looks up the
+ * friendly order/shipper number this route does not otherwise have on hand — a review-round-2 fix:
+ * the initial extraction called the synchronous `documentFilename(doc)` with no number argument,
+ * so every download regressed to a raw-cuid filename (`traveler-<cuid>.pdf`) instead of the
+ * `traveler-71246.pdf` the pre-extraction code produced via its own `order` join.
  */
 export const GET = handle(async (_req, { params }) => {
   const user = requireUser();
   const { docId } = await params;
   const doc = await getDocument(docId);
-  mustCan(user, AREA_BY_KIND[doc.kind], "view");
+  mustCan(user, AREA_FOR_KIND[doc.kind], "view");
   return new NextResponse(new Uint8Array(doc.fileData), {
     status: 200,
     headers: {
       "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${documentFilename(doc)}"`,
+      "content-disposition": `inline; filename="${await resolveDocumentFilename(doc)}"`,
     },
   });
 });
