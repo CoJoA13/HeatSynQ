@@ -5,7 +5,7 @@ import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { expandSerialRange } from "@/lib/serial-range";
 import { findDuplicateSerials } from "../new/OrderLineCard";
-import type { OrderLine, OrderMutationResult, OrderSerial } from "./page";
+import type { ApplyMutation, OrderLine, OrderMutationResult, OrderSerial } from "./page";
 
 type Fields = { serial: string; description: string };
 
@@ -33,7 +33,7 @@ function LineSerialsEditor({
   serials: OrderSerial[];
   requiresSerials: boolean;
   editGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<Fields>();
@@ -73,10 +73,8 @@ function LineSerialsEditor({
       payload.push({ serial, description: row.description });
     }
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/lines/${line.id}/serials`, {
-        method: "PUT", body: JSON.stringify(payload),
-      });
-      applyMutation(res);
+      await applyMutation(() => api<OrderMutationResult>(
+        `/api/orders/${orderId}/lines/${line.id}/serials`, { method: "PUT", body: JSON.stringify(payload) }));
       grid.reset();
       onError(null);
     } catch (e) {
@@ -158,7 +156,7 @@ export function SerialsSection({
   lines: OrderLine[];
   serials: OrderSerial[];
   editGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   return (

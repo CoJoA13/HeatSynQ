@@ -2,7 +2,7 @@
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
-import type { OrderCharge, OrderMutationResult } from "./page";
+import type { ApplyMutation, OrderCharge, OrderMutationResult } from "./page";
 
 type Fields = { description: string; amount: string };
 
@@ -15,7 +15,7 @@ export function ChargesSection({
   orderId: string;
   charges: OrderCharge[];
   editGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<Fields>();
@@ -43,10 +43,9 @@ export function ChargesSection({
       payload.push({ description, amount: amount === "" ? null : amount });
     }
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/charges`, {
+      await applyMutation(() => api<OrderMutationResult>(`/api/orders/${orderId}/charges`, {
         method: "PUT", body: JSON.stringify(payload),
-      });
-      applyMutation(res);
+      }));
       grid.reset();
       onError(null);
     } catch (e) {

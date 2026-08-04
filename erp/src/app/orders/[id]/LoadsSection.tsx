@@ -2,7 +2,7 @@
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
-import type { OrderLoad, OrderMutationResult } from "./page";
+import type { ApplyMutation, OrderLoad, OrderMutationResult } from "./page";
 
 type Fields = { loadNumber: string; qty: string; weight: string };
 
@@ -33,7 +33,7 @@ export function LoadsSection({
   orderId: string;
   loads: OrderLoad[];
   editGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<Fields>();
@@ -94,10 +94,9 @@ export function LoadsSection({
     const payload = buildPayload();
     if (!payload) return;
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/loads`, {
+      await applyMutation(() => api<OrderMutationResult>(`/api/orders/${orderId}/loads`, {
         method: "PUT", body: JSON.stringify(payload),
-      });
-      applyMutation(res);
+      }));
       grid.reset();
       onError(null);
     } catch (e) {
@@ -107,8 +106,8 @@ export function LoadsSection({
 
   async function resplit() {
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/loads/resplit`, { method: "POST" });
-      applyMutation(res);
+      await applyMutation(() =>
+        api<OrderMutationResult>(`/api/orders/${orderId}/loads/resplit`, { method: "POST" }));
       grid.reset(); // the resplit result supersedes any pending manual edit
       onError(null);
     } catch (e) {

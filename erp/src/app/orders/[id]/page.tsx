@@ -18,6 +18,7 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useMutationGate } from "@/lib/use-latest";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 import { LIGHT_DOT_CLASS, LIGHT_LABELS, type TrafficLight } from "@/lib/traffic-light";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -80,6 +81,12 @@ export type OrderDetail = {
  *  removal changes the order's totals against an unchanged loads collection exactly like
  *  addLine/updateLine do, so it needed the same warnings-bearing shape. */
 export type OrderMutationResult = OrderDetail | { order: OrderDetail; warnings: string[] };
+
+/** The one prop every section takes to run a whole-order mutation and report its result. A THUNK,
+ *  not a resolved response: the page's ordering ticket (R4 finding 6) has to be taken before the
+ *  request goes out. Awaiting it is optional — a caller that has follow-up work (clearing its own
+ *  bulk-grid overlay, resetting an input) awaits so a rejection reaches its own catch instead. */
+export type ApplyMutation = (run: () => Promise<OrderMutationResult>) => Promise<void>;
 
 /** `GET /api/parts`'s `PartRow` (src/server/parts.ts), narrowed to what this page's rider picker
  *  and per-line serialization warning need. `hasProcessSteps` is irrelevant for riders (spec §11
@@ -157,26 +164,46 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   // for a genuine empty-string reason. null = not applicable (order isn't voided).
   const [voidReason, setVoidReason] = useState<string | null | undefined>(null);
 
+  // Fix-wave R4 finding 6: ONE monotonic ticket sequence shared by every write on this page and
+  // by `load`'s own full refresh. Each of them replaces the whole `order` state, so overlapping
+  // calls race and the winner used to be whichever response happened to arrive last — a slow line
+  // edit answering after a fast bulk replace put the page back to a state the server had already
+  // moved past, and the sections' bulk-grid overlays then composed against rows that no longer
+  // existed. The ticket is taken at DISPATCH; a completion older than the newest one already
+  // applied is dropped. `load` participates in the same sequence rather than a private one of its
+  // own — otherwise a refresh and a mutation could still each be "newest" on their own counter and
+  // clobber each other.
+  const mutations = useMutationGate();
+
   const load = useCallback(async () => {
+    const ticket = mutations.next();
     const o = await api<OrderDetail>(`/api/orders/${id}`);
-    setOrder(o);
+    if (mutations.accept(ticket)) setOrder(o);
     return o;
-  }, [id]);
+  }, [id, mutations]);
   useEffect(() => {
     load().then(() => setError(null)).catch((e) => setError((e as Error).message));
   }, [load]);
 
-  /** Applies whichever shape a mutation response actually is — the one place every action on this
-   *  page (Overview/Notes/Lines/Containers/Serials/Charges/Loads/Link/Unlink) reports its result.
-   *  An endpoint with no `warnings` key (the three bulk replaces, link/unlink) clears the banner
-   *  rather than leaving a PREVIOUS mutation's warnings displayed against data they no longer
-   *  describe — there is no server signal after one of these to say whether the old warning still
-   *  applies, and showing a stale claim is worse than showing none. */
-  const applyMutation = useCallback((res: OrderMutationResult) => {
+  /** Runs one whole-order mutation and applies whichever response shape it answers with — the one
+   *  place every action on this page (Overview/Notes/Lines/Containers/Serials/Charges/Loads/
+   *  Link/Unlink) reports its result. An endpoint with no `warnings` key (the three bulk replaces,
+   *  link/unlink) clears the banner rather than leaving a PREVIOUS mutation's warnings displayed
+   *  against data they no longer describe — there is no server signal after one of these to say
+   *  whether the old warning still applies, and showing a stale claim is worse than showing none.
+   *
+   *  Takes the request as a THUNK, not its already-resolved result (R4 finding 6): the ordering
+   *  ticket has to be taken before the request is dispatched, and a ticket taken after the caller's
+   *  own `await` would order responses by arrival — which is the bug, not the fix. Callers still
+   *  `await` this and still catch their own failures; the rejection passes straight through. */
+  const applyMutation = useCallback(async (run: () => Promise<OrderMutationResult>) => {
+    const ticket = mutations.next();
+    const res = await run();
+    if (!mutations.accept(ticket)) return;
     const { order: fresh, warnings: w } = unwrapMutation(res);
     setOrder(fresh);
     setWarnings(w);
-  }, []);
+  }, [mutations]);
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
@@ -262,8 +289,8 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        const res = await api<OrderMutationResult>(`/api/orders/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
-        applyMutation(res);
+        await applyMutation(() => api<OrderMutationResult>(
+          `/api/orders/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
         setError(null);
         return true;
       } catch (e) {
@@ -341,10 +368,9 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         setError(`No order #${typed} found for ${customer ? `${customer.code} · ${customer.name}` : "this customer"}.`);
         return;
       }
-      const res = await api<OrderMutationResult>(
+      await applyMutation(() => api<OrderMutationResult>(
         `/api/orders/${id}/link`, { method: "POST", body: JSON.stringify({ otherId: match.id }) },
-      );
-      applyMutation(res);
+      ));
       setLinkInput("");
       setError(null);
     } catch (e) {
@@ -357,8 +383,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   async function unlinkAction() {
     if (!confirm("Unlink this order from its group? Its linked siblings are unaffected.")) return;
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${id}/unlink`, { method: "POST" });
-      applyMutation(res);
+      await applyMutation(() => api<OrderMutationResult>(`/api/orders/${id}/unlink`, { method: "POST" }));
       setError(null);
     } catch (e) {
       setError((e as Error).message);

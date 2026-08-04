@@ -2,7 +2,7 @@
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
-import type { ContainerTypeOption, OrderContainer, OrderMutationResult } from "./page";
+import type { ApplyMutation, ContainerTypeOption, OrderContainer, OrderMutationResult } from "./page";
 
 type Fields = { typeId: string; count: string; qty: string; tareWeight: string; grossWeight: string };
 
@@ -31,7 +31,7 @@ export function ContainersSection({
   containers: OrderContainer[];
   containerTypes: ContainerTypeOption[];
   editGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<Fields>();
@@ -74,10 +74,9 @@ export function ContainersSection({
       });
     }
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/containers`, {
+      await applyMutation(() => api<OrderMutationResult>(`/api/orders/${orderId}/containers`, {
         method: "PUT", body: JSON.stringify(payload),
-      });
-      applyMutation(res);
+      }));
       grid.reset();
       onError(null);
     } catch (e) {

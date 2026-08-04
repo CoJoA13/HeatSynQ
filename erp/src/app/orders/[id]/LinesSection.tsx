@@ -4,7 +4,7 @@ import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { Combobox, type ComboboxOption } from "../new/Combobox";
 import { computeLineWeight } from "../new/OrderLineCard";
-import type { OrderLine, OrderMutationResult, PartOption } from "./page";
+import type { ApplyMutation, OrderLine, OrderMutationResult, PartOption } from "./page";
 
 function lineLabel(line: OrderLine): string {
   return line.position === 1 ? "Lead" : `Line ${line.position}`;
@@ -32,7 +32,7 @@ export function LinesSection({
   customerParts: PartOption[];
   editGate: Gate;
   partsGate: Gate;
-  applyMutation: (res: OrderMutationResult) => void;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   // Only the fields actually being typed into — an untouched line always shows server truth
@@ -82,10 +82,9 @@ export function LinesSection({
     }
     const body = field === "qty" ? { qty: Number(trimmed) } : { weight: trimmed };
     try {
-      const res = await api<OrderMutationResult>(
+      await applyMutation(() => api<OrderMutationResult>(
         `/api/orders/${orderId}/lines/${line.id}`, { method: "PATCH", body: JSON.stringify(body) },
-      );
-      applyMutation(res);
+      ));
       clearDraft(line.id);
       onError(null);
     } catch (e) {
@@ -103,8 +102,8 @@ export function LinesSection({
   async function removeLine(line: OrderLine) {
     if (!confirm(`Remove ${line.part.customer.code} · ${line.part.partNumber} (${lineLabel(line)}) from this order?`)) return;
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/lines/${line.id}`, { method: "DELETE" });
-      applyMutation(res);
+      await applyMutation(() =>
+        api<OrderMutationResult>(`/api/orders/${orderId}/lines/${line.id}`, { method: "DELETE" }));
       onError(null);
     } catch (e) {
       onError((e as Error).message);
@@ -136,10 +135,9 @@ export function LinesSection({
     if (!(Number(weight) > 0)) { onError("New line: enter a weight greater than zero."); return; }
     setAdding(true);
     try {
-      const res = await api<OrderMutationResult>(`/api/orders/${orderId}/lines`, {
+      await applyMutation(() => api<OrderMutationResult>(`/api/orders/${orderId}/lines`, {
         method: "POST", body: JSON.stringify({ partId: addPartId, qty, weight }),
-      });
-      applyMutation(res);
+      }));
       onError(null);
       setAddPartId(null);
       setAddQty("");
