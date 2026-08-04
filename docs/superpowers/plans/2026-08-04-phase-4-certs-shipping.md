@@ -950,12 +950,18 @@ Point `printTraveler` at it (its existing test must stay green), and unit-test i
 
 ---
 
-### Task 12: Per-user signature upload
+### Task 12: Admin UI — per-user signature upload and typed settings widgets
 
 **Files:**
-- Modify: `src/server/users.ts`, `src/app/admin/users/*` (the user detail form)
+- Modify: `src/server/users.ts`, `src/app/admin/users/*` (the user detail form), `src/app/admin/settings/page.tsx`
 - Create: `src/app/api/admin/users/[id]/signature/route.ts`
-- Test: `tests/user-signature.test.ts`
+- Test: `tests/user-signature.test.ts`, `tests/settings.test.ts`
+
+**Amended 2026-08-04 after Task 1's review.** Task 1 added the first **boolean** setting (`cert_required_default`) and the first **enum** setting (`cert_scope_default`) to a settings page that has only ever rendered strings and integers — it submits every value as a string, so both new keys are unusable from the UI as shipped. That is the "a field the model supports but no screen can enter" shape this project treats as breaking, so it is fixed here rather than filed. Add to this task, before the signature work:
+
+- [ ] **Step 0a: Write the failing test** — `setSetting("cert_required_default", "true")` (a string, which is what the page currently sends) is rejected by the zod schema with a 400; assert the page's submit path sends a real boolean and a member of `CERT_SCOPES` instead.
+- [ ] **Step 0b: Render by declared type** — the settings page reads each key's `group` and label already; extend it to switch on the registry's schema type: checkbox for booleans, `<select>` over `CERT_SCOPES` (labelled with `CERT_SCOPE_LABELS`) for the scope enum, `<textarea>` for the two long standing-text keys (`cert_statement`, `shipper_liability_text` — single-line inputs make them uneditable in practice), and the existing input for everything else. Submit each with its real JavaScript type.
+- [ ] **Step 0c: Verify in the browser** that all five of Task 1's settings can be read, changed and saved, then continue with the signature work below.
 
 **Interfaces:**
 - Produces:
