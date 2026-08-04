@@ -108,7 +108,7 @@ export type CertFilter = {
 
 // Declared HERE and imported by Task 6's cert-results.ts — this task runs first, so declaring
 // them the other way round would be a forward reference that does not compile. Task 6 owns their
-// population (seedRequirements, replaceResults); this file owns their shape.
+// population (seedRequirements, replaceReadings); this file owns their shape.
 export type CertReadingDetail = {
   id: string; position: number; value: number | null;
   passed: boolean | null; overridden: boolean; note: string;
@@ -413,7 +413,7 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
  * cert PDFs survive; new prints refused"), the exact `readDetail` precedent orders.ts follows for
  * a voided order.
  *
- * Exported for Task 6's `replaceResults` (cert-results.ts) — it builds its own return value from
+ * Exported for Task 6's `replaceReadings` (cert-results.ts) — it builds its own return value from
  * the SAME `tx` its writes just landed on, the `updateCert`/`createCertInTx` precedent, rather
  * than opening a second read against `prisma` after commit.
  */
@@ -439,9 +439,9 @@ export async function getCert(id: string): Promise<CertDetail> {
  * state a caller actually acts on (`deletedAt`, `freeform`, …) is always re-read after the claim,
  * under the lock, never trusted from this stub.
  *
- * Exported for Task 6's `replaceResults` (cert-results.ts) — another cert mutator that needs the
+ * Exported for Task 6's `replaceReadings` (cert-results.ts) — another cert mutator that needs the
  * identical claim discipline before it reads or writes a requirement's readings. Two concurrent
- * `replaceResults` calls on the SAME cert serialize through the Order row lock taken here, the
+ * `replaceReadings` calls on the SAME cert serialize through the Order row lock taken here, the
  * same guarantee `updateCert`/`voidCert` already lean on.
  */
 export async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId: string }> {

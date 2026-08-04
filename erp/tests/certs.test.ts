@@ -9,7 +9,7 @@ import { addPartInspection } from "@/server/part-inspections";
 import {
   createCert, getCert, listCerts, exportCerts, updateCert, voidCert, certsForOrder,
 } from "@/server/certs";
-import { replaceResults } from "@/server/cert-results";
+import { replaceReadings } from "@/server/cert-results";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
@@ -321,7 +321,7 @@ describe("load re-split leaves a load-scope cert untouched", () => {
     await asSystem(() => addPartInspection(part.id, { inspectionCodeId: code.id, sort: 0, min: "28", max: "32" }));
 
     const cert = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 3 });
-    await asSystem(() => replaceResults(cert.id, {
+    await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30.0" }] }],
     }, { afterPrint: false }));
 

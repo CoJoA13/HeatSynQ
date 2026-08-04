@@ -87,11 +87,15 @@ const REPLACE = z.object({
 }).strict();
 
 /**
- * Full replace of the READINGS under whichever requirements are named in `input` — requirement
- * rows themselves are never added, removed or re-derived here (`seedRequirements` owns that, once,
- * at cert creation; the frozen copy is the point). A requirement id that does not belong to this
- * cert is a 400 naming it, so a stale client payload fails loudly rather than silently writing
- * nothing.
+ * MERGE semantics, not a full wipe: replaces the READINGS under whichever requirements are named
+ * in `input`, and leaves every OTHER requirement's readings on this cert completely untouched.
+ * Omitting a requirement from the payload is not the same as clearing it — a partial submit must
+ * never silently destroy readings someone already typed elsewhere on the cert (the project's own
+ * lesson, applied here deliberately: an editor keeps only what the user actually typed, never
+ * more). Requirement rows themselves are never added, removed or re-derived here
+ * (`seedRequirements` owns that, once, at cert creation; the frozen copy is the point). A
+ * requirement id that does not belong to this cert is a 400 naming it, so a stale client payload
+ * fails loudly rather than silently writing nothing.
  *
  * `passed` is computed per reading with `computePassed` against the requirement's own frozen
  * min/max UNLESS the row sets `overridden: true`, in which case the supplied `passed` is stored
@@ -99,11 +103,11 @@ const REPLACE = z.object({
  *
  * `withDbErrors` → Serializable `$transaction` → `claimCertsOrder` (the same order-row-lock
  * discipline `updateCert`/`voidCert` already use, certs.ts) → `auditedUpdate("cert", …)` wrapping
- * a delete-and-recreate of each named requirement's readings. Refuses once `printedAt` is set
+ * a delete-and-recreate of each NAMED requirement's readings only. Refuses once `printedAt` is set
  * unless `opts.afterPrint` — the caller (Task 11's route) passes
  * `canDo(user, "edit_cert_results_after_print")`.
  */
-export async function replaceResults(
+export async function replaceReadings(
   certId: string, input: unknown, opts: { afterPrint: boolean },
 ): Promise<CertDetail> {
   const data = REPLACE.parse(input);

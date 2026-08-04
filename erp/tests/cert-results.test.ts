@@ -5,7 +5,7 @@ import { readAudit } from "@/server/audit";
 import { createOrder, type OrderDetail } from "@/server/orders";
 import { addPartInspection } from "@/server/part-inspections";
 import { createCert, getCert, type CertDetail } from "@/server/certs";
-import { replaceResults } from "@/server/cert-results";
+import { replaceReadings } from "@/server/cert-results";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -167,12 +167,12 @@ describe("seedRequirements (via createCert)", () => {
   });
 });
 
-describe("replaceResults", () => {
+describe("replaceReadings", () => {
   beforeEach(truncateAll);
 
   it("computes pass/fail per reading and records an override", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
-    const saved = await asSystem(() => replaceResults(cert.id, {
+    const saved = await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [
         { value: "30.0" },
         { value: "25.6", passed: true, overridden: true, note: "retest on the flange OD" },
@@ -186,7 +186,7 @@ describe("replaceResults", () => {
   it("supports many readings under one requirement", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
     const readings = Array.from({ length: 27 }, (_, i) => ({ value: String(28 + (i % 5)) }));
-    const saved = await asSystem(() => replaceResults(cert.id, {
+    const saved = await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings }],
     }, { afterPrint: false }));
     expect(saved.requirements[0].readings).toHaveLength(27);
@@ -198,7 +198,7 @@ describe("replaceResults", () => {
 
   it("a value outside the frozen bounds fails, not overridden", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
-    const saved = await asSystem(() => replaceResults(cert.id, {
+    const saved = await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [{ value: "20.0" }] }],
     }, { afterPrint: false }));
     expect(saved.requirements[0].readings[0]).toMatchObject({ passed: false, overridden: false });
@@ -206,19 +206,52 @@ describe("replaceResults", () => {
 
   it("replacing readings under a requirement deletes the previous set rather than appending", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
-    await asSystem(() => replaceResults(cert.id, {
+    await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30" }, { value: "31" }] }],
     }, { afterPrint: false }));
-    const second = await asSystem(() => replaceResults(cert.id, {
+    const second = await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [{ value: "29" }] }],
     }, { afterPrint: false }));
     expect(second.requirements[0].readings).toHaveLength(1);
     expect(second.requirements[0].readings[0].value).toBe(29);
   });
 
+  // The locking test for the merge-vs-wipe contract: replaceReadings replaces readings ONLY
+  // under the requirements a payload names — every other requirement on the same cert must come
+  // out exactly as it went in. This is what stops a future refactor turning merge semantics into
+  // a full wipe without anything going red (that ambiguity was the review's one Important finding
+  // on this task, resolved in favor of merge — an editor keeps only what the user actually typed,
+  // never more, so a partial submit can never silently destroy readings entered elsewhere).
+  it("MERGE not WIPE: a payload naming only one requirement leaves every other requirement's readings on the cert untouched", async () => {
+    const { order } = await twoLineOrder();
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    expect(cert.requirements.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = cert.requirements;
+
+    await asSystem(() => replaceReadings(cert.id, {
+      requirements: [
+        { id: first.id, readings: [{ value: "10" }] },
+        { id: second.id, readings: [{ value: "20" }] },
+      ],
+    }, { afterPrint: false }));
+
+    // This payload names ONLY the first requirement.
+    const after = await asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: first.id, readings: [{ value: "11" }] }],
+    }, { afterPrint: false }));
+
+    const firstAfter = after.requirements.find((r) => r.id === first.id)!;
+    expect(firstAfter.readings).toHaveLength(1);
+    expect(firstAfter.readings[0].value).toBe(11);
+
+    const secondAfter = after.requirements.find((r) => r.id === second.id)!;
+    expect(secondAfter.readings).toHaveLength(1);
+    expect(secondAfter.readings[0].value).toBe(20);
+  });
+
   it("a requirement id not belonging to this cert is a 400 naming it", async () => {
     const { cert } = await seededCert({});
-    await expect(asSystem(() => replaceResults(cert.id, {
+    await expect(asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: "not-a-real-requirement-id", readings: [{ value: "30" }] }],
     }, { afterPrint: false }))).rejects.toMatchObject({
       status: 400, message: expect.stringContaining("not-a-real-requirement-id"),
@@ -228,27 +261,27 @@ describe("replaceResults", () => {
   it("refuses a results edit after printing without the special action", async () => {
     const { cert } = await seededCert({});
     await prisma.cert.update({ where: { id: cert.id }, data: { printedAt: new Date() } });
-    await expect(asSystem(() => replaceResults(cert.id, { requirements: [] }, { afterPrint: false })))
+    await expect(asSystem(() => replaceReadings(cert.id, { requirements: [] }, { afterPrint: false })))
       .rejects.toThrow(/already been printed/i);
-    await expect(asSystem(() => replaceResults(cert.id, { requirements: [] }, { afterPrint: true })))
+    await expect(asSystem(() => replaceReadings(cert.id, { requirements: [] }, { afterPrint: true })))
       .resolves.toBeTruthy();
   });
 
   it("refuses an unknown cert", async () => {
-    await expect(asSystem(() => replaceResults("nope", { requirements: [] }, { afterPrint: false })))
+    await expect(asSystem(() => replaceReadings("nope", { requirements: [] }, { afterPrint: false })))
       .rejects.toThrow(/not found/i);
   });
 
   it("refuses a voided cert", async () => {
     const { cert } = await seededCert({});
     await prisma.cert.update({ where: { id: cert.id }, data: { deletedAt: new Date() } });
-    await expect(asSystem(() => replaceResults(cert.id, { requirements: [] }, { afterPrint: false })))
+    await expect(asSystem(() => replaceReadings(cert.id, { requirements: [] }, { afterPrint: false })))
       .rejects.toThrow(/not found/i);
   });
 
   it("produces a real cert-level before/after audit diff carrying both reading values", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
-    await asSystem(() => replaceResults(cert.id, {
+    await asSystem(() => replaceReadings(cert.id, {
       requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30" }] }],
     }, { afterPrint: false }));
 
