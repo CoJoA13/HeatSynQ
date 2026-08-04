@@ -5,9 +5,11 @@ import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, voidOrder, type OrderDetail } from "@/server/orders";
 import { resplitLoads } from "@/server/order-loads";
+import { addPartInspection } from "@/server/part-inspections";
 import {
   createCert, getCert, listCerts, exportCerts, updateCert, voidCert, certsForOrder,
 } from "@/server/certs";
+import { replaceResults } from "@/server/cert-results";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
@@ -297,9 +299,6 @@ describe("createCert at order save", () => {
 describe("load re-split leaves a load-scope cert untouched", () => {
   beforeEach(truncateAll);
 
-  // Task 6's `replaceResults` does not exist yet (this task runs before it), so this asserts what
-  // is provable today: the cert survives a re-split with its loadNumber unchanged. Task 6 extends
-  // it with a readings-survive assertion once `replaceResults` (cert-results.ts) exists.
   it("leaves the cert live with its loadNumber unchanged after a re-split", async () => {
     const { order } = await savedOrder({ loadQty: 300, qty: 1000 }); // 4 loads
     const cert = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 3 });
@@ -309,6 +308,30 @@ describe("load re-split leaves a load-scope cert untouched", () => {
     const after = await getCert(cert.id);
     expect(after.deletedAt).toBeNull();
     expect(after.loadNumber).toBe(3);
+  });
+
+  // Task 6's own extension (its brief names this test explicitly): the whole reason load-scope
+  // certs are created lazily rather than eagerly is that Phase 3 keeps loads editable and
+  // re-splittable, and an eager per-load cert would mean a re-split either orphans certs or
+  // destroys ones already holding readings. This proves the "already holding readings" half —
+  // a re-split must not touch a cert someone has typed real results into.
+  it("survives a re-split with its readings intact", async () => {
+    const { order, part } = await savedOrder({ loadQty: 300, qty: 1000 }); // 4 loads
+    const code = await prisma.inspectionCode.create({ data: { name: "Brinell" } });
+    await asSystem(() => addPartInspection(part.id, { inspectionCodeId: code.id, sort: 0, min: "28", max: "32" }));
+
+    const cert = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 3 });
+    await asSystem(() => replaceResults(cert.id, {
+      requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30.0" }] }],
+    }, { afterPrint: false }));
+
+    await asSystem(() => resplitLoads(order.id));
+
+    const after = await getCert(cert.id);
+    expect(after.deletedAt).toBeNull();
+    expect(after.loadNumber).toBe(3);
+    expect(after.requirements[0].readings).toHaveLength(1);
+    expect(after.requirements[0].readings[0]).toMatchObject({ value: 30, passed: true });
   });
 });
 

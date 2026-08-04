@@ -188,7 +188,8 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
     { tx },
   );
 
-  // Task 6's seeder (cert-results.ts) — a genuine no-op today, see that file's own comment.
+  // Task 6's seeder (cert-results.ts) — writes one CertRequirement per live PartInspection of
+  // every line's part, frozen at seed time (spec §6.3).
   await seedRequirements(tx, cert.id);
 
   return readCertDetail(tx, cert.id);
@@ -411,8 +412,12 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
  * Deliberately NOT filtered on `deletedAt` — a voided cert is still readable (spec §5.6: "Stored
  * cert PDFs survive; new prints refused"), the exact `readDetail` precedent orders.ts follows for
  * a voided order.
+ *
+ * Exported for Task 6's `replaceResults` (cert-results.ts) — it builds its own return value from
+ * the SAME `tx` its writes just landed on, the `updateCert`/`createCertInTx` precedent, rather
+ * than opening a second read against `prisma` after commit.
  */
-async function readCertDetail(db: Db, id: string): Promise<CertDetail> {
+export async function readCertDetail(db: Db, id: string): Promise<CertDetail> {
   const row = await db.cert.findFirst({ where: { id }, include: DETAIL_INCLUDE });
   if (!row) throw new HttpError(404, "Certification not found");
 
@@ -433,8 +438,13 @@ export async function getCert(id: string): Promise<CertDetail> {
  * `findFirst` first, because it never changes once a cert exists (no update path touches it); the
  * state a caller actually acts on (`deletedAt`, `freeform`, …) is always re-read after the claim,
  * under the lock, never trusted from this stub.
+ *
+ * Exported for Task 6's `replaceResults` (cert-results.ts) — another cert mutator that needs the
+ * identical claim discipline before it reads or writes a requirement's readings. Two concurrent
+ * `replaceResults` calls on the SAME cert serialize through the Order row lock taken here, the
+ * same guarantee `updateCert`/`voidCert` already lean on.
  */
-async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId: string }> {
+export async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId: string }> {
   const stub = await tx.cert.findFirst({ where: { id: certId }, select: { orderId: true } });
   if (!stub) throw new HttpError(404, "Certification not found");
   await claimOrder(tx, stub.orderId);
