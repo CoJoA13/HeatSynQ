@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    },
+    "prisma-local": {
+      "command": "sh",
+      "args": ["-c", "cd erp && npx prisma mcp"]
+    }
+  }
+}
