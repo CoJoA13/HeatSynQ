@@ -55,7 +55,10 @@ function LineSerialsEditor({
     if (!rangeInput.trim()) return;
     try {
       const expanded = expandSerialRange(rangeInput);
-      for (const serial of expanded) grid.addRow({ serial, description: "" });
+      // ONE state update for the whole expansion (fix-wave R4 finding 7). `addRow` per serial
+      // spread the entire added-rows array each time, so a legal `EC{1-10000}` cost ~50 million
+      // element copies across 10,000 updates in a single keystroke's handler and froze the grid.
+      grid.addRows(expanded.map((serial) => ({ serial, description: "" })));
       setRangeInput("");
       setRangeError(null);
     } catch (e) {

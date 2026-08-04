@@ -86,6 +86,27 @@ export function computeOrphanChurn(params: {
   return { kind: "churned", orphanedEditKeys, orphanedRemovedIds };
 }
 
+/** One locally-added row as `useBulkGrid` stores it: the caller's fields plus the client-generated
+ *  id they are keyed by (there is no server id yet — that is what makes them "added"). */
+export type AddedRow<Fields> = { clientId: string } & Fields;
+
+/**
+ * The pure append behind `addRows` (fix-wave R4 finding 7): every row in `rows` gets its own
+ * client id and lands, in order, after everything already there — in ONE pass over one copy.
+ *
+ * Extracted rather than inlined so the batch behaviour is unit-testable without a component-test
+ * harness (this codebase has none; vitest runs `environment: "node"`) — the `computeOrphanChurn`
+ * precedent above. Never mutates `current`: the hook hands it straight to a `setAdded` updater,
+ * where mutating React's own previous state would be a bug independent of anything here.
+ */
+export function appendRows<Fields extends Record<string, string>>(
+  current: readonly AddedRow<Fields>[], rows: readonly Fields[],
+): AddedRow<Fields>[] {
+  const next = current.slice();
+  for (const row of rows) next.push({ clientId: crypto.randomUUID(), ...row });
+  return next;
+}
+
 /**
  * `Fields` is the flat, string-valued shape a grid's inputs are bound to (e.g. containers'
  * `{ typeId, count, qty, tareWeight, grossWeight }` — every value a plain string, same wire-shape
@@ -94,7 +115,7 @@ export function computeOrphanChurn(params: {
  */
 export function useBulkGrid<Fields extends Record<string, string>>() {
   const [edits, setEdits] = useState<Map<string, Partial<Fields>>>(new Map());
-  const [added, setAdded] = useState<({ clientId: string } & Fields)[]>([]);
+  const [added, setAdded] = useState<AddedRow<Fields>[]>([]);
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   // The row-id set `compose`/`detectOrphans` last saw, and the standing "your edits were set
   // aside" notice. Both `useState`, not `useRef`: `detectOrphans` below updates them by calling
@@ -140,6 +161,22 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
     const clientId = crypto.randomUUID();
     setAdded((cur) => [...cur, { clientId, ...initial }]);
     return clientId;
+  }
+
+  /**
+   * Appends a whole BATCH of new local-only rows in ONE state update (fix-wave R4 finding 7).
+   *
+   * `addRow` in a loop is not an equivalent shorthand for this: every call spreads the entire
+   * `added` array to make the next one, so N rows cost N successive whole-array copies —
+   * quadratic — plus N separate updates. The hub's serial grid did exactly that for a range
+   * expansion, and `expandSerialRange` legitimately produces up to 10,000 serials from one
+   * keystroke (`EC{1-10000}`), which is ~50 million element copies on the main thread inside a
+   * single event handler: the grid froze instead of filling in. Reach for this whenever the row
+   * count comes from the input rather than from a click.
+   */
+  function addRows(rows: readonly Fields[]) {
+    if (rows.length === 0) return; // nothing to append — don't schedule a re-render for it
+    setAdded((cur) => appendRows(cur, rows));
   }
 
   /** Clears every local edit — called after a Save actually succeeds, once the server's fresh
@@ -227,6 +264,6 @@ export function useBulkGrid<Fields extends Record<string, string>>() {
 
   return {
     edits, added, removedIds, dirty, orphanWarning,
-    updateExisting, updateAdded, removeExisting, removeAdded, addRow, reset, compose,
+    updateExisting, updateAdded, removeExisting, removeAdded, addRow, addRows, reset, compose,
   };
 }
