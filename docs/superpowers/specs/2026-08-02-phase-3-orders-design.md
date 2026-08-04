@@ -123,8 +123,9 @@ enum OrderStatus {
 }
 
 model Order {
-  id            String      @id @default(cuid())
-  orderNumber   Int         @unique
+  id              String    @id @default(cuid())
+  orderNumber     Int       @unique
+  clientRequestId String?   @unique  // entry form's idempotency nonce (§5.5)
   customerId    String
   customer      Customer    @relation(fields: [customerId], references: [id])
   poNumber      String      @default("")
@@ -161,6 +162,16 @@ model Order {
   forever and numbers are never reused or re-entered (allocation-only, §5.2). Reviving or
   reusing an order number is the double-billing adjacency the no-duplication rule exists to
   prevent. `tests/partial-unique-sweep.test.ts` gains the documented exemption.
+- **`clientRequestId` is the entry form's idempotency nonce**, and carries the same plain-`@unique`
+  sweep exemption for the same reason (fix-wave R4 finding 5). Two tabs can resume ONE autosaved
+  draft and both Save; the Serializable loser's 409 is retried automatically, and that retry used
+  to allocate the next number and create a SECOND order for one operator action. The nonce is
+  minted when a fresh entry form mounts, lives inside the draft payload (so both tabs and the retry
+  carry the same one), and `createOrder` answers a collision on it with the order that request
+  already created — `{ order, warnings: [], deduped: true }`. Nullable, so historic rows and any
+  caller that sends none are unaffected (NULLs never collide in a Postgres unique index); never
+  freed by a void, since handing the nonce back to a retry would recreate the duplicate it exists
+  to stop.
 - **Voided is not an enum value.** Lifecycle status and voidedness are orthogonal:
   `deletedAt` set = voided (displayed as "Voided"), reason lives in the audit entry
   (`auditedSoftDelete`), consistent with soft-delete-everywhere. Phase 3 reaches only
