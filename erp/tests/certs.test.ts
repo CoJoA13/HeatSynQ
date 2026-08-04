@@ -8,7 +8,7 @@ import { resplitLoads } from "@/server/order-loads";
 import {
   createCert, getCert, listCerts, exportCerts, updateCert, voidCert, certsForOrder,
 } from "@/server/certs";
-import type { Customer, Part } from "../prisma/generated/prisma/client";
+import { Prisma, type Customer, type Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -94,6 +94,100 @@ describe("createCert", () => {
     const first = await createCert({ orderId: order.id, scope: "ORDER" });
     await asSystem(() => voidCert(first.id, "keyed against the wrong load"));
     await expect(createCert({ orderId: order.id, scope: "ORDER" })).resolves.toBeTruthy();
+  });
+
+  // Every uniqueness case above is SEQUENTIAL (await the first createCert, then await the
+  // second), which proves the business-rule 400 but never exercises `claimOrder`'s row lock at
+  // all — a caller that deleted the claim (swapped it for a plain, unlocked `findFirst`) would
+  // still pass every test above, since nothing above ever has two transactions open on the same
+  // order at once. The real hazard is two genuinely concurrent creates for the SAME
+  // scope-instance, and the two tests below prove it two ways.
+  //
+  // Both legal outcomes for the loser of a genuine race are "a clean, correctly-refused failure":
+  // a business-rule 400 if its Serializable snapshot happens to already reflect the winner's
+  // commit, or a 40001-mapped 409 (Postgres's SSI catching the write-skew) if it does not — this
+  // invariant has no unique index behind it (spec §4.1: one can't express it), so unlike
+  // `createOrder`'s `clientRequestId` P2002 (tests/orders.test.ts, "two concurrent saves of the
+  // same intent settle on exactly ONE order") the LOSER's exact status is genuinely
+  // timing-dependent, not a bug — measured directly, it varies with how warm the connection pool
+  // already is. What must never happen, and what both tests below actually check, is a duplicate:
+  // exactly one winner, exactly one live cert.
+  it("blocks a concurrent create for the same scope-instance until the holder's cert commits, then refuses instead of duplicating (row-lock discipline)", async () => {
+    const { order } = await savedOrder();
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // The `claimOrder` row-lock precedent (order-loads.test.ts "blocks on a concurrent claim of
+    // the order row until it releases"; part-process-steps.test.ts "lockCurrentRevision cannot
+    // lock a revision that loses its last step while the claim is held"): a manual holder takes
+    // the EXACT SQL `claimOrder` takes, proven blocking below via a race-against-timeout, and only
+    // WHILE holding it commits a cert — so `createCall` cannot decide anything about this
+    // scope-instance until that commit has happened.
+    //
+    // Serializable, matching `createCert`'s own isolation — SSI conflict detection only protects
+    // a pair of transactions when BOTH run Serializable. And the holder runs `createCert`'s exact
+    // clash-check SELECT before its own create, not just the create alone: a lone write with no
+    // matching read on the holder's side is a single rw-edge, and Postgres's SSI needs a CYCLE
+    // (an edge back from the holder to `createCall` too) to have any grounds to abort anything —
+    // skipping this read left `createCall` free to duplicate the cert on every run (measured).
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      await tx.cert.findFirst({
+        where: { orderId: order.id, scope: "ORDER", loadNumber: null, shipperId: null, deletedAt: null },
+        select: { id: true },
+      });
+      await tx.cert.create({ data: { orderId: order.id, scope: "ORDER" } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 20000 });
+
+    await claimed;
+    const createCall = asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+
+    // Not itself the discriminator — its job is to guarantee createCert's own claim attempt has
+    // actually been dispatched, and in the correct implementation is genuinely blocked on the
+    // holder, before the holder is released.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      createCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: a caller that swapped `claimOrder` for a plain, unlocked `findFirst`
+    // would let `createCall` sail through on stale (pre-holder) state and resolve with a SECOND
+    // live cert — the one outcome that must never happen, regardless of which of the two legal
+    // failure shapes (see the leading comment) the loser actually gets.
+    const NOT_REJECTED = Symbol("not rejected");
+    const rejection = await createCall.then(() => NOT_REJECTED, (err: unknown) => err);
+    expect(rejection).not.toBe(NOT_REJECTED);
+    expect([400, 409]).toContain((rejection as { status: number }).status);
+    expect(await prisma.cert.count({ where: { orderId: order.id, deletedAt: null } })).toBe(1);
+  });
+
+  // A supplementary, real-world-shaped confirmation alongside the deterministic test above: two
+  // genuinely independent callers, no manual synchronization at all.
+  it("two genuinely concurrent creates for the same scope-instance still settle on exactly ONE live cert", async () => {
+    const { order } = await savedOrder();
+    const input = { orderId: order.id, scope: "ORDER" as const };
+
+    const settled = await Promise.allSettled([
+      asSystem(() => createCert(input)), asSystem(() => createCert(input)),
+    ]);
+
+    const fulfilled = settled.filter((r) => r.status === "fulfilled");
+    const rejected = settled.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect([400, 409]).toContain((rejected[0] as PromiseRejectedResult & { reason: { status: number } }).reason.status);
+
+    expect(await prisma.cert.count({ where: { orderId: order.id, deletedAt: null } })).toBe(1);
   });
 
   it("scopes by load and by shipment independently", async () => {
@@ -264,6 +358,16 @@ describe("updateCert", () => {
 
   it("throws 404 for an unknown id", async () => {
     await expect(updateCert("nope", { freeform: "x" })).rejects.toThrow(/not found/i);
+  });
+
+  // The symmetric case to voidCert's "refuses to void an already-voided cert" below — a voided
+  // cert is read-only via getCert (still viewable) but not via updateCert (the updateOrder
+  // precedent: a voided order refuses edits the same way).
+  it("refuses to update a voided cert", async () => {
+    const { order } = await savedOrder();
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => voidCert(cert.id, "test void"));
+    await expect(asSystem(() => updateCert(cert.id, { freeform: "x" }))).rejects.toThrow(/not found/i);
   });
 });
 
