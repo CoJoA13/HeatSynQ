@@ -17,6 +17,7 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { normalizeRequestNonce, submitWithConflictRetry } from "@/lib/idempotent-save";
+import { resolveLeadValidity, type LeadValidityReport } from "@/lib/lead-validity";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { OrderLineCard, computeLineWeight, findDuplicateSerials } from "./OrderLineCard";
@@ -218,8 +219,15 @@ export default function NewOrderPage() {
   }, []);
 
   const [entryDefaultRequestDate, setEntryDefaultRequestDate] = useState<string | null>(null);
-  const [leadValid, setLeadValid] = useState<boolean | null>(null);
-  const onLeadValidity = useCallback((ok: boolean | null) => setLeadValid(ok), []);
+  // Fix-wave R4 finding 9: the lead-part check's verdict is stored WITH the line id it came from,
+  // and read back only while that line is still the lead. A late report from a line the operator
+  // has since removed (or that a removal demoted out of position 1) describes a part that is no
+  // longer being ordered, and used to block — or unblock — Save on it. `resolveLeadValidity` is
+  // that read; OrderLineCard's own effect cleanup is the other half, stopping an unmounted card
+  // from reporting at all.
+  const [leadReport, setLeadReport] = useState<LeadValidityReport | null>(null);
+  const onLeadValidity = useCallback(
+    (lineId: string, ok: boolean | null) => setLeadReport({ lineId, ok }), []);
 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -368,6 +376,9 @@ export default function NewOrderPage() {
 
   const selectedCustomer = customers.find((c) => c.id === draft.customerId) ?? null;
   const customerParts = draft.customerId ? parts.filter((p) => p.customerId === draft.customerId) : [];
+  // Composed at render from the id-keyed report, never stored as its own state — a stale verdict
+  // about a line that is no longer the lead is simply not read (R4 finding 9).
+  const leadValid = resolveLeadValidity(leadReport, draft.lines[0]?.id ?? null);
   const displayedPo = draft.poOverride ?? (selectedCustomer?.defaultPo ?? "");
   const displayedReceivedDate = draft.receivedDateOverride ?? formatDateOnly(todayDateOnly());
   const displayedRequestDate = draft.requestDateOverride ?? (entryDefaultRequestDate ?? "");

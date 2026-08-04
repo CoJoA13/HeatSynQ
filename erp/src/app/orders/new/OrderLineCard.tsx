@@ -64,8 +64,10 @@ export function OrderLineCard({
   processesGate: Gate;
   onChange: (patch: Partial<LineDraft>) => void;
   onRemove?: () => void;
-  /** Fires only while isLead. `null` = unknown/unchecked — never blocks Save on its own. */
-  onLeadValidity?: (ok: boolean | null) => void;
+  /** Fires only while isLead, reporting THIS line's id alongside the verdict (`null` =
+   *  unknown/unchecked — never blocks Save on its own). The id is what lets the parent ignore a
+   *  report from a line that is no longer the lead (fix-wave R4 finding 9, `resolveLeadValidity`). */
+  onLeadValidity?: (lineId: string, ok: boolean | null) => void;
 }) {
   const part = parts.find((p) => p.id === line.partId);
   const qtyNum = Number(line.qty);
@@ -91,10 +93,11 @@ export function OrderLineCard({
   // upfront per-option disabling would need N fetches; validating the single pick is the cheap
   // alternative). Re-runs whenever this card becomes/stops being the lead too, since removing an
   // earlier line can promote this one to index 0 without its partId changing.
+  const lineId = line.id;
   useEffect(() => {
     if (!isLead || !line.partId || !processesGate.allowed) {
       setLeadCheck(null);
-      onLeadValidity?.(null);
+      onLeadValidity?.(lineId, null);
       return;
     }
     const partId = line.partId;
@@ -103,13 +106,21 @@ export function OrderLineCard({
     checkLead(partId).then((result) => {
       if (!latest.isCurrent(t)) return;
       setLeadCheck(result);
-      onLeadValidity?.(result.status === "ok");
+      onLeadValidity?.(lineId, result.status === "ok");
     }).catch((e) => {
       if (!latest.isCurrent(t)) return;
       setLeadCheck({ status: "unknown", message: (e as Error).message });
-      onLeadValidity?.(null);
+      onLeadValidity?.(lineId, null);
     });
-  }, [isLead, line.partId, processesGate.allowed, latest, checkLead, onLeadValidity]);
+    // Fix-wave R4 finding 9: bump the gate on cleanup, so a check still in flight when this card
+    // UNMOUNTS resolves into nothing. Without it, removing the lead line mid-check left the
+    // resolution free to run `setLeadCheck` on a dead component and — worse — to report a verdict
+    // about the removed part, which the parent then held against whichever line had been promoted
+    // into the lead position. `latest.isCurrent(t)` is false for every outstanding ticket after
+    // this, which is exactly the "report nothing" the two `.then`/`.catch` guards above already
+    // implement for a superseded (rather than unmounted) check.
+    return () => { latest.next(); };
+  }, [isLead, lineId, line.partId, processesGate.allowed, latest, checkLead, onLeadValidity]);
 
   // Spec §11: the picker shows step-status up front rather than only after a pick — but only for
   // the LEAD slot. Riders never lock a revision (resolveLineParts exempts them from the
