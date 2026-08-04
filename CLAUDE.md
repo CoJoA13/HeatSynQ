@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Read first
 
-`docs/HANDOFF.md` is the portable project memory and the entry point for any new session — it carries the scope decisions, the model facts, the current backlog, and the Phase 2 kickoff instruction. Read it before planning work.
+`docs/HANDOFF.md` is the portable project memory and the entry point for any new session — it carries the scope decisions, the model facts, the current backlog, and the next phase's kickoff instruction. Read it before planning work.
 
 Two documents are binding, not advisory:
 
@@ -34,9 +34,10 @@ npm run dev                       # http://localhost:3000
 Quality gates — all three must stay green:
 
 ```bash
-npm test                          # vitest, 585 integration tests against the real erp_test DB
+npm test                          # vitest, 1010 integration tests against the real erp_test DB
 npx tsc --noEmit
 npx eslint src tests
+npm run test:e2e                  # 10 Playwright flows against `npm run dev` + the DEV db (erp, not erp_test); bundled Chromium
 ```
 
 Single test file or single case:
@@ -82,7 +83,9 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 
 **Audit** (`src/server/audit.ts`). Every mutation goes through `auditedCreate` / `auditedUpdate` / `auditedSoftDelete` — `settings.ts`'s direct write is the one sanctioned exception. Phase 3 added two more: the order-draft service (`order-drafts.ts`, pre-entity scratch — spec-authorized, sweep-allowlisted) and `allocateNumber`'s counter bump (the consuming entity's own create entry is the audit trail). `auditedUpdate` snapshots before and after, and `SNAPSHOT_INCLUDE` decides which relations are pulled into those snapshots. **When you add an auditable entity, extend both `AuditableModel` and `SNAPSHOT_INCLUDE`** — omitting the relations means changes made through join tables never show up in history. `redact()` scrubs keys matching password/token/secret/signatureImage recursively, but treat it as defense-in-depth: don't hand a secret-bearing payload to the audit layer in the first place.
 
-**Deletion is always soft** (`deletedAt`), with active flags for hiding. Hard deletes only in tests. Unique columns on soft-deletable models are unique **only among live rows** (a partial index filtered on `deletedAt IS NULL`), so re-using a deleted code creates a genuinely new row with its own id and its own audit history — there is no revival-on-create, and adding one back is a regression. **Never `findUnique`/`upsert` on such a column**: the generated client still types it unique, so both compile, and `findUnique` silently returns the deleted row. Use `findFirst({ where: { code, deletedAt: null } })`. `tests/partial-unique-sweep.test.ts` enforces both halves.
+**Row locks, not isolation levels, guard cross-transaction invariants.** `workingRevision` and `lockCurrentRevision` (`part-process-steps.ts`) and `claimOrder` (`orders.ts`) all claim their row with `SELECT … FOR UPDATE` before reading the state they act on. The lock works at ANY caller isolation; making one side Serializable is never a substitute (Postgres only serializes transactions that are all Serializable). Order mutations, traveler prints, and revision cuts all serialize through these claims — do not bypass them with a bare read, and do not "simplify" a claim into a plain `findFirst`.
+
+**Deletion is always soft** (`deletedAt`), with active flags for hiding. Hard deletes only in tests. Unique columns on soft-deletable models are unique **only among live rows** (a partial index filtered on `deletedAt IS NULL`), so re-using a deleted code creates a genuinely new row with its own id and its own audit history — there is no revival-on-create, and adding one back is a regression. **Never `findUnique`/`upsert` on such a column**: the generated client still types it unique, so both compile, and `findUnique` silently returns the deleted row. Use `findFirst({ where: { code, deletedAt: null } })`. `tests/partial-unique-sweep.test.ts` enforces both halves. Two columns are deliberately plain `@unique` on the soft-deletable `Order` — `orderNumber` and `clientRequestId` — because voided orders keep them forever and they are never re-entered (allocation-only / idempotency-key). Both carry documented sweep exemptions beside `User.username`; do not convert them to partial-unique.
 
 **Settings** (`src/server/settings.ts`) is a typed zod registry validated on both read and write, guarded with `Object.hasOwn` against prototype keys.
 
@@ -93,7 +96,9 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 - **Any server-rendered page that fetches data must call `requireUser` itself.** The proxy does not authorize it. Phase 1 pages sidestep this by being client components against guarded APIs.
 - **Route handler tests must pass ctx**: `handler(request, { params: Promise.resolve({}) })`. The `Handler` type requires it — Next's ParamCheck rejects an optional ctx (true through 15 and 16).
 - Tests share one database and call `truncateAll()` in `beforeEach`; `vitest.config.ts` sets `fileParallelism: false` to keep that safe. Don't parallelize them.
-- **`npx prisma migrate dev` needs a TTY.** It refuses outright in a non-interactive shell — including a Claude Code session driving Bash — with "the environment is non-interactive, which is not supported," and neither `CI=true` nor `--create-only` gets past it (it worked fine before Prisma 7). Without a TTY: `npx prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --script`, read the output in full, hand-write it into a new `prisma/migrations/<timestamp>_<name>/migration.sql`, then apply with the usual two `migrate deploy` calls. That is how this branch's one migration was made (handoff §5.18).
+- **`npx prisma migrate dev` needs a TTY.** It refuses outright in a non-interactive shell — including a Claude Code session driving Bash — with "the environment is non-interactive, which is not supported," and neither `CI=true` nor `--create-only` gets past it (it worked fine before Prisma 7). Without a TTY: `npx prisma migrate diff --from-config-datasource --to-schema=prisma/schema.prisma --script`, read the output in full, hand-write it into a new `prisma/migrations/<timestamp>_<name>/migration.sql`, then apply with the usual two `migrate deploy` calls. Every migration since Prisma 7 has been made this way (handoff §5.18); Phase 3 added four more with it.
+- **Never `vi.spyOn` a Prisma model delegate** — `mockRestore()` does not put the original method back on this client, silently corrupting the shared `prisma` singleton for every later test in the run. Stub with plain property save/restore instead.
+- **`renderPdf` output is not byte-deterministic across calls.** Tests that compare freshly rendered PDFs must pin content (e.g. the uncompressed `/Count N` page marker), never `Buffer.compare` two renders. Comparing STORED bytes on reprint is exact by design and stays `Buffer.compare`.
 - **pdfmake's browser build wants a global `window` and will not run under Node.** Server-side PDF rendering (the traveler, `src/server/pdf/render.ts`) has to use pdfmake's actual Node entry, `PdfPrinter` (`pdfmake/src/printer.js`), fed font buffers decoded from pdfmake's own bundled vfs rather than the file paths `PdfPrinter` normally wants — nothing then has to survive `output: "standalone"`'s file tracing. That needs `next.config.ts`'s `serverExternalPackages: ["pdfmake", "bwip-js"]` alongside it: both are CJS with their own `require` graphs and megabytes of embedded font/barcode data the bundler would otherwise inline into every route that touches a document.
 
 ## Working conventions
