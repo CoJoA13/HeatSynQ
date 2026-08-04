@@ -713,7 +713,7 @@ edit additionally requires `edit_cert_results_after_print`.
   `replaceContainers`, `replaceSerials`, `voidShipper`.
 - `src/server/certs.ts` — `resolveCertSettings(customerId, lineParts)`, `createCert(scope-aware)`,
   `getCert`, `listCerts`, `updateCert`, `voidCert`.
-- `src/server/cert-results.ts` — `seedRequirements(tx, certId)`, `replaceResults`, the pass/fail
+- `src/server/cert-results.ts` — `seedRequirements(tx, certId)`, `replaceReadings`, the pass/fail
   computation and override handling.
 - `src/server/documents.ts` — **extracted from `traveler.ts`**: `storeDocument(tx, {kind, owner,
   bytes})`, `listDocumentsForOrder(orderId, permissions)`, `getDocument(docId)`. With one widened

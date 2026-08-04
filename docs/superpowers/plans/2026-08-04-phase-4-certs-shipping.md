@@ -471,7 +471,7 @@ it("creates an ORDER-scope cert at order save and nothing for the other scopes",
 it("leaves a load-scope cert with readings untouched when the loads are re-split", async () => {
   const { order } = await savedOrder({ loadQty: 300, qty: 1000 });     // 4 loads
   const cert = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 3 });
-  await replaceResults(cert.id, oneReading(cert, "30.0"), { afterPrint: false });
+  await replaceReadings(cert.id, oneReading(cert, "30.0"), { afterPrint: false });
   await resplitLoads(order.id);
   const after = await getCert(cert.id);
   expect(after.deletedAt).toBeNull();
@@ -480,7 +480,7 @@ it("leaves a load-scope cert with readings untouched when the loads are re-split
 });
 ```
 
-(Depends on Task 6's `replaceResults`; if this task runs first, assert the cert's survival and `loadNumber` only and add the readings assertion when Task 6 lands.)
+(Depends on Task 6's `replaceReadings`; if this task runs first, assert the cert's survival and `loadNumber` only and add the readings assertion when Task 6 lands.)
 
 - [ ] **Step 7: Run the tests** — PASS. Add an audit-content assertion: voiding writes an entry whose payload carries the reason, and updating `freeform` produces a real before/after diff.
 - [ ] **Step 8: Gates + commit** — `feat(certs): scope-aware creation, listing, export and void`
@@ -518,7 +518,13 @@ export type CertRequirementDetail = {
  *  inspections in the part's own `sort` order; min/max/sampleQty/location COPIED (frozen). */
 export async function seedRequirements(tx: Prisma.TransactionClient, certId: string): Promise<void>;
 /** Full replace of one cert's requirements+readings. Refuses after printedAt unless `afterPrint`. */
-export async function replaceResults(certId: string, input: unknown, opts: { afterPrint: boolean }): Promise<CertDetail>;
+/** Replaces the READINGS under whichever requirements the payload names. Requirement rows are
+ *  never added, removed or re-derived — the frozen copy is the point — and a requirement the
+ *  payload does not mention keeps its readings untouched. Renamed from `replaceResults`
+ *  2026-08-04 after this task's review: "results" read as "the cert's whole result set", which
+ *  would make an omitted requirement a silent data loss. Merge semantics are deliberate — Task
+ *  16's grid submits what the user touched, the 2C-3 "keep only what the user typed" lesson. */
+export async function replaceReadings(certId: string, input: unknown, opts: { afterPrint: boolean }): Promise<CertDetail>;
 ```
 
 - [ ] **Step 1: Write the failing pure tests** in `tests/pass-fail.test.ts` — a table covering: no value → `null`; min only (below/at/above); max only; both bounds (below/at-min/inside/at-max/above); neither bound with a value → `true`.
@@ -543,7 +549,7 @@ it("freezes min/max against a later part edit", async () => {
 
 it("computes pass/fail per reading and records an override", async () => {
   const { cert } = await seededCert({ min: 28, max: 32 });
-  const saved = await replaceResults(cert.id, {
+  const saved = await replaceReadings(cert.id, {
     requirements: [{ id: cert.requirements[0].id, readings: [
       { value: "30.0" },
       { value: "25.6", passed: true, overridden: true, note: "retest on the flange OD" },
@@ -557,14 +563,14 @@ it("computes pass/fail per reading and records an override", async () => {
 it("refuses a results edit after printing without the special action", async () => {
   const { cert } = await seededCert({});
   await prisma.cert.update({ where: { id: cert.id }, data: { printedAt: new Date() } });
-  await expect(replaceResults(cert.id, { requirements: [] }, { afterPrint: false }))
+  await expect(replaceReadings(cert.id, { requirements: [] }, { afterPrint: false }))
     .rejects.toThrow(/already been printed/i);
-  await expect(replaceResults(cert.id, { requirements: [] }, { afterPrint: true })).resolves.toBeTruthy();
+  await expect(replaceReadings(cert.id, { requirements: [] }, { afterPrint: true })).resolves.toBeTruthy();
 });
 ```
 
 - [ ] **Step 4: Run to verify failure.**
-- [ ] **Step 5: Implement.** `seedRequirements` loads the cert's order lines with their parts' live `PartInspection` rows (`orderBy: { sort: "asc" }`), writes requirements with a cert-wide running `position`, and calls `assertRefExists("inspectionCode", …, tx)` / `assertRefExists("inspectionScale", …, tx)` per row — which is why the enclosing transaction is Serializable. `replaceResults` runs `withDbErrors` → Serializable `$transaction` → `auditedUpdate("cert", …)` → delete-and-recreate readings under each requirement (requirements themselves are never re-seeded — the frozen copy is the point), computing `passed` with `computePassed` unless the row sets `overridden: true`, in which case the supplied `passed` is stored verbatim. A requirement id not belonging to this cert is a 400 naming it.
+- [ ] **Step 5: Implement.** `seedRequirements` loads the cert's order lines with their parts' live `PartInspection` rows (`orderBy: { sort: "asc" }`), writes requirements with a cert-wide running `position`, and calls `assertRefExists("inspectionCode", …, tx)` / `assertRefExists("inspectionScale", …, tx)` per row — which is why the enclosing transaction is Serializable. `replaceReadings` runs `withDbErrors` → Serializable `$transaction` → `auditedUpdate("cert", …)` → delete-and-recreate readings under each requirement (requirements themselves are never re-seeded — the frozen copy is the point), computing `passed` with `computePassed` unless the row sets `overridden: true`, in which case the supplied `passed` is stored verbatim. A requirement id not belonging to this cert is a 400 naming it.
 - [ ] **Step 6: Run the tests** — PASS. Add an audit-content assertion: a reading change produces a real cert-level before/after diff carrying both values.
 - [ ] **Step 7: Wire Task 5's call** — `createCert` now genuinely calls `seedRequirements`; re-run `tests/certs.test.ts`.
 - [ ] **Step 8: Gates + commit** — `feat(certs): seeded requirements, multi-reading results, computed pass/fail`
