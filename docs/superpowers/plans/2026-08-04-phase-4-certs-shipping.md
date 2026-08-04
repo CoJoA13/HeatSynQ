@@ -282,8 +282,11 @@ select: DOCUMENT_SELECT,   // never fileData
 
 - [ ] **Step 4: Migrate `traveler.ts`** — delete its `listDocuments`/`getDocument`/`DocumentMeta` and its inline `auditedCreate("storedDocument", …)`; `printTraveler` now calls `storeDocument(tx, { kind: "TRAVELER", orderId, loadNumber: loadNumber ?? null }, pdf)` **inside the same claim-holding transaction it already has**. Keep `travelerFilename` delegating to `documentFilename`.
 - [ ] **Step 5: Widen the document route gate** in `src/app/api/documents/[docId]/route.ts` — read the meta first, then gate on the owning area: `TRAVELER → orders.view`, `SHIPPER`/`BOL` → `shipping.view`, `CERT → certs.view`. Add a route test asserting a `shipping.view`-only session can fetch a SHIPPER document and gets 403 on a CERT one.
-- [ ] **Step 6: Run the tests** — `npx vitest run tests/documents.test.ts tests/traveler.test.ts`. Expected: PASS, with `traveler.test.ts` unchanged (behaviour is identical; only the seam moved).
-- [ ] **Step 7: Gates + commit** — `refactor(documents): one stored-document service for all four kinds`
+- [ ] **Step 6: Close two coverage gaps Task 2's review found** (both cheap, both in the area this task owns):
+  - Add the missing `CHECK` rejection case to `tests/certs-schema.test.ts` via `prisma.$executeRaw`: a `SHIPPER` row with `orderId` set but `shipperId` NULL. That is precisely the combination the `SHIPPER` branch's deliberate looseness still has to forbid, and it is the one a future "tightening" would silently allow.
+  - Add a smoke test that every `SNAPSHOT_INCLUDE` entry is a valid Prisma include for its model. `SNAPSHOT_INCLUDE` is typed `Record<AuditableModel, object | undefined>` — plain `object` — so a wrong relation name or `orderBy` field compiles and only explodes at the first `audited*` call in a later task. Iterate the map and issue one `findFirst({ include })` per entry; a bad path throws.
+- [ ] **Step 7: Run the tests** — `npx vitest run tests/documents.test.ts tests/traveler.test.ts tests/certs-schema.test.ts`. Expected: PASS, with `traveler.test.ts` unchanged (behaviour is identical; only the seam moved).
+- [ ] **Step 8: Gates + commit** — `refactor(documents): one stored-document service for all four kinds`
 
 ---
 
@@ -772,7 +775,8 @@ it("refuses a shipment with no positive quantity", async () => {
 - [ ] **Step 5: Implement `getShipper`** with the full `ShipperDetail` projection, computing `shippedToDate*` per line via `shippedTotals` and `label` as `${orderNumber}-${sequence}`.
 - [ ] **Step 6: Run the tests** — PASS.
 - [ ] **Step 7: Add the concurrency tests** — two `createShipper` calls racing on one order get distinct packing-list numbers and distinct sequences; two multi-order saves over `{A,B}` and `{B,A}` driven concurrently both complete (no deadlock, no 500).
-- [ ] **Step 8: Gates + commit** — `feat(shipping): create shipments with sorted claims, credit hold and idempotency`
+- [ ] **Step 8: Complete `SNAPSHOT_INCLUDE.shipper` (Task 2 review, spec §7).** Task 2 shipped `orders: { include: { order: { select: { orderNumber } } } }`, but spec §7 says the shipper snapshot pulls its orders "with order **and customer** selects" — without it a shipment's history diff renders `customerId`, `carrierId` and `shipToAddressId` as raw cuids, which is the unreadable-history shape issue #24 exists to prevent. Add the customer select (and the carrier/ship-to name selects on the shipper itself), then assert audit **content**: creating a shipment produces a snapshot naming the customer by code, not by cuid.
+- [ ] **Step 9: Gates + commit** — `feat(shipping): create shipments with sorted claims, credit hold and idempotency`
 
 ---
 
@@ -842,8 +846,29 @@ it("closes positions after a removal", async () => {
 - [ ] **Step 2: Run to verify failure.**
 - [ ] **Step 3: Implement.** Every mutator: `withDbErrors` → Serializable `$transaction` → resolve the shipper (404 on missing **or voided** — a voided shipment is read-only, the P3 voided-order shape) → `claimOrdersInOrder(tx, everyAffectedOrderId)` → `auditedUpdate("shipper", id, …)` → writes → `recomputeOrderStatus`. `addOrderToShipper` allocates the new `ShipperOrder.sequence` via `nextShipmentSequence` and appends `position`; `removeOrderFromShipper` closes position gaps (the steps precedent). Position renumbering uses the **two-phase negative-park** pattern against `@@unique([shipperId, position])`, exactly as `order-loads.ts` does.
 - [ ] **Step 4: Implement `listShippers`/`exportShippers`/`shipmentsForOrder`** — `use-latest`-friendly (pure data), `includeVoided` default off, search over packing-list number, BOL number, order number and customer code.
-- [ ] **Step 5: Run the tests** — PASS, plus a `replaceShipperLines` test asserting the over-ship warning appears and the save still succeeds.
-- [ ] **Step 6: Gates + commit** — `feat(shipping): shipment children, add/remove order, listing and export`
+- [ ] **Step 5: Refuse removing an order whose ticket has printed** (spec §5.5, added 2026-08-04 by Task 2's review). `ShipperOrder` has no `deletedAt`, so removal hard-deletes the row and frees its `sequence` — and a later shipment of that order would then be handed a number already printed on a customer's ticket. Refuse when a `StoredDocument` exists with `kind: "SHIPPER"` and this shipment's id and either this order's id or `orderId: null` (the whole-set print covers every order on it). The message names the document and says to void the shipment instead. Tests:
+
+```ts
+it("refuses to remove an order whose ticket has printed, and allows it before", async () => {
+  const { shipper, second } = await twoOrderShipment();
+  await expect(removeOrderFromShipper(shipper.id, second.id)).resolves.toBeTruthy();  // nothing printed
+  const { shipper: s2, second: sec2 } = await twoOrderShipment();
+  await prisma.$transaction((tx) =>
+    storeDocument(tx, { kind: "SHIPPER", shipperId: s2.id, orderId: sec2.orderId }, Buffer.from("%PDF-1.4 t")));
+  await expect(removeOrderFromShipper(s2.id, sec2.id)).rejects.toThrow(/already printed|void the shipment/i);
+});
+
+it("treats a whole-set ticket print as covering every order on the shipment", async () => {
+  const { shipper, second } = await twoOrderShipment();
+  await prisma.$transaction((tx) =>
+    storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, Buffer.from("%PDF-1.4 t")));
+  await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toThrow(/already printed/i);
+});
+```
+
+- [ ] **Step 6: Assert `ShipperOrder`'s two remaining uniques as behaviour** (Task 2's review left them unexercised): `@@unique([shipperId, orderId])` rejects the same order twice on one shipment (already covered by the service check — assert the constraint too, so a service refactor cannot silently lose it), and `@@unique([shipperId, position])` survives the two-phase negative-park renumber under a removal.
+- [ ] **Step 7: Run the tests** — PASS, plus a `replaceShipperLines` test asserting the over-ship warning appears and the save still succeeds.
+- [ ] **Step 8: Gates + commit** — `feat(shipping): shipment children, add/remove order, listing and export`
 
 ---
 

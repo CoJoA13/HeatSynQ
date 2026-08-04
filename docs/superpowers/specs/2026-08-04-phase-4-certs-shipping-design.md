@@ -596,6 +596,15 @@ page) so the block is discoverable rather than a dead end:
 - **voiding an order that has live shipments** — void the shipments first, otherwise the shipment is
   left pointing at lines that have vanished from every list.
 
+**Added 2026-08-04 (Task 2 review).** One more refusal, on the shipment side:
+**removing an order from a shipment is refused once a shipping ticket for that order has printed.**
+`ShipperOrder` has no `deletedAt` by design, so removing one hard-deletes the row — which frees its
+`sequence`, because a unique index cannot hold a number whose row is gone. A later shipment of that
+order would then be handed a number a customer is already holding on paper. Voiding the whole
+shipment is the correct correction and keeps every sequence claimed forever (§5.6). Before any
+ticket has printed the sequence is on nothing, so removal stays free — the refusal is exactly as
+narrow as the hazard.
+
 Everything else stays editable at every status: PO, VS #, customer job no, dates, notes, containers,
 serials, loads, charges, and the order's own cert-required/scope. Customer and lead part/revision
 remain immutable forever (P3 §5a).
