@@ -23,7 +23,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate } from "./audit";
-import { getOrder, claimOrder } from "./orders";
+import { claimOrder, readDetail, trafficSettings } from "./orders";
 import { getRevision } from "./part-process-steps";
 import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
@@ -421,7 +421,51 @@ export function buildTravelerDefinition(input: TravelerData): TDocumentDefinitio
 const VOIDED = "Cannot print a traveler for a voided order";
 
 /**
- * Assembles a print payload for one order (every load) or one load of it.
+ * Every SETTING the traveler needs, read in one place so `readTravelerData` below performs no
+ * setting reads of its own (fix-wave R4 finding 8).
+ *
+ * Settings are read-only, take no `tx`, and are not order state — nothing about a print's
+ * correctness depends on reading them at the same instant as the order — so they are read BEFORE
+ * the print transaction opens, exactly as `createOrder` already reads `request_days_default` and
+ * the traffic thresholds ahead of its own. Doing otherwise would mean holding the print's
+ * connection while waiting on four more round trips, for no gain in what the paper says.
+ */
+export type TravelerSettings = {
+  traffic: Awaited<ReturnType<typeof trafficSettings>>;
+  company: { name: string; address: string; phone: string };
+};
+
+export async function travelerSettings(): Promise<TravelerSettings> {
+  const [traffic, name, address, phone] = await Promise.all([
+    trafficSettings(),
+    getSetting("company_name"),
+    getSetting("company_address"),
+    getSetting("company_phone"),
+  ]);
+  return { traffic, company: { name, address, phone } };
+}
+
+/**
+ * Assembles a print payload for one order (every load) or one load of it, reading EVERYTHING
+ * through `db`.
+ *
+ * Fix-wave R4 finding 8: this used to run against the top-level `prisma` client while
+ * `printTraveler`'s transaction held a connection of its own — six reads plus the ~100 ms render,
+ * all on a second pooled connection borrowed from inside a transaction. Under concurrent prints
+ * that is a pool-starvation shape: each in-flight print holds one connection idle and competes for
+ * another, and if the pool empties every holder waits on a connection only another holder can
+ * release. Threading `db` also makes the reads mean what the surrounding claim already promised —
+ * they now see the same transaction snapshot the claim was taken in, rather than whatever
+ * committed between the claim and each individual query.
+ *
+ * The claim: between the print transaction's open and its commit there is NO query against the
+ * top-level client. `readDetail` takes the client (as `getOrder` has always shown), and
+ * `listAddresses`/`listPartInspections`/`getRevision` each gained the same trailing `db`
+ * parameter; settings moved out of the transaction entirely (`travelerSettings` above). The reads
+ * are sequential rather than `Promise.all`'d: on ONE connection they are serialized regardless,
+ * and issuing them concurrently is what makes @prisma/adapter-pg's `performIO` overlap calls on a
+ * single connection and emit node-postgres' own deprecation warning (tests/helpers/setup.ts
+ * documents the same threshold for `readDetail`'s relation loads).
  *
  * Reads the LOCKED revision via `getRevision(leadPartId, lockedRevisionNumber)` — never the
  * part's current working revision. That is the whole point of locking at save (spec §5.3): a
@@ -432,30 +476,29 @@ const VOIDED = "Cannot print a traveler for a voided order";
  * both fires a second per-part revision query and 404s a part an order may legitimately still
  * reference. Inspections still come from the parts service (`listPartInspections`).
  */
-export async function collectTravelerData(orderId: string, loadNumber?: number): Promise<TravelerData> {
-  const order = await getOrder(orderId); // 404s a missing order
+export async function readTravelerData(
+  db: Prisma.TransactionClient, orderId: string, settings: TravelerSettings, loadNumber?: number,
+): Promise<TravelerData> {
+  const order = await readDetail(db, orderId, settings.traffic); // 404s a missing order
   const lead = order.lines[0];
   if (!lead) throw new HttpError(400, "This order has no part lines to print");
 
-  const [barcode, parts, customer, addresses, inspectionRows, revision,
-    companyName, companyAddress, companyPhone] =
-    await Promise.all([
-      barcodePng(String(order.orderNumber)),
-      prisma.part.findMany({
-        // Deliberately unfiltered on deletedAt: the order references these parts and the paper
-        // has to name them, whatever has happened to the catalog since.
-        where: { id: { in: order.lines.map((l) => l.partId) } },
-        select: { id: true, partNumber: true, name: true, description: true, eachWeight: true,
-          material: { select: { name: true } } },
-      }),
-      prisma.customer.findFirst({ where: { id: order.customerId }, select: { name: true } }),
-      listAddresses(order.customerId),
-      listPartInspections(lead.partId),
-      lead.revisionNumber === null ? null : getRevision(lead.partId, lead.revisionNumber),
-      getSetting("company_name"),
-      getSetting("company_address"),
-      getSetting("company_phone"),
-    ]);
+  const parts = await db.part.findMany({
+    // Deliberately unfiltered on deletedAt: the order references these parts and the paper
+    // has to name them, whatever has happened to the catalog since.
+    where: { id: { in: order.lines.map((l) => l.partId) } },
+    select: { id: true, partNumber: true, name: true, description: true, eachWeight: true,
+      material: { select: { name: true } } },
+  });
+  const customer = await db.customer.findFirst({ where: { id: order.customerId }, select: { name: true } });
+  const addresses = await listAddresses(order.customerId, undefined, db);
+  const inspectionRows = await listPartInspections(lead.partId, db);
+  const revision = lead.revisionNumber === null
+    ? null : await getRevision(lead.partId, lead.revisionNumber, db);
+  // The one remaining non-database read, and the only reason this is not a pure function: PNG
+  // encoding, no connection involved.
+  const barcode = await barcodePng(String(order.orderNumber));
+  const { name: companyName, address: companyAddress, phone: companyPhone } = settings.company;
 
   const partById = new Map(parts.map((p) => [p.id, p]));
   const leadPart = partById.get(lead.partId);
@@ -516,6 +559,15 @@ export async function collectTravelerData(orderId: string, loadNumber?: number):
     })),
     sheets,
   };
+}
+
+/**
+ * The standalone entry point: same payload, read outside any transaction — the `getOrder` /
+ * `readDetail` split in orders.ts, applied here for the same reason. Used by the traveler
+ * PREVIEW path and by tests; `printTraveler` calls `readTravelerData` on its own `tx` instead.
+ */
+export async function collectTravelerData(orderId: string, loadNumber?: number): Promise<TravelerData> {
+  return readTravelerData(prisma, orderId, await travelerSettings(), loadNumber);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -590,6 +642,11 @@ const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
 export async function printTraveler(
   orderId: string, loadNumber?: number,
 ): Promise<{ documentId: string; orderNumber: number; loadNumber: number | null; pdf: Buffer }> {
+  // Fix-wave R4 finding 8: settings first, OUTSIDE the transaction — the `createOrder` precedent.
+  // They are read-only, they are not order state, and reading them here means the transaction
+  // below never waits on a round trip that has nothing to do with the order it is holding.
+  const settings = await travelerSettings();
+
   const { row, orderNumber, pdf } = await withDbErrors({ entity: "Order" }, () =>
     prisma.$transaction(async (tx) => {
       const live = await claimOrder(tx, orderId);
@@ -599,7 +656,13 @@ export async function printTraveler(
       // Only now, with the claim held: the read that decides what the PDF says, and the render
       // itself. Nothing else touching this order's traveler-relevant children can commit until
       // this whole transaction ends — see the fix-wave R3 finding 1 comment above.
-      const data = await collectTravelerData(orderId, loadNumber);
+      //
+      // `readTravelerData(tx, …)`, never `collectTravelerData(…)` (R4 finding 8): every read it
+      // performs runs on THIS transaction's connection. The version that called the standalone
+      // helper went to the top-level client for all six of them while this transaction sat
+      // holding a connection of its own — a pool-starvation shape under concurrent prints, and a
+      // snapshot the surrounding claim did not actually cover.
+      const data = await readTravelerData(tx, orderId, settings, loadNumber);
       const pdf = await renderPdf(buildTravelerDefinition(data));
 
       const meta = {

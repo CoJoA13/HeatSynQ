@@ -208,9 +208,9 @@ export async function getRevisions(partId: string): Promise<RevisionSummary[]> {
  * NOT a general-purpose unchecked read, and must not be exposed as one.
  */
 export async function getRevisionContentUnchecked(
-  partId: string, revisionNumber: number,
+  partId: string, revisionNumber: number, db: Prisma.TransactionClient = prisma,
 ): Promise<RevisionDetail> {
-  const rev = await prisma.partProcessRevision.findFirst({
+  const rev = await db.partProcessRevision.findFirst({
     where: { partId, revisionNumber },
     include: {
       steps: {
@@ -240,11 +240,18 @@ export async function getRevisionContentUnchecked(
 }
 
 /** The general, part-scoped read: live-part-gated, then delegates to `getRevisionContentUnchecked`
- *  for the actual content. */
-export async function getRevision(partId: string, revisionNumber: number): Promise<RevisionDetail> {
-  const part = await prisma.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+ *  for the actual content.
+ *
+ *  `db` defaults to the top-level client, so every existing caller is unchanged; a caller already
+ *  inside a transaction passes its own `tx` so BOTH reads join that transaction rather than
+ *  taking a second pooled connection while the first is held (fix-wave R4 finding 8 —
+ *  traveler.ts's print does exactly this). */
+export async function getRevision(
+  partId: string, revisionNumber: number, db: Prisma.TransactionClient = prisma,
+): Promise<RevisionDetail> {
+  const part = await db.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
   if (!part) throw new HttpError(404, "Part not found");
-  return getRevisionContentUnchecked(partId, revisionNumber);
+  return getRevisionContentUnchecked(partId, revisionNumber, db);
 }
 
 /** The old-step-id -> new-step-id mapping a revision cut produced, or `{}` when no cut happened.

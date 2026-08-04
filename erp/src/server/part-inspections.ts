@@ -41,8 +41,10 @@ async function assertPartLive(partId: string, tx: Prisma.TransactionClient): Pro
   if (!part) throw new HttpError(404, "Part not found");
 }
 
-export async function listPartInspections(partId: string): Promise<InspectionRow[]> {
-  const rows = await prisma.partInspection.findMany({
+export async function listPartInspections(
+  partId: string, db: Prisma.TransactionClient = prisma,
+): Promise<InspectionRow[]> {
+  const rows = await db.partInspection.findMany({
     where: { partId, deletedAt: null },
     include: { inspectionCode: { select: { name: true } }, scale: { select: { name: true } } },
     orderBy: { sort: "asc" },

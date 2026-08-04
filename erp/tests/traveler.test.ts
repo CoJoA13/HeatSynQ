@@ -408,6 +408,80 @@ describe("printTraveler", () => {
     expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
   });
 
+  /**
+   * Fix-wave R4 finding 8. The claim being asserted: between the print transaction's OPEN and its
+   * COMMIT there is no query against the top-level client.
+   *
+   * `collectTravelerData` used to run all six of its reads — the order graph, the line parts, the
+   * customer, its addresses, the lead part's inspections, the locked revision — plus three
+   * settings reads, against `prisma` while `printTraveler`'s transaction sat holding a connection
+   * of its own. Every concurrent print therefore held one connection idle and competed for a
+   * second: with a pool of N, N simultaneous prints can each hold one and wait for one only
+   * another holder can release. It also quietly undercut the R3 claim above — the reads that
+   * decide what the PDF says were NOT taken in the snapshot the claim was taken in.
+   *
+   * The fix threads the transaction through every one of those reads (`readTravelerData(tx, …)`,
+   * with `listAddresses`/`listPartInspections`/`getRevision` each taking the client) and moves the
+   * settings OUT of the transaction entirely, ahead of it — the `createOrder` precedent, and safe
+   * because settings are read-only and are not order state.
+   *
+   * Asserted by intercepting the TOP-LEVEL delegates and recording whether each call happened
+   * while a transaction was open — the attachments.test.ts technique ("prove the checks really did
+   * move by intercepting the top-level delegates and asserting neither is reached"), not new
+   * instrumentation. Plain save-reassign-restore, never `vi.spyOn`: on this Prisma Client's model
+   * delegates `mockRestore()` leaves the property `undefined`, and `prisma` is a process-wide
+   * singleton.
+   */
+  it("performs no top-level-client query between the print transaction's open and its commit", async () => {
+    const { order } = await orderFixture();
+
+    const MODELS = [
+      "order", "part", "customer", "customerAddress", "partInspection", "partProcessRevision",
+      "setting", "storedDocument", "auditLog",
+    ] as const;
+    const METHODS = ["findFirst", "findMany", "findUnique", "findUniqueOrThrow", "count", "create"] as const;
+
+    let depth = 0;
+    const calls: { where: string; insideTx: boolean }[] = [];
+    const client = prisma as unknown as Record<string, unknown>;
+    const realTx = client.$transaction as (...a: unknown[]) => unknown;
+    const restore: (() => void)[] = [() => { client.$transaction = realTx; }];
+
+    client.$transaction = async (...args: unknown[]) => {
+      depth++;
+      try {
+        return await realTx.apply(prisma, args);
+      } finally {
+        depth--;
+      }
+    };
+    for (const model of MODELS) {
+      const delegate = client[model] as Record<string, unknown>;
+      for (const method of METHODS) {
+        const real = delegate[method] as ((...a: unknown[]) => unknown) | undefined;
+        if (typeof real !== "function") continue;
+        restore.push(() => { delegate[method] = real; });
+        delegate[method] = (...args: unknown[]) => {
+          calls.push({ where: `${model}.${method}`, insideTx: depth > 0 });
+          return real.apply(delegate, args);
+        };
+      }
+    }
+
+    try {
+      await asSystem(() => printTraveler(order.id));
+    } finally {
+      for (const undo of restore.reverse()) undo();
+    }
+
+    // The interception itself has to have worked, or this proves nothing: the settings reads
+    // happen on the top-level client BY DESIGN, before the transaction opens, and are the proof
+    // that a top-level call really would have been recorded.
+    expect(calls.some((c) => c.where.startsWith("setting.") && !c.insideTx)).toBe(true);
+    // The claim.
+    expect(calls.filter((c) => c.insideTx)).toEqual([]);
+  });
+
   // Fix-wave R3 finding 1: `collectTravelerData` (the read that decides what the PDF says) used
   // to run BEFORE printTraveler ever took ANY lock at all — the OLD claim (above) only wrapped
   // the final archive-commit. A child mutation committing during that unlocked window left the
