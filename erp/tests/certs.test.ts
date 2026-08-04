@@ -8,7 +8,7 @@ import { resplitLoads } from "@/server/order-loads";
 import {
   createCert, getCert, listCerts, exportCerts, updateCert, voidCert, certsForOrder,
 } from "@/server/certs";
-import { Prisma, type Customer, type Part } from "../prisma/generated/prisma/client";
+import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -101,18 +101,28 @@ describe("createCert", () => {
   // all — a caller that deleted the claim (swapped it for a plain, unlocked `findFirst`) would
   // still pass every test above, since nothing above ever has two transactions open on the same
   // order at once. The real hazard is two genuinely concurrent creates for the SAME
-  // scope-instance, and the two tests below prove it two ways.
+  // scope-instance.
   //
-  // Both legal outcomes for the loser of a genuine race are "a clean, correctly-refused failure":
-  // a business-rule 400 if its Serializable snapshot happens to already reflect the winner's
-  // commit, or a 40001-mapped 409 (Postgres's SSI catching the write-skew) if it does not — this
-  // invariant has no unique index behind it (spec §4.1: one can't express it), so unlike
-  // `createOrder`'s `clientRequestId` P2002 (tests/orders.test.ts, "two concurrent saves of the
-  // same intent settle on exactly ONE order") the LOSER's exact status is genuinely
-  // timing-dependent, not a bug — measured directly, it varies with how warm the connection pool
-  // already is. What must never happen, and what both tests below actually check, is a duplicate:
-  // exactly one winner, exactly one live cert.
-  it("blocks a concurrent create for the same scope-instance until the holder's cert commits, then refuses instead of duplicating (row-lock discipline)", async () => {
+  // Two earlier versions of this test both turned out to prove Postgres's own SSI (Serializable
+  // Snapshot Isolation), not `claimOrder`'s row lock — reviewed and diagnosed by hand: swapping
+  // `claimOrder` for a bare `findFirst` in `createCertInTx` and re-running left both versions
+  // green. With BOTH the competing caller AND every real caller of `createCertInTx` running
+  // Serializable, and both doing the identical clash-check SELECT then INSERT on `Cert`, Postgres
+  // detects the write-skew on that predicate ALONE — the Order-row lock never has to do anything,
+  // so removing it changed nothing observable.
+  //
+  // The fix (CLAUDE.md's actual point: "the row lock works at ANY caller isolation" is what makes
+  // it the guarantee rather than the isolation level) is to take Serializable OFF the table for
+  // the competing caller, the `lockCurrentRevision` precedent (part-process-steps.test.ts): call
+  // `createCert` directly against a manually-opened, DEFAULT-isolation (Read Committed) `tx`
+  // rather than through the public API (which always forces Serializable when no `tx` is passed).
+  // Under Read Committed there is no whole-transaction snapshot and no SSI — every statement gets
+  // a fresh look at the database — so the ONLY thing that can serialize this call against the
+  // holder is `claimOrder`'s row lock itself. That makes the outcome fully deterministic (always
+  // exactly the same clean 400, never a legal-either-way race against a 409) and makes the test
+  // discriminate for real: verified by hand below (RED with the lock removed, GREEN with it
+  // restored — see the task report for both transcripts).
+  it("blocks a concurrent create under Read Committed until the holder's cert commits, then refuses on the fresh read (row-lock discipline)", async () => {
     const { order } = await savedOrder();
 
     let hasClaimed!: () => void;
@@ -120,36 +130,29 @@ describe("createCert", () => {
     let mayRelease!: () => void;
     const release = new Promise<void>((resolve) => { mayRelease = resolve; });
 
-    // The `claimOrder` row-lock precedent (order-loads.test.ts "blocks on a concurrent claim of
-    // the order row until it releases"; part-process-steps.test.ts "lockCurrentRevision cannot
-    // lock a revision that loses its last step while the claim is held"): a manual holder takes
-    // the EXACT SQL `claimOrder` takes, proven blocking below via a race-against-timeout, and only
-    // WHILE holding it commits a cert — so `createCall` cannot decide anything about this
-    // scope-instance until that commit has happened.
-    //
-    // Serializable, matching `createCert`'s own isolation — SSI conflict detection only protects
-    // a pair of transactions when BOTH run Serializable. And the holder runs `createCert`'s exact
-    // clash-check SELECT before its own create, not just the create alone: a lone write with no
-    // matching read on the holder's side is a single rw-edge, and Postgres's SSI needs a CYCLE
-    // (an edge back from the holder to `createCall` too) to have any grounds to abort anything —
-    // skipping this read left `createCall` free to duplicate the cert on every run (measured).
+    // Default (Read Committed) isolation — the `order-loads.test.ts`/`part-process-steps.test.ts`
+    // holder precedent exactly. Its own isolation level isn't load-bearing here (SSI is out of
+    // the picture on the `createCall` side regardless), only that it takes the row lock, releases
+    // it only on commit, and commits a cert while still holding it.
     const holder = prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
       hasClaimed();
       await release;
-      await tx.cert.findFirst({
-        where: { orderId: order.id, scope: "ORDER", loadNumber: null, shipperId: null, deletedAt: null },
-        select: { id: true },
-      });
       await tx.cert.create({ data: { orderId: order.id, scope: "ORDER" } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 20000 });
+    }, { timeout: 20000 });
 
     await claimed;
-    const createCall = asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    // Read Committed, NOT Serializable (see the leading comment) — `createCert` called directly
+    // against a manually-opened `tx` rather than through the public no-`tx` API.
+    const createCall = asSystem(() =>
+      prisma.$transaction((tx) => createCert({ orderId: order.id, scope: "ORDER" }, tx)));
 
     // Not itself the discriminator — its job is to guarantee createCert's own claim attempt has
     // actually been dispatched, and in the correct implementation is genuinely blocked on the
-    // holder, before the holder is released.
+    // holder, before the holder is released. (In the regression — the row lock removed — this call
+    // never blocks at all: it reaches its own clash-check instantly, before the holder's cert
+    // exists, and resolves with a duplicate almost immediately, so THIS assertion is the one that
+    // fails first.)
     const TIMED_OUT = Symbol("timed out");
     const raceResult = await Promise.race([
       createCall.then(() => "settled" as const, () => "settled" as const),
@@ -160,20 +163,26 @@ describe("createCert", () => {
     mayRelease();
     await holder;
 
-    // The discriminator: a caller that swapped `claimOrder` for a plain, unlocked `findFirst`
-    // would let `createCall` sail through on stale (pre-holder) state and resolve with a SECOND
-    // live cert — the one outcome that must never happen, regardless of which of the two legal
-    // failure shapes (see the leading comment) the loser actually gets.
-    const NOT_REJECTED = Symbol("not rejected");
-    const rejection = await createCall.then(() => NOT_REJECTED, (err: unknown) => err);
-    expect(rejection).not.toBe(NOT_REJECTED);
-    expect([400, 409]).toContain((rejection as { status: number }).status);
+    // The discriminator: with the row lock genuinely in effect, createCert cannot decide anything
+    // about this scope-instance until AFTER the holder's cert has committed, and its clash-check
+    // — running under Read Committed, so a FRESH per-statement snapshot — must then see it and
+    // refuse. Deterministic: always this exact 400, never the Serializable version's legal 400-or-
+    // 409 ambiguity, because SSI has nothing to do with this path at all.
+    await expect(createCall).rejects.toMatchObject({
+      status: 400, message: expect.stringMatching(/already has a certification/i),
+    });
     expect(await prisma.cert.count({ where: { orderId: order.id, deletedAt: null } })).toBe(1);
   });
 
-  // A supplementary, real-world-shaped confirmation alongside the deterministic test above: two
-  // genuinely independent callers, no manual synchronization at all.
-  it("two genuinely concurrent creates for the same scope-instance still settle on exactly ONE live cert", async () => {
+  // A supplementary, production-shape confirmation: two genuinely independent callers through the
+  // PUBLIC API (both Serializable, no manual synchronization at all) still settle on exactly one
+  // live cert. Read this test for what it honestly proves and no more, per the diagnosis above:
+  // with both sides Serializable, Postgres's own SSI protects this outcome independently of
+  // `claimOrder` — swapping the row lock for a bare `findFirst` does NOT turn this test red (
+  // verified by hand). It stays here because it is still true and still worth knowing that real
+  // double-submits can't duplicate a cert; the dedicated regression proof for the row lock itself
+  // is the Read-Committed test above.
+  it("two genuinely concurrent creates through the public API still settle on exactly ONE live cert (not a row-lock regression guard — see comment)", async () => {
     const { order } = await savedOrder();
     const input = { orderId: order.id, scope: "ORDER" as const };
 
