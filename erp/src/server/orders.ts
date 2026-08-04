@@ -10,7 +10,7 @@ import { currentActor } from "./context";
 import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
-import { resolveCertSettings, type CertResolution } from "./certs";
+import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
@@ -699,6 +699,16 @@ async function saveNewOrder(
     );
 
     await createSerials(tx, order.id, order.lines.map((l) => l.id), data.lines, parts);
+
+    // ORDER-scope certs are created here, at save (spec §6.2, owner ruling §3.17) — the ONLY
+    // scope created eagerly. SHIPMENT scope is created when a shipment is created (Task 8); LOAD
+    // scope is created on demand from the order hub, deliberately, since Phase 3 keeps loads
+    // editable and re-splittable after save. `tx` threads through so the cert commits or rolls
+    // back with the order it belongs to, and `claimOrder` inside `createCert` re-locks the row
+    // this same transaction just inserted — a no-op wait, since nothing else can see it yet.
+    if (certResolution.certRequired && certResolution.certScope === "ORDER") {
+      await createCert({ orderId: order.id, scope: "ORDER" }, tx);
+    }
 
     // Same transaction as the save (spec §5.5): the scratch draft dies exactly when the order
     // it became is committed, and survives untouched if anything above rolled back.
