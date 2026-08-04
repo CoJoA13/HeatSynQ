@@ -12,6 +12,7 @@ import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { claimOrder } from "./order-locks";
+import { recomputeOrderStatus } from "./ship-ledger";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
@@ -1018,6 +1019,11 @@ export async function addLine(
       await createSerials(tx, orderId, [line.id], [data], [part], position - 1);
     }, { tx });
 
+    // A new rider changes the order's own LINE SET — spec §5.2: "every order line has at least
+    // one live shipper line with lineComplete = true" now has one more line to satisfy, so a
+    // fully-shipped order returns to Partial Shipped the moment a rider joins it.
+    await recomputeOrderStatus(tx, [orderId]);
+
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
@@ -1044,6 +1050,11 @@ export async function updateLine(
     };
 
     await auditedUpdate("order", orderId, () => tx.orderLine.update({ where: { id: lineId }, data: patch }), { tx });
+
+    // The line SET is unchanged (qty/weight only), so this is a no-op in practice — quantities
+    // never enter the status decision (spec §5.2) — but every mutator that touches an order's
+    // lines calls it uniformly rather than one of them silently relying on that invariant holding.
+    await recomputeOrderStatus(tx, [orderId]);
 
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
@@ -1093,6 +1104,11 @@ export async function removeLine(
         await tx.orderLine.update({ where: { id: l.id }, data: { position: l.position - 1 } });
       }
     }, { tx });
+
+    // The line SET just shrank — spec §5.2: removing the one incomplete line among an otherwise
+    // fully-shipped order can turn Partial Shipped into Shipped, exactly the mirror of addLine's
+    // own comment above.
+    await recomputeOrderStatus(tx, [orderId]);
 
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
