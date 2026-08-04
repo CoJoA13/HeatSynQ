@@ -716,11 +716,20 @@ edit additionally requires `edit_cert_results_after_print`.
 - `src/server/cert-results.ts` — `seedRequirements(tx, certId)`, `replaceResults`, the pass/fail
   computation and override handling.
 - `src/server/documents.ts` — **extracted from `traveler.ts`**: `storeDocument(tx, {kind, owner,
-  bytes})`, `listDocumentsForOrder(orderId)`, `getDocument(docId)`. With one widened table, the
-  permanence guarantee, the redaction rule and the byte-exact reprint should exist once. The
-  order-hub union is one query:
+  bytes})`, `listDocumentsForOrder(orderId, permissions)`, `getDocument(docId)`. With one widened
+  table, the permanence guarantee, the redaction rule and the byte-exact reprint should exist once.
+  The order-hub union is one query:
   `{ OR: [{ orderId }, { cert: { orderId } }, { shipper: { orders: { some: { orderId } } } }] }`
   — which is what puts a multi-order shipment's BOL on every order it covers.
+
+  **Owner ruling 2026-08-04 (Task 3 review): that union is filtered by the caller's permissions.**
+  The union means `GET /api/orders/[id]/documents`, gated on `orders.view` alone, would otherwise
+  reveal to an order-entry-only user that a BOL or a certification exists for their order. The list
+  therefore shows only the kinds the viewer may actually open — `TRAVELER` needs `orders.view`,
+  `SHIPPER`/`BOL` need `shipping.view`, `CERT` needs `certs.view` — implemented the way
+  `src/server/search.ts` already filters its grouped results, not as a second bespoke mechanism.
+  Considered and rejected: showing the row greyed-out per §5.16, and showing everything on the
+  grounds that it is only metadata.
 - `src/server/pdf/shipping-ticket.ts`, `pdf/bol.ts`, `pdf/cert.ts` — document definitions (plain
   JSON), on the existing `pdf/render.ts` plumbing. **No MOS layout** (§3.20).
 - `settings.ts` — `allocateNumber`'s key type narrows to
@@ -796,6 +805,13 @@ just that one (`orderId` set) — **the traveler's per-load mechanic, reused** (
 ### 10.2 Bill of lading — `Bill of Lading Sample.pdf`
 
 **The multi-order document** (§3.20). One per shipment, `StoredDocument{kind: BOL, shipperId}`.
+
+**Model confirmed by the owner 2026-08-04 (during Task 3's review):** a BOL belongs to exactly one
+shipment and does not exist until someone prints one — the sample's five order numbers
+(`TRV NO. 71955, 71957, 71959, 71960, 71961`) are five orders that went out on one truck as one
+shipment. A BOL built independently of a shipment, and a BOL gathering several shipments onto one
+form, were both put to the owner and both rejected. Nothing in the model changes; this paragraph
+exists because the question was asked and answered, and a future reader should not have to re-ask it.
 Straight-bill-of-lading form: `Original - Not Negotiable`, `Carrier's Pro No.` (`proNumber`),
 `Shipper's Bill of Lading No.` (`bolNumber`, allocated on this first print), `Consignee's Ref/PO No.`
 (the orders' POs), `Carrier's Code (SCAC)`; name of carrier; the standard UDSBL boilerplate; ship-from
