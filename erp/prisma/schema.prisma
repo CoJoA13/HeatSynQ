@@ -163,28 +163,30 @@ model Material {
 }
 
 model InspectionScale {
-  id              String           @id @default(cuid())
-  name            String
-  active          Boolean          @default(true)
-  deletedAt       DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  codes           InspectionCode[]
-  partInspections PartInspection[]
+  id               String            @id @default(cuid())
+  name             String
+  active           Boolean           @default(true)
+  deletedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  codes            InspectionCode[]
+  partInspections  PartInspection[]
+  certRequirements CertRequirement[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
 
 model InspectionCode {
-  id              String           @id @default(cuid())
-  name            String
-  defaultScaleId  String?
-  defaultScale    InspectionScale? @relation(fields: [defaultScaleId], references: [id])
-  active          Boolean          @default(true)
-  deletedAt       DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  partInspections PartInspection[]
+  id               String            @id @default(cuid())
+  name             String
+  defaultScaleId   String?
+  defaultScale     InspectionScale?  @relation(fields: [defaultScaleId], references: [id])
+  active           Boolean           @default(true)
+  deletedAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  partInspections  PartInspection[]
+  certRequirements CertRequirement[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -208,6 +210,7 @@ model Carrier {
   deletedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+  shippers  Shipper[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -288,6 +291,11 @@ model Customer {
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
   financeChargeRate   Decimal?          @db.Decimal(6, 4)
   requestDaysOverride Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
+  // Certification chain, most-specific-wins (spec §4.4): null = inherit the plant setting
+  // (cert_required_default / cert_scope_default). Part overrides customer, order freezes the
+  // resolved value at save.
+  certRequiredDefault Boolean?
+  certScopeDefault    CertScope?
   active              Boolean           @default(true)
   deletedAt           DateTime?
   createdAt           DateTime          @default(now())
@@ -296,6 +304,7 @@ model Customer {
   contacts            CustomerContact[]
   parts               Part[]
   orders              Order[]
+  shippers            Shipper[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -322,6 +331,7 @@ model CustomerAddress {
   deletedAt  DateTime?
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
+  shippers   Shipper[]
 
   @@index([customerId, kind])
 }
@@ -379,6 +389,10 @@ model Part {
   // lbs; > 0 when present — same app + DB CHECK pairing as loadQty above, same migration.
   loadWeight            Decimal?              @db.Decimal(10, 2)
   requestDaysOverride   Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
+  // Certification chain (spec §4.4): null = inherit the customer's default, which in turn falls
+  // back to the plant setting. Never read directly — resolveCertSettings walks the chain.
+  certRequired          Boolean?
+  certScope             CertScope?
   serializationRequired Boolean               @default(false)
   setupCharge           Decimal?              @db.Decimal(12, 2)
   unitPrice             Decimal?              @db.Decimal(12, 4)
@@ -576,6 +590,11 @@ model Order {
   targetDate      DateTime?         @db.Date
   status          OrderStatus       @default(OPEN)
   notes           String            @default("")
+  /// Resolved from the part/customer/plant chain and FROZEN at save (spec §4.4) — overridable at
+  /// entry and after. Editing the part next month must not silently change an existing order.
+  certRequired    Boolean           @default(false)
+  certScope       CertScope         @default(ORDER)
+  customerJobNo   String            @default("") // §3.22; prints on the ticket beside the PO
   linkGroupId     String?
   deletedAt       DateTime? // set = VOIDED (reason required, void_order permission)
   createdAt       DateTime          @default(now())
@@ -587,6 +606,8 @@ model Order {
   charges         OrderCharge[]
   attachments     OrderAttachment[]
   documents       StoredDocument[]
+  certs           Cert[]
+  shipperOrders   ShipperOrder[]
 
   @@index([customerId])
   @@index([status])
@@ -598,46 +619,51 @@ model Order {
 }
 
 model OrderLine {
-  id             String        @id @default(cuid())
-  orderId        String
-  order          Order         @relation(fields: [orderId], references: [id])
-  position       Int // 1 = lead part
-  partId         String
-  part           Part          @relation(fields: [partId], references: [id])
-  revisionNumber Int? // lead line only: the locked PartProcessRevision number
-  qty            Int
-  weight         Decimal       @db.Decimal(12, 2)
-  serials        OrderSerial[]
+  id               String            @id @default(cuid())
+  orderId          String
+  order            Order             @relation(fields: [orderId], references: [id])
+  position         Int // 1 = lead part
+  partId           String
+  part             Part              @relation(fields: [partId], references: [id])
+  revisionNumber   Int? // lead line only: the locked PartProcessRevision number
+  qty              Int
+  weight           Decimal           @db.Decimal(12, 2)
+  serials          OrderSerial[]
+  shipperLines     ShipperLine[]
+  certRequirements CertRequirement[]
 
   @@unique([orderId, position])
   @@index([partId])
 }
 
 model OrderContainer {
-  id          String        @id @default(cuid())
-  orderId     String
-  order       Order         @relation(fields: [orderId], references: [id])
-  position    Int
-  typeId      String
-  type        ContainerType @relation(fields: [typeId], references: [id])
-  count       Int
-  qty         Int?
-  tareWeight  Decimal?      @db.Decimal(12, 2)
-  grossWeight Decimal?      @db.Decimal(12, 2)
+  id                  String             @id @default(cuid())
+  orderId             String
+  order               Order              @relation(fields: [orderId], references: [id])
+  position            Int
+  typeId              String
+  type                ContainerType      @relation(fields: [typeId], references: [id])
+  count               Int
+  qty                 Int?
+  tareWeight          Decimal?           @db.Decimal(12, 2)
+  grossWeight         Decimal?           @db.Decimal(12, 2)
+  customerContainerId String             @default("") // §3.22; the ticket's "Cust Cont Id" column
+  shipperContainers   ShipperContainer[]
 
   @@unique([orderId, position])
   @@index([typeId])
 }
 
 model OrderSerial {
-  id          String    @id @default(cuid())
-  orderId     String
-  order       Order     @relation(fields: [orderId], references: [id])
-  lineId      String
-  line        OrderLine @relation(fields: [lineId], references: [id])
-  position    Int
-  serial      String
-  description String    @default("") // heat/lot number, prints on cert (Phase 4)
+  id             String          @id @default(cuid())
+  orderId        String
+  order          Order           @relation(fields: [orderId], references: [id])
+  lineId         String
+  line           OrderLine       @relation(fields: [lineId], references: [id])
+  position       Int
+  serial         String
+  description    String          @default("") // heat/lot number, prints on cert (Phase 4)
+  shipperSerials ShipperSerial[]
 
   @@unique([lineId, serial])
   @@unique([lineId, position])
@@ -722,15 +748,22 @@ model SavedView {
 }
 
 enum DocumentKind {
-  TRAVELER // Phase 4+ widens (SHIPPER, CERT, …) or adds sibling tables — its call
+  TRAVELER
+  SHIPPER
+  BOL
+  CERT
 }
 
 model StoredDocument {
   id         String       @id @default(cuid())
-  orderId    String
-  order      Order        @relation(fields: [orderId], references: [id])
+  orderId    String? // TRAVELER: owner. SHIPPER: which order's ticket (null = the whole set)
+  order      Order?       @relation(fields: [orderId], references: [id])
+  shipperId  String? // SHIPPER, BOL: owner
+  shipper    Shipper?     @relation(fields: [shipperId], references: [id])
+  certId     String? // CERT: owner
+  cert       Cert?        @relation(fields: [certId], references: [id])
   kind       DocumentKind
-  loadNumber Int? // null = full set (one sheet-set per load in one PDF)
+  loadNumber Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
   createdAt  DateTime     @default(now())
 
@@ -738,5 +771,201 @@ model StoredDocument {
   // (orders.ts's DETAIL_INCLUDE.documents), and the archive endpoint filters and orders by
   // orderId too (traveler.ts's listDocuments) — this permanent, append-only table had no
   // supporting index, so both scans got slower with every traveler ever printed, anywhere.
+  //
+  // Which owner column is required is decided by `kind`, enforced by a hand-written DB CHECK
+  // ("StoredDocument_kind_owner_check") — Prisma's schema language has no check-constraint
+  // syntax, the same Part.loadQty situation. It lives in
+  // migrations/<ts>_certs_and_shipping/migration.sql; keep the two in step.
   @@index([orderId])
+  @@index([shipperId])
+  @@index([certId])
+}
+
+enum CertScope {
+  ORDER
+  LOAD
+  SHIPMENT
+}
+
+model Cert {
+  id            String            @id @default(cuid())
+  orderId       String
+  order         Order             @relation(fields: [orderId], references: [id])
+  scope         CertScope
+  loadNumber    Int? // scope = LOAD
+  shipperId     String? // scope = SHIPMENT
+  shipper       Shipper?          @relation(fields: [shipperId], references: [id])
+  freeform      String            @default("") // prints
+  internalNotes String            @default("") // never prints (spec §7.4)
+  printedAt     DateTime? // first print; gates edit_cert_results_after_print
+  deletedAt     DateTime? // voided; reason in the audit entry
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  requirements  CertRequirement[]
+  documents     StoredDocument[]
+
+  // Deliberately NO unique column of any kind (spec §3.19): a cert carries no number of its own
+  // and is identified by its order and scope instance. Uniqueness per scope-instance (one live
+  // cert per order for ORDER, per (order, loadNumber) for LOAD, per (order, shipperId) for
+  // SHIPMENT) is service-enforced under claimOrder, not indexed — Postgres treats NULLs as
+  // distinct, so two (orderId, ORDER, NULL, NULL) rows would not collide in any index.
+  //
+  // `loadNumber` is a plain integer, NOT a foreign key to Load — deliberate, matching
+  // StoredDocument.loadNumber (spec §4.1). Loads are renumbered and re-split by design, so a cert
+  // pinned to a load ROW would silently follow that row through a renumber and describe a
+  // different physical load than the one on its paper.
+  @@index([orderId])
+  @@index([shipperId])
+}
+
+model CertRequirement {
+  id               String           @id @default(cuid())
+  certId           String
+  cert             Cert             @relation(fields: [certId], references: [id])
+  orderLineId      String
+  orderLine        OrderLine        @relation(fields: [orderLineId], references: [id])
+  // Cert-wide, not per line: requirements are seeded in order-line position order, and within
+  // each line in the part's own PartInspection.sort order, so this orders the whole document
+  // exactly as it prints.
+  position         Int
+  inspectionCodeId String
+  inspectionCode   InspectionCode   @relation(fields: [inspectionCodeId], references: [id])
+  scaleId          String?
+  scale            InspectionScale? @relation(fields: [scaleId], references: [id])
+  // min/max/sampleQty/location are COPIED from PartInspection at seed time and frozen here —
+  // editing the part next month must not rewrite a cert already being filled in. Precision
+  // matches PartInspection.min/max exactly; validate with decimalField(10, 4) before Prisma.
+  min              Decimal?         @db.Decimal(10, 4)
+  max              Decimal?         @db.Decimal(10, 4)
+  sampleQty        String           @default("") // free text, never a number (spec §3.9)
+  location         String           @default("")
+  readings         CertReading[]
+
+  @@unique([certId, position])
+  @@index([orderLineId])
+  @@index([inspectionCodeId])
+  @@index([scaleId])
+}
+
+model CertReading {
+  id            String          @id @default(cuid())
+  requirementId String
+  requirement   CertRequirement @relation(fields: [requirementId], references: [id])
+  position      Int
+  value         Decimal?        @db.Decimal(10, 4)
+  passed        Boolean? // computed from min/max when a value is present; screen only (§3.21)
+  overridden    Boolean         @default(false)
+  note          String          @default("")
+
+  @@unique([requirementId, position])
+}
+
+enum FreightTerms {
+  PREPAID
+  COLLECT
+}
+
+model Shipper {
+  id                 String           @id @default(cuid())
+  /// Prints as "Packing List No". Plain @unique on a soft-deletable model, deliberately NOT
+  /// live-rows-only (spec §4.2, sweep exemption in tests/partial-unique-sweep.test.ts): a voided
+  /// shipment keeps its number forever and the number is never reused or re-entered.
+  shipperNumber      Int              @unique
+  /// Allocated lazily at first BOL print (§3.19) and never reissued — same exemption.
+  bolNumber          Int?             @unique
+  /// Idempotency nonce (the createOrder precedent) — same exemption: handing it back to a retry
+  /// would recreate the duplicate it exists to stop.
+  clientRequestId    String?          @unique
+  customerId         String
+  customer           Customer         @relation(fields: [customerId], references: [id])
+  shipToAddressId    String? // also the BOL's consignee (§3, closing note)
+  shipToAddress      CustomerAddress? @relation(fields: [shipToAddressId], references: [id])
+  shipDate           DateTime         @db.Date
+  carrierId          String?
+  carrier            Carrier?         @relation(fields: [carrierId], references: [id])
+  route              String           @default("")
+  comments           String           @default("")
+  billFreight        Boolean          @default(false)
+  freightAmount      Decimal?         @db.Decimal(12, 2)
+  freightTerms       FreightTerms     @default(PREPAID)
+  freightClass       String           @default("") // NMFC class, e.g. "70" or "92.5" — text, never math
+  freightDescription String           @default("") // "Manufactured Castings I/S"
+  packageCount       Int? // prefilled from the container sum, editable
+  proNumber          String           @default("")
+  scacCode           String           @default("")
+  deletedAt          DateTime? // voided; reason in the audit entry, void_shipper
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  orders             ShipperOrder[]
+  certs              Cert[]
+  documents          StoredDocument[]
+
+  @@index([customerId])
+  @@index([shipDate])
+  @@index([carrierId])
+}
+
+model ShipperOrder {
+  id         String             @id @default(cuid())
+  shipperId  String
+  shipper    Shipper            @relation(fields: [shipperId], references: [id])
+  orderId    String
+  order      Order              @relation(fields: [orderId], references: [id])
+  sequence   Int // the "-3" in "72036-3": this order's Nth shipment, never reused
+  position   Int // print order of the tickets within one shipment
+  lines      ShipperLine[]
+  containers ShipperContainer[]
+  serials    ShipperSerial[]
+
+  @@unique([shipperId, orderId])
+  @@unique([shipperId, position])
+  // Bare, NOT live-rows-only, and that is the point: the sequence is allocated as
+  // max(sequence for that order, including voided shipments) + 1, so voiding shipment 2 never
+  // renumbers shipment 3 — that number is already on paper in a customer's hands.
+  @@unique([orderId, sequence])
+  @@index([orderId])
+}
+
+model ShipperLine {
+  id             String       @id @default(cuid())
+  shipperOrderId String
+  shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
+  orderLineId    String
+  orderLine      OrderLine    @relation(fields: [orderLineId], references: [id])
+  position       Int
+  qty            Int // >= 0
+  weight         Decimal      @db.Decimal(12, 2) // >= 0
+  lineComplete   Boolean      @default(false)
+
+  @@unique([shipperOrderId, position])
+  // One row per order line per shipment. Shipping the same line twice means two shipments,
+  // which is what two shipments are.
+  @@unique([shipperOrderId, orderLineId])
+  @@index([orderLineId])
+}
+
+model ShipperContainer {
+  id               String         @id @default(cuid())
+  shipperOrderId   String
+  shipperOrder     ShipperOrder   @relation(fields: [shipperOrderId], references: [id])
+  orderContainerId String
+  orderContainer   OrderContainer @relation(fields: [orderContainerId], references: [id])
+  position         Int
+  count            Int
+
+  @@unique([shipperOrderId, position])
+  @@unique([shipperOrderId, orderContainerId])
+  @@index([orderContainerId])
+}
+
+model ShipperSerial {
+  id             String       @id @default(cuid())
+  shipperOrderId String
+  shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
+  orderSerialId  String
+  orderSerial    OrderSerial  @relation(fields: [orderSerialId], references: [id])
+  printOnShipper Boolean      @default(true)
+
+  @@unique([shipperOrderId, orderSerialId])
+  @@index([orderSerialId])
 }

@@ -10,7 +10,8 @@ export type AuditableModel =
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
   | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
   | "partProcessRevision" | "processTemplate"
-  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument";
+  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument"
+  | "cert" | "shipper";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -103,6 +104,39 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Permanent, create-only (design spec §4: "no delete path at all") — snapshots are metadata
   // only, fileData excluded the same way as the attachment tables (SNAPSHOT_SELECT below).
   storedDocument: undefined,
+  // Cert and Shipper children have no deletedAt of their own — editing them IS editing the
+  // document (Phase 4 spec §4.1/§4.2), audited as its own before/after diff, never as a separate
+  // entity. That is the same call Order's children got, and it is what makes these includes
+  // load-bearing rather than decorative: without them, filling in every reading on a cert would
+  // diff as no change at all.
+  //
+  // Every collection below is explicitly orderBy'd — issue #24 applied from birth. HistoryPanel
+  // compares whole keys with JSON.stringify, which is order-sensitive, so an unordered collection
+  // makes two snapshots of identical data render as a spurious diff. Live code/scale/part names
+  // are selected in so the diff reads "Hardness", not a cuid.
+  cert: {
+    requirements: {
+      orderBy: { position: "asc" },
+      include: {
+        inspectionCode: { select: { name: true } },
+        scale: { select: { name: true } },
+        readings: { orderBy: { position: "asc" } },
+      },
+    },
+  },
+  shipper: {
+    orders: {
+      orderBy: { position: "asc" },
+      include: {
+        order: { select: { orderNumber: true } },
+        lines: { orderBy: { position: "asc" }, include: { orderLine: { select: { position: true } } } },
+        containers: { orderBy: { position: "asc" } },
+        // ShipperSerial has no position of its own (a serial is either on the ticket or not), so
+        // its stable ordering key is the order serial it points at.
+        serials: { orderBy: { orderSerialId: "asc" } },
+      },
+    },
+  },
 };
 
 /**
@@ -133,7 +167,13 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     id: true, orderId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
   },
-  storedDocument: { id: true, orderId: true, kind: true, loadNumber: true, createdAt: true },
+  // Phase 4 widened this table from one owner to three; the list stays "every scalar except
+  // fileData", so shipperId and certId belong here the moment they exist rather than being
+  // something a later phase has to remember.
+  storedDocument: {
+    id: true, orderId: true, shipperId: true, certId: true,
+    kind: true, loadNumber: true, createdAt: true,
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

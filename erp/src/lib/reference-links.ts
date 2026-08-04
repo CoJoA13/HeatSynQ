@@ -16,7 +16,8 @@ export const TARGET_LABELS: Record<"processStepCode", string> = { processStepCod
 export type ReferenceLinkModel =
   | "customer" | "processStepCode" | "paymentType" | "inspectionCode"
   | "part" | "partSpecification" | "partInspection"
-  | "partProcessStep" | "processTemplateStep" | "orderContainer";
+  | "partProcessStep" | "processTemplateStep" | "orderContainer"
+  | "shipper" | "certRequirement";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -62,6 +63,20 @@ const PART_VIA_CHILD = {
   displayName: (r: Record<string, unknown>) => partLabel(r.part),
 } as const;
 
+/** A CertRequirement's FKs are held by a child row, but the blocker a person can act on is the
+ *  CERT — so liveness, identity and the detail link all come from the parent (the PART_VIA_CHILD
+ *  shape, one model over). A cert has no number of its own (spec §3.19), so it names itself by
+ *  the order it certifies. */
+const CERT_VIA_REQUIREMENT = {
+  entityLabel: "Certification",
+  detailPath: (id: string) => `/certs/${id}`,
+  liveWhere: { cert: { is: { deletedAt: null } } },
+  include: { cert: { select: { id: true, order: { select: { orderNumber: true } } } } },
+  blockerId: (r: Record<string, unknown>) => String((r.cert as { id: string }).id),
+  displayName: (r: Record<string, unknown>) =>
+    `Cert · #${((r.cert as { order: { orderNumber: number } }).order).orderNumber}`,
+} as const;
+
 /** The single source of truth for "which column points at which reference kind".
  *  Two consumers read it in opposite directions: name resolution forward (given a column,
  *  show the target's name), the delete guard inverted (given a kind, who points at me).
@@ -104,6 +119,16 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     blockerId: (r) => String((r.order as { id: string }).id),
     displayName: (r) => { const o = r.order as { orderNumber: number; customer: { code: string } };
       return `#${o.orderNumber} · ${o.customer.code}`; } },
+  // Carrier's first consumer since it shipped in Phase 2A — this entry is what finally gives it a
+  // delete guard and a blocker list. Shipper holds the FK itself, so `liveWhere` stays the default
+  // `{ deletedAt: null }`: a voided shipment does not block a carrier delete.
+  { model: "shipper", column: "carrierId", targetKind: "carrier",
+    label: "Carrier", entityLabel: "Shipment", detailPath: (id) => `/shipping/${id}`,
+    displayName: (r) => `Packing List ${r.shipperNumber}` },
+  { model: "certRequirement", column: "inspectionCodeId", targetKind: "inspectionCode",
+    label: "Inspection code", ...CERT_VIA_REQUIREMENT },
+  { model: "certRequirement", column: "scaleId", targetKind: "inspectionScale",
+    label: "Scale", ...CERT_VIA_REQUIREMENT },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

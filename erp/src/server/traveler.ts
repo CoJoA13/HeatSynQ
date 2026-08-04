@@ -587,8 +587,25 @@ const DOCUMENT_SELECT = {
 } satisfies Prisma.StoredDocumentSelect;
 
 type DocumentSelected = Prisma.StoredDocumentGetPayload<{ select: typeof DOCUMENT_SELECT }>;
-const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
-  ({ ...rest, orderNumber: order.orderNumber });
+
+/**
+ * Phase 4 widened `StoredDocument.orderId` to nullable — a BOL or a certification's PDF is owned
+ * by a shipment or a cert and has no order of its own (design spec §4.3). Both readers below are
+ * order-scoped traveler paths, and the kind/owner CHECK guarantees a TRAVELER always carries an
+ * order, so the null branch is unreachable for anything they can legitimately be handed.
+ *
+ * Refused loudly rather than coerced: reaching it means `getDocument` was called with the id of a
+ * document that is not an order's, and a 404 is the honest answer for an order-scoped endpoint.
+ * `documents.ts` (spec §8) takes over serving every kind and owns the widened shape; this guard
+ * is what keeps the traveler paths correct until it lands, instead of a `!` that would hand the
+ * route an `orderNumber` of `undefined` and name the download `traveler-undefined.pdf`.
+ */
+const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta => {
+  if (rest.orderId === null || order === null) {
+    throw new HttpError(404, "That document does not belong to an order");
+  }
+  return { ...rest, orderId: rest.orderId, orderNumber: order.orderNumber };
+};
 
 /**
  * Renders and archives one traveler, returning the exact bytes stored.
