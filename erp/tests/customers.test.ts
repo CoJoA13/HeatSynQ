@@ -471,4 +471,29 @@ describe("customers service", () => {
       expect(after.requestDaysOverride).toBe(7);
     });
   });
+
+  // Task 4 wiring: the update schema accepts certRequiredDefault/certScopeDefault, and null
+  // (inherit the plant setting) stays distinct from an explicit false end to end —
+  // resolveCertSettings (certs.ts, tests/cert-resolution.test.ts) is what actually WALKS this
+  // chain; this only pins that the customer's own half of it round-trips through
+  // create/update/getCustomer untouched.
+  describe("certRequiredDefault / certScopeDefault", () => {
+    it("round-trips through create and update, and clears back to null (inherit)", async () => {
+      const { id } = await createCustomer({
+        code: "CD1", name: "Cert Default Co", certRequiredDefault: true, certScopeDefault: "LOAD",
+      });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: true, certScopeDefault: "LOAD" });
+
+      await updateCustomer(id, { certRequiredDefault: false, certScopeDefault: "SHIPMENT" });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: false, certScopeDefault: "SHIPMENT" });
+
+      await updateCustomer(id, { certRequiredDefault: null, certScopeDefault: null });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: null, certScopeDefault: null });
+    });
+
+    it("defaults to null (inherit) when omitted on create", async () => {
+      const { id } = await createCustomer({ code: "CD2", name: "Cert Default Co 2" });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: null, certScopeDefault: null });
+    });
+  });
 });

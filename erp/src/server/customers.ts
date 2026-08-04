@@ -9,6 +9,7 @@ import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
+import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import type { PasteResult } from "./paste";
 import type { Blocker } from "./reference-blockers";
 
@@ -19,6 +20,9 @@ export type CustomerRow = {
   creditLimit: number | null; creditHold: boolean; cod: boolean; taxable: boolean;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string;
   surchargeOptOut: boolean; financeChargeRate: number | null; requestDaysOverride: number | null;
+  /** Certification chain (spec §6.1): null = inherit the plant setting. Part overrides this;
+   *  never resolved here — resolveCertSettings (certs.ts) walks the chain. */
+  certRequiredDefault: boolean | null; certScopeDefault: CertScopeValue | null;
   active: boolean;
 };
 
@@ -50,6 +54,12 @@ const CREATE = z.object({
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the customer's own override.
   requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
+  // Certification chain (spec §6.1): `null` (or an omitted key on create) means "inherit the
+  // plant setting" — the resolver treats `null` and "not sent" identically. An explicit
+  // `false`/`true` is this customer's own override and stays distinct from that inherited `null`
+  // end to end (a part can still override it back down to `false`).
+  certRequiredDefault: z.boolean().nullable().optional(),
+  certScopeDefault: z.enum(CERT_SCOPES).nullable().optional(),
   active: z.boolean().optional(),
 }).strict();
 
@@ -57,7 +67,8 @@ const SELECT = {
   id: true, code: true, name: true, parentId: true, termsId: true,
   creditLimit: true, creditHold: true, cod: true, taxable: true,
   defaultPo: true, orderNotes: true, shippingNotes: true, invoiceNotes: true,
-  surchargeOptOut: true, financeChargeRate: true, requestDaysOverride: true, active: true,
+  surchargeOptOut: true, financeChargeRate: true, requestDaysOverride: true,
+  certRequiredDefault: true, certScopeDefault: true, active: true,
   parent: { select: { code: true } },
 } as const;
 
@@ -65,7 +76,8 @@ type Raw = Prisma.CustomerGetPayload<{ select: typeof SELECT }>;
 function toRow(r: Raw): CustomerRow {
   const { parent, creditLimit, financeChargeRate, ...rest } = r;
   return { ...rest, parentCode: parent?.code ?? null,
-    creditLimit: num(creditLimit), financeChargeRate: num(financeChargeRate) };
+    creditLimit: num(creditLimit), financeChargeRate: num(financeChargeRate),
+    certScopeDefault: r.certScopeDefault as CertScopeValue | null };
 }
 
 export async function listCustomers(opts?: { includeInactive?: boolean; search?: string }): Promise<CustomerRow[]> {

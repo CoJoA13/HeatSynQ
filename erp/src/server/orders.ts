@@ -10,9 +10,11 @@ import { currentActor } from "./context";
 import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
+import { resolveCertSettings, type CertResolution } from "./certs";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
+import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 
 export type OrderWarnings = string[];
 
@@ -26,7 +28,7 @@ export type OrderLineDetail = {
 };
 export type OrderContainerDetail = {
   id: string; position: number; typeId: string; count: number; qty: number | null;
-  tareWeight: number | null; grossWeight: number | null; type: { name: string };
+  tareWeight: number | null; grossWeight: number | null; customerContainerId: string; type: { name: string };
 };
 export type OrderSerialDetail = {
   id: string; lineId: string; position: number; serial: string; description: string;
@@ -38,9 +40,12 @@ export type OrderChargeDetail = {
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
-  poNumber: string; vsOrderNumber: string;
+  poNumber: string; vsOrderNumber: string; customerJobNo: string;
   receivedDate: string; requestDate: string; targetDate: string | null;
   status: OrderStatus; notes: string; linkGroupId: string | null;
+  /** Resolved from the part/customer/plant chain and FROZEN at save (spec §6.1) — overridable at
+   *  entry and afterwards (updateOrder), never re-derived from a part edited after the fact. */
+  certRequired: boolean; certScope: CertScopeValue;
   /** `deletedAt` is set. Voided orders are returned, not hidden — the hub renders them
    *  read-only, and the reason lives in the `auditedSoftDelete` entry (spec §5c). */
   voided: boolean;
@@ -102,6 +107,9 @@ const CONTAINER_ITEM = z.object({
   qty: z.number().int().min(1).max(INT4_MAX).nullable().optional(),
   tareWeight: decimalField(12, 2, { min: "nonnegative" }),
   grossWeight: decimalField(12, 2, { min: "nonnegative" }),
+  // §3.22: the ticket's "Cust Cont Id" column — the customer's own identifier for this bin, not
+  // one this shop assigns. Built with no present-day user on the owner's explicit instruction.
+  customerContainerId: z.string().max(60).default(""),
 }).strict();
 
 const CHARGE_ITEM = z.object({
@@ -137,6 +145,9 @@ const CREATE = z.object({
   clientRequestId: z.string().uuid().optional(),
   poNumber: z.string().max(200).default(""),
   vsOrderNumber: z.string().max(60).default(""),
+  // §3.22: prints on the ticket beside the PO — built with no present-day user on the owner's
+  // explicit instruction, same as containers[].customerContainerId above.
+  customerJobNo: z.string().max(60).default(""),
   receivedDate: z.string().optional(),
   requestDate: z.string().optional(),
   targetDate: z.string().nullable().optional(),
@@ -330,12 +341,13 @@ function auditPayload(args: {
   revisionNumber: number;
   loads: { qty: number; weight: number }[];
   containerTypeNames: Map<string, string>;
+  certResolution: CertResolution;
 }) {
-  const { orderNumber, customer, data, parts, loads, containerTypeNames } = args;
+  const { orderNumber, customer, data, parts, loads, containerTypeNames, certResolution } = args;
   return {
     orderNumber,
     customerId: customer.id, customerCode: customer.code,
-    poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
+    poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber, customerJobNo: data.customerJobNo,
     receivedDate: formatDateOnly(args.receivedDate),
     requestDate: formatDateOnly(args.requestDate),
     targetDate: args.targetDate === null ? null : formatDateOnly(args.targetDate),
@@ -343,6 +355,10 @@ function auditPayload(args: {
     // later update diff describe the same set of fields.
     status: "OPEN",
     notes: data.notes,
+    // Resolved and frozen by resolveCertSettings at the moment of this save (spec §6.1) — not the
+    // caller's own input, since none was given; the audit entry is what proves what the chain
+    // actually resolved to at save time, ahead of any later part edit.
+    certRequired: certResolution.certRequired, certScope: certResolution.certScope,
     lines: data.lines.map((line, i) => ({
       position: i + 1, partId: line.partId, partNumber: parts[i].partNumber,
       revisionNumber: i === 0 ? args.revisionNumber : null, qty: line.qty, weight: line.weight,
@@ -351,6 +367,7 @@ function auditPayload(args: {
       position: i + 1, typeId: c.typeId, typeName: containerTypeNames.get(c.typeId) ?? null,
       count: c.count, qty: c.qty ?? null,
       tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+      customerContainerId: c.customerContainerId,
     })),
     serials: data.lines.flatMap((line, i) => line.serials.map((s, index) => ({
       linePosition: i + 1, position: index + 1, serial: s.serial, description: s.description,
@@ -408,6 +425,8 @@ function toDetail(
     requestDate: formatDateOnly(row.requestDate),
     targetDate: row.targetDate === null ? null : formatDateOnly(row.targetDate),
     status: row.status, notes: row.notes, linkGroupId: row.linkGroupId,
+    customerJobNo: row.customerJobNo,
+    certRequired: row.certRequired, certScope: row.certScope as CertScopeValue,
     voided: row.deletedAt !== null,
     light: computeLight(row.requestDate, todayDateOnly(), traffic.mayMissDays, traffic.willMissDays),
     travelerPrinted: row.documents.length > 0,
@@ -417,7 +436,8 @@ function toDetail(
     })),
     containers: row.containers.map((c) => ({
       id: c.id, position: c.position, typeId: c.typeId, count: c.count, qty: c.qty,
-      tareWeight: num(c.tareWeight), grossWeight: num(c.grossWeight), type: c.type,
+      tareWeight: num(c.tareWeight), grossWeight: num(c.grossWeight),
+      customerContainerId: c.customerContainerId, type: c.type,
     })),
     serials: row.serials.map((s) => ({
       id: s.id, lineId: s.lineId, position: s.position, serial: s.serial, description: s.description,
@@ -588,6 +608,11 @@ async function saveNewOrder(
     const parts = await resolveLineParts(tx, customer.id, data.lines);
     const lead = parts[0];
 
+    // Resolved and FROZEN onto the order right here, at save (spec §6.1) — never re-derived from
+    // a part edited after the fact. `data.lines[0].partId` is the lead, matching every other
+    // most-specific-wins chain in this function (requestDate just below).
+    const certResolution = await resolveCertSettings(tx, customer.id, data.lines.map((l) => l.partId));
+
     const receivedDate = data.receivedDate
       ? parseDate(data.receivedDate, "Received date")
       : todayDateOnly();
@@ -626,7 +651,7 @@ async function saveNewOrder(
       "order",
       auditPayload({
         orderNumber, customer, data, parts, receivedDate, requestDate, targetDate,
-        revisionNumber, loads, containerTypeNames,
+        revisionNumber, loads, containerTypeNames, certResolution,
       }),
       () => tx.order.create({
         data: {
@@ -634,7 +659,8 @@ async function saveNewOrder(
           // The nonce rides on the row itself: a replay of this same request collides HERE, on
           // the unique index, rather than quietly allocating the next number (R4 finding 5).
           clientRequestId: data.clientRequestId ?? null,
-          poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
+          poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber, customerJobNo: data.customerJobNo,
+          certRequired: certResolution.certRequired, certScope: certResolution.certScope,
           receivedDate, requestDate, targetDate, notes: data.notes,
           lines: {
             create: data.lines.map((line, i) => ({
@@ -649,6 +675,7 @@ async function saveNewOrder(
             create: data.containers.map((c, i) => ({
               position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
               tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+              customerContainerId: c.customerContainerId,
             })),
           },
           loads: { create: loads.map((l, i) => ({ loadNumber: i + 1, qty: l.qty, weight: l.weight })) },
@@ -895,10 +922,17 @@ export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
 const UPDATE_ORDER = z.object({
   poNumber: z.string().max(200).optional(),
   vsOrderNumber: z.string().max(60).optional(),
+  customerJobNo: z.string().max(60).optional(),
   receivedDate: z.string().optional(),
   requestDate: z.string().optional(),
   targetDate: z.string().nullable().optional(),
   notes: z.string().max(4000).optional(),
+  // Overridable at entry and afterwards (spec §6.1) — resolveCertSettings only ever runs at
+  // createOrder's own save. An edit here is a plain scalar patch like every other field in this
+  // schema (still audited by auditedUpdate below), never a re-derivation of the part/customer
+  // chain.
+  certRequired: z.boolean().optional(),
+  certScope: z.enum(CERT_SCOPES).optional(),
 }).strict();
 
 // qty/weight only — partId and revisionNumber have no key in this shape at all, so `.strict()`
@@ -952,12 +986,15 @@ export async function updateOrder(
     const patch: Prisma.OrderUpdateInput = {
       ...(data.poNumber !== undefined ? { poNumber: data.poNumber } : {}),
       ...(data.vsOrderNumber !== undefined ? { vsOrderNumber: data.vsOrderNumber } : {}),
+      ...(data.customerJobNo !== undefined ? { customerJobNo: data.customerJobNo } : {}),
       ...(data.receivedDate !== undefined ? { receivedDate: parseDate(data.receivedDate, "Received date") } : {}),
       ...(data.requestDate !== undefined ? { requestDate: parseDate(data.requestDate, "Request date") } : {}),
       ...(data.targetDate !== undefined
         ? { targetDate: data.targetDate === null ? null : parseDate(data.targetDate, "Target date") }
         : {}),
       ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      ...(data.certRequired !== undefined ? { certRequired: data.certRequired } : {}),
+      ...(data.certScope !== undefined ? { certScope: data.certScope } : {}),
     };
 
     await auditedUpdate("order", id, () => tx.order.update({ where: { id }, data: patch }), { tx });
@@ -1096,6 +1133,7 @@ export async function replaceContainers(orderId: string, input: unknown): Promis
           data: data.map((c, i) => ({
             orderId, position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
             tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+            customerContainerId: c.customerContainerId,
           })),
         });
       }

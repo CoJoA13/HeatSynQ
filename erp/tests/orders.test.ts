@@ -148,6 +148,40 @@ describe("createOrder: the two-line sibling order", () => {
     expect(fetched.lines[1].part.serializationRequired).toBe(true);
   });
 
+  // Task 4 wiring: createOrder freezes resolveCertSettings's answer onto the order row (spec
+  // §6.1's detailed chain behaviour is cert-resolution.test.ts's job — this only pins that
+  // createOrder actually CALLS the resolver and that customerJobNo/customerContainerId, §3.22's
+  // two owner-mandated fields, round-trip through the create payload untouched.
+  it("freezes certRequired/certScope from the resolver and carries customerJobNo/customerContainerId through", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: true, certScope: "LOAD" } });
+    // The rider disagrees on scope — must not win (lead owns document identity, spec §6.1).
+    await prisma.part.update({ where: { id: rider.id }, data: { certScope: "SHIPMENT" } });
+
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-42",
+      lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1, customerContainerId: "CUST-BIN-1" }],
+    }));
+
+    expect(order.customerJobNo).toBe("JOB-42");
+    expect(order.certRequired).toBe(true);
+    expect(order.certScope).toBe("LOAD");
+    expect(order.containers[0].customerContainerId).toBe("CUST-BIN-1");
+  });
+
+  it("defaults customerJobNo to \"\" and containers' customerContainerId to \"\" when omitted", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+    expect(order.customerJobNo).toBe("");
+    expect(order.certRequired).toBe(false);
+    expect(order.certScope).toBe("ORDER");
+    expect(order.containers[0].customerContainerId).toBe("");
+  });
+
   it("auto-splits the mockup order into 14 loads whose weights sum exactly", async () => {
     const { customer, lead, rider } = await fixture();
 
@@ -1279,6 +1313,29 @@ describe("updateOrder", () => {
     expect(diffAfter.poNumber).toBe("PO-NEW");
   });
 
+  // Task 4: certRequired/certScope/customerJobNo are frozen at save but stay editable afterwards
+  // (spec §6.1: "Both are editable on the order afterwards").
+  it("PATCHes customerJobNo/certRequired/certScope, overriding what createOrder froze", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-1",
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    expect(order.certRequired).toBe(false);
+    expect(order.certScope).toBe("ORDER");
+
+    const { order: after } = await asSystem(() => updateOrder(order.id, {
+      customerJobNo: "JOB-2", certRequired: true, certScope: "SHIPMENT",
+    }));
+    expect(after).toMatchObject({ customerJobNo: "JOB-2", certRequired: true, certScope: "SHIPMENT" });
+
+    // A part edited AFTER this override must not re-resolve it back — updateOrder is a plain
+    // scalar patch, never a re-derivation of the chain.
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: false } });
+    const untouched = await getOrder(order.id);
+    expect(untouched.certRequired).toBe(true);
+  });
+
   it("leaves targetDate alone when omitted, and clears it on an explicit null", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({
@@ -1548,6 +1605,18 @@ describe("replaceContainers", () => {
     expect(after.containers).toHaveLength(2);
     expect(after.containers[0]).toMatchObject({ position: 1, typeId: crate.id, count: 2, tareWeight: 10 });
     expect(after.containers[1]).toMatchObject({ position: 2, typeId: containerType.id, count: 1 });
+  });
+
+  it("carries customerContainerId through a bulk replace (§3.22)", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    const after = await asSystem(() => replaceContainers(order.id, [
+      { typeId: containerType.id, count: 1, customerContainerId: "CUST-BIN-9" },
+    ]));
+    expect(after.containers[0].customerContainerId).toBe("CUST-BIN-9");
   });
 
   it("rejects an unknown container type and writes nothing", async () => {

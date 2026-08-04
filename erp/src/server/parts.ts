@@ -9,6 +9,7 @@ import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
+import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import type { PasteResult } from "./paste";
 import type { Blocker } from "./reference-blockers";
 
@@ -18,6 +19,10 @@ export type PartRow = {
   materialId: string | null; materialName: string | null;
   eachWeight: number; loadQty: number | null; loadWeight: number | null;
   requestDaysOverride: number | null;
+  /** Certification chain (spec §6.1): null = inherit the customer's default, which in turn falls
+   *  back to the plant setting. Never resolved here — resolveCertSettings (certs.ts) walks the
+   *  chain; this is the part's own OWN override, or the absence of one. */
+  certRequired: boolean | null; certScope: CertScopeValue | null;
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
@@ -43,6 +48,11 @@ const FIELDS = {
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the lead part's own override.
   requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
+  // Certification chain (spec §6.1): `null` (or an omitted key on create) means "inherit" — the
+  // resolver treats `null` and "not sent" identically. An explicit `false`/`true` is the part's
+  // own override and stays distinct from that inherited `null` end to end.
+  certRequired: z.boolean().nullable().optional(),
+  certScope: z.enum(CERT_SCOPES).nullable().optional(),
   serializationRequired: z.boolean().optional(),
   setupCharge: decimalField(12, 2, { min: "nonnegative" }),
   unitPrice: decimalField(12, 4, { min: "nonnegative" }),
@@ -56,6 +66,7 @@ const UPDATE = z.object(FIELDS).partial().strict();   // no customerId — immut
 const SELECT = {
   id: true, customerId: true, partNumber: true, name: true, description: true,
   materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
+  certRequired: true, certScope: true,
   serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
   pricePer: true, active: true,
   customer: { select: { code: true, name: true } },
@@ -71,6 +82,7 @@ function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
     eachWeight: eachWeight.toNumber(), loadWeight: num(loadWeight),
     setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
     pricePer: r.pricePer as PricePerValue,
+    certScope: r.certScope as CertScopeValue | null,
     hasProcessSteps,
   };
 }
