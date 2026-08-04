@@ -5,8 +5,9 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedUpdate } from "./audit";
 import { decimalField } from "./decimal-field";
+import { MAX_LOADS } from "../lib/load-split";
 import {
-  type OrderDetail, type OrderWarnings,
+  type OrderDetail, type OrderWarnings, INT4_MAX,
   readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads, claimOrder,
 } from "./orders";
 
@@ -34,9 +35,23 @@ export type LoadInput = { loadNumber: number; qty: number | null; weight: number
 // unconditionally meant that legal auto-split could never be re-saved once loaded back into the
 // bulk editor. The `superRefine` below still refuses a WEIGHT-ONLY row (qty null) at exactly
 // zero — there is nothing else on that row for a positive weight to describe.
+// Fix-wave R4 finding 4: the same `.max()` treatment `qty` gets just below, applied to the
+// ARRAY. `createOrder`'s auto-split already refuses to produce more than `MAX_LOADS` loads
+// (runSplitLoads, translated into a clean 400) — but that cap lived entirely on the SPLIT path,
+// so the manual bulk replace could set a load count no split would ever generate, one INSERT per
+// row inside a single Serializable transaction. Bounded here, before the transaction opens, with
+// the cap named in the message: a refusal has to say what the limit actually is.
+const MAX_LOADS_MESSAGE =
+  `An order cannot have more than ${MAX_LOADS.toLocaleString("en-US")} loads`;
+
+// Fix-wave R4 finding 3: `Load.qty` is a Postgres `INTEGER` (schema.prisma) — a value past its
+// ceiling escaped this schema's field-anchored 400 as an unmapped numeric-overflow 500 from
+// inside the transaction. The auto-split path could never produce one (splitLoads divides a
+// bounded line qty), so the hole was only ever reachable through this manual editor. Same bound,
+// same reasoning, as orders.ts's own container count/qty fields.
 const LOAD_ITEM = z.object({
   loadNumber: z.number().int().min(1),
-  qty: z.number().int().min(1).nullable().optional(),
+  qty: z.number().int().min(1).max(INT4_MAX).nullable().optional(),
   weight: decimalField(12, 2, { min: "nonnegative" }),
 }).strict().superRefine((row, ctx) => {
   if (row.qty == null && row.weight == null) {
@@ -51,7 +66,7 @@ const LOAD_ITEM = z.object({
   }
 });
 
-const REPLACE_LOADS = z.array(LOAD_ITEM).min(1);
+const REPLACE_LOADS = z.array(LOAD_ITEM).min(1).max(MAX_LOADS, MAX_LOADS_MESSAGE);
 
 /**
  * The SET of `loadNumber`s must be exactly {1, ..., N} — no gaps, no repeats — so the board's

@@ -5,6 +5,8 @@ import { runWithContext } from "@/server/context";
 import { createOrder, updateLine, voidOrder } from "@/server/orders";
 import { replaceLoads, resplitLoads } from "@/server/order-loads";
 import { readAudit } from "@/server/audit";
+import { readableMessage } from "@/server/error-message";
+import { MAX_LOADS } from "@/lib/load-split";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -122,6 +124,41 @@ describe("replaceLoads", () => {
 
     await expect(asSystem(() => replaceLoads(order.id, [{ loadNumber: 1, qty: 1, weight: "-1.00" }])))
       .rejects.toBeInstanceOf(ZodError);
+  });
+
+  // Fix-wave R4 finding 3: the auto-split path's qty already carried the Int4 bound (orders.ts's
+  // CONTAINER_ITEM, R2 finding 3's own fix), but the MANUAL load editor's qty was bounded only
+  // below (`min(1)`). `Load.qty` is a Postgres `Int` — anything past 2,147,483,647 is not a
+  // business refusal at all, it is an unmapped 22003 numeric-overflow escaping the transaction
+  // as a 500. A fat-fingered paste is a validation error, not a server error.
+  it("rejects a manual load qty past the Int4 ceiling", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    await expect(asSystem(() => replaceLoads(order.id,
+      [{ loadNumber: 1, qty: 2_147_483_648, weight: "1000.00" }])))
+      .rejects.toBeInstanceOf(ZodError);
+    // The ceiling itself is still accepted — the bound is the column's, not an arbitrary one.
+    const { order: saved } = await asSystem(() => replaceLoads(order.id,
+      [{ loadNumber: 1, qty: 2_147_483_647, weight: "1000.00" }]));
+    expect(saved.loads[0].qty).toBe(2_147_483_647);
+  });
+
+  // Fix-wave R4 finding 4: `MAX_LOADS` was enforced only on the AUTO-SPLIT path (runSplitLoads,
+  // orders.ts) — the manual bulk replace could set a load count no split would ever produce, one
+  // INSERT per row inside a single Serializable transaction. Same cap, now on both doors.
+  it("rejects a manual replacement past the MAX_LOADS cap, naming the limit", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    const tooMany = Array.from({ length: MAX_LOADS + 1 }, (_, i) => ({ loadNumber: i + 1, qty: 1, weight: null }));
+    const err = await asSystem(() => replaceLoads(order.id, tooMany)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ZodError);
+    // Discoverable: the refusal says what the ceiling is, not just that one was hit.
+    expect(readableMessage(err as ZodError)).toContain("10,000");
+
+    // Nothing was written — the cap is reached before the transaction opens.
+    expect(await prisma.load.count({ where: { orderId: order.id } })).toBe(3);
   });
 
   it("rejects an unrecognized key on a load row (.strict())", async () => {
