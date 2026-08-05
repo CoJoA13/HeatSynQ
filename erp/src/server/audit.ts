@@ -128,11 +128,20 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
       },
     },
   },
+  // Task 8 review (2026-08-04, carried forward from Task 2): the original include here pulled
+  // `order: { select: { orderNumber: true } }` only — a diff on `Shipper.customerId`,
+  // `carrierId` or `shipToAddressId` rendered as a raw cuid, exactly the unreadable-history shape
+  // issue #24 exists to prevent. `customer` joins `orderNumber` on the ORDER side (an order's own
+  // customer, which is always the shipment's customer — spec §4.2's "one ship-to per shipment" is
+  // about the address, not a second customer), and `carrier`/`shipToAddress` are added on the
+  // SHIPPER side itself so a carrier or ship-to change also reads as a name, not an id.
   shipper: {
+    carrier: { select: { name: true } },
+    shipToAddress: { select: { name: true } },
     orders: {
       orderBy: { position: "asc" },
       include: {
-        order: { select: { orderNumber: true } },
+        order: { select: { orderNumber: true, customer: { select: { code: true, name: true } } } },
         lines: { orderBy: { position: "asc" }, include: { orderLine: { select: { position: true } } } },
         containers: { orderBy: { position: "asc" } },
         // ShipperSerial has no position of its own (a serial is either on the ticket or not), so

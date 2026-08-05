@@ -500,8 +500,13 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
  * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
  * is still consulted first, so this keeps working if a future adapter populates it; the driver's
  * message is the last resort. Field names arrive quoted, hence substring rather than equality.
+ *
+ * Exported for shippers.ts's `createShipper` (Task 8) — `Shipper.clientRequestId` is the
+ * identical idempotency-nonce shape on a different model, and this function never hardcodes a
+ * model name, only the column name, so it discriminates a `Shipper` P2002 exactly as it does an
+ * `Order` one. Reused rather than re-derived, per the task brief.
  */
-function isDuplicateClientRequestId(err: unknown): boolean {
+export function isDuplicateClientRequestId(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
   const meta = err.meta as {
     target?: unknown;
