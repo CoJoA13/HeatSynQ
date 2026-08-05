@@ -18,7 +18,7 @@ type CertRow = {
   customerCode: string; customerName: string; scope: CertScopeValue;
   loadNumber: number | null; shipperNumber: number | null;
   printedAt: string | null; deletedAt: string | null;
-  readingCount: number; failCount: number;
+  readingCount: number; passedCount: number; failCount: number;
 };
 
 // The parts/page.tsx precedent: only the slice the customer filter picker needs.
@@ -39,6 +39,30 @@ function loadOrShipment(row: CertRow): string {
   if (row.scope === "LOAD") return row.loadNumber !== null ? `Load ${row.loadNumber}` : "";
   if (row.scope === "SHIPMENT") return row.shipperNumber !== null ? `Shipper #${row.shipperNumber}` : "";
   return "";
+}
+
+/**
+ * The §11 pass/fail summary — three states, never two. A reading with no value yet has
+ * `passed === null`, not `false`, so it is neither a pass nor a fail; `readingCount -
+ * failCount` (this file's original, wrong, shape) silently counted it as "passed", which
+ * overstates completeness for exactly the mid-entry cert this page exists to surface (a few
+ * requirements filled in and passing, the rest still blank, zero failures so far — the normal
+ * state of every cert before data entry finishes, not an edge case). `passedCount` is computed
+ * server-side the same explicit-equality way `failCount` always was (`passed === true`, not "not
+ * false"), so the three counts here are read directly off the row rather than inferred from a
+ * subtraction that hides the null case.
+ */
+type ResultSegment = { text: string; className: string };
+function resultSegments(row: CertRow): ResultSegment[] {
+  const pending = row.readingCount - row.passedCount - row.failCount;
+  const segments: ResultSegment[] = [];
+  if (row.failCount > 0) {
+    segments.push({ text: `${row.failCount} of ${row.readingCount} failed`, className: "text-red-700" });
+  } else if (row.passedCount > 0) {
+    segments.push({ text: `${row.passedCount} passed`, className: "text-slate-600" });
+  }
+  if (pending > 0) segments.push({ text: `${pending} pending`, className: "text-amber-700" });
+  return segments;
 }
 
 export function CertList() {
@@ -157,10 +181,12 @@ export function CertList() {
               <td className="p-2">
                 {row.readingCount === 0 ? (
                   <span className="text-slate-400">—</span>
-                ) : row.failCount > 0 ? (
-                  <span className="text-red-700">{row.failCount} of {row.readingCount} failed</span>
                 ) : (
-                  <span className="text-slate-600">{row.readingCount} passed</span>
+                  resultSegments(row).map((seg, i) => (
+                    <span key={seg.text} className={seg.className}>
+                      {i > 0 && ", "}{seg.text}
+                    </span>
+                  ))
                 )}
               </td>
             </tr>

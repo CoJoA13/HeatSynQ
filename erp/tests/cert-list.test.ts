@@ -123,7 +123,7 @@ describe("listCerts — the certifications worklist's own filter and column cont
     expect(rows.get(orderCert.id)?.sequence).toBeNull();
   });
 
-  it("failCount counts only readings whose passed is exactly false, summed across every requirement on the cert", async () => {
+  it("passedCount and failCount count only readings whose passed is exactly true/false, summed across every requirement on the cert", async () => {
     const customer = await makeCustomer();
     const leadPart = await makePart(customer.id);
     const riderPart = await makePart(customer.id);
@@ -143,7 +143,7 @@ describe("listCerts — the certifications worklist's own filter and column cont
 
     // Requirement 1: one pass (30.0, within 28-32), one fail (20.0, below min).
     // Requirement 2: one fail (26.0, below min). A reading left with no value at all (`passed`
-    // stays null) counts toward neither readingCount's complement nor failCount.
+    // stays null) counts toward neither passedCount nor failCount.
     await asSystem(() => replaceReadings(cert.id, {
       requirements: [
         { id: cert.requirements[0].id, readings: [{ value: "30.0" }, { value: "20.0" }] },
@@ -153,6 +153,38 @@ describe("listCerts — the certifications worklist's own filter and column cont
 
     const [row] = await listCerts({ customerId: customer.id });
     expect(row.readingCount).toBe(3);
+    expect(row.passedCount).toBe(1);
     expect(row.failCount).toBe(2);
+  });
+
+  it("a pending reading (no value entered, passed === null) counts toward neither passedCount nor failCount, even with zero fails", async () => {
+    // The exact case the worklist page got wrong: a mid-entry cert with some requirements filled
+    // in and passing, the rest still blank, and zero failures so far — the normal state of every
+    // cert before data entry finishes, not an edge case. `readingCount - failCount` (the page's
+    // original, wrong, arithmetic) would report `passedCount === readingCount` here, which is
+    // false: one of the two readings has no value yet.
+    const customer = await makeCustomer();
+    const part = await makePart(customer.id);
+    await giveSteps(part.id);
+    const code = await prisma.inspectionCode.create({ data: { name: "CL-Pending" } });
+    await asSystem(() => addPartInspection(part.id, { inspectionCodeId: code.id, sort: 0, min: 28, max: 32 }));
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "",
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    expect(cert.requirements).toHaveLength(1);
+
+    await asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30.0" }, { value: null }] }],
+    }, { afterPrint: false }));
+
+    const [row] = await listCerts({ customerId: customer.id });
+    expect(row.readingCount).toBe(2);
+    expect(row.passedCount).toBe(1);
+    expect(row.failCount).toBe(0);
+    // The regression check: with zero fails, `passedCount` must NOT equal `readingCount` — one
+    // reading is still pending, and the page must be able to tell the difference.
+    expect(row.passedCount).not.toBe(row.readingCount);
   });
 });
