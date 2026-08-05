@@ -3,6 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
+import { storeDocument } from "@/server/documents";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 import { GET as listRoute, POST as createRoute } from "@/app/api/shippers/route";
@@ -14,6 +15,7 @@ import { PUT as replaceLinesRoute } from "@/app/api/shippers/[id]/orders/[shippe
 import { PUT as replaceContainersRoute } from "@/app/api/shippers/[id]/orders/[shipperOrderId]/containers/route";
 import { PUT as replaceSerialsRoute } from "@/app/api/shippers/[id]/orders/[shipperOrderId]/serials/route";
 import { GET as shipmentsForOrderRoute } from "@/app/api/orders/[id]/shipments/route";
+import { GET as shipperDocumentsRoute } from "@/app/api/shippers/[id]/documents/route";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -413,5 +415,37 @@ describe("shipper routes", () => {
     expect(res.status).toBe(200);
     const rows = await res.json();
     expect(rows).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // GET /api/shippers/[id]/documents (Task 14: the shipment page's stored-documents list —
+  // `listDocumentsForShipper` (documents.ts, Task 3) had no HTTP caller before this route).
+  // ---------------------------------------------------------------------------------------
+
+  it("GET /api/shippers/[id]/documents requires shipping.view and lists this shipment's SHIPPER/BOL documents", async () => {
+    const { order } = await orderFixture();
+    const creator = await signInWith(["shipping.create"], "ship-docs-create-1");
+    const created = await createRoute(bodyReq("http://t/api/shippers", "POST", creator, oneOrderInput(order)), noParams);
+    const { shipper } = await created.json();
+
+    const url = `http://t/api/shippers/${shipper.id}/documents`;
+    expect((await shipperDocumentsRoute(getReq(url), withParams({ id: shipper.id }))).status).toBe(401);
+
+    const wrong = await signInWith(["orders.view"], "ship-docs-wrong-1");
+    expect((await shipperDocumentsRoute(getReq(url, wrong), withParams({ id: shipper.id }))).status).toBe(403);
+
+    const viewer = await signInWith(["shipping.view"], "ship-docs-view-1");
+    const empty = await shipperDocumentsRoute(getReq(url, viewer), withParams({ id: shipper.id }));
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual([]);
+
+    const bol = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, Buffer.from("%PDF-1.4 bol")));
+
+    const withDoc = await shipperDocumentsRoute(getReq(url, viewer), withParams({ id: shipper.id }));
+    expect(withDoc.status).toBe(200);
+    const docs = await withDoc.json();
+    expect(docs).toHaveLength(1);
+    expect(docs[0]).toMatchObject({ id: bol.id, kind: "BOL", shipperId: shipper.id, orderId: null, certId: null });
   });
 });
