@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-03 (late). **Phase 3 (Orders & Loads) is complete and MERGED to `main`** — squash-merged as `12a17f9` (PR #39, 56 commits). All 17 tasks done, five Codex review rounds (rounds 1–4: 34 findings fixed on the branch; round 5: 6 findings triaged to issues #41–#46 by owner ruling — the round was not converging), final whole-branch review passed with its fix wave applied. Verified after merge: the squashed tree is byte-identical to the branch tip (`56063b6`), `main` green on **1010 tests**, `tsc`, `eslint`, and the E2E harness 10/10; both databases migrated. Next work is **Phase 4 (Certifications & Shipping)** — kickoff prompt in §9. Start at §4a "RESUME HERE". This document is the portable project memory: a fresh machine or a fresh AI session should be able to continue the project from this file plus the documents it links. Session-local memory and the `.superpowers/` execution scratch (task reports, progress ledger) do **not** travel between machines — everything load-bearing from them has been folded in here.
+**Updated:** 2026-08-04 — **machine-move handoff.** Phase 4 (Certifications & Shipping) is IN PROGRESS on branch `phase-4-certs-shipping`; start at §4a, then read `.superpowers/sdd/progress.md` (now tracked in git). Phase 3 merged as `12a17f9` (PR #39).
 
 ---
 
@@ -73,7 +73,108 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — state as of 2026-08-03, Phase 3 (Orders & Loads) MERGED to main
+### 4a. RESUME HERE — Phase 4 (Certifications & Shipping) is IN PROGRESS on a branch
+
+**Written 2026-08-04 as a machine-move handoff. Everything load-bearing is in git; nothing you
+need is left on the old laptop.**
+
+**Branches — both must be pushed before the old machine is wiped.**
+
+| Branch | Commits | Holds |
+|---|---|---|
+| `phase-4-certs-shipping` | 44 from `586a569` | Tasks 1–13 + the spec, plan and samples |
+| `phase-4-lane-b` | 2 from `893dc5e` | Task 15 only (certifications worklist) — **must be merged into the main phase branch** |
+
+`phase-4-lane-b` exists because Tasks 13/15 ran as two parallel lanes; git will not check out one
+branch in two worktrees, so the second lane needed its own. The two lanes touch disjoint
+directories (`src/app/shipping/` vs `src/app/certs/`), so `git merge phase-4-lane-b` should be
+uneventful. **Merge it first thing.**
+
+**The execution record now travels.** `.superpowers/sdd/` was local-only scratch through Phase 3 —
+which is why this document had to restate that phase's lessons by hand. As of commit `4a3cb6b` its
+task briefs, implementer reports, reviewer verdicts and `progress.md` ledger are **tracked in git**.
+`progress.md` is the authoritative per-task record: what was found, what was refuted, what was
+deferred and why. Read it before resuming. Only the `review-*.diff` packages stay ignored, since
+they are `git diff` between commits already in history.
+
+**Documents (both binding, both committed):**
+- Spec: `docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3 carries **18 owner
+  rulings** from the design session plus **four amendments (§3.19–§3.22)** forced by the owner's real
+  printed samples arriving mid-session, plus three more dated amendments added during execution
+  (§5.5's printed-ticket removal refusal, §5.6's cert-voids-when-its-order-leaves rule, §8's
+  permission-filtered document list).
+- Plan: `docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md` — 20 tasks, amended in place
+  seven times as reviews found things the plan itself had caused.
+- **The owner's four production samples are in `docs/samples/`** (shipping ticket, BOL,
+  certification, invoice) — **HANDOFF §7 item 1 is CLOSED.** They are the layout contract, and they
+  overturned four of the design's own decisions before code was written.
+
+**Task status at handoff:**
+
+| Tasks | State |
+|---|---|
+| 1–13, 15 | **Complete**, each through implementation → independent review → fix rounds → re-review Approved |
+| 14 (shipment page) | **Was in flight when the handoff was called.** Check `git log` on `phase-4-certs-shipping` and `.superpowers/sdd/task-14-report.md` for whether it landed; if it committed but was never reviewed, review it before continuing |
+| 16 (cert detail), 17 (order hub sections) | Not started |
+| 18–19 (the three PDF layouts) | Not started — **not blocked**, the samples are in hand |
+| 20 (E2E, demo doc, docs) | Not started |
+
+**Gates at handoff:** 1278 tests (from 1010 at branch start), `tsc`, `eslint` and `npm run build`
+all clean. Both databases migrated (18 migrations).
+
+**Local-only infrastructure that does NOT travel, and does not need to.** A second test database
+`erp_test2` and a git worktree at `../HeatSynQ-laneB` were created so two UI tasks could run in
+parallel. Both are disposable. On the new machine, do the standard §8 setup and ignore them; if you
+want the second lane again, the recipe is in `progress.md` under "SECOND LANE BUILT". The isolation
+property that makes it safe was verified rather than assumed: `tests/helpers/db.ts` truncates every
+table in `beforeEach`, so two lanes sharing one test database would silently destroy each other's
+fixtures.
+
+**Nine lessons from this phase's reviews, all with real defects behind them.** These are the ones
+worth carrying — the full per-task detail is in `progress.md`.
+
+1. **A concurrency test that passes is not evidence.** Task 5's race test passed with the row lock
+   it guarded **deleted** — both sides ran Serializable, so Postgres's SSI caught the anomaly and
+   the lock never acted. The technique that works: run the **competing** caller at Read Committed,
+   so only the row lock can serialise the two. Verify every such test by deleting the guard and
+   watching it go red.
+2. **Some concurrency properties cannot be tested at all at this layer, and that is now settled.**
+   ABBA deadlock cannot be discriminated: the sorted claim is one `SELECT … ORDER BY id FOR UPDATE`
+   with `LockRows` above `Sort`, so a correct implementation also holds A while blocking on B. Three
+   tests carry that disclaimer **in their titles**. Do not spend rounds rediscovering it.
+3. **Hoisted functions survive a module cycle; a `const` does not.** `shippers.ts` consumed
+   `INT4_MAX` from `orders.ts` at module-evaluation time, and Task 10 was about to add the reverse
+   edge — a crash at import, two tasks later, caused three tasks earlier. Two real cycles were found
+   and broken this phase (`orders↔certs`, `cert-results↔certs`); the leaves are now `errors.ts`,
+   `order-locks.ts` and `src/lib/order-constants.ts`.
+4. **`import type` is erased and creates no runtime edge.** A naive cycle-detecting grep reports
+   false positives; one implementer was misled by exactly that.
+5. **`redact()` round-trips through `JSON.stringify`, which silently drops keys whose value is
+   `undefined`.** Changing a zod field from `.default("")` to `.optional()` made an audit snapshot
+   lose a key entirely. When you change a field's optionality, check every audit payload it reaches.
+6. **The sibling-split rule keeps costing.** It bit three times this phase, worst when a fix for
+   "queries dragging signature bytes" landed on one call site and missed `getSessionUser`, which
+   runs on **every authenticated request**. When a fix lands on one member of a group, enumerate the
+   whole group in the report so the sweep is checkable rather than asserted.
+7. **A refusal must name what is actually blocking it.** One shipped naming a problem that did not
+   exist ("a shipper with that shipper number already exists" for a duplicate line id).
+8. **Half the findings in a fix round are in the code written for the previous round.** Task 4's
+   Minor fix introduced an Important bug. Re-review every fix.
+9. **Test fixtures quietly demonstrate forbidden states.** Task 9's own test built a one-order
+   shipment and removed its only order — exercising a state the spec forbids, green, with no
+   assertion against it.
+
+**What to do next, in order:**
+1. **Push both branches** if that did not happen before the move (`git push -u origin
+   phase-4-certs-shipping` and the same for `phase-4-lane-b`).
+2. **Merge `phase-4-lane-b`** into `phase-4-certs-shipping`.
+3. **Settle Task 14** — check whether it landed and whether it was reviewed.
+4. **Resume at the first unfinished task** using the §9 prompt, keeping the per-task
+   implement → review → fix → re-review loop. It has found something in every single task.
+
+---
+
+### 4a-prior. Phase 3 (Orders & Loads) MERGED to main — state as of 2026-08-03
 
 **Phase 2C was split into three branches** (owner ruling, 2026-08-01) because as originally framed it was ~11 new models and ~30 tasks, roughly 3× Phase 2B: **2C-1 shared foundations** (done), **2C-2 Parts core** (next), **2C-3 Process Steps + Templates**.
 
@@ -350,7 +451,13 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 
 ## 7. The owner still owes (spec §14 — chase these, none block Phase 2)
 
-1. **Samples of the current printed shipper, cert, and invoice** — these drive Phase 4/5's document templates and the cert field set; drop scans/PDFs into `docs/samples/`. **The traveler sample is done** — closed 2026-08-03 by the owner's own ruling that the 2025 mockup already in `docs/samples/` is the build target, no further traveler samples needed (spec §3.9, Task 16).
+1. ~~**Samples of the current printed shipper, cert, and invoice**~~ — **CLOSED 2026-08-04.** The
+   owner delivered all four during the Phase 4 design session: `docs/samples/Shipping Ticket
+   Sample.pdf`, `Bill of Lading Sample.pdf`, `Certification Sample.pdf` and `Invoice Sample.pdf`
+   (the last is Phase 5's). They are real filled-in documents for orders `72036-3` and `72026`, not
+   mockups, and they **overturned four of the Phase 4 design's own decisions before a line of code
+   was written** — see that spec's §3.19–§3.22. The traveler sample was closed earlier, 2026-08-03,
+   by the ruling that the 2025 mockup is its build target (spec §3.9).
 2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely).
 3. The office's go-to report list.
 4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
@@ -397,7 +504,47 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — Phase 4 (Certifications & Shipping). Phase 3 is merged (`12a17f9`, PR #39).**
+**Next up — RESUME Phase 4 (Certifications & Shipping), already in progress on a branch. Paste the
+block below into a fresh session on the new machine.**
+
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` §4a — **Phase 4 is mid-execution on branch
+> `phase-4-certs-shipping`, not unstarted.** Then read
+> `.superpowers/sdd/progress.md`, which is the per-task execution ledger (now tracked in git) and
+> the authoritative record of what each review found, refuted or deferred.
+>
+> Before anything else: confirm both `phase-4-certs-shipping` and `phase-4-lane-b` are on the
+> remote, **merge `phase-4-lane-b`** into the phase branch (disjoint directories, should be
+> uneventful), and settle Task 14 — check `git log` and `.superpowers/sdd/task-14-report.md` for
+> whether the shipment page landed and whether it was ever reviewed. Then run the §8 fresh-machine
+> setup and confirm the gates are green before writing anything new: `npm test` (expect ~1278),
+> `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
+>
+> The binding documents are the spec
+> (`docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3's 18 owner rulings,
+> §3.19–§3.22's samples-driven amendments, and three further dated amendments added during
+> execution) and the plan
+> (`docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md` — 20 tasks, amended seven times in
+> place as reviews found things the plan itself caused). **The owner's four production samples are
+> in `docs/samples/` and are the layout contract for Tasks 18–19 — nothing is blocked on paper any
+> more.**
+>
+> Resume with `superpowers:subagent-driven-development` at the first unfinished task, keeping the
+> loop that has found something in **every single task so far**: fresh subagent per task →
+> independent review → fix rounds → re-review → only then mark it done. Dispatch reviews with the
+> repo's own `task-reviewer` agent. §4a lists nine lessons from this phase's reviews; the two that
+> will bite a new session fastest are that **a concurrency test which passes is not evidence**
+> (verify it by deleting the guard and watching it go red) and that **when a fix lands on one member
+> of a sibling group, enumerate the whole group in the report** so the sweep is checkable.
+>
+> Remaining: 16 (cert detail page), 17 (order hub sections + cert fields), 18–19 (shipping ticket,
+> BOL and certification layouts, built to the samples), 20 (five E2E flows, demo walkthrough,
+> HANDOFF and CLAUDE.md updates). Then the whole-branch review on the strongest model, one fix wave,
+> and the PR. Attribution goes in the **PR body**, never in a commit — a hook blocks trailers.
+> Remember the prime directive: do not assume — ask the owner.
+
+---
+
+**Historical — the prompt that started Phase 4. Phase 3 was merged as `12a17f9`, PR #39.**
 
 > Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
 > backlog. **Phase 3 (Orders & Loads) is complete** (§4a — 17 tasks, all four gates green, the
