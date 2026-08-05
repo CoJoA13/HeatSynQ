@@ -6,8 +6,9 @@ import { withDbErrors } from "./db-errors";
 import { auditedUpdate } from "./audit";
 import { decimalField } from "./decimal-field";
 import { MAX_LOADS } from "../lib/load-split";
+import { INT4_MAX } from "../lib/order-constants";
 import {
-  type OrderDetail, type OrderWarnings, INT4_MAX,
+  type OrderDetail, type OrderWarnings,
   readDetail, trafficSettings, loadsMismatchWarnings, lineTotals, runSplitLoads,
 } from "./orders";
 import { claimOrder } from "./order-locks";

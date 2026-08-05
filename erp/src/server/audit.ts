@@ -131,11 +131,13 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Task 8 review (2026-08-04, carried forward from Task 2): the original include here pulled
   // `order: { select: { orderNumber: true } }` only — a diff on `Shipper.customerId`,
   // `carrierId` or `shipToAddressId` rendered as a raw cuid, exactly the unreadable-history shape
-  // issue #24 exists to prevent. `customer` joins `orderNumber` on the ORDER side (an order's own
-  // customer, which is always the shipment's customer — spec §4.2's "one ship-to per shipment" is
-  // about the address, not a second customer), and `carrier`/`shipToAddress` are added on the
-  // SHIPPER side itself so a carrier or ship-to change also reads as a name, not an id.
+  // issue #24 exists to prevent. `customer`/`carrier`/`shipToAddress` are all selected directly on
+  // the SHIPPER itself (round 2 of the same review, 2026-08-04) — not read off `orders[].order`
+  // alone, because `ShipperOrder` has no `deletedAt` of its own (spec §4.2) and Task 10's
+  // `removeOrderFromShipper` hard-deletes the row: an order-less shipment would otherwise fall
+  // back to rendering `customerId` as a raw cuid the moment its last order is removed.
   shipper: {
+    customer: { select: { code: true, name: true } },
     carrier: { select: { name: true } },
     shipToAddress: { select: { name: true } },
     orders: {

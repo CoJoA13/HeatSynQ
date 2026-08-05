@@ -17,6 +17,7 @@ import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
+import { INT4_MAX } from "../lib/order-constants";
 
 export type OrderWarnings = string[];
 
@@ -99,9 +100,9 @@ const SERIAL_ITEM = z.object({
 // bulk replace unchecked and failed with an unmapped database range error (a 500) rather than
 // this schema's own field-anchored 400. Bounding both here catches it before the transaction
 // even opens, the same role `LINE_QTY`'s own `.max()` plays for a line's qty just below.
-// Exported for order-loads.ts, whose manual load editor writes `Load.qty` — the same Postgres
-// `INTEGER` ceiling, reached through a different door (fix-wave R4 finding 3).
-export const INT4_MAX = 2_147_483_647;
+// `INT4_MAX` itself now lives in `../lib/order-constants` (Task 8 review, 2026-08-04) — see that
+// module's own comment for why a `const` consumed at module-evaluation time could not stay here
+// once `shippers.ts` needed it too.
 
 const CONTAINER_ITEM = z.object({
   typeId: z.string().min(1),

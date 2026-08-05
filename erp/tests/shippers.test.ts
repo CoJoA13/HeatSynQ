@@ -68,6 +68,12 @@ async function savedOrder(opts: {
   return { order, part, customer };
 }
 
+/** Shape of one `createShipper` input's container/serial entries — typed properly (not
+ *  `unknown[]`) so the tests that mutate `input.orders[0].containers`/`.serials` in place stay
+ *  type-checked rather than opting out of it (Task 8 review, 2026-08-04). */
+type ShipContainerInput = { orderContainerId: string; count: number };
+type ShipSerialInput = { orderSerialId: string; printOnShipper?: boolean };
+
 /** The minimal legal `createShipper` input for one order, shipping its one lead line in full —
  *  no containers, no serials. */
 function oneOrderInput(order: OrderDetail) {
@@ -80,8 +86,8 @@ function oneOrderInput(order: OrderDetail) {
         orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight,
         lineComplete: false,
       }],
-      containers: [] as unknown[],
-      serials: [] as unknown[],
+      containers: [] as ShipContainerInput[],
+      serials: [] as ShipSerialInput[],
     }],
   };
 }
@@ -95,8 +101,8 @@ function zeroQtyInput(order: OrderDetail) {
     orders: [{
       orderId: order.id,
       lines: [{ orderLineId: order.lines[0].id, qty: 0, weight: 0, lineComplete: false }],
-      containers: [] as unknown[],
-      serials: [] as unknown[],
+      containers: [] as ShipContainerInput[],
+      serials: [] as ShipSerialInput[],
     }],
   };
 }
@@ -149,7 +155,7 @@ describe("createShipper", () => {
   });
 
   it("does not warn once a serial is selected for a serialization-required line", async () => {
-    const { order, customer } = await savedOrder({ serializationRequired: true });
+    const { order } = await savedOrder({ serializationRequired: true });
     const serial = await prisma.orderSerial.create({
       data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "S-1", description: "" },
     });
@@ -157,7 +163,6 @@ describe("createShipper", () => {
     input.orders[0].serials = [{ orderSerialId: serial.id, printOnShipper: true }];
     const { warnings } = await createShipper(input, { canOverrideCreditHold: false });
     expect(warnings.join(" ")).not.toMatch(/no serial numbers/i);
-    void customer;
   });
 
   it("warns, but still saves, when a line ships more than its remaining quantity", async () => {
@@ -204,6 +209,44 @@ describe("createShipper", () => {
     input.orders[0].lines[0].orderLineId = b.order.lines[0].id;
     await expect(createShipper(input, { canOverrideCreditHold: false }))
       .rejects.toThrow(/does not belong/i);
+  });
+
+  // A repeated child id within one order must be refused BY NAME, in the service — never left to
+  // fall through to the database's `@@unique` constraint, where `withDbErrors`' generic
+  // `conflictField: "shipper number"` would mislabel it as a numbering collision (Task 8 review,
+  // 2026-08-04).
+  it("refuses a duplicate order line within one shipment, naming it", async () => {
+    const { order } = await savedOrder({ qty: 10 });
+    const input = oneOrderInput(order);
+    input.orders[0].lines.push({ ...input.orders[0].lines[0] });
+    await expect(createShipper(input, { canOverrideCreditHold: false }))
+      .rejects.toThrow(/line 1.*listed twice/i);
+  });
+
+  it("refuses a duplicate container within one shipment, naming it", async () => {
+    const { order } = await savedOrder();
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const container = await prisma.orderContainer.create({
+      data: { orderId: order.id, position: 1, typeId: containerType.id, count: 2 },
+    });
+    const input = oneOrderInput(order);
+    input.orders[0].containers = [
+      { orderContainerId: container.id, count: 1 },
+      { orderContainerId: container.id, count: 1 },
+    ];
+    await expect(createShipper(input, { canOverrideCreditHold: false }))
+      .rejects.toThrow(/Basket.*listed twice/i);
+  });
+
+  it("refuses a duplicate serial within one shipment, naming it", async () => {
+    const { order } = await savedOrder();
+    const serial = await prisma.orderSerial.create({
+      data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "S-42", description: "" },
+    });
+    const input = oneOrderInput(order);
+    input.orders[0].serials = [{ orderSerialId: serial.id }, { orderSerialId: serial.id }];
+    await expect(createShipper(input, { canOverrideCreditHold: false }))
+      .rejects.toThrow(/S-42.*listed twice/i);
   });
 
   it("writes a create audit entry naming the customer by code, not only by cuid", async () => {
@@ -265,9 +308,25 @@ describe("createShipper", () => {
   // `claimOrdersInOrder` (order-locks.ts), already proven deadlock-free by
   // ship-ledger.test.ts's own `claimOrdersInOrder` suite; this test proves THIS service's call
   // site actually uses it, rather than looping `claimOrder` per id in caller order.
-  it("two multi-order shipments over {A,B} and {B,A} both complete without deadlocking or a 500", async () => {
+  //
+  // Verified by hand both ways (task-8 review, 2026-08-04), against a temporary probe that
+  // swapped `claimOrdersInOrder` for the exact anti-pattern spec §5.3 names — an unsorted loop of
+  // per-id `claimOrder` calls in caller order:
+  //  - WITH a 50ms delay inserted between the loop's two claims (to force the interleaving
+  //    window open): reliably RED — a genuine Postgres `deadlock detected` (40P01), untranslated,
+  //    would surface as a 500 in production.
+  //  - WITHOUT that delay: GREEN 5/5 repeats. This local Postgres is fast enough that one side's
+  //    whole two-statement loop usually finishes before the other side's first statement lands,
+  //    so the naive loop alone is not a reliable trigger — the identical finding
+  //    `ship-ledger.test.ts`'s own `claimOrdersInOrder` suite already documented for this exact
+  //    shape one level down ("Reproducing it needed a short artificial delay... the plain swap
+  //    alone was NOT a reliable RED on its own").
+  // This test therefore is NOT a deterministic row-lock regression guard on its own in this
+  // environment — an unsorted-loop regression could land here and stay green under ordinary,
+  // undelayed CI timing. It is titled accordingly, per the two existing precedents
+  // (tests/certs.test.ts:187, tests/ship-ledger.test.ts:290).
+  it("two multi-order shipments over {A,B} and {B,A} both complete without deadlocking or a 500 (not a deterministic row-lock regression guard without artificial delay — see comment)", async () => {
     const a = await savedOrder({ qty: 20 });
-    const b = await savedOrder();
     // A second order for a's own customer, so a single shipment can legally cover both.
     const bSameCustomer = await (async () => {
       const part = await makePart(a.customer.id);
@@ -277,7 +336,6 @@ describe("createShipper", () => {
       }));
       return order;
     })();
-    void b;
 
     const inputAB = {
       customerId: a.customer.id, shipDate: "2026-08-04",

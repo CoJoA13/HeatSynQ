@@ -10,9 +10,10 @@ import { allocateNumber } from "./settings";
 import { claimOrdersInOrder } from "./order-locks";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
 import { createCert } from "./certs";
-import { INT4_MAX, isDuplicateClientRequestId } from "./orders";
+import { isDuplicateClientRequestId } from "./orders";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
 import { FREIGHT_TERMS, type FreightTermsValue } from "../lib/cert-constants";
+import { INT4_MAX } from "../lib/order-constants";
 
 // -------------------------------------------------------------------------------------------
 // Task 8: the shipment save — `Shipper -> ShipperOrder -> lines/containers/serials` (spec §4.2,
@@ -99,7 +100,7 @@ const CREATE_SHIPPER = z.object({
   shipDate: z.string().min(1),
   carrierId: z.string().min(1).nullable().optional(),
   route: z.string().max(200).default(""),
-  comments: z.string().max(2000).default(""),
+  comments: z.string().max(4000).default(""),
   billFreight: z.boolean().default(false),
   freightAmount: decimalField(12, 2, { min: "nonnegative" }),
   freightTerms: z.enum(FREIGHT_TERMS).default("PREPAID"),
@@ -290,7 +291,7 @@ export async function getShipper(id: string): Promise<ShipperDetail> {
  * any isolation level.
  */
 async function saveNewShipper(
-  data: CreateShipperInput, opts: { canOverrideCreditHold: boolean },
+  data: CreateShipperInput, shipDate: Date, opts: { canOverrideCreditHold: boolean },
 ): Promise<ShipperCreateResult> {
   return prisma.$transaction(async (tx) => {
     if (new Set(data.orders.map((o) => o.orderId)).size !== data.orders.length) {
@@ -353,25 +354,51 @@ async function saveNewShipper(
     });
     const serialById = new Map(orderSerials.map((s) => [s.id, s]));
 
+    // Membership AND uniqueness, in the same pass — a repeated orderLineId/orderContainerId/
+    // orderSerialId within one order is refused HERE, naming the duplicated line/container/serial
+    // by the same live name the membership check already resolved, rather than falling through to
+    // the `@@unique` constraint and being mislabeled by `withDbErrors`' generic
+    // `conflictField: "shipper number"` (Task 8 review, 2026-08-04) — the `orders.ts`
+    // `duplicateSerialError` precedent, made proactive since the resolved rows are already here.
     for (const o of data.orders) {
       const order = ordersById.get(o.orderId)!;
+
+      const seenLines = new Set<string>();
       for (const l of o.lines) {
         const line = lineById.get(l.orderLineId);
         if (!line || line.orderId !== o.orderId) {
           throw new HttpError(400, `Order #${order.orderNumber}: that line does not belong to this order`);
         }
+        if (seenLines.has(l.orderLineId)) {
+          throw new HttpError(400, `${shipLineLabel(order.orderNumber, line)}: listed twice on this shipment`);
+        }
+        seenLines.add(l.orderLineId);
       }
+
+      const seenContainers = new Set<string>();
       for (const c of o.containers) {
         const container = containerById.get(c.orderContainerId);
         if (!container || container.orderId !== o.orderId) {
           throw new HttpError(400, `Order #${order.orderNumber}: that container does not belong to this order`);
         }
+        if (seenContainers.has(c.orderContainerId)) {
+          throw new HttpError(400,
+            `Order #${order.orderNumber}: container "${container.type.name}" is listed twice on this shipment`);
+        }
+        seenContainers.add(c.orderContainerId);
       }
+
+      const seenSerials = new Set<string>();
       for (const s of o.serials) {
         const serial = serialById.get(s.orderSerialId);
         if (!serial || serial.orderId !== o.orderId) {
           throw new HttpError(400, `Order #${order.orderNumber}: that serial does not belong to this order`);
         }
+        if (seenSerials.has(s.orderSerialId)) {
+          throw new HttpError(400,
+            `Order #${order.orderNumber}: serial "${serial.serial}" is listed twice on this shipment`);
+        }
+        seenSerials.add(s.orderSerialId);
       }
     }
 
@@ -408,8 +435,6 @@ async function saveNewShipper(
     // Shipped-to-date BEFORE this shipment's own lines exist — the over-ship warning below
     // compares against what was already live, not what this save is about to add.
     const priorShipped = await shippedTotals(tx, orderLineIds);
-
-    const shipDate = parseDate(data.shipDate, "Ship date");
 
     const shipper = await auditedCreate(
       "shipper",
@@ -530,14 +555,16 @@ export async function createShipper(
 ): Promise<ShipperCreateResult> {
   const data = CREATE_SHIPPER.parse(input);
 
-  // A shipment about nothing is not a shipment (spec §4.2) — checked ahead of the transaction
-  // since it is pure input validation with no DB dependency.
+  // Both checked ahead of the transaction — pure input validation with no DB dependency (Task 8
+  // review, 2026-08-04: `parseDate` moved up beside the pre-existing `qty > 0` check for the same
+  // reason). A shipment about nothing is not a shipment (spec §4.2).
   const anyPositiveQty = data.orders.some((o) => o.lines.some((l) => l.qty > 0));
   if (!anyPositiveQty) throw new HttpError(400, "A shipment needs at least one line with a positive quantity");
+  const shipDate = parseDate(data.shipDate, "Ship date");
 
   return withDbErrors({ entity: "Shipper", conflictField: "shipper number" }, async () => {
     try {
-      return await saveNewShipper(data, opts);
+      return await saveNewShipper(data, shipDate, opts);
     } catch (err) {
       // The replay: deliberately inside withDbErrors' callback and outside the transaction — by
       // the time this runs the failed attempt has fully rolled back (no number, no sequence
