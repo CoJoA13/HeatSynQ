@@ -10,11 +10,13 @@ import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-
 // Local mirror of src/server/certs.ts's CertRow — not imported from src/server/** (CLAUDE.md
 // "Constraints that will bite you": a client component pulling from there drags node:async_hooks
 // and Prisma into the browser bundle). Dates cross the wire as ISO strings once run through
-// NextResponse.json, not the `Date` the service type carries.
+// NextResponse.json, not the `Date` the service type carries. Only the columns this list actually
+// renders (the parts/page.tsx PartRow precedent) — `orderId`/`shipperId` are on the server row but
+// nothing here needs them, since the detail link is keyed on the cert's own `id`.
 type CertRow = {
-  id: string; orderId: string; orderNumber: number; sequence: number | null;
+  id: string; orderNumber: number; sequence: number | null;
   customerCode: string; customerName: string; scope: CertScopeValue;
-  loadNumber: number | null; shipperId: string | null; shipperNumber: number | null;
+  loadNumber: number | null; shipperNumber: number | null;
   printedAt: string | null; deletedAt: string | null;
   readingCount: number; failCount: number;
 };
@@ -141,7 +143,7 @@ export function CertList() {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id} className="border-t">
+            <tr key={row.id} className={`border-t ${row.deletedAt ? "text-slate-400" : ""}`}>
               <td className="p-2 font-mono">
                 <Link href={`/certs/${row.id}`} className="text-blue-700 underline">{orderLabel(row)}</Link>
                 {row.deletedAt && (
