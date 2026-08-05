@@ -29,7 +29,7 @@ import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
 import { getSetting } from "./settings";
 import { renderPdf, barcodePng, pngDataUri, LAYOUT } from "./pdf/render";
-import { storeDocument, listDocumentsForOrder, documentFilename } from "./documents";
+import { storeDocument, listDocumentsForOrder, documentFilename, assertPrintable } from "./documents";
 
 // Re-exported unchanged: `src/app/api/orders/[id]/documents/route.ts` and this file's own tests
 // depend on `getDocument` living at this import path. Phase 4 Task 3 moved its implementation
@@ -425,8 +425,6 @@ export function buildTravelerDefinition(input: TravelerData): TDocumentDefinitio
 // collectTravelerData — the reads.
 // ---------------------------------------------------------------------------------------------
 
-const VOIDED = "Cannot print a traveler for a voided order";
-
 /**
  * Every SETTING the traveler needs, read in one place so `readTravelerData` below performs no
  * setting reads of its own (fix-wave R4 finding 8).
@@ -647,7 +645,7 @@ export async function printTraveler(
     prisma.$transaction(async (tx) => {
       const live = await claimOrder(tx, orderId);
       if (!live) throw new HttpError(404, "Order not found");
-      if (live.deletedAt !== null) throw new HttpError(400, VOIDED);
+      assertPrintable(live);
 
       // Only now, with the claim held: the read that decides what the PDF says, and the render
       // itself. Nothing else touching this order's traveler-relevant children can commit until

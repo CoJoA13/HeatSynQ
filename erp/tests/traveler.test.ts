@@ -12,6 +12,7 @@ import {
   buildTravelerDefinition, collectTravelerData, printTraveler, listDocuments, getDocument,
   type TravelerData,
 } from "@/server/traveler";
+import { VOIDED_PRINT } from "@/server/documents";
 
 import { POST as travelerRoute } from "@/app/api/orders/[id]/traveler/route";
 import { GET as documentsRoute } from "@/app/api/orders/[id]/documents/route";
@@ -342,7 +343,7 @@ describe("printTraveler", () => {
     await asSystem(() => voidOrder(order.id, "keyed against the wrong PO"));
 
     await expect(asSystem(() => printTraveler(order.id)))
-      .rejects.toThrow("Cannot print a traveler for a voided order");
+      .rejects.toThrow(VOIDED_PRINT);
 
     // Reads keep working (spec §5c) — the stored print is still listed and still reprintable.
     const docs = await listDocuments(order.id);
@@ -402,9 +403,7 @@ describe("printTraveler", () => {
     // The discriminator: with the FOR UPDATE genuinely in effect, printTraveler cannot decide
     // "not voided" until after the holder's void has committed, so it must see the order voided
     // and refuse — no document is ever archived against it.
-    await expect(printCall).rejects.toMatchObject({
-      status: 400, message: "Cannot print a traveler for a voided order",
-    });
+    await expect(printCall).rejects.toMatchObject({ status: 400, message: VOIDED_PRINT });
     expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
   });
 
@@ -743,7 +742,7 @@ describe("traveler routes", () => {
     const res = await travelerRoute(
       req(`http://t/api/orders/${order.id}/traveler`, "POST", cookie), withParams({ id: order.id }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Cannot print a traveler for a voided order");
+    expect((await res.json()).error).toBe(VOIDED_PRINT);
 
     const list = await documentsRoute(
       req(`http://t/api/orders/${order.id}/documents`, "GET", cookie), withParams({ id: order.id }));

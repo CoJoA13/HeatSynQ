@@ -3,7 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import {
   storeDocument, listDocumentsForOrder, listDocumentsForShipper, listDocumentsForCert,
-  getDocument, documentFilename, type DocumentMeta,
+  getDocument, documentFilename, assertPrintable, VOIDED_PRINT, type DocumentMeta,
 } from "@/server/documents";
 import type { PermUser } from "@/server/permissions";
 import { GET as documentRoute } from "@/app/api/documents/[docId]/route";
@@ -186,6 +186,22 @@ describe("getDocument", () => {
 
   it("404s a missing document", async () => {
     await expect(getDocument("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("assertPrintable", () => {
+  it("throws 400 VOIDED_PRINT for a voided owner", () => {
+    expect(() => assertPrintable({ deletedAt: new Date() })).toThrow(VOIDED_PRINT);
+    try {
+      assertPrintable({ deletedAt: new Date() });
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toMatchObject({ status: 400, message: VOIDED_PRINT });
+    }
+  });
+
+  it("does nothing for a live owner", () => {
+    expect(() => assertPrintable({ deletedAt: null })).not.toThrow();
   });
 });
 

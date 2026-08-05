@@ -12,7 +12,15 @@ import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { claimOrder } from "./order-locks";
-import { recomputeOrderStatus } from "./ship-ledger";
+import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
+// The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
+// `export async function`, and this file never reads it at module-evaluation time (only inside
+// `removeLine`/`updateLine`/`voidOrder`'s bodies, all called well after both modules finish
+// loading) — safe against the cycle this creates with `shippers.ts`'s own pre-existing import of
+// `isDuplicateClientRequestId` FROM this file, for the identical reason (order-locks.ts's own
+// header comment; verified per the task report, not merely assumed).
+import { shipmentBlockers } from "./shippers";
+import type { Blocker } from "./reference-blockers";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
@@ -193,6 +201,15 @@ function parseDate(value: string, field: string): Date {
  */
 function lineLabel(index: number, part?: { partNumber: string; customer: { code: string } }): string {
   return part ? `Line ${index + 1} (${part.customer.code} · ${part.partNumber})` : `Line ${index + 1}`;
+}
+
+/** "Packing List 072826 — void the shipment first" (or "Packing List 072826, Packing List
+ *  072830 — void the shipments first") — the shared tail every spec §5.5 refusal appends once
+ *  `shipmentBlockers` (shippers.ts) has found at least one live shipment; never called with an
+ *  empty list. Names the remedy, not only the block (Task 9's last-order refusal precedent,
+ *  shippers.ts's own `removeOrderFromShipper`). */
+function shipmentBlockerTail(blockers: Blocker[]): string {
+  return `${blockers.map((b) => b.name).join(", ")} — void the shipment${blockers.length > 1 ? "s" : ""} first`;
 }
 
 const PART_SELECT = {
@@ -1047,8 +1064,33 @@ export async function updateLine(
     const order = await claimOrder(tx, orderId);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
-    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
+    const line = await tx.orderLine.findFirst({
+      where: { id: lineId, orderId },
+      select: {
+        id: true, position: true,
+        part: { select: { partNumber: true, customer: { select: { code: true } } } },
+      },
+    });
     if (!line) throw new HttpError(404, "Order line not found");
+
+    // Spec §5.5: qty/weight may never drop below what is already shipped-to-date (ship-ledger.ts's
+    // "used everywhere" derivation) — checked only when this edit actually touches the field in
+    // question, so a weight-only edit never pays for a qty comparison it did not ask for.
+    if (data.qty !== undefined || data.weight !== undefined) {
+      const totals = (await shippedTotals(tx, [lineId])).get(lineId) ?? { qty: 0, weight: 0 };
+      if (data.qty !== undefined && data.qty < totals.qty) {
+        const blockers = await shipmentBlockers(tx, orderId, lineId);
+        throw new HttpError(400,
+          `${lineLabel(line.position - 1, line.part)}: cannot reduce qty below ${totals.qty} already shipped — ` +
+          shipmentBlockerTail(blockers));
+      }
+      if (data.weight !== undefined && data.weight < totals.weight) {
+        const blockers = await shipmentBlockers(tx, orderId, lineId);
+        throw new HttpError(400,
+          `${lineLabel(line.position - 1, line.part)}: cannot reduce weight below ${totals.weight} lbs already ` +
+          `shipped — ${shipmentBlockerTail(blockers)}`);
+      }
+    }
 
     const patch: Prisma.OrderLineUpdateInput = {
       ...(data.qty !== undefined ? { qty: data.qty } : {}),
@@ -1090,11 +1132,23 @@ export async function removeLine(
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const line = await tx.orderLine.findFirst({
-      where: { id: lineId, orderId }, select: { id: true, position: true },
+      where: { id: lineId, orderId },
+      select: {
+        id: true, position: true,
+        part: { select: { partNumber: true, customer: { select: { code: true } } } },
+      },
     });
     if (!line) throw new HttpError(404, "Order line not found");
     if (line.position === 1) {
       throw new HttpError(400, "The lead part cannot be removed — void the order instead");
+    }
+
+    // Spec §5.5: a part line with a live shipper line already describes a shipped fact — removing
+    // it from every list would leave that shipment pointing at a line that has vanished.
+    const blockers = await shipmentBlockers(tx, orderId, lineId);
+    if (blockers.length > 0) {
+      throw new HttpError(400,
+        `${lineLabel(line.position - 1, line.part)}: cannot remove — shipped on ${shipmentBlockerTail(blockers)}`);
     }
 
     await auditedUpdate("order", orderId, async () => {
@@ -1239,6 +1293,15 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
   await withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
     const order = await claimOrder(tx, id);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+
+    // Spec §5.5: void the shipments first, otherwise the shipment is left pointing at an order
+    // (and lines) that have vanished from every list.
+    const blockers = await shipmentBlockers(tx, id);
+    if (blockers.length > 0) {
+      throw new HttpError(400,
+        `Order #${order.orderNumber} has live shipments — ${shipmentBlockerTail(blockers)}`);
+    }
+
     await auditedSoftDelete("order", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

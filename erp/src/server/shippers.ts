@@ -3,7 +3,7 @@ import { Prisma, type Order } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { auditedCreate, auditedUpdate } from "./audit";
+import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { allocateNumber } from "./settings";
@@ -12,6 +12,7 @@ import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type Shipped
 import { createCert } from "./certs";
 import { isDuplicateClientRequestId } from "./orders";
 import { toXlsx } from "./excel";
+import type { Blocker } from "./reference-blockers";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
 import { FREIGHT_TERMS, type FreightTermsValue } from "../lib/cert-constants";
 import { INT4_MAX } from "../lib/order-constants";
@@ -1007,6 +1008,92 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
 
     await recomputeOrderStatus(tx, orderIds);
     return readShipperDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 10: void, and the order edit invariants (spec §5.5/§5.6). `shipmentBlockers` is the
+// `orders.ts -> shippers.ts` import edge this task adds — `orders.ts`'s `removeLine`/`updateLine`/
+// `voidOrder` call it to refuse a contradiction of shipped fact, naming the blocking shipment
+// through the SAME `Blocker` shape every other "still in use" refusal in this codebase already
+// renders through `BlockerPanel` (reference-blockers.ts), rather than a bespoke shape. Safe
+// against the cycle this creates with `shippers.ts`'s own pre-existing import of
+// `isDuplicateClientRequestId` FROM orders.ts (order-locks.ts's own header comment anticipated
+// this): both crossing exports are hoisted `function` declarations, never a top-level `const`
+// evaluated at module-load time, so neither side can land in the other's temporal dead zone
+// regardless of which module a given entry point happens to import first — see the task report
+// for how this was verified (module-load-order smoke test, plus the full suite importing both
+// modules together with no import-time error).
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Every LIVE shipment currently attached to `orderId` — or, scoped to `orderLineId`, only those
+ * carrying a live `ShipperLine` for that exact order line — as the shared `Blocker` shape (spec
+ * §5.5). Deduplicated by shipper (a shipment can only appear on one `ShipperOrder` row per order,
+ * `@@unique([shipperId, orderId])`, so dedup only matters when `orderLineId` is omitted and more
+ * than one shipment touches the order), ordered by `shipperNumber` ascending so the refusal names
+ * shipments in a deterministic, human-meaningful order rather than whatever order Postgres
+ * happened to scan them in.
+ */
+export async function shipmentBlockers(db: Db, orderId: string, orderLineId?: string): Promise<Blocker[]> {
+  const rows = await db.shipperOrder.findMany({
+    where: {
+      orderId,
+      shipper: { deletedAt: null },
+      ...(orderLineId ? { lines: { some: { orderLineId } } } : {}),
+    },
+    select: { shipperId: true, shipper: { select: { shipperNumber: true } } },
+    orderBy: { shipper: { shipperNumber: "asc" } },
+  });
+
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const row of rows) {
+    if (seen.has(row.shipperId)) continue;
+    seen.add(row.shipperId);
+    out.push({
+      entityLabel: "Shipment",
+      name: `Packing List ${row.shipper.shipperNumber}`,
+      id: row.shipperId,
+      href: `/shipping/${row.shipperId}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * `mustDo(user, "void_shipper")` is the route's job; the reason is required and trimmed HERE so
+ * no future caller can bypass it (the `voidOrder`/`voidCert` precedent, orders.ts/certs.ts).
+ * Claims every order the shipment touches — sorted, via `claimOrdersInOrder` — before writing
+ * anything, `auditedSoftDelete`s the shipper, then every LIVE shipment-scope cert hanging off it
+ * WITH THE SAME REASON (spec §5.6: "voids any shipment-scoped certs hanging off it with the same
+ * reason"), and finally recomputes every affected order's status. `shipperNumber`, `bolNumber` and
+ * every `ShipperOrder.sequence` are never touched by this function — that permanence is the
+ * absence of any write to them, not a check this function performs.
+ *
+ * A shipment-scope cert's `orderId` is always one of the orders this same shipment is attached to
+ * — the only place one is ever created is `saveNewShipper`'s own loop, one per order named on the
+ * shipment AT CREATE TIME (`addOrderToShipper` attaches a LATER order to the shipment but creates
+ * no cert of its own) — so the claim already taken over `orderIds` covers every cert this loop can
+ * touch; no separate claim is needed for the cert side.
+ */
+export async function voidShipper(id: string, reason: string): Promise<void> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to void a shipment");
+
+  await withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
+    await claimLiveShipper(tx, id);
+    const orderIds = await shipperOrderIds(tx, id);
+    await claimOrdersInOrder(tx, orderIds);
+
+    await auditedSoftDelete("shipper", id, why, tx);
+
+    const certs = await tx.cert.findMany({ where: { shipperId: id, deletedAt: null }, select: { id: true } });
+    for (const cert of certs) {
+      await auditedSoftDelete("cert", cert.id, why, tx);
+    }
+
+    await recomputeOrderStatus(tx, orderIds);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 

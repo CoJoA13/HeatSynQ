@@ -78,6 +78,26 @@ function ownerColumns(owner: DocumentOwner): {
 }
 
 /**
+ * Shared refusal for every print guard in this codebase (Task 10; consumed here by
+ * `printTraveler`, and by Tasks 18/19 for the shipping ticket/BOL and certification prints):
+ * spec §5.6's "stored PDFs survive a void forever and stay reprintable; new prints are refused"
+ * is Phase 3's voided-order rule (traveler.ts's own original `VOIDED` constant) reused, not
+ * reinvented, for every document owner this phase adds.
+ */
+export const VOIDED_PRINT = "This record is voided — no new documents can be produced for it";
+
+/**
+ * Throws 400 `VOIDED_PRINT` when `owner.deletedAt` is set. Call inside the transaction that
+ * already claimed `owner`'s row (`claimOrder`, and the shipper/cert claims later tasks add) —
+ * never a fresh, unlocked read of its own: the caller's own claim is what makes the check
+ * race-free (order-locks.ts's own reasoning), this function only reads the field off what the
+ * caller already resolved under that lock.
+ */
+export function assertPrintable(owner: { deletedAt: Date | null }): void {
+  if (owner.deletedAt !== null) throw new HttpError(400, VOIDED_PRINT);
+}
+
+/**
  * Archives one rendered PDF, permanently — there is no delete path for a `StoredDocument`
  * anywhere in this codebase (design spec §4: "no delete path at all"), and this is the only place
  * a row is ever created.

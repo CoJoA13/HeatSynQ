@@ -192,8 +192,16 @@ describe("recomputeOrderStatus (via getOrder)", () => {
 
   it("leaves a voided order's status untouched", async () => {
     const { order, line } = await oneLineOrder({});
-    await shipLine(line, { qty: 10, lineComplete: true });
+    const shipped = await shipLine(line, { qty: 10, lineComplete: true });
     expect((await getOrder(order.id)).status).toBe("SHIPPED");
+
+    // Task 10, spec §5.5: `voidOrder` now refuses an order with a LIVE shipment attached — void
+    // the shipment first, directly (this file's own `shipLine` is already raw prisma standing in
+    // for a real `createShipper` write, the fixtures-note precedent). This does NOT itself call
+    // `recomputeOrderStatus`, so the order's `status` column is left exactly SHIPPED, same as the
+    // assertion just above — the fixture change has no bearing on what this test is actually
+    // proving below.
+    await prisma.shipper.update({ where: { id: shipped.shipperId }, data: { deletedAt: new Date() } });
 
     await asSystem(() => voidOrder(order.id, "test void"));
 
