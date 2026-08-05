@@ -774,6 +774,16 @@ async function renumberShipperOrderPositions(tx: Prisma.TransactionClient, shipp
  * document and pointing at the correct fix: void the shipment instead, which keeps every sequence
  * claimed forever (spec §5.6) rather than freeing one back into circulation.
  *
+ * **Also voids that order's own SHIPMENT-scope cert, if it has one (spec §5.6, 2026-08-04
+ * amendment — recorded after a review caught the gap this closes).** Once the order leaves the
+ * shipment, nothing on it still names that order's parts — the cert is orphaned regardless of
+ * locking. Doing it HERE, under the claim this function already holds for `target.orderId`
+ * (`orderIds` above includes it, via `claimOrdersInOrder`), rather than leaving it for
+ * `voidShipper`'s own cascade to find later, is what keeps `voidShipper` provably correct: its own
+ * claim only ever covers the orders STILL on the shipment when IT runs, and would otherwise have
+ * to write a `deletedAt` onto a cert belonging to an order it never claimed — see `voidShipper`'s
+ * own doc comment for the full argument this closes.
+ *
  * Children are deleted explicitly before the parent row — `ShipperLine`/`Container`/`Serial` are
  * all `ON DELETE RESTRICT` from `ShipperOrder` (migration.sql), so a bare `shipperOrder.delete`
  * would fail with a foreign-key violation while any child row survives it (the `removeLine`
@@ -806,6 +816,19 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
       throw new HttpError(400,
         `A shipping ticket for this order has already printed (Packing List ${shipper.shipperNumber}) — ` +
         "void the shipment instead of removing it.");
+    }
+
+    // Void this order's own SHIPMENT-scope cert, if it has one — see this function's own doc
+    // comment for why HERE, not deferred to `voidShipper`'s cascade. A DIFFERENT audit entity
+    // ("cert", not "shipper"), so a separate `auditedSoftDelete` call, not folded into the
+    // `auditedUpdate("shipper", …)` below. At most one live row can match (createCert's own
+    // scope-instance uniqueness, certs.ts), so this is a find-and-void of at most one row.
+    const orphanedCert = await tx.cert.findFirst({
+      where: { orderId: target.orderId, shipperId: id, deletedAt: null }, select: { id: true },
+    });
+    if (orphanedCert) {
+      await auditedSoftDelete("cert", orphanedCert.id,
+        `Order removed from shipment (Packing List ${shipper.shipperNumber})`, tx);
     }
 
     await auditedUpdate("shipper", id, async () => {
@@ -1071,11 +1094,18 @@ export async function shipmentBlockers(db: Db, orderId: string, orderLineId?: st
  * every `ShipperOrder.sequence` are never touched by this function — that permanence is the
  * absence of any write to them, not a check this function performs.
  *
- * A shipment-scope cert's `orderId` is always one of the orders this same shipment is attached to
- * — the only place one is ever created is `saveNewShipper`'s own loop, one per order named on the
- * shipment AT CREATE TIME (`addOrderToShipper` attaches a LATER order to the shipment but creates
- * no cert of its own) — so the claim already taken over `orderIds` covers every cert this loop can
- * touch; no separate claim is needed for the cert side.
+ * A shipment-scope cert's `orderId` is always one of the orders THIS claim just covered — NOT
+ * because every order that ever touched the shipment still does (an order CAN be removed,
+ * `removeOrderFromShipper` above), but because `removeOrderFromShipper` itself voids that order's
+ * own shipment-scope cert, under the claim it already holds for that order, at the moment the
+ * order leaves the shipment (spec §5.6, 2026-08-04 amendment). A review of the first version of
+ * this function caught the gap that amendment closes: `orderIds` here comes from the shipment's
+ * CURRENT `ShipperOrder` rows, so an order removed earlier is not in it and its row is not
+ * claimed — if its cert could still be live, THIS loop would be writing `deletedAt` onto a row
+ * belonging to an unclaimed order. With the removal-time void in place, that case cannot arise: by
+ * the time a shipment-scope cert can still be found live here, its order is necessarily still ON
+ * the shipment, i.e. inside `orderIds` — so the claim already taken over `orderIds` genuinely
+ * covers every cert this loop can touch, and no separate claim is needed for the cert side.
  */
 export async function voidShipper(id: string, reason: string): Promise<void> {
   const why = reason.trim();

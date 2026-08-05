@@ -128,4 +128,34 @@ describe("order edit invariants after a shipment (spec §5.5)", () => {
     await asSystem(() => voidShipper(shipper.id, "cancelled too"));
     await expect(asSystem(() => voidOrder(order.id, "cancelled"))).resolves.toBeUndefined();
   });
+
+  // Minor 2 (Task 10 review, 2026-08-04): `shipmentBlockerTail`'s pluralized branch ("Packing
+  // List X, Packing List Y — void the shipmentS first") was written but never exercised — every
+  // other test here blocks on exactly one shipment. Two SEPARATE shipments of the SAME order line
+  // (over-shipping only warns, never blocks — spec §5.1/§5.7) is the minimal fixture that puts two
+  // live blockers on one `voidOrder` call.
+  it("names every live shipment, pluralized, when more than one blocks the same order", async () => {
+    const { order } = await savedOrder({ qty: 20 });
+    const line = order.lines[0];
+
+    const shipSome = async (qty: number) => {
+      const { shipper } = await createShipper({
+        customerId: order.customerId,
+        shipDate: "2026-08-04",
+        orders: [{
+          orderId: order.id,
+          lines: [{ orderLineId: line.id, qty, weight: "5.00", lineComplete: false }],
+          containers: [],
+          serials: [],
+        }],
+      }, { canOverrideCreditHold: false });
+      return shipper;
+    };
+
+    const first = await shipSome(5);
+    const second = await shipSome(5);
+
+    await expect(asSystem(() => voidOrder(order.id, "cancelled"))).rejects.toThrow(
+      new RegExp(`Packing List ${first.shipperNumber}.*Packing List ${second.shipperNumber}.*shipments`));
+  });
 });

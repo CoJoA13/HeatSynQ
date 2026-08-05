@@ -1,11 +1,25 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
-import { createShipper, voidShipper, type ShipperDetail } from "@/server/shippers";
+import { createShipper, voidShipper, removeOrderFromShipper, type ShipperDetail } from "@/server/shippers";
 import { storeDocument, getDocument } from "@/server/documents";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
+
+// House-legal module-boundary mock (CLAUDE.md: never `vi.spyOn` a Prisma delegate — this wraps a
+// LEAF service module instead, the `shipper-children.test.ts` precedent for mocking at a boundary
+// rather than a Prisma model method). The wrapped function still runs its REAL implementation
+// (`vi.fn(actual.fn)`) — this only adds a call recorder, never changes behaviour. Needed for the
+// "voidShipper never claims a previously-removed order" regression test below, which has to
+// observe exactly which order ids `voidShipper` claims, not merely what it writes.
+vi.mock("@/server/order-locks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/order-locks")>();
+  return { ...actual, claimOrdersInOrder: vi.fn(actual.claimOrdersInOrder) };
+});
+import * as orderLocks from "@/server/order-locks";
+
+const claimOrdersInOrderMock = vi.mocked(orderLocks.claimOrdersInOrder);
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -92,16 +106,90 @@ async function completeShipmentWithShipmentCert(): Promise<{
   return { order, shipper, cert };
 }
 
-describe("voidShipper", () => {
-  beforeEach(truncateAll);
+function twoOrderInput(customerId: string, a: OrderDetail, b: OrderDetail) {
+  const line = (order: OrderDetail) => ({
+    orderId: order.id,
+    lines: [{
+      orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight,
+      lineComplete: true,
+    }],
+    containers: [] as { orderContainerId: string; count: number }[],
+    serials: [] as { orderSerialId: string; printOnShipper?: boolean }[],
+  });
+  return { customerId, shipDate: "2026-08-04", orders: [line(a), line(b)] };
+}
 
-  it("restores order status, keeps the number, and voids shipment-scoped certs", async () => {
+/** A two-order shipment where ONLY `orderA`'s resolved cert scope is SHIPMENT — `orderB` is a
+ *  plain rider order of the same customer, present only so the shipment has a SECOND order to
+ *  still be attached to after `orderA` is removed (spec §5.5 refuses removing the LAST order —
+ *  `removeOrderFromShipper`'s own guard). The fixture the Important review finding's regression
+ *  test needs: it must be possible to remove `orderA` (the cert-bearing one) WITHOUT voiding the
+ *  whole shipment, so the removed-order's-cert-is-orphaned case is actually reachable. */
+async function twoOrderShipmentWithShipmentCertOnFirst(): Promise<{
+  shipper: ShipperDetail; orderA: OrderDetail; orderB: OrderDetail; cert: { id: string };
+}> {
+  const { order: orderA, customer } = await savedOrder({ certRequired: true, certScope: "SHIPMENT" });
+  const partB = await makePart(customer.id);
+  await giveSteps(partB.id);
+  const { order: orderB } = await asSystem(() => createOrder({
+    customerId: customer.id, lines: [{ partId: partB.id, qty: 10, weight: "25.00" }],
+  }));
+  const { shipper } = await createShipper(
+    twoOrderInput(customer.id, orderA, orderB), { canOverrideCreditHold: false });
+  const cert = await prisma.cert.findFirstOrThrow({
+    where: { orderId: orderA.id, shipperId: shipper.id }, select: { id: true },
+  });
+  return { shipper, orderA, orderB, cert };
+}
+
+describe("voidShipper", () => {
+  beforeEach(async () => {
+    await truncateAll();
+    claimOrdersInOrderMock.mockClear();
+  });
+
+  it("restores order status, keeps the number, and voids shipment-scoped certs with the same reason", async () => {
     const { shipper, order, cert } = await completeShipmentWithShipmentCert();
     await asSystem(() => voidShipper(shipper.id, "loaded onto the wrong truck"));
     expect((await getOrder(order.id)).status).toBe("OPEN");
     expect((await prisma.cert.findUniqueOrThrow({ where: { id: cert.id } })).deletedAt).not.toBeNull();
+    // Same reason as the shipper's own delete entry — an observed fact (spec §5.6's "with the
+    // same reason"), not merely inferred from the source sharing one `why` variable.
+    const certAudit = await prisma.auditLog.findFirst({
+      where: { entity: "cert", entityId: cert.id, action: "delete" },
+    });
+    expect(certAudit?.reason).toBe("loaded onto the wrong truck");
     expect((await prisma.shipper.findUniqueOrThrow({ where: { id: shipper.id } })).shipperNumber)
       .toBe(shipper.shipperNumber);
+  });
+
+  // The Important review finding (2026-08-04): the first version of `voidShipper` computed its
+  // claim from the shipment's CURRENT orders only, then soft-deleted every LIVE cert with
+  // `shipperId = id` — including one belonging to an order that had been REMOVED from the shipment
+  // earlier (`removeOrderFromShipper`, legal before any ticket prints), whose row was therefore
+  // never claimed. Fixed at the source (spec §5.6, 2026-08-04 amendment): `removeOrderFromShipper`
+  // now voids that order's own shipment-scope cert AT REMOVAL TIME, under the claim it already
+  // holds for that order — so by the time `voidShipper` runs, a still-live shipment-scope cert can
+  // only belong to an order still ON the shipment, i.e. inside its own claim.
+  it("a removed order's shipment-scope cert is voided at removal, so voidShipper's later claim never has to reach it (spec §5.6, 2026-08-04 amendment)", async () => {
+    const { shipper, orderA, orderB, cert } = await twoOrderShipmentWithShipmentCertOnFirst();
+    const soA = shipper.orders.find((so) => so.orderId === orderA.id)!;
+
+    // Legal per spec §5.5: neither of removeOrderFromShipper's own guards applies yet — this is
+    // not the shipment's last order, and no shipping ticket has printed.
+    await asSystem(() => removeOrderFromShipper(shipper.id, soA.id));
+    expect((await prisma.cert.findUniqueOrThrow({ where: { id: cert.id } })).deletedAt).not.toBeNull();
+
+    claimOrdersInOrderMock.mockClear();
+    await asSystem(() => voidShipper(shipper.id, "consolidating loads"));
+
+    // voidShipper's own claim covers only the shipment's CURRENT orders — orderA left earlier and
+    // is never among them, which is exactly what makes the cert cascade above safe: nothing this
+    // call writes (including the certs it soft-deletes) belongs to an order outside this claim.
+    const claimedIds = claimOrdersInOrderMock.mock.calls.flatMap((call) => call[1]);
+    expect(claimedIds).toEqual([orderB.id]);
+
+    expect((await getOrder(orderB.id)).status).toBe("OPEN");
   });
 
   it("keeps stored PDFs readable after a void", async () => {
