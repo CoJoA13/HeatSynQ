@@ -118,13 +118,37 @@ they are `git diff` between commits already in history.
 | Tasks | State |
 |---|---|
 | 1–13, 15 | **Complete**, each through implementation → independent review → fix rounds → re-review Approved |
-| 14 (shipment page) | **Was in flight when the handoff was called.** Check `git log` on `phase-4-certs-shipping` and `.superpowers/sdd/task-14-report.md` for whether it landed; if it committed but was never reviewed, review it before continuing |
+| 14 (shipment page) | **Landed as `e54684c` and pushed, but deliberately NEVER REVIEWED** — the machine move was called first. **Review it before building on it**, with two specific things to adjudicate (below) |
+| **14b (shipment creation flow)** | **NEW — a hole in the plan, found by Task 14's implementer.** See below; it blocks three of Task 20's E2E flows |
 | 16 (cert detail), 17 (order hub sections) | Not started |
 | 18–19 (the three PDF layouts) | Not started — **not blocked**, the samples are in hand |
 | 20 (E2E, demo doc, docs) | Not started |
 
-**Gates at handoff:** 1278 tests (from 1010 at branch start), `tsc`, `eslint` and `npm run build`
-all clean. Both databases migrated (18 migrations).
+**Gates at handoff:** 1279 tests on the phase branch and 1275 on the lane branch (from 1010 at
+branch start), `tsc`, `eslint` and `npm run build` all clean. Both databases migrated (18
+migrations).
+
+**Two things to settle before writing new code — both came out of Task 14.**
+
+1. **Task 14 is unreviewed.** Review `e54684c` first, and adjudicate two things its own report
+   raises. It added **`GET /api/shippers/[id]/documents`, a route not in spec §9's table** — almost
+   certainly a genuine gap (Task 3 built `listDocumentsForShipper`, Task 11 built the *orders*
+   equivalent, and nothing ever exposed the shipment one, which this page needs for its stored-
+   documents list), but a route appearing outside the spec's route table should be adjudicated, not
+   waved through. It also reports browser-verifying the voided state by checking `disabled` **and**
+   `readOnly`, which is worth confirming, since "looks disabled" and "cannot be edited" are different
+   claims.
+
+2. **There is no shipment creation flow, and the plan never had one — this is a real hole, not a
+   deferral.** `createShipper` exists (Task 8), `POST /api/shippers` exists (Task 11), but **no
+   screen calls either.** Consequences: **the credit-hold gate — this phase's headline feature and
+   the blocking half of owner ruling §3.7 — is unreachable by a human**, since it fires only in
+   `createShipper` and the edit page never calls it; the `clientRequestId` idempotency nonce has no
+   producer; and **three of Task 20's five E2E flows assume the literal route `/shipping/new`** and
+   cannot run without it. Task 14's implementer found this and correctly refused to invent the
+   screen unilaterally, since its shape (one atomic nested POST) is architecturally unlike the edit
+   page's model. **Task 14b is now written into the plan** with the shape and reasoning; build it
+   before Task 20.
 
 **Local-only infrastructure that does NOT travel, and does not need to.** A second test database
 `erp_test2` and a git worktree at `../HeatSynQ-laneB` were created so two UI tasks could run in
