@@ -1,0 +1,524 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { prisma, truncateAll } from "./helpers/db";
+import { runWithContext } from "@/server/context";
+import { readAudit } from "@/server/audit";
+import { createOrder, getOrder, voidOrder, type OrderDetail } from "@/server/orders";
+import { storeDocument } from "@/server/documents";
+import {
+  createShipper, updateShipper, addOrderToShipper, removeOrderFromShipper,
+  replaceShipperLines, replaceShipperContainers, replaceShipperSerials,
+  overshipWarnings, listShippers, exportShippers, shipmentsForOrder,
+  type ShipperDetail, type ShipperOrderDetail,
+} from "@/server/shippers";
+import type { Customer, Part } from "../prisma/generated/prisma/client";
+
+// House-legal module-boundary mock (CLAUDE.md: never `vi.spyOn` a Prisma delegate — this wraps a
+// LEAF service module instead, the `tests/fetcher.test.ts` / `tests/request-context.test.ts`
+// precedent for mocking at a boundary rather than a Prisma model method). The wrapped functions
+// still run their REAL implementation (`vi.fn(actual.fn)`) — this only adds a call recorder, it
+// never changes behaviour, so every ordinary (non-composition) test below exercises the genuine
+// row-lock code path.
+vi.mock("@/server/order-locks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/order-locks")>();
+  return {
+    ...actual,
+    claimOrdersInOrder: vi.fn(actual.claimOrdersInOrder),
+    claimOrder: vi.fn(actual.claimOrder),
+  };
+});
+import * as orderLocks from "@/server/order-locks";
+
+const claimOrdersInOrderMock = vi.mocked(orderLocks.claimOrdersInOrder);
+const claimOrderMock = vi.mocked(orderLocks.claimOrder);
+
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
+
+let customerSeq = 0;
+async function makeCustomer(): Promise<Customer> {
+  customerSeq += 1;
+  return prisma.customer.create({ data: { code: `SC${customerSeq}`, name: `Ship Customer ${customerSeq}` } });
+}
+
+let partSeq = 0;
+async function makePart(customerId: string): Promise<Part> {
+  partSeq += 1;
+  return prisma.part.create({ data: { customerId, partNumber: `SP-${partSeq}`, eachWeight: "1.0000" } });
+}
+
+/** Gives a part revision 1 with one step — the orderability precondition createOrder enforces
+ *  (spec §5.3), the shippers.test.ts `giveSteps` precedent. */
+async function giveSteps(partId: string): Promise<void> {
+  const code = await prisma.processStepCode.create({ data: { code: `SHT-${partId}`, name: "Austenitize" } });
+  const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
+  await prisma.partProcessStep.create({
+    data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Austenitize at 1650F." },
+  });
+}
+
+async function orderForCustomer(
+  customer: Customer, opts: { qty?: number; weight?: string } = {},
+): Promise<OrderDetail> {
+  const part = await makePart(customer.id);
+  await giveSteps(part.id);
+  const { order } = await asSystem(() => createOrder({
+    customerId: customer.id, lines: [{ partId: part.id, qty: opts.qty ?? 10, weight: opts.weight ?? "5.00" }],
+  }));
+  return order;
+}
+
+async function savedOrder(
+  opts: { qty?: number; weight?: string } = {},
+): Promise<{ order: OrderDetail; customer: Customer }> {
+  const customer = await makeCustomer();
+  const order = await orderForCustomer(customer, opts);
+  return { order, customer };
+}
+
+type ShipContainerInput = { orderContainerId: string; count: number };
+type ShipSerialInput = { orderSerialId: string; printOnShipper?: boolean };
+
+/** One order's worth of `createShipper` input, shipping its lead line in full. */
+function orderInput(order: OrderDetail) {
+  return {
+    orderId: order.id,
+    lines: [{
+      orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight, lineComplete: false,
+    }],
+    containers: [] as ShipContainerInput[],
+    serials: [] as ShipSerialInput[],
+  };
+}
+
+function oneOrderInput(order: OrderDetail) {
+  return { customerId: order.customerId, shipDate: "2026-08-04", orders: [orderInput(order)] };
+}
+
+function multiOrderInput(customerId: string, orders: OrderDetail[]) {
+  return { customerId, shipDate: "2026-08-04", orders: orders.map(orderInput) };
+}
+
+async function oneOrderShipment(): Promise<{ shipper: ShipperDetail; orderA: OrderDetail; customer: Customer }> {
+  const { order, customer } = await savedOrder({ qty: 10 });
+  const { shipper } = await createShipper(oneOrderInput(order), { canOverrideCreditHold: false });
+  return { shipper, orderA: order, customer };
+}
+
+async function twoOrderShipment(): Promise<{
+  shipper: ShipperDetail; first: ShipperOrderDetail; second: ShipperOrderDetail;
+  customer: Customer; orders: OrderDetail[];
+}> {
+  const customer = await makeCustomer();
+  const a = await orderForCustomer(customer);
+  const b = await orderForCustomer(customer);
+  const { shipper } = await createShipper(multiOrderInput(customer.id, [a, b]), { canOverrideCreditHold: false });
+  return { shipper, first: shipper.orders[0], second: shipper.orders[1], customer, orders: [a, b] };
+}
+
+async function threeOrderShipment(): Promise<{
+  shipper: ShipperDetail; first: ShipperOrderDetail; second: ShipperOrderDetail; third: ShipperOrderDetail;
+  customer: Customer;
+}> {
+  const customer = await makeCustomer();
+  const a = await orderForCustomer(customer);
+  const b = await orderForCustomer(customer);
+  const c = await orderForCustomer(customer);
+  const { shipper } = await createShipper(multiOrderInput(customer.id, [a, b, c]), { canOverrideCreditHold: false });
+  return { shipper, first: shipper.orders[0], second: shipper.orders[1], third: shipper.orders[2], customer };
+}
+
+async function shipmentPlusSpareOrder(): Promise<{ shipper: ShipperDetail; orderB: OrderDetail }> {
+  const { shipper, customer } = await oneOrderShipment();
+  const orderB = await orderForCustomer(customer);
+  return { shipper, orderB };
+}
+
+async function shipmentPlusForeignOrder(): Promise<{ shipper: ShipperDetail; foreignOrder: OrderDetail }> {
+  const { shipper } = await oneOrderShipment();
+  const { order: foreignOrder } = await savedOrder();
+  return { shipper, foreignOrder };
+}
+
+/** A one-order shipment whose single line is already marked `lineComplete`, so the order starts
+ *  out SHIPPED — the brief's own fixture, minus the self-referential `orderA` argument its sample
+ *  code passed (a `const { orderA } = await completeShipmentOf(orderA)` reads its own binding
+ *  before initialization; fixed here to take no argument). */
+async function completeShipmentOf(): Promise<{
+  shipper: ShipperDetail; orderA: OrderDetail; shipperOrderA: ShipperOrderDetail;
+}> {
+  const { order } = await savedOrder({ qty: 10 });
+  const input = oneOrderInput(order);
+  input.orders[0].lines[0].lineComplete = true;
+  const { shipper } = await createShipper(input, { canOverrideCreditHold: false });
+  return { shipper, orderA: order, shipperOrderA: shipper.orders[0] };
+}
+
+beforeEach(async () => {
+  await truncateAll();
+  claimOrdersInOrderMock.mockClear();
+  claimOrderMock.mockClear();
+});
+
+describe("addOrderToShipper", () => {
+  it("adds another order of the same customer and gives it its own sequence", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    const after = await addOrderToShipper(shipper.id, orderB.id);
+    expect(after.orders).toHaveLength(2);
+    expect(after.orders[1].sequence).toBe(1); // orderB's FIRST shipment
+    expect(after.orders[1].position).toBe(2); // second ticket on this shipment
+  });
+
+  it("refuses an order belonging to a different customer", async () => {
+    const { shipper, foreignOrder } = await shipmentPlusForeignOrder();
+    await expect(addOrderToShipper(shipper.id, foreignOrder.id)).rejects.toThrow(/same customer/i);
+  });
+
+  it("refuses the same order twice on one shipment", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    await expect(addOrderToShipper(shipper.id, orderA.id)).rejects.toThrow(/already on this shipment/i);
+  });
+
+  it("refuses a voided order", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    await asSystem(() => voidOrder(orderB.id, "wrong part"));
+    await expect(addOrderToShipper(shipper.id, orderB.id)).rejects.toThrow(/voided/i);
+  });
+
+  it("404s on a voided shipment — a voided shipment is read-only", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    await prisma.shipper.update({ where: { id: shipper.id }, data: { deletedAt: new Date() } });
+    await expect(addOrderToShipper(shipper.id, orderB.id)).rejects.toThrow(/not found/i);
+  });
+
+  it("404s on an unknown shipment id", async () => {
+    const { order } = await savedOrder();
+    await expect(addOrderToShipper("nope", order.id)).rejects.toThrow(/not found/i);
+  });
+});
+
+describe("removeOrderFromShipper", () => {
+  it("recomputes status when an order is removed", async () => {
+    const { shipper, orderA, shipperOrderA } = await completeShipmentOf();
+    expect((await getOrder(orderA.id)).status).toBe("SHIPPED");
+    await removeOrderFromShipper(shipper.id, shipperOrderA.id);
+    expect((await getOrder(orderA.id)).status).toBe("OPEN");
+  });
+
+  it("closes positions after a removal", async () => {
+    const { shipper, second } = await threeOrderShipment();
+    const after = await removeOrderFromShipper(shipper.id, second.id);
+    expect(after.orders.map((o) => o.position)).toEqual([1, 2]);
+  });
+
+  it("refuses to remove an order whose ticket has printed, and allows it before", async () => {
+    const { shipper, second } = await twoOrderShipment();
+    await expect(removeOrderFromShipper(shipper.id, second.id)).resolves.toBeTruthy(); // nothing printed
+
+    const { shipper: s2, second: sec2 } = await twoOrderShipment();
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: s2.id, orderId: sec2.orderId }, Buffer.from("%PDF-1.4 t")));
+    await expect(removeOrderFromShipper(s2.id, sec2.id)).rejects.toThrow(/already printed|void the shipment/i);
+  });
+
+  it("treats a whole-set ticket print as covering every order on the shipment", async () => {
+    const { shipper, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, Buffer.from("%PDF-1.4 t")));
+    await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toThrow(/already printed/i);
+  });
+
+  it("404s for a shipperOrderId that belongs to a different shipment", async () => {
+    const { shipper: s1 } = await oneOrderShipment();
+    const { shipper: s2 } = await oneOrderShipment();
+    await expect(removeOrderFromShipper(s1.id, s2.orders[0].id)).rejects.toThrow(/not on this shipment/i);
+  });
+
+  // Step 6 (Task 2's review): assert ShipperOrder's two remaining uniques as BEHAVIOUR, not just
+  // trust the service check — a service refactor that dropped the pre-check would still be caught
+  // by these.
+  it("the database rejects two ShipperOrder rows sharing (shipperId, orderId)", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    await expect(prisma.shipperOrder.create({
+      data: { shipperId: shipper.id, orderId: orderA.id, sequence: 99, position: 99 },
+    })).rejects.toThrow();
+  });
+
+  it("(shipperId, position) stays unique through the two-phase renumber a removal triggers", async () => {
+    const { shipper, second } = await threeOrderShipment();
+    const after = await removeOrderFromShipper(shipper.id, second.id);
+    const positions = after.orders.map((o) => o.position);
+    expect(new Set(positions).size).toBe(positions.length); // no duplicate position survived
+
+    const spare = await orderForCustomer(await prisma.customer.findUniqueOrThrow({ where: { id: after.customerId } }));
+    await expect(prisma.shipperOrder.create({
+      data: { shipperId: shipper.id, orderId: spare.id, sequence: 1, position: after.orders[0].position },
+    })).rejects.toThrow();
+  });
+});
+
+describe("replaceShipperLines", () => {
+  it("replaces the line grid for one order", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const so = shipper.orders[0];
+    const after = await replaceShipperLines(shipper.id, so.id, [
+      { orderLineId: orderA.lines[0].id, qty: 3, weight: 7.5, lineComplete: true },
+    ]);
+    expect(after.orders[0].lines[0]).toMatchObject({ qty: 3, weight: 7.5, lineComplete: true });
+  });
+
+  it("refuses a line that does not belong to this order", async () => {
+    const { shipper } = await oneOrderShipment();
+    const { order: other } = await savedOrder();
+    const so = shipper.orders[0];
+    await expect(replaceShipperLines(shipper.id, so.id, [
+      { orderLineId: other.lines[0].id, qty: 1, weight: 1, lineComplete: false },
+    ])).rejects.toThrow(/does not belong/i);
+  });
+
+  it("refuses a duplicate line within the replacement set, naming it", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const so = shipper.orders[0];
+    const line = { orderLineId: orderA.lines[0].id, qty: 1, weight: 1, lineComplete: false };
+    await expect(replaceShipperLines(shipper.id, so.id, [line, { ...line }]))
+      .rejects.toThrow(/line 1.*listed twice/i);
+  });
+
+  // Step 7: over-ship still warns, never blocks. `replaceShipperLines` itself returns a bare
+  // `ShipperDetail` (task-9-brief.md's own literal interface) — `overshipWarnings` is the small,
+  // additional pure export that derives the warning straight off that detail's own
+  // shippedToDateQty/orderedQty fields (see its doc comment in shippers.ts), so a caller does not
+  // need a second `shippedTotals` read to report it.
+  it("allows shipping over the remaining quantity, and the warning surfaces via overshipWarnings", async () => {
+    const { shipper, orderA } = await oneOrderShipment(); // 10 qty / 5.00 weight ordered
+    const so = shipper.orders[0];
+    const after = await replaceShipperLines(shipper.id, so.id, [
+      { orderLineId: orderA.lines[0].id, qty: 999, weight: 999, lineComplete: false },
+    ]);
+    expect(after.orders[0].lines[0].qty).toBe(999); // the save still succeeds
+    expect(overshipWarnings(after).join(" ")).toMatch(/exceeds/i);
+  });
+
+  it("does not warn when shipped-to-date stays within what was ordered", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const so = shipper.orders[0];
+    const after = await replaceShipperLines(shipper.id, so.id, [
+      { orderLineId: orderA.lines[0].id, qty: 4, weight: 4, lineComplete: false },
+    ]);
+    expect(overshipWarnings(after)).toEqual([]);
+  });
+});
+
+describe("replaceShipperContainers", () => {
+  it("replaces the container grid for one order", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const container = await prisma.orderContainer.create({
+      data: { orderId: orderA.id, position: 1, typeId: containerType.id, count: 2 },
+    });
+    const so = shipper.orders[0];
+    const after = await replaceShipperContainers(shipper.id, so.id, [{ orderContainerId: container.id, count: 2 }]);
+    expect(after.orders[0].containers[0]).toMatchObject({ typeName: "Basket", count: 2 });
+  });
+
+  it("refuses a container that does not belong to this order", async () => {
+    const { shipper } = await oneOrderShipment();
+    const { order: other } = await savedOrder();
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const container = await prisma.orderContainer.create({
+      data: { orderId: other.id, position: 1, typeId: containerType.id, count: 2 },
+    });
+    const so = shipper.orders[0];
+    await expect(replaceShipperContainers(shipper.id, so.id, [{ orderContainerId: container.id, count: 1 }]))
+      .rejects.toThrow(/does not belong/i);
+  });
+});
+
+describe("replaceShipperSerials", () => {
+  it("replaces the serial grid for one order", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const serial = await prisma.orderSerial.create({
+      data: { orderId: orderA.id, lineId: orderA.lines[0].id, position: 1, serial: "S-1", description: "Heat 1" },
+    });
+    const so = shipper.orders[0];
+    const after = await replaceShipperSerials(shipper.id, so.id, [{ orderSerialId: serial.id, printOnShipper: false }]);
+    expect(after.orders[0].serials[0]).toMatchObject({ serial: "S-1", printOnShipper: false });
+  });
+
+  it("refuses a serial that does not belong to this order", async () => {
+    const { shipper } = await oneOrderShipment();
+    const { order: other } = await savedOrder();
+    const serial = await prisma.orderSerial.create({
+      data: { orderId: other.id, lineId: other.lines[0].id, position: 1, serial: "S-2", description: "" },
+    });
+    const so = shipper.orders[0];
+    await expect(replaceShipperSerials(shipper.id, so.id, [{ orderSerialId: serial.id }]))
+      .rejects.toThrow(/does not belong/i);
+  });
+});
+
+describe("updateShipper", () => {
+  it("patches header fields, leaving the rest untouched", async () => {
+    const { shipper } = await oneOrderShipment();
+    const carrier = await prisma.carrier.create({ data: { name: "ACME Freight" } });
+    const after = await updateShipper(shipper.id, { carrierId: carrier.id, route: "I-80 west", proNumber: "PRO-1" });
+    expect(after.carrierName).toBe("ACME Freight");
+    expect(after.route).toBe("I-80 west");
+    expect(after.proNumber).toBe("PRO-1");
+    expect(after.comments).toBe(shipper.comments); // untouched
+  });
+
+  it("refuses a ship-to address that does not belong to this customer", async () => {
+    const { shipper } = await oneOrderShipment();
+    const { customer: other } = await savedOrder();
+    const addr = await prisma.customerAddress.create({ data: { customerId: other.id, kind: "SHIP_TO", name: "Dock 1" } });
+    await expect(updateShipper(shipper.id, { shipToAddressId: addr.id })).rejects.toThrow(/ship-to address/i);
+  });
+
+  it("404s on missing or voided shipments", async () => {
+    await expect(updateShipper("nope", { route: "x" })).rejects.toThrow(/not found/i);
+    const { shipper } = await oneOrderShipment();
+    await prisma.shipper.update({ where: { id: shipper.id }, data: { deletedAt: new Date() } });
+    await expect(updateShipper(shipper.id, { route: "x" })).rejects.toThrow(/not found/i);
+  });
+
+  // Step 5b (carried from Task 8's review): `updateShipper` is `SNAPSHOT_INCLUDE.shipper`'s FIRST
+  // real consumer — `auditedCreate` writes a hand-built payload and never reads the include.
+  // Assert the snapshot's actual CONTENT: the customer by CODE, the carrier and ship-to by NAME —
+  // raw cuids in a history diff are the unreadable-history shape issue #24 exists to prevent.
+  it("the update audit snapshot names the customer by code and the carrier/ship-to by name", async () => {
+    const { shipper, customer } = await oneOrderShipment();
+    const carrier = await prisma.carrier.create({ data: { name: "ACME Freight" } });
+    const address = await prisma.customerAddress.create({ data: { customerId: customer.id, kind: "SHIP_TO", name: "Dock 4" } });
+
+    await updateShipper(shipper.id, { carrierId: carrier.id, shipToAddressId: address.id, route: "I-80 west" });
+
+    const [entry] = await readAudit("shipper", shipper.id); // newest first
+    expect(entry.action).toBe("update");
+    const after = entry.after as { customer?: { code?: string }; carrier?: { name?: string }; shipToAddress?: { name?: string } };
+    expect(after.customer?.code).toBe(customer.code);
+    expect(after.carrier?.name).toBe("ACME Freight");
+    expect(after.shipToAddress?.name).toBe("Dock 4");
+  });
+});
+
+describe("listShippers / exportShippers / shipmentsForOrder", () => {
+  it("filters by customer, search term and includeVoided", async () => {
+    const { shipper: a, customer: customerA } = await oneOrderShipment();
+    const { shipper: b } = await oneOrderShipment();
+    await prisma.shipper.update({ where: { id: b.id }, data: { deletedAt: new Date() } });
+
+    const byCustomer = await listShippers({ customerId: customerA.id });
+    expect(byCustomer.map((r) => r.id)).toEqual([a.id]);
+
+    const bySearch = await listShippers({ search: customerA.code });
+    expect(bySearch.map((r) => r.id)).toEqual([a.id]);
+
+    const withoutVoided = await listShippers({});
+    expect(withoutVoided.map((r) => r.id)).not.toContain(b.id);
+
+    const withVoided = await listShippers({ includeVoided: true });
+    expect(withVoided.map((r) => r.id)).toEqual(expect.arrayContaining([a.id, b.id]));
+  });
+
+  it("reports order labels, count and totals", async () => {
+    const { shipper } = await oneOrderShipment(); // ships its one line in full: qty 10 / weight 5.00
+    const [row] = await listShippers({});
+    expect(row.orderCount).toBe(1);
+    expect(row.orderLabels).toEqual(shipper.orders.map((o) => o.label));
+    expect(row.totalQty).toBe(10);
+    expect(row.totalWeight).toBe(5);
+  });
+
+  it("exportShippers produces a non-empty workbook for the same filter", async () => {
+    await oneOrderShipment();
+    const buf = await exportShippers({});
+    expect(buf.length).toBeGreaterThan(0);
+  });
+
+  it("shipmentsForOrder returns every shipment for that order, voided included", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    await prisma.shipper.update({ where: { id: shipper.id }, data: { deletedAt: new Date() } });
+    const rows = await shipmentsForOrder(orderA.id);
+    expect(rows.map((r) => r.id)).toEqual([shipper.id]);
+    expect(rows[0].deletedAt).not.toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Step 5a (carried from Task 8's review): lock the claim CALL SITE, not concurrency timing —
+// timing cannot discriminate ABBA deadlock at this layer (the sorted claim is one statement), so
+// what's deterministically testable is that each mutator claims through `claimOrdersInOrder` with
+// the full affected id set, as the FIRST lock call. `createShipper` also calls `certs.ts`'s
+// `claimOrder` (via `createCert`, for a SHIPMENT-scope cert) — asserted here as "first call comes
+// before claimOrder", never "claimOrder is never called".
+// -------------------------------------------------------------------------------------------
+describe("composition: claim discipline (module-boundary mock)", () => {
+  it("createShipper claims through claimOrdersInOrder before certs.ts's claimOrder", async () => {
+    const customer = await makeCustomer();
+    const part = await makePart(customer.id);
+    await prisma.part.update({ where: { id: part.id }, data: { certRequired: true, certScope: "SHIPMENT" } });
+    await giveSteps(part.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: part.id, qty: 5, weight: "5.00" }],
+    }));
+
+    await createShipper(oneOrderInput(order), { canOverrideCreditHold: false });
+
+    expect(claimOrdersInOrderMock).toHaveBeenCalled();
+    expect(claimOrderMock).toHaveBeenCalled(); // createCert's own claim, transitively
+    expect(claimOrdersInOrderMock.mock.invocationCallOrder[0])
+      .toBeLessThan(claimOrderMock.mock.invocationCallOrder[0]);
+    expect(claimOrdersInOrderMock.mock.calls[0][1]).toEqual([order.id]);
+  });
+
+  it("updateShipper's first lock call claims every order on the shipment", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    claimOrdersInOrderMock.mockClear();
+    await updateShipper(shipper.id, { route: "x" });
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual(orders.map((o) => o.id).sort());
+  });
+
+  it("addOrderToShipper's first lock call claims the existing order plus the new one", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    const existingOrderId = shipper.orders[0].orderId;
+    claimOrdersInOrderMock.mockClear();
+    await addOrderToShipper(shipper.id, orderB.id);
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual([existingOrderId, orderB.id].sort());
+  });
+
+  it("removeOrderFromShipper's first lock call claims every order on the shipment", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    claimOrdersInOrderMock.mockClear();
+    await removeOrderFromShipper(shipper.id, shipper.orders[0].id);
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual(orders.map((o) => o.id).sort());
+  });
+
+  it("replaceShipperLines' first lock call claims every order on the shipment", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    claimOrdersInOrderMock.mockClear();
+    await replaceShipperLines(shipper.id, shipper.orders[0].id, [
+      { orderLineId: orders[0].lines[0].id, qty: 1, weight: 1, lineComplete: false },
+    ]);
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual(orders.map((o) => o.id).sort());
+  });
+
+  it("replaceShipperContainers' first lock call claims every order on the shipment", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    claimOrdersInOrderMock.mockClear();
+    await replaceShipperContainers(shipper.id, shipper.orders[0].id, []);
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual(orders.map((o) => o.id).sort());
+  });
+
+  it("replaceShipperSerials' first lock call claims every order on the shipment", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    claimOrdersInOrderMock.mockClear();
+    await replaceShipperSerials(shipper.id, shipper.orders[0].id, []);
+    expect(claimOrdersInOrderMock.mock.calls[0][1].slice().sort())
+      .toEqual(orders.map((o) => o.id).sort());
+  });
+});
