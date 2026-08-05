@@ -613,7 +613,16 @@ remain immutable forever (P3 §5a).
 
 **Shipment** (`mustDo(user, "void_shipper")`, reason required and trimmed in the service): claims
 every affected order in sorted order, `auditedSoftDelete`s the shipper, recomputes each order's
-status, and **voids any shipment-scoped certs hanging off it with the same reason**. Its stored PDFs
+status, and **voids any shipment-scoped certs hanging off it with the same reason**.
+
+**Added 2026-08-04 (Task 10 review).** A shipment-scoped cert is voided **when its order leaves the
+shipment**, not only when the whole shipment is voided. `removeOrderFromShipper` hard-deletes the
+`ShipperOrder` join row but the cert created for that order at shipment-save time still points at
+the shipper — leaving a certification scoped to a shipment that no longer carries its parts, and
+leaving `voidShipper`'s later cascade writing to a cert whose order it never claimed (a row-lock
+violation, since the claim is computed from the shipment's *current* orders). Voiding the cert at
+removal time, under the claim that mutator already holds for that order, fixes the orphan at its
+source and keeps `voidShipper`'s cascade provably covered by its own claim. Its stored PDFs
 stay listable and reprintable **forever**; new prints against a voided shipment are refused. Its
 `shipperNumber`, `bolNumber` and every `ShipperOrder.sequence` are kept and never reissued. This is
 Phase 3's voided-order rule reused, not reinvented.
