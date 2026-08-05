@@ -87,8 +87,12 @@ need is left on the old laptop.**
 
 `phase-4-lane-b` exists because Tasks 13/15 ran as two parallel lanes; git will not check out one
 branch in two worktrees, so the second lane needed its own. The two lanes touch disjoint
-directories (`src/app/shipping/` vs `src/app/certs/`), so `git merge phase-4-lane-b` should be
-uneventful. **Merge it first thing.**
+directories (`src/app/shipping/` vs `src/app/certs/`), so the eventual merge should be uneventful.
+
+**OWNER RULING 2026-08-04: do NOT merge `phase-4-lane-b` yet.** Nothing merges until the whole
+branch is **pushed and reviewed**. Keep both branches separate on the remote, finish the remaining
+tasks, run the whole-branch review, and fold the lane in as part of that finish sequence — not as a
+convenience step at the start of a session.
 
 **The execution record now travels.** `.superpowers/sdd/` was local-only scratch through Phase 3 —
 which is why this document had to restate that phase's lessons by hand. As of commit `4a3cb6b` its
@@ -166,11 +170,12 @@ worth carrying — the full per-task detail is in `progress.md`.
 
 **What to do next, in order:**
 1. **Push both branches** if that did not happen before the move (`git push -u origin
-   phase-4-certs-shipping` and the same for `phase-4-lane-b`).
-2. **Merge `phase-4-lane-b`** into `phase-4-certs-shipping`.
-3. **Settle Task 14** — check whether it landed and whether it was reviewed.
-4. **Resume at the first unfinished task** using the §9 prompt, keeping the per-task
+   phase-4-certs-shipping` and the same for `phase-4-lane-b`). Keep them **separate**.
+2. **Settle Task 14** — check whether it landed and whether it was reviewed.
+3. **Resume at the first unfinished task** using the §9 prompt, keeping the per-task
    implement → review → fix → re-review loop. It has found something in every single task.
+4. **Only after every task is done and the whole-branch review has run**, fold `phase-4-lane-b` in
+   and open the PR (owner ruling above).
 
 ---
 
@@ -513,11 +518,13 @@ block below into a fresh session on the new machine.**
 > the authoritative record of what each review found, refuted or deferred.
 >
 > Before anything else: confirm both `phase-4-certs-shipping` and `phase-4-lane-b` are on the
-> remote, **merge `phase-4-lane-b`** into the phase branch (disjoint directories, should be
-> uneventful), and settle Task 14 — check `git log` and `.superpowers/sdd/task-14-report.md` for
-> whether the shipment page landed and whether it was ever reviewed. Then run the §8 fresh-machine
-> setup and confirm the gates are green before writing anything new: `npm test` (expect ~1278),
-> `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
+> remote, and settle Task 14 — check `git log` and `.superpowers/sdd/task-14-report.md` for whether
+> the shipment page landed and whether it was ever reviewed. **Do NOT merge `phase-4-lane-b`**
+> (owner ruling 2026-08-04: nothing merges until the whole branch is pushed and reviewed — the lane
+> folds in at the finish, not at the start). Then run the §8 fresh-machine setup and confirm the
+> gates are green before writing anything new: `npm test` (expect ~1278), `npx tsc --noEmit`,
+> `npx eslint src tests`, `npm run build`. Note Task 15's own fix round may still have been in
+> flight on the lane branch — check its report before assuming that task is closed.
 >
 > The binding documents are the spec
 > (`docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3's 18 owner rulings,
