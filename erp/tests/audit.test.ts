@@ -73,7 +73,14 @@ describe("audit helpers", () => {
     expect(afterStr).toContain("[redacted]");
   });
 
-  it("redacts signatureImage in update", async () => {
+  // Task 12 added a `SNAPSHOT_SELECT` entry for `user` (audit.ts), mirroring the
+  // partAttachment/orderAttachment/storedDocument precedent: signatureImage now has a real
+  // writer (setSignature, users.ts) and is excluded from the snapshot QUERY itself, the same way
+  // those three tables' fileData is — so this no longer merely redacts the bytes, it never fetches
+  // them at all. Updated from this test's original "asserts '[redacted]'" expectation to match;
+  // see attachments.test.ts's identical before/after (its own comment: "the key itself is absent,
+  // not merely redacted to a placeholder string").
+  it("excludes signatureImage bytes from the snapshot query entirely, rather than merely redacting them", async () => {
     const u = await prisma.user.create({
       data: { username: "sig", passwordHash: "x", displayName: "Sig", signatureImage: Buffer.from("fakeimage") },
     });
@@ -87,12 +94,15 @@ describe("audit helpers", () => {
     const beforeStr = JSON.stringify(entry.before);
     const afterStr = JSON.stringify(entry.after);
 
-    // Structurally assert redaction of signatureImage in both snapshots
-    expect(beforeSnapshot.signatureImage).toBe("[redacted]");
-    expect(afterSnapshot.signatureImage).toBe("[redacted]");
+    // The key itself is absent — redact()'s "signatureimage" pattern stays defense-in-depth, not
+    // the mechanism relied on to keep the bytes out (CLAUDE.md).
+    expect(beforeSnapshot).not.toHaveProperty("signatureImage");
+    expect(afterSnapshot).not.toHaveProperty("signatureImage");
 
-    // Prove no raw Buffer serialization survives
+    // Belt: no raw Buffer serialization survives either.
     expect(beforeStr).not.toContain('"type":"Buffer"');
     expect(afterStr).not.toContain('"type":"Buffer"');
+    expect(beforeStr).not.toContain("fakeimage");
+    expect(afterStr).not.toContain("fakeimage");
   });
 });

@@ -192,6 +192,17 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     id: true, orderId: true, shipperId: true, certId: true,
     kind: true, loadNumber: true, createdAt: true,
   },
+  // Task 12: `User.signatureImage` is a bytes column exactly like the three above, and gets the
+  // same treatment — an explicit `select` (never `include`, which pulls every scalar including
+  // this one) that lists every OTHER User scalar plus the `overrides` relation SNAPSHOT_INCLUDE's
+  // `user` entry already carries, so `setSignature`'s own `auditedUpdate("user", ...)` never pulls
+  // the image bytes into a before/after snapshot in the first place. redact()'s "signatureimage"
+  // pattern stays defense-in-depth, not the mechanism relied on to keep them out (CLAUDE.md).
+  user: {
+    id: true, username: true, passwordHash: true, displayName: true, roleId: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
+    overrides: true,
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

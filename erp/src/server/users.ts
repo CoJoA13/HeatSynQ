@@ -16,9 +16,20 @@ async function activeManageUsersHolders() {
 }
 
 export async function listUsers() {
+  // Explicit `select` (never the old `include: { role: true, overrides: true }`, which pulls
+  // every scalar on User) — Task 12 gave `signatureImage` real bytes for the first time, and this
+  // list is refetched on every admin/users page load and every mutation on it. Pulling up to
+  // SIGNATURE_MAX_BYTES per row into a list nobody renders bytes from is exactly the "real memory
+  // pressure for a value nothing ever needed" shape SNAPSHOT_SELECT (audit.ts) already exists to
+  // avoid for the attachment tables; this is the same fix applied at the query that actually feeds
+  // this screen. `passwordHash` drops out too, for free.
   const users = await prisma.user.findMany({
     where: { deletedAt: null },
-    include: { role: true, overrides: true },
+    select: {
+      id: true, username: true, displayName: true, roleId: true, active: true,
+      role: { select: { name: true } },
+      overrides: { select: { permission: true, mode: true } },
+    },
     orderBy: { username: "asc" },
   });
   return users.map((u) => ({
@@ -104,4 +115,64 @@ export async function setUserOverrides(id: string, overrides: { permission: stri
         data: overrides.map((o) => ({ userId: id, permission: o.permission, mode: o.mode })),
       });
     }, { tx }));
+}
+
+// 2 MB — small enough that pulling it into a before/after audit snapshot would be real memory
+// pressure for a value nothing there ever needs (SNAPSHOT_SELECT's `user` entry, audit.ts, is the
+// other half of that guarantee); large enough for a real scanned or drawn signature.
+export const SIGNATURE_MAX_BYTES = 2 * 1024 * 1024;
+// Per task-12-brief.md's interface — png/jpeg cover the common web image types, bmp besides.
+export const SIGNATURE_MIME = ["image/png", "image/jpeg", "image/bmp"] as const;
+
+/**
+ * Owner ruling (spec §3.11): the signature that prints on a certification is the PRINTING user's
+ * own — no signer selection, no config key. This is the one and only writer of that image; there
+ * is no separate "signer" concept anywhere in this codebase for Task 19's cert layout to consume.
+ *
+ * Follows the attachments.ts precedent (parseUploadFile/assertDeclaredUploadSize upstream in the
+ * route, a size cap and a MIME allowlist here) at a much smaller scale — one image per user
+ * rather than an unbounded list, so there is no separate list/get-by-id shape, just the three
+ * verbs a single optional field needs.
+ */
+export async function setSignature(userId: string, data: Buffer, mimeType: string): Promise<void> {
+  if (!(SIGNATURE_MIME as readonly string[]).includes(mimeType)) {
+    throw new HttpError(400, `Signature images must be one of: ${SIGNATURE_MIME.join(", ")}`);
+  }
+  if (data.byteLength > SIGNATURE_MAX_BYTES) {
+    throw new HttpError(400, `Signature images cannot exceed ${SIGNATURE_MAX_BYTES / (1024 * 1024)} MB`);
+  }
+  // No upfront findFirst/existence check: `tx.user.update` on an id that doesn't exist raises
+  // Prisma's P2025, which withDbErrors already translates to the same "User not found" 404 —
+  // updateUser (above) relies on the identical path rather than a redundant pre-check.
+  //
+  // `new Uint8Array(data)`, not `data` itself: Prisma's `Bytes` input is typed
+  // `Uint8Array<ArrayBuffer>`, and Node's `Buffer` is `Uint8Array<ArrayBufferLike>`, which that
+  // does not accept (the storeDocument precedent, documents.ts).
+  await withDbErrors({ entity: "User" }, () =>
+    prisma.$transaction((tx) =>
+      auditedUpdate("user", userId, () =>
+        tx.user.update({
+          where: { id: userId }, data: { signatureImage: new Uint8Array(data), signatureMimeType: mimeType },
+        }),
+      { tx })));
+}
+
+export async function clearSignature(userId: string): Promise<void> {
+  await withDbErrors({ entity: "User" }, () =>
+    prisma.$transaction((tx) =>
+      auditedUpdate("user", userId, () =>
+        tx.user.update({ where: { id: userId }, data: { signatureImage: null, signatureMimeType: null } }),
+      { tx })));
+}
+
+export async function getSignature(userId: string): Promise<{ data: Buffer; mimeType: string } | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { signatureImage: true, signatureMimeType: true },
+  });
+  if (!user) throw new HttpError(404, "User not found");
+  if (!user.signatureImage || !user.signatureMimeType) return null;
+  // Prisma's `Bytes` scalar is a bare Uint8Array (see attachments.ts's identical comment on
+  // getAttachment) — Buffer.from guarantees the real Node Buffer this function's type promises.
+  return { data: Buffer.from(user.signatureImage), mimeType: user.signatureMimeType };
 }

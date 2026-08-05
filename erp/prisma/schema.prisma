@@ -15,21 +15,24 @@ datasource db {
 }
 
 model User {
-  id             String                   @id @default(cuid())
-  username       String                   @unique
-  passwordHash   String
-  displayName    String
-  roleId         String?
-  role           Role?                    @relation(fields: [roleId], references: [id])
-  signatureImage Bytes?
-  active         Boolean                  @default(true)
-  deletedAt      DateTime?
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @updatedAt
-  sessions       Session[]
-  overrides      UserPermissionOverride[]
-  orderDraft     OrderDraft?
-  savedViews     SavedView[]
+  id                String                   @id @default(cuid())
+  username          String                   @unique
+  passwordHash      String
+  displayName       String
+  roleId            String?
+  role              Role?                    @relation(fields: [roleId], references: [id])
+  signatureImage    Bytes?
+  // Persisted alongside signatureImage so GET can stream it back with its real Content-Type —
+  // the upload is constrained to SIGNATURE_MIME (users.ts), never inferred or defaulted.
+  signatureMimeType String?
+  active            Boolean                  @default(true)
+  deletedAt         DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  sessions          Session[]
+  overrides         UserPermissionOverride[]
+  orderDraft        OrderDraft?
+  savedViews        SavedView[]
 }
 
 model Session {

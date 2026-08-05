@@ -16,7 +16,7 @@ function sessionUser(rolePermissions: string[]): SessionUser {
   const n = nextUserSeq++;
   return {
     id: `search-user-${n}`, username: `search-user-${n}`, passwordHash: "x",
-    displayName: "Test User", roleId: `search-role-${n}`, signatureImage: null,
+    displayName: "Test User", roleId: `search-role-${n}`, signatureImage: null, signatureMimeType: null,
     active: true, deletedAt: null, createdAt: new Date(), updatedAt: new Date(),
     role: {
       id: `search-role-${n}`, name: `search-role-${n}`, deletedAt: null,
