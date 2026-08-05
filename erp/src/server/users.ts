@@ -6,11 +6,24 @@ import { auditedCreate, auditedUpdate } from "./audit";
 import { currentActor } from "./context";
 import { withDbErrors } from "./db-errors";
 
-/** Active, non-deleted users whose effective permissions currently include action.manage_users. */
+/**
+ * Active, non-deleted users whose effective permissions currently include action.manage_users.
+ *
+ * Explicit `select` (never the old `include: { role: {...}, overrides: true }`, which pulls
+ * every scalar on User) — this runs on every `updateUser` call that changes `active` or `roleId`,
+ * a routine admin action, and the old blanket include pulled up to SIGNATURE_MAX_BYTES of
+ * signature bytes (plus passwordHash) per active user just to compute a permission check that
+ * only ever reads id/active/roleId/role.permissions/overrides. Same fix as `listUsers` below, in
+ * the same file, for the same reason — this is the sibling that fix was supposed to catch too.
+ */
 async function activeManageUsersHolders() {
   const users = await prisma.user.findMany({
     where: { active: true, deletedAt: null },
-    include: { role: { include: { permissions: true } }, overrides: true },
+    select: {
+      id: true, active: true, roleId: true,
+      role: { select: { permissions: { select: { permission: true } } } },
+      overrides: { select: { permission: true, mode: true } },
+    },
   });
   return users.filter((u) => canDo(u, "manage_users"));
 }
@@ -44,7 +57,9 @@ export async function listUsers() {
 }
 
 export async function createUser(input: { username: string; displayName: string; password: string; roleId?: string }) {
-  const dupe = await prisma.user.findUnique({ where: { username: input.username } });
+  // select: { id: true } — this is a bare existence check (`if (dupe)`); no reason to pull the
+  // full row, signature bytes included, just to learn whether one exists.
+  const dupe = await prisma.user.findUnique({ where: { username: input.username }, select: { id: true } });
   if (dupe) throw new HttpError(400, "That username is taken");
   // Destructure the plaintext password out before it reaches the audit log: redact() only
   // strips keys containing "passwordhash", so spreading the raw `input` (which carries

@@ -17,11 +17,29 @@ export async function createSession(userId: string) {
   return { token, expiresAt };
 }
 
+/**
+ * Runs on every authenticated request (`handle`, http.ts, calls this for every request carrying
+ * a session cookie) — the hottest path in the application for a User row read. Explicit `select`
+ * on the nested `user`, not `include`: `include` pulls every scalar on User, including
+ * `signatureImage` (up to SIGNATURE_MAX_BYTES, users.ts) now that it has a real writer, on every
+ * single request. Lists exactly what a `SessionUser` is actually used for downstream:
+ * id/username/displayName (http.ts's actor, /api/auth/me), active/deletedAt (the eligibility
+ * check just below), and role.permissions/overrides (can()/canDo(), permissions.ts) — nothing
+ * else reads a `SessionUser` field anywhere in the codebase (swept via grep before this change).
+ */
 export async function getSessionUser(token: string) {
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: {
-      user: { include: { role: { include: { permissions: true } }, overrides: true } },
+    select: {
+      id: true,
+      expiresAt: true,
+      user: {
+        select: {
+          id: true, username: true, displayName: true, active: true, deletedAt: true,
+          role: { select: { permissions: { select: { permission: true } } } },
+          overrides: { select: { permission: true, mode: true } },
+        },
+      },
     },
   });
   if (!session) return null;

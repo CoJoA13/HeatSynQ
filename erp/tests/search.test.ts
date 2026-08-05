@@ -10,19 +10,20 @@ import type { SessionUser } from "@/server/sessions";
  * columns plus `role` (with its `permissions`) and `overrides`, both of which is all `can()`
  * (permissions.ts) ever actually reads. No overrides needed for this file's cases — every test
  * here is a pure role-grant question — so `overrides` is always empty.
+ *
+ * `SessionUser` narrowed to an explicit `select` (sessions.ts, the sibling-sweep fix that also
+ * trimmed `activeManageUsersHolders`/`authenticateUser`/`createUser`'s dupe check in users.ts and
+ * auth.ts): it no longer carries `passwordHash`/`roleId`/`signatureImage`/`signatureMimeType`/
+ * `createdAt`/`updatedAt`, and `role`/`overrides` themselves are narrowed to exactly the fields
+ * `can()` reads. This fixture is narrowed to match.
  */
 let nextUserSeq = 0;
 function sessionUser(rolePermissions: string[]): SessionUser {
   const n = nextUserSeq++;
   return {
-    id: `search-user-${n}`, username: `search-user-${n}`, passwordHash: "x",
-    displayName: "Test User", roleId: `search-role-${n}`, signatureImage: null, signatureMimeType: null,
-    active: true, deletedAt: null, createdAt: new Date(), updatedAt: new Date(),
-    role: {
-      id: `search-role-${n}`, name: `search-role-${n}`, deletedAt: null,
-      permissions: rolePermissions.map((permission, i) => (
-        { id: `search-role-${n}-p${i}`, roleId: `search-role-${n}`, permission })),
-    },
+    id: `search-user-${n}`, username: `search-user-${n}`,
+    displayName: "Test User", active: true, deletedAt: null,
+    role: { permissions: rolePermissions.map((permission) => ({ permission })) },
     overrides: [],
   };
 }
