@@ -4,8 +4,14 @@
 # Large vendor reference PDF stays on disk, not in git
 VisualShopTraining.pdf
 
-# SDD scratch
-.superpowers/
+# SDD execution record. The task briefs, implementer reports and reviewer verdicts under
+# .superpowers/sdd/ are the only account of WHY each task ended up the way it did — they were
+# local-only scratch through Phase 3 and did not survive between machines, which HANDOFF §3 had
+# to work around by hand. They are tracked from 2026-08-04 so they travel.
+# The review-*.diff packages stay out: they are `git diff` between commits already in history.
+.superpowers/*
+!.superpowers/sdd/
+.superpowers/sdd/**/*.diff
 
 erp/node_modules/
 erp/.next/
