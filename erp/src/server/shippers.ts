@@ -786,6 +786,17 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
     const orderIds = await shipperOrderIds(tx, id);
     await claimOrdersInOrder(tx, orderIds);
 
+    // Spec §4.2: "a shipment must carry at least one line with qty > 0 across all its orders" —
+    // removing the LAST order leaves `orders: []`, a document about nothing in the strongest
+    // sense. Void the shipment is the correct correction (§5.6): it keeps every sequence claimed
+    // forever, exactly like the printed-ticket refusal just below — this is the same
+    // "irreversible removal has a void-shaped escape hatch" shape, not a coincidence.
+    if (orderIds.length === 1) {
+      throw new HttpError(400,
+        `This is the only order on the shipment — void the shipment (Packing List ${shipper.shipperNumber}) ` +
+        "instead of removing its last order.");
+    }
+
     const printed = await tx.storedDocument.findFirst({
       where: { kind: "SHIPPER", shipperId: id, OR: [{ orderId: target.orderId }, { orderId: null }] },
       select: { id: true },
@@ -873,6 +884,20 @@ export async function replaceShipperLines(id: string, shipperOrderId: string, in
         throw new HttpError(400, `${shipLineLabel(order.orderNumber, line)}: listed twice on this shipment`);
       }
       seen.add(l.orderLineId);
+    }
+
+    // Spec §4.2: "a shipment must carry at least one line with qty > 0 across all its orders" —
+    // a DOCUMENT-level invariant, not a per-line one (a single zeroed line, `lineComplete: true`,
+    // stays legal on its own — "we are not sending the last three, close the line"). Checked only
+    // when THIS order's own new lines carry none, against every OTHER `ShipperOrder` on the same
+    // shipment — the common case (this order still has a positive line, or this isn't the only
+    // order) never pays for the extra read.
+    if (!data.some((l) => l.qty > 0)) {
+      const otherPositive = await tx.shipperLine.findFirst({
+        where: { qty: { gt: 0 }, shipperOrder: { shipperId: id, id: { not: shipperOrderId } } },
+        select: { id: true },
+      });
+      if (!otherPositive) throw new HttpError(400, "A shipment needs at least one line with a positive quantity");
     }
 
     await auditedUpdate("shipper", id, async () => {

@@ -139,18 +139,25 @@ async function shipmentPlusForeignOrder(): Promise<{ shipper: ShipperDetail; for
   return { shipper, foreignOrder };
 }
 
-/** A one-order shipment whose single line is already marked `lineComplete`, so the order starts
- *  out SHIPPED — the brief's own fixture, minus the self-referential `orderA` argument its sample
- *  code passed (a `const { orderA } = await completeShipmentOf(orderA)` reads its own binding
- *  before initialization; fixed here to take no argument). */
+/** A TWO-order shipment whose first order's single line is already marked `lineComplete`, so that
+ *  order starts out SHIPPED — the brief's own fixture, adapted two ways from its sample code: (1)
+ *  the self-referential `orderA` argument its sample passed (`const { orderA } = await
+ *  completeShipmentOf(orderA)` reads its own binding before initialization) is dropped, this
+ *  fixture takes none; (2) a SECOND order is added so the removal the test performs is never the
+ *  shipment's LAST order — spec §4.2's "at least one line with qty > 0 across all its orders",
+ *  enforced at the document level in `removeOrderFromShipper` (coordinator review, this task):
+ *  a one-order version of this fixture would make the test exercise the now-forbidden
+ *  remove-the-last-order state instead of the status recompute it was written to prove. */
 async function completeShipmentOf(): Promise<{
   shipper: ShipperDetail; orderA: OrderDetail; shipperOrderA: ShipperOrderDetail;
 }> {
-  const { order } = await savedOrder({ qty: 10 });
-  const input = oneOrderInput(order);
-  input.orders[0].lines[0].lineComplete = true;
+  const customer = await makeCustomer();
+  const orderA = await orderForCustomer(customer, { qty: 10 });
+  const orderSpare = await orderForCustomer(customer);
+  const input = multiOrderInput(customer.id, [orderA, orderSpare]);
+  input.orders[0].lines[0].lineComplete = true; // orderA's only line, shipped in full
   const { shipper } = await createShipper(input, { canOverrideCreditHold: false });
-  return { shipper, orderA: order, shipperOrderA: shipper.orders[0] };
+  return { shipper, orderA, shipperOrderA: shipper.orders[0] };
 }
 
 beforeEach(async () => {
@@ -233,6 +240,21 @@ describe("removeOrderFromShipper", () => {
     await expect(removeOrderFromShipper(s1.id, s2.orders[0].id)).rejects.toThrow(/not on this shipment/i);
   });
 
+  // Coordinator review (this task): spec §4.2's "at least one line with qty > 0 across all its
+  // orders" is a DOCUMENT-level invariant — removing a shipment's last order would leave
+  // `orders: []`, exactly the "document about nothing" the invariant forbids. Refused, naming the
+  // real remedy (void the shipment, §5.6 — the correction that keeps every sequence claimed).
+  it("refuses to remove the shipment's last remaining order", async () => {
+    const { shipper } = await oneOrderShipment();
+    await expect(removeOrderFromShipper(shipper.id, shipper.orders[0].id))
+      .rejects.toThrow(/void the shipment/i);
+  });
+
+  it("allows removing an order that is not the last one on the shipment", async () => {
+    const { shipper, second } = await twoOrderShipment();
+    await expect(removeOrderFromShipper(shipper.id, second.id)).resolves.toBeTruthy();
+  });
+
   // Step 6 (Task 2's review): assert ShipperOrder's two remaining uniques as BEHAVIOUR, not just
   // trust the service check — a service refactor that dropped the pre-check would still be caught
   // by these.
@@ -281,6 +303,26 @@ describe("replaceShipperLines", () => {
     const line = { orderLineId: orderA.lines[0].id, qty: 1, weight: 1, lineComplete: false };
     await expect(replaceShipperLines(shipper.id, so.id, [line, { ...line }]))
       .rejects.toThrow(/line 1.*listed twice/i);
+  });
+
+  // Coordinator review (this task): spec §4.2's "at least one line with qty > 0 across all its
+  // orders" is a DOCUMENT-level invariant, not a per-line one — a single zeroed line (`qty: 0`,
+  // `lineComplete: true`) stays legal ON ITS OWN ("close the line"), but a shipment where EVERY
+  // line across EVERY order is zero is a document about nothing.
+  it("refuses zeroing a shipment's only line across all its orders", async () => {
+    const { shipper, orderA } = await oneOrderShipment();
+    const so = shipper.orders[0];
+    await expect(replaceShipperLines(shipper.id, so.id, [
+      { orderLineId: orderA.lines[0].id, qty: 0, weight: 0, lineComplete: true },
+    ])).rejects.toThrow(/at least one line/i);
+  });
+
+  it("allows zeroing one order's lines when another order on the shipment still ships something", async () => {
+    const { shipper, second, orders } = await twoOrderShipment();
+    const orderB = orders[1];
+    await expect(replaceShipperLines(shipper.id, second.id, [
+      { orderLineId: orderB.lines[0].id, qty: 0, weight: 0, lineComplete: true },
+    ])).resolves.toBeTruthy();
   });
 
   // Step 7: over-ship still warns, never blocks. `replaceShipperLines` itself returns a bare

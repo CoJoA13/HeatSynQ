@@ -133,9 +133,12 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // `carrierId` or `shipToAddressId` rendered as a raw cuid, exactly the unreadable-history shape
   // issue #24 exists to prevent. `customer`/`carrier`/`shipToAddress` are all selected directly on
   // the SHIPPER itself (round 2 of the same review, 2026-08-04) — not read off `orders[].order`
-  // alone, because `ShipperOrder` has no `deletedAt` of its own (spec §4.2) and Task 10's
-  // `removeOrderFromShipper` hard-deletes the row: an order-less shipment would otherwise fall
-  // back to rendering `customerId` as a raw cuid the moment its last order is removed.
+  // alone, because `ShipperOrder` has no `deletedAt` of its own (spec §4.2) and Task 9's
+  // `removeOrderFromShipper` hard-deletes the row. That same task's `removeOrderFromShipper` now
+  // also refuses to remove a shipment's LAST order (§4.2's "at least one line with qty > 0 across
+  // all its orders" enforced at the document level), so an order-less shipment isn't actually
+  // reachable through that path any more — this select stays anyway, as cheap defensive insurance
+  // against a raw cuid ever surfacing in a history diff.
   shipper: {
     customer: { select: { code: true, name: true } },
     carrier: { select: { name: true } },
