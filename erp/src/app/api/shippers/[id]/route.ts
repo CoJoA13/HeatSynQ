@@ -6,7 +6,13 @@ import { shipperResponse } from "../response";
 
 export const GET = handle(async (_req, { params }) => {
   mustCan(requireUser(), "shipping", "view");
-  return NextResponse.json(await getShipper((await params).id));
+  // Wrapped through `shipperResponse` (review round 2, 2026-08-04): the shipment page (spec §11)
+  // remounts per id and renders §5.7's warnings as banners on a plain load, not only right after
+  // an edit — an over-ship condition created in an earlier session must still show up the next
+  // time this shipment is opened. `overshipWarnings` is a pure read over data `getShipper` already
+  // fetched, so this costs no extra query. Client components can't import `src/server/**`, so a
+  // downstream screen has no other seam to compute this itself without a second round trip.
+  return shipperResponse(await getShipper((await params).id));
 });
 
 export const PATCH = handle(async (req, { params }) => {

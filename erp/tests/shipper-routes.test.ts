@@ -181,7 +181,12 @@ describe("shipper routes", () => {
     const viewer = await signInWith(["shipping.view"], "ship-detail-view-1");
     const got = await getRoute(getReq(`http://t/api/shippers/${shipper.id}`, viewer), withParams({ id: shipper.id }));
     expect(got.status).toBe(200);
-    expect((await got.json()).id).toBe(shipper.id);
+    const gotBody = await got.json();
+    // GET is wrapped through `shipperResponse` too (review round 2, 2026-08-04): the shipment
+    // page remounts per id and renders §5.7's warnings on a plain load, not only right after an
+    // edit, so GET carries the same { shipper, warnings } shape every mutator does.
+    expect(gotBody.shipper.id).toBe(shipper.id);
+    expect(gotBody.warnings).toEqual([]);
 
     const editor = await signInWith(["shipping.edit"], "ship-detail-edit-1");
     const patched = await patchRoute(
@@ -192,6 +197,32 @@ describe("shipper routes", () => {
     // Step 0b: PATCH wraps its response in the same { shipper, warnings } shape POST established.
     expect(patchedBody.shipper.route).toBe("Dock 3");
     expect(patchedBody.warnings).toEqual([]);
+  });
+
+  it("GET /api/shippers/[id] surfaces an over-ship warning that was created in an earlier request, with no mutation of its own", async () => {
+    const { order } = await orderFixture({ qty: 10 });
+    const creator = await signInWith(["shipping.create"], "ship-getwarn-create-1");
+    const created = await createRoute(
+      bodyReq("http://t/api/shippers", "POST", creator, oneOrderInput(order)), noParams);
+    const { shipper } = await created.json();
+    const shipperOrderId = shipper.orders[0].id;
+
+    // Over-ship the line in one request (PUT .../lines) — a separate request from the GET below,
+    // so the GET's warning cannot be riding on anything this test's own call just wrote.
+    const editor = await signInWith(["shipping.edit"], "ship-getwarn-edit-1");
+    const linesBody = [{ orderLineId: order.lines[0].id, qty: 999, weight: order.lines[0].weight, lineComplete: false }];
+    const putRes = await replaceLinesRoute(
+      bodyReq(`http://t/api/shippers/${shipper.id}/orders/${shipperOrderId}/lines`, "PUT", editor, linesBody),
+      withParams({ id: shipper.id, shipperOrderId }));
+    expect(putRes.status).toBe(200);
+
+    // A FRESH GET, as a plain read with no body of its own — this is the property being bought:
+    // the warning is visible on load, not only in the response of the mutation that created it.
+    const viewer = await signInWith(["shipping.view"], "ship-getwarn-view-1");
+    const res = await getRoute(getReq(`http://t/api/shippers/${shipper.id}`, viewer), withParams({ id: shipper.id }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.warnings.join(" ")).toMatch(/exceeds/i);
   });
 
   it("DELETE /api/shippers/[id]: void_shipper is required even with all four shipping.* CRUD grants, and a reason is required", async () => {
@@ -312,7 +343,7 @@ describe("shipper routes", () => {
   });
 
   it("PUT .../containers and .../serials require shipping.edit and return the wrapped shape", async () => {
-    const { customer, order } = await orderFixture();
+    const { order } = await orderFixture();
     const containerType = await prisma.containerType.create({ data: { name: "SR Basket" } });
     const orderContainer = await prisma.orderContainer.create({
       data: { orderId: order.id, typeId: containerType.id, position: 1, count: 2 },
@@ -320,7 +351,6 @@ describe("shipper routes", () => {
     const orderSerial = await prisma.orderSerial.create({
       data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "SR-SER-1", description: "" },
     });
-    void customer;
 
     const creator = await signInWith(["shipping.create"], "ship-cs-create-1");
     const created = await createRoute(
