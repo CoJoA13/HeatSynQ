@@ -381,6 +381,11 @@ describe("updateShipper", () => {
     await expect(updateShipper(shipper.id, { route: "x" })).rejects.toThrow(/not found/i);
   });
 
+  it("refuses an unknown carrierId", async () => {
+    const { shipper } = await oneOrderShipment();
+    await expect(updateShipper(shipper.id, { carrierId: "nope" })).rejects.toThrow(/carrier/i);
+  });
+
   // Step 5b (carried from Task 8's review): `updateShipper` is `SNAPSHOT_INCLUDE.shipper`'s FIRST
   // real consumer — `auditedCreate` writes a hand-built payload and never reads the include.
   // Assert the snapshot's actual CONTENT: the customer by CODE, the carrier and ship-to by NAME —
@@ -427,6 +432,13 @@ describe("listShippers / exportShippers / shipmentsForOrder", () => {
     expect(row.orderLabels).toEqual(shipper.orders.map((o) => o.label));
     expect(row.totalQty).toBe(10);
     expect(row.totalWeight).toBe(5);
+  });
+
+  it("orders a multi-order shipment's labels by print position, not scan order", async () => {
+    const { shipper } = await twoOrderShipment();
+    const [row] = await listShippers({});
+    expect(row.orderLabels).toEqual(shipper.orders.map((o) => o.label));
+    expect(row.orderCount).toBe(2);
   });
 
   it("exportShippers produces a non-empty workbook for the same filter", async () => {

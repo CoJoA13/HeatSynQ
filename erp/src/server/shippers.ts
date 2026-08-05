@@ -686,21 +686,29 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
 /**
  * Attaches one more order of the SAME customer to the shipment (spec §4.2's emergent multi-order
  * shipment) — its own `sequence` (this order's Nth shipment ever, `nextShipmentSequence`) and the
- * next `position` (print order of the tickets, `existing.length + 1`; positions stay contiguous
+ * next `position` (print order of the tickets, `MAX(position) + 1`; positions stay contiguous
  * 1..N by construction — appends never collide with an existing position, so unlike
  * `removeOrderFromShipper` this needs no two-phase renumber). No lines/containers/serials are
  * populated here — those come from the three replace calls below, once the order shell exists.
+ *
+ * Task 9 review (2026-08-04): the duplicate-order check and the `position` number are read AFTER
+ * `claimOrdersInOrder`, not from the bare pre-claim `preClaimExisting` list below — that list
+ * exists ONLY to know which orders to claim (there is no lock on `Shipper`/`ShipperOrder`
+ * themselves to claim instead, so some unlocked read is unavoidable to learn that). Computing
+ * `position` fresh at the point of use, the `nextShipmentSequence` idiom (ship-ledger.ts), rather
+ * than trusting a value captured before the claim. A residual collision (two adds racing on the
+ * same shipment, serialized through the row lock but still landing on `@@unique([shipperId,
+ * position])` or `@@unique([shipperId, orderId])`) is mapped to the SAME honest "try again" 409
+ * `withDbErrors` already gives a genuine Serializable conflict (P2034) elsewhere in this codebase
+ * — not the generic, mislabelled `withDbErrors` P2002 fallback the Task 8 review's own lesson
+ * warns against ("a refusal naming a problem that did not exist").
  */
 export async function addOrderToShipper(id: string, orderId: string): Promise<ShipperDetail> {
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
     const shipper = await claimLiveShipper(tx, id);
 
-    const existing = await tx.shipperOrder.findMany({ where: { shipperId: id }, select: { orderId: true } });
-    if (existing.some((o) => o.orderId === orderId)) {
-      throw new HttpError(400, "That order is already on this shipment");
-    }
-
-    const allOrderIds = [...existing.map((o) => o.orderId), orderId];
+    const preClaimExisting = await tx.shipperOrder.findMany({ where: { shipperId: id }, select: { orderId: true } });
+    const allOrderIds = [...new Set([...preClaimExisting.map((o) => o.orderId), orderId])];
     const claimed = await claimOrdersInOrder(tx, allOrderIds);
     const order = claimed.find((o) => o.id === orderId);
     if (!order) throw new HttpError(404, "Order not found");
@@ -709,13 +717,24 @@ export async function addOrderToShipper(id: string, orderId: string): Promise<Sh
       throw new HttpError(400, `Order #${order.orderNumber} does not belong to the same customer as this shipment`);
     }
 
-    const sequence = await nextShipmentSequence(tx, orderId);
-    const position = existing.length + 1;
+    const dup = await tx.shipperOrder.findFirst({ where: { shipperId: id, orderId }, select: { id: true } });
+    if (dup) throw new HttpError(400, "That order is already on this shipment");
 
-    await auditedUpdate("shipper", id, () => tx.shipperOrder.create({
-      data: { shipperId: id, orderId, sequence, position },
-      select: { id: true },
-    }), { tx });
+    const { _max } = await tx.shipperOrder.aggregate({ where: { shipperId: id }, _max: { position: true } });
+    const position = (_max.position ?? 0) + 1;
+    const sequence = await nextShipmentSequence(tx, orderId);
+
+    try {
+      await auditedUpdate("shipper", id, () => tx.shipperOrder.create({
+        data: { shipperId: id, orderId, sequence, position },
+        select: { id: true },
+      }), { tx });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        throw new HttpError(409, "Another change to this shipment was saved at the same time — please try again");
+      }
+      throw err;
+    }
 
     await recomputeOrderStatus(tx, allOrderIds);
     return readShipperDetail(tx, id);
@@ -984,6 +1003,11 @@ const ROW_SELECT = {
   customer: { select: { code: true, name: true } },
   carrier: { select: { name: true } },
   orders: {
+    // Deterministic order for `orderLabels` — the issue #24 lesson applied here too: an
+    // unordered collection makes a multi-order shipment's label list depend on Postgres's own
+    // scan order rather than the print order the operator actually sees (DETAIL_INCLUDE's own
+    // `orderBy: { position: "asc" }`, reused).
+    orderBy: { position: "asc" },
     select: {
       sequence: true,
       order: { select: { orderNumber: true } },
