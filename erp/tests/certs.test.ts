@@ -236,6 +236,19 @@ describe("createCert", () => {
     expect(certB.sequence).toBe(2);
   });
 
+  // Task 11 Step 0 (carried from Task 8's review): `Shipper` is soft-deletable and `shipperId`
+  // carries no `assertRefExists` — a raw foreign key catches a NONEXISTENT id but not a VOIDED
+  // one. Safe only while the sole caller (shippers.ts's `saveNewShipper`) passed its own
+  // uncommitted row; Task 11 adds the first HTTP-reachable path, so `createCertInTx`'s SHIPMENT
+  // branch now checks liveness itself, defense-in-depth, regardless of caller trust.
+  it("refuses a voided shipper for SHIPMENT scope", async () => {
+    const { order, customer } = await savedOrder();
+    const shipper = await makeShipment(customer.id, order.id, 1);
+    await prisma.shipper.update({ where: { id: shipper.id }, data: { deletedAt: new Date() } });
+    await expect(createCert({ orderId: order.id, scope: "SHIPMENT", shipperId: shipper.id }))
+      .rejects.toThrow(/shipperId.*(does not exist|voided)/i);
+  });
+
   describe("per-scope shape", () => {
     it("requires a load number for LOAD scope", async () => {
       const { order } = await savedOrder();

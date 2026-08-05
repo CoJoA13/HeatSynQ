@@ -164,6 +164,21 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
   const order = await claimOrder(tx, data.orderId);
   if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
+  // Task 11 Step 0 (carried from Task 8's review): `shipperId` deliberately carries no
+  // `assertRefExists` — that helper is exclusively the REFERENCE_LINKS pattern and spec §7 omits
+  // shipper from it — but `Shipper` is soft-deletable, so the raw foreign key below only catches
+  // a NONEXISTENT id, never a VOIDED one. Safe until now only because the sole caller
+  // (shippers.ts's `saveNewShipper`) always passed its own uncommitted row, which by
+  // construction cannot yet be voided by anyone. `assertScopeShape` (createCert, below) already
+  // guarantees `data.shipperId !== null` whenever `data.scope === "SHIPMENT"`, so the assertion
+  // here is documentation, not a runtime possibility this function has to branch on.
+  if (data.scope === "SHIPMENT") {
+    const shipperId = data.shipperId;
+    if (shipperId === null) throw new HttpError(400, "shipperId: shipment scope requires a shipper");
+    const shipper = await tx.shipper.findFirst({ where: { id: shipperId, deletedAt: null }, select: { id: true } });
+    if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
+  }
+
   // Service-enforced, not indexed (spec §4.1): a partial unique index cannot express "one live
   // row per (orderId, scope, loadNumber, shipperId)" because Postgres treats NULLs as distinct,
   // so two (orderId, ORDER, NULL, NULL) rows would never collide in any index.
