@@ -1,0 +1,11 @@
+# Was `*` — everything here was local-only scratch, which is why Phase 3's execution record did
+# not survive between machines and HANDOFF §3 had to restate it by hand. From 2026-08-04 the task
+# briefs, implementer reports, reviewer verdicts and the progress ledger are tracked: they are the
+# only account of WHY each task landed the way it did, and none of it is reproducible from source.
+#
+# Still ignored: the review-*.diff packages, which are `git diff` between two commits already in
+# history and regenerate with the subagent-driven-development skill's scripts/review-package.
+*
+!*/
+!*.md
+!.gitignore
