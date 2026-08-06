@@ -37,9 +37,23 @@ export async function shippedTotals(db: Db, orderLineIds: string[]): Promise<Map
     select: { orderLineId: true, qty: true, weight: true },
   });
 
+  // Weight accumulates in INTEGER CENTS and divides once at the end (the `toShipperRow` idiom,
+  // shippers.ts — weights are Decimal(12,2), so cents are exact): summing `toNumber()` floats made
+  // 0.10 + 0.20 come back as 0.30000000000000004, and since this is the ONE §5.1 derivation every
+  // caller reads, that artifact turned `updateLine`'s §5.5 guard into a hard false REFUSAL of a
+  // legal edit-to-exactly-shipped, made `overshipWarnings` flag exactly-complete lines, and printed
+  // the raw float in refusal text (fix-wave 2026-08-06, whole-branch review Important #2). `qty` is
+  // an int and needs nothing.
+  const cents = new Map<string, { qty: number; weightCents: number }>();
   for (const row of rows) {
-    const prev = totals.get(row.orderLineId) ?? { qty: 0, weight: 0 };
-    totals.set(row.orderLineId, { qty: prev.qty + row.qty, weight: prev.weight + row.weight.toNumber() });
+    const prev = cents.get(row.orderLineId) ?? { qty: 0, weightCents: 0 };
+    cents.set(row.orderLineId, {
+      qty: prev.qty + row.qty,
+      weightCents: prev.weightCents + Math.round(row.weight.toNumber() * 100),
+    });
+  }
+  for (const [orderLineId, t] of cents) {
+    totals.set(orderLineId, { qty: t.qty, weight: t.weightCents / 100 });
   }
   return totals;
 }

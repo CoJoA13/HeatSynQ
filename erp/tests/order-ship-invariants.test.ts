@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, addLine, removeLine, updateLine, voidOrder, type OrderDetail } from "@/server/orders";
-import { createShipper, voidShipper } from "@/server/shippers";
+import { createShipper, voidShipper, getShipper, overshipWarnings } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -120,6 +120,35 @@ describe("order edit invariants after a shipment (spec §5.5)", () => {
   it("allows increasing a line above its shipped-to-date freely", async () => {
     const { order, line } = await shipmentOfOneLine({ ordered: 1000, shipped: 400 });
     await expect(asSystem(() => updateLine(order.id, line.id, { qty: 2000 }))).resolves.toBeTruthy();
+  });
+
+  // Fix-wave (whole-branch review 2026-08-06, Important #2): `shippedTotals` accumulated weight in
+  // raw floats, so 0.10 + 0.20 summed to 0.30000000000000004 — turning the §5.5 guard into a hard
+  // FALSE refusal of the legal edit-to-exactly-shipped, and making an exactly-complete line warn
+  // as over-shipped. The fix sums in integer cents (the `toShipperRow` idiom) and divides once.
+  it("0.10 + 0.20 shipped across two shipments: the line edits to exactly 0.30 and no over-ship warning fires", async () => {
+    const { order: base } = await savedOrder({ qty: 1 });
+    const order = await addRiderLine(base, { qty: 2, weight: "0.30" });
+    const line = order.lines[1];
+
+    const shipOnce = (qty: number, weight: string) => asSystem(() => createShipper({
+      customerId: order.customerId, shipDate: "2026-08-04",
+      orders: [{
+        orderId: order.id,
+        lines: [{ orderLineId: line.id, qty, weight, lineComplete: false }],
+        containers: [], serials: [],
+      }],
+    }, { canOverrideCreditHold: false }));
+    await shipOnce(1, "0.10");
+    const second = await shipOnce(1, "0.20");
+
+    // §5.5 permits reducing to EXACTLY the shipped-to-date (the qty/weight tests above pin the
+    // same boundary at integer values) — pre-fix this refused with "0.30000000000000004 lbs".
+    await expect(asSystem(() => updateLine(order.id, line.id, { weight: 0.3 }))).resolves.toBeTruthy();
+
+    // And the exactly-complete line is NOT over-shipped (§5.7 warns only past the ordered figure)
+    // — pre-fix the float artifact pushed shipped-to-date a hair past 0.30 and warned.
+    expect(overshipWarnings(await getShipper(second.shipper.id))).toEqual([]);
   });
 
   it("refuses voiding an order with live shipments, and allows it after the shipment is voided", async () => {
