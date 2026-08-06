@@ -1096,6 +1096,22 @@ describe("getOrder", () => {
     expect((await getOrder(order.id)).travelerPrinted).toBe(true);
   });
 
+  it("does not report travelerPrinted for a shipping ticket that names the order (Phase 4)", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    // A one-order shipping ticket stores SHIPPER + this order's id — a traveler it is not.
+    const shipper = await prisma.shipper.create({
+      data: { shipperNumber: 90001, customerId: customer.id, shipDate: new Date("2026-07-29") },
+    });
+    await prisma.storedDocument.create({
+      data: { orderId: order.id, shipperId: shipper.id, kind: "SHIPPER", fileData: Buffer.from("pdf") },
+    });
+    expect((await getOrder(order.id)).travelerPrinted).toBe(false);
+  });
+
   it("returns a voided order — the hub renders it read-only rather than 404ing", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({

@@ -444,8 +444,9 @@ const DETAIL_INCLUDE = {
   loads: { orderBy: { loadNumber: "asc" } },
   charges: { orderBy: { position: "asc" } },
   // Existence only — the bytes are never read here, and `travelerPrinted` is the one thing the
-  // hub needs from them.
-  documents: { select: { id: true }, take: 1 },
+  // hub needs from them. Filtered to TRAVELER: since Phase 4, a one-order shipping ticket also
+  // stores this order's id on its SHIPPER document, and that must not read as a printed traveler.
+  documents: { where: { kind: "TRAVELER" }, select: { id: true }, take: 1 },
 } satisfies Prisma.OrderInclude;
 
 type DetailRow = Prisma.OrderGetPayload<{ include: typeof DETAIL_INCLUDE }>;

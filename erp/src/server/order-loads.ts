@@ -129,9 +129,9 @@ async function applyLoads(tx: Prisma.TransactionClient, orderId: string, loads: 
  * Sum-mismatch (Task 5's `loadsMismatchWarnings`, reused verbatim) plus the traveler-reprint
  * notice (spec §3.3): loads stay editable after a traveler prints (owner ruling), but a stored
  * traveler describes the loads as they were at print time, so any edit after that needs a nudge
- * to reprint. `order.travelerPrinted` is already "any StoredDocument row exists for this order" —
- * `readDetail`'s own derivation off a `documents` existence check — so no separate query is
- * needed here to answer "has a traveler printed". Never blocks either mutator.
+ * to reprint. `order.travelerPrinted` is already "a TRAVELER StoredDocument exists for this
+ * order" — `readDetail`'s own derivation off a kind-filtered `documents` existence check — so no
+ * separate query is needed here to answer "has a traveler printed". Never blocks either mutator.
  */
 function buildLoadWarnings(order: OrderDetail): OrderWarnings {
   const warnings = loadsMismatchWarnings(order);
