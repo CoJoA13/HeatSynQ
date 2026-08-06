@@ -588,6 +588,15 @@ after the per-task reviews closed:
 - Assorted per-task §5.16 title gaps on state-disabled buttons and a missing 404/401 case on two
   document/print routes — all enumerated in the ledger under their tasks.
 
+**Backlog burn-down (2026-08-06, branch `backlog-burndown`, post-merge):** closed #48 (shipping
+worklist links — the shipping.view-only dead end), #49 (signature magic-byte sniff; test fixtures
+upgraded to real image bytes), #50+#54 (one `shipmentWarnings` recompute feeds the idempotent
+replay AND every edit response via `shipperResponse` — the full §5.7 surface, not over-ship
+alone), #53 (scope-matched missing-cert warnings), #55 (ruling 27: multi-part certs head each
+line group with frozen part identity; single-part stays §3.21-sample-identical), and #56 (ruling
+28: `addLine` seeds the rider's requirements into every live cert, audited per cert, typed
+readings untouched). Gates: **1402 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15.
+
 **Deferred from the PR #47 Codex triage (2026-08-06), issues #48–#51** — all verified real, none
 data-integrity: #48 shipping worklist rows don't link to `/shipping/<id>`; #49 signature upload
 trusts the declared MIME, so corrupt bytes break that user's cert prints until the signature is
