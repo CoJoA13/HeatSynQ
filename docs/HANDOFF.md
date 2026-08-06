@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is PR-ready on `phase-4-certs-shipping` (PR #47)**: the finish sequence ran (whole-branch review, fix wave, PR), and both Codex review triage rounds are resolved — 14/14 threads, nine fixes on-branch including the owner-ratified **snapshot + release** schema amendment (spec ruling 23), four deferrals to issues #48–#51. Gates: 1370 tests, `tsc`/`eslint`/`build` clean, E2E 15/15. Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is PR-ready on `phase-4-certs-shipping` (PR #47)**: the finish sequence ran (whole-branch review, fix wave, PR), and all three Codex review triage rounds are resolved — 21/21 threads, sixteen fixes on-branch including the owner-ratified **snapshot + release** schema amendments (spec rulings 23–24) and the credit-hold extension gate (ruling 25), four deferrals to issues #48–#51. Gates: 1381 tests, `tsc`/`eslint`/`build` clean, E2E 15/15. Phase 3 merged as `12a17f9` (PR #39).
 
 ---
 
@@ -101,6 +101,20 @@ amendment — spec ruling 23, migration `20260806091506` (20 migrations total no
 rules from these rounds: run the Playwright E2E suite whenever a change touches any UI/flow, and
 update the appropriate docs as part of the work itself. Gates after round 2: **1370 tests**,
 `tsc`/`eslint`/`build` clean, E2E 15/15.
+
+**Round 3 (2026-08-06, seven findings, all verified real, all fixed on-branch — spec rulings
+24–26):** `printCert` refuses when the owning ORDER is voided (voidOrder leaves ORDER/LOAD certs
+live, so the cert's own `deletedAt` couldn't carry §5.6 alone); the cert=1 bundle resolves inside
+`printShippingTickets`' own claimed transaction (the separate unlocked resolution could bundle a
+different shipment state than the tickets printed); **credit hold gates shipment extension** —
+owner ruled add-order + line-replacement, same override/reason shape as creation, reason in the
+audit entry, UI reason field on the shipment page; an order update landing on certRequired+ORDER
+creates the ORDER cert (the hub only exposes LOAD-scope creation); **ruling 23 extended to
+`CertRequirement`** (snapshot linePosition/partNumber/partName, FK SET NULL, migration
+`20260806104833`) so a frozen requirement never blocks `removeLine`; shipment grids render
+released snapshot rows read-only and shipper-side replaces preserve them as frozen history; cert
+export gained Passed/Pending columns. Gates after round 3: **1381 tests**, `tsc`/`eslint`/`build`
+clean, E2E 15/15. 22 migrations total.
 
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
 mid-execution — are implemented and individually reviewed on the combined branch. Gates at that

@@ -214,7 +214,7 @@ cert charges, cert-by-process, template editing.
     something is built without a present-day user, and a future reviewer should know it was a
     decision and not an accident.
 
-### Amendment during PR #47 review (2026-08-06)
+### Amendments during PR #47 review (2026-08-06)
 
 23. **Snapshot + release — shipper children snapshot printed identity; their order-side FKs are
     nullable `ON DELETE SET NULL`.** The original `RESTRICT` FKs from
@@ -230,6 +230,30 @@ cert charges, cert-by-process, template editing.
     snapshot; orders stay correctable through the APIs they always had. Migration
     `20260806091506_shipper_children_snapshot_release` backfilled every existing row from the
     joins `RESTRICT` had kept intact.
+
+24. **Ruling 23 extends to `CertRequirement` (round 3, same session).** A frozen requirement's
+    `orderLineId` is nullable `SET NULL` with the line identity it prints (`linePosition`,
+    `partNumber`, `partName`) snapshotted at seed time, beside the min/max/sampleQty/location that
+    were always frozen copies — a requirement must never block `removeLine`. Migration
+    `20260806104833_cert_requirement_snapshot_release`. Released rows in shipment grids render
+    read-only from their snapshots and **survive every shipper-side replace as frozen history**
+    (replaces delete only rows still tied to a live order-side row).
+
+25. **§5.4's credit-hold gate extends to shipment EXTENSION.** Owner ruled (round 3): a hold set
+    after a shipment exists gates `addOrderToShipper` and `replaceShipperLines` — the two paths
+    that add shipped work — with the same shape as creation: named + linked refusal;
+    `override_credit_hold` plus a reason recorded in the audit entry proceeds. Header edits,
+    containers, serials and removal stay ungated.
+
+26. **A voided order produces no new cert paper.** `voidOrder` leaves ORDER/LOAD-scope certs live
+    by design, so `printCert` checks the owning order's `deletedAt` under its claim and refuses
+    with the shared voided-print rule; stored prints stay downloadable (§5.6). Also settled in
+    round 3: the cert=1 bundle resolves **inside `printShippingTickets`' own claimed
+    transaction** (a separate unlocked resolution could describe a different shipment state than
+    the tickets printed); an order UPDATE landing on certRequired + ORDER scope creates the
+    ORDER-scope cert `createOrder` would have (idempotent, §6.2's timing followed); LOAD-scope
+    cert creation requires a load the order currently has; and the cert export carries
+    passed/pending counts beside readings/fails (the worklist's three-state rule).
 
 **Settled by design, not by ruling:** when an order's part lines disagree about whether a cert is
 required, **any** line requiring one makes the order require one (a rider's requirement is never
