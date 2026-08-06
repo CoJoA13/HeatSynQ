@@ -73,11 +73,21 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. Phase 4 (Certifications & Shipping) — COMPLETE on `phase-4-certs-shipping`, awaiting the whole-branch review and PR
+### 4a. Phase 4 (Certifications & Shipping) — COMPLETE on `phase-4-certs-shipping`, PR open
+
+**Finish sequence DONE (2026-08-06):** the whole-branch review ran on the strongest model (verdict:
+merge with fixes — full text `.superpowers/sdd/whole-branch-review.md`), its one fix wave was
+applied (five items) and the scoped re-review approved it **PR-ready** with zero new breakage.
+Final gates: **1360 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15. The review's headline catch:
+the T6-era carry was a **latent defect, not a test gap** — the voided-state guards on Cert/Shipper
+rested on SSI accidents, and print-vs-void had no protection at all; both discriminating race tests
+were verified RED pre-fix. The fix locks the cert/shipper row itself after the order claims, and
+`order-locks.ts`'s header now carries the resulting house rule: **the guarded state must live on,
+or be locked with, the claimed row** (Phase 5's reversing-shipment work will need it again).
 
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
-mid-execution — are implemented and individually reviewed on the combined branch. Gates: **1357
-tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
+mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
+point: **1357 tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
 harness is now **15 flows** (the ten inherited plus this phase's five, spec §13), run three times
 consecutively to confirm stability. Both databases migrated (19 migrations; the three Phase 4 ones
 hand-written via the TTY-less `migrate diff` recipe). Owner demo walkthrough:
