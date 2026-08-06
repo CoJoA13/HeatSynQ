@@ -11,6 +11,8 @@ import { GET as exportRoute } from "@/app/api/certs/export/route";
 import { GET as getRoute, PATCH as patchRoute, DELETE as voidRoute } from "@/app/api/certs/[id]/route";
 import { PUT as resultsRoute } from "@/app/api/certs/[id]/results/route";
 import { GET as certsForOrderRoute, POST as createLoadCertRoute } from "@/app/api/orders/[id]/certs/route";
+import { GET as certDocumentsRoute } from "@/app/api/certs/[id]/documents/route";
+import { storeDocument } from "@/server/documents";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -240,6 +242,47 @@ describe("cert routes", () => {
     const allowed = await resultsRoute(
       bodyReq(url, "PUT", afterPrintEditor, { requirements: [] }), withParams({ id: cert.id }));
     expect(allowed.status).toBe(200);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // GET /api/certs/[id]/documents (Task 16 — the cert page's stored-documents list; mirrors
+  // GET /api/shippers/[id]/documents, the lane-A Task 14 precedent, since documents.ts's own
+  // `listDocumentsForCert` had no HTTP caller before this page needed one)
+  // ---------------------------------------------------------------------------------------
+
+  it("GET /api/certs/[id]/documents requires certs.view and lists only this cert's documents", async () => {
+    const first = await savedOrder();
+    const second = await savedOrder();
+    const creator = await signInWith(["certs.create"], "cert-docs-create-1");
+    const certA = await (await createRoute(
+      bodyReq("http://t/api/certs", "POST", creator, { orderId: first.order.id, scope: "ORDER" }), noParams)).json();
+    const certB = await (await createRoute(
+      bodyReq("http://t/api/certs", "POST", creator, { orderId: second.order.id, scope: "ORDER" }), noParams)).json();
+
+    const pdf = (tag: string) => Buffer.from(`%PDF-fake-${tag}`);
+    const docA = await asSystem(() => prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "CERT", certId: certA.id }, pdf("a"))));
+    await asSystem(() => prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "CERT", certId: certB.id }, pdf("b"))));
+
+    expect((await certDocumentsRoute(
+      getReq(`http://t/api/certs/${certA.id}/documents`), withParams({ id: certA.id }))).status).toBe(401);
+
+    const wrong = await signInWith(["orders.view"], "cert-docs-wrong-1");
+    expect((await certDocumentsRoute(
+      getReq(`http://t/api/certs/${certA.id}/documents`, wrong), withParams({ id: certA.id }))).status).toBe(403);
+
+    const viewer = await signInWith(["certs.view"], "cert-docs-view-1");
+    const res = await certDocumentsRoute(
+      getReq(`http://t/api/certs/${certA.id}/documents`, viewer), withParams({ id: certA.id }));
+    expect(res.status).toBe(200);
+    const docs = await res.json();
+    expect(docs.map((d: { id: string }) => d.id)).toEqual([docA.id]);
+    expect(docs[0]).toMatchObject({ kind: "CERT", certId: certA.id });
+    expect("fileData" in docs[0]).toBe(false);
+
+    expect((await certDocumentsRoute(
+      getReq("http://t/api/certs/nope/documents", viewer), withParams({ id: "nope" }))).status).toBe(404);
   });
 
   // ---------------------------------------------------------------------------------------
