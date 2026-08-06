@@ -527,6 +527,79 @@ describe("exportCerts", () => {
   });
 });
 
+// Fix-wave (whole-branch review 2026-08-06, Important #1): the guarded state (`Cert.deletedAt`)
+// lives on the Cert row, NOT on the Order row `claimCertsOrder` claims — so the void-vs-mutate
+// serialization has to come from a lock on the Cert row itself, never from SSI. The T5 technique
+// from the createCert race test above, applied to the void interleaving: the VOIDER is a
+// manually-scripted DEFAULT-isolation (Read Committed) transaction, which takes Postgres's SSI
+// entirely off the table (SSI only serializes transactions that are ALL Serializable — CLAUDE.md),
+// so the ONLY thing that can stop `replaceReadings` writing through a void that committed while it
+// was blocked on the order lock is `claimCertsOrder`'s own FOR UPDATE on the Cert row. Verified
+// RED against the pre-fix code (claimCertsOrder locking the Order row alone): `replaceReadings`
+// resolved successfully and wrote a reading onto the voided cert — the fix-wave report carries the
+// transcript.
+describe("voided-state guard rides the Cert row lock, not SSI (fix-wave Important #1)", () => {
+  beforeEach(truncateAll);
+
+  it("replaceReadings racing a Read-Committed voidCert never writes readings through a void that committed while it was blocked", async () => {
+    const customer = await makeCustomer();
+    const part = await makePart(customer.id);
+    await giveSteps(part.id);
+    const code = await prisma.inspectionCode.create({ data: { name: "Hardness-race" } });
+    await asSystem(() => addPartInspection(part.id, { inspectionCodeId: code.id, sort: 0 }));
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "",
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    const cert = await createCert({ orderId: order.id, scope: "ORDER" });
+    const requirementId = cert.requirements[0].id;
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // The voider: `voidCert`'s own claim-then-write sequence, scripted at DEFAULT (Read Committed)
+    // isolation. It signals ONLY once its FOR UPDATE is actually held (the real happens-before
+    // edge — never a sleep), then commits the void while the competitor is still blocked on that
+    // same order lock.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      await tx.cert.update({ where: { id: cert.id }, data: { deletedAt: new Date() } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const replaceCall = asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: requirementId, readings: [{ value: 42 }] }],
+    }, { afterPrint: false }));
+
+    // Not itself the discriminator (the createCert race test's own probe shape): its job is to
+    // guarantee replaceReadings' claim attempt has been dispatched and is genuinely blocked on the
+    // holder before the void is released.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      replaceCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator. With the Cert row locked by claimCertsOrder, the Serializable competitor's
+    // FOR UPDATE on the now-updated Cert row raises 40001, which withDbErrors maps to its honest
+    // "try again" 409 — and, decisively, NO reading is ever written onto the voided cert. Pre-fix
+    // (Order row lock alone) the call resolves: its Serializable snapshot was fixed before the void
+    // committed, so the post-claim re-read could not see `deletedAt` and the write went through.
+    await expect(replaceCall).rejects.toMatchObject({ status: 409 });
+    expect(await prisma.certReading.count({ where: { requirementId } })).toBe(0);
+    const after = await prisma.cert.findFirst({ where: { id: cert.id } });
+    expect(after?.deletedAt).not.toBeNull();
+  });
+});
+
 describe("certsForOrder", () => {
   beforeEach(truncateAll);
 

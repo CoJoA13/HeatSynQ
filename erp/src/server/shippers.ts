@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Prisma, type Order } from "../../prisma/generated/prisma/client";
+import { Prisma, type Order, type Shipper } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
@@ -634,14 +634,42 @@ export async function createShipper(
 // order") that a later change could quietly break.
 // -------------------------------------------------------------------------------------------
 
-/** Resolves the shipper and 404s on missing OR voided — a voided shipment is read-only (the P3
- *  voided-order shape). Not a row claim of its own: `Shipper` has no `FOR UPDATE` instrument in
- *  this system, only the `Order` rows it points at do (order-locks.ts) — this is a plain
- *  existence/liveness read, always followed by `claimOrdersInOrder` below. */
-async function claimLiveShipper(tx: Prisma.TransactionClient, id: string) {
+/** FOR UPDATE on the Shipper row itself — always taken AFTER `claimOrdersInOrder`'s order claims
+ *  (order-locks.ts's house rule: the guarded state must live on, or be locked with, the claimed
+ *  row; one fixed order — Order rows, then the entity's own row — so no ABBA window). This is what
+ *  makes a post-claim re-read of `Shipper.deletedAt` genuinely fresh at Read Committed, and what
+ *  raises the honest 40001 → 409 at Serializable when a voidShipper committed while the caller was
+ *  blocked on the order locks (whole-branch review 2026-08-06, Important #1 — the discriminating
+ *  race test lives in shipping-ticket.test.ts). */
+async function claimShipperRow(tx: Prisma.TransactionClient, id: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "Shipper" WHERE "id" = ${id} FOR UPDATE`;
+}
+
+/** Claims the shipment and everything it spans, in the ONE fixed order every mutator shares, then
+ *  404s on missing OR voided — a voided shipment is read-only (the P3 voided-order shape):
+ *
+ *  1. an UNLOCKED stub read (404 on missing) — it exists only to learn which orders to claim (the
+ *     `printShippingTickets` shape: some unlocked read is unavoidable when the first lock lives on
+ *     the orders); nothing acted on below is trusted from it;
+ *  2. `claimOrdersInOrder` over the shipment's current orders plus `extraOrderIds`
+ *     (addOrderToShipper's incoming order — same single ordered statement, so two adds racing
+ *     different incoming orders still cannot ABBA);
+ *  3. `claimShipperRow` — the Shipper's own row, AFTER the order claims (see its comment);
+ *  4. only then the liveness re-read, off a row this transaction actually holds.
+ *
+ *  Returns the fresh shipper row, the shipment's own order ids (the `recomputeOrderStatus` set),
+ *  and every claimed Order row so callers can read scalars without a second round trip. */
+async function claimLiveShipper(
+  tx: Prisma.TransactionClient, id: string, extraOrderIds: string[] = [],
+): Promise<{ shipper: Shipper; orderIds: string[]; claimed: Order[] }> {
+  const stub = await tx.shipper.findFirst({ where: { id }, select: { id: true } });
+  if (!stub) throw new HttpError(404, "Shipment not found");
+  const orderIds = await shipperOrderIds(tx, id);
+  const claimed = await claimOrdersInOrder(tx, [...orderIds, ...extraOrderIds]);
+  await claimShipperRow(tx, id);
   const shipper = await tx.shipper.findFirst({ where: { id } });
   if (!shipper || shipper.deletedAt !== null) throw new HttpError(404, "Shipment not found");
-  return shipper;
+  return { shipper, orderIds, claimed };
 }
 
 /** Resolves one `ShipperOrder` row scoped to this shipment — a `shipperOrderId` from a DIFFERENT
@@ -688,9 +716,7 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
   const data = UPDATE_SHIPPER.parse(input);
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    const shipper = await claimLiveShipper(tx, id);
-    const orderIds = await shipperOrderIds(tx, id);
-    await claimOrdersInOrder(tx, orderIds);
+    const { shipper, orderIds } = await claimLiveShipper(tx, id);
 
     if (data.shipToAddressId) {
       const addr = await tx.customerAddress.findFirst({
@@ -732,9 +758,9 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
  * populated here — those come from the three replace calls below, once the order shell exists.
  *
  * Task 9 review (2026-08-04): the duplicate-order check and the `position` number are read AFTER
- * `claimOrdersInOrder`, not from the bare pre-claim `preClaimExisting` list below — that list
- * exists ONLY to know which orders to claim (there is no lock on `Shipper`/`ShipperOrder`
- * themselves to claim instead, so some unlocked read is unavoidable to learn that). Computing
+ * the claims, never from `claimLiveShipper`'s bare pre-claim stub reads — those exist ONLY to know
+ * which orders to claim (some unlocked read is unavoidable to learn that; the incoming order rides
+ * the same single ordered claim statement via `extraOrderIds`). Computing
  * `position` fresh at the point of use, the `nextShipmentSequence` idiom (ship-ledger.ts), rather
  * than trusting a value captured before the claim. A residual collision (two adds racing on the
  * same shipment, serialized through the row lock but still landing on `@@unique([shipperId,
@@ -745,11 +771,8 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
  */
 export async function addOrderToShipper(id: string, orderId: string): Promise<ShipperDetail> {
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    const shipper = await claimLiveShipper(tx, id);
-
-    const preClaimExisting = await tx.shipperOrder.findMany({ where: { shipperId: id }, select: { orderId: true } });
-    const allOrderIds = [...new Set([...preClaimExisting.map((o) => o.orderId), orderId])];
-    const claimed = await claimOrdersInOrder(tx, allOrderIds);
+    const { shipper, claimed } = await claimLiveShipper(tx, id, [orderId]);
+    const allOrderIds = claimed.map((o) => o.id); // current orders + the incoming one, deduplicated
     const order = claimed.find((o) => o.id === orderId);
     if (!order) throw new HttpError(404, "Order not found");
     if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
@@ -830,11 +853,8 @@ async function renumberShipperOrderPositions(tx: Prisma.TransactionClient, shipp
  */
 export async function removeOrderFromShipper(id: string, shipperOrderId: string): Promise<ShipperDetail> {
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    const shipper = await claimLiveShipper(tx, id);
+    const { shipper, orderIds } = await claimLiveShipper(tx, id);
     const target = await findShipperOrder(tx, id, shipperOrderId);
-
-    const orderIds = await shipperOrderIds(tx, id);
-    await claimOrdersInOrder(tx, orderIds);
 
     // Spec §4.2: "a shipment must carry at least one line with qty > 0 across all its orders" —
     // removing the LAST order leaves `orders: []`, a document about nothing in the strongest
@@ -920,11 +940,8 @@ export async function replaceShipperLines(id: string, shipperOrderId: string, in
   const data = z.array(SHIP_LINE).parse(input);
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveShipper(tx, id);
+    const { orderIds, claimed } = await claimLiveShipper(tx, id);
     const so = await findShipperOrder(tx, id, shipperOrderId);
-
-    const orderIds = await shipperOrderIds(tx, id);
-    const claimed = await claimOrdersInOrder(tx, orderIds);
     const order = claimed.find((o) => o.id === so.orderId)!;
 
     const lineIds = [...new Set(data.map((l) => l.orderLineId))];
@@ -985,11 +1002,8 @@ export async function replaceShipperContainers(id: string, shipperOrderId: strin
   const data = z.array(SHIP_CONTAINER).parse(input);
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveShipper(tx, id);
+    const { orderIds, claimed } = await claimLiveShipper(tx, id);
     const so = await findShipperOrder(tx, id, shipperOrderId);
-
-    const orderIds = await shipperOrderIds(tx, id);
-    const claimed = await claimOrdersInOrder(tx, orderIds);
     const order = claimed.find((o) => o.id === so.orderId)!;
 
     const containerIds = [...new Set(data.map((c) => c.orderContainerId))];
@@ -1033,11 +1047,8 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
   const data = z.array(SHIP_SERIAL).parse(input);
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveShipper(tx, id);
+    const { orderIds, claimed } = await claimLiveShipper(tx, id);
     const so = await findShipperOrder(tx, id, shipperOrderId);
-
-    const orderIds = await shipperOrderIds(tx, id);
-    const claimed = await claimOrdersInOrder(tx, orderIds);
     const order = claimed.find((o) => o.id === so.orderId)!;
 
     const serialIds = [...new Set(data.map((s) => s.orderSerialId))];
@@ -1151,9 +1162,7 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
   if (!why) throw new HttpError(400, "A reason is required to void a shipment");
 
   await withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveShipper(tx, id);
-    const orderIds = await shipperOrderIds(tx, id);
-    await claimOrdersInOrder(tx, orderIds);
+    const { orderIds } = await claimLiveShipper(tx, id);
 
     await auditedSoftDelete("shipper", id, why, tx);
 
@@ -1286,13 +1295,16 @@ export async function readShippingTicketData(
  * describes a fully-committed state no concurrent shipment edit can tear (traveler.ts's fix-wave R3
  * finding 1 reasoning, inherited wholesale).
  *
- * The claim is `claimOrdersInOrder` over every order on the shipment — `Shipper` has no row-lock
- * instrument of its own (claimLiveShipper's own comment); its mutators all serialize through the
- * orders' row locks, so holding those same locks is what makes this print's read/render/archive
- * atomic against them. The shipper row is re-read AFTER the claim and checked with `assertPrintable`
- * (documents.ts): a voided shipment refuses a NEW print with the shared 400 while every stored
- * print stays reprintable forever (spec §5.6) — deliberately NOT `claimLiveShipper`, whose 404
- * would misname a void as "not found".
+ * The claim is `claimOrdersInOrder` over every order on the shipment, then `claimShipperRow` on
+ * the Shipper row itself — same fixed order as `claimLiveShipper` (order-locks.ts's house rule:
+ * the guarded state, `Shipper.deletedAt`, lives on the Shipper row, so it must be locked with the
+ * claim; without it a voidShipper committing while this print blocked on the order locks was
+ * invisible to the print's fixed snapshot, and a NEW document could archive against a voided
+ * shipment — whole-branch review Important #1's genuinely unprotected interleaving). The shipper
+ * row is re-read AFTER the claims and checked with `assertPrintable` (documents.ts): a voided
+ * shipment refuses a NEW print with the shared 400 while every stored print stays reprintable
+ * forever (spec §5.6) — deliberately NOT `claimLiveShipper`, whose 404 would misname a void as
+ * "not found".
  *
  * `orderNumber` rides along (null for the whole set) purely so the route can name the download —
  * the `printTraveler` precedent.
@@ -1309,6 +1321,7 @@ export async function printShippingTickets(
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
     await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
     if (!shipper) throw new HttpError(404, "Shipment not found");
@@ -1411,10 +1424,13 @@ export async function printBol(
   const settings = await bolSettings();
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    // Pre-claim stub read only to learn which orders to claim (the printShippingTickets shape).
+    // Pre-claim stub read only to learn which orders to claim (the printShippingTickets shape),
+    // then the Shipper row's own claim AFTER the order claims (claimShipperRow's comment) — the
+    // voided-state re-read below is only trustworthy under that lock.
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
     await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
     if (!shipper) throw new HttpError(404, "Shipment not found");

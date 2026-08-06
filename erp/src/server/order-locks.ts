@@ -15,6 +15,19 @@
 // back — safe only because every crossing export was, again, a hoisted `function`. `claimCertsOrder`
 // moved here (a lock helper belongs beside the lock it wraps); `readCertDetail` moved into
 // `cert-results.ts` itself instead, since certs.ts is no longer in a position to host it.
+//
+// HOUSE RULE (whole-branch review, 2026-08-06): **the guarded state must live on, or be locked
+// with, the claimed row.** The Order row's claim protects `Order.deletedAt` only because
+// `voidOrder` writes that very row; the moment a claim guards state on a DIFFERENT row (a Cert's
+// or Shipper's own `deletedAt`), the post-claim re-read is only fresh if that row is locked too —
+// at Serializable the snapshot is fixed at the transaction's first read, so blocking on the Order
+// lock and then re-reading the other row sees a pre-void world, and SSI cannot be relied on to
+// abort it (Postgres only serializes transactions that are ALL Serializable, and a print's
+// StoredDocument insert conflicts with nothing a void touches). Hence `claimCertsOrder` below also
+// takes FOR UPDATE on the Cert row, and shippers.ts's `claimLiveShipper`/print paths do the same
+// for the Shipper row — uniformly AFTER the order claims (one fixed order: Order rows first, then
+// the entity's own row), so no new ABBA window opens. Phase 5's reversing shipments will need this
+// rule again.
 import type { Prisma, Order } from "../../prisma/generated/prisma/client";
 import { HttpError } from "./errors";
 
@@ -110,5 +123,14 @@ export async function claimCertsOrder(tx: Db, certId: string): Promise<{ orderId
   const stub = await tx.cert.findFirst({ where: { id: certId }, select: { orderId: true } });
   if (!stub) throw new HttpError(404, "Certification not found");
   await claimOrder(tx, stub.orderId);
+  // The house rule (file header): the state every caller acts on after this claim — `deletedAt`,
+  // `printedAt`, `freeform`, the readings' merge target — lives on the CERT row, not the Order row
+  // just claimed, so the Cert row is locked too, always AFTER the order claim (fixed order, no
+  // ABBA window). A Read Committed caller's post-claim re-read is then genuinely fresh; a
+  // Serializable caller whose Cert row changed under it raises 40001, which withDbErrors maps to
+  // its honest "try again" 409. Without this, a voidCert committing while a mutator blocked on the
+  // Order lock was invisible to the mutator's stale snapshot (whole-branch review Important #1 —
+  // the discriminating race test lives in certs.test.ts).
+  await tx.$queryRaw`SELECT "id" FROM "Cert" WHERE "id" = ${certId} FOR UPDATE`;
   return stub;
 }

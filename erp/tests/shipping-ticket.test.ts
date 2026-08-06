@@ -278,6 +278,56 @@ describe("printShippingTickets", () => {
     await expect(asSystem(() => printShippingTickets(shipper.id, elsewhere.id)))
       .rejects.toThrow(/not on this shipment/i);
   });
+
+  // Fix-wave (whole-branch review 2026-08-06, Important #1): the review's genuinely UNPROTECTED
+  // interleaving — a print writes only a StoredDocument row nothing in the void ever reads, so no
+  // write-write conflict and no SSI cycle could rescue it incidentally, and `Shipper.deletedAt`
+  // lives on a row the print's order claims never covered. The voider is scripted at DEFAULT
+  // (Read Committed) isolation — the certs.test.ts T5 technique — so the ONLY thing that can stop
+  // the print archiving new paper against a voided shipment (§5.6) is the print path's own FOR
+  // UPDATE on the Shipper row. Verified RED against the pre-fix code (order claims alone): the
+  // print resolved and archived a document against the voided shipment — transcript in the
+  // fix-wave report.
+  it("racing a Read-Committed voidShipper, a void committed while the print blocked on the order claims archives NOTHING (fix-wave Important #1)", async () => {
+    const { shipper, order } = await oneOrderShipment();
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // voidShipper's own claim-then-void sequence, signalling ONLY once its FOR UPDATE is held
+    // (the real happens-before edge — never a sleep).
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      await tx.shipper.update({ where: { id: shipper.id }, data: { deletedAt: new Date() } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const printCall = asSystem(() => printShippingTickets(shipper.id));
+
+    // The probe (certs.test.ts race shape): the print must be genuinely blocked on the holder's
+    // order lock before the void is released — not itself the discriminator.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      printCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: the Serializable print's FOR UPDATE on the now-voided Shipper row raises
+    // 40001 → withDbErrors' honest "try again" 409 — and NOTHING was archived. (A retry then gets
+    // the ordinary voided-print 400 off a fresh snapshot.) Pre-fix the print resolves: its
+    // snapshot fixed before the void committed, so assertPrintable read stale `deletedAt: null`
+    // and a NEW document landed against a voided shipment.
+    await expect(printCall).rejects.toMatchObject({ status: 409 });
+    expect(await listDocumentsForShipper(shipper.id)).toEqual([]);
+  });
 });
 
 // -------------------------------------------------------------------------------------------
