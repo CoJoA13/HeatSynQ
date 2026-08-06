@@ -237,7 +237,15 @@ cert charges, cert-by-process, template editing.
     were always frozen copies — a requirement must never block `removeLine`. Migration
     `20260806104833_cert_requirement_snapshot_release`. Released rows in shipment grids render
     read-only from their snapshots and **survive every shipper-side replace as frozen history**
-    (replaces delete only rows still tied to a live order-side row).
+    (replaces delete only rows still tied to a live order-side row). **Refined in round 4 (same
+    day): a requirement's identity reads the SNAPSHOT unconditionally** — the whole row is a
+    frozen copy, so a later part rename or an earlier rider's removal must never shift a seeded
+    certification; the cert page groups requirement blocks by the frozen `linePosition`
+    accordingly. Shipment-grid rows stay live-join-first (a shipment is a document being edited);
+    a certification is frozen at seed. Round 4 also pinned two release consequences: the
+    order-hub document list matches whole-shipment paper only through the shipper relation
+    (`orderId: null` — a sibling order's own ticket is not this order's paper), and audit
+    snapshots order serials by `[serial, id]` since `orderSerialId` stopped being a stable key.
 
 25. **§5.4's credit-hold gate extends to shipment EXTENSION.** Owner ruled (round 3): a hold set
     after a shipment exists gates `addOrderToShipper` and `replaceShipperLines` — the two paths

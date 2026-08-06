@@ -116,6 +116,18 @@ released snapshot rows read-only and shipper-side replaces preserve them as froz
 export gained Passed/Pending columns. Gates after round 3: **1381 tests**, `tsc`/`eslint`/`build`
 clean, E2E 15/15. 22 migrations total.
 
+**Round 4 (2026-08-06, four findings — all real follow-ons to the snapshot + release work, all
+fixed on-branch):** cert requirement identity now reads the frozen snapshot UNCONDITIONALLY
+(round 3 had shipped it live-join-first, the shipment-grid convention — wrong for a document
+frozen at seed: a part rename would silently rewrite a seeded cert), and the cert page groups
+requirement blocks by frozen `linePosition` (two released riders otherwise merged under one
+heading); the order-hub document list's shipper-relation branch is constrained to `orderId: null`
+so a sibling order's own ticket stays off other orders' lists; and both the audit
+`SNAPSHOT_INCLUDE` and the shipment detail read order serials by `[serial, id]` — released rows
+tie at `orderSerialId: null`, and the arbitrary tie-break made order-sensitive audit diffs report
+unchanged serials as modified. Gates after round 4: **1384 tests**, `tsc`/`eslint`/`build` clean,
+E2E 15/15.
+
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
 mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
 point: **1357 tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
