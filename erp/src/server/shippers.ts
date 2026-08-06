@@ -552,6 +552,7 @@ async function saveNewShipper(
                   return {
                     orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
                     serial: serial.serial, description: serial.description,
+                    orderLineIdAtSave: serial.lineId,
                   };
                 }),
               },
@@ -1083,12 +1084,15 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
     select: { id: true, position: true, part: { select: { partNumber: true, serializationRequired: true } } },
   });
   const lineById = new Map(lines.map((l) => [l.id, l]));
-  const selectedSerialIds = detail.orders.flatMap((so) => so.serials.map((sr) => sr.orderSerialId))
-    .filter((id): id is string => id !== null);
+  // A RELEASED selection (orderSerialId nulled by snapshot + release) still satisfies its line
+  // (#57 review): the shipment displays and prints that serial, so the line linkage rides the
+  // `orderLineIdAtSave` snapshot — live rows prefer the live join, same convention as reads.
+  const shipSerials = await db.shipperSerial.findMany({
+    where: { shipperOrder: { shipperId: detail.id } },
+    select: { orderLineIdAtSave: true, orderSerial: { select: { lineId: true } } },
+  });
   const serialLineIds = new Set(
-    (selectedSerialIds.length === 0 ? [] : await db.orderSerial.findMany({
-      where: { id: { in: selectedSerialIds } }, select: { lineId: true },
-    })).map((sr) => sr.lineId),
+    shipSerials.map((sr) => sr.orderSerial?.lineId ?? sr.orderLineIdAtSave).filter((id) => id !== ""),
   );
 
   const warnings: string[] = [];
@@ -1302,6 +1306,7 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
             return {
               shipperOrderId, orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
               serial: serial.serial, description: serial.description,
+              orderLineIdAtSave: serial.lineId,
             };
           }),
         });

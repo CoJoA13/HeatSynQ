@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, replaceSerials, type OrderDetail } from "@/server/orders";
 import { storeDocument } from "@/server/documents";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -368,6 +368,30 @@ describe("shipper routes", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.warnings.join(" ")).toMatch(/no serial numbers/i);
+  });
+
+  it("a RELEASED serial selection still satisfies the serialization warning (#57 review)", async () => {
+    const { part, order } = await orderFixture();
+    await prisma.part.update({ where: { id: part.id }, data: { serializationRequired: true } });
+    const orderSerial = await prisma.orderSerial.create({
+      data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "SR-REL-1", description: "" },
+    });
+    const creator = await signInWith(["shipping.create"], "ship-rel-create");
+    const input = oneOrderInput(order);
+    input.orders[0].serials = [{ orderSerialId: orderSerial.id, printOnShipper: true }];
+    const created = await createRoute(bodyReq("http://t/api/shippers", "POST", creator, input), noParams);
+    const createdBody = await created.json();
+    expect(createdBody.warnings.join(" ")).not.toMatch(/no serial numbers/i);
+
+    // Order-side replacement releases the shipment's serial row (snapshot + release) — the
+    // shipment still displays and prints that serial, so no false warning may appear.
+    await asSystem(() => replaceSerials(order.id, order.lines[0].id, []));
+    const editor = await signInWith(["shipping.edit"], "ship-rel-edit");
+    const res = await patchRoute(
+      bodyReq(`http://t/api/shippers/${createdBody.shipper.id}`, "PATCH", editor, { route: "x" }),
+      withParams({ id: createdBody.shipper.id }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).warnings.join(" ")).not.toMatch(/no serial numbers/i);
   });
 
   it("PUT .../containers and .../serials require shipping.edit and return the wrapped shape", async () => {

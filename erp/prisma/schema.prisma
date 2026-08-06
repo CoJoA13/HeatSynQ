@@ -991,6 +991,10 @@ model ShipperSerial {
   printOnShipper Boolean      @default(true)
   serial         String
   description    String       @default("")
+  // Plain snapshot of OrderSerial.lineId at save — deliberately NOT an FK (nothing about the
+  // line's own life may touch this row): what lets a RELEASED selection keep satisfying the
+  // line's serialization warning (#57 review). "" only on rows released before the backfill.
+  orderLineIdAtSave String    @default("")
 
   @@unique([shipperOrderId, orderSerialId])
   @@index([orderSerialId])
