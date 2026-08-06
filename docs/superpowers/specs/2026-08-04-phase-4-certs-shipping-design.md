@@ -263,6 +263,19 @@ cert charges, cert-by-process, template editing.
     cert creation requires a load the order currently has; and the cert export carries
     passed/pending counts beside readings/fails (the worklist's three-state rule).
 
+### Amendments after the merge (2026-08-06, backlog burn-down)
+
+27. **Requirement blocks get a part heading exactly when the cert spans more than one part**
+    (issue #55). A single-part cert stays byte-identical to the §3.21 sample; a multi-part cert
+    renders each line group's frozen `partNumber`/`partName` above its requirement blocks — the
+    sample was a single-part cert, so its headingless shape never had to answer which part a
+    grid of readings certifies.
+
+28. **Adding a rider line seeds its requirements into every LIVE cert on the order,
+    transactionally, frozen at add time** (issue #56). Mirrors creation-time seeding (§6.3);
+    typed readings survive; nothing is refused. Post-print reading entry stays governed by
+    `edit_cert_results_after_print`.
+
 **Settled by design, not by ruling:** when an order's part lines disagree about whether a cert is
 required, **any** line requiring one makes the order require one (a rider's requirement is never
 silently dropped); when they disagree about scope, the **lead** part's resolved scope wins (the lead

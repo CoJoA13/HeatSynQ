@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
@@ -158,7 +159,11 @@ export function ShippingList() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className="border-t">
-                <td className="p-2 font-mono">{r.shipperNumber}</td>
+                <td className="p-2 font-mono">
+                  {/* The one path to an existing shipment for a shipping.view-only user (#48) —
+                      the cert and order-hub shipment lists' own link shape. */}
+                  <Link href={`/shipping/${r.id}`} className="text-blue-700 underline">{r.shipperNumber}</Link>
+                </td>
                 <td className="p-2">{r.customerCode} · {r.customerName}</td>
                 <td className="p-2">{r.shipDate}</td>
                 <td className="p-2">{r.orderLabels.join(", ")}</td>
