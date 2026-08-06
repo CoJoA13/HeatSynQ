@@ -162,7 +162,11 @@ function sampleCert(overrides: Partial<CertPdfData> = {}): CertPdfData {
     material: "steel",
     parts: [{ qty: 192, partNumber: "500031-HT", partName: "Track Shoe, Vehicular", partDescription: "T-130", pounds: 4128 }],
     statement: "We certify that the listed Parts / Materials were heat treated in accordance with the QAM and customer requirements as follows:",
-    requirements: [{ specification: "Were heat treated as per P.O. NONE", scale: "HRC", readings: [28, 30, 29, 30, 29, 30.1, 29.7, 25.6, 27.1] }],
+    requirements: [{
+      linePosition: 1, partNumber: "500031-HT", partName: "Track Shoe, Vehicular",
+      specification: "Were heat treated as per P.O. NONE", scale: "HRC",
+      readings: [28, 30, 29, 30, 29, 30.1, 29.7, 25.6, 27.1],
+    }],
     serialBlocks: [{ partNumber: "500031-HT", serials: [{ serial: "SN-0001", description: "Heat A1" }] }],
     freeform: "FREEFORM BLOCK UNDER TEST",
     signer: { name: "Colton Jones", title: "", company: "American Heat Treating - Alabama, LLC", signatureDataUri: `data:image/png;base64,${TINY_PNG.toString("base64")}` },
@@ -399,6 +403,36 @@ describe("printCert", () => {
     // not "survivors first, released appended" (round-6 finding).
     expect(data.parts.map((p) => p.partNumber))
       .toEqual([lead.partNumber, riderA.partNumber, riderB.partNumber]);
+  });
+
+  it("renders a part heading per line group when the cert spans multiple parts (ruling 27)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const rider = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const text = allText(buildCertDefinition(data)).join("\n");
+    expect(text).toContain(`${lead.partNumber} — ${lead.name}`);
+    expect(text).toContain(`${rider.partNumber} — ${rider.name}`);
+  });
+
+  it("keeps a single-part cert heading-free — the §3.21 sample shape unchanged (ruling 27)", async () => {
+    const { cert, order, user } = await certWithReadings({ readings: [30.0] });
+    const settings = await certPrintSettings();
+    const signer = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const line = await prisma.orderLine.findFirstOrThrow({
+      where: { orderId: order.id }, select: { part: { select: { partNumber: true } } },
+    });
+    const text = allText(buildCertDefinition(data)).join("\n");
+    expect(text).not.toContain(`${line.part.partNumber} — `);
   });
 
   it("404s a cert that does not exist", async () => {

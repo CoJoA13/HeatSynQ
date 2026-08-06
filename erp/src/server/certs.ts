@@ -624,6 +624,7 @@ export async function readCertPdfData(
     parts,
     statement: settings.statement,
     requirements: detail.requirements.map((r) => ({
+      linePosition: r.linePosition, partNumber: r.partNumber, partName: r.partName,
       specification: r.inspectionCodeName,
       scale: r.scaleName ?? "",
       readings: r.readings.map((rd) => rd.value).filter((v): v is number => v !== null),
