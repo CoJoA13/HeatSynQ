@@ -578,17 +578,26 @@ async function saveNewShipper(
     await recomputeOrderStatus(tx, orderIds);
 
     // Warnings (spec §5.7) — collected AFTER the cert/status writes above, so a SHIPMENT-scope
-    // cert this very save just created is never reported as "missing".
-    const liveCertOrderIds = new Set(
-      (await tx.cert.findMany({
-        where: { orderId: { in: orderIds }, deletedAt: null }, select: { orderId: true },
-      })).map((c) => c.orderId),
+    // cert this very save just created is never reported as "missing". Matched to the order's
+    // CURRENT scope (#53): a stale live cert of another scope (deliberately kept live when the
+    // frozen scope was overridden) must not satisfy a requirement nothing has created yet. For
+    // SHIPMENT scope only THIS shipment's cert counts — the print resolution's own rule.
+    const liveCerts = await tx.cert.findMany({
+      where: { orderId: { in: orderIds }, deletedAt: null },
+      select: { orderId: true, scope: true, shipperId: true },
+    });
+    const scopeSatisfiedOrderIds = new Set(
+      liveCerts.filter((c) => {
+        const order = ordersById.get(c.orderId);
+        if (!order || c.scope !== order.certScope) return false;
+        return c.scope !== "SHIPMENT" || c.shipperId === shipper.id;
+      }).map((c) => c.orderId),
     );
 
     const warnings: string[] = [];
     for (const o of data.orders) {
       const order = ordersById.get(o.orderId)!;
-      if (order.certRequired && !liveCertOrderIds.has(o.orderId)) {
+      if (order.certRequired && !scopeSatisfiedOrderIds.has(o.orderId)) {
         warnings.push(
           `Order #${order.orderNumber} requires a certification and none exists yet — see /orders/${order.id}`);
       }
