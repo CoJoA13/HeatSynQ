@@ -1,6 +1,6 @@
 # Task 20 report — E2E flows, demo walkthrough, and docs (2026-08-05/06)
 
-Status: COMPLETE (pending final gate tails below). Branch `phase-4-certs-shipping`, combined tree.
+Status: COMPLETE — all gates green (tails below). Branch `phase-4-certs-shipping`, combined tree.
 Deliverables: five new E2E flows (harness now 15), `docs/2026-08-05-phase-4-demo.md`,
 `docs/HANDOFF.md` §4a/§6/§7/§9, `CLAUDE.md` additions, and the fixture/harness plumbing.
 
@@ -218,7 +218,7 @@ override-saved, override-in-history.
   passed (1357)`)
 - `npx tsc --noEmit` — clean (exit 0)
 - `npx eslint src tests` — clean (exit 0)
-- `npm run build` — succeeded (tail in the commit-time terminal; standalone output produced)
+- `npm run build` — succeeded (exit 0; route table includes `/shipping/new` et al.)
 - `npm run test:e2e` — **15/15, three consecutive runs** (above); both databases report no
   pending migrations
 
@@ -248,5 +248,7 @@ override-saved, override-in-history.
 
 ## Commits
 
-- PENDING: `test(e2e): five Phase 4 flows — ship ledger, multi-order, certs, void, credit hold`
-- PENDING: `docs: Phase 4 demo walkthrough and handoff update`
+- `a7fe24b` — `test(e2e): five Phase 4 flows — ship ledger, multi-order print, certs, void, credit hold`
+- `aa1f02b` — `docs: Phase 4 demo walkthrough and handoff update` (demo doc, HANDOFF, CLAUDE.md,
+  this report)
+- `<this file's amendment>` — the report's own gate/commit facts finalized after the commits above.
