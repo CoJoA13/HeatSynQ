@@ -183,6 +183,22 @@ describe("replaceReadings", () => {
     expect([b.passed, b.overridden]).toEqual([true, true]);
   });
 
+  it("refuses an override verdict without a measurement value", async () => {
+    // `value: null, passed: true` stored a passing result with no measurement (round-5 finding).
+    const { cert } = await seededCert({ min: 28, max: 32 });
+    await expect(asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: cert.requirements[0].id, readings: [{ passed: true, overridden: true }] }],
+    }, { afterPrint: false }))).rejects.toThrow(/measurement/i);
+  });
+
+  it("refuses an overridden populated value with no pass\/fail verdict", async () => {
+    // `value: 25.6, passed: null` hid an out-of-bounds value from the failure count.
+    const { cert } = await seededCert({ min: 28, max: 32 });
+    await expect(asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: cert.requirements[0].id, readings: [{ value: "25.6", overridden: true }] }],
+    }, { afterPrint: false }))).rejects.toThrow(/verdict/i);
+  });
+
   it("supports many readings under one requirement", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });
     const readings = Array.from({ length: 27 }, (_, i) => ({ value: String(28 + (i % 5)) }));

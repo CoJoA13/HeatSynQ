@@ -184,7 +184,19 @@ const READING = z.object({
   passed: z.boolean().nullable().optional(),
   overridden: z.boolean().optional().default(false),
   note: z.string().max(500).optional().default(""),
-}).strict();
+}).strict()
+  // A verdict must never contradict the measurement's presence (round-5 finding): overriding
+  // without a value stored "passed" with nothing measured, and overriding a populated value to
+  // pending hid an out-of-bounds reading from the failure count. Non-overridden rows need
+  // neither check — `computePassed` derives their verdict from the value alone.
+  .superRefine((r, ctx) => {
+    if (!r.overridden) return;
+    if ((r.value ?? null) === null) {
+      ctx.addIssue({ code: "custom", message: "An override needs a measurement value — a verdict cannot stand on nothing" });
+    } else if (typeof r.passed !== "boolean") {
+      ctx.addIssue({ code: "custom", message: "An overridden reading needs an explicit pass/fail verdict" });
+    }
+  });
 
 const REQUIREMENT_PATCH = z.object({
   id: z.string().min(1),

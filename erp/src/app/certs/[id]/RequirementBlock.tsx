@@ -115,6 +115,17 @@ export function RequirementBlock({ requirement, editGate, onSave }: {
         setLocalError(`Reading ${i + 1}: the note is over 500 characters.`);
         return;
       }
+      // Mirror the server's contradiction rules (round-5 finding) so the refusal names the row
+      // here instead of bouncing off the schema: a verdict cannot stand on no measurement, and
+      // an overridden measurement cannot hide as pending.
+      if (row.overridden && raw === "") {
+        setLocalError(`Reading ${i + 1}: an override needs a measurement value.`);
+        return;
+      }
+      if (row.overridden && raw !== "" && row.passedChoice === "") {
+        setLocalError(`Reading ${i + 1}: pick Pass or Fail for the override — an overridden reading cannot stay pending.`);
+        return;
+      }
     }
     setLocalError(null);
     setSaving(true);
