@@ -4,10 +4,10 @@ import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import type { ApplyMutation, ContainerTypeOption, OrderContainer, OrderMutationResult } from "./page";
 
-type Fields = { typeId: string; count: string; qty: string; tareWeight: string; grossWeight: string };
+type Fields = { typeId: string; count: string; qty: string; tareWeight: string; grossWeight: string; customerContainerId: string };
 
 function blankRow(): Fields {
-  return { typeId: "", count: "", qty: "", tareWeight: "", grossWeight: "" };
+  return { typeId: "", count: "", qty: "", tareWeight: "", grossWeight: "", customerContainerId: "" };
 }
 
 function netWeight(gross: string, tare: string): number | null {
@@ -41,6 +41,11 @@ export function ContainersSection({
     qty: c.qty === null ? "" : String(c.qty),
     tareWeight: c.tareWeight === null ? "" : String(c.tareWeight),
     grossWeight: c.grossWeight === null ? "" : String(c.grossWeight),
+    // §3.22 (Task 17): the customer's own bin id, printed as the ticket's "Cust Cont Id" column.
+    // MUST ride this grid, not just order entry's — the PUT below replaces the whole array, so a
+    // grid that never composed the column would silently blank every stored value on any
+    // unrelated container save.
+    customerContainerId: c.customerContainerId,
   }));
 
   function patch(row: { key: string; isNew: boolean }, field: keyof Fields, value: string) {
@@ -53,7 +58,10 @@ export function ContainersSection({
   }
 
   async function save() {
-    const payload: { typeId: string; count: number; qty: number | null; tareWeight: string | null; grossWeight: string | null }[] = [];
+    const payload: {
+      typeId: string; count: number; qty: number | null;
+      tareWeight: string | null; grossWeight: string | null; customerContainerId: string;
+    }[] = [];
     for (const [i, row] of rows.entries()) {
       const label = `Container ${i + 1}`;
       if (!row.typeId) { onError(`${label}: pick a type.`); return; }
@@ -71,6 +79,7 @@ export function ContainersSection({
       payload.push({
         typeId: row.typeId, count, qty,
         tareWeight: tare === "" ? null : tare, grossWeight: gross === "" ? null : gross,
+        customerContainerId: row.customerContainerId,
       });
     }
     try {
@@ -94,7 +103,7 @@ export function ContainersSection({
       {rows.map((row, i) => {
         const net = netWeight(row.grossWeight, row.tareWeight);
         return (
-          <div key={row.key} className="mb-2 grid grid-cols-6 items-end gap-2 text-sm">
+          <div key={row.key} className="mb-2 grid grid-cols-7 items-end gap-2 text-sm">
             <label className="block">
               Type
               <select value={row.typeId} disabled={!editGate.allowed} title={editGate.title}
@@ -128,6 +137,12 @@ export function ContainersSection({
               <input value={row.grossWeight} inputMode="decimal" disabled={!editGate.allowed} title={editGate.title}
                      onChange={(e) => patch(row, "grossWeight", e.target.value)}
                      aria-label={`Container ${i + 1} gross weight`} className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-50" />
+            </label>
+            <label className="block">
+              Cust Cont Id
+              <input value={row.customerContainerId} disabled={!editGate.allowed} title={editGate.title}
+                     onChange={(e) => patch(row, "customerContainerId", e.target.value)}
+                     aria-label={`Container ${i + 1} customer container id`} className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-50" />
             </label>
             <div className="flex items-center justify-between gap-2">
               <span className="text-slate-600">Net: {net ?? "—"}</span>

@@ -20,6 +20,7 @@ import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useMutationGate } from "@/lib/use-latest";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
+import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { LIGHT_DOT_CLASS, LIGHT_LABELS, type TrafficLight } from "@/lib/traffic-light";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { AttachmentsSection } from "@/components/AttachmentsSection";
@@ -30,6 +31,8 @@ import { SerialsSection } from "./SerialsSection";
 import { ChargesSection } from "./ChargesSection";
 import { LoadsSection } from "./LoadsSection";
 import { DocumentsSection } from "./DocumentsSection";
+import { CertificationsSection } from "./CertificationsSection";
+import { ShipmentsSection } from "./ShipmentsSection";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/orders.ts's exported row shapes — not imported from
@@ -50,7 +53,7 @@ export type OrderLine = {
 };
 export type OrderContainer = {
   id: string; position: number; typeId: string; count: number; qty: number | null;
-  tareWeight: number | null; grossWeight: number | null; type: { name: string };
+  tareWeight: number | null; grossWeight: number | null; customerContainerId: string; type: { name: string };
 };
 export type OrderSerial = { id: string; lineId: string; position: number; serial: string; description: string };
 export type OrderLoad = { id: string; loadNumber: number; qty: number | null; weight: number | null };
@@ -58,7 +61,10 @@ export type OrderCharge = { id: string; position: number; description: string; a
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
-  poNumber: string; vsOrderNumber: string;
+  poNumber: string; vsOrderNumber: string; customerJobNo: string;
+  /** The values RESOLVED AND FROZEN at save (spec §6.1) — shown and edited here as stored, never
+   *  re-derived from the part/customer chain (that only runs inside createOrder). */
+  certRequired: boolean; certScope: CertScopeValue;
   receivedDate: string; requestDate: string; targetDate: string | null;
   status: OrderStatusValue; notes: string; linkGroupId: string | null;
   voided: boolean;
@@ -96,6 +102,13 @@ export type ApplyMutation = (run: () => Promise<OrderMutationResult>) => Promise
 export type PartOption = {
   id: string; customerId: string; partNumber: string; name: string;
   eachWeight: number; serializationRequired: boolean; hasProcessSteps: boolean; active: boolean;
+  /** Carried for structural compatibility with the entry page's own `PartOption` (Task 17 added
+   *  the cert chain there for its resolved preview) — `computeLineWeight`, imported from
+   *  OrderLineCard by LinesSection, is typed against that shape. The fetch already returns them;
+   *  nothing on the hub reads them (the hub shows the order's own FROZEN values, never a
+   *  re-derivation — spec §6.1). */
+  certRequired: boolean | null; certScope: CertScopeValue | null;
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
 };
 
 export type ContainerTypeOption = { id: string; name: string };
@@ -283,7 +296,9 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
    *  truth FIRST and only then reports why (§5.13 — a reload after the error is set would clear
    *  it, since `load()` itself resets `error` to null on success). */
   async function saveOrder(
-    patch: Partial<Pick<OrderDetail, "poNumber" | "vsOrderNumber" | "receivedDate" | "requestDate" | "targetDate" | "notes">>,
+    patch: Partial<Pick<OrderDetail,
+      "poNumber" | "vsOrderNumber" | "customerJobNo" | "receivedDate" | "requestDate" | "targetDate" | "notes"
+      | "certRequired" | "certScope">>,
   ): Promise<boolean> {
     setOrder((cur) => (cur ? { ...cur, ...patch } : cur));
     const key = Object.keys(patch).sort().join(",");
@@ -444,6 +459,16 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
                    onBlur={(e) => onBlurSave(e, (vsOrderNumber) => void saveOrder({ vsOrderNumber }))}
                    className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
+          <label className="block">
+            Customer job #
+            {/* §3.22: the customer's own job number, printed on the shipping ticket beside the
+                PO. Same blur-save shape as PO/VS # above; stays editable at every status
+                (spec §5.5's "everything else stays editable" list names it). */}
+            <input value={order.customerJobNo} onFocus={noteFocus} readOnly={!editGate.allowed} title={editGate.title}
+                   onChange={(e) => setOrder({ ...order, customerJobNo: e.target.value })}
+                   onBlur={(e) => onBlurSave(e, (customerJobNo) => void saveOrder({ customerJobNo }))}
+                   className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
+          </label>
           <div className="block">
             Status
             <div className="mt-1 flex items-center gap-1.5 rounded border bg-slate-50 px-2 py-1">
@@ -470,6 +495,28 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
                    onChange={(e) => void saveOrder({ targetDate: e.target.value || null })}
                    className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-50" />
           </label>
+          {/* Spec §6.1: certRequired/certScope were RESOLVED (part → customer → plant) and frozen
+              onto the order at save; what's shown and edited here is the stored pair, never a
+              re-derivation — an edit is a plain scalar PATCH like every field above (spec §5.5
+              keeps both editable at every status). Changing them later never creates or destroys
+              a cert by itself; the Certifications section below is where load-scope certs are
+              created on demand. */}
+          <div className="block">
+            <span className="flex items-center gap-2">
+              <input type="checkbox" id="cert-required" checked={order.certRequired}
+                     disabled={!editGate.allowed} title={editGate.title}
+                     onChange={(e) => void saveOrder({ certRequired: e.target.checked })} />
+              <label htmlFor="cert-required">Certification required</label>
+            </span>
+            <label className="mt-1 block">
+              <span className="sr-only">Certification scope</span>
+              <select value={order.certScope} disabled={!editGate.allowed} title={editGate.title}
+                      onChange={(e) => void saveOrder({ certScope: e.target.value as CertScopeValue })}
+                      className="w-full rounded border px-2 py-1 disabled:bg-slate-50">
+                {CERT_SCOPES.map((s) => <option key={s} value={s}>{CERT_SCOPE_LABELS[s]}</option>)}
+              </select>
+            </label>
+          </div>
         </div>
 
         <div className="mt-4 border-t pt-3">
@@ -550,6 +597,14 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         orderId={id} loads={order.loads} voided={voided} viewGate={gate(perms, "orders.view")}
         autoPrint={autoPrint}
       />
+
+      <CertificationsSection
+        orderId={id} loads={order.loads} certRequired={order.certRequired} certScope={order.certScope}
+        viewGate={gate(perms, "certs.view")}
+        createGate={voidLocked(gate(perms, "certs.create"), voided)}
+      />
+
+      <ShipmentsSection orderId={id} orderNumber={order.orderNumber} viewGate={gate(perms, "shipping.view")} />
 
       <div className="mb-6">
         <HistoryPanel entity="order" entityId={id} />
