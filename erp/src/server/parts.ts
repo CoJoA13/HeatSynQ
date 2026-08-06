@@ -5,6 +5,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { getSetting } from "./settings";
 import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
@@ -23,6 +24,13 @@ export type PartRow = {
    *  back to the plant setting. Never resolved here — resolveCertSettings (certs.ts) walks the
    *  chain; this is the part's own OWN override, or the absence of one. */
   certRequired: boolean | null; certScope: CertScopeValue | null;
+  /** What a null `certRequired`/`certScope` would inherit RIGHT NOW — the customer's default,
+   *  else the plant setting (Task 17). Display-only companions: the part page's three-state
+   *  control labels its "Inherit" option with them, and order entry's untouched cert preview
+   *  composes `certRequired ?? inheritedCertRequired` per line client-side (the 2C-3 derive-at-
+   *  render convention) without needing a settings seam of its own. The authoritative save-time
+   *  resolution stays `resolveCertSettings` (certs.ts) — these never feed a write. */
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
@@ -69,12 +77,21 @@ const SELECT = {
   certRequired: true, certScope: true,
   serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
   pricePer: true, active: true,
-  customer: { select: { code: true, name: true } },
+  customer: { select: { code: true, name: true, certRequiredDefault: true, certScopeDefault: true } },
   material: { select: { name: true } },
 } as const;
 
+/** The two plant-level cert settings, read once per list/get call (not per row) so `toRow` can
+ *  compose each row's `inheritedCert*` companions without an N+1 on the settings table. */
+async function plantCertDefaults(): Promise<{ required: boolean; scope: CertScopeValue }> {
+  return {
+    required: await getSetting("cert_required_default"),
+    scope: (await getSetting("cert_scope_default")) as CertScopeValue,
+  };
+}
+
 type Raw = Prisma.PartGetPayload<{ select: typeof SELECT }>;
-function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
+function toRow(r: Raw, hasProcessSteps: boolean, plant: { required: boolean; scope: CertScopeValue }): PartRow {
   const { customer, material, eachWeight, loadWeight, setupCharge, unitPrice, minimumCharge, ...rest } = r;
   return {
     ...rest, customerCode: customer.code, customerName: customer.name,
@@ -83,6 +100,8 @@ function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
     setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
     pricePer: r.pricePer as PricePerValue,
     certScope: r.certScope as CertScopeValue | null,
+    inheritedCertRequired: customer.certRequiredDefault ?? plant.required,
+    inheritedCertScope: (customer.certScopeDefault as CertScopeValue | null) ?? plant.scope,
     hasProcessSteps,
   };
 }
@@ -125,14 +144,15 @@ export async function listParts(opts?: { includeInactive?: boolean; search?: str
     orderBy: [{ customer: { code: "asc" } }, { partNumber: "asc" }],
   });
   const stepsByPart = await hasProcessStepsByPart(rows.map((r) => r.id));
-  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false));
+  const plant = await plantCertDefaults();
+  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false, plant));
 }
 
 export async function getPart(id: string): Promise<PartRow> {
   const row = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: SELECT });
   if (!row) throw new HttpError(404, "Part not found");
   const stepsByPart = await hasProcessStepsByPart([id]);
-  return toRow(row, stepsByPart.get(id) ?? false);
+  return toRow(row, stepsByPart.get(id) ?? false, await plantCertDefaults());
 }
 
 export async function createPart(input: Record<string, unknown>): Promise<{ id: string }> {
