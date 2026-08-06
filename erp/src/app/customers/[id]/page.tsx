@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
+import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
@@ -21,6 +22,12 @@ type Customer = {
   // commit path (below) parses it to a number itself rather than forwarding the typed text.
   requestDaysOverride: number | string | null;
   creditHold: boolean; cod: boolean; taxable: boolean; surchargeOptOut: boolean;
+  /** Certification chain (spec §6.1): null = inherit the plant setting; a part can override
+   *  either way. The `inheritedCert*` companions are what that null currently resolves to —
+   *  computed server-side (customers.ts) so the three-state controls can label their "Inherit"
+   *  option without a settings seam of their own. */
+  certRequiredDefault: boolean | null; certScopeDefault: CertScopeValue | null;
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string; active: boolean;
 };
 // `active` on both child types is carried and editable (round 5): the services have always
@@ -559,6 +566,31 @@ function CustomerDetail({ id }: { id: string }) {
                    })}
                    className="ml-2 w-20 rounded border px-2 py-1 read-only:bg-slate-50" />
             <span className="ml-2 text-xs text-slate-500">Blank uses the plant default.</span>
+          </label>
+          {/* Certification chain (spec §6.1, Task 17): three-state, never a checkbox — an
+              explicit "No" and "inherit the plant" are different answers, and a part can still
+              override either way. The Inherit option names what it currently resolves to (the
+              plant settings — `inheritedCert*`, computed server-side), the parts/[id]/
+              IdentitySection sibling of the same control. */}
+          <label className="block text-sm">
+            Certification required default
+            <select value={c.certRequiredDefault === null ? "" : c.certRequiredDefault ? "yes" : "no"}
+                    disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => save({ certRequiredDefault: e.target.value === "" ? null : e.target.value === "yes" })}
+                    className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100">
+              <option value="">Inherit plant — currently {c.inheritedCertRequired ? "Yes" : "No"}</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label className="block text-sm">
+            Certification scope default
+            <select value={c.certScopeDefault ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => save({ certScopeDefault: e.target.value === "" ? null : e.target.value as CertScopeValue })}
+                    className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100">
+              <option value="">Inherit plant — currently {CERT_SCOPE_LABELS[c.inheritedCertScope]}</option>
+              {CERT_SCOPES.map((s) => <option key={s} value={s}>{CERT_SCOPE_LABELS[s]}</option>)}
+            </select>
           </label>
         </div>
       </section>
