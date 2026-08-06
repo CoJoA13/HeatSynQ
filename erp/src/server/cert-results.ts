@@ -80,6 +80,48 @@ export async function seedRequirements(tx: Db, certId: string): Promise<void> {
   }
 }
 
+/**
+ * Ruling 28 (issue #56): a rider line added AFTER a certification exists seeds its
+ * `PartInspection` requirements into every LIVE cert on the order, in the same transaction —
+ * mirrors creation-time seeding above, frozen at add time, appended after the cert's existing
+ * requirements (the rider is the order's last line, so print order stays line-position order).
+ * Typed readings on existing requirements are untouched. Each cert's growth is its own audited
+ * update — a cert silently gaining requirements would be a hole in its history.
+ */
+export async function seedLineIntoLiveCerts(tx: Db, orderId: string, orderLineId: string): Promise<void> {
+  const line = await tx.orderLine.findFirst({
+    where: { id: orderLineId },
+    select: { id: true, partId: true, position: true, part: { select: { partNumber: true, name: true } } },
+  });
+  if (!line) return;
+  const inspections = await tx.partInspection.findMany({
+    where: { partId: line.partId, deletedAt: null },
+    orderBy: { sort: "asc" },
+  });
+  if (inspections.length === 0) return;
+
+  const certs = await tx.cert.findMany({ where: { orderId, deletedAt: null }, select: { id: true } });
+  for (const cert of certs) {
+    await auditedUpdate("cert", cert.id, async () => {
+      const { _max } = await tx.certRequirement.aggregate({ where: { certId: cert.id }, _max: { position: true } });
+      let position = _max.position ?? 0;
+      for (const insp of inspections) {
+        position += 1;
+        await assertRefExists("inspectionCode", insp.inspectionCodeId, tx);
+        if (insp.scaleId !== null) await assertRefExists("inspectionScale", insp.scaleId, tx);
+        await tx.certRequirement.create({
+          data: {
+            certId: cert.id, orderLineId: line.id, position,
+            linePosition: line.position, partNumber: line.part.partNumber, partName: line.part.name,
+            inspectionCodeId: insp.inspectionCodeId, scaleId: insp.scaleId,
+            min: insp.min, max: insp.max, sampleQty: insp.sampleQty, location: insp.location,
+          },
+        });
+      }
+    }, { tx, reason: "Rider line added to the order (ruling 28)" });
+  }
+}
+
 // -------------------------------------------------------------------------------------------
 // The cert detail read (moved here from certs.ts, Task 7 review, 2026-08-04 — see order-locks.ts's
 // header comment for why): certs.ts's `getCert`/`createCertInTx`/`updateCert` now import

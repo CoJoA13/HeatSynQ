@@ -11,6 +11,7 @@ import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
+import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
@@ -1094,6 +1095,10 @@ export async function addLine(
         },
       });
       await createSerials(tx, orderId, [line.id], [data], [part], position - 1);
+      // Ruling 28 (#56): the rider's inspection requirements join every LIVE cert now, frozen —
+      // requirements are otherwise seeded only at cert creation, and a cert listing a part with
+      // none of its measurements is paper claiming coverage of something nobody measured.
+      await seedLineIntoLiveCerts(tx, orderId, line.id);
     }, { tx });
 
     // A new rider changes the order's own LINE SET — spec §5.2: "every order line has at least
