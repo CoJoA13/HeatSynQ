@@ -805,6 +805,24 @@ make the §8 per-kind filter vacuously satisfied behind `mustCan(certs.view)`.
 certs — so the entry-time override must ride the create body. Validation and audit parity with the
 PATCH path is maintained (identical zod shapes; the audit entry records the effective frozen pair).
 
+**Amendments 2026-08-05 (Task 19 review adjudications, owner-ratified):**
+- **The print route's `cert=1` branch also requires `certs.view`** on top of `shipping.view`. The §8
+  ruling forbids disclosing cert existence to shipping-only users, so letting them produce cert
+  paper they cannot open or list would be incoherent. The UI degrades cleanly: the checkbox is
+  unticked and disabled with a permission-naming tooltip, and the request omits `cert=1`.
+- **`cert=1` with a cert-REQUIRING order that has no cert prints the tickets and WARNS** — it does
+  not refuse the request (owner ruling, honoring §3.13's "a missing cert warns and never blocks" in
+  the default pre-ticked flow). No cert is archived; the response carries a named warning the UI
+  surfaces.
+- **`cert=1` on a LOAD-scope order prints ALL its live load certs** — including loads that did not
+  ship on this shipment — and sets `printedAt` on each, placing their readings behind
+  `edit_cert_results_after_print`. Owner accepted the side effect: the shipment cannot know which
+  loads went, and the alternatives either kill the combined print for load-scope shops or silently
+  drop quality paper.
+- **`SIGNATURE_MIME` drops `image/bmp`** — pdfkit cannot embed BMP, so a BMP signature rendered on
+  screen while every cert silently printed the typed-name fallback. New uploads must be PNG/JPEG;
+  existing BMP rows keep falling back safely.
+
 ## 10. Documents
 
 Three layouts on `src/server/pdf/`'s existing plumbing, each a JSON document definition — the same
