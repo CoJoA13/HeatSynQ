@@ -172,6 +172,16 @@ const CREATE = z.object({
   // §3.22: prints on the ticket beside the PO — built with no present-day user on the owner's
   // explicit instruction, same as containers[].customerContainerId above.
   customerJobNo: z.string().max(60).default(""),
+  // Spec §6.1: the resolution is "overridable at entry". An omitted key means "no override" —
+  // the chain (part → customer → plant) resolves and freezes as always; a present key IS the
+  // frozen value, and §6.2's order-scope cert creation follows the EFFECTIVE values either way
+  // (an override to LOAD scope creates nothing eagerly; an override to `certRequired: false`
+  // suppresses the cert the chain would have produced). `.optional()`, never `.nullable()`:
+  // unlike the part/customer columns there is no "inherit" state to store on the order — its
+  // columns are always resolved values (Task 17; the UPDATE_ORDER pair below is the
+  // "and after" half of the same spec sentence).
+  certRequired: z.boolean().optional(),
+  certScope: z.enum(CERT_SCOPES).optional(),
   receivedDate: z.string().optional(),
   requestDate: z.string().optional(),
   targetDate: z.string().nullable().optional(),
@@ -388,9 +398,9 @@ function auditPayload(args: {
     // later update diff describe the same set of fields.
     status: "OPEN",
     notes: data.notes,
-    // Resolved and frozen by resolveCertSettings at the moment of this save (spec §6.1) — not the
-    // caller's own input, since none was given; the audit entry is what proves what the chain
-    // actually resolved to at save time, ahead of any later part edit.
+    // The EFFECTIVE values frozen at the moment of this save (spec §6.1): the chain's own
+    // resolution, unless the caller sent an explicit entry-time override (Task 17) — the audit
+    // entry proves what actually froze on at save time, ahead of any later part edit.
     certRequired: certResolution.certRequired, certScope: certResolution.certScope,
     lines: data.lines.map((line, i) => ({
       position: i + 1, partId: line.partId, partNumber: parts[i].partNumber,
@@ -630,8 +640,17 @@ async function saveNewOrder(
 
     // Resolved and FROZEN onto the order right here, at save (spec §6.1) — never re-derived from
     // a part edited after the fact. `data.lines[0].partId` is the lead, matching every other
-    // most-specific-wins chain in this function (requestDate just below).
-    const certResolution = await resolveCertSettings(tx, customer.id, data.lines.map((l) => l.partId));
+    // most-specific-wins chain in this function (requestDate just below). An explicit entry-time
+    // override (Task 17, §6.1's "overridable at entry") beats the chain per field; the EFFECTIVE
+    // pair is what freezes on, what the audit entry records, and what decides the §6.2 eager
+    // order-scope cert below. The chain still resolves even when both keys are overridden —
+    // one extra read inside an already-open transaction, in exchange for never forking this
+    // function's control flow on which keys happened to arrive.
+    const resolved = await resolveCertSettings(tx, customer.id, data.lines.map((l) => l.partId));
+    const certResolution: CertResolution = {
+      certRequired: data.certRequired ?? resolved.certRequired,
+      certScope: data.certScope ?? resolved.certScope,
+    };
 
     const receivedDate = data.receivedDate
       ? parseDate(data.receivedDate, "Received date")

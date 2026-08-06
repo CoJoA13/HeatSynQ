@@ -105,7 +105,16 @@ export type CertRow = {
   customerCode: string; customerName: string; scope: CertScopeValue;
   loadNumber: number | null; shipperId: string | null; shipperNumber: number | null;
   printedAt: string | null; deletedAt: string | null;
-  readingCount: number; failCount: number;
+  // `readingCount` is `passedCount + failCount + <readings with no value yet>` — the third state
+  // (`passed === null`, a reading nobody has entered) is NOT `readingCount - failCount`. That
+  // subtraction is exactly the bug the certifications worklist (src/app/certs/CertList.tsx) shipped
+  // with: it reported a mid-entry cert (some requirements filled and passing, the rest still
+  // blank, zero failures so far — the normal state of every cert before data entry finishes) as
+  // fully "N passed", overstating completeness to the audience this page exists for. `passedCount`
+  // is computed the same explicit-equality way `failCount` always was (`passed === true`, not
+  // "not false"), so a caller can tell all three states apart without re-deriving one from a
+  // subtraction that silently folds "no value" into "passed".
+  readingCount: number; passedCount: number; failCount: number;
 };
 export type CertDetail = CertRow & {
   freeform: string; internalNotes: string; requirements: CertRequirementDetail[];
@@ -296,6 +305,7 @@ async function rowsToCertRows(db: Db, rows: RowShape[]): Promise<CertRow[]> {
       printedAt: row.printedAt ? row.printedAt.toISOString() : null,
       deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
       readingCount: readings.length,
+      passedCount: readings.filter((r) => r.passed === true).length,
       failCount: readings.filter((r) => r.passed === false).length,
     };
   });

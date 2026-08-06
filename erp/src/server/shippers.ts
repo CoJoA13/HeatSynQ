@@ -1509,9 +1509,20 @@ export async function printableShipmentCertIds(
 // -------------------------------------------------------------------------------------------
 
 export type ShipperFilter = { customerId?: string; from?: string; to?: string; includeVoided?: boolean; search?: string };
+/** One `ShipperOrder`'s slice of a row (Task 17, additive): the order hub's Shipments section
+ *  shows THIS order's own label (`72036-3`), its own quantities, and whether its lines shipped
+ *  complete — none of which the shipment-wide totals can answer once a shipment carries several
+ *  orders. `complete` is "every line of this ShipperOrder is `lineComplete`" — the same per-line
+ *  human's-call flag §5.2's status derivation reads, aggregated per order-on-shipment, never
+ *  derived from quantities. */
+export type ShipperRowOrder = {
+  orderId: string; orderNumber: number; sequence: number;
+  qty: number; weight: number; complete: boolean;
+};
 export type ShipperRow = {
   id: string; shipperNumber: number; bolNumber: number | null; customerCode: string; customerName: string;
-  shipDate: string; orderCount: number; orderLabels: string[]; carrierName: string | null;
+  shipDate: string; orderCount: number; orderLabels: string[]; orders: ShipperRowOrder[];
+  carrierName: string | null;
   totalQty: number; totalWeight: number; freightAmount: number | null; deletedAt: string | null;
 };
 
@@ -1520,15 +1531,16 @@ const ROW_SELECT = {
   customer: { select: { code: true, name: true } },
   carrier: { select: { name: true } },
   orders: {
-    // Deterministic order for `orderLabels` — the issue #24 lesson applied here too: an
-    // unordered collection makes a multi-order shipment's label list depend on Postgres's own
-    // scan order rather than the print order the operator actually sees (DETAIL_INCLUDE's own
+    // Deterministic order for `orderLabels` (and `orders`) — the issue #24 lesson applied here
+    // too: an unordered collection makes a multi-order shipment's label list depend on Postgres's
+    // own scan order rather than the print order the operator actually sees (DETAIL_INCLUDE's own
     // `orderBy: { position: "asc" }`, reused).
     orderBy: { position: "asc" },
     select: {
+      orderId: true,
       sequence: true,
       order: { select: { orderNumber: true } },
-      lines: { select: { qty: true, weight: true } },
+      lines: { select: { qty: true, weight: true, lineComplete: true } },
     },
   },
 } satisfies Prisma.ShipperSelect;
@@ -1537,6 +1549,24 @@ type ShipperRowShape = Prisma.ShipperGetPayload<{ select: typeof ROW_SELECT }>;
 
 function toShipperRow(row: ShipperRowShape): ShipperRow {
   const orderLabels = row.orders.map((o) => `${o.order.orderNumber}-${o.sequence}`);
+  // Per-order sums in integer cents, exactly like the shipment-wide totals below — the same
+  // IEEE754-sidestep `loadsMismatchWarnings` (orders.ts) documents.
+  const orders = row.orders.map((so): ShipperRowOrder => {
+    let qty = 0;
+    let cents = 0;
+    for (const l of so.lines) {
+      qty += l.qty;
+      cents += Math.round(l.weight.toNumber() * 100);
+    }
+    return {
+      orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,
+      qty, weight: cents / 100,
+      // `every` on an empty array is true, but a ShipperOrder cannot legally reach zero lines
+      // (§4.2's document-level "at least one line" invariant) — guarded anyway so a historical
+      // or hand-edited row reads "not complete" rather than claiming completion off no lines.
+      complete: so.lines.length > 0 && so.lines.every((l) => l.lineComplete),
+    };
+  });
   let totalQty = 0;
   let weightCents = 0;
   for (const so of row.orders) {
@@ -1548,7 +1578,7 @@ function toShipperRow(row: ShipperRowShape): ShipperRow {
   return {
     id: row.id, shipperNumber: row.shipperNumber, bolNumber: row.bolNumber,
     customerCode: row.customer.code, customerName: row.customer.name,
-    shipDate: formatDateOnly(row.shipDate), orderCount: row.orders.length, orderLabels,
+    shipDate: formatDateOnly(row.shipDate), orderCount: row.orders.length, orderLabels, orders,
     carrierName: row.carrier?.name ?? null,
     totalQty, totalWeight: weightCents / 100,
     freightAmount: num(row.freightAmount), deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,

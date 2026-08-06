@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { CERT_SCOPES, CERT_SCOPE_LABELS } from "@/lib/cert-constants";
 import type { Part } from "./page";
 
 type MaterialOption = { id: string; name: string; active: boolean };
@@ -197,6 +198,33 @@ export function IdentitySection({
           <input type="checkbox" checked={part.active} disabled={!canEdit.allowed} title={canEdit.title}
                  onChange={(e) => void save({ active: e.target.checked })} />
           Active
+        </label>
+      </div>
+      {/* Certification chain (spec §6.1, Task 17): three-state, never a checkbox — an explicit
+          "No" and "inherit" are different answers (a part can override a cert-required customer
+          back DOWN), and the Inherit option names what it currently resolves to (customer
+          default, else plant setting — `inheritedCert*`, computed server-side) so choosing it is
+          never a blind fallback. Selects save on change like Material above; §5.16 gating. */}
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <label className="block text-sm">
+          Certification required
+          <select value={part.certRequired === null ? "" : part.certRequired ? "yes" : "no"}
+                  disabled={!canEdit.allowed} title={canEdit.title}
+                  onChange={(e) => void save({ certRequired: e.target.value === "" ? null : e.target.value === "yes" })}
+                  className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-100">
+            <option value="">Inherit — currently {part.inheritedCertRequired ? "Yes" : "No"}</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+        <label className="block text-sm">
+          Certification scope
+          <select value={part.certScope ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                  onChange={(e) => void save({ certScope: e.target.value === "" ? null : e.target.value })}
+                  className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-100">
+            <option value="">Inherit — currently {CERT_SCOPE_LABELS[part.inheritedCertScope]}</option>
+            {CERT_SCOPES.map((s) => <option key={s} value={s}>{CERT_SCOPE_LABELS[s]}</option>)}
+          </select>
         </label>
       </div>
     </section>

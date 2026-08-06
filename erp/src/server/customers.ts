@@ -8,6 +8,7 @@ import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
+import { getSetting } from "./settings";
 import { CUSTOMER_PASTE_COLUMNS } from "../lib/customer-constants";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import type { PasteResult } from "./paste";
@@ -23,6 +24,11 @@ export type CustomerRow = {
   /** Certification chain (spec §6.1): null = inherit the plant setting. Part overrides this;
    *  never resolved here — resolveCertSettings (certs.ts) walks the chain. */
   certRequiredDefault: boolean | null; certScopeDefault: CertScopeValue | null;
+  /** What a null default would inherit RIGHT NOW — the plant settings (Task 17). Display-only
+   *  companions for the customer page's three-state controls (its "Inherit" option is labelled
+   *  with them), mirroring `PartRow.inheritedCert*`; the authoritative save-time resolution
+   *  stays `resolveCertSettings` (certs.ts) — these never feed a write. */
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   active: boolean;
 };
 
@@ -72,12 +78,22 @@ const SELECT = {
   parent: { select: { code: true } },
 } as const;
 
+/** The two plant-level cert settings, read once per list/get call (not per row) so `toRow` can
+ *  compose each row's `inheritedCert*` companions — the parts.ts sibling of the same helper. */
+async function plantCertDefaults(): Promise<{ required: boolean; scope: CertScopeValue }> {
+  return {
+    required: await getSetting("cert_required_default"),
+    scope: (await getSetting("cert_scope_default")) as CertScopeValue,
+  };
+}
+
 type Raw = Prisma.CustomerGetPayload<{ select: typeof SELECT }>;
-function toRow(r: Raw): CustomerRow {
+function toRow(r: Raw, plant: { required: boolean; scope: CertScopeValue }): CustomerRow {
   const { parent, creditLimit, financeChargeRate, ...rest } = r;
   return { ...rest, parentCode: parent?.code ?? null,
     creditLimit: num(creditLimit), financeChargeRate: num(financeChargeRate),
-    certScopeDefault: r.certScopeDefault as CertScopeValue | null };
+    certScopeDefault: r.certScopeDefault as CertScopeValue | null,
+    inheritedCertRequired: plant.required, inheritedCertScope: plant.scope };
 }
 
 export async function listCustomers(opts?: { includeInactive?: boolean; search?: string }): Promise<CustomerRow[]> {
@@ -94,13 +110,14 @@ export async function listCustomers(opts?: { includeInactive?: boolean; search?:
     select: SELECT,
     orderBy: { code: "asc" },
   });
-  return rows.map(toRow);
+  const plant = await plantCertDefaults();
+  return rows.map((r) => toRow(r, plant));
 }
 
 export async function getCustomer(id: string): Promise<CustomerRow> {
   const row = await prisma.customer.findFirst({ where: { id, deletedAt: null }, select: SELECT });
   if (!row) throw new HttpError(404, "Customer not found");
-  return toRow(row);
+  return toRow(row, await plantCertDefaults());
 }
 
 // Either the top-level client or a `tx` from prisma.$transaction — lets the hierarchy guards run

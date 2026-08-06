@@ -121,6 +121,7 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
     printedAt: row.printedAt ? row.printedAt.toISOString() : null,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     readingCount: readings.length,
+    passedCount: readings.filter((r) => r.passed === true).length,
     failCount: readings.filter((r) => r.passed === false).length,
     freeform: row.freeform, internalNotes: row.internalNotes,
     poNumber: row.order.poNumber,

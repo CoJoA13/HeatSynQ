@@ -6,6 +6,7 @@ import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import type { PricePerValue } from "@/lib/part-constants";
+import type { CertScopeValue } from "@/lib/cert-constants";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { IdentitySection } from "./IdentitySection";
 import { SpecsSection } from "./SpecsSection";
@@ -30,6 +31,14 @@ export type Part = {
   loadQty: number | string | null;
   loadWeight: number | string | null;
   requestDaysOverride: number | string | null;
+  /** Certification chain (spec §6.1): null = inherit the customer default, else the plant
+   *  setting. The `inheritedCert*` companions are what that null currently resolves to —
+   *  computed server-side (parts.ts) so the three-state controls can label their "Inherit"
+   *  option for every viewer, regardless of customers.view / admin.view. */
+  certRequired: boolean | null;
+  certScope: CertScopeValue | null;
+  inheritedCertRequired: boolean;
+  inheritedCertScope: CertScopeValue;
   serializationRequired: boolean;
   setupCharge: number | string | null;
   unitPrice: number | string | null;
