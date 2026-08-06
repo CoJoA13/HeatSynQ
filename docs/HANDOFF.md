@@ -137,8 +137,29 @@ passed: true` stored a pass measured on nothing, and `value: X, passed: null` hi
 out-of-bounds reading from the failure count), with the readings editor pre-validating the same
 two rules by row. Gates after round 5: **1387 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15.
 Also this round: one CI run hit the workflow's 15-minute timeout (5m01 → 8m51 → cancelled across
-the triage rounds while the local suite held ~2 min) — being watched on the next runs; if it
-recurs, CI-side test timing needs profiling rather than a timeout bump.
+the triage rounds while the local suite held ~2 min) — diagnosed as GitHub Actions degradation
+(stuck runner queue, API 502s), confirmed when the same head passed in a normal 5m44 once a
+runner picked it up. Not a branch problem; no timeout bump.
+
+**Round 6 (2026-08-06) — and the STOPPING RULE, owner-ratified.** The owner asked why the review
+loop wasn't converging; the answer is the 2C-3 dynamic §4a-prior already records (review of
+review-fixes converges slowly — half of rounds 4–6 there were findings in code written for the
+previous round; here, rounds 4–5 were almost entirely the snapshot + release blast radius), plus
+an LLM reviewer having no natural zero — severity converged (data-integrity P1s → advisory P2s),
+count never will. **Ruling: the 2C-3 stopping rule applies from round 6 — findings are triaged to
+issues unless they are correctness, concurrency, or data-integrity defects; after round 6's
+fixes, further findings become issues only, and the owner squash-merges.** Round 6 itself (seven
+findings): FIXED — cert PDFs print frozen identity throughout (parts table + serial blocks now
+agree with the requirement headings; released rows merge at frozen positions, matching the
+seeded order); every credit-hold check claims the Customer row (the house rule applied — a
+concurrently committed hold was invisible to the unlocked read, at creation AND extension; the
+discriminating holder-race test is in shipper-children.test.ts); order removal refuses once ANY
+shipment-owned paper printed (BOL included — it lists order numbers permanently); `loadNumber`
+bounded to INT4_MAX (500 → field 400). DEFERRED — #52 whole-shipment document coverage vs
+current membership (design: persist coverage / freeze adds / mark stale — the add-after-print
+half of the BOL finding), #53 scope-matched missing-cert warnings, #54 edit-response
+warning recompute (shares a fix with #50). Gates after round 6: **1392 tests**,
+`tsc`/`eslint`/`build` clean, E2E 15/15.
 
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
 mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
