@@ -59,6 +59,7 @@ export type ShipperOrder = {
 export type ShipperDetail = {
   id: string; shipperNumber: number; bolNumber: number | null;
   customerId: string; customerCode: string; customerName: string;
+  customerCreditHold: boolean;
   shipToAddressId: string | null; shipDate: string;
   carrierId: string | null; carrierName: string | null; route: string; comments: string;
   billFreight: boolean;
@@ -190,6 +191,7 @@ export function ShipmentDetail({ id }: { id: string }) {
   const [catalogs, setCatalogs] = useState<Map<string, OrderCatalog>>(new Map());
   const [addOrderChoice, setAddOrderChoice] = useState("");
   const [addingOrder, setAddingOrder] = useState(false);
+  const [creditHoldReason, setCreditHoldReason] = useState("");
   // undefined = fetched but no reason could be resolved (missing admin.view, the fetch failed, or
   // the latest entry wasn't a delete) — the order hub `voidReason` precedent. null = not
   // applicable (shipment isn't voided).
@@ -230,6 +232,15 @@ export function ShipmentDetail({ id }: { id: string }) {
   const docsGate = gate(perms, "shipping.view");
   const voided = (shipper?.deletedAt ?? null) !== null;
   const editGate = voidLocked(gate(perms, "shipping.edit"), voided);
+  // §5.4 extended to shipment extension (owner ruling 2026-08-06): adding orders and replacing
+  // lines on a HELD customer's shipment needs override_credit_hold + a reason. NewShipment's own
+  // shape — a disabled control says why, an allowed override renders the reason field.
+  const overrideGate = gateDo(perms, "override_credit_hold");
+  const held = shipper?.customerCreditHold ?? false;
+  const extendGate: Gate = held && editGate.allowed && !overrideGate.allowed
+    ? { allowed: false, disabled: true,
+        title: `${shipper?.customerCode} · ${shipper?.customerName} is on credit hold — adding orders or changing lines requires the override_credit_hold action` }
+    : editGate;
   const voidGate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
     : gateDo(perms, "void_shipper");
@@ -443,7 +454,10 @@ export function ShipmentDetail({ id }: { id: string }) {
     setAddingOrder(true);
     try {
       await applyMutation(() => api<ShipperMutationResult>(
-        `/api/shippers/${id}/orders`, { method: "POST", body: JSON.stringify({ orderId: addOrderChoice }) }));
+        `/api/shippers/${id}/orders`, { method: "POST", body: JSON.stringify({
+          orderId: addOrderChoice,
+          ...(held && overrideGate.allowed && creditHoldReason.trim() ? { creditHoldReason: creditHoldReason.trim() } : {}),
+        }) }));
       setAddOrderChoice("");
       setError(null);
     } catch (e) {
@@ -711,19 +725,29 @@ export function ShipmentDetail({ id }: { id: string }) {
         <h2 className="mb-2 font-medium">Add order</h2>
         <div className="flex flex-wrap items-center gap-2">
           <select value={addOrderChoice} onChange={(e) => setAddOrderChoice(e.target.value)}
-                  disabled={editGate.disabled || addableOrders.length === 0}
-                  title={editGate.allowed ? undefined : editGate.title}
+                  disabled={extendGate.disabled || addableOrders.length === 0}
+                  title={extendGate.allowed ? undefined : extendGate.title}
                   className="rounded border px-2 py-1 text-sm disabled:cursor-not-allowed disabled:bg-slate-100">
             <option value="">{addableOrders.length === 0 ? "No unshipped orders for this customer" : "Choose an order…"}</option>
             {addableOrders.map((o) => (
               <option key={o.id} value={o.id}>#{o.orderNumber}{o.poNumber ? ` · PO ${o.poNumber}` : ""}</option>
             ))}
           </select>
-          <button onClick={() => void addOrder()} disabled={editGate.disabled || !addOrderChoice || addingOrder}
-                  title={editGate.allowed ? undefined : editGate.title}
+          <button onClick={() => void addOrder()}
+                  disabled={extendGate.disabled || !addOrderChoice || addingOrder
+                    || (held && overrideGate.allowed && !creditHoldReason.trim())}
+                  title={extendGate.allowed
+                    ? (held && overrideGate.allowed && !creditHoldReason.trim()
+                        ? "A reason is required to override the credit hold" : undefined)
+                    : extendGate.title}
                   className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
             {addingOrder ? "Adding…" : "Add order"}
           </button>
+          {held && overrideGate.allowed && !voided && (
+            <input value={creditHoldReason} onChange={(e) => setCreditHoldReason(e.target.value)}
+                   placeholder={`${shipper?.customerCode} is on credit hold — override reason (required)`}
+                   className="min-w-72 rounded border px-2 py-1 text-sm" />
+          )}
         </div>
       </section>
 
@@ -734,7 +758,9 @@ export function ShipmentDetail({ id }: { id: string }) {
       {shipper.orders.map((so) => (
         <ShipmentOrderPanel
           key={so.id} shipperId={id} order={so} catalog={catalogs.get(so.orderId)}
-          editGate={editGate} applyMutation={applyMutation} onError={setError}
+          editGate={editGate} linesGate={extendGate}
+          creditHoldReason={held && overrideGate.allowed ? creditHoldReason.trim() : ""}
+          applyMutation={applyMutation} onError={setError}
           onRemove={() => void removeOrder(so.id, so.label)}
           printGate={printGate} printing={printing} certsGate={certsGate}
           onPrintTicket={(certWanted) => void printTicket(so.orderId, certWanted)}

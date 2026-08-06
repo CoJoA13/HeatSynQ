@@ -40,11 +40,16 @@ function SaveButton({ label, gate, dirty, onSave }: {
 // -------------------------------------------------------------------------------------------
 
 function LinesGrid({
-  shipperId, shipperOrderId, lines, shippedToDate, catalog, editGate, applyMutation, onError,
+  shipperId, shipperOrderId, lines, shippedToDate, catalog, editGate, creditHoldReason, applyMutation, onError,
 }: {
   shipperId: string; shipperOrderId: string; lines: ShipperOrder["lines"];
   shippedToDate: ShipperOrder["orderLineShippedToDate"];
-  catalog: OrderCatalog | undefined; editGate: Gate; applyMutation: ApplyMutation;
+  /** Already the extension gate when the customer is held (ShipmentDetail's `extendGate`) —
+   *  §5.4 extended to line replacement, owner ruling 2026-08-06. */
+  catalog: OrderCatalog | undefined; editGate: Gate;
+  /** Non-empty exactly when a held customer's save should carry the override reason. */
+  creditHoldReason: string;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<LineFields>();
@@ -99,7 +104,8 @@ function LinesGrid({
     }
     try {
       await applyMutation(() => api<ShipperMutationResult>(
-        `/api/shippers/${shipperId}/orders/${shipperOrderId}/lines`, { method: "PUT", body: JSON.stringify(payload) }));
+        `/api/shippers/${shipperId}/orders/${shipperOrderId}/lines`,
+        { method: "PUT", body: JSON.stringify(creditHoldReason ? { lines: payload, creditHoldReason } : payload) }));
       grid.reset();
       onError(null);
     } catch (e) {
@@ -225,11 +231,17 @@ function SerialsGrid({
 // -------------------------------------------------------------------------------------------
 
 export function ShipmentOrderPanel({
-  shipperId, order, catalog, editGate, applyMutation, onError, onRemove,
+  shipperId, order, catalog, editGate, linesGate, creditHoldReason, applyMutation, onError, onRemove,
   printGate, printing, certsGate, onPrintTicket,
 }: {
   shipperId: string; order: ShipperOrder; catalog: OrderCatalog | undefined;
-  editGate: Gate; applyMutation: ApplyMutation;
+  editGate: Gate;
+  /** The extension gate for the lines grid — editGate tightened when the customer is on credit
+   *  hold and the viewer lacks override_credit_hold (§5.4 extension ruling, 2026-08-06). */
+  linesGate: Gate;
+  /** Trimmed override reason to ride line saves for a held customer ("" otherwise). */
+  creditHoldReason: string;
+  applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
   onRemove: () => void;
   /** Ticket printing went live with Task 18 — the gate, the shared in-flight flag and the POST
@@ -254,8 +266,9 @@ export function ShipmentOrderPanel({
       </div>
 
       <LinesGrid shipperId={shipperId} shipperOrderId={order.id} lines={order.lines}
+                 creditHoldReason={creditHoldReason}
                  shippedToDate={order.orderLineShippedToDate} catalog={catalog}
-                 editGate={editGate} applyMutation={applyMutation} onError={onError} />
+                 editGate={linesGate} applyMutation={applyMutation} onError={onError} />
       <div className="my-4 border-t" />
       <ContainersGrid shipperId={shipperId} shipperOrderId={order.id} containers={order.containers} catalog={catalog}
                        editGate={editGate} applyMutation={applyMutation} onError={onError} />

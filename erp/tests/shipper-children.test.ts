@@ -639,3 +639,67 @@ describe("composition: claim discipline (module-boundary mock)", () => {
       .toEqual(orders.map((o) => o.id).sort());
   });
 });
+
+// -------------------------------------------------------------------------------------------
+// Credit hold gates shipment EXTENSION (owner ruling 2026-08-06, PR #47 round 3): a hold set
+// after a shipment exists must not be bypassable by adding orders or replacing lines — the two
+// paths that add shipped work. Same §5.4 shape as creation: named + linked refusal;
+// override_credit_hold + a reason (recorded in the audit entry) proceeds.
+// -------------------------------------------------------------------------------------------
+describe("credit hold gates shipment extension", () => {
+  beforeEach(truncateAll);
+
+  async function heldShipmentPlusSpare() {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    await prisma.customer.update({
+      where: { id: (await prisma.shipper.findUniqueOrThrow({ where: { id: shipper.id } })).customerId },
+      data: { creditHold: true },
+    });
+    return { shipper, orderB };
+  }
+
+  it("addOrderToShipper refuses on a held customer without the override, naming the customer", async () => {
+    const { shipper, orderB } = await heldShipmentPlusSpare();
+    await expect(addOrderToShipper(shipper.id, orderB.id)).rejects.toThrow(/credit hold/i);
+  });
+
+  it("addOrderToShipper proceeds with the override and records the reason in the audit entry", async () => {
+    const { shipper, orderB } = await heldShipmentPlusSpare();
+    const after = await addOrderToShipper(shipper.id, orderB.id,
+      { canOverrideCreditHold: true }, "owner approved by phone");
+    expect(after.orders).toHaveLength(2);
+    const [entry] = await readAudit("shipper", shipper.id);
+    expect(entry.reason).toBe("owner approved by phone");
+  });
+
+  it("addOrderToShipper with the override still requires a reason", async () => {
+    const { shipper, orderB } = await heldShipmentPlusSpare();
+    await expect(addOrderToShipper(shipper.id, orderB.id, { canOverrideCreditHold: true }))
+      .rejects.toThrow(/reason/i);
+  });
+
+  it("replaceShipperLines refuses on a held customer without the override", async () => {
+    const { shipper } = await heldShipmentPlusSpare();
+    const so = shipper.orders[0];
+    await expect(replaceShipperLines(shipper.id, so.id,
+      [{ orderLineId: so.lines[0].orderLineId!, qty: 9, weight: "9.00", lineComplete: false }]))
+      .rejects.toThrow(/credit hold/i);
+  });
+
+  it("replaceShipperLines proceeds with the override + reason, recording it", async () => {
+    const { shipper } = await heldShipmentPlusSpare();
+    const so = shipper.orders[0];
+    const after = await replaceShipperLines(shipper.id, so.id, {
+      lines: [{ orderLineId: so.lines[0].orderLineId!, qty: 9, weight: "9.00", lineComplete: false }],
+      creditHoldReason: "owner approved",
+    }, { canOverrideCreditHold: true });
+    expect(after.orders[0].lines[0].qty).toBe(9);
+    const [entry] = await readAudit("shipper", shipper.id);
+    expect(entry.reason).toBe("owner approved");
+  });
+
+  it("stays un-gated for a customer not on hold", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    await expect(addOrderToShipper(shipper.id, orderB.id)).resolves.toBeTruthy();
+  });
+});

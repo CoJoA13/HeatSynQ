@@ -60,6 +60,8 @@ export type ShipperOrderDetail = {
 export type ShipperDetail = {
   id: string; shipperNumber: number; bolNumber: number | null;
   customerId: string; customerCode: string; customerName: string;
+  /** The §5.4 gate's UI signal — extension mutators refuse without the override when set. */
+  customerCreditHold: boolean;
   shipToAddressId: string | null; shipDate: string;
   carrierId: string | null; carrierName: string | null; route: string; comments: string;
   billFreight: boolean; freightAmount: number | null; freightTerms: FreightTermsValue;
@@ -226,7 +228,7 @@ function auditPayload(args: {
 }
 
 const DETAIL_INCLUDE = {
-  customer: { select: { code: true, name: true } },
+  customer: { select: { code: true, name: true, creditHold: true } },
   carrier: { select: { name: true } },
   orders: {
     orderBy: { position: "asc" },
@@ -275,6 +277,7 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
   return {
     id: row.id, shipperNumber: row.shipperNumber, bolNumber: row.bolNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
+    customerCreditHold: row.customer.creditHold,
     shipToAddressId: row.shipToAddressId, shipDate: formatDateOnly(row.shipDate),
     carrierId: row.carrierId, carrierName: row.carrier?.name ?? null,
     route: row.route, comments: row.comments,
@@ -786,6 +789,30 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
 }
 
 /**
+ * The §5.4 credit-hold gate, extended to shipment EXTENSION (owner ruling 2026-08-06, PR #47
+ * round 3): `addOrderToShipper` and `replaceShipperLines` are the two paths that add shipped
+ * work, so a hold set AFTER a shipment exists gates them exactly as creation is gated — named +
+ * linked refusal; `override_credit_hold` plus a reason (returned for the mutator's audit entry,
+ * printed nowhere) proceeds. Read on `tx` AFTER the claims, so the hold state is fresh.
+ */
+async function creditHoldGate(
+  tx: Prisma.TransactionClient, customerId: string,
+  opts: { canOverrideCreditHold: boolean }, reason: string | undefined,
+): Promise<string | undefined> {
+  const customer = await tx.customer.findFirst({
+    where: { id: customerId }, select: { id: true, code: true, name: true, creditHold: true },
+  });
+  if (!customer || !customer.creditHold) return undefined;
+  if (!opts.canOverrideCreditHold) {
+    throw new HttpError(400,
+      `${customer.code} · ${customer.name} is on credit hold — see /customers/${customer.id} to lift it`);
+  }
+  const trimmed = (reason ?? "").trim();
+  if (!trimmed) throw new HttpError(400, "A reason is required to override a credit hold");
+  return trimmed;
+}
+
+/**
  * Attaches one more order of the SAME customer to the shipment (spec §4.2's emergent multi-order
  * shipment) — its own `sequence` (this order's Nth shipment ever, `nextShipmentSequence`) and the
  * next `position` (print order of the tickets, `MAX(position) + 1`; positions stay contiguous
@@ -805,9 +832,14 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
  * — not the generic, mislabelled `withDbErrors` P2002 fallback the Task 8 review's own lesson
  * warns against ("a refusal naming a problem that did not exist").
  */
-export async function addOrderToShipper(id: string, orderId: string): Promise<ShipperDetail> {
+export async function addOrderToShipper(
+  id: string, orderId: string,
+  opts: { canOverrideCreditHold: boolean } = { canOverrideCreditHold: false },
+  creditHoldReason?: string,
+): Promise<ShipperDetail> {
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
     const { shipper, claimed } = await claimLiveShipper(tx, id, [orderId]);
+    const overrideReason = await creditHoldGate(tx, shipper.customerId, opts, creditHoldReason);
     const allOrderIds = claimed.map((o) => o.id); // current orders + the incoming one, deduplicated
     const order = claimed.find((o) => o.id === orderId);
     if (!order) throw new HttpError(404, "Order not found");
@@ -827,7 +859,7 @@ export async function addOrderToShipper(id: string, orderId: string): Promise<Sh
       await auditedUpdate("shipper", id, () => tx.shipperOrder.create({
         data: { shipperId: id, orderId, sequence, position },
         select: { id: true },
-      }), { tx });
+      }), { tx, ...(overrideReason ? { reason: overrideReason } : {}) });
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
         throw new HttpError(409, "Another change to this shipment was saved at the same time — please try again");
@@ -1006,11 +1038,23 @@ export function overshipWarnings(detail: ShipperDetail): string[] {
  * blocks (spec §5.7): `overshipWarnings` above is what a caller uses to see it in the fresh detail
  * this function returns.
  */
-export async function replaceShipperLines(id: string, shipperOrderId: string, input: unknown): Promise<ShipperDetail> {
-  const data = z.array(SHIP_LINE).parse(input);
+export async function replaceShipperLines(
+  id: string, shipperOrderId: string, input: unknown,
+  opts: { canOverrideCreditHold: boolean } = { canOverrideCreditHold: false },
+): Promise<ShipperDetail> {
+  // A bare array (the original shape, every non-held caller) or the wrapped form carrying the
+  // §5.4 override reason — the reason has to ride the payload because a PUT of lines is the
+  // mutation being overridden, not a separate action.
+  const parsed = z.union([
+    z.array(SHIP_LINE),
+    z.object({ lines: z.array(SHIP_LINE), creditHoldReason: z.string().max(1000).optional() }).strict(),
+  ]).parse(input);
+  const data = Array.isArray(parsed) ? parsed : parsed.lines;
+  const creditHoldReason = Array.isArray(parsed) ? undefined : parsed.creditHoldReason;
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    const { orderIds, claimed } = await claimLiveShipper(tx, id);
+    const { shipper, orderIds, claimed } = await claimLiveShipper(tx, id);
+    const overrideReason = await creditHoldGate(tx, shipper.customerId, opts, creditHoldReason);
     const so = await findShipperOrder(tx, id, shipperOrderId);
     const order = claimed.find((o) => o.id === so.orderId)!;
 
@@ -1066,7 +1110,7 @@ export async function replaceShipperLines(id: string, shipperOrderId: string, in
           }),
         });
       }
-    }, { tx });
+    }, { tx, ...(overrideReason ? { reason: overrideReason } : {}) });
 
     await recomputeOrderStatus(tx, orderIds);
     return readShipperDetail(tx, id);
