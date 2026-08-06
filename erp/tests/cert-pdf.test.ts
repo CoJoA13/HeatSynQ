@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, voidOrder, type OrderDetail } from "@/server/orders";
 import {
   createCert, printCert, readCertPdfData, certPrintSettings, voidCert, updateCert, type CertDetail,
 } from "@/server/certs";
@@ -334,6 +334,16 @@ describe("printCert", () => {
   it("404s a cert that does not exist", async () => {
     const user = await makeSigner("png");
     await expect(asSystem(() => printCert("nope", user.id))).rejects.toThrow(/not found/i);
+  });
+
+  it("refuses to print a live cert whose OWNING ORDER is voided, keeping stored prints readable", async () => {
+    const { cert, order, user } = await certWithReadings({});
+    const printed = await asSystem(() => printCert(cert.id, user.id));
+    // voidOrder leaves ORDER/LOAD-scope certs live — but a voided order must produce no NEW
+    // paper of any kind (spec §5.6's voided-print rule, the same one the cert's own void gets).
+    await asSystem(() => voidOrder(order.id, "customer cancelled"));
+    await expect(asSystem(() => printCert(cert.id, user.id))).rejects.toThrow(VOIDED_PRINT);
+    expect((await getDocument(printed.documentId)).fileData.length).toBeGreaterThan(0);
   });
 
   it("prints shipment-scope quantities and the sequenced order label", async () => {

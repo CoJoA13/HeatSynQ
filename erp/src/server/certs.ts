@@ -612,10 +612,15 @@ export async function printCert(
   const printDate = formatDateOnly(todayDateOnly());
 
   return withDbErrors({ entity: "Cert" }, () => prisma.$transaction(async (tx) => {
-    await claimCertsOrder(tx, certId); // 404s a missing cert, claims its order row
+    const { orderId } = await claimCertsOrder(tx, certId); // 404s a missing cert, claims its order row
     const cert = await tx.cert.findFirst({ where: { id: certId } });
     if (!cert) throw new HttpError(404, "Certification not found");
     assertPrintable(cert);
+    // The OWNING ORDER's void refuses new paper too (spec §5.6): `voidOrder` leaves ORDER/LOAD
+    // certs live, so the cert's own `deletedAt` alone cannot carry the rule. Read fresh under
+    // the claim just taken — the house rule's whole point.
+    const owner = await tx.order.findFirst({ where: { id: orderId }, select: { deletedAt: true } });
+    assertPrintable(owner ?? { deletedAt: new Date(0) });
 
     const signer = await tx.user.findFirst({
       where: { id: signerUserId },
