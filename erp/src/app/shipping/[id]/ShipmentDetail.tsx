@@ -16,6 +16,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
 import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
@@ -199,13 +200,18 @@ export function ShipmentDetail({ id }: { id: string }) {
   // replaces the whole `shipper` state, so overlapping calls race and the ticket ensures the
   // winner is whichever call is genuinely newest, not whichever happens to answer last.
   const mutations = useMutationGate();
+  // Every set-from-server-detail below routes through `editGuard.merge` so an arriving detail —
+  // another header field's PATCH response, a grid save, or §5.13's rollback `load()` — never
+  // resets the header text field the user is actively typing in (use-edit-guard.ts; the fix-wave
+  // notes-clobber trio, of which CertDetail.tsx and customers/[id]/page.tsx carry the same shape).
+  const editGuard = useEditGuard();
 
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<ShipperMutationResult>(`/api/shippers/${id}`);
-    if (mutations.accept(ticket)) { setShipper(res.shipper); setWarnings(res.warnings); }
+    if (mutations.accept(ticket)) { setShipper((cur) => editGuard.merge(cur, res.shipper)); setWarnings(res.warnings); }
     return res.shipper;
-  }, [id, mutations]);
+  }, [id, mutations, editGuard]);
   useEffect(() => {
     load().then(() => setError(null)).catch((e) => setError((e as Error).message));
   }, [load]);
@@ -214,9 +220,9 @@ export function ShipmentDetail({ id }: { id: string }) {
     const ticket = mutations.next();
     const res = await run();
     if (!mutations.accept(ticket)) return;
-    setShipper(res.shipper);
+    setShipper((cur) => editGuard.merge(cur, res.shipper));
     setWarnings(res.warnings);
-  }, [mutations]);
+  }, [mutations, editGuard]);
 
   const customersGate = gate(perms, "customers.view");
   const ordersGate = gate(perms, "orders.view");
@@ -414,16 +420,9 @@ export function ShipmentDetail({ id }: { id: string }) {
     });
   }
 
-  // Blur-save guard (customers/[id]/page.tsx precedent): a text field that saved unconditionally
-  // on blur would PATCH (and audit) every simple tab-through even when nothing changed.
-  const focusedValue = useRef("");
-  const onFocusRemember = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    focusedValue.current = e.target.value;
-  };
-  function onBlurSave(e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>, commit: (value: string) => void) {
-    if (e.target.value === focusedValue.current) return;
-    commit(e.target.value);
-  }
+  // Blur-save guard and focused-field tracking are both `editGuard`'s (use-edit-guard.ts): the
+  // no-op guard is unchanged, and the focus handler now also names which header field is under
+  // the cursor so `merge` above can preserve it.
   function commitFreightAmount(value: string) {
     const trimmed = value.trim();
     void patchHeader({ freightAmount: trimmed === "" ? null : trimmed });
@@ -582,16 +581,16 @@ export function ShipmentDetail({ id }: { id: string }) {
           </label>
           <label className="block">
             Route
-            <input value={shipper.route} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+            <input value={shipper.route} onFocus={editGuard.onFocusField("route")} readOnly={!editGate.allowed} title={editGate.title}
                    onChange={(e) => setShipper({ ...shipper, route: e.target.value })}
-                   onBlur={(e) => onBlurSave(e, (route) => void patchHeader({ route }))}
+                   onBlur={(e) => editGuard.onBlurSave(e, (route) => void patchHeader({ route }))}
                    className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="col-span-2 block md:col-span-3">
             Comments
-            <textarea value={shipper.comments} rows={2} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+            <textarea value={shipper.comments} rows={2} onFocus={editGuard.onFocusField("comments")} readOnly={!editGate.allowed} title={editGate.title}
                       onChange={(e) => setShipper({ ...shipper, comments: e.target.value })}
-                      onBlur={(e) => onBlurSave(e, (comments) => void patchHeader({ comments }))}
+                      onBlur={(e) => editGuard.onBlurSave(e, (comments) => void patchHeader({ comments }))}
                       className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
           </label>
         </div>
@@ -606,10 +605,10 @@ export function ShipmentDetail({ id }: { id: string }) {
             </label>
             <label className="block">
               Freight amount
-              <input value={String(shipper.freightAmount ?? "")} inputMode="decimal" onFocus={onFocusRemember}
+              <input value={String(shipper.freightAmount ?? "")} inputMode="decimal" onFocus={editGuard.onFocusField("freightAmount")}
                      readOnly={!editGate.allowed} title={editGate.title}
                      onChange={(e) => setShipper({ ...shipper, freightAmount: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, commitFreightAmount)}
+                     onBlur={(e) => editGuard.onBlurSave(e, commitFreightAmount)}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
             <label className="block">
@@ -622,38 +621,38 @@ export function ShipmentDetail({ id }: { id: string }) {
             </label>
             <label className="block">
               Freight class
-              <input value={shipper.freightClass} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+              <input value={shipper.freightClass} onFocus={editGuard.onFocusField("freightClass")} readOnly={!editGate.allowed} title={editGate.title}
                      onChange={(e) => setShipper({ ...shipper, freightClass: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, (freightClass) => void patchHeader({ freightClass }))}
+                     onBlur={(e) => editGuard.onBlurSave(e, (freightClass) => void patchHeader({ freightClass }))}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
             <label className="col-span-2 block">
               Freight description
-              <input value={shipper.freightDescription} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+              <input value={shipper.freightDescription} onFocus={editGuard.onFocusField("freightDescription")} readOnly={!editGate.allowed} title={editGate.title}
                      onChange={(e) => setShipper({ ...shipper, freightDescription: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, (freightDescription) => void patchHeader({ freightDescription }))}
+                     onBlur={(e) => editGuard.onBlurSave(e, (freightDescription) => void patchHeader({ freightDescription }))}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
             <label className="block">
               Package count
-              <input value={packageCountDisplay} inputMode="numeric" onFocus={onFocusRemember}
+              <input value={packageCountDisplay} inputMode="numeric" onFocus={editGuard.onFocusField("packageCount")}
                      readOnly={!editGate.allowed} title={editGate.allowed ? "Blank uses the current container count" : editGate.title}
                      onChange={(e) => setShipper({ ...shipper, packageCount: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, commitPackageCount)}
+                     onBlur={(e) => editGuard.onBlurSave(e, commitPackageCount)}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
             <label className="block">
               Pro no
-              <input value={shipper.proNumber} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+              <input value={shipper.proNumber} onFocus={editGuard.onFocusField("proNumber")} readOnly={!editGate.allowed} title={editGate.title}
                      onChange={(e) => setShipper({ ...shipper, proNumber: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, (proNumber) => void patchHeader({ proNumber }))}
+                     onBlur={(e) => editGuard.onBlurSave(e, (proNumber) => void patchHeader({ proNumber }))}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
             <label className="block">
               SCAC
-              <input value={shipper.scacCode} onFocus={onFocusRemember} readOnly={!editGate.allowed} title={editGate.title}
+              <input value={shipper.scacCode} onFocus={editGuard.onFocusField("scacCode")} readOnly={!editGate.allowed} title={editGate.title}
                      onChange={(e) => setShipper({ ...shipper, scacCode: e.target.value })}
-                     onBlur={(e) => onBlurSave(e, (scacCode) => void patchHeader({ scacCode }))}
+                     onBlur={(e) => editGuard.onBlurSave(e, (scacCode) => void patchHeader({ scacCode }))}
                      className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
             </label>
           </div>

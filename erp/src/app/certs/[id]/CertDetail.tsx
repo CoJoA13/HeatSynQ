@@ -13,12 +13,13 @@
 // truth, discard the block's draft (bumpReset remounts it), then show the error. Every mutating
 // call on this page answers with the ENTIRE fresh CertDetail, so all of them share ONE monotonic
 // mutation-ticket sequence (`useMutationGate`, fix-wave R4 finding 6).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useMutationGate } from "@/lib/use-latest";
+import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { RequirementBlock, type ReadingPayload } from "./RequirementBlock";
@@ -161,13 +162,18 @@ export function CertDetail({ id }: { id: string }) {
   // mutating call here replaces the whole `cert` state, so overlapping calls race and the ticket
   // ensures the winner is whichever is genuinely newest (the ShipmentDetail.tsx precedent).
   const mutations = useMutationGate();
+  // Every set-from-server-detail below routes through `editGuard.merge` so an arriving detail —
+  // a sibling field's PATCH response, or §5.13's rollback `load()` — never resets the notes field
+  // the user is actively typing in (use-edit-guard.ts; the fix-wave notes-clobber trio, of which
+  // ShipmentDetail.tsx and customers/[id]/page.tsx carry the same shape).
+  const editGuard = useEditGuard();
 
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const detail = await api<CertDetailData>(`/api/certs/${id}`);
-    if (mutations.accept(ticket)) setCert(detail);
+    if (mutations.accept(ticket)) setCert((cur) => editGuard.merge(cur, detail));
     return detail;
-  }, [id, mutations]);
+  }, [id, mutations, editGuard]);
   useEffect(() => {
     load().then(() => setError(null)).catch((e) => setError((e as Error).message));
   }, [load]);
@@ -175,8 +181,8 @@ export function CertDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<CertDetailData>) => {
     const ticket = mutations.next();
     const detail = await run();
-    if (mutations.accept(ticket)) setCert(detail);
-  }, [mutations]);
+    if (mutations.accept(ticket)) setCert((cur) => editGuard.merge(cur, detail));
+  }, [mutations, editGuard]);
 
   const voided = (cert?.deletedAt ?? null) !== null;
   const printed = (cert?.printedAt ?? null) !== null;
@@ -225,16 +231,9 @@ export function CertDetail({ id }: { id: string }) {
     }
   }
 
-  // Blur-save guard (customers/[id]/page.tsx precedent): a field that saved unconditionally on
-  // blur would PATCH (and audit) every simple tab-through even when nothing changed.
-  const focusedValue = useRef("");
-  const onFocusRemember = (e: React.FocusEvent<HTMLTextAreaElement>) => {
-    focusedValue.current = e.target.value;
-  };
-  function onBlurSave(e: React.FocusEvent<HTMLTextAreaElement>, commit: (value: string) => void) {
-    if (e.target.value === focusedValue.current) return;
-    commit(e.target.value);
-  }
+  // Blur-save guard and focused-field tracking are both `editGuard`'s (use-edit-guard.ts): the
+  // no-op guard is unchanged, and the focus handler now also names which notes field is under the
+  // cursor so `merge` above can preserve it.
 
   // ---- Readings: non-optimistic per-requirement save (merge semantics — only the named
   // requirement's readings are replaced; every other requirement is untouched server-side) ----
@@ -469,10 +468,10 @@ export function CertDetail({ id }: { id: string }) {
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block">
             <span>Freeform <span className="text-xs text-slate-500">(prints on the certification)</span></span>
-            <textarea value={cert.freeform} rows={4} onFocus={onFocusRemember}
+            <textarea value={cert.freeform} rows={4} onFocus={editGuard.onFocusField("freeform")}
                       readOnly={!notesGate.allowed} title={notesGate.title}
                       onChange={(e) => setCert({ ...cert, freeform: e.target.value })}
-                      onBlur={(e) => onBlurSave(e, (freeform) => void patchNotes({ freeform }))}
+                      onBlur={(e) => editGuard.onBlurSave(e, (freeform) => void patchNotes({ freeform }))}
                       className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
           </label>
           <label className="block">
@@ -482,10 +481,10 @@ export function CertDetail({ id }: { id: string }) {
                 never printed
               </span>
             </span>
-            <textarea value={cert.internalNotes} rows={4} onFocus={onFocusRemember}
+            <textarea value={cert.internalNotes} rows={4} onFocus={editGuard.onFocusField("internalNotes")}
                       readOnly={!notesGate.allowed} title={notesGate.title}
                       onChange={(e) => setCert({ ...cert, internalNotes: e.target.value })}
-                      onBlur={(e) => onBlurSave(e, (internalNotes) => void patchNotes({ internalNotes }))}
+                      onBlur={(e) => editGuard.onBlurSave(e, (internalNotes) => void patchNotes({ internalNotes }))}
                       className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
           </label>
         </div>
