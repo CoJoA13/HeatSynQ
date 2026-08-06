@@ -345,11 +345,17 @@ export function CertDetail({ id }: { id: string }) {
   const groups: { linePosition: number; partNumber: string; partName: string; requirements: CertRequirementRow[] }[] = [];
   for (const req of cert.requirements) {
     const last = groups[groups.length - 1];
-    if (last && last.linePosition === req.linePosition) last.requirements.push(req);
-    else groups.push({
-      linePosition: req.linePosition,
-      partNumber: req.partNumber, partName: req.partName, requirements: [req],
-    });
+    // Full frozen identity, never linePosition alone — a freed position re-used by a later rider
+    // must not fold two parts into one block (#57 review; the PDF groups the same way).
+    if (last && last.linePosition === req.linePosition
+        && last.partNumber === req.partNumber && last.partName === req.partName) {
+      last.requirements.push(req);
+    } else {
+      groups.push({
+        linePosition: req.linePosition,
+        partNumber: req.partNumber, partName: req.partName, requirements: [req],
+      });
+    }
   }
 
   const subject = scopeSubject(cert);
@@ -450,7 +456,7 @@ export function CertDetail({ id }: { id: string }) {
         </p>
       )}
       {groups.map((group) => (
-        <section key={group.linePosition} className="mb-4 rounded border bg-white p-4">
+        <section key={`${group.linePosition}-${group.partNumber}`} className="mb-4 rounded border bg-white p-4">
           <h2 className="mb-3 font-medium">
             Line {group.linePosition} — <span className="font-mono">{group.partNumber}</span>
             <span className="ml-2 font-normal text-slate-600">{group.partName}</span>

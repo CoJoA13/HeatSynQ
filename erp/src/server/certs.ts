@@ -546,17 +546,21 @@ export async function readCertPdfData(
   // (`partDescription` stays live/blank: the snapshot deliberately carries identity, not prose.)
   const reqRows = await db.certRequirement.findMany({
     where: { certId },
-    orderBy: { linePosition: "asc" },
+    orderBy: [{ linePosition: "asc" }, { position: "asc" }],
     select: { orderLineId: true, linePosition: true, partNumber: true, partName: true },
   });
   type FrozenIdentity = { linePosition: number; partNumber: string; partName: string };
   const frozenByLineId = new Map<string, FrozenIdentity>();
-  const releasedByPosition = new Map<number, FrozenIdentity>();
+  // Keyed by the FULL frozen identity, never linePosition alone (#57 review, P1): removeLine
+  // frees positions and a later rider re-uses them, so two released lines — or a released line
+  // and a live one — can legally share a number without being the same part.
+  const releasedByIdentity = new Map<string, FrozenIdentity>();
   for (const r of reqRows) {
     if (r.orderLineId !== null) {
       if (!frozenByLineId.has(r.orderLineId)) frozenByLineId.set(r.orderLineId, r);
-    } else if (!releasedByPosition.has(r.linePosition)) {
-      releasedByPosition.set(r.linePosition, r);
+    } else {
+      const identity = `${r.linePosition}\u0000${r.partNumber}\u0000${r.partName}`;
+      if (!releasedByIdentity.has(identity)) releasedByIdentity.set(identity, r);
     }
   }
 
@@ -587,10 +591,10 @@ export async function readCertPdfData(
       },
     };
   });
-  for (const [linePosition, r] of releasedByPosition) {
+  for (const r of releasedByIdentity.values()) {
     // Quantities honest-blank: the live line — and any qty to print — is gone (round-5 rule).
     partRows.push({
-      key: linePosition,
+      key: r.linePosition,
       row: { qty: null, pounds: null, partNumber: r.partNumber, partName: r.partName, partDescription: "" },
     });
   }

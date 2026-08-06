@@ -222,14 +222,19 @@ function requirementBlock(r: CertRequirementBlock): Content {
  * deviates from it only where the sample's shape could not answer which part a grid certifies.
  */
 function requirementSection(d: CertPdfData): Content[] {
-  const distinctLines = new Set(d.requirements.map((r) => r.linePosition)).size;
-  if (distinctLines <= 1) return d.requirements.map(requirementBlock);
+  // Multi-part detection reads the PARTS TABLE, not the requirement rows (#57 review): a cert
+  // listing two parts where only one is inspected still needs its one grid attributed. The
+  // grouping key is the full frozen identity, never `linePosition` alone — `removeLine` frees
+  // positions and a later rider re-uses them (#57 review, P1), so two different parts can share
+  // a number; the composite keeps each part's readings under its own heading.
+  if (d.parts.length <= 1) return d.requirements.map(requirementBlock);
 
   const out: Content[] = [];
-  let current: number | null = null;
+  let current: string | null = null;
   for (const r of d.requirements) {
-    if (r.linePosition !== current) {
-      current = r.linePosition;
+    const identity = `${r.linePosition}\u0000${r.partNumber}\u0000${r.partName}`;
+    if (identity !== current) {
+      current = identity;
       out.push({ text: `${r.partNumber} — ${r.partName}`, bold: true, fontSize: 9.5, margin: [0, 6, 0, 2] });
     }
     out.push(requirementBlock(r));
