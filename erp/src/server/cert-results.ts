@@ -104,7 +104,6 @@ const DETAIL_INCLUDE = {
   requirements: {
     orderBy: { position: "asc" },
     include: {
-      orderLine: { select: { position: true, part: { select: { partNumber: true, name: true } } } },
       inspectionCode: { select: { name: true } },
       scale: { select: { name: true } },
       readings: { orderBy: { position: "asc" } },
@@ -132,10 +131,11 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
     material: row.order.lines[0]?.part.material?.name ?? "",
     receivedDate: formatDateOnly(row.order.receivedDate),
     requirements: row.requirements.map((r) => ({
+      // The SNAPSHOT unconditionally, never the live join (round-4 finding): a requirement's
+      // whole row is a frozen copy (min/max/sampleQty/location always were) — a later part rename
+      // or an earlier rider's removal must not shift a seeded certification's identity.
       id: r.id, orderLineId: r.orderLineId,
-      linePosition: r.orderLine?.position ?? r.linePosition,
-      partNumber: r.orderLine?.part.partNumber ?? r.partNumber,
-      partName: r.orderLine?.part.name ?? r.partName,
+      linePosition: r.linePosition, partNumber: r.partNumber, partName: r.partName,
       position: r.position, inspectionCodeId: r.inspectionCodeId, inspectionCodeName: r.inspectionCode.name,
       scaleId: r.scaleId, scaleName: r.scale?.name ?? null,
       min: num(r.min), max: num(r.max), sampleQty: r.sampleQty, location: r.location,

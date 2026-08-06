@@ -149,9 +149,12 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
         order: { select: { orderNumber: true, customer: { select: { code: true, name: true } } } },
         lines: { orderBy: { position: "asc" }, include: { orderLine: { select: { position: true } } } },
         containers: { orderBy: { position: "asc" } },
-        // ShipperSerial has no position of its own (a serial is either on the ticket or not), so
-        // its stable ordering key is the order serial it points at.
-        serials: { orderBy: { orderSerialId: "asc" } },
+        // ShipperSerial has no position of its own (a serial is either on the ticket or not),
+        // and `orderSerialId` stopped being a stable key when snapshot + release made it nullable
+        // (several released rows tie at null, and Postgres breaks the tie arbitrarily — an
+        // order-sensitive before/after diff then reports unchanged serials as modified). The
+        // snapshot column orders; `id` breaks a duplicate-serial tie deterministically.
+        serials: { orderBy: [{ serial: "asc" }, { id: "asc" }] },
       },
     },
   },

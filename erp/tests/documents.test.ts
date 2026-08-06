@@ -98,6 +98,19 @@ describe("storeDocument / listDocumentsForOrder", () => {
     expect((await listDocumentsForOrder(orderB.id)).map((d) => d.kind)).toEqual(["BOL"]);
   });
 
+  it("keeps a sibling order's own ticket off another order's list; whole-set tickets reach both", async () => {
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: orderA.id }, pdf("a")));
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("all")));
+
+    expect(await listDocumentsForOrder(orderA.id)).toHaveLength(2); // its own ticket + the whole set
+    const bDocs = await listDocumentsForOrder(orderB.id);
+    expect(bDocs).toHaveLength(1); // ONLY the whole-set ticket — A's own ticket is not B's paper
+    expect(bDocs[0].orderId).toBeNull();
+  });
+
   // Brief step 1, test 2.
   it("stores no bytes in the audit payload", async () => {
     const { order } = await oneOrder();

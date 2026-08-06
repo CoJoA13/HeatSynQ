@@ -6,8 +6,10 @@ import {
   type OrderDetail,
 } from "@/server/orders";
 import {
-  createShipper, voidShipper, getShipper, overshipWarnings, replaceShipperContainers, replaceShipperSerials,
+  createShipper, voidShipper, getShipper, updateShipper, overshipWarnings,
+  replaceShipperContainers, replaceShipperSerials,
 } from "@/server/shippers";
+import { readAudit } from "@/server/audit";
 import { createCert, getCert } from "@/server/certs";
 import { addPartInspection } from "@/server/part-inspections";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -264,6 +266,32 @@ describe("snapshot + release: order corrections after shipment references", () =
     expect(detail.orders[0].containers[0].typeName).toBe("Basket");
     expect(detail.orders[0].containers[0].customerContainerId).toBe("BIN-9");
     expect(detail.orders[0].containers[0].orderContainerId).toBeNull();
+  });
+
+  it("audits released serials in a deterministic order — the snapshot key, not the null FK", async () => {
+    const { order: base } = await savedOrder({ qty: 10 });
+    // Created "SN-B" FIRST, "SN-A" second: an ordering that leans on insertion order stays RED.
+    const sB = await prisma.orderSerial.create({
+      data: { orderId: base.id, lineId: base.lines[0].id, position: 1, serial: "SN-B" },
+    });
+    const sA = await prisma.orderSerial.create({
+      data: { orderId: base.id, lineId: base.lines[0].id, position: 2, serial: "SN-A" },
+    });
+    const { shipper } = await createShipper({
+      customerId: base.customerId, shipDate: "2026-08-04",
+      orders: [{
+        orderId: base.id,
+        lines: [{ orderLineId: base.lines[0].id, qty: 5, weight: "5.00", lineComplete: false }],
+        containers: [],
+        serials: [{ orderSerialId: sB.id, printOnShipper: true }, { orderSerialId: sA.id, printOnShipper: true }],
+      }],
+    }, { canOverrideCreditHold: false });
+    await asSystem(() => replaceSerials(base.id, base.lines[0].id, [])); // releases both
+
+    await asSystem(() => updateShipper(shipper.id, { comments: "audited edit" }));
+    const [entry] = await readAudit("shipper", shipper.id);
+    const after = entry.after as { orders: { serials: { serial: string }[] }[] };
+    expect(after.orders[0].serials.map((s) => s.serial)).toEqual(["SN-A", "SN-B"]);
   });
 
   it("shipper-side container/serial replaces preserve released snapshot rows", async () => {

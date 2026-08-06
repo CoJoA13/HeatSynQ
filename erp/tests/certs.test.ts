@@ -302,6 +302,28 @@ describe("createCert", () => {
   });
 });
 
+describe("requirement identity is frozen at seed (ruling 24; round-4 finding)", () => {
+  beforeEach(truncateAll);
+
+  it("keeps the seeded part identity when the part is later renamed", async () => {
+    const { order, part } = await savedOrder();
+    const code = await prisma.inspectionCode.create({ data: { name: "FRZ-Hardness" } });
+    await asSystem(() => addPartInspection(part.id, { inspectionCodeId: code.id, sort: 0, min: 28, max: 32 }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    const seeded = cert.requirements[0];
+
+    await prisma.part.update({ where: { id: part.id }, data: { partNumber: "RENAMED-9", name: "Renamed Part" } });
+
+    // min/max/sampleQty/location were always frozen copies — the line identity freezes the same
+    // way, whether or not the OrderLine row still exists.
+    const after = await getCert(cert.id);
+    expect(after.requirements[0].partNumber).toBe(seeded.partNumber);
+    expect(after.requirements[0].partNumber).not.toBe("RENAMED-9");
+    expect(after.requirements[0].partName).toBe(seeded.partName);
+    expect(after.requirements[0].linePosition).toBe(seeded.linePosition);
+  });
+});
+
 describe("createCert at order save", () => {
   beforeEach(truncateAll);
 

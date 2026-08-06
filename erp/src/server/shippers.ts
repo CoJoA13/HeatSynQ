@@ -263,8 +263,9 @@ const DETAIL_INCLUDE = {
       },
       serials: {
         // The snapshot column, not `orderSerialId` — released rows carry a null id, which would
-        // make the sort unstable exactly when the fallback matters.
-        orderBy: { serial: "asc" },
+        // make the sort unstable exactly when the fallback matters. `id` breaks a
+        // duplicate-serial tie (same serial string on two lines is legal) deterministically.
+        orderBy: [{ serial: "asc" }, { id: "asc" }],
         include: { orderSerial: { select: { serial: true, description: true } } },
       },
     },
