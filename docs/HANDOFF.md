@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-05 — **Phase 4 (Certifications & Shipping) is COMPLETE on branch `phase-4-certs-shipping`** (all 21 tasks, both lanes folded in, gates green). What remains before merge is the finish sequence in §4a: the whole-branch review, one fix wave, and the PR. Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is PR-ready on `phase-4-certs-shipping` (PR #47)**: the finish sequence ran (whole-branch review, fix wave, PR), and both Codex review triage rounds are resolved — 14/14 threads, nine fixes on-branch including the owner-ratified **snapshot + release** schema amendment (spec ruling 23), four deferrals to issues #48–#51. Gates: 1370 tests, `tsc`/`eslint`/`build` clean, E2E 15/15. Phase 3 merged as `12a17f9` (PR #39).
 
 ---
 
@@ -84,6 +84,23 @@ rested on SSI accidents, and print-vs-void had no protection at all; both discri
 were verified RED pre-fix. The fix locks the cert/shipper row itself after the order claims, and
 `order-locks.ts`'s header now carries the resulting house rule: **the guarded state must live on,
 or be locked with, the claimed row** (Phase 5's reversing-shipment work will need it again).
+
+**PR #47 Codex review, two triage rounds (2026-08-06), all 14 threads resolved.** Round 1 (nine
+findings, all verified real): five fixed on the branch — `travelerPrinted` filtered to TRAVELER
+documents (a one-order shipping ticket also carries `orderId` now), BOL "No. Packages" falls back
+to the container-count sum, `addOrderToShipper` creates the shipment-scope cert it owed,
+removal refuses when the shipment-scope cert has printed (the cert carries `orderNumber-sequence`
+permanently), and `cert=1` print failures ride `x-print-warnings` instead of failing a request
+whose ticket already archived — and four deferred to issues **#48–#51** (shipping-list row links,
+signature byte validation, idempotent-replay warnings, add-order customer-switch race). Round 2
+(five findings, all real): removal keeps the positive-qty invariant against lineless-shell
+survivors, LOAD-scope cert creation requires a load the order currently has, the print bar links
+bundled cert PDFs directly (the shipment Documents list filters on `shipperId` and can never show
+a CERT document), and the two FK findings became the owner-ratified **snapshot + release**
+amendment — spec ruling 23, migration `20260806091506` (20 migrations total now). Standing owner
+rules from these rounds: run the Playwright E2E suite whenever a change touches any UI/flow, and
+update the appropriate docs as part of the work itself. Gates after round 2: **1370 tests**,
+`tsc`/`eslint`/`build` clean, E2E 15/15.
 
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
 mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
@@ -500,10 +517,9 @@ after the per-task reviews closed:
   in flight can reset text typed into its sibling field, byte-for-byte the same code on
   `CertDetail`, `ShipmentDetail`, and the customers page (reproduced live during Task 16's
   verification). Fix-wave candidate: fix all three together, never one.
-- **The shipment page's cert-print info line points at the wrong list**: after "Print all tickets"
-  with certs, it says the archived certifications are "in Documents below", but cert documents are
-  owned by `certId` and surface on the cert page and the order hubs — `listDocumentsForShipper`
-  filters on `shipperId` and never returns them (observed in Task 20's browser run; copy-only).
+- ~~**The shipment page's cert-print info line points at the wrong list**~~ (**FIXED in the PR #47
+  round-2 triage, 2026-08-06** — the print bar now renders direct `/api/documents/<id>` links from
+  `x-cert-document-ids`; Codex independently re-found this Task 20 observation as a P2.)
 - **The order hub's Documents list renders non-traveler kinds by raw enum name** ("SHIPPER",
   "BOL", "CERT") — its `KIND_LABELS` map only ever learned `TRAVELER`; the shipping and cert
   pages' own lists have friendly labels (cosmetic, observed in Task 20's flows).
@@ -512,6 +528,15 @@ after the per-task reviews closed:
   catalog payload (dead weight; trim or keep at the whole-branch review).
 - Assorted per-task §5.16 title gaps on state-disabled buttons and a missing 404/401 case on two
   document/print routes — all enumerated in the ledger under their tasks.
+
+**Deferred from the PR #47 Codex triage (2026-08-06), issues #48–#51** — all verified real, none
+data-integrity: #48 shipping worklist rows don't link to `/shipping/<id>`; #49 signature upload
+trusts the declared MIME, so corrupt bytes break that user's cert prints until the signature is
+cleared (the cert=1 route now survives it with a warning, which is also the regression test's
+failure injection); #50 the idempotent shipment-create replay returns `warnings: []`, dropping
+creation-only warnings exactly in the lost-response case the nonce exists for; #51 the new-shipment
+page's add-order response can land after a customer switch and append the old customer's order
+(server rejects the cross-customer save — UI dead-end only).
 
 **Toolchain upgrades blocked on what `eslint-config-next` vendors (2026-08-02).** Next 16 landed, and neither of the two remaining Dependabot majors can follow it yet. Both are blocked by packages bundled *inside* `eslint-config-next@16.2.12`, not by anything in this codebase:
 

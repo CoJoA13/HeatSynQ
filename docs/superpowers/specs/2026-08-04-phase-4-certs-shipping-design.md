@@ -214,6 +214,23 @@ cert charges, cert-by-process, template editing.
     something is built without a present-day user, and a future reviewer should know it was a
     decision and not an accident.
 
+### Amendment during PR #47 review (2026-08-06)
+
+23. **Snapshot + release — shipper children snapshot printed identity; their order-side FKs are
+    nullable `ON DELETE SET NULL`.** The original `RESTRICT` FKs from
+    `ShipperLine`/`ShipperContainer`/`ShipperSerial` to the order-side rows meant that once any
+    shipment (voided included — its children survive by §5.6) referenced an order's
+    line/container/serial, the order-correction APIs (`removeLine` after voiding every blocker,
+    `replaceContainers`, `replaceSerials`) died on a raw FK error — the documented void-then-correct
+    recovery path could not work. Owner ruled **snapshot + release** over "honest refusal": each
+    child captures at save time exactly what the paper prints (`partNumber`/`partName`/
+    `partDescription`/`orderedQty`/`orderedWeight`; `typeName`/`customerContainerId`;
+    `serial`/`description`), the FKs become nullable `SET NULL`, reads prefer the live join and
+    fall back to the snapshot once released. Voided-shipment history survives through the
+    snapshot; orders stay correctable through the APIs they always had. Migration
+    `20260806091506_shipper_children_snapshot_release` backfilled every existing row from the
+    joins `RESTRICT` had kept intact.
+
 **Settled by design, not by ruling:** when an order's part lines disagree about whether a cert is
 required, **any** line requiring one makes the order require one (a rider's requirement is never
 silently dropped); when they disagree about scope, the **lead** part's resolved scope wins (the lead
@@ -395,16 +412,23 @@ model ShipperOrder {
   @@index([orderId])
 }
 
+// Amended 2026-08-06 (ruling 23, snapshot + release): the three FKs to the order-side rows are
+// nullable ON DELETE SET NULL, and each child snapshots the identity it prints at save time.
 model ShipperLine {
-  id             String       @id @default(cuid())
-  shipperOrderId String
-  shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
-  orderLineId    String
-  orderLine      OrderLine    @relation(fields: [orderLineId], references: [id])
-  position       Int
-  qty            Int          // >= 0
-  weight         Decimal      @db.Decimal(12, 2)  // >= 0
-  lineComplete   Boolean      @default(false)
+  id              String       @id @default(cuid())
+  shipperOrderId  String
+  shipperOrder    ShipperOrder @relation(fields: [shipperOrderId], references: [id])
+  orderLineId     String?
+  orderLine       OrderLine?   @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  position        Int
+  qty             Int          // >= 0
+  weight          Decimal      @db.Decimal(12, 2)  // >= 0
+  lineComplete    Boolean      @default(false)
+  partNumber      String       // snapshot at save
+  partName        String       @default("")
+  partDescription String       @default("")
+  orderedQty      Int
+  orderedWeight   Decimal      @db.Decimal(12, 2)
 
   @@unique([shipperOrderId, position])
   @@unique([shipperOrderId, orderLineId])
@@ -412,13 +436,15 @@ model ShipperLine {
 }
 
 model ShipperContainer {
-  id               String         @id @default(cuid())
-  shipperOrderId   String
-  shipperOrder     ShipperOrder   @relation(fields: [shipperOrderId], references: [id])
-  orderContainerId String
-  orderContainer   OrderContainer @relation(fields: [orderContainerId], references: [id])
-  position         Int
-  count            Int
+  id                  String          @id @default(cuid())
+  shipperOrderId      String
+  shipperOrder        ShipperOrder    @relation(fields: [shipperOrderId], references: [id])
+  orderContainerId    String?
+  orderContainer      OrderContainer? @relation(fields: [orderContainerId], references: [id], onDelete: SetNull)
+  position            Int
+  count               Int
+  typeName            String          // snapshot at save
+  customerContainerId String          @default("")
 
   @@unique([shipperOrderId, position])
   @@unique([shipperOrderId, orderContainerId])
@@ -429,9 +455,11 @@ model ShipperSerial {
   id             String       @id @default(cuid())
   shipperOrderId String
   shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
-  orderSerialId  String
-  orderSerial    OrderSerial  @relation(fields: [orderSerialId], references: [id])
+  orderSerialId  String?
+  orderSerial    OrderSerial? @relation(fields: [orderSerialId], references: [id], onDelete: SetNull)
   printOnShipper Boolean      @default(true)
+  serial         String       // snapshot at save
+  description    String       @default("")
 
   @@unique([shipperOrderId, orderSerialId])
   @@index([orderSerialId])
