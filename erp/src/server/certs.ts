@@ -193,6 +193,20 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
     if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
   }
 
+  // LOAD scope must name a load the order CURRENTLY has — checked under the claim above, so a
+  // concurrent re-split serializes with this create. Creation-time only, deliberately: a
+  // re-split AFTER creation orphans the cert and keeps it live (spec §4.1's loadNumber-not-FK
+  // reasoning), but a cert born pointing at a load that never existed is not an orphan, it is a
+  // printable record of nothing.
+  if (data.scope === "LOAD") {
+    const load = await tx.load.findFirst({
+      where: { orderId: data.orderId, loadNumber: data.loadNumber! }, select: { id: true },
+    });
+    if (!load) {
+      throw new HttpError(400, `loadNumber: this order does not have a load ${data.loadNumber}`);
+    }
+  }
+
   // Service-enforced, not indexed (spec §4.1): a partial unique index cannot express "one live
   // row per (orderId, scope, loadNumber, shipperId)" because Postgres treats NULLs as distinct,
   // so two (orderId, ORDER, NULL, NULL) rows would never collide in any index.

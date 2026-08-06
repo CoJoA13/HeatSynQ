@@ -202,11 +202,17 @@ describe("createCert", () => {
   });
 
   it("scopes by load and by shipment independently", async () => {
-    const { order } = await savedOrder();
+    const { order } = await savedOrder({ loadQty: 5 }); // qty 10 → loads 1 and 2
     await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 1 });
     await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2 });
     await expect(createCert({ orderId: order.id, scope: "LOAD", loadNumber: 1 }))
       .rejects.toThrow(/already has a certification/i);
+  });
+
+  it("refuses a LOAD-scope cert for a load the order does not currently have", async () => {
+    const { order } = await savedOrder(); // no loadQty cap → exactly one load
+    await expect(createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2 }))
+      .rejects.toThrow(/does not have a load 2/i);
   });
 
   it("refuses a cert on a voided order", async () => {
@@ -288,7 +294,7 @@ describe("createCert", () => {
   });
 
   it("writes a create audit entry carrying the cert's own fields", async () => {
-    const { order } = await savedOrder();
+    const { order } = await savedOrder({ loadQty: 5 }); // qty 10 → loads 1 and 2
     const cert = await asSystem(() => createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2 }));
     const [entry] = await readAudit("cert", cert.id);
     expect(entry.action).toBe("create");
@@ -508,7 +514,7 @@ describe("exportCerts", () => {
   }
 
   it("writes the cert columns with a header row and one row per cert", async () => {
-    const { order } = await savedOrder();
+    const { order } = await savedOrder({ loadQty: 3 }); // qty 10 -> loads 1..4
     await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 4 });
 
     const sheet = await sheetOf(await exportCerts({}));
@@ -604,7 +610,7 @@ describe("certsForOrder", () => {
   beforeEach(truncateAll);
 
   it("returns every cert for the order, voided included", async () => {
-    const { order } = await savedOrder();
+    const { order } = await savedOrder({ loadQty: 5 }); // qty 10 -> loads 1 and 2
     const live = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 1 });
     const voided = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2 });
     await asSystem(() => voidCert(voided.id, "test"));

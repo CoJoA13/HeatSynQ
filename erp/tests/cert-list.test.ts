@@ -104,7 +104,7 @@ describe("listCerts — the certifications worklist's own filter and column cont
   it("excludes voided certs when includeVoided is left off the filter (the unchecked-box shape), and restores them when set", async () => {
     const { order } = await savedOrder();
     const live = await createCert({ orderId: order.id, scope: "ORDER" });
-    const voided = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 9 });
+    const voided = await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 1 });
     await asSystem(() => voidCert(voided.id, "test"));
 
     expect((await listCerts({ customerId: order.customerId })).map((c) => c.id)).toEqual([live.id]);
