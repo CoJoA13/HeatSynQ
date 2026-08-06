@@ -262,10 +262,15 @@ describe("printBol", () => {
     const pallet = await prisma.orderContainer.create({
       data: { orderId: order.id, position: 2, typeId: containerType.id, count: 4 },
     });
-    const input = shipOrderInput(order) as ReturnType<typeof shipOrderInput> & {
-      containers: { orderContainerId: string; count: number }[];
+    const input = {
+      orderId: order.id,
+      lines: [{
+        orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight,
+        lineComplete: true,
+      }],
+      containers: [{ orderContainerId: bin.id, count: 3 }, { orderContainerId: pallet.id, count: 4 }],
+      serials: [],
     };
-    input.containers = [{ orderContainerId: bin.id, count: 3 }, { orderContainerId: pallet.id, count: 4 }];
     // No packageCount — the forms promise "Blank uses the current container count".
     const { shipper } = await asSystem(() => createShipper({
       customerId: customer.id, shipDate: "2026-07-06", shipToAddressId: shipTo.id, orders: [input],
