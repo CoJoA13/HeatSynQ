@@ -128,6 +128,18 @@ tie at `orderSerialId: null`, and the arbitrary tie-break made order-sensitive a
 unchanged serials as modified. Gates after round 4: **1384 tests**, `tsc`/`eslint`/`build` clean,
 E2E 15/15.
 
+**Round 5 (2026-08-06, two findings, both fixed on-branch):** the cert PDF's parts table now
+appends one frozen-identity row (honest-blank quantities) per released requirement line — the
+cert stays live when an unshipped rider is removed, and its archived paper must still name the
+part its readings belong to; and `replaceReadings` refuses verdict/measurement contradictions
+(an override needs a value, an overridden value needs a boolean verdict — `value: null,
+passed: true` stored a pass measured on nothing, and `value: X, passed: null` hid an
+out-of-bounds reading from the failure count), with the readings editor pre-validating the same
+two rules by row. Gates after round 5: **1387 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15.
+Also this round: one CI run hit the workflow's 15-minute timeout (5m01 → 8m51 → cancelled across
+the triage rounds while the local suite held ~2 min) — being watched on the next runs; if it
+recurs, CI-side test timing needs profiling rather than a timeout bump.
+
 **Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
 mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
 point: **1357 tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
