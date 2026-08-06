@@ -2,9 +2,9 @@
 // The certification page's body (design spec §11 "Cert page"): header (order link, scope and its
 // subject, printed date, void), a prominent three-state pass/fail summary WITH the §3.21
 // explanation (none of it prints), one requirement block per seeded `CertRequirement` grouped by
-// part line (RequirementBlock.tsx), freeform + internal notes, the disabled print action
-// (Task 19 owns the layout), stored documents, and History. Remounted per id by page.tsx's
-// `key={id}` (HANDOFF §5.12).
+// part line (RequirementBlock.tsx), freeform + internal notes, the live print action (Task 19's
+// POST /api/certs/[id]/print, wired at the fold-in), stored documents, and History. Remounted per
+// id by page.tsx's `key={id}` (HANDOFF §5.12).
 //
 // THE BINDING STATE MODEL (the ShipmentDetail.tsx / order-hub precedent): notes PATCHes are
 // optimistic with rollback-then-report on failure (§5.13 — reload BEFORE setting the error,
@@ -100,14 +100,14 @@ function resultsGateFor(perms: string[] | undefined, voided: boolean, printed: b
  *  HTTP caller existed for `listDocumentsForCert` before this page needed one). Not printing
  *  itself (Task 19 owns that); a plain link to the existing, already-gated
  *  `GET /api/documents/[id]` download route — the ShipmentDocumentsList precedent. */
-function CertDocumentsList({ certId, viewGate }: { certId: string; viewGate: Gate }) {
+function CertDocumentsList({ certId, viewGate, refresh }: { certId: string; viewGate: Gate; refresh: number }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     if (!viewGate.allowed) return;
     api<StoredDoc[]>(`/api/certs/${certId}/documents`).then(setDocs)
       .catch((e) => setErr((e as Error).message));
-  }, [certId, viewGate.allowed]);
+  }, [certId, viewGate.allowed, refresh]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -187,15 +187,13 @@ export function CertDetail({ id }: { id: string }) {
   const voidGate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
     : gate(perms, "certs.delete");
-  // Print is Task 19's layout — the ShipmentDetail.tsx disabled-print precedent, §5.16: the
-  // disabled state says why. A voided cert refuses NEW prints forever (spec §5.6), which is the
-  // more specific reason when both apply.
-  const printGate: Gate = {
-    allowed: false, disabled: true,
-    title: voided
-      ? "Certification is voided — no new documents can be produced for it"
-      : "Available once the certification layout lands (Task 19)",
-  };
+  // Print (Task 19's POST /api/certs/[id]/print, live since the fold-in). Gated certs.view like
+  // the route — printing mutates nothing beyond the first-print printedAt fact and its own
+  // audited archive. A voided cert refuses NEW prints forever (spec §5.6), which is the more
+  // specific reason when both apply (§5.16 — disabled with a truthful title, never hidden).
+  const printGate: Gate = voided
+    ? { allowed: false, disabled: true, title: "Certification is voided — no new documents can be produced for it" }
+    : gate(perms, "certs.view");
 
   // Voided banner's reason (ShipmentDetail.tsx precedent) — safe to key on `voided` alone: once
   // voided, no mutator can touch the cert again, so the delete entry, if readable, is entries[0].
@@ -256,6 +254,51 @@ export function CertDetail({ id }: { id: string }) {
       setError((e as Error).message);
     }
   }, [id, applyMutation, load, bumpReset]);
+
+  // ---- Print: the ShipmentDetail.tsx `printDoc` pipeline (popup handling and error surfacing
+  // shared shape; the x-print-warnings decode there is shipment-specific and has no counterpart
+  // here — the cert route carries no warnings header). After a successful print the page reloads
+  // server truth so the §5.16 post-print gate engages live (printedAt is now set), and the
+  // Documents list refreshes to show the newly archived print. ----
+
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [docsRefresh, setDocsRefresh] = useState(0);
+
+  const printCertAction = useCallback(async () => {
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      const res = await fetch(`/api/certs/${id}/print`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const opened = window.open(url, "_blank");
+      if (opened) opened.opener = null;
+      if (opened === null) {
+        // Never silent (the DocumentsSection rule): the print HAPPENED and is archived — the
+        // refreshed Documents list below is the escape hatch, and this message says so.
+        setPrintError("The browser blocked the print window — the certification was archived and is in Documents below.");
+      }
+      // Revoked on a delay either way — revoking immediately would race the new tab's own load
+      // (the DocumentsSection precedent, fix-wave finding 6).
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setDocsRefresh((n) => n + 1);
+      // printedAt is now set server-side (first print) — reload so the results-grid gate and the
+      // header's Printed fact reflect it. A failed refresh must not read as a failed print.
+      try {
+        await load();
+      } catch (e) {
+        setPrintError(`Printed and archived, but the page could not be refreshed — reload to see the current state. (${(e as Error).message})`);
+      }
+    } catch (e) {
+      setPrintError((e as Error).message);
+    } finally {
+      setPrinting(false);
+    }
+  }, [id, load]);
 
   // ---- Void: non-optimistic (ShipmentDetail.tsx `voidAction` precedent) ----
 
@@ -379,17 +422,19 @@ export function CertDetail({ id }: { id: string }) {
         </p>
       </section>
 
-      {/* ---- Print + documents (brief Step 5) ---- */}
+      {/* ---- Print + documents (brief Step 5; live via POST /api/certs/[id]/print) ---- */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded border bg-slate-50 p-3 text-sm">
-        <button type="button" disabled title={printGate.title}
-                className="cursor-not-allowed rounded border px-3 py-1.5 text-slate-400">
-          Print certification
+        <button type="button" onClick={() => void printCertAction()}
+                disabled={printGate.disabled || printing} title={printGate.title}
+                className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
+          {printing ? "Printing…" : "Print certification"}
         </button>
         <span className="text-xs text-slate-500">
           {voided
             ? "This certification is voided — stored prints below remain reprintable; new prints are refused."
-            : "Printing lands with the certification layout (Task 19)."}
+            : "Prints with your signature, and is archived under Documents below."}
         </span>
+        {printError && <span className="text-xs text-red-700">{printError}</span>}
       </div>
 
       {/* ---- Requirement blocks, grouped by part line (brief Step 2) ---- */}
@@ -445,7 +490,7 @@ export function CertDetail({ id }: { id: string }) {
       {/* ---- Documents + History (brief Step 5) ---- */}
       <section className="mb-4 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Documents</h2>
-        <CertDocumentsList certId={id} viewGate={docsGate} />
+        <CertDocumentsList certId={id} viewGate={docsGate} refresh={docsRefresh} />
       </section>
 
       <div className="mb-6">
