@@ -466,6 +466,35 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     expect(cert.printedAt).not.toBeNull();
   });
 
+  it("archives the ticket and warns when a cert print fails, instead of failing the request", async () => {
+    const { shipper, order } = await shipmentScopeShipment();
+    const cookie = await signInWith(["shipping.view", "certs.view"]);
+    // Corrupt signature bytes declared as PNG: the printing user's signature is what embeds
+    // (§3.11), so THIS user's cert render throws at pdf time. The ticket has already archived
+    // permanently by then — the request must report the cert failure as a warning, not fail a
+    // print that half-succeeded (and invite a retry that archives a duplicate ticket).
+    await prisma.user.update({
+      where: { username: "root" },
+      data: { signatureImage: Buffer.from("not a png"), signatureMimeType: "image/png" },
+    });
+
+    const res = await shipperPrintRoute(
+      postReq(`http://t/api/shippers/${shipper.id}/print?doc=ticket&cert=1`, cookie), withParams({ id: shipper.id }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+
+    // The ticket archived; the failed cert archived nothing.
+    const docs = await listDocumentsForShipper(shipper.id);
+    expect(docs.map((d) => d.kind)).toEqual(["SHIPPER"]);
+    expect(await prisma.storedDocument.count({ where: { kind: "CERT" } })).toBe(0);
+    expect(res.headers.get("x-cert-document-ids")).toBeNull();
+
+    const warnings = JSON.parse(decodeURIComponent(res.headers.get("x-print-warnings")!)) as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`#${order.orderNumber}`);
+    expect(warnings[0]).toMatch(/certification.*(fail|could not)/i);
+  });
+
   it("prints an ORDER-scope cert for a covered order whose scope is by order", async () => {
     const customer = await makeCustomer();
     await makeBillTo(customer.id);

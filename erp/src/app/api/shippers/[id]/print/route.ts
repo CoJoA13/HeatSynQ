@@ -69,19 +69,30 @@ export const POST = handle(async (req, { params }) => {
   // Resolved BEFORE the ticket prints (a voided shipment still refuses with nothing archived).
   // A cert-REQUIRING order with no cert WARNS instead of refusing (§9 amendment 2026-08-05):
   // the tickets print exactly as a cert-less print would and the warning rides the response.
-  let certIds: string[] = [];
+  let certs: { id: string; orderNumber: number }[] = [];
   let warnings: string[] = [];
   if (withCerts) {
     mustCan(user, "certs", "view");
-    ({ certIds, warnings } = await printableShipmentCertIds(id, order));
+    ({ certs, warnings } = await printableShipmentCertIds(id, order));
   }
 
   const printed = await printShippingTickets(id, order);
   // Each cert is its own render, its own archive, its own document (§3.14) — printed by THIS
-  // user, whose signature is what lands on the paper (§3.11).
+  // user, whose signature is what lands on the paper (§3.11). By this point the ticket is
+  // committed and archived permanently, so a cert failure (a concurrently voided cert, an
+  // unrenderable signature) must NOT fail the request — the UI would call a half-succeeded
+  // print failed and a retry would archive a duplicate ticket. It rides the same §5.7 warning
+  // channel the no-cert case does, and the remaining certs still print.
   const certDocumentIds: string[] = [];
-  for (const certId of certIds) {
-    certDocumentIds.push((await printCert(certId, user.id)).documentId);
+  for (const cert of certs) {
+    try {
+      certDocumentIds.push((await printCert(cert.id, user.id)).documentId);
+    } catch (err) {
+      warnings.push(
+        `Order #${cert.orderNumber}: its certification could not be printed ` +
+        `(${err instanceof HttpError ? err.message : "the certification failed to render"}) — ` +
+        "the tickets archived; print it from the certification screen");
+    }
   }
 
   const filename = documentFilename(

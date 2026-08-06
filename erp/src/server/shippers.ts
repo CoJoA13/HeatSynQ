@@ -1511,7 +1511,7 @@ export async function printBol(
  */
 export async function printableShipmentCertIds(
   shipperId: string, orderId?: string,
-): Promise<{ certIds: string[]; warnings: string[] }> {
+): Promise<{ certs: { id: string; orderNumber: number }[]; warnings: string[] }> {
   const shipper = await prisma.shipper.findFirst({ where: { id: shipperId }, select: { deletedAt: true } });
   if (!shipper) throw new HttpError(404, "Shipment not found");
   assertPrintable(shipper);
@@ -1528,7 +1528,7 @@ export async function printableShipmentCertIds(
     throw new HttpError(404, "That order is not on this shipment");
   }
 
-  const certIds: string[] = [];
+  const printable: { id: string; orderNumber: number }[] = [];
   const warnings: string[] = [];
   for (const so of shipperOrders) {
     const scope = so.order.certScope as CertScopeValue;
@@ -1546,9 +1546,9 @@ export async function printableShipmentCertIds(
         `Order #${so.order.orderNumber} requires a certification and none exists to print — ` +
         `its ticket printed without one; create it from /orders/${so.order.id}`);
     }
-    certIds.push(...certs.map((c) => c.id));
+    printable.push(...certs.map((c) => ({ id: c.id, orderNumber: so.order.orderNumber })));
   }
-  return { certIds, warnings };
+  return { certs: printable, warnings };
 }
 
 // -------------------------------------------------------------------------------------------
