@@ -496,6 +496,29 @@ describe("listShippers / exportShippers / shipmentsForOrder", () => {
     expect(rows.map((r) => r.id)).toEqual([shipper.id]);
     expect(rows[0].deletedAt).not.toBeNull();
   });
+
+  // Task 17 (order hub Shipments section): the hub row shows THIS order's own label (`72036-3`),
+  // its own quantities, and whether its lines shipped complete — none of which the shipment-wide
+  // totals can answer for a multi-order shipment. The per-order breakdown is additive on
+  // `ShipperRow`, in print (position) order like `orderLabels`.
+  it("rows carry a per-order breakdown: id, number, sequence, quantities and the complete flag", async () => {
+    const { shipper, orders } = await twoOrderShipment();
+    const [row] = await shipmentsForOrder(orders[0].id);
+    expect(row.orders).toHaveLength(2);
+    expect(row.orders[0]).toMatchObject({
+      orderId: orders[0].id, orderNumber: orders[0].orderNumber, sequence: 1,
+      qty: 10, weight: 5, complete: false,
+    });
+    expect(row.orders[1]).toMatchObject({ orderId: orders[1].id, sequence: 1, complete: false });
+
+    // Marking the first order's only line complete flips ITS flag and only its flag.
+    await replaceShipperLines(shipper.id, shipper.orders[0].id, [
+      { orderLineId: orders[0].lines[0].id, qty: 10, weight: 5, lineComplete: true },
+    ]);
+    const [after] = await shipmentsForOrder(orders[0].id);
+    expect(after.orders[0].complete).toBe(true);
+    expect(after.orders[1].complete).toBe(false);
+  });
 });
 
 // -------------------------------------------------------------------------------------------
