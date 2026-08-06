@@ -17,6 +17,11 @@ import { claimOrder, claimCertsOrder } from "./order-locks";
 // `claimCertsOrder`, above) — the identical bidirectional-cycle shape, found and broken in the
 // same Task 7 review. It now lives in cert-results.ts itself, so this import is one-directional.
 import { seedRequirements, readCertDetail } from "./cert-results";
+import { renderPdf } from "./pdf/render";
+import { buildCertDefinition, type CertPdfData, type CertPartRow, type CertSerialBlock } from "./pdf/cert";
+import { storeDocument, assertPrintable } from "./documents";
+import { listAddresses } from "./customer-addresses";
+import { formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 
 // Either the top-level client or a `tx` — the `readDetail` precedent (orders.ts): callers pass a
@@ -395,6 +400,211 @@ export async function updateCert(id: string, input: unknown): Promise<CertDetail
 
     await auditedUpdate("cert", id, () => tx.cert.update({ where: { id }, data: patch }), { tx });
     return readCertDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 19: the certification print (spec §10.3, §3.11, §3.21, §5.15) — the printTraveler /
+// printShippingTickets mechanic applied to a cert: settings outside the transaction, then one
+// Serializable transaction bracketing claim → re-read → assertPrintable → read-on-tx → render →
+// `printedAt` on first print → archive.
+// -------------------------------------------------------------------------------------------
+
+/** Every SETTING the cert needs, read BEFORE the print transaction opens (the ticketSettings
+ *  precedent): the company block, and the `cert_statement` standing text (§3.21). */
+export type CertPrintSettings = {
+  company: { name: string; address: string; phone: string };
+  statement: string;
+};
+
+export async function certPrintSettings(): Promise<CertPrintSettings> {
+  const [name, address, phone, statement] = await Promise.all([
+    getSetting("company_name"),
+    getSetting("company_address"),
+    getSetting("company_phone"),
+    getSetting("cert_statement"),
+  ]);
+  return { company: { name, address, phone }, statement };
+}
+
+/** The three signer columns `printCert` reads off the User row under its own transaction —
+ *  deliberately NOT users.ts's `getSignature` (that reads on the top-level client; borrowing a
+ *  second pooled connection mid-transaction is the pool-starvation shape fix-wave R4 finding 8
+ *  exists to prevent). */
+export type CertSignerRow = {
+  displayName: string; signatureImage: Uint8Array | null; signatureMimeType: string | null;
+};
+
+/** pdfkit embeds PNG and JPEG only — a BMP upload (users.ts allows it) cannot reach the page, so
+ *  it falls back to the typed-name-over-the-rule rendering exactly as "no signature on file" does
+ *  (§3.11's own fallback; a broken render at the printer would serve nobody). */
+const EMBEDDABLE_SIGNATURE_MIME = ["image/png", "image/jpeg"];
+
+function signatureDataUri(signer: CertSignerRow): string | null {
+  if (!signer.signatureImage || !signer.signatureMimeType) return null;
+  if (!EMBEDDABLE_SIGNATURE_MIME.includes(signer.signatureMimeType)) return null;
+  return `data:${signer.signatureMimeType};base64,${Buffer.from(signer.signatureImage).toString("base64")}`;
+}
+
+/**
+ * Assembles the print payload (spec §10.3) off the caller's `db` — inside `printCert` that is the
+ * claim-holding `tx` (the `readShippingTicketData` rule). `printDate` travels as an argument so
+ * this collector, like the builder, never touches the clock itself.
+ *
+ * - **To:** the customer at their default `BILL_TO` address (the ticket's Sold To idiom) — §10.3
+ *   says only "the customer name and address block", and the billing address is the customer's
+ *   own record the way the sample's "To:" block reads.
+ * - **Parts** carry scope-appropriate quantities (§10.3): the order's own for ORDER scope; this
+ *   shipment's shipped qty/lbs for SHIPMENT (zero for a line the shipment didn't carry — honest,
+ *   not blank: the line shipped nothing on this shipment); for LOAD, the load's own qty/weight on
+ *   the LEAD line (Phase 3's loads split the lead part's quantity; `Load` carries one qty/weight
+ *   pair, not per-line ones) with rider lines keeping their order quantities.
+ * - **Requirements** flatten to specification + scale + bare values — min/max/pass/fail/override
+ *   never leave this function (§3.21; the builder's input type cannot even carry them).
+ * - **Serials** are the ORDER's serial rows with their description (the heat/lot field), grouped
+ *   per part line (§10.3 does not scope them per shipment/load, and the description lives on the
+ *   order serial).
+ */
+export async function readCertPdfData(
+  db: Db, certId: string, settings: CertPrintSettings, signer: CertSignerRow, printDate: string,
+): Promise<{ data: CertPdfData; orderNumber: number }> {
+  const detail = await readCertDetail(db, certId); // 404s a missing cert
+
+  const order = await db.order.findFirst({
+    where: { id: detail.orderId }, select: { customerId: true },
+  });
+  if (!order) throw new HttpError(404, "Order not found");
+
+  const addresses = await listAddresses(order.customerId, undefined, db);
+  const billTos = addresses.filter((a) => a.kind === "BILL_TO");
+  const billTo = billTos.find((a) => a.isDefault) ?? billTos[0] ?? null;
+
+  const lines = await db.orderLine.findMany({
+    where: { orderId: detail.orderId },
+    orderBy: { position: "asc" },
+    select: {
+      id: true, position: true, qty: true, weight: true,
+      part: { select: { partNumber: true, name: true, description: true } },
+    },
+  });
+
+  // Scope-appropriate quantities (§10.3) — see the doc comment above.
+  let shippedByLineId = new Map<string, { qty: number; weight: number }>();
+  if (detail.scope === "SHIPMENT" && detail.shipperId !== null) {
+    const so = await db.shipperOrder.findFirst({
+      where: { shipperId: detail.shipperId, orderId: detail.orderId }, select: { id: true },
+    });
+    const shipLines = so === null ? [] : await db.shipperLine.findMany({
+      where: { shipperOrderId: so.id }, select: { orderLineId: true, qty: true, weight: true },
+    });
+    shippedByLineId = new Map(shipLines.map((l) => [l.orderLineId, { qty: l.qty, weight: l.weight.toNumber() }]));
+  }
+  const load = detail.scope === "LOAD" && detail.loadNumber !== null
+    ? await db.load.findFirst({ where: { orderId: detail.orderId, loadNumber: detail.loadNumber } })
+    : null;
+
+  const parts: CertPartRow[] = lines.map((l) => {
+    let qty: number | null = l.qty;
+    let pounds: number | null = l.weight.toNumber();
+    if (detail.scope === "SHIPMENT") {
+      const shipped = shippedByLineId.get(l.id) ?? { qty: 0, weight: 0 };
+      qty = shipped.qty;
+      pounds = shipped.weight;
+    } else if (detail.scope === "LOAD" && l.position === 1) {
+      qty = load?.qty ?? null;
+      pounds = load === null || load.weight === null ? null : load.weight.toNumber();
+    }
+    return {
+      qty, pounds,
+      partNumber: l.part.partNumber, partName: l.part.name, partDescription: l.part.description,
+    };
+  });
+
+  const serialRows = await db.orderSerial.findMany({
+    where: { orderId: detail.orderId },
+    orderBy: { position: "asc" },
+    select: { lineId: true, serial: true, description: true },
+  });
+  const serialBlocks: CertSerialBlock[] = lines.map((l) => ({
+    partNumber: l.part.partNumber,
+    serials: serialRows.filter((s) => s.lineId === l.id).map((s) => ({ serial: s.serial, description: s.description })),
+  }));
+
+  const data: CertPdfData = {
+    company: settings.company,
+    // "<orderNumber>-<sequence>" for shipment scope, the bare number otherwise (§10.3) —
+    // `detail.sequence` is non-null exactly for shipment-scope certs (readCertDetail).
+    orderLabel: detail.sequence === null ? String(detail.orderNumber) : `${detail.orderNumber}-${detail.sequence}`,
+    printDate,
+    entryDate: detail.receivedDate,
+    to: {
+      name: detail.customerName,
+      street: billTo?.street ?? "", city: billTo?.city ?? "", state: billTo?.state ?? "", zip: billTo?.zip ?? "",
+    },
+    poNumber: detail.poNumber,
+    packingListNo: detail.shipperNumber,
+    material: detail.material,
+    parts,
+    statement: settings.statement,
+    requirements: detail.requirements.map((r) => ({
+      specification: r.inspectionCodeName,
+      scale: r.scaleName ?? "",
+      readings: r.readings.map((rd) => rd.value).filter((v): v is number => v !== null),
+    })),
+    serialBlocks,
+    freeform: detail.freeform,
+    signer: {
+      name: signer.displayName,
+      // The sample prints a title ("Production Manager") but no title field exists anywhere on
+      // this system's User record — "" omits the line rather than fabricating one (CertSigner's
+      // own comment, pdf/cert.ts).
+      title: "",
+      company: settings.company.name,
+      signatureDataUri: signatureDataUri(signer),
+    },
+  };
+  return { data, orderNumber: detail.orderNumber };
+}
+
+/**
+ * Renders and archives the certification, returning the exact bytes stored (spec §5.15's
+ * print/reprint contract, task-19-brief.md Step 5). The signature that prints is the PRINTING
+ * user's (§3.11) — `signerUserId` is the route's `requireUser().id`, never a selection.
+ *
+ * `printedAt` is set on the FIRST print only, through `auditedUpdate` inside this same
+ * transaction — it is the fact §5.16's post-print gate reads (`replaceReadings` refuses without
+ * `edit_cert_results_after_print` once set), so it must commit with the archived document, not
+ * before or after it. A voided cert refuses a NEW print with the shared 400 while every stored
+ * print stays reprintable forever (spec §5.6).
+ */
+export async function printCert(
+  certId: string, signerUserId: string,
+): Promise<{ documentId: string; orderNumber: number; pdf: Buffer }> {
+  const settings = await certPrintSettings();
+  const printDate = formatDateOnly(todayDateOnly());
+
+  return withDbErrors({ entity: "Cert" }, () => prisma.$transaction(async (tx) => {
+    await claimCertsOrder(tx, certId); // 404s a missing cert, claims its order row
+    const cert = await tx.cert.findFirst({ where: { id: certId } });
+    if (!cert) throw new HttpError(404, "Certification not found");
+    assertPrintable(cert);
+
+    const signer = await tx.user.findFirst({
+      where: { id: signerUserId },
+      select: { displayName: true, signatureImage: true, signatureMimeType: true },
+    });
+    if (!signer) throw new HttpError(404, "User not found");
+
+    const { data, orderNumber } = await readCertPdfData(tx, certId, settings, signer, printDate);
+    const pdf = await renderPdf(buildCertDefinition(data));
+
+    if (cert.printedAt === null) {
+      await auditedUpdate("cert", certId,
+        () => tx.cert.update({ where: { id: certId }, data: { printedAt: new Date() } }), { tx });
+    }
+
+    const doc = await storeDocument(tx, { kind: "CERT", certId }, pdf);
+    return { documentId: doc.id, orderNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 

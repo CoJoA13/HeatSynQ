@@ -113,7 +113,7 @@ type AuditEntry = { id: string; action: string; reason: string | null };
 /** Slice of `GET /api/shippers/[id]/documents`'s `DocumentMeta` (src/server/documents.ts). */
 type StoredDoc = { id: string; kind: string; orderId: string | null; createdAt: string };
 
-const DOC_KIND_LABELS: Record<string, string> = { SHIPPER: "Shipping ticket", BOL: "Bill of lading" };
+const DOC_KIND_LABELS: Record<string, string> = { SHIPPER: "Shipping ticket", BOL: "Bill of lading", CERT: "Certification" };
 
 /** A voided shipment is read-only everywhere (spec §5.6, the P3 voided-order shape) regardless of
  *  what the permission grid would otherwise allow — the order hub `voidLocked` precedent. */
@@ -235,15 +235,23 @@ export function ShipmentDetail({ id }: { id: string }) {
   const printGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Shipment is voided — stored prints stay available" }
     : docsGate;
+  // The cert checkbox (§3.14) needs certs.view on top: the archived paper is certs-area paper
+  // (the route enforces the same pair), so the §5.16 tooltip names the missing permission and the
+  // box unchecks itself rather than sending a request that can only 403.
+  const certsGate = gate(perms, "certs.view");
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
+  const [printInfo, setPrintInfo] = useState<string | null>(null);
   const [docsRefresh, setDocsRefresh] = useState(0);
-  const printTicket = useCallback(async (orderId?: string) => {
+  const [withCerts, setWithCerts] = useState(true);   // pre-ticked (§3.14)
+
+  /** Shared print pipeline for every document this page can produce. `query` names the doc. */
+  const printDoc = useCallback(async (query: string, label: string) => {
     setPrinting(true);
     setPrintError(null);
+    setPrintInfo(null);
     try {
-      const query = orderId === undefined ? "" : `&order=${orderId}`;
-      const res = await fetch(`/api/shippers/${id}/print?doc=ticket${query}`, { method: "POST" });
+      const res = await fetch(`/api/shippers/${id}/print?${query}`, { method: "POST" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
@@ -254,7 +262,14 @@ export function ShipmentDetail({ id }: { id: string }) {
       if (opened === null) {
         // Never silent (the DocumentsSection rule): the print HAPPENED and is archived — the
         // refreshed Documents list below is the escape hatch, and this message says so.
-        setPrintError("The browser blocked the print window — the ticket was archived and is in Documents below.");
+        setPrintError(`The browser blocked the print window — the ${label} was archived and is in Documents below.`);
+      }
+      // The certs print as their own archived documents (§3.14); a browser allows one popup per
+      // click, so they are surfaced through Documents rather than a volley of blocked tabs.
+      const certDocs = res.headers.get("x-cert-document-ids");
+      if (certDocs !== null) {
+        const n = certDocs.split(",").length;
+        setPrintInfo(`${n} certification${n === 1 ? "" : "s"} archived — open them from Documents below.`);
       }
       // Revoked on a delay either way — revoking immediately would race the new tab's own load
       // (the DocumentsSection precedent, fix-wave finding 6).
@@ -266,6 +281,12 @@ export function ShipmentDetail({ id }: { id: string }) {
       setPrinting(false);
     }
   }, [id]);
+
+  const printTicket = useCallback((orderId: string | undefined, certWanted: boolean) => {
+    const query = `doc=ticket${orderId === undefined ? "" : `&order=${orderId}`}${certWanted ? "&cert=1" : ""}`;
+    return printDoc(query, "ticket");
+  }, [printDoc]);
+  const printBol = useCallback(() => printDoc("doc=bol", "bill of lading"), [printDoc]);
 
   const customerId = shipper?.customerId;
 
@@ -630,19 +651,28 @@ export function ShipmentDetail({ id }: { id: string }) {
         </div>
       </section>
 
-      {/* ---- Print (top-level: all tickets live per Task 18; BOL stays Task 19's) ---- */}
+      {/* ---- Print (spec §11: all tickets, the BOL, and the cert checkbox pre-ticked) ---- */}
       <div className="mb-6 flex flex-wrap items-center gap-3 rounded border bg-slate-50 p-3 text-sm">
-        <button type="button" onClick={() => void printTicket()} disabled={!printGate.allowed || printing}
+        <button type="button" onClick={() => void printTicket(undefined, withCerts && certsGate.allowed)}
+                disabled={!printGate.allowed || printing}
                 title={printGate.title}
                 className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
           {printing ? "Printing…" : "Print all tickets"}
         </button>
-        <button type="button" disabled title="Available once the bill-of-lading layout lands (Task 19)"
-                className="cursor-not-allowed rounded border px-3 py-1.5 text-slate-400">
-          Print BOL
+        <label className={`flex items-center gap-1 ${certsGate.allowed ? "" : "text-slate-400"}`}
+               title={certsGate.title}>
+          <input type="checkbox" checked={withCerts && certsGate.allowed}
+                 disabled={!certsGate.allowed || !printGate.allowed}
+                 onChange={(e) => setWithCerts(e.target.checked)} />
+          Also print certifications
+        </label>
+        <button type="button" onClick={() => void printBol()} disabled={!printGate.allowed || printing}
+                title={printGate.title}
+                className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
+          {printing ? "Printing…" : "Print BOL"}
         </button>
-        <span className="text-xs text-slate-500">BOL and certification printing land with their layouts (Task 19).</span>
         {printError && <span className="text-xs text-red-700">{printError}</span>}
+        {printInfo && <span className="text-xs text-slate-600">{printInfo}</span>}
       </div>
 
       {/* ---- Add order ---- */}
@@ -675,8 +705,8 @@ export function ShipmentDetail({ id }: { id: string }) {
           key={so.id} shipperId={id} order={so} catalog={catalogs.get(so.orderId)}
           editGate={editGate} applyMutation={applyMutation} onError={setError}
           onRemove={() => void removeOrder(so.id, so.label)}
-          printGate={printGate} printing={printing}
-          onPrintTicket={() => void printTicket(so.orderId)}
+          printGate={printGate} printing={printing} certsGate={certsGate}
+          onPrintTicket={(certWanted) => void printTicket(so.orderId, certWanted)}
         />
       ))}
 

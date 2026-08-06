@@ -398,7 +398,9 @@ describe("POST /api/shippers/[id]/print", () => {
     expect(Buffer.from(await res.arrayBuffer()).toString("latin1")).toContain("/Count 1");
   });
 
-  it("rejects an unknown doc kind, and names Task 19 for bol and cert until they exist", async () => {
+  // The Task 18 version of this test also pinned the temporary bol/cert refusals; those became
+  // the real print paths with Task 19 and are covered in tests/bol.test.ts / tests/cert-pdf.test.ts.
+  it("rejects an unknown or missing doc kind, archiving nothing", async () => {
     const { shipper } = await oneOrderShipment();
     const cookie = await signInWith(["shipping.view"]);
 
@@ -406,15 +408,10 @@ describe("POST /api/shippers/[id]/print", () => {
       postReq(`http://t/api/shippers/${shipper.id}/print`, cookie), withParams({ id: shipper.id }));
     expect(missing.status).toBe(400);
 
-    const bol = await printRoute(
-      postReq(`http://t/api/shippers/${shipper.id}/print?doc=bol`, cookie), withParams({ id: shipper.id }));
-    expect(bol.status).toBe(400);
-    expect((await bol.json()).error).toMatch(/not available yet/i);
+    const unknown = await printRoute(
+      postReq(`http://t/api/shippers/${shipper.id}/print?doc=nope`, cookie), withParams({ id: shipper.id }));
+    expect(unknown.status).toBe(400);
 
-    const cert = await printRoute(
-      postReq(`http://t/api/shippers/${shipper.id}/print?doc=ticket&cert=1`, cookie), withParams({ id: shipper.id }));
-    expect(cert.status).toBe(400);
-    expect((await cert.json()).error).toMatch(/certification/i);
     // The refusal archived nothing: an honest no is a no.
     expect(await listDocumentsForShipper(shipper.id)).toEqual([]);
   });

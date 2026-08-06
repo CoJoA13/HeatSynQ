@@ -11,6 +11,7 @@ import { claimOrdersInOrder } from "./order-locks";
 import { listAddresses } from "./customer-addresses";
 import { renderPdf } from "./pdf/render";
 import { buildShippingTicketDefinition, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { buildBolDefinition, type BolData, type BolParty } from "./pdf/bol";
 import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
 import { createCert } from "./certs";
@@ -18,7 +19,7 @@ import { isDuplicateClientRequestId } from "./orders";
 import { toXlsx } from "./excel";
 import type { Blocker } from "./reference-blockers";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
-import { FREIGHT_TERMS, type FreightTermsValue } from "../lib/cert-constants";
+import { FREIGHT_TERMS, type FreightTermsValue, type CertScopeValue } from "../lib/cert-constants";
 import { INT4_MAX } from "../lib/order-constants";
 
 // -------------------------------------------------------------------------------------------
@@ -1322,6 +1323,176 @@ export async function printShippingTickets(
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
     };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 19: the bill of lading (spec §10.2, §3.19/§3.20) — one per shipment, and it does not
+// exist until someone prints one (the owner's Task 3 ruling, restated in §10.2): `bolNumber` is
+// allocated lazily HERE, at first print, inside the claim-holding transaction, and never again.
+// -------------------------------------------------------------------------------------------
+
+/** Every SETTING the BOL needs, read BEFORE the print transaction opens (the ticketSettings
+ *  precedent): the ship-from block is the company settings (spec §10.2). */
+export type BolSettings = { company: { name: string; address: string } };
+
+export async function bolSettings(): Promise<BolSettings> {
+  const [name, address] = await Promise.all([
+    getSetting("company_name"),
+    getSetting("company_address"),
+  ]);
+  return { company: { name, address } };
+}
+
+/**
+ * Assembles the BOL payload off the same claim-held `db` the print transaction passes (the
+ * `readShippingTicketData` rule). `bolNumber` is the CALLER's — inside `printBol` it may have
+ * been allocated a statement earlier in this same transaction, so it travels as an argument
+ * rather than being re-derived from a read that could not be wrong but would be one more thing
+ * to reason about.
+ *
+ * Consignee semantics (spec §10.2, §3's closing note): the shipment's own ship-to address, read
+ * UNFILTERED on deletedAt/active — the paper has to name where the truck went, whatever has
+ * happened to the address book since (the ticket's own rule). A blank name falls back to the
+ * customer's, exactly as the ticket's Ship To does.
+ */
+export async function readBolData(
+  db: Db, shipperId: string, bolNumber: number, settings: BolSettings,
+): Promise<BolData> {
+  const detail = await readShipperDetail(db, shipperId); // 404s a missing shipment
+
+  const shipToRow = detail.shipToAddressId === null ? null
+    : await db.customerAddress.findFirst({ where: { id: detail.shipToAddressId } });
+  const consignee: BolParty = {
+    name: shipToRow !== null && shipToRow.name !== "" ? shipToRow.name : detail.customerName,
+    street: shipToRow?.street ?? "", city: shipToRow?.city ?? "",
+    state: shipToRow?.state ?? "", zip: shipToRow?.zip ?? "",
+  };
+
+  // The shipment's total weight, summed in cents (the toShipperRow idiom) so 0.1 + 0.2 shapes
+  // never print as 0.30000000000000004 on the freight table.
+  let weightCents = 0;
+  for (const so of detail.orders) {
+    for (const l of so.lines) weightCents += Math.round(l.weight * 100);
+  }
+
+  return {
+    company: settings.company,
+    bolNumber,
+    proNumber: detail.proNumber, scacCode: detail.scacCode,
+    carrierName: detail.carrierName ?? "",
+    shipDate: detail.shipDate,
+    consignee,
+    // Ticket print order (`ShipperOrder.position`, already how readShipperDetail sorts) — the
+    // sample's own "TRV NO. 71955,71957,71959,71960,71961" list (§3.20).
+    orderNumbers: detail.orders.map((o) => o.orderNumber),
+    poNumbers: detail.orders.map((o) => o.poNumber),
+    packageCount: detail.packageCount,
+    freightDescription: detail.freightDescription,
+    totalWeight: weightCents / 100,
+    freightClass: detail.freightClass,
+    freightTerms: detail.freightTerms,
+  };
+}
+
+/**
+ * Renders and archives the bill of lading, returning the exact bytes stored — the
+ * `printShippingTickets` mechanic (settings outside, then ONE Serializable transaction bracketing
+ * claim → re-read → assertPrintable → allocate → read-on-tx → render → archive), plus the one
+ * thing only this print does: **`bolNumber` is allocated from `bol_number_next` on the first BOL
+ * print only** (spec §3.19 — not every shipment gets a BOL, so allocating at shipment creation
+ * would burn numbers), written through `auditedUpdate` so history records which print claimed
+ * which number, and reused verbatim by every reprint. A voided shipment refuses a NEW print and
+ * keeps its number forever (spec §5.6) — permanence is the absence of any write, the `voidShipper`
+ * rule.
+ */
+export async function printBol(
+  shipperId: string,
+): Promise<{ documentId: string; bolNumber: number; shipperNumber: number; pdf: Buffer }> {
+  const settings = await bolSettings();
+
+  return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
+    // Pre-claim stub read only to learn which orders to claim (the printShippingTickets shape).
+    const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
+    if (!stub) throw new HttpError(404, "Shipment not found");
+    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+
+    const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
+    if (!shipper) throw new HttpError(404, "Shipment not found");
+    assertPrintable(shipper);
+
+    let bolNumber = shipper.bolNumber;
+    if (bolNumber === null) {
+      bolNumber = await allocateNumber("bol_number_next", tx);
+      const allocated = bolNumber;
+      await auditedUpdate("shipper", shipperId,
+        () => tx.shipper.update({ where: { id: shipperId }, data: { bolNumber: allocated } }), { tx });
+    }
+
+    const data = await readBolData(tx, shipperId, bolNumber, settings);
+    const pdf = await renderPdf(buildBolDefinition(data));
+
+    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf);
+    return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/**
+ * The cert=1 half of the shipment print action (spec §3.14, §9; task-19-brief.md Step 6):
+ * resolves which certification prints alongside each covered order's ticket, WITHOUT printing
+ * anything — the route prints the tickets and then each cert through `printCert` (certs.ts), so
+ * each PDF is produced and stored as its own document exactly as §3.14 rules.
+ *
+ * "Each covered order's cert" resolves through the order's own frozen `certScope` (§6.1's
+ * freeze is what makes this well-defined):
+ *  - SHIPMENT — that order's live cert pinned to THIS shipment;
+ *  - ORDER    — that order's live order-scope cert;
+ *  - LOAD     — every live load-scope cert the order has (a shipment cannot know which loads went,
+ *    and load certs exist only on demand, §3.17).
+ *
+ * An order that REQUIRES a cert (its frozen `certRequired`) with nothing to print refuses the
+ * whole request — the Task 18 refusal ethos: honouring the ticket half while silently dropping
+ * the cert half would tell the person at the printer their quality paperwork went out when it did
+ * not. An order that doesn't require one and has none simply contributes nothing. A voided
+ * shipment refuses here with the shared refusal, BEFORE any ticket could print — its ORDER-scope
+ * certs are still live (only shipment-scope certs are voided with the shipment, spec §5.6), so
+ * without this check a voided shipment's print could still archive cert paper.
+ */
+export async function printableShipmentCertIds(shipperId: string, orderId?: string): Promise<string[]> {
+  const shipper = await prisma.shipper.findFirst({ where: { id: shipperId }, select: { deletedAt: true } });
+  if (!shipper) throw new HttpError(404, "Shipment not found");
+  assertPrintable(shipper);
+
+  const shipperOrders = await prisma.shipperOrder.findMany({
+    where: { shipperId, ...(orderId ? { orderId } : {}) },
+    orderBy: { position: "asc" },
+    select: {
+      orderId: true,
+      order: { select: { id: true, orderNumber: true, certRequired: true, certScope: true } },
+    },
+  });
+  if (orderId !== undefined && shipperOrders.length === 0) {
+    throw new HttpError(404, "That order is not on this shipment");
+  }
+
+  const certIds: string[] = [];
+  for (const so of shipperOrders) {
+    const scope = so.order.certScope as CertScopeValue;
+    const certs = await prisma.cert.findMany({
+      where: {
+        orderId: so.orderId, scope, deletedAt: null,
+        ...(scope === "SHIPMENT" ? { shipperId } : {}),
+      },
+      orderBy: [{ loadNumber: "asc" }, { createdAt: "asc" }],
+      select: { id: true },
+    });
+    if (certs.length === 0 && so.order.certRequired) {
+      throw new HttpError(400,
+        `Order #${so.order.orderNumber} requires a certification and none exists to print — ` +
+        `create it from /orders/${so.order.id}, or print without certifications.`);
+    }
+    certIds.push(...certs.map((c) => c.id));
+  }
+  return certIds;
 }
 
 // -------------------------------------------------------------------------------------------

@@ -11,6 +11,7 @@
 // ShipmentDetail.tsx) — the ContainersSection/SerialsSection precedent (src/app/orders/[id]/),
 // not an auto-seed-everything mutation chain: nothing is written to the server until the operator
 // clicks Save, exactly like every other bulk grid in this codebase.
+import { useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
@@ -223,20 +224,21 @@ function SerialsGrid({
 // The panel itself.
 // -------------------------------------------------------------------------------------------
 
-const CERT_TOOLTIP = "Available once the certification layout lands (Task 19)";
-
 export function ShipmentOrderPanel({
   shipperId, order, catalog, editGate, applyMutation, onError, onRemove,
-  printGate, printing, onPrintTicket,
+  printGate, printing, certsGate, onPrintTicket,
 }: {
   shipperId: string; order: ShipperOrder; catalog: OrderCatalog | undefined;
   editGate: Gate; applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
   onRemove: () => void;
   /** Ticket printing went live with Task 18 — the gate, the shared in-flight flag and the POST
-   *  itself all live on ShipmentDetail (one print pipeline for the whole page). */
-  printGate: Gate; printing: boolean; onPrintTicket: () => void;
+   *  itself all live on ShipmentDetail (one print pipeline for the whole page). Task 19 added
+   *  the cert checkbox (§3.14): `onPrintTicket(certWanted)` carries this panel's own box, and
+   *  `certsGate` (certs.view) gates it with a truthful §5.16 tooltip. */
+  printGate: Gate; printing: boolean; certsGate: Gate; onPrintTicket: (certWanted: boolean) => void;
 }) {
+  const [withCert, setWithCert] = useState(true);   // pre-ticked (§3.14)
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -261,16 +263,21 @@ export function ShipmentOrderPanel({
       <SerialsGrid shipperId={shipperId} shipperOrderId={order.id} serials={order.serials} catalog={catalog}
                     editGate={editGate} applyMutation={applyMutation} onError={onError} />
 
-      {/* Print (spec §11) — the ticket path is live (Task 18: POST ?doc=ticket&order=<id>); the
-          cert checkbox stays disabled until its layout lands (Task 19), tooltip naming why. */}
+      {/* Print (spec §11) — POST ?doc=ticket&order=<id>, with the cert checkbox pre-ticked
+          (§3.14): the order's cert prints alongside as its own archived document. */}
       <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-3 text-sm">
-        <button type="button" onClick={onPrintTicket} disabled={!printGate.allowed || printing}
+        <button type="button" onClick={() => onPrintTicket(withCert && certsGate.allowed)}
+                disabled={!printGate.allowed || printing}
                 title={printGate.title}
                 className="rounded border px-3 py-1.5 disabled:cursor-not-allowed disabled:text-slate-400">
           {printing ? "Printing…" : "Print this order's ticket"}
         </button>
-        <label className="flex items-center gap-1 text-slate-400" title={CERT_TOOLTIP}>
-          <input type="checkbox" checked readOnly disabled /> Also print certification
+        <label className={`flex items-center gap-1 ${certsGate.allowed ? "" : "text-slate-400"}`}
+               title={certsGate.title}>
+          <input type="checkbox" checked={withCert && certsGate.allowed}
+                 disabled={!certsGate.allowed || !printGate.allowed}
+                 onChange={(e) => setWithCert(e.target.checked)} />
+          Also print certification
         </label>
       </div>
     </section>
