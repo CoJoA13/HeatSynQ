@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
-import { createOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper, getShipper, voidShipper, type ShipperCreateResult } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
@@ -485,5 +485,49 @@ describe("getShipper", () => {
     // A line whose only shipment was voided reports a real 0, not a missing entry — the grid
     // renders the number, and the prefill falls back to the full ordered figure.
     expect(ledger.get(lineB.id)).toMatchObject({ shippedToDateQty: 0, shippedToDateWeight: 0 });
+  });
+});
+
+// Task 14b: the shipment CREATE page (`/shipping/new`) prefills every grid to the remainder
+// (`ordered − shipped`, design §5.1) before any shipper exists — so, unlike the edit page (whose
+// `orderLineShippedToDate` rides the shipper's own GET, Task 14 review Important #1), the figure
+// has to ride the ORDER's own detail: the same GET the create page already makes per selected
+// order for its line/container/serial catalog. Same name, same dense shape, same single
+// `shippedTotals` derivation — a widened existing payload, not a new route (spec §9 unchanged).
+describe("getOrder shipped-to-date (the /shipping/new prefill seam)", () => {
+  beforeEach(truncateAll);
+
+  it("carries a dense per-line ledger on the order's own detail", async () => {
+    const { order } = await twoLineOrder();
+    const [lineA, lineB] = order.lines;
+    await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 4, weight: 10 },
+    ]), { canOverrideCreditHold: false });
+
+    const detail = await getOrder(order.id);
+    const ledger = new Map(detail.orderLineShippedToDate.map((e) => [e.orderLineId, e]));
+    expect(ledger.size).toBe(2);
+    expect(ledger.get(lineA.id)).toMatchObject({ shippedToDateQty: 4, shippedToDateWeight: 10 });
+    // DENSE: a never-shipped line reports a real 0/0, so the prefill is the full ordered figure
+    // rather than an undefined the grid would have to special-case.
+    expect(ledger.get(lineB.id)).toMatchObject({ shippedToDateQty: 0, shippedToDateWeight: 0 });
+  });
+
+  it("sums every live shipment and excludes voided ones (spec §5.1)", async () => {
+    const { order } = await twoLineOrder();
+    const [lineA] = order.lines;
+    const prior = await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 4, weight: 10 },
+    ]), { canOverrideCreditHold: false });
+    await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 2, weight: 5 },
+    ]), { canOverrideCreditHold: false });
+
+    let ledger = new Map((await getOrder(order.id)).orderLineShippedToDate.map((e) => [e.orderLineId, e]));
+    expect(ledger.get(lineA.id)).toMatchObject({ shippedToDateQty: 6, shippedToDateWeight: 15 });
+
+    await voidShipper(prior.shipper.id, "loaded onto the wrong truck");
+    ledger = new Map((await getOrder(order.id)).orderLineShippedToDate.map((e) => [e.orderLineId, e]));
+    expect(ledger.get(lineA.id)).toMatchObject({ shippedToDateQty: 2, shippedToDateWeight: 5 });
   });
 });

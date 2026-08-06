@@ -20,6 +20,8 @@ import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // `isDuplicateClientRequestId` FROM this file, for the identical reason (order-locks.ts's own
 // header comment; verified per the task report, not merely assumed).
 import { shipmentBlockers } from "./shippers";
+// Type-only, so it is erased at compile time and adds nothing to the runtime cycle above.
+import type { OrderLineShippedToDate } from "./shippers";
 import type { Blocker } from "./reference-blockers";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
@@ -63,6 +65,14 @@ export type OrderDetail = {
   light: TrafficLight;
   /** Derived, never stored: any StoredDocument row for this order (spec §5b). */
   travelerPrinted: boolean;
+  /** Shipped-to-date for EVERY line of this order (Task 14b) — the same dense, per-line ledger
+   *  `ShipperOrderDetail.orderLineShippedToDate` carries on the shipment page's own GET (Task 14
+   *  review, Important #1), riding here for the one page that has no shipper to read it from: the
+   *  shipment CREATE page (`/shipping/new`), whose grids prefill to `ordered − shipped` (design
+   *  §5.1) from the same order-detail fetch that already supplies their line/container/serial
+   *  catalog. One `shippedTotals` call in `readDetail`, the single §5.1 derivation — never a
+   *  second arithmetic. Dense: a never-shipped line reports a real 0/0. */
+  orderLineShippedToDate: OrderLineShippedToDate[];
   lines: OrderLineDetail[];
   containers: OrderContainerDetail[];
   serials: OrderSerialDetail[];
@@ -445,6 +455,7 @@ export async function trafficSettings(): Promise<Traffic> {
 
 function toDetail(
   row: DetailRow, linkedOrders: { id: string; orderNumber: number }[], traffic: Traffic,
+  shipped: Map<string, { qty: number; weight: number }>,
 ): OrderDetail {
   return {
     id: row.id, orderNumber: row.orderNumber, customerId: row.customerId,
@@ -458,6 +469,12 @@ function toDetail(
     voided: row.deletedAt !== null,
     light: computeLight(row.requestDate, todayDateOnly(), traffic.mayMissDays, traffic.willMissDays),
     travelerPrinted: row.documents.length > 0,
+    // Dense (the shippers.ts `toDetail` shape): `shippedTotals` returns a SPARSE map — a line with
+    // no live shipper line has no entry — and the grid needs a real "0 / 0", not a hole.
+    orderLineShippedToDate: row.lines.map((l) => {
+      const totals = shipped.get(l.id) ?? { qty: 0, weight: 0 };
+      return { orderLineId: l.id, shippedToDateQty: totals.qty, shippedToDateWeight: totals.weight };
+    }),
     lines: row.lines.map((l) => ({
       id: l.id, position: l.position, partId: l.partId, revisionNumber: l.revisionNumber,
       qty: l.qty, weight: l.weight.toNumber(), part: l.part,
@@ -500,7 +517,8 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
       orderBy: { orderNumber: "asc" },
     })
     : [];
-  return toDetail(row, linkedOrders, traffic);
+  const shipped = await shippedTotals(db, row.lines.map((l) => l.id));
+  return toDetail(row, linkedOrders, traffic, shipped);
 }
 
 /**
