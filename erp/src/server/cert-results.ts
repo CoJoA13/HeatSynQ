@@ -67,7 +67,7 @@ export async function seedRequirements(tx: Db, certId: string): Promise<void> {
       if (insp.scaleId !== null) await assertRefExists("inspectionScale", insp.scaleId, tx);
       await tx.certRequirement.create({
         data: {
-          certId, orderLineId: line.id, position,
+          certId, orderLineId: line.id, orderLineIdAtSeed: line.id, position,
           // Snapshot at seed (ruling 23 extended): what the requirement prints if the line is
           // later corrected away — min/max/sampleQty/location were always frozen copies; the
           // line identity now freezes the same way.
@@ -111,7 +111,7 @@ export async function seedLineIntoLiveCerts(tx: Db, orderId: string, orderLineId
         if (insp.scaleId !== null) await assertRefExists("inspectionScale", insp.scaleId, tx);
         await tx.certRequirement.create({
           data: {
-            certId: cert.id, orderLineId: line.id, position,
+            certId: cert.id, orderLineId: line.id, orderLineIdAtSeed: line.id, position,
             linePosition: line.position, partNumber: line.part.partNumber, partName: line.part.name,
             inspectionCodeId: insp.inspectionCodeId, scaleId: insp.scaleId,
             min: insp.min, max: insp.max, sampleQty: insp.sampleQty, location: insp.location,
@@ -176,7 +176,7 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
       // The SNAPSHOT unconditionally, never the live join (round-4 finding): a requirement's
       // whole row is a frozen copy (min/max/sampleQty/location always were) — a later part rename
       // or an earlier rider's removal must not shift a seeded certification's identity.
-      id: r.id, orderLineId: r.orderLineId,
+      id: r.id, orderLineId: r.orderLineId, orderLineIdAtSeed: r.orderLineIdAtSeed,
       linePosition: r.linePosition, partNumber: r.partNumber, partName: r.partName,
       position: r.position, inspectionCodeId: r.inspectionCodeId, inspectionCodeName: r.inspectionCode.name,
       scaleId: r.scaleId, scaleName: r.scale?.name ?? null,

@@ -41,8 +41,10 @@ export type CertPartRow = { qty: number | null; partNumber: string; partName: st
 /** One §10.3 requirement block: the line naming the specification and scale, then bare values. */
 export type CertRequirementBlock = {
   /** Frozen line identity (ruling 24) — consumed only when the cert spans more than one part
-   *  (ruling 27): a single-part cert renders heading-free, identical to the §3.21 sample. */
-  linePosition: number; partNumber: string; partName: string;
+   *  (ruling 27): a single-part cert renders heading-free, identical to the §3.21 sample.
+   *  `lineIdentity` is the never-reused grouping key (#57 review — the seed-line cuid, or the
+   *  composite fallback for rows released before the backfill). */
+  lineIdentity: string; linePosition: number; partNumber: string; partName: string;
   specification: string; scale: string; readings: number[];
 };
 export type CertSerialBlock = { partNumber: string; serials: { serial: string; description: string }[] };
@@ -232,9 +234,8 @@ function requirementSection(d: CertPdfData): Content[] {
   const out: Content[] = [];
   let current: string | null = null;
   for (const r of d.requirements) {
-    const identity = `${r.linePosition}\u0000${r.partNumber}\u0000${r.partName}`;
-    if (identity !== current) {
-      current = identity;
+    if (r.lineIdentity !== current) {
+      current = r.lineIdentity;
       out.push({ text: `${r.partNumber} — ${r.partName}`, bold: true, fontSize: 9.5, margin: [0, 6, 0, 2] });
     }
     out.push(requirementBlock(r));

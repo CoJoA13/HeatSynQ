@@ -832,6 +832,11 @@ model CertRequirement {
   linePosition     Int // snapshot at seed
   partNumber       String
   partName         String           @default("")
+  // Plain copy of the seeding OrderLine's cuid — never an FK, survives SET NULL, and unlike a
+  // position it is NEVER reused, so it is the one grouping key two incarnations of the same part
+  // at the same freed position cannot collide on (#57 review). "" only on rows released before
+  // the backfill; consumers fall back to the composite identity there.
+  orderLineIdAtSeed String          @default("")
   // Cert-wide, not per line: requirements are seeded in order-line position order, and within
   // each line in the part's own PartInspection.sort order, so this orders the whole document
   // exactly as it prints.

@@ -163,7 +163,7 @@ function sampleCert(overrides: Partial<CertPdfData> = {}): CertPdfData {
     parts: [{ qty: 192, partNumber: "500031-HT", partName: "Track Shoe, Vehicular", partDescription: "T-130", pounds: 4128 }],
     statement: "We certify that the listed Parts / Materials were heat treated in accordance with the QAM and customer requirements as follows:",
     requirements: [{
-      linePosition: 1, partNumber: "500031-HT", partName: "Track Shoe, Vehicular",
+      lineIdentity: "line-1", linePosition: 1, partNumber: "500031-HT", partName: "Track Shoe, Vehicular",
       specification: "Were heat treated as per P.O. NONE", scale: "HRC",
       readings: [28, 30, 29, 30, 29, 30.1, 29.7, 25.6, 27.1],
     }],
@@ -468,6 +468,28 @@ describe("printCert", () => {
     expect(text).toContain(`${riderB.partNumber} — ${riderB.name}`);
     // And the parts table keeps both rows distinct.
     expect(data.parts.filter((p) => [riderA.partNumber, riderB.partNumber].includes(p.partNumber))).toHaveLength(2);
+  });
+
+  it("two incarnations of the SAME part at the same freed position stay distinct rows (K4)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const rider = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => removeLine(order.id, order.lines[1].id));                     // incarnation 1 released
+    const { order: withSecond } = await asSystem(() => addLine(order.id, { partId: rider.id, qty: 3, weight: "64.50" }));
+    await asSystem(() => removeLine(order.id, withSecond.lines[1].id));                // incarnation 2 released
+
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    // Same part, same freed position, but two distinct certified line incarnations — the paper
+    // lists BOTH released rows rather than folding them into one.
+    expect(data.parts.filter((p) => p.partNumber === rider.partNumber)).toHaveLength(2);
   });
 
   it("keeps a single-part cert heading-free — the §3.21 sample shape unchanged (ruling 27)", async () => {
