@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is PR-ready on `phase-4-certs-shipping` (PR #47)**: the finish sequence ran (whole-branch review, fix wave, PR), and all three Codex review triage rounds are resolved — 21/21 threads, sixteen fixes on-branch including the owner-ratified **snapshot + release** schema amendments (spec rulings 23–24) and the credit-hold extension gate (ruling 25), four deferrals to issues #48–#51. Gates: 1381 tests, `tsc`/`eslint`/`build` clean, E2E 15/15. Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is MERGED to main as `f129aae` (PR #47, squash)** after seven Codex triage rounds: 38/38 review threads resolved, 27 fixes on-branch (including the owner-ratified snapshot + release amendments, rulings 23–26, and the frozen-identity refinements), 9 deferrals to issues #48–#56, and the owner-ratified stopping rule recorded in §4a. Final gates on the merged tree: **1392 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15, CI green. Phase 3 merged as `12a17f9` (PR #39). Next: Phase 5 per the roadmap.
 
 ---
 
@@ -73,7 +73,7 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. Phase 4 (Certifications & Shipping) — COMPLETE on `phase-4-certs-shipping`, PR open
+### 4a. Phase 4 (Certifications & Shipping) — MERGED to main as `f129aae` (PR #47, 2026-08-06)
 
 **Finish sequence DONE (2026-08-06):** the whole-branch review ran on the strongest model (verdict:
 merge with fixes — full text `.superpowers/sdd/whole-branch-review.md`), its one fix wave was
