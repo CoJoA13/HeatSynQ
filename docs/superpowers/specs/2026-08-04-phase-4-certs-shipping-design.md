@@ -764,6 +764,7 @@ Authorize → parse → delegate, ctx always passed.
 | `/api/shippers/[id]/orders/[shipperOrderId]/lines`, `/containers`, `/serials` | PUT (replace) | `shipping.edit` |
 | `/api/shippers/[id]/print` (`?doc=ticket\|bol&order=<id>&cert=1`) | POST | `shipping.view` |
 | `/api/shippers/[id]/documents` | GET | `shipping.view` (added 2026-08-05, see below) |
+| `/api/certs/[id]/documents` | GET | `certs.view` (added 2026-08-05, see below) |
 | `/api/certs` | GET / POST | `certs.view` / `certs.create` |
 | `/api/certs/export` | GET | `certs.view` |
 | `/api/certs/[id]` | GET / PATCH | `certs.view` / `certs.edit` |
@@ -791,6 +792,11 @@ stored-documents list. Task 14 added it; its review adjudicated the addition a f
 `handle` + `mustCan(shipping.view)` first line, metadata-only select, and the §8 per-kind filter is
 satisfied *by construction* — `ownerColumns` nulls `shipperId` for TRAVELER/CERT behind a DB CHECK,
 so only SHIPPER/BOL rows (both `shipping`-area kinds per `AREA_FOR_KIND`) can ever match.
+
+**Amendment 2026-08-05 (Task 16 review adjudication):** `GET /api/certs/[id]/documents` added on the
+same footing — the cert detail page's stored-documents list mirrors the shipper route's pattern, and
+the same CHECK (`certId` non-null only for kind CERT) plus `AREA_FOR_KIND`'s `CERT → certs` mapping
+make the §8 per-kind filter vacuously satisfied behind `mustCan(certs.view)`.
 
 ## 10. Documents
 
