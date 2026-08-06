@@ -1049,6 +1049,22 @@ export async function updateOrder(
 
     await auditedUpdate("order", id, () => tx.order.update({ where: { id }, data: patch }), { tx });
 
+    // The §6.2 creation-time behavior, following the §6.1 post-save override: an update that
+    // lands the order on certRequired + ORDER scope owes the ORDER-scope cert `createOrder`
+    // would have made — the hub only exposes on-demand creation for LOAD scope, so nothing else
+    // can. Existence-checked first (idempotent repeat updates; a live cert already there wins).
+    if (data.certRequired !== undefined || data.certScope !== undefined) {
+      const now = await tx.order.findFirstOrThrow({
+        where: { id }, select: { certRequired: true, certScope: true },
+      });
+      if (now.certRequired && now.certScope === "ORDER") {
+        const existing = await tx.cert.findFirst({
+          where: { orderId: id, scope: "ORDER", deletedAt: null }, select: { id: true },
+        });
+        if (!existing) await createCert({ orderId: id, scope: "ORDER" }, tx);
+      }
+    }
+
     const order = await readDetail(tx, id, traffic);
     return { order, warnings: loadsMismatchWarnings(order) };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));

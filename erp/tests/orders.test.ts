@@ -1399,6 +1399,26 @@ describe("updateOrder", () => {
     expect(untouched.certRequired).toBe(true);
   });
 
+  it("creates the ORDER-scope cert when an update transitions the order to certRequired + ORDER", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    expect(await prisma.cert.count({ where: { orderId: order.id } })).toBe(0);
+
+    // The post-save override spec §6.1 supports — creation-time §6.2 behavior must follow it,
+    // since the hub only exposes on-demand creation for LOAD scope.
+    await asSystem(() => updateOrder(order.id, { certRequired: true, certScope: "ORDER" }));
+    expect(await prisma.cert.findFirst({
+      where: { orderId: order.id, scope: "ORDER", deletedAt: null },
+    })).not.toBeNull();
+
+    // Idempotent: a repeat of the same update must not attempt a duplicate create.
+    await expect(asSystem(() => updateOrder(order.id, { certRequired: true, certScope: "ORDER" })))
+      .resolves.toBeTruthy();
+    expect(await prisma.cert.count({ where: { orderId: order.id, scope: "ORDER", deletedAt: null } })).toBe(1);
+  });
+
   it("leaves targetDate alone when omitted, and clears it on an explicit null", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({
