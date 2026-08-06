@@ -247,7 +247,10 @@ export function ShipmentDetail({ id }: { id: string }) {
   const certsGate = gate(perms, "certs.view");
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
-  const [printInfo, setPrintInfo] = useState<string | null>(null);
+  // The bundled certs' archived document ids (x-cert-document-ids) — surfaced as DIRECT links:
+  // the Documents list below filters on shipperId and a CERT document carries only certId, so
+  // "open them from Documents below" would point at a list that can never show them.
+  const [certDocIds, setCertDocIds] = useState<string[]>([]);
   // §9 amendment 2026-08-05: a cert-requiring covered order with no cert prints its tickets and
   // WARNS — the route carries the named warnings in x-print-warnings (URI-encoded JSON, since the
   // body is PDF bytes) and this page surfaces them beside the print bar.
@@ -259,7 +262,7 @@ export function ShipmentDetail({ id }: { id: string }) {
   const printDoc = useCallback(async (query: string, label: string) => {
     setPrinting(true);
     setPrintError(null);
-    setPrintInfo(null);
+    setCertDocIds([]);
     setPrintWarnings([]);
     try {
       const res = await fetch(`/api/shippers/${id}/print?${query}`, { method: "POST" });
@@ -276,12 +279,10 @@ export function ShipmentDetail({ id }: { id: string }) {
         setPrintError(`The browser blocked the print window — the ${label} was archived and is in Documents below.`);
       }
       // The certs print as their own archived documents (§3.14); a browser allows one popup per
-      // click, so they are surfaced through Documents rather than a volley of blocked tabs.
+      // click, so they are surfaced as direct links beside the print bar rather than a volley of
+      // blocked tabs.
       const certDocs = res.headers.get("x-cert-document-ids");
-      if (certDocs !== null) {
-        const n = certDocs.split(",").length;
-        setPrintInfo(`${n} certification${n === 1 ? "" : "s"} archived — open them from Documents below.`);
-      }
+      setCertDocIds(certDocs === null ? [] : certDocs.split(","));
       const warned = res.headers.get("x-print-warnings");
       if (warned !== null) {
         try {
@@ -689,7 +690,17 @@ export function ShipmentDetail({ id }: { id: string }) {
           {printing ? "Printing…" : "Print BOL"}
         </button>
         {printError && <span className="text-xs text-red-700">{printError}</span>}
-        {printInfo && <span className="text-xs text-slate-600">{printInfo}</span>}
+        {certDocIds.length > 0 && (
+          <span className="text-xs text-slate-600">
+            {certDocIds.length} certification{certDocIds.length === 1 ? "" : "s"} archived:{" "}
+            {certDocIds.map((docId, i) => (
+              <a key={docId} href={`/api/documents/${docId}`} target="_blank" rel="noreferrer"
+                 className="text-blue-700 underline">
+                certification PDF{certDocIds.length === 1 ? "" : ` ${i + 1}`}{i < certDocIds.length - 1 ? ", " : ""}
+              </a>
+            ))}
+          </span>
+        )}
         {printWarnings.map((w) => (
           <span key={w} className="w-full text-xs text-amber-700">{w}</span>
         ))}
