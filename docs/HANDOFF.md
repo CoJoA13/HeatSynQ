@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-06 — **Phase 4 (Certifications & Shipping) is MERGED to main as `f129aae` (PR #47, squash)** after seven Codex triage rounds: 38/38 review threads resolved, 27 fixes on-branch (including the owner-ratified snapshot + release amendments, rulings 23–26, and the frozen-identity refinements), 9 deferrals to issues #48–#56, and the owner-ratified stopping rule recorded in §4a. Final gates on the merged tree: **1392 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15, CI green. Phase 3 merged as `12a17f9` (PR #39). Next: Phase 5 per the roadmap.
+**Updated:** 2026-08-06 (evening) — Phase 4 merged as `f129aae` (PR #47); the **backlog burn-down merged as `8647a7d` (PR #57)**, closing #48–#50 and #53–#56 (rulings 27–28) plus its own review round's four fixes (the seed-line identity, the parts-table multi-part detection, the released-serial warning credit). 25 migrations; final gates **1406 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15, CI green. Remaining backlog: #51–#52 plus the older triaged issues. **Next: Phase 5 kickoff per §9, fresh session.** Phase 3 merged as `12a17f9` (PR #39).
 
 ---
 
