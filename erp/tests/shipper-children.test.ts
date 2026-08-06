@@ -244,6 +244,19 @@ describe("removeOrderFromShipper", () => {
     await expect(removeOrderFromShipper(s2.id, sec2.id)).rejects.toThrow(/already printed|void the shipment/i);
   });
 
+  it("refuses to remove an order whose shipment-scope cert has printed", async () => {
+    const { shipper, second } = await twoOrderShipment();
+    const cert = await prisma.cert.create({
+      data: { orderId: second.orderId, shipperId: shipper.id, scope: "SHIPMENT" },
+    });
+    // The cert printed BEFORE any ticket — the printed paper carries orderNumber-sequence
+    // permanently, so the sequence must stay claimed exactly as a printed ticket's would.
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "CERT", certId: cert.id }, Buffer.from("%PDF-1.4 c")));
+    await expect(removeOrderFromShipper(shipper.id, second.id))
+      .rejects.toThrow(/certification.*printed|void the shipment/i);
+  });
+
   it("treats a whole-set ticket print as covering every order on the shipment", async () => {
     const { shipper, second } = await twoOrderShipment();
     await prisma.$transaction((tx) =>

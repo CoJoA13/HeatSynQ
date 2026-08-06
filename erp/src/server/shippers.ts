@@ -886,6 +886,20 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
         "void the shipment instead of removing it.");
     }
 
+    // The same guard for the OTHER paper that permanently carries this order's
+    // `orderNumber-sequence` identity (certs.ts's orderLabel): a shipment-scope cert printed
+    // before any ticket. Deliberately unfiltered on `deletedAt` — a voided cert's stored print
+    // still exists forever (spec §5.6), so its sequence must stay claimed exactly the same way.
+    const printedCert = await tx.storedDocument.findFirst({
+      where: { kind: "CERT", cert: { orderId: target.orderId, shipperId: id } },
+      select: { id: true },
+    });
+    if (printedCert) {
+      throw new HttpError(400,
+        `This order's shipment certification has already printed (Packing List ${shipper.shipperNumber}) — ` +
+        "void the shipment instead of removing it.");
+    }
+
     // Void this order's own SHIPMENT-scope cert, if it has one — see this function's own doc
     // comment for why HERE, not deferred to `voidShipper`'s cascade. A DIFFERENT audit entity
     // ("cert", not "shipper"), so a separate `auditedSoftDelete` call, not folded into the
