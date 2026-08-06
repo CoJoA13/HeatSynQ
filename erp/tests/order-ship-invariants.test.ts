@@ -6,6 +6,8 @@ import {
   type OrderDetail,
 } from "@/server/orders";
 import { createShipper, voidShipper, getShipper, overshipWarnings } from "@/server/shippers";
+import { createCert, getCert } from "@/server/certs";
+import { addPartInspection } from "@/server/part-inspections";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -213,6 +215,27 @@ describe("snapshot + release: order corrections after shipment references", () =
     const shipLine = detail.orders[0].lines.find((l) => l.qty === 5)!;
     expect(shipLine.partNumber).toMatch(/^R-/);   // the rider part's number, snapshotted
     expect(shipLine.orderLineId).toBeNull();
+  });
+
+  it("removeLine succeeds when a cert's frozen requirements reference the line, keeping their identity", async () => {
+    // No shipments at all — the FK from CertRequirement alone must not block the removal (round-3
+    // finding, 2026-08-06; ruling 23 extended). The requirement keeps rendering from its snapshot.
+    const { order } = await savedOrder();
+    const withRider = await addRiderLine(order, { qty: 5, weight: "10.00" });
+    const rider = withRider.lines[1];
+    const code = await prisma.inspectionCode.create({ data: { name: "SSR-Hardness" } });
+    await asSystem(() => addPartInspection(rider.partId, { inspectionCodeId: code.id, sort: 0, min: 28, max: 32 }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    expect(cert.requirements.some((r) => r.orderLineId === rider.id)).toBe(true);
+
+    const removed = await asSystem(() => removeLine(order.id, rider.id));
+    expect(removed.order.lines.map((l) => l.id)).not.toContain(rider.id);
+
+    const after = await getCert(cert.id);
+    const frozen = after.requirements.find((r) => r.orderLineId === null);
+    expect(frozen).toBeTruthy();
+    expect(frozen!.partNumber).toMatch(/^R-/);   // the rider part's number, snapshotted at seed
+    expect(frozen!.linePosition).toBe(2);
   });
 
   it("replaceContainers keeps working on an order a live shipment references, and the shipment keeps the container's identity", async () => {

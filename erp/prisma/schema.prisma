@@ -825,8 +825,13 @@ model CertRequirement {
   id               String           @id @default(cuid())
   certId           String
   cert             Cert             @relation(fields: [certId], references: [id])
-  orderLineId      String
-  orderLine        OrderLine        @relation(fields: [orderLineId], references: [id])
+  // Snapshot + release (ruling 23 extended, 2026-08-06): a frozen requirement must not block
+  // removeLine — the line identity it prints is snapshotted below, the FK releases on delete.
+  orderLineId      String?
+  orderLine        OrderLine?       @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  linePosition     Int // snapshot at seed
+  partNumber       String
+  partName         String           @default("")
   // Cert-wide, not per line: requirements are seeded in order-line position order, and within
   // each line in the part's own PartInspection.sort order, so this orders the whole document
   // exactly as it prints.

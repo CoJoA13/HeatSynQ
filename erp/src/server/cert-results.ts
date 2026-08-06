@@ -42,7 +42,7 @@ export async function seedRequirements(tx: Db, certId: string): Promise<void> {
   const lines = await tx.orderLine.findMany({
     where: { orderId: cert.orderId },
     orderBy: { position: "asc" },
-    select: { id: true, partId: true },
+    select: { id: true, partId: true, position: true, part: { select: { partNumber: true, name: true } } },
   });
   if (lines.length === 0) return;
 
@@ -68,6 +68,10 @@ export async function seedRequirements(tx: Db, certId: string): Promise<void> {
       await tx.certRequirement.create({
         data: {
           certId, orderLineId: line.id, position,
+          // Snapshot at seed (ruling 23 extended): what the requirement prints if the line is
+          // later corrected away — min/max/sampleQty/location were always frozen copies; the
+          // line identity now freezes the same way.
+          linePosition: line.position, partNumber: line.part.partNumber, partName: line.part.name,
           inspectionCodeId: insp.inspectionCodeId, scaleId: insp.scaleId,
           min: insp.min, max: insp.max, sampleQty: insp.sampleQty, location: insp.location,
         },
@@ -128,8 +132,10 @@ function toCertDetail(row: DetailRow, sequence: number | null): CertDetail {
     material: row.order.lines[0]?.part.material?.name ?? "",
     receivedDate: formatDateOnly(row.order.receivedDate),
     requirements: row.requirements.map((r) => ({
-      id: r.id, orderLineId: r.orderLineId, linePosition: r.orderLine.position,
-      partNumber: r.orderLine.part.partNumber, partName: r.orderLine.part.name,
+      id: r.id, orderLineId: r.orderLineId,
+      linePosition: r.orderLine?.position ?? r.linePosition,
+      partNumber: r.orderLine?.part.partNumber ?? r.partNumber,
+      partName: r.orderLine?.part.name ?? r.partName,
       position: r.position, inspectionCodeId: r.inspectionCodeId, inspectionCodeName: r.inspectionCode.name,
       scaleId: r.scaleId, scaleName: r.scale?.name ?? null,
       min: num(r.min), max: num(r.max), sampleQty: r.sampleQty, location: r.location,

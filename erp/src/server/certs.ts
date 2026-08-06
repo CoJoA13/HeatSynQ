@@ -132,7 +132,7 @@ export type CertReadingDetail = {
   passed: boolean | null; overridden: boolean; note: string;
 };
 export type CertRequirementDetail = {
-  id: string; orderLineId: string; linePosition: number; partNumber: string; partName: string;
+  id: string; orderLineId: string | null; linePosition: number; partNumber: string; partName: string;
   position: number; inspectionCodeId: string; inspectionCodeName: string;
   scaleId: string | null; scaleName: string | null;
   min: number | null; max: number | null; sampleQty: string; location: string;

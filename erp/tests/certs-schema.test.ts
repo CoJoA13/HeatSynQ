@@ -61,6 +61,7 @@ describe("certs and shipping schema", () => {
     const requirement = await prisma.certRequirement.create({
       data: {
         certId: cert.id, orderLineId: line.id, position: 1,
+        linePosition: 1, partNumber: "500031-HT",
         inspectionCodeId: code.id, scaleId: scale.id,
         min: "45.0000", max: "52.5000", sampleQty: "100%", location: "flange OD",
       },
