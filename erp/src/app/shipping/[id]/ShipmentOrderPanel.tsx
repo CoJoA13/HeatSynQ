@@ -17,18 +17,21 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import { useBulkGrid } from "@/lib/bulk-grid";
+import { shipRemainder } from "@/lib/ship-remainder";
 import type { ApplyMutation, OrderCatalog, ShipperOrder, ShipperMutationResult } from "./ShipmentDetail";
 
 // -------------------------------------------------------------------------------------------
-// Lines grid — ordered / shipped-to-date / ship-now qty and lbs / ship-line-complete.
+// Lines grid — ordered / shipped-to-date / ship-now qty and lbs / ship-line-complete, prefilled
+// to the remainder (task-14-brief.md Step 2).
 // -------------------------------------------------------------------------------------------
 
 type LineFields = { orderLineId: string; qty: string; weight: string; lineComplete: string };
 
 function LinesGrid({
-  shipperId, shipperOrderId, lines, catalog, editGate, applyMutation, onError,
+  shipperId, shipperOrderId, lines, shippedToDate, catalog, editGate, applyMutation, onError,
 }: {
   shipperId: string; shipperOrderId: string; lines: ShipperOrder["lines"];
+  shippedToDate: ShipperOrder["orderLineShippedToDate"];
   catalog: OrderCatalog | undefined; editGate: Gate; applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
 }) {
@@ -38,11 +41,6 @@ function LinesGrid({
     lineComplete: l.lineComplete ? "true" : "false",
   }));
   const usedLineIds = new Set(rows.map((r) => r.orderLineId));
-  // Prefilled to the remainder (task-14-brief.md): a candidate not yet on this shipment defaults
-  // to its own full ordered qty/weight — the true remainder for the common case (this order has
-  // no OTHER live shipment against this line yet). If it does, the §5.7 over-ship warning fires
-  // on save and the operator corrects the ship-now qty by hand; over-shipping warns and never
-  // blocks (spec §5.7), which is exactly the mechanism this default leans on.
   const candidates = (catalog?.lines ?? []).filter((c) => !usedLineIds.has(c.id));
   const [pick, setPick] = useState("");
 
@@ -60,9 +58,28 @@ function LinesGrid({
       infoByLineId.set(c.id, { partNumber: c.partNumber, partName: c.partName, orderedQty: c.qty, orderedWeight: c.weight });
     }
   }
-  // Shipped-to-date is only known for a line already saved onto SOME shipment (ship-ledger.ts has
-  // no client-callable endpoint) — a row added but not yet saved shows "—" rather than a guessed 0.
+  // Shipped-to-date for EVERY line of the order, candidates included — `orderLineShippedToDate`
+  // rides on the shipment's own GET (shippers.ts `readShipperDetail`), so it is refetched with
+  // every mutation on this page and never goes stale the way a separately-fetched catalog could.
+  // Seeded from the rows already on the shipment first purely as a belt-and-braces fallback: both
+  // sides come from the SAME `shippedTotals` call, so the values agree by construction.
   const shippedByLineId = new Map(lines.map((l) => [l.orderLineId, { qty: l.shippedToDateQty, weight: l.shippedToDateWeight }]));
+  for (const s of shippedToDate) shippedByLineId.set(s.orderLineId, { qty: s.shippedToDateQty, weight: s.shippedToDateWeight });
+
+  /** Prefilled to the remainder (task-14-brief.md Step 2, design §5.1 `ordered − shipped`): a
+   *  candidate partly shipped on an EARLIER shipment defaults to what is left, not to the full
+   *  ordered figure — which used to hand the operator an over-shipping default they only found out
+   *  about from the §5.7 warning AFTER saving. A default, never a cap: the field stays editable and
+   *  the server still accepts (and warns about) more, since over-shipping warns and never blocks. */
+  function prefill(c: { id: string; qty: number; weight: number }): LineFields {
+    const shipped = shippedByLineId.get(c.id) ?? { qty: 0, weight: 0 };
+    return {
+      orderLineId: c.id,
+      qty: String(shipRemainder(c.qty, shipped.qty)),
+      weight: String(shipRemainder(c.weight, shipped.weight)),
+      lineComplete: "false",
+    };
+  }
 
   function patch(row: { key: string; isNew: boolean }, field: keyof LineFields, value: string) {
     if (row.isNew) grid.updateAdded(row.key, { [field]: value } as Partial<LineFields>);
@@ -75,12 +92,12 @@ function LinesGrid({
   function addPicked() {
     const c = candidates.find((x) => x.id === pick);
     if (!c) return;
-    grid.addRow({ orderLineId: c.id, qty: String(c.qty), weight: String(c.weight), lineComplete: "false" });
+    grid.addRow(prefill(c));
     setPick("");
   }
   function addAllRemaining() {
     if (candidates.length === 0) return;
-    grid.addRows(candidates.map((c) => ({ orderLineId: c.id, qty: String(c.qty), weight: String(c.weight), lineComplete: "false" })));
+    grid.addRows(candidates.map(prefill));
   }
 
   async function save() {
@@ -133,6 +150,8 @@ function LinesGrid({
                     {info && <div className="text-xs text-slate-500">{info.partName}</div>}
                   </td>
                   <td>{info ? `${info.orderedQty} / ${info.orderedWeight} lbs` : "—"}</td>
+                  {/* A real number for a not-yet-saved row too, so the operator can see what the
+                      prefilled ship-now figure was derived from and correct it against. */}
                   <td>{shipped ? `${shipped.qty} / ${shipped.weight} lbs` : "—"}</td>
                   <td>
                     <input value={row.qty} inputMode="numeric" disabled={!editGate.allowed} title={editGate.title}
@@ -167,7 +186,13 @@ function LinesGrid({
         <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={!editGate.allowed || candidates.length === 0}
                 title={editGate.title} aria-label="Add line" className="rounded border px-2 py-1 text-sm disabled:cursor-not-allowed disabled:bg-slate-100">
           <option value="">{candidates.length === 0 ? "Every order line is on this shipment" : "Add line…"}</option>
-          {candidates.map((c) => <option key={c.id} value={c.id}>{c.partNumber} — ordered {c.qty}</option>)}
+          {/* "remaining" names the figure the row will actually be prefilled with, so the choice
+              is made against it rather than discovered after the row lands in the grid. */}
+          {candidates.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.partNumber} — ordered {c.qty}, remaining {shipRemainder(c.qty, shippedByLineId.get(c.id)?.qty ?? 0)}
+            </option>
+          ))}
         </select>
         <button onClick={addPicked} disabled={!editGate.allowed || !pick} title={editGate.title}
                 className="text-sm text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">
@@ -189,6 +214,15 @@ function LinesGrid({
 // -------------------------------------------------------------------------------------------
 // Containers grid — which of the order's container rows went, and how many (spec §4.2 "which of
 // the order's container rows went and how many").
+//
+// SIBLING-SPLIT NOTE (task-14-brief.md, Task 14 review Important #1): the lines grid's "prefill to
+// the remainder" fix does NOT land here, and the reason is structural rather than an oversight.
+// The ship ledger is defined per ORDER LINE and nothing else (design §5.1, ship-ledger.ts:
+// `shippedTotals(db, orderLineIds)`); `ShipperContainer` carries a `count` of bins that travelled
+// on this shipment with no ledger, no aggregate, and no "containers shipped to date" anywhere in
+// the schema or the spec, so `ordered − shipped` has no second operand to compute. The candidate
+// prefill here stays the order container's own `count` — which IS its whole remainder, since a
+// container row is not consumed across shipments the way a line's quantity is.
 // -------------------------------------------------------------------------------------------
 
 type ContainerFields = { orderContainerId: string; count: string };
@@ -315,6 +349,12 @@ function ContainersGrid({
 // -------------------------------------------------------------------------------------------
 // Serials grid — which of the order's serials went, with a per-row print-on-shipper flag (spec
 // §4.2).
+//
+// SIBLING-SPLIT NOTE: the "prefill to the remainder" fix does not land here either, and even less
+// ambiguously than for containers — a serial has no quantity at all. Its only prefilled field is
+// the boolean `printOnShipper` (defaulted true), so there is no arithmetic to make remainder-aware.
+// A serial that already shipped is excluded from the picker by the same `usedIds` filter every
+// grid uses, which is the whole of "remainder" for a set-membership row.
 // -------------------------------------------------------------------------------------------
 
 type SerialFields = { orderSerialId: string; printOnShipper: string };
@@ -458,7 +498,8 @@ export function ShipmentOrderPanel({
         </button>
       </div>
 
-      <LinesGrid shipperId={shipperId} shipperOrderId={order.id} lines={order.lines} catalog={catalog}
+      <LinesGrid shipperId={shipperId} shipperOrderId={order.id} lines={order.lines}
+                 shippedToDate={order.orderLineShippedToDate} catalog={catalog}
                  editGate={editGate} applyMutation={applyMutation} onError={onError} />
       <div className="my-4 border-t" />
       <ContainersGrid shipperId={shipperId} shipperOrderId={order.id} containers={order.containers} catalog={catalog}

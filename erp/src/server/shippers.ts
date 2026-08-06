@@ -28,9 +28,23 @@ export type ShipperLineDetail = {
   orderedQty: number; orderedWeight: number; shippedToDateQty: number; shippedToDateWeight: number;
   qty: number; weight: number; lineComplete: boolean;
 };
+/**
+ * Shipped-to-date for ONE line of the order, whether or not that line is on this shipment (Task 14
+ * review, Important #1). `ShipperLineDetail` above already carries the same two figures for the
+ * lines that ARE on this shipment; this is the same derivation extended to the rest of the order's
+ * lines — the ones the shipment page's "Add line" picker offers — so the ship-now prefill can be
+ * `ordered − shipped` (design §5.1) for a candidate that was partly shipped on some OTHER
+ * shipment, instead of defaulting to the full ordered figure and over-shipping by construction.
+ */
+export type OrderLineShippedToDate = {
+  orderLineId: string; shippedToDateQty: number; shippedToDateWeight: number;
+};
 export type ShipperOrderDetail = {
   id: string; orderId: string; orderNumber: number; sequence: number; position: number;
   poNumber: string; customerJobNo: string; label: string;
+  /** Every LIVE line of this order, in order position — a superset of `lines[].orderLineId`, and
+   *  the only place a not-yet-added candidate's shipped-to-date is knowable client-side. */
+  orderLineShippedToDate: OrderLineShippedToDate[];
   lines: ShipperLineDetail[];
   containers: { id: string; orderContainerId: string; typeName: string; customerContainerId: string; count: number; position: number }[];
   serials: { id: string; orderSerialId: string; serial: string; description: string; printOnShipper: boolean }[];
@@ -209,7 +223,16 @@ const DETAIL_INCLUDE = {
   orders: {
     orderBy: { position: "asc" },
     include: {
-      order: { select: { orderNumber: true, poNumber: true, customerJobNo: true } },
+      order: {
+        select: {
+          orderNumber: true, poNumber: true, customerJobNo: true,
+          // The order's OWN full line set, not just the lines on this shipment — `toDetail` turns
+          // it into `orderLineShippedToDate` below. A nested select on a relation this query
+          // already joins, so it costs no extra round trip; order lines carry no `deletedAt` of
+          // their own (P3 §4), so every row here is live by construction.
+          lines: { orderBy: { position: "asc" }, select: { id: true } },
+        },
+      },
       lines: {
         orderBy: { position: "asc" },
         include: {
@@ -248,6 +271,13 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
       id: so.id, orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,
       position: so.position, poNumber: so.order.poNumber, customerJobNo: so.order.customerJobNo,
       label: `${so.order.orderNumber}-${so.sequence}`,
+      // A DENSE list: a line with no live shipper line at all has no entry in `shipped` (the
+      // sparse-map shape `shippedTotals` documents), and the grid must render a real "0 / 0 lbs"
+      // for it rather than the "—" that used to stand in for "unknown".
+      orderLineShippedToDate: so.order.lines.map((ol) => {
+        const totals = shipped.get(ol.id) ?? { qty: 0, weight: 0 };
+        return { orderLineId: ol.id, shippedToDateQty: totals.qty, shippedToDateWeight: totals.weight };
+      }),
       lines: so.lines.map((l) => {
         const totals = shipped.get(l.orderLineId) ?? { qty: 0, weight: 0 };
         return {
@@ -275,7 +305,11 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
 export async function readShipperDetail(db: Db, id: string): Promise<ShipperDetail> {
   const row = await db.shipper.findFirst({ where: { id }, include: DETAIL_INCLUDE });
   if (!row) throw new HttpError(404, "Shipment not found");
-  const orderLineIds = row.orders.flatMap((o) => o.lines.map((l) => l.orderLineId));
+  // Every line of every order on this shipment — a superset of the lines actually ON the shipment
+  // (`o.lines[].orderLineId`), which is what lets `toDetail` answer shipped-to-date for an add-line
+  // CANDIDATE too (Task 14 review, Important #1). Still ONE `shippedTotals` call, and still the
+  // single §5.1 derivation: the ids widened, the arithmetic untouched.
+  const orderLineIds = row.orders.flatMap((o) => o.order.lines.map((l) => l.id));
   const shipped = await shippedTotals(db, orderLineIds);
   return toDetail(row, shipped);
 }

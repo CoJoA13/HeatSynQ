@@ -38,9 +38,14 @@ export type ShipperContainer = {
 export type ShipperSerial = {
   id: string; orderSerialId: string; serial: string; description: string; printOnShipper: boolean;
 };
+/** Shipped-to-date for one line of the ORDER — including lines not on this shipment, which is what
+ *  the "Add line" picker needs to prefill ship-now to the remainder rather than the full ordered
+ *  figure (Task 14 review, Important #1). Dense: a never-shipped line arrives as a real 0/0. */
+export type OrderLineShipped = { orderLineId: string; shippedToDateQty: number; shippedToDateWeight: number };
 export type ShipperOrder = {
   id: string; orderId: string; orderNumber: number; sequence: number; position: number;
   poNumber: string; customerJobNo: string; label: string;
+  orderLineShippedToDate: OrderLineShipped[];
   lines: ShipperLine[]; containers: ShipperContainer[]; serials: ShipperSerial[];
 };
 

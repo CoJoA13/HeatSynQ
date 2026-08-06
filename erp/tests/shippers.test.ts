@@ -3,7 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, type OrderDetail } from "@/server/orders";
-import { createShipper, getShipper, type ShipperCreateResult } from "@/server/shippers";
+import { createShipper, getShipper, voidShipper, type ShipperCreateResult } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
@@ -68,6 +68,26 @@ async function savedOrder(opts: {
   return { order, part, customer };
 }
 
+/** An order with TWO lines — the add-line picker's own fixture: one line goes on the shipment and
+ *  the OTHER stays a candidate for it, which is the case task-14-brief.md's "prefilled to the
+ *  remainder" actually turns on (a candidate already partly shipped elsewhere). `savedOrder` above
+ *  only ever makes a single-line order, so the candidate case has no fixture without this one. */
+async function twoLineOrder(): Promise<{ order: OrderDetail; customer: Customer }> {
+  const customer = await makeCustomer();
+  const firstPart = await makePart(customer.id);
+  const secondPart = await makePart(customer.id);
+  await giveSteps(firstPart.id);
+  await giveSteps(secondPart.id);
+  const { order } = await asSystem(() => createOrder({
+    customerId: customer.id,
+    lines: [
+      { partId: firstPart.id, qty: 10, weight: "25.00" },
+      { partId: secondPart.id, qty: 8, weight: "12.00" },
+    ],
+  }));
+  return { order, customer };
+}
+
 /** Shape of one `createShipper` input's container/serial entries — typed properly (not
  *  `unknown[]`) so the tests that mutate `input.orders[0].containers`/`.serials` in place stay
  *  type-checked rather than opting out of it (Task 8 review, 2026-08-04). */
@@ -86,6 +106,21 @@ function oneOrderInput(order: OrderDetail) {
         orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight,
         lineComplete: false,
       }],
+      containers: [] as ShipContainerInput[],
+      serials: [] as ShipSerialInput[],
+    }],
+  };
+}
+
+/** `oneOrderInput` with the caller choosing which of the order's lines ship, and how much — the
+ *  multi-line/multi-shipment fixture the ledger tests below need. */
+function shipmentOf(order: OrderDetail, lines: { orderLineId: string; qty: number; weight: number }[]) {
+  return {
+    customerId: order.customerId,
+    shipDate: "2026-08-04",
+    orders: [{
+      orderId: order.id,
+      lines: lines.map((l) => ({ ...l, lineComplete: false })),
       containers: [] as ShipContainerInput[],
       serials: [] as ShipSerialInput[],
     }],
@@ -402,5 +437,53 @@ describe("getShipper", () => {
 
   it("throws 404 for an unknown id", async () => {
     await expect(getShipper("nope")).rejects.toThrow(/not found/i);
+  });
+
+  // Task 14 review, Important #1: the add-line picker's ship-now prefill is `ordered − shipped`
+  // (design §5.1), and shipped-to-date for a CANDIDATE line — one not on this shipment yet — is
+  // knowable nowhere on the page unless the shipment's own GET carries it. `lines[]` only covers
+  // what is already on the shipment, so this second, order-wide ledger is what the picker reads.
+  it("carries shipped-to-date for EVERY line of each order, not only the lines on this shipment", async () => {
+    const { order } = await twoLineOrder();
+    const [lineA, lineB] = order.lines;
+    // A PRIOR shipment took 4 of line A and 3 of line B.
+    await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 4, weight: 10 },
+      { orderLineId: lineB.id, qty: 3, weight: 5 },
+    ]), { canOverrideCreditHold: false });
+    // THIS shipment carries line A only — line B is an add-line candidate on it.
+    const { shipper } = await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 2, weight: 5 },
+    ]), { canOverrideCreditHold: false });
+
+    const so = (await getShipper(shipper.id)).orders[0];
+    expect(so.lines).toHaveLength(1);
+    const ledger = new Map(so.orderLineShippedToDate.map((e) => [e.orderLineId, e]));
+    expect(ledger.size).toBe(2);
+    // Every LIVE shipment counts, this one included (spec §5.1) — 4 + 2 and 10 + 5.
+    expect(ledger.get(lineA.id)).toMatchObject({ shippedToDateQty: 6, shippedToDateWeight: 15 });
+    // The candidate: shipped only on the OTHER shipment, so its remainder here is 8 − 3 / 12 − 5.
+    expect(ledger.get(lineB.id)).toMatchObject({ shippedToDateQty: 3, shippedToDateWeight: 5 });
+  });
+
+  it("excludes voided shipments from that per-order-line ledger", async () => {
+    const { order } = await twoLineOrder();
+    const [lineA, lineB] = order.lines;
+    const prior = await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 4, weight: 10 },
+      { orderLineId: lineB.id, qty: 3, weight: 5 },
+    ]), { canOverrideCreditHold: false });
+    const { shipper } = await createShipper(shipmentOf(order, [
+      { orderLineId: lineA.id, qty: 2, weight: 5 },
+    ]), { canOverrideCreditHold: false });
+
+    await voidShipper(prior.shipper.id, "loaded onto the wrong truck");
+
+    const so = (await getShipper(shipper.id)).orders[0];
+    const ledger = new Map(so.orderLineShippedToDate.map((e) => [e.orderLineId, e]));
+    expect(ledger.get(lineA.id)).toMatchObject({ shippedToDateQty: 2, shippedToDateWeight: 5 });
+    // A line whose only shipment was voided reports a real 0, not a missing entry — the grid
+    // renders the number, and the prefill falls back to the full ordered figure.
+    expect(ledger.get(lineB.id)).toMatchObject({ shippedToDateQty: 0, shippedToDateWeight: 0 });
   });
 });
