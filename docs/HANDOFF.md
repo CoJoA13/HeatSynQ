@@ -595,7 +595,15 @@ replay AND every edit response via `shipperResponse` — the full §5.7 surface,
 alone), #53 (scope-matched missing-cert warnings), #55 (ruling 27: multi-part certs head each
 line group with frozen part identity; single-part stays §3.21-sample-identical), and #56 (ruling
 28: `addLine` seeds the rider's requirements into every live cert, audited per cert, typed
-readings untouched). Gates: **1402 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15.
+readings untouched). Its Codex round (three findings, all in the PR's own new code, all fixed):
+grouping keys use the FULL frozen identity — `removeLine` frees positions a later rider re-uses,
+so `linePosition` alone could misattribute readings on permanent paper (PDF, data build, and the
+cert page swept together); ruling 27's multi-part detection reads the PARTS TABLE, not the
+requirement rows (a cert listing two parts with one inspected still heads its grid); and a
+RELEASED serial selection keeps satisfying its line's serialization warning via a new
+`ShipperSerial.orderLineIdAtSave` plain-snapshot column (migration `20260806164109`, backfilled —
+pre-existing released rows keep "" and simply don't credit a line). Gates: **1405 tests**,
+`tsc`/`eslint`/`build` clean, E2E 15/15. 24 migrations total.
 
 **Deferred from the PR #47 Codex triage (2026-08-06), issues #48–#51** — all verified real, none
 data-integrity: #48 shipping worklist rows don't link to `/shipping/<id>`; #49 signature upload
