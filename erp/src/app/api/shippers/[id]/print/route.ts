@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { handle, requireUser } from "@/server/http";
 import { mustCan } from "@/server/permissions";
 import { HttpError } from "@/server/errors";
-import { printShippingTickets, printBol, printableShipmentCertIds } from "@/server/shippers";
+import { printShippingTickets, printBol } from "@/server/shippers";
 import { printCert } from "@/server/certs";
 import { documentFilename } from "@/server/documents";
 
@@ -66,17 +66,14 @@ export const POST = handle(async (req, { params }) => {
 
   const order = search.get("order") ?? undefined;
 
-  // Resolved BEFORE the ticket prints (a voided shipment still refuses with nothing archived).
-  // A cert-REQUIRING order with no cert WARNS instead of refusing (§9 amendment 2026-08-05):
-  // the tickets print exactly as a cert-less print would and the warning rides the response.
-  let certs: { id: string; orderNumber: number }[] = [];
-  let warnings: string[] = [];
-  if (withCerts) {
-    mustCan(user, "certs", "view");
-    ({ certs, warnings } = await printableShipmentCertIds(id, order));
-  }
-
-  const printed = await printShippingTickets(id, order);
+  // Resolved INSIDE the ticket print's own claimed transaction (round-3 finding, 2026-08-06) —
+  // a separate unlocked resolution let shipment membership change between it and the print, so
+  // the permanent bundle could describe two different shipment states. A cert-REQUIRING order
+  // with no cert WARNS instead of refusing (§9 amendment 2026-08-05): the tickets print exactly
+  // as a cert-less print would and the warning rides the response.
+  if (withCerts) mustCan(user, "certs", "view");
+  const printed = await printShippingTickets(id, order, { withCerts });
+  const { certs, warnings } = printed;
   // Each cert is its own render, its own archive, its own document (§3.14) — printed by THIS
   // user, whose signature is what lands on the paper (§3.11). By this point the ticket is
   // committed and archived permanently, so a cert failure (a concurrently voided cert, an

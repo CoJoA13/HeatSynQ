@@ -7,7 +7,7 @@ import {
   createCert, printCert, readCertPdfData, certPrintSettings, voidCert, updateCert, type CertDetail,
 } from "@/server/certs";
 import { replaceReadings } from "@/server/cert-results";
-import { createShipper } from "@/server/shippers";
+import { createShipper, printShippingTickets } from "@/server/shippers";
 import { buildCertDefinition, type CertPdfData } from "@/server/pdf/cert";
 import { getDocument, listDocumentsForShipper, VOIDED_PRINT } from "@/server/documents";
 import type { Customer, User } from "../prisma/generated/prisma/client";
@@ -453,6 +453,18 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
       postReq(`http://t/api/shippers/${shipper.id}/print?doc=ticket&cert=1`, cookie), withParams({ id: shipper.id }));
     expect(res.status).toBe(403);
     expect(await listDocumentsForShipper(shipper.id)).toEqual([]);
+  });
+
+  it("resolves the cert bundle inside the ticket print itself, under its claims", async () => {
+    // Round-3 finding (2026-08-06): resolving certs in a separate, unlocked read let shipment
+    // membership change between resolution and the ticket transaction — the permanent bundle
+    // could describe two different shipment states. The resolution now rides printShippingTickets'
+    // own claimed transaction and returns with the print.
+    const { shipper, order } = await shipmentScopeShipment();
+    const printed = await asSystem(() => printShippingTickets(shipper.id, undefined, { withCerts: true }));
+    expect(printed.certs).toHaveLength(1);
+    expect(printed.certs[0].orderNumber).toBe(order.orderNumber);
+    expect(printed.warnings).toEqual([]);
   });
 
   it("prints the tickets and each covered order's cert, each stored as its own document", async () => {

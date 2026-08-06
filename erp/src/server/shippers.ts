@@ -1446,8 +1446,13 @@ export async function readShippingTicketData(
  * the `printTraveler` precedent.
  */
 export async function printShippingTickets(
-  shipperId: string, orderId?: string,
-): Promise<{ documentId: string; shipperNumber: number; orderNumber: number | null; pdf: Buffer }> {
+  shipperId: string, orderId?: string, opts: { withCerts?: boolean } = {},
+): Promise<{
+  documentId: string; shipperNumber: number; orderNumber: number | null; pdf: Buffer;
+  /** cert=1 only (round-3 finding, 2026-08-06): resolved INSIDE this same claimed transaction,
+   *  so the permanent bundle describes exactly the shipment state the tickets printed. */
+  certs: { id: string; orderNumber: number }[]; warnings: string[];
+}> {
   const settings = await ticketSettings();
 
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
@@ -1463,6 +1468,10 @@ export async function printShippingTickets(
     if (!shipper) throw new HttpError(404, "Shipment not found");
     assertPrintable(shipper);
 
+    const { certs, warnings } = opts.withCerts
+      ? await resolveShipmentCerts(tx, shipperId, orderId)
+      : { certs: [], warnings: [] };
+
     const data = await readShippingTicketData(tx, shipperId, settings, orderId);
     const pdf = await renderPdf(buildShippingTicketDefinition(data));
 
@@ -1470,6 +1479,7 @@ export async function printShippingTickets(
     return {
       documentId: doc.id, shipperNumber: shipper.shipperNumber,
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
+      certs, warnings,
     };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -1620,16 +1630,16 @@ export async function printBol(
  * print theirs. An order that doesn't require one and has none simply contributes nothing. A
  * voided shipment refuses here with the shared refusal, BEFORE any ticket could print — its
  * ORDER-scope certs are still live (only shipment-scope certs are voided with the shipment, spec
- * §5.6), so without this check a voided shipment's print could still archive cert paper.
+ * §5.6), so without a voided-shipment check a voided shipment's print could still archive cert
+ * paper. Round-3 finding (2026-08-06): this runs ONLY on `printShippingTickets`' own claimed
+ * `tx` — a separate, unlocked resolution let shipment membership change between it and the
+ * ticket transaction, so the archived bundle could describe two different shipment states. The
+ * voided check is the caller's `assertPrintable` under that same claim.
  */
-export async function printableShipmentCertIds(
-  shipperId: string, orderId?: string,
+async function resolveShipmentCerts(
+  db: Db, shipperId: string, orderId?: string,
 ): Promise<{ certs: { id: string; orderNumber: number }[]; warnings: string[] }> {
-  const shipper = await prisma.shipper.findFirst({ where: { id: shipperId }, select: { deletedAt: true } });
-  if (!shipper) throw new HttpError(404, "Shipment not found");
-  assertPrintable(shipper);
-
-  const shipperOrders = await prisma.shipperOrder.findMany({
+  const shipperOrders = await db.shipperOrder.findMany({
     where: { shipperId, ...(orderId ? { orderId } : {}) },
     orderBy: { position: "asc" },
     select: {
@@ -1645,7 +1655,7 @@ export async function printableShipmentCertIds(
   const warnings: string[] = [];
   for (const so of shipperOrders) {
     const scope = so.order.certScope as CertScopeValue;
-    const certs = await prisma.cert.findMany({
+    const certs = await db.cert.findMany({
       where: {
         orderId: so.orderId, scope, deletedAt: null,
         ...(scope === "SHIPMENT" ? { shipperId } : {}),
