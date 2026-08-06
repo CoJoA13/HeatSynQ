@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { createOrder, addLine, removeLine, updateLine, voidOrder, type OrderDetail } from "@/server/orders";
+import {
+  createOrder, addLine, removeLine, updateLine, voidOrder, replaceContainers, replaceSerials,
+  type OrderDetail,
+} from "@/server/orders";
 import { createShipper, voidShipper, getShipper, overshipWarnings } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -186,5 +189,79 @@ describe("order edit invariants after a shipment (spec §5.5)", () => {
 
     await expect(asSystem(() => voidOrder(order.id, "cancelled"))).rejects.toThrow(
       new RegExp(`Packing List ${first.shipperNumber}.*Packing List ${second.shipperNumber}.*shipments`));
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Snapshot + release (owner ruling 2026-08-06, PR #47 review round 2): shipper children snapshot
+// the identity they print, and their FKs to the order-side rows release (SET NULL) instead of
+// blocking the order-correction APIs. A voided shipment's history survives through the snapshot;
+// the order stays correctable through the same APIs it always had.
+// -------------------------------------------------------------------------------------------
+describe("snapshot + release: order corrections after shipment references", () => {
+  beforeEach(truncateAll);
+
+  it("removeLine succeeds once every referencing shipment is voided, and the voided shipment still names the part", async () => {
+    const { line, shipper } = await shipmentOfOneLine();
+    await asSystem(() => voidShipper(shipper.id, "wrong truck"));
+
+    const removed = await asSystem(() => removeLine(line.orderId, line.id));
+    expect(removed.order.lines.map((l) => l.id)).not.toContain(line.id);
+
+    // The voided shipment's grid still renders what shipped — the snapshot, not the dead join.
+    const detail = await getShipper(shipper.id);
+    const shipLine = detail.orders[0].lines.find((l) => l.qty === 5)!;
+    expect(shipLine.partNumber).toMatch(/^R-/);   // the rider part's number, snapshotted
+    expect(shipLine.orderLineId).toBeNull();
+  });
+
+  it("replaceContainers keeps working on an order a live shipment references, and the shipment keeps the container's identity", async () => {
+    const { order: base } = await savedOrder({ qty: 10 });
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const bin = await prisma.orderContainer.create({
+      data: { orderId: base.id, position: 1, typeId: containerType.id, count: 2, customerContainerId: "BIN-9" },
+    });
+    const { shipper } = await createShipper({
+      customerId: base.customerId, shipDate: "2026-08-04",
+      orders: [{
+        orderId: base.id,
+        lines: [{ orderLineId: base.lines[0].id, qty: 5, weight: "5.00", lineComplete: false }],
+        containers: [{ orderContainerId: bin.id, count: 2 }],
+        serials: [],
+      }],
+    }, { canOverrideCreditHold: false });
+
+    // Pre-Phase-4, container corrections were free at any time — they must stay so.
+    await expect(asSystem(() => replaceContainers(base.id, []))).resolves.toBeTruthy();
+
+    const detail = await getShipper(shipper.id);
+    expect(detail.orders[0].containers).toHaveLength(1);
+    expect(detail.orders[0].containers[0].typeName).toBe("Basket");
+    expect(detail.orders[0].containers[0].customerContainerId).toBe("BIN-9");
+    expect(detail.orders[0].containers[0].orderContainerId).toBeNull();
+  });
+
+  it("replaceSerials keeps working on a line a live shipment's serials reference, and the shipment keeps the serial", async () => {
+    const { order: base } = await savedOrder({ qty: 10 });
+    const serial = await prisma.orderSerial.create({
+      data: { orderId: base.id, lineId: base.lines[0].id, position: 1, serial: "SN-77", description: "Heat A1" },
+    });
+    const { shipper } = await createShipper({
+      customerId: base.customerId, shipDate: "2026-08-04",
+      orders: [{
+        orderId: base.id,
+        lines: [{ orderLineId: base.lines[0].id, qty: 5, weight: "5.00", lineComplete: false }],
+        containers: [],
+        serials: [{ orderSerialId: serial.id, printOnShipper: true }],
+      }],
+    }, { canOverrideCreditHold: false });
+
+    await expect(asSystem(() => replaceSerials(base.id, base.lines[0].id, []))).resolves.toBeTruthy();
+
+    const detail = await getShipper(shipper.id);
+    expect(detail.orders[0].serials).toHaveLength(1);
+    expect(detail.orders[0].serials[0].serial).toBe("SN-77");
+    expect(detail.orders[0].serials[0].description).toBe("Heat A1");
+    expect(detail.orders[0].serials[0].orderSerialId).toBeNull();
   });
 });

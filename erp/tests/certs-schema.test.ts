@@ -148,13 +148,17 @@ describe("certs and shipping schema", () => {
       data: {
         shipperOrderId: shipperOrder.id, orderLineId: line.id, position: 1,
         qty: 4, weight: "10.25", lineComplete: false,
+        partNumber: "500031-HT", orderedQty: 4, orderedWeight: "10.25",
       },
     });
     await prisma.shipperContainer.create({
-      data: { shipperOrderId: shipperOrder.id, orderContainerId: container.id, position: 1, count: 2 },
+      data: {
+        shipperOrderId: shipperOrder.id, orderContainerId: container.id, position: 1, count: 2,
+        typeName: "Bin", customerContainerId: "CUST-BIN-7",
+      },
     });
     await prisma.shipperSerial.create({
-      data: { shipperOrderId: shipperOrder.id, orderSerialId: serial.id },
+      data: { shipperOrderId: shipperOrder.id, orderSerialId: serial.id, serial: "EC001" },
     });
 
     const back = await prisma.shipper.findFirst({
@@ -184,10 +188,10 @@ describe("certs and shipping schema", () => {
     expect(Number(back?.freightAmount)).toBe(125);
     expect(back?.orders[0]?.lines[0]?.qty).toBe(4);
     expect(Number(back?.orders[0]?.lines[0]?.weight)).toBe(10.25);
-    expect(back?.orders[0]?.lines[0]?.orderLine.id).toBe(line.id);
-    expect(back?.orders[0]?.containers[0]?.orderContainer.customerContainerId).toBe("CUST-BIN-7");
+    expect(back?.orders[0]?.lines[0]?.orderLine?.id).toBe(line.id);
+    expect(back?.orders[0]?.containers[0]?.orderContainer?.customerContainerId).toBe("CUST-BIN-7");
     expect(back?.orders[0]?.serials[0]?.printOnShipper).toBe(true);
-    expect(back?.orders[0]?.serials[0]?.orderSerial.serial).toBe("EC001");
+    expect(back?.orders[0]?.serials[0]?.orderSerial?.serial).toBe("EC001");
 
     const orderBack = await prisma.order.findFirst({
       where: { id: order.id }, include: { shipperOrders: true, certs: true },

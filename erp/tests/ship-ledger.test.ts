@@ -118,6 +118,7 @@ async function shipLine(
       data: {
         shipperOrderId: shipperOrder.id, orderLineId: line.id, position: 1,
         qty: opts.qty, weight: opts.weight ?? "10.00", lineComplete: opts.lineComplete,
+        partNumber: "SL-PART", orderedQty: opts.qty, orderedWeight: opts.weight ?? "10.00",
       },
     });
     await recomputeOrderStatus(tx, [line.orderId]);

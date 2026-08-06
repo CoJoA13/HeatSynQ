@@ -523,7 +523,9 @@ export async function readCertPdfData(
     const shipLines = so === null ? [] : await db.shipperLine.findMany({
       where: { shipperOrderId: so.id }, select: { orderLineId: true, qty: true, weight: true },
     });
-    shippedByLineId = new Map(shipLines.map((l) => [l.orderLineId, { qty: l.qty, weight: l.weight.toNumber() }]));
+    shippedByLineId = new Map(shipLines.flatMap((l) => (l.orderLineId === null
+      ? [] // a released snapshot row no longer maps to a live order line
+      : [[l.orderLineId, { qty: l.qty, weight: l.weight.toNumber() }] as const])));
   }
   const load = detail.scope === "LOAD" && detail.loadNumber !== null
     ? await db.load.findFirst({ where: { orderId: detail.orderId, loadNumber: detail.loadNumber } })

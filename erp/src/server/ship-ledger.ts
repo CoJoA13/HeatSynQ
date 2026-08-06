@@ -46,6 +46,7 @@ export async function shippedTotals(db: Db, orderLineIds: string[]): Promise<Map
   // an int and needs nothing.
   const cents = new Map<string, { qty: number; weightCents: number }>();
   for (const row of rows) {
+    if (row.orderLineId === null) continue; // released snapshot rows total nothing (no live line)
     const prev = cents.get(row.orderLineId) ?? { qty: 0, weightCents: 0 };
     cents.set(row.orderLineId, {
       qty: prev.qty + row.qty,
@@ -103,6 +104,7 @@ export async function recomputeOrderStatus(tx: Prisma.TransactionClient, orderId
   const linesWithLiveShipment = new Set<string>();
   const linesComplete = new Set<string>();
   for (const row of shipperLines) {
+    if (row.orderLineId === null) continue; // filtered by `in` above; narrows the type
     linesWithLiveShipment.add(row.orderLineId);
     if (row.lineComplete) linesComplete.add(row.orderLineId);
   }

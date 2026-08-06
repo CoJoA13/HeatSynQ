@@ -29,7 +29,10 @@ import { INT4_MAX } from "../lib/order-constants";
 // -------------------------------------------------------------------------------------------
 
 export type ShipperLineDetail = {
-  id: string; orderLineId: string; linePosition: number; partNumber: string; partName: string;
+  /** Null once the order line was removed (post-void, snapshot + release) — the row renders from
+   *  its snapshot columns from then on. */
+  id: string; orderLineId: string | null; linePosition: number; partNumber: string; partName: string;
+  partDescription: string;
   orderedQty: number; orderedWeight: number; shippedToDateQty: number; shippedToDateWeight: number;
   qty: number; weight: number; lineComplete: boolean;
 };
@@ -51,8 +54,8 @@ export type ShipperOrderDetail = {
    *  the only place a not-yet-added candidate's shipped-to-date is knowable client-side. */
   orderLineShippedToDate: OrderLineShippedToDate[];
   lines: ShipperLineDetail[];
-  containers: { id: string; orderContainerId: string; typeName: string; customerContainerId: string; count: number; position: number }[];
-  serials: { id: string; orderSerialId: string; serial: string; description: string; printOnShipper: boolean }[];
+  containers: { id: string; orderContainerId: string | null; typeName: string; customerContainerId: string; count: number; position: number }[];
+  serials: { id: string; orderSerialId: string | null; serial: string; description: string; printOnShipper: boolean }[];
 };
 export type ShipperDetail = {
   id: string; shipperNumber: number; bolNumber: number | null;
@@ -141,7 +144,7 @@ type CreateShipperInput = z.infer<typeof CREATE_SHIPPER>;
 
 type ResolvedLine = {
   id: string; orderId: string; position: number; qty: number; weight: Prisma.Decimal;
-  part: { partNumber: string; name: string; serializationRequired: boolean };
+  part: { partNumber: string; name: string; description: string; serializationRequired: boolean };
 };
 type ResolvedContainer = {
   id: string; orderId: string; customerContainerId: string; type: { name: string };
@@ -238,11 +241,17 @@ const DETAIL_INCLUDE = {
           lines: { orderBy: { position: "asc" }, select: { id: true } },
         },
       },
+      // Live joins preferred, snapshot columns as the fallback (snapshot + release, owner ruling
+      // 2026-08-06): each `orderLine`/`orderContainer`/`orderSerial` is null once the order-side
+      // row was corrected away, and `toDetail` falls back to the columns captured at save time.
       lines: {
         orderBy: { position: "asc" },
         include: {
           orderLine: {
-            select: { position: true, qty: true, weight: true, part: { select: { partNumber: true, name: true } } },
+            select: {
+              position: true, qty: true, weight: true,
+              part: { select: { partNumber: true, name: true, description: true } },
+            },
           },
         },
       },
@@ -251,7 +260,9 @@ const DETAIL_INCLUDE = {
         include: { orderContainer: { select: { customerContainerId: true, type: { select: { name: true } } } } },
       },
       serials: {
-        orderBy: { orderSerialId: "asc" },
+        // The snapshot column, not `orderSerialId` — released rows carry a null id, which would
+        // make the sort unstable exactly when the fallback matters.
+        orderBy: { serial: "asc" },
         include: { orderSerial: { select: { serial: true, description: true } } },
       },
     },
@@ -284,22 +295,30 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
         return { orderLineId: ol.id, shippedToDateQty: totals.qty, shippedToDateWeight: totals.weight };
       }),
       lines: so.lines.map((l) => {
-        const totals = shipped.get(l.orderLineId) ?? { qty: 0, weight: 0 };
+        const totals = (l.orderLineId === null ? undefined : shipped.get(l.orderLineId)) ?? { qty: 0, weight: 0 };
         return {
-          id: l.id, orderLineId: l.orderLineId, linePosition: l.orderLine.position,
-          partNumber: l.orderLine.part.partNumber, partName: l.orderLine.part.name,
-          orderedQty: l.orderLine.qty, orderedWeight: l.orderLine.weight.toNumber(),
+          id: l.id, orderLineId: l.orderLineId,
+          linePosition: l.orderLine?.position ?? l.position,
+          partNumber: l.orderLine?.part.partNumber ?? l.partNumber,
+          partName: l.orderLine?.part.name ?? l.partName,
+          partDescription: l.orderLine?.part.description ?? l.partDescription,
+          orderedQty: l.orderLine?.qty ?? l.orderedQty,
+          orderedWeight: (l.orderLine?.weight ?? l.orderedWeight).toNumber(),
           shippedToDateQty: totals.qty, shippedToDateWeight: totals.weight,
           qty: l.qty, weight: l.weight.toNumber(), lineComplete: l.lineComplete,
         };
       }),
       containers: so.containers.map((c) => ({
-        id: c.id, orderContainerId: c.orderContainerId, typeName: c.orderContainer.type.name,
-        customerContainerId: c.orderContainer.customerContainerId, count: c.count, position: c.position,
+        id: c.id, orderContainerId: c.orderContainerId,
+        typeName: c.orderContainer?.type.name ?? c.typeName,
+        customerContainerId: c.orderContainer?.customerContainerId ?? c.customerContainerId,
+        count: c.count, position: c.position,
       })),
       serials: so.serials.map((s) => ({
-        id: s.id, orderSerialId: s.orderSerialId, serial: s.orderSerial.serial,
-        description: s.orderSerial.description, printOnShipper: s.printOnShipper,
+        id: s.id, orderSerialId: s.orderSerialId,
+        serial: s.orderSerial?.serial ?? s.serial,
+        description: s.orderSerial?.description ?? s.description,
+        printOnShipper: s.printOnShipper,
       })),
     })),
   };
@@ -376,7 +395,7 @@ async function saveNewShipper(
       where: { id: { in: orderLineIds } },
       select: {
         id: true, orderId: true, position: true, qty: true, weight: true,
-        part: { select: { partNumber: true, name: true, serializationRequired: true } },
+        part: { select: { partNumber: true, name: true, description: true, serializationRequired: true } },
       },
     });
     const lineById = new Map(orderLines.map((l) => [l.id, l]));
@@ -506,21 +525,38 @@ async function saveNewShipper(
               orderId: o.orderId,
               sequence: sequenceByOrderId.get(o.orderId)!,
               position: oi + 1,
+              // Snapshot columns ride every child create (owner ruling 2026-08-06): the identity
+              // the paper prints, captured at save time off the same resolved rows the
+              // membership checks above already validated.
               lines: {
-                create: o.lines.map((l, li) => ({
-                  orderLineId: l.orderLineId, position: li + 1,
-                  qty: l.qty, weight: l.weight, lineComplete: l.lineComplete,
-                })),
+                create: o.lines.map((l, li) => {
+                  const line = lineById.get(l.orderLineId)!;
+                  return {
+                    orderLineId: l.orderLineId, position: li + 1,
+                    qty: l.qty, weight: l.weight, lineComplete: l.lineComplete,
+                    partNumber: line.part.partNumber, partName: line.part.name,
+                    partDescription: line.part.description,
+                    orderedQty: line.qty, orderedWeight: line.weight,
+                  };
+                }),
               },
               containers: {
-                create: o.containers.map((c, ci) => ({
-                  orderContainerId: c.orderContainerId, position: ci + 1, count: c.count,
-                })),
+                create: o.containers.map((c, ci) => {
+                  const container = containerById.get(c.orderContainerId)!;
+                  return {
+                    orderContainerId: c.orderContainerId, position: ci + 1, count: c.count,
+                    typeName: container.type.name, customerContainerId: container.customerContainerId,
+                  };
+                }),
               },
               serials: {
-                create: o.serials.map((s) => ({
-                  orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
-                })),
+                create: o.serials.map((s) => {
+                  const serial = serialById.get(s.orderSerialId)!;
+                  return {
+                    orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
+                    serial: serial.serial, description: serial.description,
+                  };
+                }),
               },
             })),
           },
@@ -983,7 +1019,7 @@ export async function replaceShipperLines(id: string, shipperOrderId: string, in
       where: { id: { in: lineIds } },
       select: {
         id: true, orderId: true, position: true, qty: true, weight: true,
-        part: { select: { partNumber: true, name: true, serializationRequired: true } },
+        part: { select: { partNumber: true, name: true, description: true, serializationRequired: true } },
       },
     });
     const lineById = new Map(orderLines.map((l) => [l.id, l]));
@@ -1018,8 +1054,16 @@ export async function replaceShipperLines(id: string, shipperOrderId: string, in
       await tx.shipperLine.deleteMany({ where: { shipperOrderId } });
       if (data.length > 0) {
         await tx.shipperLine.createMany({
-          data: data.map((l, i) => (
-            { shipperOrderId, orderLineId: l.orderLineId, position: i + 1, qty: l.qty, weight: l.weight, lineComplete: l.lineComplete })),
+          data: data.map((l, i) => {
+            const line = lineById.get(l.orderLineId)!;
+            return {
+              shipperOrderId, orderLineId: l.orderLineId, position: i + 1,
+              qty: l.qty, weight: l.weight, lineComplete: l.lineComplete,
+              partNumber: line.part.partNumber, partName: line.part.name,
+              partDescription: line.part.description,
+              orderedQty: line.qty, orderedWeight: line.weight,
+            };
+          }),
         });
       }
     }, { tx });
@@ -1064,7 +1108,13 @@ export async function replaceShipperContainers(id: string, shipperOrderId: strin
       await tx.shipperContainer.deleteMany({ where: { shipperOrderId } });
       if (data.length > 0) {
         await tx.shipperContainer.createMany({
-          data: data.map((c, i) => ({ shipperOrderId, orderContainerId: c.orderContainerId, position: i + 1, count: c.count })),
+          data: data.map((c, i) => {
+            const container = containerById.get(c.orderContainerId)!;
+            return {
+              shipperOrderId, orderContainerId: c.orderContainerId, position: i + 1, count: c.count,
+              typeName: container.type.name, customerContainerId: container.customerContainerId,
+            };
+          }),
         });
       }
     }, { tx });
@@ -1108,7 +1158,13 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
       await tx.shipperSerial.deleteMany({ where: { shipperOrderId } });
       if (data.length > 0) {
         await tx.shipperSerial.createMany({
-          data: data.map((s) => ({ shipperOrderId, orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper })),
+          data: data.map((s) => {
+            const serial = serialById.get(s.orderSerialId)!;
+            return {
+              shipperOrderId, orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
+              serial: serial.serial, description: serial.description,
+            };
+          }),
         });
       }
     }, { tx });
@@ -1283,7 +1339,8 @@ export async function readShippingTicketData(
 
   // Part DESCRIPTIONS in one batched read — `ShipperLineDetail` carries number and name already,
   // and the ticket's stacked part cell (spec §10.1) needs the third line too.
-  const orderLineIds = [...new Set(orders.flatMap((o) => o.lines.map((l) => l.orderLineId)))];
+  const orderLineIds = [...new Set(orders.flatMap((o) =>
+    o.lines.map((l) => l.orderLineId).filter((lineId): lineId is string => lineId !== null)))];
   const descriptionRows = orderLineIds.length === 0 ? [] : await db.orderLine.findMany({
     where: { id: { in: orderLineIds } },
     select: { id: true, part: { select: { description: true } } },
@@ -1308,7 +1365,8 @@ export async function readShippingTicketData(
       route: detail.route, carrierName: detail.carrierName ?? "",
       lines: o.lines.map((l) => ({
         qty: l.qty, partNumber: l.partNumber, partName: l.partName,
-        partDescription: descriptionByLineId.get(l.orderLineId) ?? "", pounds: l.weight,
+        partDescription: (l.orderLineId === null ? undefined : descriptionByLineId.get(l.orderLineId))
+          ?? l.partDescription, pounds: l.weight,
       })),
       containers: o.containers.map((c) => ({
         typeName: c.typeName, count: c.count, customerContainerId: c.customerContainerId,

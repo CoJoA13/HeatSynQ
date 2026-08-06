@@ -933,28 +933,43 @@ model ShipperLine {
   id             String       @id @default(cuid())
   shipperOrderId String
   shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
-  orderLineId    String
-  orderLine      OrderLine    @relation(fields: [orderLineId], references: [id])
-  position       Int
-  qty            Int // >= 0
-  weight         Decimal      @db.Decimal(12, 2) // >= 0
-  lineComplete   Boolean      @default(false)
+  // Snapshot + release (owner ruling 2026-08-06): nullable, ON DELETE SET NULL — a removeLine
+  // after every referencing shipment is voided releases this link instead of raising a raw FK
+  // error, and the snapshot columns below keep rendering what shipped. Live rows still prefer
+  // the join (current part identity, ordered totals); the snapshot is the fallback.
+  orderLineId     String?
+  orderLine       OrderLine? @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  position        Int
+  qty             Int // >= 0
+  weight          Decimal    @db.Decimal(12, 2) // >= 0
+  lineComplete    Boolean    @default(false)
+  // What the ticket printed and the detail grid shows, captured at save time.
+  partNumber      String
+  partName        String     @default("")
+  partDescription String     @default("")
+  orderedQty      Int
+  orderedWeight   Decimal    @db.Decimal(12, 2)
 
   @@unique([shipperOrderId, position])
   // One row per order line per shipment. Shipping the same line twice means two shipments,
-  // which is what two shipments are.
+  // which is what two shipments are. (Postgres treats NULLs as distinct, so released rows
+  // never collide here.)
   @@unique([shipperOrderId, orderLineId])
   @@index([orderLineId])
 }
 
 model ShipperContainer {
-  id               String         @id @default(cuid())
+  id               String          @id @default(cuid())
   shipperOrderId   String
-  shipperOrder     ShipperOrder   @relation(fields: [shipperOrderId], references: [id])
-  orderContainerId String
-  orderContainer   OrderContainer @relation(fields: [orderContainerId], references: [id])
-  position         Int
-  count            Int
+  shipperOrder     ShipperOrder    @relation(fields: [shipperOrderId], references: [id])
+  // Snapshot + release (see ShipperLine): order-side container replacement stays free, the
+  // shipment keeps what was selected at ship time through the snapshot columns.
+  orderContainerId    String?
+  orderContainer      OrderContainer? @relation(fields: [orderContainerId], references: [id], onDelete: SetNull)
+  position            Int
+  count               Int
+  typeName            String
+  customerContainerId String          @default("")
 
   @@unique([shipperOrderId, position])
   @@unique([shipperOrderId, orderContainerId])
@@ -965,9 +980,12 @@ model ShipperSerial {
   id             String       @id @default(cuid())
   shipperOrderId String
   shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
-  orderSerialId  String
-  orderSerial    OrderSerial  @relation(fields: [orderSerialId], references: [id])
+  // Snapshot + release (see ShipperLine).
+  orderSerialId  String?
+  orderSerial    OrderSerial? @relation(fields: [orderSerialId], references: [id], onDelete: SetNull)
   printOnShipper Boolean      @default(true)
+  serial         String
+  description    String       @default("")
 
   @@unique([shipperOrderId, orderSerialId])
   @@index([orderSerialId])
