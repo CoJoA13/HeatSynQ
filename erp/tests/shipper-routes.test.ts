@@ -344,6 +344,32 @@ describe("shipper routes", () => {
     expect(body.warnings.join(" ")).toMatch(/exceeds/i);
   });
 
+  it("edit responses recompute missing-serialization warnings, not only over-ship (#54)", async () => {
+    const { part, order } = await orderFixture();
+    await prisma.part.update({ where: { id: part.id }, data: { serializationRequired: true } });
+    const orderSerial = await prisma.orderSerial.create({
+      data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "SR-W-1", description: "" },
+    });
+
+    const creator = await signInWith(["shipping.create"], "ship-warn-create");
+    const input = oneOrderInput(order);
+    input.orders[0].serials = [{ orderSerialId: orderSerial.id, printOnShipper: true }];
+    const created = await createRoute(bodyReq("http://t/api/shippers", "POST", creator, input), noParams);
+    const createdBody = await created.json();
+    expect(createdBody.warnings.join(" ")).not.toMatch(/no serial numbers/i); // serial selected
+
+    // Removing the LAST selected serial via the route must re-raise the §5.7 warning creation
+    // would have raised — the detail page swaps its banner for exactly this array.
+    const editor = await signInWith(["shipping.edit"], "ship-warn-edit");
+    const shipperOrderId = createdBody.shipper.orders[0].id;
+    const serialsUrl = `http://t/api/shippers/${createdBody.shipper.id}/orders/${shipperOrderId}/serials`;
+    const res = await replaceSerialsRoute(
+      bodyReq(serialsUrl, "PUT", editor, []), withParams({ id: createdBody.shipper.id, shipperOrderId }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.warnings.join(" ")).toMatch(/no serial numbers/i);
+  });
+
   it("PUT .../containers and .../serials require shipping.edit and return the wrapped shape", async () => {
     const { order } = await orderFixture();
     const containerType = await prisma.containerType.create({ data: { name: "SR Basket" } });

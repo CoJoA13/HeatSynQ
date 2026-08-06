@@ -657,7 +657,10 @@ export async function createShipper(
         where: { clientRequestId: data.clientRequestId }, select: { id: true },
       });
       if (!existing) throw err;
-      return { shipper: await readShipperDetail(prisma, existing.id), warnings: [], deduped: true };
+      // The replay carries the SAME advisory surface the original response did (#50) — the
+      // lost-response retry is exactly when the operator never saw it.
+      const detail = await readShipperDetail(prisma, existing.id);
+      return { shipper: detail, warnings: await shipmentWarnings(prisma, detail), deduped: true };
     }
   });
 }
@@ -1041,6 +1044,71 @@ export function overshipWarnings(detail: ShipperDetail): string[] {
       }
     }
   }
+  return warnings;
+}
+
+/**
+ * EVERY §5.7 warning derivable from a fresh `ShipperDetail` (#50/#54): the scope-matched
+ * missing-cert warning (#53's rule), unserialized serialization-required lines, and over-ship —
+ * the same advisory surface creation computes, recomputable at any later moment. Consumed by the
+ * idempotent-replay path (a lost-response retry must not silently drop the warnings the original
+ * response carried) and by `shipperResponse`, so every edit response carries the full surface
+ * rather than over-ship alone. Released rows (null order-side ids) contribute nothing — their
+ * order-side rows are gone, so there is nothing left to warn about.
+ */
+export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<string[]> {
+  const orderIds = detail.orders.map((o) => o.orderId);
+  const orders = await db.order.findMany({
+    where: { id: { in: orderIds } },
+    select: { id: true, certRequired: true, certScope: true },
+  });
+  const orderById = new Map(orders.map((o) => [o.id, o]));
+
+  const liveCerts = await db.cert.findMany({
+    where: { orderId: { in: orderIds }, deletedAt: null },
+    select: { orderId: true, scope: true, shipperId: true },
+  });
+  const certSatisfied = new Set(
+    liveCerts.filter((c) => {
+      const order = orderById.get(c.orderId);
+      if (!order || c.scope !== order.certScope) return false;
+      return c.scope !== "SHIPMENT" || c.shipperId === detail.id;
+    }).map((c) => c.orderId),
+  );
+
+  const lineIds = detail.orders.flatMap((so) => so.lines.map((l) => l.orderLineId))
+    .filter((id): id is string => id !== null);
+  const lines = lineIds.length === 0 ? [] : await db.orderLine.findMany({
+    where: { id: { in: lineIds } },
+    select: { id: true, position: true, part: { select: { partNumber: true, serializationRequired: true } } },
+  });
+  const lineById = new Map(lines.map((l) => [l.id, l]));
+  const selectedSerialIds = detail.orders.flatMap((so) => so.serials.map((sr) => sr.orderSerialId))
+    .filter((id): id is string => id !== null);
+  const serialLineIds = new Set(
+    (selectedSerialIds.length === 0 ? [] : await db.orderSerial.findMany({
+      where: { id: { in: selectedSerialIds } }, select: { lineId: true },
+    })).map((sr) => sr.lineId),
+  );
+
+  const warnings: string[] = [];
+  for (const so of detail.orders) {
+    const order = orderById.get(so.orderId);
+    if (order?.certRequired && !certSatisfied.has(so.orderId)) {
+      warnings.push(
+        `Order #${so.orderNumber} requires a certification and none exists yet — see /orders/${so.orderId}`);
+    }
+    for (const l of so.lines) {
+      if (l.orderLineId === null) continue;
+      const line = lineById.get(l.orderLineId);
+      if (line?.part.serializationRequired && !serialLineIds.has(l.orderLineId)) {
+        warnings.push(
+          `Order #${so.orderNumber} line ${line.position} (${line.part.partNumber}): ` +
+          "requires serialization but no serial numbers were selected for this shipment");
+      }
+    }
+  }
+  warnings.push(...overshipWarnings(detail));
   return warnings;
 }
 

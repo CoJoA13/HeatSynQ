@@ -176,6 +176,18 @@ describe("createShipper", () => {
     expect(await prisma.shipper.count()).toBe(1);
   });
 
+  it("recomputes creation warnings on an idempotent replay (#50)", async () => {
+    const { order } = await savedOrder({ certRequired: true }); // LOAD default — no cert exists
+    const input = { ...oneOrderInput(order), clientRequestId: "nonce-warn" };
+    const a = await createShipper(input, { canOverrideCreditHold: false });
+    expect(a.warnings.join(" ")).toMatch(/requires a certification/i);
+
+    // The lost-response retry the nonce exists for must not silently drop the advisory surface.
+    const b = await createShipper(input, { canOverrideCreditHold: false });
+    expect(b.deduped).toBe(true);
+    expect(b.warnings.join(" ")).toMatch(/requires a certification/i);
+  });
+
   it("warns without blocking on a missing cert and unserialised lines", async () => {
     const { order } = await savedOrder({ certRequired: true, serializationRequired: true });
     const { warnings } = await createShipper(oneOrderInput(order), { canOverrideCreditHold: false });
