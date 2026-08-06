@@ -28,16 +28,19 @@ import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
 // needs — the orders/[id]/page.tsx `OrderLine`/`ApplyMutation` precedent.
 // ---------------------------------------------------------------------------------------------
 
+/** A null orderLineId/orderContainerId/orderSerialId marks a RELEASED row (snapshot + release,
+ *  ruling 23): the order-side row was corrected away and the shipment row is frozen history —
+ *  rendered read-only from its snapshot fields, never editable, never sent in a replace. */
 export type ShipperLine = {
-  id: string; orderLineId: string; linePosition: number; partNumber: string; partName: string;
+  id: string; orderLineId: string | null; linePosition: number; partNumber: string; partName: string;
   orderedQty: number; orderedWeight: number; shippedToDateQty: number; shippedToDateWeight: number;
   qty: number; weight: number; lineComplete: boolean;
 };
 export type ShipperContainer = {
-  id: string; orderContainerId: string; typeName: string; customerContainerId: string; count: number; position: number;
+  id: string; orderContainerId: string | null; typeName: string; customerContainerId: string; count: number; position: number;
 };
 export type ShipperSerial = {
-  id: string; orderSerialId: string; serial: string; description: string; printOnShipper: boolean;
+  id: string; orderSerialId: string | null; serial: string; description: string; printOnShipper: boolean;
 };
 /** Shipped-to-date for one line of the ORDER — including lines not on this shipment, which is what
  *  the "Add line" picker needs to prefill ship-now to the remainder rather than the full ordered

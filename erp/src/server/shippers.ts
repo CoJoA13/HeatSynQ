@@ -1149,13 +1149,27 @@ export async function replaceShipperContainers(id: string, shipperOrderId: strin
     }
 
     await auditedUpdate("shipper", id, async () => {
-      await tx.shipperContainer.deleteMany({ where: { shipperOrderId } });
+      // Released rows (orderContainerId null — snapshot + release) are frozen history and SURVIVE
+      // a replace: only rows still tied to a live order container are replaceable. The survivors
+      // are renumbered 1..k first (two-phase negative park, the renumberShipperOrderPositions
+      // shape) so the payload's rows can land at k+1..k+n without colliding.
+      await tx.shipperContainer.deleteMany({ where: { shipperOrderId, orderContainerId: { not: null } } });
+      const released = await tx.shipperContainer.findMany({
+        where: { shipperOrderId }, orderBy: { position: "asc" }, select: { id: true },
+      });
+      for (const [i, row] of released.entries()) {
+        await tx.shipperContainer.update({ where: { id: row.id }, data: { position: -(i + 1) } });
+      }
+      for (const [i, row] of released.entries()) {
+        await tx.shipperContainer.update({ where: { id: row.id }, data: { position: i + 1 } });
+      }
       if (data.length > 0) {
         await tx.shipperContainer.createMany({
           data: data.map((c, i) => {
             const container = containerById.get(c.orderContainerId)!;
             return {
-              shipperOrderId, orderContainerId: c.orderContainerId, position: i + 1, count: c.count,
+              shipperOrderId, orderContainerId: c.orderContainerId,
+              position: released.length + i + 1, count: c.count,
               typeName: container.type.name, customerContainerId: container.customerContainerId,
             };
           }),
@@ -1199,7 +1213,8 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
     }
 
     await auditedUpdate("shipper", id, async () => {
-      await tx.shipperSerial.deleteMany({ where: { shipperOrderId } });
+      // Released rows survive the replace — same frozen-history rule as containers above.
+      await tx.shipperSerial.deleteMany({ where: { shipperOrderId, orderSerialId: { not: null } } });
       if (data.length > 0) {
         await tx.shipperSerial.createMany({
           data: data.map((s) => {

@@ -5,7 +5,9 @@ import {
   createOrder, addLine, removeLine, updateLine, voidOrder, replaceContainers, replaceSerials,
   type OrderDetail,
 } from "@/server/orders";
-import { createShipper, voidShipper, getShipper, overshipWarnings } from "@/server/shippers";
+import {
+  createShipper, voidShipper, getShipper, overshipWarnings, replaceShipperContainers, replaceShipperSerials,
+} from "@/server/shippers";
 import { createCert, getCert } from "@/server/certs";
 import { addPartInspection } from "@/server/part-inspections";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -262,6 +264,46 @@ describe("snapshot + release: order corrections after shipment references", () =
     expect(detail.orders[0].containers[0].typeName).toBe("Basket");
     expect(detail.orders[0].containers[0].customerContainerId).toBe("BIN-9");
     expect(detail.orders[0].containers[0].orderContainerId).toBeNull();
+  });
+
+  it("shipper-side container/serial replaces preserve released snapshot rows", async () => {
+    const { order: base } = await savedOrder({ qty: 10 });
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const bin = await prisma.orderContainer.create({
+      data: { orderId: base.id, position: 1, typeId: containerType.id, count: 2, customerContainerId: "BIN-9" },
+    });
+    const serial = await prisma.orderSerial.create({
+      data: { orderId: base.id, lineId: base.lines[0].id, position: 1, serial: "SN-88", description: "Heat B2" },
+    });
+    const { shipper } = await createShipper({
+      customerId: base.customerId, shipDate: "2026-08-04",
+      orders: [{
+        orderId: base.id,
+        lines: [{ orderLineId: base.lines[0].id, qty: 5, weight: "5.00", lineComplete: false }],
+        containers: [{ orderContainerId: bin.id, count: 2 }],
+        serials: [{ orderSerialId: serial.id, printOnShipper: true }],
+      }],
+    }, { canOverrideCreditHold: false });
+
+    // Order-side replacement releases both shipment rows to their snapshots.
+    await asSystem(() => replaceContainers(base.id, []));
+    await asSystem(() => replaceSerials(base.id, base.lines[0].id, []));
+
+    // A fresh order-side container the operator now also selects on the shipment.
+    const pallet = await prisma.orderContainer.create({
+      data: { orderId: base.id, position: 1, typeId: containerType.id, count: 3, customerContainerId: "PAL-1" },
+    });
+    const so = shipper.orders[0];
+    const afterContainers = await replaceShipperContainers(shipper.id, so.id, [{ orderContainerId: pallet.id, count: 3 }]);
+    const kept = afterContainers.orders[0].containers;
+    // The released Basket row SURVIVES the replace (it is frozen history), alongside the new pick.
+    expect(kept).toHaveLength(2);
+    expect(kept.some((c) => c.orderContainerId === null && c.typeName === "Basket" && c.customerContainerId === "BIN-9")).toBe(true);
+    expect(kept.some((c) => c.orderContainerId === pallet.id && c.typeName === "Basket")).toBe(true);
+
+    const afterSerials = await replaceShipperSerials(shipper.id, so.id, []);
+    expect(afterSerials.orders[0].serials).toHaveLength(1);
+    expect(afterSerials.orders[0].serials[0]).toMatchObject({ orderSerialId: null, serial: "SN-88" });
   });
 
   it("replaceSerials keeps working on a line a live shipment's serials reference, and the shipment keeps the serial", async () => {

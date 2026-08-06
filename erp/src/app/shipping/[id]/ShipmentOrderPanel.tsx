@@ -35,6 +35,19 @@ function SaveButton({ label, gate, dirty, onSave }: {
   );
 }
 
+/** Read-only strip for RELEASED rows (snapshot + release, ruling 23): the order-side row was
+ *  corrected away, so these render from their snapshots, stay out of the editable grid and its
+ *  payload, and survive every replace server-side as frozen history. */
+function ReleasedRows({ label, rows }: { label: string; rows: string[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="mb-1 rounded border border-dashed bg-slate-50 px-2 py-1 text-xs text-slate-600">
+      {label} kept from earlier selections (the order-side rows were since corrected away):{" "}
+      {rows.join("; ")}
+    </div>
+  );
+}
+
 // -------------------------------------------------------------------------------------------
 // Lines grid — `useBulkGrid` over the shipment's saved lines, saved through the bulk PUT.
 // -------------------------------------------------------------------------------------------
@@ -53,7 +66,9 @@ function LinesGrid({
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<LineFields>();
-  const rows = grid.compose(lines, (l) => ({
+  const liveLines = lines.filter((l): l is typeof l & { orderLineId: string } => l.orderLineId !== null);
+  const releasedLines = lines.filter((l) => l.orderLineId === null);
+  const rows = grid.compose(liveLines, (l) => ({
     orderLineId: l.orderLineId, qty: String(l.qty), weight: String(l.weight),
     lineComplete: l.lineComplete ? "true" : "false",
   }));
@@ -64,7 +79,7 @@ function LinesGrid({
   // (ShipperLineDetail); a row just added locally has no server row yet, so it's looked up from
   // the order's own catalog instead.
   const infoByLineId = new Map<string, LineInfo>();
-  for (const l of lines) {
+  for (const l of liveLines) {
     infoByLineId.set(l.orderLineId, {
       partNumber: l.partNumber, partName: l.partName, orderedQty: l.orderedQty, orderedWeight: l.orderedWeight,
     });
@@ -80,7 +95,7 @@ function LinesGrid({
   // Seeded from the rows already on the shipment first purely as a belt-and-braces fallback: both
   // sides come from the SAME `shippedTotals` call, so the values agree by construction.
   const shippedByLineId = new Map<string, ShippedInfo>(
-    lines.map((l) => [l.orderLineId, { qty: l.shippedToDateQty, weight: l.shippedToDateWeight }]));
+    liveLines.map((l) => [l.orderLineId, { qty: l.shippedToDateQty, weight: l.shippedToDateWeight }]));
   for (const s of shippedToDate) shippedByLineId.set(s.orderLineId, { qty: s.shippedToDateQty, weight: s.shippedToDateWeight });
 
   function patch(row: GridRowHandle, field: keyof LineFields, value: string) {
@@ -113,12 +128,14 @@ function LinesGrid({
     }
   }
 
-  return (
+  return (<>
+    <ReleasedRows label="Lines"
+      rows={releasedLines.map((l) => `${l.partNumber} · ${l.qty} pcs / ${l.weight} lbs`)} />
     <LinesGridView rows={rows} candidates={candidates} infoByLineId={infoByLineId} shippedByLineId={shippedByLineId}
                    gate={editGate} orphanWarning={grid.orphanWarning}
                    onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
                    footer={<SaveButton label="Save lines" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
-  );
+  </>);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -133,12 +150,14 @@ function ContainersGrid({
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<ContainerFields>();
-  const rows = grid.compose(containers, (c) => ({ orderContainerId: c.orderContainerId, count: String(c.count) }));
+  const liveContainers = containers.filter((c): c is typeof c & { orderContainerId: string } => c.orderContainerId !== null);
+  const releasedContainers = containers.filter((c) => c.orderContainerId === null);
+  const rows = grid.compose(liveContainers, (c) => ({ orderContainerId: c.orderContainerId, count: String(c.count) }));
   const usedIds = new Set(rows.map((r) => r.orderContainerId));
   const candidates = (catalog?.containers ?? []).filter((c) => !usedIds.has(c.id));
 
   const infoById = new Map<string, ContainerInfo>();
-  for (const c of containers) infoById.set(c.orderContainerId, { typeName: c.typeName, customerContainerId: c.customerContainerId });
+  for (const c of liveContainers) infoById.set(c.orderContainerId, { typeName: c.typeName, customerContainerId: c.customerContainerId });
   for (const c of catalog?.containers ?? []) {
     if (!infoById.has(c.id)) infoById.set(c.id, { typeName: c.typeName, customerContainerId: c.customerContainerId });
   }
@@ -169,12 +188,14 @@ function ContainersGrid({
     }
   }
 
-  return (
+  return (<>
+    <ReleasedRows label="Containers"
+      rows={releasedContainers.map((c) => `${c.typeName}${c.customerContainerId ? ` (${c.customerContainerId})` : ""} ×${c.count}`)} />
     <ContainersGridView rows={rows} candidates={candidates} infoById={infoById}
                         gate={editGate} orphanWarning={grid.orphanWarning}
                         onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
                         footer={<SaveButton label="Save containers" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
-  );
+  </>);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -189,12 +210,14 @@ function SerialsGrid({
   onError: (message: string | null) => void;
 }) {
   const grid = useBulkGrid<SerialFields>();
-  const rows = grid.compose(serials, (s) => ({ orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper ? "true" : "false" }));
+  const liveSerials = serials.filter((sr): sr is typeof sr & { orderSerialId: string } => sr.orderSerialId !== null);
+  const releasedSerials = serials.filter((sr) => sr.orderSerialId === null);
+  const rows = grid.compose(liveSerials, (s) => ({ orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper ? "true" : "false" }));
   const usedIds = new Set(rows.map((r) => r.orderSerialId));
   const candidates = (catalog?.serials ?? []).filter((s) => !usedIds.has(s.id));
 
   const infoById = new Map<string, SerialInfo>();
-  for (const s of serials) infoById.set(s.orderSerialId, { serial: s.serial, description: s.description });
+  for (const s of liveSerials) infoById.set(s.orderSerialId, { serial: s.serial, description: s.description });
   for (const s of catalog?.serials ?? []) if (!infoById.has(s.id)) infoById.set(s.id, { serial: s.serial, description: s.description });
 
   function patch(row: GridRowHandle, field: keyof SerialFields, value: string) {
@@ -218,11 +241,14 @@ function SerialsGrid({
     }
   }
 
-  return (
+  return (<>
+    <ReleasedRows label="Serials"
+      rows={releasedSerials.map((sr) => `${sr.serial}${sr.description ? ` — ${sr.description}` : ""}`)} />
     <SerialsGridView rows={rows} candidates={candidates} infoById={infoById}
                      gate={editGate} orphanWarning={grid.orphanWarning}
                      onPatch={patch} onRemove={remove} onAddRows={(rs) => grid.addRows(rs)}
                      footer={<SaveButton label="Save serials" gate={editGate} dirty={grid.dirty} onSave={() => void save()} />} />
+  </>
   );
 }
 
