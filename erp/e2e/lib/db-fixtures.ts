@@ -50,6 +50,27 @@ const FIXTURE = {
   orderCustomerCode: "E2EORDCUST",
   orderLeadPartNumber: "E2E-ORD-LEAD",
   orderRiderPartNumber: "E2E-ORD-RIDER",
+  // Phase 4 (Task 20): the five shipping/cert flows get their OWN customers, again separate from
+  // the two above — the order flows leave E2EORDCUST's one order voided (void-order runs last of
+  // them), and E2EORDCUST carries creditHold: true, which would BLOCK createShipper for every
+  // shipping flow that isn't specifically about the credit-hold gate. `shipCustomer` is the
+  // plain-sailing shipping customer (no hold); `holdCustomer` exists precisely to be refused.
+  shipCustomerCode: "E2ESHIPCUST",
+  shipPartANumber: "E2E-SHIP-A",
+  shipPartBNumber: "E2E-SHIP-B",
+  certPartNumber: "E2E-CERT-PART",
+  holdCustomerCode: "E2EHOLDCUST",
+  holdPartNumber: "E2E-HOLD-PART",
+  inspectionScaleName: "E2E HRC",
+  inspectionCodeAName: "E2E Hardness",
+  inspectionCodeBName: "E2E Case Depth",
+  containerTypeName: "E2E Tote",
+  // A user who can create shipments but does NOT hold action.override_credit_hold — the
+  // credit-hold flow's first half is exactly this person hitting the gate. Holds parts.view too:
+  // lib/auth.mjs's login() waits for the "Parts" nav entry as its signed-in checkpoint.
+  clerkRoleName: "E2E Shipping Clerk Role",
+  clerkUsername: "e2e_clerk",
+  clerkPassword: "e2eClerk123!",
 } as const;
 
 /**
@@ -117,6 +138,31 @@ export type Fixtures = {
   orderLeadPartNumber: string;
   orderRiderPartId: string;
   orderRiderPartNumber: string;
+  /** Phase 4 (Task 20): the shipping/cert flows' own fixtures — see FIXTURE's comment. */
+  shipCustomerId: string;
+  shipCustomerCode: string;
+  shipPartAId: string;
+  shipPartANumber: string;
+  shipPartBId: string;
+  shipPartBNumber: string;
+  certPartId: string;
+  certPartNumber: string;
+  holdCustomerId: string;
+  holdCustomerCode: string;
+  holdPartId: string;
+  holdPartNumber: string;
+  inspectionScaleId: string;
+  inspectionScaleName: string;
+  inspectionCodeAId: string;
+  inspectionCodeAName: string;
+  inspectionCodeBId: string;
+  inspectionCodeBName: string;
+  containerTypeId: string;
+  containerTypeName: string;
+  clerkRoleId: string;
+  clerkUserId: string;
+  clerkUsername: string;
+  clerkPassword: string;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -156,6 +202,9 @@ async function deleteStepCodes(stepCodeIds: string[]): Promise<void> {
 }
 
 async function deletePartsAndCustomers(partIds: string[], customerIds: string[]): Promise<void> {
+  // Phase 4: the cert fixture part carries PartInspection rows (the cert-seeding source) —
+  // restrict-on-delete children of Part, so they go first. No-op for every other part.
+  if (partIds.length > 0) await prisma.partInspection.deleteMany({ where: { partId: { in: partIds } } });
   if (partIds.length > 0) await prisma.part.deleteMany({ where: { id: { in: partIds } } });
   if (customerIds.length > 0) await prisma.customer.deleteMany({ where: { id: { in: customerIds } } });
 }
@@ -211,6 +260,70 @@ async function deleteOrdersAndChildren(customerIds: string[]): Promise<void> {
   await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
 }
 
+/**
+ * Phase 4 (Task 20): every shipment and certification the flows produced, scoped through the
+ * fixture customers exactly like `deleteOrdersAndChildren` — a shipment's own natural scope is
+ * `Shipper.customerId`, and a cert's is its order's customer. Must run BEFORE
+ * `deleteOrdersAndChildren`: `Cert.orderId`, `ShipperOrder.orderId`, `CertRequirement.orderLineId`,
+ * `ShipperLine.orderLineId` and `ShipperContainer.orderContainerId` are all plain
+ * restrict-on-delete FKs into the order tables. `deletedAt` is deliberately NOT filtered anywhere
+ * here — the void-shipment flow's whole point is to leave one shipment (and multi-order-shipment
+ * leaves one cert) voided, and a leftover voided fixture row is exactly as unwelcome as a live one.
+ *
+ * Audit rows: shipper and cert mutations write entries keyed by THEIR OWN entity/entityId
+ * ("shipper"/"cert"), and each print archives a StoredDocument whose audit entry is keyed by the
+ * DOCUMENT's id (the fix-wave-12 lesson recorded on deleteOrdersAndChildren) — all three swept
+ * here, before the rows themselves go.
+ */
+async function deleteShippingAndCerts(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const orders = await prisma.order.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const orderIds = orders.map((o) => o.id);
+  const shippers = await prisma.shipper.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const shipperIds = shippers.map((s) => s.id);
+  const certs = await prisma.cert.findMany({ where: { orderId: { in: orderIds } }, select: { id: true } });
+  const certIds = certs.map((c) => c.id);
+  if (shipperIds.length === 0 && certIds.length === 0) return;
+
+  // Shipper/cert-owned documents; order-owned ones (travelers, and SHIPPER docs that also carry
+  // an orderId sub-scope — those carry shipperId too, so this match is a superset) are ALSO
+  // covered by deleteOrdersAndChildren, but that runs after this and deleteMany is a no-op on
+  // already-deleted ids, so there is no double-delete hazard, only belt and braces.
+  const documents = await prisma.storedDocument.findMany({
+    where: { OR: [{ shipperId: { in: shipperIds } }, { certId: { in: certIds } }] },
+    select: { id: true },
+  });
+  const documentIds = documents.map((d) => d.id);
+
+  await prisma.auditLog.deleteMany({ where: { entity: "shipper", entityId: { in: shipperIds } } });
+  await prisma.auditLog.deleteMany({ where: { entity: "cert", entityId: { in: certIds } } });
+  if (documentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "storedDocument", entityId: { in: documentIds } } });
+    await prisma.storedDocument.deleteMany({ where: { id: { in: documentIds } } });
+  }
+
+  // Children before parents; Cert before Shipper (Cert.shipperId is a plain FK).
+  await prisma.certReading.deleteMany({ where: { requirement: { certId: { in: certIds } } } });
+  await prisma.certRequirement.deleteMany({ where: { certId: { in: certIds } } });
+  await prisma.cert.deleteMany({ where: { id: { in: certIds } } });
+  await prisma.shipperLine.deleteMany({ where: { shipperOrder: { shipperId: { in: shipperIds } } } });
+  await prisma.shipperContainer.deleteMany({ where: { shipperOrder: { shipperId: { in: shipperIds } } } });
+  await prisma.shipperSerial.deleteMany({ where: { shipperOrder: { shipperId: { in: shipperIds } } } });
+  await prisma.shipperOrder.deleteMany({ where: { shipperId: { in: shipperIds } } });
+  await prisma.shipper.deleteMany({ where: { id: { in: shipperIds } } });
+}
+
+/** Phase 4 reference rows (created by this script, never through the app, so no audit rows).
+ *  Runs LAST of the data deletes: `CertRequirement.inspectionCodeId`/`scaleId`,
+ *  `PartInspection.inspectionCodeId`/`scaleId` and `OrderContainer.typeId` are restrict-on-delete
+ *  FKs, so certs, part inspections and orders must all be gone first. Codes before scales —
+ *  `InspectionCode.defaultScaleId` points at the scale. */
+async function deletePhase4Reference(scaleIds: string[], codeIds: string[], typeIds: string[]): Promise<void> {
+  if (codeIds.length > 0) await prisma.inspectionCode.deleteMany({ where: { id: { in: codeIds } } });
+  if (scaleIds.length > 0) await prisma.inspectionScale.deleteMany({ where: { id: { in: scaleIds } } });
+  if (typeIds.length > 0) await prisma.containerType.deleteMany({ where: { id: { in: typeIds } } });
+}
+
 async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promise<void> {
   // Session, OrderDraft, and SavedView all have `ON DELETE RESTRICT` from User (verified against
   // the generated migration SQL, not assumed from schema.prisma's silence on the point) — every
@@ -244,7 +357,10 @@ async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promis
  * do nothing too — no self-heal, wedged indefinitely).
  */
 async function reapLeftovers(): Promise<void> {
-  const [templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts] = await Promise.all([
+  const [
+    templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts,
+    shipCustomers, holdCustomers, phase4Parts, scales, codes, containerTypes,
+  ] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
     }),
@@ -262,10 +378,12 @@ async function reapLeftovers(): Promise<void> {
     }),
     prisma.customer.findMany({ where: { code: FIXTURE.customerCode }, select: { id: true } }),
     prisma.user.findMany({
-      where: { username: { in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername] } }, select: { id: true },
+      where: { username: { in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername, FIXTURE.clerkUsername] } },
+      select: { id: true },
     }),
     prisma.role.findMany({
-      where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName] } }, select: { id: true },
+      where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName, FIXTURE.clerkRoleName] } },
+      select: { id: true },
     }),
     // Task 17's own customer, looked up the same way as the process suite's above — its id is
     // ALSO the gate for that customer's orders below, since Order.customerId is a real scope
@@ -278,33 +396,63 @@ async function reapLeftovers(): Promise<void> {
       },
       select: { id: true },
     }),
+    // Phase 4 (Task 20): the shipping/cert fixtures, looked up the same exact-key,
+    // customer-scoped way as everything above.
+    prisma.customer.findMany({ where: { code: FIXTURE.shipCustomerCode }, select: { id: true } }),
+    prisma.customer.findMany({ where: { code: FIXTURE.holdCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: {
+        OR: [
+          {
+            partNumber: { in: [FIXTURE.shipPartANumber, FIXTURE.shipPartBNumber, FIXTURE.certPartNumber] },
+            customer: { code: FIXTURE.shipCustomerCode },
+          },
+          { partNumber: FIXTURE.holdPartNumber, customer: { code: FIXTURE.holdCustomerCode } },
+        ],
+      },
+      select: { id: true },
+    }),
+    prisma.inspectionScale.findMany({ where: { name: FIXTURE.inspectionScaleName }, select: { id: true } }),
+    prisma.inspectionCode.findMany({
+      where: { name: { in: [FIXTURE.inspectionCodeAName, FIXTURE.inspectionCodeBName] } }, select: { id: true },
+    }),
+    prisma.containerType.findMany({ where: { name: FIXTURE.containerTypeName }, select: { id: true } }),
   ]);
   const templateIds = templates.map((t) => t.id);
-  const partIds = [...parts.map((p) => p.id), ...orderParts.map((p) => p.id)];
+  const partIds = [...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id)];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  const customerIds = [...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id)];
+  const shipHoldCustomerIds = [...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id)];
+  const customerIds = [...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds];
   const userIds = users.map((u) => u.id);
   const roleIds = roles.map((r) => r.id);
-  const orderCustomerIds = orderCustomers.map((c) => c.id);
+  const orderCustomerIds = [...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds];
+  const scaleIds = scales.map((s) => s.id);
+  const codeIds = codes.map((c) => c.id);
+  const containerTypeIds = containerTypes.map((t) => t.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
-    + customerIds.length + userIds.length + roleIds.length;
+    + customerIds.length + userIds.length + roleIds.length
+    + scaleIds.length + codeIds.length + containerTypeIds.length;
   if (total === 0) return;
 
   console.error(
     `Reaping leftover E2E fixtures from a prior run: ${templateIds.length} template(s), ` +
     `${partIds.length} part(s), ${stepCodeIds.length} step code(s), ${customerIds.length} ` +
-    `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s).`,
+    `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s), ` +
+    `${scaleIds.length + codeIds.length + containerTypeIds.length} Phase 4 reference row(s).`,
   );
 
-  // Before parts: OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order
-  // (voided by a prior run's void-order flow, or left live by a crash before it) must be gone
-  // before deletePartsAndCustomers below can touch E2E-ORD-LEAD/E2E-ORD-RIDER.
+  // Shipments/certs first (their children FK into the order tables), then orders. Before parts:
+  // OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order (voided by a
+  // prior run's void-order/void-shipment flow, or left live by a crash before it) must be gone
+  // before deletePartsAndCustomers below can touch the fixture parts.
+  await deleteShippingAndCerts(shipHoldCustomerIds);
   await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
   await deleteTemplatesAndSteps(templateIds);
   await deleteStepCodes(stepCodeIds);
   await deletePartsAndCustomers(partIds, customerIds);
+  await deletePhase4Reference(scaleIds, codeIds, containerTypeIds);
   await deleteUsersAndRoles(userIds, roleIds);
 }
 
@@ -334,8 +482,9 @@ async function create(): Promise<Fixtures> {
 
   // Hashed before the transaction opens: argon2 is deliberately slow, and holding a transaction
   // open across it for no reason is exactly the wrong place to spend that time.
-  const [adminHash, restrictedHash] = await Promise.all([
+  const [adminHash, restrictedHash, clerkHash] = await Promise.all([
     hashPassword(FIXTURE.adminPassword), hashPassword(FIXTURE.restrictedPassword),
+    hashPassword(FIXTURE.clerkPassword),
   ]);
 
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
@@ -410,6 +559,81 @@ async function create(): Promise<Fixtures> {
       },
     });
 
+    // ----- Phase 4 (Task 20): shipping/cert fixtures (see FIXTURE's comment). Every part below
+    // is orderable from the start (one revision + one step, the orderLeadPart shape above), and
+    // every part pins its cert chain EXPLICITLY (certRequired true/false, never null) so the
+    // flows never depend on whatever cert_required_default the developer's own dev-DB settings
+    // happen to hold — the resolution chain is part ?? customer ?? plant, and a non-null part
+    // value always wins. Reuses stepCodeB, NOT stepCodeA, for the same blocked-code-delete
+    // exact-blocker-count reason recorded above. -----
+    const hrcScale = await tx.inspectionScale.create({ data: { name: FIXTURE.inspectionScaleName } });
+    const hardnessCode = await tx.inspectionCode.create({
+      data: { name: FIXTURE.inspectionCodeAName, defaultScaleId: hrcScale.id },
+    });
+    const caseDepthCode = await tx.inspectionCode.create({ data: { name: FIXTURE.inspectionCodeBName } });
+    const toteType = await tx.containerType.create({ data: { name: FIXTURE.containerTypeName } });
+
+    const shipCustomer = await tx.customer.create({
+      data: { code: FIXTURE.shipCustomerCode, name: "E2E Shipping Customer" },
+    });
+    const holdCustomer = await tx.customer.create({
+      data: { code: FIXTURE.holdCustomerCode, name: "E2E Held Customer", creditHold: true },
+    });
+
+    async function orderablePart(data: {
+      customerId: string; partNumber: string; name: string; eachWeight: string;
+      certRequired: boolean; certScope?: "ORDER";
+    }) {
+      const part = await tx.part.create({
+        data: {
+          customerId: data.customerId, partNumber: data.partNumber, name: data.name,
+          eachWeight: data.eachWeight, certRequired: data.certRequired,
+          ...(data.certScope ? { certScope: data.certScope } : {}),
+        },
+      });
+      const revision = await tx.partProcessRevision.create({
+        data: { partId: part.id, revisionNumber: 1 },
+      });
+      await tx.partProcessStep.create({
+        data: {
+          revisionId: revision.id, position: 1, codeId: stepCodeB.id,
+          instruction: "E2E shipping flow: wash and pack.",
+        },
+      });
+      return part;
+    }
+
+    const shipPartA = await orderablePart({
+      customerId: shipCustomer.id, partNumber: FIXTURE.shipPartANumber,
+      name: "E2E Ship Part A", eachWeight: "10.0000", certRequired: false,
+    });
+    const shipPartB = await orderablePart({
+      customerId: shipCustomer.id, partNumber: FIXTURE.shipPartBNumber,
+      name: "E2E Ship Part B", eachWeight: "5.0000", certRequired: false,
+    });
+    // The cert flow's part: cert required at ORDER scope, so the order save itself creates the
+    // order-scope cert (§6.2), seeded from these two inspections (frozen min/max/scale/location).
+    const certPart = await orderablePart({
+      customerId: shipCustomer.id, partNumber: FIXTURE.certPartNumber,
+      name: "E2E Certified Part", eachWeight: "10.0000", certRequired: true, certScope: "ORDER",
+    });
+    await tx.partInspection.create({
+      data: {
+        partId: certPart.id, inspectionCodeId: hardnessCode.id, scaleId: hrcScale.id,
+        min: "40", max: "50", sampleQty: "3", location: "E2E flange OD", sort: 1,
+      },
+    });
+    await tx.partInspection.create({
+      data: {
+        partId: certPart.id, inspectionCodeId: caseDepthCode.id,
+        min: "0.02", max: "0.045", sampleQty: "100%", location: "E2E case at pitch line", sort: 2,
+      },
+    });
+    const holdPart = await orderablePart({
+      customerId: holdCustomer.id, partNumber: FIXTURE.holdPartNumber,
+      name: "E2E Held Customer Part", eachWeight: "8.0000", certRequired: false,
+    });
+
     // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
     // both the parts/processes screens and the admin step-codes screen, so anything narrower would
     // have to be kept in step with them by hand.
@@ -437,6 +661,32 @@ async function create(): Promise<Fixtures> {
         passwordHash: restrictedHash, roleId: restrictedRole.id,
       },
     });
+    // Phase 4: can key orders and shipments but does NOT hold action.override_credit_hold —
+    // the credit-hold flow's blocked half is this user hitting the gate. parts.view rides along
+    // because login() (lib/auth.mjs) waits for the "Parts" nav entry as its signed-in checkpoint.
+    const clerkRole = await tx.role.create({
+      data: {
+        name: FIXTURE.clerkRoleName,
+        permissions: {
+          create: [
+            // processes.view rides along with orders.create: the entry page's lead-part preview
+            // ("Rev 1 — locks at save") reads /api/parts/[id]/process/revisions, which is gated
+            // on processes.view — without it the preview shows "Could not verify process steps"
+            // and the shared createOrderViaUi helper's settled-state checkpoint never renders.
+            "parts.view", "customers.view", "processes.view",
+            "orders.view", "orders.create", "orders.edit",
+            "shipping.view", "shipping.create", "shipping.edit",
+            "certs.view",
+          ].map((permission) => ({ permission })),
+        },
+      },
+    });
+    const clerkUser = await tx.user.create({
+      data: {
+        username: FIXTURE.clerkUsername, displayName: "E2E Shipping Clerk",
+        passwordHash: clerkHash, roleId: clerkRole.id,
+      },
+    });
     return {
       customerId: customer.id, customerCode: customer.code,
       partId: part.id, partNumber: part.partNumber,
@@ -451,6 +701,18 @@ async function create(): Promise<Fixtures> {
       orderCustomerId: orderCustomer.id, orderCustomerCode: orderCustomer.code,
       orderLeadPartId: orderLeadPart.id, orderLeadPartNumber: orderLeadPart.partNumber,
       orderRiderPartId: orderRiderPart.id, orderRiderPartNumber: orderRiderPart.partNumber,
+      shipCustomerId: shipCustomer.id, shipCustomerCode: shipCustomer.code,
+      shipPartAId: shipPartA.id, shipPartANumber: shipPartA.partNumber,
+      shipPartBId: shipPartB.id, shipPartBNumber: shipPartB.partNumber,
+      certPartId: certPart.id, certPartNumber: certPart.partNumber,
+      holdCustomerId: holdCustomer.id, holdCustomerCode: holdCustomer.code,
+      holdPartId: holdPart.id, holdPartNumber: holdPart.partNumber,
+      inspectionScaleId: hrcScale.id, inspectionScaleName: hrcScale.name,
+      inspectionCodeAId: hardnessCode.id, inspectionCodeAName: hardnessCode.name,
+      inspectionCodeBId: caseDepthCode.id, inspectionCodeBName: caseDepthCode.name,
+      containerTypeId: toteType.id, containerTypeName: toteType.name,
+      clerkRoleId: clerkRole.id, clerkUserId: clerkUser.id,
+      clerkUsername: clerkUser.username, clerkPassword: FIXTURE.clerkPassword,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -499,16 +761,33 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // every order the flows produced regardless of whether the run that created one ever recorded
   // its id anywhere, and regardless of whether void-order got to it — `deleteOrdersAndChildren`
   // doesn't filter on `deletedAt`. Before parts, same FK reason as `reapLeftovers`' own comment.
-  await deleteOrdersAndChildren([orderCustomerId]);
-  await deletePartProcessData([partId, orderLeadPartId]);
+  // Task 20: shipments/certs first (their children FK into the order tables), same scoping logic
+  // — a shipment/cert is only ever created live through the app, so the customer is the gate.
+  await deleteShippingAndCerts([payload.shipCustomerId, payload.holdCustomerId]);
+  await deleteOrdersAndChildren([orderCustomerId, payload.shipCustomerId, payload.holdCustomerId]);
+  await deletePartProcessData([
+    partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+  ]);
   await deleteTemplatesAndSteps(templateIds);
   await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
-  await deletePartsAndCustomers([partId, orderLeadPartId, orderRiderPartId], [customerId, orderCustomerId]);
-  // Both users, not just the restricted one: deleteUsersAndRoles clears each user's Session (and,
-  // as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears the
-  // per-user rows the flows' own logins and the order-entry-full autosave created.
+  await deletePartsAndCustomers(
+    [
+      partId, orderLeadPartId, orderRiderPartId,
+      payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+    ],
+    [customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId],
+  );
+  await deletePhase4Reference(
+    [payload.inspectionScaleId],
+    [payload.inspectionCodeAId, payload.inspectionCodeBId],
+    [payload.containerTypeId],
+  );
+  // All three users, not just the restricted one: deleteUsersAndRoles clears each user's Session
+  // (and, as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears
+  // the per-user rows the flows' own logins and the order-entry autosaves created.
   await deleteUsersAndRoles(
-    [payload.adminUserId, payload.restrictedUserId], [payload.adminRoleId, payload.restrictedRoleId],
+    [payload.adminUserId, payload.restrictedUserId, payload.clerkUserId],
+    [payload.adminRoleId, payload.restrictedRoleId, payload.clerkRoleId],
   );
 
   return { ok: true };

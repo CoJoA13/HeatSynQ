@@ -5,11 +5,13 @@ import { api, ApiError } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
 import type { OrderLoad } from "./page";
 
-/** Mirrors `DocumentMeta` (src/server/traveler.ts) — a local type, not an import, for the usual
- *  reason (CLAUDE.md): a client component pulling from src/server/** drags Prisma and
- *  node:async_hooks into the browser bundle. `createdAt` arrives as a JSON date string. */
+/** Mirrors `DocumentMeta` (src/server/documents.ts, Phase 4 Task 3) — a local type, not an
+ *  import, for the usual reason (CLAUDE.md): a client component pulling from src/server/** drags
+ *  Prisma and node:async_hooks into the browser bundle. `createdAt` arrives as a JSON date
+ *  string. No `orderNumber`: `documents.ts` never joins to learn one, so this route only ever
+ *  returns the raw `orderId` — unused below, kept for parity with the server shape. */
 type StoredDocument = {
-  id: string; orderId: string; orderNumber: number; kind: string;
+  id: string; orderId: string | null; kind: string;
   loadNumber: number | null; createdAt: string;
 };
 

@@ -11,6 +11,7 @@ import { createPart, deletePart } from "@/server/parts";
 import { createOrder, voidOrder } from "@/server/orders";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
+import { setSetting } from "@/server/settings";
 
 /** Gives a part revision 1 with one step — createOrder's orderability precondition for the LEAD
  *  of an order (spec §5.3), the orders.test.ts/parts.test.ts `giveSteps` shape, built with raw
@@ -469,6 +470,46 @@ describe("customers service", () => {
       const after = entry!.after as { requestDaysOverride: number | null };
       expect(before.requestDaysOverride).toBeNull();
       expect(after.requestDaysOverride).toBe(7);
+    });
+  });
+
+  // Task 4 wiring: the update schema accepts certRequiredDefault/certScopeDefault, and null
+  // (inherit the plant setting) stays distinct from an explicit false end to end —
+  // resolveCertSettings (certs.ts, tests/cert-resolution.test.ts) is what actually WALKS this
+  // chain; this only pins that the customer's own half of it round-trips through
+  // create/update/getCustomer untouched.
+  describe("certRequiredDefault / certScopeDefault", () => {
+    it("round-trips through create and update, and clears back to null (inherit)", async () => {
+      const { id } = await createCustomer({
+        code: "CD1", name: "Cert Default Co", certRequiredDefault: true, certScopeDefault: "LOAD",
+      });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: true, certScopeDefault: "LOAD" });
+
+      await updateCustomer(id, { certRequiredDefault: false, certScopeDefault: "SHIPMENT" });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: false, certScopeDefault: "SHIPMENT" });
+
+      await updateCustomer(id, { certRequiredDefault: null, certScopeDefault: null });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: null, certScopeDefault: null });
+    });
+
+    it("defaults to null (inherit) when omitted on create", async () => {
+      const { id } = await createCustomer({ code: "CD2", name: "Cert Default Co 2" });
+      expect(await getCustomer(id)).toMatchObject({ certRequiredDefault: null, certScopeDefault: null });
+    });
+
+    // Task 17: the customer page's three-state control shows what "inherit" currently resolves
+    // to — the plant settings — without the client needing a settings seam of its own.
+    // Display-only companion values; the customer's own columns stay the unresolved override.
+    it("reports what a null default would inherit: the plant settings, on get and on list", async () => {
+      await setSetting("cert_required_default", true);
+      await setSetting("cert_scope_default", "SHIPMENT");
+      const { id } = await createCustomer({ code: "CD3", name: "Cert Default Co 3", certRequiredDefault: false });
+      expect(await getCustomer(id)).toMatchObject({
+        certRequiredDefault: false, certScopeDefault: null,
+        inheritedCertRequired: true, inheritedCertScope: "SHIPMENT",
+      });
+      const row = (await listCustomers()).find((r) => r.id === id);
+      expect(row).toMatchObject({ inheritedCertRequired: true, inheritedCertScope: "SHIPMENT" });
     });
   });
 });

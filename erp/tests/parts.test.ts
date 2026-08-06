@@ -7,6 +7,7 @@ import {
 } from "@/server/parts";
 import { createOrder, voidOrder } from "@/server/orders";
 import { addAttachment } from "@/server/attachments";
+import { setSetting } from "@/server/settings";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -269,6 +270,60 @@ describe("parts core", () => {
       const after = entry!.after as { requestDaysOverride: number | null };
       expect(before.requestDaysOverride).toBeNull();
       expect(after.requestDaysOverride).toBe(7);
+    });
+  });
+
+  // Task 4 wiring: the update schema accepts certRequired/certScope, and null (inherit) stays
+  // distinct from an explicit false (the part's own "no cert") end to end — resolveCertSettings
+  // (certs.ts, tests/cert-resolution.test.ts) is what actually WALKS this chain; this only pins
+  // that the part's own half of it round-trips through create/update/getPart untouched.
+  describe("certRequired / certScope", () => {
+    it("round-trips through create and update, and clears back to null (inherit)", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({
+        customerId: acme.id, partNumber: "CT1", eachWeight: 1, certRequired: true, certScope: "LOAD",
+      }));
+      expect(await getPart(id)).toMatchObject({ certRequired: true, certScope: "LOAD" });
+
+      await asSystem(() => updatePart(id, { certRequired: false, certScope: "SHIPMENT" }));
+      expect(await getPart(id)).toMatchObject({ certRequired: false, certScope: "SHIPMENT" });
+
+      await asSystem(() => updatePart(id, { certRequired: null, certScope: null }));
+      expect(await getPart(id)).toMatchObject({ certRequired: null, certScope: null });
+    });
+
+    it("defaults to null (inherit) when omitted on create", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "CT2", eachWeight: 1 }));
+      expect(await getPart(id)).toMatchObject({ certRequired: null, certScope: null });
+    });
+
+    // Task 17: the part page's three-state control shows what "inherit" currently resolves to
+    // (customer default, else plant setting) without the client needing a settings seam of its
+    // own. Display-only companion values — the part's own columns stay the unresolved override.
+    it("reports what a null column would inherit: the customer default, else the plant setting", async () => {
+      await setSetting("cert_required_default", false);
+      await setSetting("cert_scope_default", "ORDER");
+      const { acme } = await twoCustomers();
+      await prisma.customer.update({
+        where: { id: acme.id }, data: { certRequiredDefault: true, certScopeDefault: "LOAD" },
+      });
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "CT3", eachWeight: 1 }));
+      expect(await getPart(id)).toMatchObject({ inheritedCertRequired: true, inheritedCertScope: "LOAD" });
+
+      // The part's OWN override never moves the inherited display values.
+      await asSystem(() => updatePart(id, { certRequired: false, certScope: "SHIPMENT" }));
+      expect(await getPart(id)).toMatchObject({
+        certRequired: false, certScope: "SHIPMENT",
+        inheritedCertRequired: true, inheritedCertScope: "LOAD",
+      });
+
+      // Customer inheriting too → the plant settings show through, on the list row as well.
+      await prisma.customer.update({
+        where: { id: acme.id }, data: { certRequiredDefault: null, certScopeDefault: null },
+      });
+      const row = (await listParts()).find((r) => r.id === id);
+      expect(row).toMatchObject({ inheritedCertRequired: false, inheritedCertScope: "ORDER" });
     });
   });
 });

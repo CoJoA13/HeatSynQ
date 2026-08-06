@@ -41,6 +41,6 @@ describe("permission resolution", () => {
   it("ALL_PERMISSIONS covers areas × actions plus specials", () => {
     expect(ALL_PERMISSIONS).toContain("orders.view");
     expect(ALL_PERMISSIONS).toContain("action.close_ar_period");
-    expect(ALL_PERMISSIONS.length).toBe(12 * 4 + 10);
+    expect(ALL_PERMISSIONS.length).toBe(12 * 4 + 11);
   });
 });

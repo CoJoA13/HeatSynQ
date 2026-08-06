@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Prisma, type OrderStatus, type Order } from "../../prisma/generated/prisma/client";
+import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
@@ -10,9 +10,24 @@ import { currentActor } from "./context";
 import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
+import { resolveCertSettings, createCert, type CertResolution } from "./certs";
+import { claimOrder } from "./order-locks";
+import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
+// The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
+// `export async function`, and this file never reads it at module-evaluation time (only inside
+// `removeLine`/`updateLine`/`voidOrder`'s bodies, all called well after both modules finish
+// loading) — safe against the cycle this creates with `shippers.ts`'s own pre-existing import of
+// `isDuplicateClientRequestId` FROM this file, for the identical reason (order-locks.ts's own
+// header comment; verified per the task report, not merely assumed).
+import { shipmentBlockers } from "./shippers";
+// Type-only, so it is erased at compile time and adds nothing to the runtime cycle above.
+import type { OrderLineShippedToDate } from "./shippers";
+import type { Blocker } from "./reference-blockers";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
+import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
+import { INT4_MAX } from "../lib/order-constants";
 
 export type OrderWarnings = string[];
 
@@ -26,7 +41,7 @@ export type OrderLineDetail = {
 };
 export type OrderContainerDetail = {
   id: string; position: number; typeId: string; count: number; qty: number | null;
-  tareWeight: number | null; grossWeight: number | null; type: { name: string };
+  tareWeight: number | null; grossWeight: number | null; customerContainerId: string; type: { name: string };
 };
 export type OrderSerialDetail = {
   id: string; lineId: string; position: number; serial: string; description: string;
@@ -38,15 +53,26 @@ export type OrderChargeDetail = {
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
-  poNumber: string; vsOrderNumber: string;
+  poNumber: string; vsOrderNumber: string; customerJobNo: string;
   receivedDate: string; requestDate: string; targetDate: string | null;
   status: OrderStatus; notes: string; linkGroupId: string | null;
+  /** Resolved from the part/customer/plant chain and FROZEN at save (spec §6.1) — overridable at
+   *  entry and afterwards (updateOrder), never re-derived from a part edited after the fact. */
+  certRequired: boolean; certScope: CertScopeValue;
   /** `deletedAt` is set. Voided orders are returned, not hidden — the hub renders them
    *  read-only, and the reason lives in the `auditedSoftDelete` entry (spec §5c). */
   voided: boolean;
   light: TrafficLight;
   /** Derived, never stored: any StoredDocument row for this order (spec §5b). */
   travelerPrinted: boolean;
+  /** Shipped-to-date for EVERY line of this order (Task 14b) — the same dense, per-line ledger
+   *  `ShipperOrderDetail.orderLineShippedToDate` carries on the shipment page's own GET (Task 14
+   *  review, Important #1), riding here for the one page that has no shipper to read it from: the
+   *  shipment CREATE page (`/shipping/new`), whose grids prefill to `ordered − shipped` (design
+   *  §5.1) from the same order-detail fetch that already supplies their line/container/serial
+   *  catalog. One `shippedTotals` call in `readDetail`, the single §5.1 derivation — never a
+   *  second arithmetic. Dense: a never-shipped line reports a real 0/0. */
+  orderLineShippedToDate: OrderLineShippedToDate[];
   lines: OrderLineDetail[];
   containers: OrderContainerDetail[];
   serials: OrderSerialDetail[];
@@ -92,9 +118,9 @@ const SERIAL_ITEM = z.object({
 // bulk replace unchecked and failed with an unmapped database range error (a 500) rather than
 // this schema's own field-anchored 400. Bounding both here catches it before the transaction
 // even opens, the same role `LINE_QTY`'s own `.max()` plays for a line's qty just below.
-// Exported for order-loads.ts, whose manual load editor writes `Load.qty` — the same Postgres
-// `INTEGER` ceiling, reached through a different door (fix-wave R4 finding 3).
-export const INT4_MAX = 2_147_483_647;
+// `INT4_MAX` itself now lives in `../lib/order-constants` (Task 8 review, 2026-08-04) — see that
+// module's own comment for why a `const` consumed at module-evaluation time could not stay here
+// once `shippers.ts` needed it too.
 
 const CONTAINER_ITEM = z.object({
   typeId: z.string().min(1),
@@ -102,6 +128,12 @@ const CONTAINER_ITEM = z.object({
   qty: z.number().int().min(1).max(INT4_MAX).nullable().optional(),
   tareWeight: decimalField(12, 2, { min: "nonnegative" }),
   grossWeight: decimalField(12, 2, { min: "nonnegative" }),
+  // §3.22: the ticket's "Cust Cont Id" column — the customer's own identifier for this bin, not
+  // one this shop assigns. Built with no present-day user on the owner's explicit instruction.
+  // `.optional()`, not `.default("")`: an omitted key stays omitted through to the Prisma create,
+  // which is what lets the column's own DB default ("") apply — functionally identical to
+  // `.default("")` here, but the brief's exact schema shape is binding.
+  customerContainerId: z.string().max(60).optional(),
 }).strict();
 
 const CHARGE_ITEM = z.object({
@@ -137,6 +169,19 @@ const CREATE = z.object({
   clientRequestId: z.string().uuid().optional(),
   poNumber: z.string().max(200).default(""),
   vsOrderNumber: z.string().max(60).default(""),
+  // §3.22: prints on the ticket beside the PO — built with no present-day user on the owner's
+  // explicit instruction, same as containers[].customerContainerId above.
+  customerJobNo: z.string().max(60).default(""),
+  // Spec §6.1: the resolution is "overridable at entry". An omitted key means "no override" —
+  // the chain (part → customer → plant) resolves and freezes as always; a present key IS the
+  // frozen value, and §6.2's order-scope cert creation follows the EFFECTIVE values either way
+  // (an override to LOAD scope creates nothing eagerly; an override to `certRequired: false`
+  // suppresses the cert the chain would have produced). `.optional()`, never `.nullable()`:
+  // unlike the part/customer columns there is no "inherit" state to store on the order — its
+  // columns are always resolved values (Task 17; the UPDATE_ORDER pair below is the
+  // "and after" half of the same spec sentence).
+  certRequired: z.boolean().optional(),
+  certScope: z.enum(CERT_SCOPES).optional(),
   receivedDate: z.string().optional(),
   requestDate: z.string().optional(),
   targetDate: z.string().nullable().optional(),
@@ -176,6 +221,15 @@ function parseDate(value: string, field: string): Date {
  */
 function lineLabel(index: number, part?: { partNumber: string; customer: { code: string } }): string {
   return part ? `Line ${index + 1} (${part.customer.code} · ${part.partNumber})` : `Line ${index + 1}`;
+}
+
+/** "Packing List 072826 — void the shipment first" (or "Packing List 072826, Packing List
+ *  072830 — void the shipments first") — the shared tail every spec §5.5 refusal appends once
+ *  `shipmentBlockers` (shippers.ts) has found at least one live shipment; never called with an
+ *  empty list. Names the remedy, not only the block (Task 9's last-order refusal precedent,
+ *  shippers.ts's own `removeOrderFromShipper`). */
+function shipmentBlockerTail(blockers: Blocker[]): string {
+  return `${blockers.map((b) => b.name).join(", ")} — void the shipment${blockers.length > 1 ? "s" : ""} first`;
 }
 
 const PART_SELECT = {
@@ -330,12 +384,13 @@ function auditPayload(args: {
   revisionNumber: number;
   loads: { qty: number; weight: number }[];
   containerTypeNames: Map<string, string>;
+  certResolution: CertResolution;
 }) {
-  const { orderNumber, customer, data, parts, loads, containerTypeNames } = args;
+  const { orderNumber, customer, data, parts, loads, containerTypeNames, certResolution } = args;
   return {
     orderNumber,
     customerId: customer.id, customerCode: customer.code,
-    poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
+    poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber, customerJobNo: data.customerJobNo,
     receivedDate: formatDateOnly(args.receivedDate),
     requestDate: formatDateOnly(args.requestDate),
     targetDate: args.targetDate === null ? null : formatDateOnly(args.targetDate),
@@ -343,6 +398,10 @@ function auditPayload(args: {
     // later update diff describe the same set of fields.
     status: "OPEN",
     notes: data.notes,
+    // The EFFECTIVE values frozen at the moment of this save (spec §6.1): the chain's own
+    // resolution, unless the caller sent an explicit entry-time override (Task 17) — the audit
+    // entry proves what actually froze on at save time, ahead of any later part edit.
+    certRequired: certResolution.certRequired, certScope: certResolution.certScope,
     lines: data.lines.map((line, i) => ({
       position: i + 1, partId: line.partId, partNumber: parts[i].partNumber,
       revisionNumber: i === 0 ? args.revisionNumber : null, qty: line.qty, weight: line.weight,
@@ -351,6 +410,12 @@ function auditPayload(args: {
       position: i + 1, typeId: c.typeId, typeName: containerTypeNames.get(c.typeId) ?? null,
       count: c.count, qty: c.qty ?? null,
       tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+      // `.optional()`, not `.default("")` (the brief's exact shape) — an omitted key parses to
+      // `undefined`, and `redact()`'s `JSON.stringify` round-trip DROPS a key whose value is
+      // `undefined` rather than keeping it, so the audit snapshot would silently lose this column
+      // for the ordinary (omitted) case without this fallback. `?? ""` matches both the column's
+      // own DB default and every sibling optional field in this same object literal.
+      customerContainerId: c.customerContainerId ?? "",
     })),
     serials: data.lines.flatMap((line, i) => line.serials.map((s, index) => ({
       linePosition: i + 1, position: index + 1, serial: s.serial, description: s.description,
@@ -379,8 +444,9 @@ const DETAIL_INCLUDE = {
   loads: { orderBy: { loadNumber: "asc" } },
   charges: { orderBy: { position: "asc" } },
   // Existence only — the bytes are never read here, and `travelerPrinted` is the one thing the
-  // hub needs from them.
-  documents: { select: { id: true }, take: 1 },
+  // hub needs from them. Filtered to TRAVELER: since Phase 4, a one-order shipping ticket also
+  // stores this order's id on its SHIPPER document, and that must not read as a printed traveler.
+  documents: { where: { kind: "TRAVELER" }, select: { id: true }, take: 1 },
 } satisfies Prisma.OrderInclude;
 
 type DetailRow = Prisma.OrderGetPayload<{ include: typeof DETAIL_INCLUDE }>;
@@ -400,6 +466,7 @@ export async function trafficSettings(): Promise<Traffic> {
 
 function toDetail(
   row: DetailRow, linkedOrders: { id: string; orderNumber: number }[], traffic: Traffic,
+  shipped: Map<string, { qty: number; weight: number }>,
 ): OrderDetail {
   return {
     id: row.id, orderNumber: row.orderNumber, customerId: row.customerId,
@@ -408,16 +475,25 @@ function toDetail(
     requestDate: formatDateOnly(row.requestDate),
     targetDate: row.targetDate === null ? null : formatDateOnly(row.targetDate),
     status: row.status, notes: row.notes, linkGroupId: row.linkGroupId,
+    customerJobNo: row.customerJobNo,
+    certRequired: row.certRequired, certScope: row.certScope as CertScopeValue,
     voided: row.deletedAt !== null,
     light: computeLight(row.requestDate, todayDateOnly(), traffic.mayMissDays, traffic.willMissDays),
     travelerPrinted: row.documents.length > 0,
+    // Dense (the shippers.ts `toDetail` shape): `shippedTotals` returns a SPARSE map — a line with
+    // no live shipper line has no entry — and the grid needs a real "0 / 0", not a hole.
+    orderLineShippedToDate: row.lines.map((l) => {
+      const totals = shipped.get(l.id) ?? { qty: 0, weight: 0 };
+      return { orderLineId: l.id, shippedToDateQty: totals.qty, shippedToDateWeight: totals.weight };
+    }),
     lines: row.lines.map((l) => ({
       id: l.id, position: l.position, partId: l.partId, revisionNumber: l.revisionNumber,
       qty: l.qty, weight: l.weight.toNumber(), part: l.part,
     })),
     containers: row.containers.map((c) => ({
       id: c.id, position: c.position, typeId: c.typeId, count: c.count, qty: c.qty,
-      tareWeight: num(c.tareWeight), grossWeight: num(c.grossWeight), type: c.type,
+      tareWeight: num(c.tareWeight), grossWeight: num(c.grossWeight),
+      customerContainerId: c.customerContainerId, type: c.type,
     })),
     serials: row.serials.map((s) => ({
       id: s.id, lineId: s.lineId, position: s.position, serial: s.serial, description: s.description,
@@ -452,38 +528,8 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
       orderBy: { orderNumber: "asc" },
     })
     : [];
-  return toDetail(row, linkedOrders, traffic);
-}
-
-/**
- * Claims the Order row for the rest of the caller's OWN transaction — the ONE shared instrument
- * every order-family mutator below, order-loads.ts's two mutators, attachments.ts's order-owner
- * writes, and traveler.ts's `printTraveler` now open their order-resolution step with.
- *
- * Fix-wave R3 finding 1: before this helper existed, only `printTraveler`'s own inline claim (and,
- * incidentally, `voidOrder`'s own row UPDATE) ever took a lock here — every child mutator
- * (`replaceLoads`, `addLine`, `replaceContainers`, …) resolved the order with a plain, UNLOCKED
- * `findFirst`. That let a child edit commit in the gap between `printTraveler`'s content read
- * (`collectTravelerData`) and its archive commit, so the stored traveler could describe pre-edit
- * state with no warning possible — from the archive's own point of view nothing was wrong, the
- * document simply didn't exist yet when the stale read happened.
- *
- * Raw because Prisma has no `FOR UPDATE` of its own (the `workingRevision` precedent,
- * part-process-steps.ts) — id only, since the full row is read back through the ordinary client
- * immediately below, once the lock is actually held. A row lock is the right instrument
- * regardless of isolation level (restated here for the Order row, generalizing `workingRevision`'s
- * own reasoning): whichever caller — a print, or any edit below — reaches this claim first makes
- * every other one wait until it commits or rolls back, so a child mutation can never commit
- * invisibly while a traveler render is reading this same order, and a print can never archive a
- * stale, pre-edit snapshot while an edit is mid-flight either. Returns the full row (or `null` for
- * an id that does not exist) so every call site can read off whatever scalar it needs —
- * `deletedAt`, `customerId`, `linkGroupId`, … — without a second round trip; callers still decide
- * for themselves whether a voided (`deletedAt !== null`) row counts as "not found" for their own
- * purpose, exactly as every mutator already did with its own `findFirst({ deletedAt: null })`.
- */
-export async function claimOrder(tx: Db, orderId: string): Promise<Order | null> {
-  await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
-  return tx.order.findFirst({ where: { id: orderId } });
+  const shipped = await shippedTotals(db, row.lines.map((l) => l.id));
+  return toDetail(row, linkedOrders, traffic, shipped);
 }
 
 /**
@@ -501,8 +547,13 @@ export async function claimOrder(tx: Db, orderId: string): Promise<Order | null>
  * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
  * is still consulted first, so this keeps working if a future adapter populates it; the driver's
  * message is the last resort. Field names arrive quoted, hence substring rather than equality.
+ *
+ * Exported for shippers.ts's `createShipper` (Task 8) — `Shipper.clientRequestId` is the
+ * identical idempotency-nonce shape on a different model, and this function never hardcodes a
+ * model name, only the column name, so it discriminates a `Shipper` P2002 exactly as it does an
+ * `Order` one. Reused rather than re-derived, per the task brief.
  */
-function isDuplicateClientRequestId(err: unknown): boolean {
+export function isDuplicateClientRequestId(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
   const meta = err.meta as {
     target?: unknown;
@@ -588,6 +639,20 @@ async function saveNewOrder(
     const parts = await resolveLineParts(tx, customer.id, data.lines);
     const lead = parts[0];
 
+    // Resolved and FROZEN onto the order right here, at save (spec §6.1) — never re-derived from
+    // a part edited after the fact. `data.lines[0].partId` is the lead, matching every other
+    // most-specific-wins chain in this function (requestDate just below). An explicit entry-time
+    // override (Task 17, §6.1's "overridable at entry") beats the chain per field; the EFFECTIVE
+    // pair is what freezes on, what the audit entry records, and what decides the §6.2 eager
+    // order-scope cert below. The chain still resolves even when both keys are overridden —
+    // one extra read inside an already-open transaction, in exchange for never forking this
+    // function's control flow on which keys happened to arrive.
+    const resolved = await resolveCertSettings(tx, customer.id, data.lines.map((l) => l.partId));
+    const certResolution: CertResolution = {
+      certRequired: data.certRequired ?? resolved.certRequired,
+      certScope: data.certScope ?? resolved.certScope,
+    };
+
     const receivedDate = data.receivedDate
       ? parseDate(data.receivedDate, "Received date")
       : todayDateOnly();
@@ -626,7 +691,7 @@ async function saveNewOrder(
       "order",
       auditPayload({
         orderNumber, customer, data, parts, receivedDate, requestDate, targetDate,
-        revisionNumber, loads, containerTypeNames,
+        revisionNumber, loads, containerTypeNames, certResolution,
       }),
       () => tx.order.create({
         data: {
@@ -634,7 +699,8 @@ async function saveNewOrder(
           // The nonce rides on the row itself: a replay of this same request collides HERE, on
           // the unique index, rather than quietly allocating the next number (R4 finding 5).
           clientRequestId: data.clientRequestId ?? null,
-          poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber,
+          poNumber: data.poNumber, vsOrderNumber: data.vsOrderNumber, customerJobNo: data.customerJobNo,
+          certRequired: certResolution.certRequired, certScope: certResolution.certScope,
           receivedDate, requestDate, targetDate, notes: data.notes,
           lines: {
             create: data.lines.map((line, i) => ({
@@ -649,6 +715,7 @@ async function saveNewOrder(
             create: data.containers.map((c, i) => ({
               position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
               tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+              customerContainerId: c.customerContainerId,
             })),
           },
           loads: { create: loads.map((l, i) => ({ loadNumber: i + 1, qty: l.qty, weight: l.weight })) },
@@ -664,6 +731,16 @@ async function saveNewOrder(
     );
 
     await createSerials(tx, order.id, order.lines.map((l) => l.id), data.lines, parts);
+
+    // ORDER-scope certs are created here, at save (spec §6.2, owner ruling §3.17) — the ONLY
+    // scope created eagerly. SHIPMENT scope is created when a shipment is created (Task 8); LOAD
+    // scope is created on demand from the order hub, deliberately, since Phase 3 keeps loads
+    // editable and re-splittable after save. `tx` threads through so the cert commits or rolls
+    // back with the order it belongs to, and `claimOrder` inside `createCert` re-locks the row
+    // this same transaction just inserted — a no-op wait, since nothing else can see it yet.
+    if (certResolution.certRequired && certResolution.certScope === "ORDER") {
+      await createCert({ orderId: order.id, scope: "ORDER" }, tx);
+    }
 
     // Same transaction as the save (spec §5.5): the scratch draft dies exactly when the order
     // it became is committed, and survives untouched if anything above rolled back.
@@ -895,10 +972,17 @@ export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
 const UPDATE_ORDER = z.object({
   poNumber: z.string().max(200).optional(),
   vsOrderNumber: z.string().max(60).optional(),
+  customerJobNo: z.string().max(60).optional(),
   receivedDate: z.string().optional(),
   requestDate: z.string().optional(),
   targetDate: z.string().nullable().optional(),
   notes: z.string().max(4000).optional(),
+  // Overridable at entry and afterwards (spec §6.1) — resolveCertSettings only ever runs at
+  // createOrder's own save. An edit here is a plain scalar patch like every other field in this
+  // schema (still audited by auditedUpdate below), never a re-derivation of the part/customer
+  // chain.
+  certRequired: z.boolean().optional(),
+  certScope: z.enum(CERT_SCOPES).optional(),
 }).strict();
 
 // qty/weight only — partId and revisionNumber have no key in this shape at all, so `.strict()`
@@ -952,15 +1036,34 @@ export async function updateOrder(
     const patch: Prisma.OrderUpdateInput = {
       ...(data.poNumber !== undefined ? { poNumber: data.poNumber } : {}),
       ...(data.vsOrderNumber !== undefined ? { vsOrderNumber: data.vsOrderNumber } : {}),
+      ...(data.customerJobNo !== undefined ? { customerJobNo: data.customerJobNo } : {}),
       ...(data.receivedDate !== undefined ? { receivedDate: parseDate(data.receivedDate, "Received date") } : {}),
       ...(data.requestDate !== undefined ? { requestDate: parseDate(data.requestDate, "Request date") } : {}),
       ...(data.targetDate !== undefined
         ? { targetDate: data.targetDate === null ? null : parseDate(data.targetDate, "Target date") }
         : {}),
       ...(data.notes !== undefined ? { notes: data.notes } : {}),
+      ...(data.certRequired !== undefined ? { certRequired: data.certRequired } : {}),
+      ...(data.certScope !== undefined ? { certScope: data.certScope } : {}),
     };
 
     await auditedUpdate("order", id, () => tx.order.update({ where: { id }, data: patch }), { tx });
+
+    // The §6.2 creation-time behavior, following the §6.1 post-save override: an update that
+    // lands the order on certRequired + ORDER scope owes the ORDER-scope cert `createOrder`
+    // would have made — the hub only exposes on-demand creation for LOAD scope, so nothing else
+    // can. Existence-checked first (idempotent repeat updates; a live cert already there wins).
+    if (data.certRequired !== undefined || data.certScope !== undefined) {
+      const now = await tx.order.findFirstOrThrow({
+        where: { id }, select: { certRequired: true, certScope: true },
+      });
+      if (now.certRequired && now.certScope === "ORDER") {
+        const existing = await tx.cert.findFirst({
+          where: { orderId: id, scope: "ORDER", deletedAt: null }, select: { id: true },
+        });
+        if (!existing) await createCert({ orderId: id, scope: "ORDER" }, tx);
+      }
+    }
 
     const order = await readDetail(tx, id, traffic);
     return { order, warnings: loadsMismatchWarnings(order) };
@@ -993,6 +1096,11 @@ export async function addLine(
       await createSerials(tx, orderId, [line.id], [data], [part], position - 1);
     }, { tx });
 
+    // A new rider changes the order's own LINE SET — spec §5.2: "every order line has at least
+    // one live shipper line with lineComplete = true" now has one more line to satisfy, so a
+    // fully-shipped order returns to Partial Shipped the moment a rider joins it.
+    await recomputeOrderStatus(tx, [orderId]);
+
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
@@ -1010,8 +1118,33 @@ export async function updateLine(
     const order = await claimOrder(tx, orderId);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
-    const line = await tx.orderLine.findFirst({ where: { id: lineId, orderId }, select: { id: true } });
+    const line = await tx.orderLine.findFirst({
+      where: { id: lineId, orderId },
+      select: {
+        id: true, position: true,
+        part: { select: { partNumber: true, customer: { select: { code: true } } } },
+      },
+    });
     if (!line) throw new HttpError(404, "Order line not found");
+
+    // Spec §5.5: qty/weight may never drop below what is already shipped-to-date (ship-ledger.ts's
+    // "used everywhere" derivation) — checked only when this edit actually touches the field in
+    // question, so a weight-only edit never pays for a qty comparison it did not ask for.
+    if (data.qty !== undefined || data.weight !== undefined) {
+      const totals = (await shippedTotals(tx, [lineId])).get(lineId) ?? { qty: 0, weight: 0 };
+      if (data.qty !== undefined && data.qty < totals.qty) {
+        const blockers = await shipmentBlockers(tx, orderId, lineId);
+        throw new HttpError(400,
+          `${lineLabel(line.position - 1, line.part)}: cannot reduce qty below ${totals.qty} already shipped — ` +
+          shipmentBlockerTail(blockers));
+      }
+      if (data.weight !== undefined && data.weight < totals.weight) {
+        const blockers = await shipmentBlockers(tx, orderId, lineId);
+        throw new HttpError(400,
+          `${lineLabel(line.position - 1, line.part)}: cannot reduce weight below ${totals.weight} lbs already ` +
+          `shipped — ${shipmentBlockerTail(blockers)}`);
+      }
+    }
 
     const patch: Prisma.OrderLineUpdateInput = {
       ...(data.qty !== undefined ? { qty: data.qty } : {}),
@@ -1019,6 +1152,11 @@ export async function updateLine(
     };
 
     await auditedUpdate("order", orderId, () => tx.orderLine.update({ where: { id: lineId }, data: patch }), { tx });
+
+    // The line SET is unchanged (qty/weight only), so this is a no-op in practice — quantities
+    // never enter the status decision (spec §5.2) — but every mutator that touches an order's
+    // lines calls it uniformly rather than one of them silently relying on that invariant holding.
+    await recomputeOrderStatus(tx, [orderId]);
 
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
@@ -1048,11 +1186,23 @@ export async function removeLine(
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
     const line = await tx.orderLine.findFirst({
-      where: { id: lineId, orderId }, select: { id: true, position: true },
+      where: { id: lineId, orderId },
+      select: {
+        id: true, position: true,
+        part: { select: { partNumber: true, customer: { select: { code: true } } } },
+      },
     });
     if (!line) throw new HttpError(404, "Order line not found");
     if (line.position === 1) {
       throw new HttpError(400, "The lead part cannot be removed — void the order instead");
+    }
+
+    // Spec §5.5: a part line with a live shipper line already describes a shipped fact — removing
+    // it from every list would leave that shipment pointing at a line that has vanished.
+    const blockers = await shipmentBlockers(tx, orderId, lineId);
+    if (blockers.length > 0) {
+      throw new HttpError(400,
+        `${lineLabel(line.position - 1, line.part)}: cannot remove — shipped on ${shipmentBlockerTail(blockers)}`);
     }
 
     await auditedUpdate("order", orderId, async () => {
@@ -1068,6 +1218,11 @@ export async function removeLine(
         await tx.orderLine.update({ where: { id: l.id }, data: { position: l.position - 1 } });
       }
     }, { tx });
+
+    // The line SET just shrank — spec §5.2: removing the one incomplete line among an otherwise
+    // fully-shipped order can turn Partial Shipped into Shipped, exactly the mirror of addLine's
+    // own comment above.
+    await recomputeOrderStatus(tx, [orderId]);
 
     const detail = await readDetail(tx, orderId, traffic);
     return { order: detail, warnings: loadsMismatchWarnings(detail) };
@@ -1096,6 +1251,7 @@ export async function replaceContainers(orderId: string, input: unknown): Promis
           data: data.map((c, i) => ({
             orderId, position: i + 1, typeId: c.typeId, count: c.count, qty: c.qty ?? null,
             tareWeight: c.tareWeight ?? null, grossWeight: c.grossWeight ?? null,
+            customerContainerId: c.customerContainerId,
           })),
         });
       }
@@ -1191,6 +1347,15 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
   await withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
     const order = await claimOrder(tx, id);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+
+    // Spec §5.5: void the shipments first, otherwise the shipment is left pointing at an order
+    // (and lines) that have vanished from every list.
+    const blockers = await shipmentBlockers(tx, id);
+    if (blockers.length > 0) {
+      throw new HttpError(400,
+        `Order #${order.orderNumber} has live shipments — ${shipmentBlockerTail(blockers)}`);
+    }
+
     await auditedSoftDelete("order", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

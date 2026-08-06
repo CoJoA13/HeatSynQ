@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Playwright E2E harness (spec §12 / HANDOFF §5a). Drives the bundled Chromium against a
-// throwaway `next dev` instance on port 3100, running six owner-reviewable flows in sequence.
+// throwaway `next dev` instance on port 3100, running fifteen owner-reviewable flows in sequence.
 // Each flow gets its own browser context (so it gets its own video.webm) and its own numbered
 // screenshot sequence under e2e-artifacts/<flow>/.
 //
@@ -34,6 +34,12 @@ const HEADED = Boolean(process.env.HEADED);
 // order the other three all operate on (its id/number travel via `ctx.created`, set at the end of
 // that flow), board-search-scan and loads-after-print both need it live, and void-order runs last
 // because voiding it leaves nothing for a later flow to build on.
+// Task 20 (Phase 4) adds the last five, per design spec §13. Unlike the four Phase 3 order flows
+// (which share one order), each Phase 4 flow creates its own order(s) through the real entry page
+// against its own fixture customer, so they carry no cross-flow state — only the run order
+// matters for the numbering the demo doc narrates. `credit-hold-block-and-override` starts as the
+// fixture "clerk" (shipping permissions but NOT action.override_credit_hold — the blocked half)
+// and re-logs-in as the fixture admin mid-flow for the override half.
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -45,6 +51,11 @@ const FLOWS = [
   { name: "board-search-scan", as: "admin", module: "./flows/board-search-scan.mjs" },
   { name: "loads-after-print", as: "admin", module: "./flows/loads-after-print.mjs" },
   { name: "void-order", as: "admin", module: "./flows/void-order.mjs" },
+  { name: "ship-partial-then-complete", as: "admin", module: "./flows/ship-partial-then-complete.mjs" },
+  { name: "multi-order-shipment", as: "admin", module: "./flows/multi-order-shipment.mjs" },
+  { name: "cert-results-print", as: "admin", module: "./flows/cert-results-print.mjs" },
+  { name: "void-shipment", as: "admin", module: "./flows/void-shipment.mjs" },
+  { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
@@ -231,7 +242,9 @@ async function runFlow(browser, flow, ctx, results) {
     // change after first login, so the four flows using them broke for any developer who did.
     const creds = flow.as === "restricted"
       ? { username: ctx.fixtures.restrictedUsername, password: ctx.fixtures.restrictedPassword }
-      : { username: ctx.fixtures.adminUsername, password: ctx.fixtures.adminPassword };
+      : flow.as === "clerk"
+        ? { username: ctx.fixtures.clerkUsername, password: ctx.fixtures.clerkPassword }
+        : { username: ctx.fixtures.adminUsername, password: ctx.fixtures.adminPassword };
     await login(page, ctx.baseURL, creds.username, creds.password);
     await shot("logged-in");
 

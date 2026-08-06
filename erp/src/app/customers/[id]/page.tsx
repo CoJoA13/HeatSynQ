@@ -4,8 +4,10 @@ import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
+import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useEditGuard } from "@/lib/use-edit-guard";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 
 type Customer = {
@@ -21,6 +23,12 @@ type Customer = {
   // commit path (below) parses it to a number itself rather than forwarding the typed text.
   requestDaysOverride: number | string | null;
   creditHold: boolean; cod: boolean; taxable: boolean; surchargeOptOut: boolean;
+  /** Certification chain (spec §6.1): null = inherit the plant setting; a part can override
+   *  either way. The `inheritedCert*` companions are what that null currently resolves to —
+   *  computed server-side (customers.ts) so the three-state controls can label their "Inherit"
+   *  option without a settings seam of their own. */
+  certRequiredDefault: boolean | null; certScopeDefault: CertScopeValue | null;
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string; active: boolean;
 };
 // `active` on both child types is carried and editable (round 5): the services have always
@@ -110,6 +118,11 @@ function CustomerDetail({ id }: { id: string }) {
   // failure surfaces through permsError, folded into the same error banner below, instead of
   // leaving every control silently stuck disabled.
   const { permissions: perms, error: permsError } = usePermissions();
+  // Every set-of-`c`-from-server routes through `editGuard.merge` so a reload landing mid-typing —
+  // most notably save()'s own §5.13 failure-path rollback for a SIBLING field — never resets the
+  // customer field the user is actively editing (use-edit-guard.ts; the fix-wave notes-clobber
+  // trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same shape).
+  const editGuard = useEditGuard();
 
   const load = useCallback(async () => {
     const [cust, addr, cont] = await Promise.all([
@@ -117,8 +130,8 @@ function CustomerDetail({ id }: { id: string }) {
       api<Address[]>(`/api/customers/${id}/addresses${showInactiveAddresses ? "?includeInactive=1" : ""}`),
       api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
     ]);
-    setC(cust); setAddresses(addr); setContacts(cont); setError(null);
-  }, [id, showInactiveAddresses, showInactiveContacts]);
+    setC((cur) => editGuard.merge(cur, cust)); setAddresses(addr); setContacts(cont); setError(null);
+  }, [id, showInactiveAddresses, showInactiveContacts, editGuard]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
   const canDelete = gate(perms, "customers.delete");
   const canEdit = gate(perms, "customers.edit");
@@ -279,13 +292,14 @@ function CustomerDetail({ id }: { id: string }) {
   // Blur-save guard (round 5/6). Every text field on this page saved unconditionally on blur, so
   // simply tabbing through the form sent a PUT per field and wrote an audit entry whose before
   // and after are identical — filling the history spec §9 promises with events that assert a
-  // change nobody made. `focusedValue` snapshots the field as it was when the user entered it;
-  // a blur whose value matches that snapshot never reaches the network. One ref is enough
-  // because only one field can hold focus at a time.
-  const focusedValue = useRef("");
-  const noteFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    focusedValue.current = e.target.value;
-  };
+  // change nobody made. The snapshot-on-focus guard now lives in `editGuard` (use-edit-guard.ts,
+  // the fix-wave notes-clobber trio — CertDetail.tsx and ShipmentDetail.tsx carry the same shape):
+  // customer-bound fields register WHICH property is under the cursor (`noteFocusC`), so `load()`'s
+  // merge above can preserve an in-flight edit when a failed sibling save's rollback (or any other
+  // reload) lands mid-typing; address/contact cells keep the plain no-op guard (`noteFocus`) —
+  // they bind to the separate row arrays, not to `c`.
+  const noteFocus = editGuard.onFocusField(null);
+  const noteFocusC = (key: keyof Customer & string) => editGuard.onFocusField(key);
   // `trim` mirrors the server's own zod .trim() on that specific field (customer code and name,
   // contact name). Applying it here as well keeps the input showing what was actually stored:
   // otherwise the server saved "Acme" while the box went on displaying " Acme " indefinitely,
@@ -294,12 +308,9 @@ function CustomerDetail({ id }: { id: string }) {
   function onBlurSave(
     e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
     opts: { trim?: boolean },
-    commit: (value: string) => void,
+    commit: (value: string, atFocus: string) => void,
   ) {
-    const normalize = (v: string) => (opts.trim ? v.trim() : v);
-    const value = normalize(e.target.value);
-    if (value === normalize(focusedValue.current)) return;
-    commit(value);
+    editGuard.onBlurSave(e, commit, opts);
   }
   // Deliberately not routed through call(): call() reloads on success, and this record no longer
   // exists on success — the reload would 404 and replace the list we're navigating to with an
@@ -422,12 +433,12 @@ function CustomerDetail({ id }: { id: string }) {
           input reverts to server truth and the error banner explains why, same as every other
           field on this page (Fix C2). */}
       <div className="mb-1 flex flex-wrap items-baseline gap-2">
-        <input value={c.code} aria-label="Customer code" onFocus={noteFocus} readOnly={!canEdit.allowed}
+        <input value={c.code} aria-label="Customer code" onFocus={noteFocusC("code")} readOnly={!canEdit.allowed}
                onChange={(e) => setC({ ...c, code: e.target.value })}
                onBlur={(e) => onBlurSave(e, { trim: true }, (code) => void save({ code }))}
                className="w-40 rounded border px-2 py-1 font-mono text-xl font-semibold read-only:bg-slate-50" />
         <span className="text-2xl font-semibold text-slate-400">—</span>
-        <input value={c.name} aria-label="Customer name" onFocus={noteFocus} readOnly={!canEdit.allowed}
+        <input value={c.name} aria-label="Customer name" onFocus={noteFocusC("name")} readOnly={!canEdit.allowed}
                onChange={(e) => setC({ ...c, name: e.target.value })}
                onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void save({ name }))}
                className="min-w-[16rem] flex-1 rounded border px-2 py-1 text-xl font-semibold read-only:bg-slate-50" />
@@ -518,21 +529,21 @@ function CustomerDetail({ id }: { id: string }) {
           </label>
           <label className="block text-sm">
             Default PO
-            <input value={c.defaultPo} onFocus={noteFocus} readOnly={!canEdit.allowed}
+            <input value={c.defaultPo} onFocus={noteFocusC("defaultPo")} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, defaultPo: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (defaultPo) => void save({ defaultPo }))}
                    className="ml-2 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
             Credit limit
-            <input value={c.creditLimit ?? ""} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
+            <input value={c.creditLimit ?? ""} inputMode="decimal" onFocus={noteFocusC("creditLimit")} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, creditLimit: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ creditLimit: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block text-sm">
             Finance charge rate
-            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
+            <input value={c.financeChargeRate ?? ""} inputMode="decimal" onFocus={noteFocusC("financeChargeRate")} readOnly={!canEdit.allowed}
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
@@ -543,15 +554,17 @@ function CustomerDetail({ id }: { id: string }) {
                 typed text is parsed to a number before save() ever sees it, the parts/[id]/
                 IdentitySection.tsx Load qty/Request days override precedent. Blank clears the
                 override, falling back to the plant default (spec §7.1's chain — orders.ts). */}
-            <input value={c.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocus}
+            <input value={c.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocusC("requestDaysOverride")}
                    readOnly={!canEdit.allowed} title={canEdit.title}
                    onChange={(e) => setC({ ...c, requestDaysOverride: e.target.value })}
-                   onBlur={(e) => onBlurSave(e, {}, (v) => {
+                   onBlur={(e) => onBlurSave(e, {}, (v, atFocus) => {
                      const trimmed = v.trim();
                      if (trimmed === "") { void save({ requestDaysOverride: null }); return; }
                      const n = Number(trimmed);
                      if (!Number.isInteger(n)) {
-                       setC((cur) => (cur ? { ...cur, requestDaysOverride: focusedValue.current } : cur));
+                       // Roll the box back to what it held on entry — `atFocus` is the guard's
+                       // own snapshot (use-edit-guard.ts), the old `focusedValue.current`.
+                       setC((cur) => (cur ? { ...cur, requestDaysOverride: atFocus } : cur));
                        setError("Request days override must be a whole number.");
                        return;
                      }
@@ -559,6 +572,31 @@ function CustomerDetail({ id }: { id: string }) {
                    })}
                    className="ml-2 w-20 rounded border px-2 py-1 read-only:bg-slate-50" />
             <span className="ml-2 text-xs text-slate-500">Blank uses the plant default.</span>
+          </label>
+          {/* Certification chain (spec §6.1, Task 17): three-state, never a checkbox — an
+              explicit "No" and "inherit the plant" are different answers, and a part can still
+              override either way. The Inherit option names what it currently resolves to (the
+              plant settings — `inheritedCert*`, computed server-side), the parts/[id]/
+              IdentitySection sibling of the same control. */}
+          <label className="block text-sm">
+            Certification required default
+            <select value={c.certRequiredDefault === null ? "" : c.certRequiredDefault ? "yes" : "no"}
+                    disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => save({ certRequiredDefault: e.target.value === "" ? null : e.target.value === "yes" })}
+                    className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100">
+              <option value="">Inherit plant — currently {c.inheritedCertRequired ? "Yes" : "No"}</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label className="block text-sm">
+            Certification scope default
+            <select value={c.certScopeDefault ?? ""} disabled={!canEdit.allowed} title={canEdit.title}
+                    onChange={(e) => save({ certScopeDefault: e.target.value === "" ? null : e.target.value as CertScopeValue })}
+                    className="ml-2 rounded border px-2 py-1 disabled:bg-slate-100">
+              <option value="">Inherit plant — currently {CERT_SCOPE_LABELS[c.inheritedCertScope]}</option>
+              {CERT_SCOPES.map((s) => <option key={s} value={s}>{CERT_SCOPE_LABELS[s]}</option>)}
+            </select>
           </label>
         </div>
       </section>
@@ -569,7 +607,7 @@ function CustomerDetail({ id }: { id: string }) {
           .map(([key, label]) => (
             <label key={key} className="mb-2 block text-sm">
               {label}
-              <textarea value={c[key]} rows={2} onFocus={noteFocus} readOnly={!canEdit.allowed}
+              <textarea value={c[key]} rows={2} onFocus={noteFocusC(key)} readOnly={!canEdit.allowed}
                         onChange={(e) => setC({ ...c, [key]: e.target.value })}
                         onBlur={(e) => onBlurSave(e, {}, (v) => void save({ [key]: v }))}
                         className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />

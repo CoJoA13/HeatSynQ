@@ -21,7 +21,13 @@ export async function authenticateUser(
   username: string,
   password: string,
 ): Promise<{ id: string; displayName: string } | null> {
-  const user = await prisma.user.findUnique({ where: { username } });
+  // select: only what this function actually reads below — every login attempt runs this query,
+  // and the bare findUnique used to pull the full row, signature bytes included, just to check a
+  // password and return an id/displayName pair.
+  const user = await prisma.user.findUnique({
+    where: { username },
+    select: { id: true, displayName: true, passwordHash: true, active: true, deletedAt: true },
+  });
   const eligibleUser = user && user.active && !user.deletedAt ? user : null;
   const passwordOk = await verifyPassword(eligibleUser?.passwordHash ?? DUMMY_HASH, password);
   if (!eligibleUser || !passwordOk) return null;

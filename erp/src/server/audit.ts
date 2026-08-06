@@ -10,14 +10,19 @@ export type AuditableModel =
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
   | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
   | "partProcessRevision" | "processTemplate"
-  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument";
+  | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument"
+  | "cert" | "shipper";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
 // model row itself. `undefined` means "no relations" — snapshot() falls back to a bare
 // findUnique for that model. These relations carry no sensitive fields (permission/mode keys
 // only), so redact() doesn't need new patterns to keep snapshots safe.
-const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
+// Exported for tests/certs-schema.test.ts's smoke test: this map is typed `object | undefined`
+// per entry (Prisma's own `include` shape has no useful common supertype), so a wrong relation
+// name or `orderBy` field compiles cleanly and would otherwise only explode at the first
+// `audited*` call against that model, in whatever later task happens to be the first to touch it.
+export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   role: { permissions: true },
   user: { overrides: true },
   setting: undefined,
@@ -103,6 +108,56 @@ const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Permanent, create-only (design spec §4: "no delete path at all") — snapshots are metadata
   // only, fileData excluded the same way as the attachment tables (SNAPSHOT_SELECT below).
   storedDocument: undefined,
+  // Cert and Shipper children have no deletedAt of their own — editing them IS editing the
+  // document (Phase 4 spec §4.1/§4.2), audited as its own before/after diff, never as a separate
+  // entity. That is the same call Order's children got, and it is what makes these includes
+  // load-bearing rather than decorative: without them, filling in every reading on a cert would
+  // diff as no change at all.
+  //
+  // Every collection below is explicitly orderBy'd — issue #24 applied from birth. HistoryPanel
+  // compares whole keys with JSON.stringify, which is order-sensitive, so an unordered collection
+  // makes two snapshots of identical data render as a spurious diff. Live code/scale/part names
+  // are selected in so the diff reads "Hardness", not a cuid.
+  cert: {
+    requirements: {
+      orderBy: { position: "asc" },
+      include: {
+        inspectionCode: { select: { name: true } },
+        scale: { select: { name: true } },
+        readings: { orderBy: { position: "asc" } },
+      },
+    },
+  },
+  // Task 8 review (2026-08-04, carried forward from Task 2): the original include here pulled
+  // `order: { select: { orderNumber: true } }` only — a diff on `Shipper.customerId`,
+  // `carrierId` or `shipToAddressId` rendered as a raw cuid, exactly the unreadable-history shape
+  // issue #24 exists to prevent. `customer`/`carrier`/`shipToAddress` are all selected directly on
+  // the SHIPPER itself (round 2 of the same review, 2026-08-04) — not read off `orders[].order`
+  // alone, because `ShipperOrder` has no `deletedAt` of its own (spec §4.2) and Task 9's
+  // `removeOrderFromShipper` hard-deletes the row. That same task's `removeOrderFromShipper` now
+  // also refuses to remove a shipment's LAST order (§4.2's "at least one line with qty > 0 across
+  // all its orders" enforced at the document level), so an order-less shipment isn't actually
+  // reachable through that path any more — this select stays anyway, as cheap defensive insurance
+  // against a raw cuid ever surfacing in a history diff.
+  shipper: {
+    customer: { select: { code: true, name: true } },
+    carrier: { select: { name: true } },
+    shipToAddress: { select: { name: true } },
+    orders: {
+      orderBy: { position: "asc" },
+      include: {
+        order: { select: { orderNumber: true, customer: { select: { code: true, name: true } } } },
+        lines: { orderBy: { position: "asc" }, include: { orderLine: { select: { position: true } } } },
+        containers: { orderBy: { position: "asc" } },
+        // ShipperSerial has no position of its own (a serial is either on the ticket or not),
+        // and `orderSerialId` stopped being a stable key when snapshot + release made it nullable
+        // (several released rows tie at null, and Postgres breaks the tie arbitrarily — an
+        // order-sensitive before/after diff then reports unchanged serials as modified). The
+        // snapshot column orders; `id` breaks a duplicate-serial tie deterministically.
+        serials: { orderBy: [{ serial: "asc" }, { id: "asc" }] },
+      },
+    },
+  },
 };
 
 /**
@@ -133,7 +188,24 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     id: true, orderId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
   },
-  storedDocument: { id: true, orderId: true, kind: true, loadNumber: true, createdAt: true },
+  // Phase 4 widened this table from one owner to three; the list stays "every scalar except
+  // fileData", so shipperId and certId belong here the moment they exist rather than being
+  // something a later phase has to remember.
+  storedDocument: {
+    id: true, orderId: true, shipperId: true, certId: true,
+    kind: true, loadNumber: true, createdAt: true,
+  },
+  // Task 12: `User.signatureImage` is a bytes column exactly like the three above, and gets the
+  // same treatment — an explicit `select` (never `include`, which pulls every scalar including
+  // this one) that lists every OTHER User scalar plus the `overrides` relation SNAPSHOT_INCLUDE's
+  // `user` entry already carries, so `setSignature`'s own `auditedUpdate("user", ...)` never pulls
+  // the image bytes into a before/after snapshot in the first place. redact()'s "signatureimage"
+  // pattern stays defense-in-depth, not the mechanism relied on to keep them out (CLAUDE.md).
+  user: {
+    id: true, username: true, passwordHash: true, displayName: true, roleId: true,
+    active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
+    overrides: true,
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {

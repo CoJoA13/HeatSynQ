@@ -61,4 +61,23 @@ describe("sessions", () => {
     await prisma.user.update({ where: { id: user.id }, data: { deletedAt: new Date() } });
     expect(await getSessionUser(token)).toBeNull();
   });
+
+  // getSessionUser runs on every authenticated request (handle(), http.ts) — the hottest path
+  // in the app for a User row read. Its `select` (sessions.ts) must never pull signatureImage:
+  // unlike the audit snapshot's SNAPSHOT_SELECT (whose absence is provable straight from the
+  // database), a session lookup has no equivalent redaction layer at all — an included bytes
+  // column here would ride along on literally every route. Pins the property's absence on the
+  // resolved user, not just the query shape, against a user that genuinely has a signature set.
+  it("never pulls signatureImage into the resolved session user", async () => {
+    const user = await makeUser("has-a-signature");
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { signatureImage: Buffer.from("fake-signature-bytes"), signatureMimeType: "image/png" },
+    });
+    const { token } = await createSession(user.id);
+    const found = await getSessionUser(token);
+    expect(found).not.toBeNull();
+    expect(found).not.toHaveProperty("signatureImage");
+    expect(JSON.stringify(found)).not.toContain("fake-signature-bytes");
+  });
 });

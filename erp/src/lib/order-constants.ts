@@ -12,3 +12,15 @@ export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
   INVOICED: "Invoiced",
   REOPENED: "Reopened",
 };
+
+// Postgres's INTEGER (int4) column range — every `count`/`qty` column any zod schema in this
+// codebase bounds against it (order lines/containers, loads, shipment lines/containers/
+// packageCount, …). Lives here rather than in `orders.ts` (Task 8 review, 2026-08-04): `orders.ts`
+// and `shippers.ts` are on a path to a genuine two-way module edge (Task 10 adds `orders.ts` ->
+// `shippers.ts` for the §5.5 edit invariants, order-locks.ts's own header comment anticipates it;
+// `shippers.ts` already imports back from `orders.ts` for `isDuplicateClientRequestId`, a hoisted
+// function and therefore safe in either evaluation order). A `const` consumed at module-evaluation
+// time inside a top-level zod schema is NOT safe across that cycle — whichever side evaluates
+// second can hit the other in the temporal dead zone and throw at import. A zero-import leaf
+// (the `errors.ts`/`order-locks.ts` precedent) can never be on the wrong side of that.
+export const INT4_MAX = 2_147_483_647;

@@ -12,6 +12,7 @@ import {
   buildTravelerDefinition, collectTravelerData, printTraveler, listDocuments, getDocument,
   type TravelerData,
 } from "@/server/traveler";
+import { VOIDED_PRINT } from "@/server/documents";
 
 import { POST as travelerRoute } from "@/app/api/orders/[id]/traveler/route";
 import { GET as documentsRoute } from "@/app/api/orders/[id]/documents/route";
@@ -342,7 +343,7 @@ describe("printTraveler", () => {
     await asSystem(() => voidOrder(order.id, "keyed against the wrong PO"));
 
     await expect(asSystem(() => printTraveler(order.id)))
-      .rejects.toThrow("Cannot print a traveler for a voided order");
+      .rejects.toThrow(VOIDED_PRINT);
 
     // Reads keep working (spec §5c) — the stored print is still listed and still reprintable.
     const docs = await listDocuments(order.id);
@@ -402,9 +403,7 @@ describe("printTraveler", () => {
     // The discriminator: with the FOR UPDATE genuinely in effect, printTraveler cannot decide
     // "not voided" until after the holder's void has committed, so it must see the order voided
     // and refuse — no document is ever archived against it.
-    await expect(printCall).rejects.toMatchObject({
-      status: 400, message: "Cannot print a traveler for a voided order",
-    });
+    await expect(printCall).rejects.toMatchObject({ status: 400, message: VOIDED_PRINT });
     expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
   });
 
@@ -488,7 +487,7 @@ describe("printTraveler", () => {
   // archived traveler describing pre-edit state, with no warning possible: nothing about the
   // archive itself was wrong, the document simply didn't exist yet when the stale read happened.
   // The fix moves the claim to the FRONT of printTraveler: it now claims (via the shared
-  // `claimOrder`, orders.ts — the same helper every order-family mutator opens with) BEFORE it
+  // `claimOrder`, order-locks.ts — the same helper every order-family mutator opens with) BEFORE it
   // ever calls `collectTravelerData`, and holds it through render and archive. A load that
   // changes while this claim is held cannot be missed by a print that started before the change
   // committed — the print simply cannot read anything until the change (and the claim it needed)
@@ -743,7 +742,7 @@ describe("traveler routes", () => {
     const res = await travelerRoute(
       req(`http://t/api/orders/${order.id}/traveler`, "POST", cookie), withParams({ id: order.id }));
     expect(res.status).toBe(400);
-    expect((await res.json()).error).toBe("Cannot print a traveler for a voided order");
+    expect((await res.json()).error).toBe(VOIDED_PRINT);
 
     const list = await documentsRoute(
       req(`http://t/api/orders/${order.id}/documents`, "GET", cookie), withParams({ id: order.id }));

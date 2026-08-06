@@ -110,6 +110,8 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
   // letting the main sweep above pass while silently checking nothing.
   it("finds every known reference FK when nothing is registered", () => {
     expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
+      "certRequirement.inspectionCodeId -> inspectionCode",
+      "certRequirement.scaleId -> inspectionScale",
       "customer.termsId -> terms",
       "inspectionCode.defaultScaleId -> inspectionScale",
       "orderContainer.typeId -> containerType",
@@ -121,6 +123,7 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
       "processTemplateStep.codeId -> processStepCode",
+      "shipper.carrierId -> carrier",
     ]);
   });
 

@@ -18,17 +18,24 @@
  * commented below; there are no silent ones.
  */
 import type { Content, TDocumentDefinitions, TableCell } from "pdfmake/interfaces";
-import { Prisma, type DocumentKind } from "../../prisma/generated/prisma/client";
+import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { auditedCreate } from "./audit";
-import { claimOrder, readDetail, trafficSettings } from "./orders";
+import { readDetail, trafficSettings } from "./orders";
+import { claimOrder } from "./order-locks";
 import { getRevision } from "./part-process-steps";
 import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
 import { getSetting } from "./settings";
 import { renderPdf, barcodePng, pngDataUri, LAYOUT } from "./pdf/render";
+import { storeDocument, listDocumentsForOrder, documentFilename, assertPrintable } from "./documents";
+
+// Re-exported unchanged: `src/app/api/orders/[id]/documents/route.ts` and this file's own tests
+// depend on `getDocument` living at this import path. Phase 4 Task 3 moved its implementation
+// (and the storage it shares with shipping tickets, BOLs and certifications) to documents.ts —
+// see the "Stored documents" section below for `listDocuments`, the other half of that surface.
+export { getDocument } from "./documents";
 
 // ---------------------------------------------------------------------------------------------
 // TravelerData — the builder's whole input. Plain data by construction: no Decimals, no Dates,
@@ -418,8 +425,6 @@ export function buildTravelerDefinition(input: TravelerData): TDocumentDefinitio
 // collectTravelerData — the reads.
 // ---------------------------------------------------------------------------------------------
 
-const VOIDED = "Cannot print a traveler for a voided order";
-
 /**
  * Every SETTING the traveler needs, read in one place so `readTravelerData` below performs no
  * setting reads of its own (fix-wave R4 finding 8).
@@ -571,34 +576,22 @@ export async function collectTravelerData(orderId: string, loadNumber?: number):
 }
 
 // ---------------------------------------------------------------------------------------------
-// Stored documents. Permanent, create-only (spec §4) — there is no delete path at all.
+// Stored documents. Permanent, create-only (spec §4) — there is no delete path at all. The
+// storage itself (this section used to own it directly) now lives in documents.ts, shared with
+// the shipping ticket, BOL and certification kinds Phase 4 adds; `printTraveler` below and
+// `listDocuments`/`getDocument` further down are this file's thin, order-scoped remainder of it.
 // ---------------------------------------------------------------------------------------------
-
-export type DocumentMeta = {
-  id: string; orderId: string; orderNumber: number; kind: DocumentKind;
-  loadNumber: number | null; createdAt: Date;
-};
-
-/** The one projection both reads share — everything except the bytes, plus the order number the
- *  filename needs. */
-const DOCUMENT_SELECT = {
-  id: true, orderId: true, kind: true, loadNumber: true, createdAt: true,
-  order: { select: { orderNumber: true } },
-} satisfies Prisma.StoredDocumentSelect;
-
-type DocumentSelected = Prisma.StoredDocumentGetPayload<{ select: typeof DOCUMENT_SELECT }>;
-const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
-  ({ ...rest, orderNumber: order.orderNumber });
 
 /**
  * Renders and archives one traveler, returning the exact bytes stored.
  *
  * Voided orders refuse a NEW print (spec §5c) but keep every earlier print listable and
- * reprintable — `listDocuments`/`getDocument` below deliberately do not filter on `deletedAt`.
+ * reprintable — `listDocuments`/`getDocument` deliberately do not filter on `deletedAt`
+ * (documents.ts's own doc comment).
  *
  * Fix-wave R3 finding 1: the ENTIRE operation — claim, content read, render, archive — now runs
- * inside ONE transaction, claimed with the shared `claimOrder` (orders.ts) before anything else
- * happens. Before this, the claim only wrapped the final archive commit (fix-wave R2 finding 4,
+ * inside ONE transaction, claimed with the shared `claimOrder` (order-locks.ts) before anything
+ * else happens. Before this, the claim only wrapped the final archive commit (fix-wave R2 finding 4,
  * below): `collectTravelerData` (the read that decides what the PDF says) and `renderPdf` (~100 ms
  * of pure CPU) both ran BEFORE any lock was taken, so a child mutator — `replaceLoads`,
  * `replaceContainers`, a line/serial/charge edit — could claim the SAME row, write, and commit
@@ -608,16 +601,16 @@ const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
  * point of view nothing was wrong, the document simply didn't exist yet when the stale read
  * happened.
  *
- * `claimOrder`'s row lock now brackets the read too, and every order-family mutator (orders.ts,
- * order-loads.ts, attachments.ts's order-owner writes) opens with the SAME claim on its own
- * transaction — so the two sides properly serialize: whichever gets here first forces the other to
- * wait for its FULL transaction, not just its final write, to finish. A print that wins the race
- * archives the pre-edit state, and the edit — blocked until the print commits — lands cleanly
- * right after, affecting only the next print ("a load edit after printing changes the NEXT print,
- * never the stored one", below). An edit that wins the race commits first, and the print — blocked
- * until the edit commits — reads and archives the POST-edit state once it can proceed. Either way
- * the archived bytes always describe a real, fully-committed state; a torn, mid-edit snapshot is
- * no longer reachable.
+ * `claimOrder`'s (order-locks.ts) row lock now brackets the read too, and every order-family
+ * mutator (orders.ts, order-loads.ts, attachments.ts's order-owner writes) opens with the SAME
+ * claim on its own transaction — so the two sides properly serialize: whichever gets here first
+ * forces the other to wait for its FULL transaction, not just its final write, to finish. A print
+ * that wins the race archives the pre-edit state, and the edit — blocked until the print commits —
+ * lands cleanly right after, affecting only the next print ("a load edit after printing changes
+ * the NEXT print, never the stored one", below). An edit that wins the race commits first, and the
+ * print — blocked until the edit commits — reads and archives the POST-edit state once it can
+ * proceed. Either way the archived bytes always describe a real, fully-committed state; a torn,
+ * mid-edit snapshot is no longer reachable.
  *
  * This does mean the Order row's lock is now held across the render, not just the final insert —
  * accepted deliberately: correctness (no torn snapshot) matters more here than shaving the
@@ -633,7 +626,8 @@ const toMeta = ({ order, ...rest }: DocumentSelected): DocumentMeta =>
  * on anything — so a `voidOrder` call whose own UPDATE committed in the gap between that read and
  * the `storedDocument` insert went unnoticed, and the print archived against an order that was, by
  * the time anyone looked, already voided. Claiming the row with `SELECT … FOR UPDATE` before the
- * re-check closed that gap: `voidOrder`'s own `tx.order.update(...)` (via `auditedSoftDelete`)
+ * re-check closed that gap: `voidOrder`'s own order UPDATE (via `auditedSoftDelete`, in orders.ts —
+ * this file performs no mutation of its own since Phase 4 Task 3 moved storage to documents.ts)
  * takes a write lock on the same row at ANY isolation level, the same "a row lock is the right
  * instrument because both sides take it regardless of isolation" guarantee `workingRevision`
  * documents for the process-steps revision claim (part-process-steps.ts) — `claimOrder` is that
@@ -647,11 +641,11 @@ export async function printTraveler(
   // below never waits on a round trip that has nothing to do with the order it is holding.
   const settings = await travelerSettings();
 
-  const { row, orderNumber, pdf } = await withDbErrors({ entity: "Order" }, () =>
+  const { doc, orderNumber, pdf } = await withDbErrors({ entity: "Order" }, () =>
     prisma.$transaction(async (tx) => {
       const live = await claimOrder(tx, orderId);
       if (!live) throw new HttpError(404, "Order not found");
-      if (live.deletedAt !== null) throw new HttpError(400, VOIDED);
+      assertPrintable(live);
 
       // Only now, with the claim held: the read that decides what the PDF says, and the render
       // itself. Nothing else touching this order's traveler-relevant children can commit until
@@ -665,57 +659,34 @@ export async function printTraveler(
       const data = await readTravelerData(tx, orderId, settings, loadNumber);
       const pdf = await renderPdf(buildTravelerDefinition(data));
 
-      const meta = {
-        orderId, kind: "TRAVELER" as const, loadNumber: loadNumber ?? null,
-      };
-      // Metadata only in the audit payload — the bytes are never handed to the audit layer
-      // (CLAUDE.md: redact() is defense in depth, not the mechanism keeping them out). The
-      // attachments service does exactly this for the same reason.
-      const row = await auditedCreate("storedDocument", meta,
-        // `new Uint8Array(pdf)`, not the Buffer itself: Prisma's `Bytes` input is typed
-        // `Uint8Array<ArrayBuffer>`, and Node's Buffer is `Uint8Array<ArrayBufferLike>`, which
-        // that does not accept.
-        () => tx.storedDocument.create({ data: { ...meta, fileData: new Uint8Array(pdf) } }), { tx });
-      return { row, orderNumber: data.orderNumber, pdf };
+      // Storage itself — permanence, the audit-payload/bytes split, and the `new Uint8Array`
+      // conversion — is documents.ts's job now (Phase 4 Task 3); this claim-holding transaction
+      // is still the one thing that has to stay HERE, since the archive must land before the
+      // claim is released.
+      const doc = await storeDocument(tx, { kind: "TRAVELER", orderId, loadNumber: loadNumber ?? null }, pdf);
+      return { doc, orderNumber: data.orderNumber, pdf };
     }));
 
   // `orderNumber`/`loadNumber` ride along purely so the route can name the download without a
   // second read — `getDocument` would pull the whole PDF back out of the database to learn them.
-  return { documentId: row.id, orderNumber, loadNumber: loadNumber ?? null, pdf };
+  return { documentId: doc.id, orderNumber, loadNumber: loadNumber ?? null, pdf };
 }
 
-/** Newest first. Never selects `fileData` — a list of N prints has no reason to pull N PDFs into
- *  memory to render a timestamp. `createdAt` ties break on the id, which is a time-ordered cuid,
- *  so two prints inside the same millisecond still list in the order they happened. */
-export async function listDocuments(orderId: string): Promise<DocumentMeta[]> {
-  const order = await prisma.order.findFirst({ where: { id: orderId }, select: { id: true } });
-  if (!order) throw new HttpError(404, "Order not found");
-  const rows = await prisma.storedDocument.findMany({
-    where: { orderId },
-    select: DOCUMENT_SELECT,
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-  });
-  return rows.map(toMeta);
-}
-
-/** The stored bytes, untouched — a reprint is a byte-for-byte reissue of what was printed, never
- *  a re-render (spec §5b: loads stay editable after a print, so a re-render could differ). */
-export async function getDocument(docId: string): Promise<DocumentMeta & { fileData: Buffer }> {
-  const row = await prisma.storedDocument.findUnique({
-    where: { id: docId }, select: { ...DOCUMENT_SELECT, fileData: true },
-  });
-  if (!row) throw new HttpError(404, "Document not found");
-  const { fileData, ...meta } = row;
-  // Prisma's `Bytes` scalar is a bare Uint8Array; Buffer.from guarantees the real Node Buffer
-  // this signature promises (the attachments service precedent).
-  return { ...toMeta(meta), fileData: Buffer.from(fileData) };
-}
+/** Every traveler this order has had printed, newest first — the order-scoped view onto
+ *  documents.ts's shared store. Kept under this name (rather than `listDocumentsForOrder`
+ *  directly) because `src/app/api/orders/[id]/documents/route.ts` and this file's own tests
+ *  already depend on it. */
+export const listDocuments = listDocumentsForOrder;
 
 /** `traveler-71246.pdf` / `traveler-71246-load-3.pdf` — what the browser tab and any save-as
- *  dialog show. Shared by the print route and the stored-bytes route so one document never
- *  arrives under two names. */
+ *  dialog show. Delegates to documents.ts's shared `documentFilename` (Phase 4 Task 3) rather
+ *  than keeping its own copy of the naming rule; the adapter object below carries only what a
+ *  TRAVELER filename needs (`kind`, `loadNumber`, and `orderId: null` since the real order
+ *  number arrives as the second argument instead) — `id`/`createdAt` are part of `DocumentMeta`
+ *  but `documentFilename` never reads them for this kind. */
 export function travelerFilename(orderNumber: number, loadNumber: number | null): string {
-  return loadNumber === null
-    ? `traveler-${orderNumber}.pdf`
-    : `traveler-${orderNumber}-load-${loadNumber}.pdf`;
+  return documentFilename(
+    { id: "", createdAt: new Date(0), kind: "TRAVELER", orderId: null, shipperId: null, certId: null, loadNumber },
+    orderNumber,
+  );
 }

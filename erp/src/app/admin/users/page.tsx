@@ -1,6 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { usePermissions } from "@/lib/use-permissions";
+import { gateDo } from "@/lib/permission-ui";
+import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
 type User = {
@@ -14,6 +17,10 @@ export default function UsersPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ username: "", displayName: "", password: "", roleId: "" });
+  const { permissions: perms, error: permsError } = usePermissions();
+  // Every verb on the signature route (PUT/DELETE/GET, src/app/api/admin/users/[id]/signature/
+  // route.ts) requires this same special action — disabled with a tooltip, never hidden (§5.16).
+  const manageUsersGate = gateDo(perms, "manage_users");
 
   const load = useCallback(async () => {
     setUsers(await api<User[]>("/api/admin/users"));
@@ -40,11 +47,13 @@ export default function UsersPage() {
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Users</h1>
-      {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {(error ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
       <table className="mb-6 w-full rounded border bg-white text-sm">
         <thead><tr className="border-b text-left">
           <th className="p-2">Username</th><th className="p-2">Name</th><th className="p-2">Role</th>
-          <th className="p-2">Active</th><th className="p-2">Reset password</th>
+          <th className="p-2">Active</th><th className="p-2">Signature</th><th className="p-2">Reset password</th>
         </tr></thead>
         <tbody>
           {users.map((u) => (
@@ -60,6 +69,9 @@ export default function UsersPage() {
               </td>
               <td className="p-2">
                 <input type="checkbox" checked={u.active} onChange={(e) => patch(u.id, { active: e.target.checked })} />
+              </td>
+              <td className="p-2">
+                <UserSignatureControl userId={u.id} gate={manageUsersGate} />
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline"

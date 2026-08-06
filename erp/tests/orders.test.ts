@@ -148,6 +148,40 @@ describe("createOrder: the two-line sibling order", () => {
     expect(fetched.lines[1].part.serializationRequired).toBe(true);
   });
 
+  // Task 4 wiring: createOrder freezes resolveCertSettings's answer onto the order row (spec
+  // §6.1's detailed chain behaviour is cert-resolution.test.ts's job — this only pins that
+  // createOrder actually CALLS the resolver and that customerJobNo/customerContainerId, §3.22's
+  // two owner-mandated fields, round-trip through the create payload untouched.
+  it("freezes certRequired/certScope from the resolver and carries customerJobNo/customerContainerId through", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: true, certScope: "LOAD" } });
+    // The rider disagrees on scope — must not win (lead owns document identity, spec §6.1).
+    await prisma.part.update({ where: { id: rider.id }, data: { certScope: "SHIPMENT" } });
+
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-42",
+      lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1, customerContainerId: "CUST-BIN-1" }],
+    }));
+
+    expect(order.customerJobNo).toBe("JOB-42");
+    expect(order.certRequired).toBe(true);
+    expect(order.certScope).toBe("LOAD");
+    expect(order.containers[0].customerContainerId).toBe("CUST-BIN-1");
+  });
+
+  it("defaults customerJobNo to \"\" and containers' customerContainerId to \"\" when omitted", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1 }],
+    }));
+    expect(order.customerJobNo).toBe("");
+    expect(order.certRequired).toBe(false);
+    expect(order.certScope).toBe("ORDER");
+    expect(order.containers[0].customerContainerId).toBe("");
+  });
+
   it("auto-splits the mockup order into 14 loads whose weights sum exactly", async () => {
     const { customer, lead, rider } = await fixture();
 
@@ -839,6 +873,53 @@ describe("createOrder: audit", () => {
       .toMatchObject({ position: 1, description: "Freight", amount: 125 });
   });
 
+  // Task 4 review (Minor): the create snapshot must carry the RESOLVED certRequired/certScope —
+  // not the caller's own input, since none was given here — proving resolveCertSettings actually
+  // ran inside this save rather than the columns merely holding their schema defaults. The lead's
+  // scope (LOAD) has to win over the rider's disagreeing one (SHIPMENT) in the audit content too,
+  // the same way it already does in the saved order's own projection (a different test, above).
+  it("records the RESOLVED certRequired/certScope in the create audit entry, plus customerJobNo/customerContainerId", async () => {
+    const { customer, lead, rider, containerType } = await fixture();
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: true, certScope: "LOAD" } });
+    await prisma.part.update({ where: { id: rider.id }, data: { certScope: "SHIPMENT" } });
+
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-77",
+      lines: mockupLines(lead.id, rider.id),
+      containers: [{ typeId: containerType.id, count: 1, customerContainerId: "CUST-1" }],
+    }));
+
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entity: "order", entityId: order.id, action: "create" },
+    });
+    const after = entry.after as Record<string, unknown>;
+    expect(after).toMatchObject({ customerJobNo: "JOB-77", certRequired: true, certScope: "LOAD" });
+    expect((after.containers as Record<string, unknown>[])[0]).toMatchObject({ customerContainerId: "CUST-1" });
+  });
+
+  // Task 4 review round 2 (Important): `customerContainerId` is `.optional()`, so an omitted key
+  // parses to `undefined` — and `redact()`'s `JSON.parse(JSON.stringify(value))` round-trip DROPS
+  // a key whose value is `undefined` rather than keeping it. `auditPayload` must therefore fall
+  // back to `""` explicitly (matching every sibling optional field in that same object literal),
+  // or the audit entry loses the key entirely for the ordinary (omitted) case — silently
+  // disagreeing in SHAPE with every later snapshot (readDetail/SNAPSHOT_INCLUDE both always
+  // return the DB row's `""`), the inconsistent-representation class issue #24 exists for.
+  // `toMatchObject` alone would NOT catch a missing key, so this asserts presence directly.
+  it("still carries the customerContainerId key (as \"\") in the create audit entry when the container omits it", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+      containers: [{ typeId: containerType.id, count: 1 }], // no customerContainerId
+    }));
+
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entity: "order", entityId: order.id, action: "create" },
+    });
+    const after = entry.after as { containers: Record<string, unknown>[] };
+    expect(Object.hasOwn(after.containers[0], "customerContainerId")).toBe(true);
+    expect(after.containers[0].customerContainerId).toBe("");
+  });
+
   it("puts no fileData-shaped key anywhere in the create snapshot", async () => {
     const { customer, lead } = await fixture();
     const { order } = await asSystem(() => createOrder({
@@ -1013,6 +1094,22 @@ describe("getOrder", () => {
       data: { orderId: order.id, kind: "TRAVELER", fileData: Buffer.from("pdf") },
     });
     expect((await getOrder(order.id)).travelerPrinted).toBe(true);
+  });
+
+  it("does not report travelerPrinted for a shipping ticket that names the order (Phase 4)", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    // A one-order shipping ticket stores SHIPPER + this order's id — a traveler it is not.
+    const shipper = await prisma.shipper.create({
+      data: { shipperNumber: 90001, customerId: customer.id, shipDate: new Date("2026-07-29") },
+    });
+    await prisma.storedDocument.create({
+      data: { orderId: order.id, shipperId: shipper.id, kind: "SHIPPER", fileData: Buffer.from("pdf") },
+    });
+    expect((await getOrder(order.id)).travelerPrinted).toBe(false);
   });
 
   it("returns a voided order — the hub renders it read-only rather than 404ing", async () => {
@@ -1277,6 +1374,49 @@ describe("updateOrder", () => {
     const diffAfter = entry.after as { poNumber: string };
     expect(before.poNumber).toBe("PO-OLD");
     expect(diffAfter.poNumber).toBe("PO-NEW");
+  });
+
+  // Task 4: certRequired/certScope/customerJobNo are frozen at save but stay editable afterwards
+  // (spec §6.1: "Both are editable on the order afterwards").
+  it("PATCHes customerJobNo/certRequired/certScope, overriding what createOrder froze", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, customerJobNo: "JOB-1",
+      lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    expect(order.certRequired).toBe(false);
+    expect(order.certScope).toBe("ORDER");
+
+    const { order: after } = await asSystem(() => updateOrder(order.id, {
+      customerJobNo: "JOB-2", certRequired: true, certScope: "SHIPMENT",
+    }));
+    expect(after).toMatchObject({ customerJobNo: "JOB-2", certRequired: true, certScope: "SHIPMENT" });
+
+    // A part edited AFTER this override must not re-resolve it back — updateOrder is a plain
+    // scalar patch, never a re-derivation of the chain.
+    await prisma.part.update({ where: { id: lead.id }, data: { certRequired: false } });
+    const untouched = await getOrder(order.id);
+    expect(untouched.certRequired).toBe(true);
+  });
+
+  it("creates the ORDER-scope cert when an update transitions the order to certRequired + ORDER", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    expect(await prisma.cert.count({ where: { orderId: order.id } })).toBe(0);
+
+    // The post-save override spec §6.1 supports — creation-time §6.2 behavior must follow it,
+    // since the hub only exposes on-demand creation for LOAD scope.
+    await asSystem(() => updateOrder(order.id, { certRequired: true, certScope: "ORDER" }));
+    expect(await prisma.cert.findFirst({
+      where: { orderId: order.id, scope: "ORDER", deletedAt: null },
+    })).not.toBeNull();
+
+    // Idempotent: a repeat of the same update must not attempt a duplicate create.
+    await expect(asSystem(() => updateOrder(order.id, { certRequired: true, certScope: "ORDER" })))
+      .resolves.toBeTruthy();
+    expect(await prisma.cert.count({ where: { orderId: order.id, scope: "ORDER", deletedAt: null } })).toBe(1);
   });
 
   it("leaves targetDate alone when omitted, and clears it on an explicit null", async () => {
@@ -1548,6 +1688,18 @@ describe("replaceContainers", () => {
     expect(after.containers).toHaveLength(2);
     expect(after.containers[0]).toMatchObject({ position: 1, typeId: crate.id, count: 2, tareWeight: 10 });
     expect(after.containers[1]).toMatchObject({ position: 2, typeId: containerType.id, count: 1 });
+  });
+
+  it("carries customerContainerId through a bulk replace (§3.22)", async () => {
+    const { customer, lead, containerType } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+
+    const after = await asSystem(() => replaceContainers(order.id, [
+      { typeId: containerType.id, count: 1, customerContainerId: "CUST-BIN-9" },
+    ]));
+    expect(after.containers[0].customerContainerId).toBe("CUST-BIN-9");
   });
 
   it("rejects an unknown container type and writes nothing", async () => {

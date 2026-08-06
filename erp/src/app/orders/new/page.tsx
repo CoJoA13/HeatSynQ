@@ -19,6 +19,7 @@ import { useLatest } from "@/lib/use-latest";
 import { normalizeRequestNonce, submitWithConflictRetry } from "@/lib/idempotent-save";
 import { resolveLeadValidity, type LeadValidityReport } from "@/lib/lead-validity";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
+import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { OrderLineCard, computeLineWeight, findDuplicateSerials } from "./OrderLineCard";
 
@@ -41,6 +42,13 @@ export type PartOption = {
    *  (src/server/parts.ts) so the lead-part picker can show this up front (spec §11) rather than
    *  only after a pick. Irrelevant for riders, which never lock a revision. */
   hasProcessSteps: boolean;
+  /** Certification chain (spec §6.1, Task 17): the part's own three-state override plus what a
+   *  null would inherit (customer default, else plant — computed server-side, parts.ts). The
+   *  untouched entry preview composes `certRequired ?? inheritedCertRequired` per line at render
+   *  (2C-3: derive, never store), which is exactly `resolveCertSettings`'s own chain because
+   *  every part in this customer's catalog shares this customer's defaults. */
+  certRequired: boolean | null; certScope: CertScopeValue | null;
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
 };
 
 type ContainerTypeOption = { id: string; name: string };
@@ -59,6 +67,8 @@ export type LineDraft = {
 
 export type ContainerDraft = {
   id: string; typeId: string | null; count: string; qty: string; tareWeight: string; grossWeight: string;
+  /** §3.22 (Task 17): the customer's own bin id — the ticket's "Cust Cont Id" column. */
+  customerContainerId: string;
 };
 
 export type ChargeDraft = { id: string; description: string; amount: string };
@@ -79,6 +89,13 @@ export type OrderDraftState = {
   /** null = show the selected customer's defaultPo; non-null = the user's own text. */
   poOverride: string | null;
   vsOrderNumber: string;
+  customerJobNo: string;
+  /** Cert preview overrides (spec §6.1 "overridable at entry", Task 17). null = show the chain's
+   *  own resolution, recomputed every render from the picked parts (2C-3: nothing derived is
+   *  ever stored); non-null = the user's explicit answer, which wins until reset and is the only
+   *  case where the create body carries the key at all. */
+  certRequiredOverride: boolean | null;
+  certScopeOverride: CertScopeValue | null;
   /** null = show today (recomputed every render); non-null = the user's own text. */
   receivedDateOverride: string | null;
   /** null = show the entry-defaults fetch result; non-null = the user's own text. */
@@ -98,7 +115,7 @@ function blankLine(): LineDraft {
   return { id: crypto.randomUUID(), partId: null, qty: "", weightOverride: null, serials: [] };
 }
 function blankContainer(): ContainerDraft {
-  return { id: crypto.randomUUID(), typeId: null, count: "", qty: "", tareWeight: "", grossWeight: "" };
+  return { id: crypto.randomUUID(), typeId: null, count: "", qty: "", tareWeight: "", grossWeight: "", customerContainerId: "" };
 }
 function blankCharge(): ChargeDraft {
   return { id: crypto.randomUUID(), description: "", amount: "" };
@@ -106,7 +123,8 @@ function blankCharge(): ChargeDraft {
 function blankDraft(): OrderDraftState {
   return {
     clientRequestId: crypto.randomUUID(),
-    customerId: null, poOverride: null, vsOrderNumber: "",
+    customerId: null, poOverride: null, vsOrderNumber: "", customerJobNo: "",
+    certRequiredOverride: null, certScopeOverride: null,
     receivedDateOverride: null, requestDateOverride: null, targetDate: null,
     notes: "", lines: [blankLine()], containers: [], charges: [],
   };
@@ -141,8 +159,16 @@ function normalizeContainer(raw: unknown): ContainerDraft {
     id: typeof r.id === "string" ? r.id : crypto.randomUUID(),
     typeId: strOrNull(r.typeId), count: str(r.count), qty: str(r.qty),
     tareWeight: str(r.tareWeight), grossWeight: str(r.grossWeight),
+    customerContainerId: str(r.customerContainerId),
   };
 }
+/** A resumed draft's stored override is trusted only when it is one of the three real scopes —
+ *  anything else (a hand-edited payload, a future enum change) degrades to "no override", which
+ *  is the safe state: the preview re-derives. */
+function scopeOrNull(v: unknown): CertScopeValue | null {
+  return typeof v === "string" && (CERT_SCOPES as readonly string[]).includes(v) ? (v as CertScopeValue) : null;
+}
+function boolOrNull(v: unknown): boolean | null { return typeof v === "boolean" ? v : null; }
 function normalizeCharge(raw: unknown): ChargeDraft {
   const r = rec(raw);
   return { id: typeof r.id === "string" ? r.id : crypto.randomUUID(), description: str(r.description), amount: str(r.amount) };
@@ -158,6 +184,9 @@ function normalizeDraft(raw: unknown): OrderDraftState {
     customerId: strOrNull(r.customerId),
     poOverride: strOrNull(r.poOverride),
     vsOrderNumber: str(r.vsOrderNumber),
+    customerJobNo: str(r.customerJobNo),
+    certRequiredOverride: boolOrNull(r.certRequiredOverride),
+    certScopeOverride: scopeOrNull(r.certScopeOverride),
     receivedDateOverride: strOrNull(r.receivedDateOverride),
     requestDateOverride: strOrNull(r.requestDateOverride),
     targetDate: strOrNull(r.targetDate),
@@ -177,6 +206,7 @@ function normalizeDraft(raw: unknown): OrderDraftState {
  *  cleared back to blank still autosaves normally — this only suppresses the FIRST write. */
 function isDraftEmpty(d: OrderDraftState): boolean {
   return d.customerId === null && d.poOverride === null && d.vsOrderNumber === ""
+    && d.customerJobNo === "" && d.certRequiredOverride === null && d.certScopeOverride === null
     && d.receivedDateOverride === null && d.requestDateOverride === null && d.targetDate === null
     && d.notes === "" && d.containers.length === 0 && d.charges.length === 0
     && d.lines.length === 1 && d.lines[0].partId === null && d.lines[0].qty === ""
@@ -383,6 +413,24 @@ export default function NewOrderPage() {
   const displayedReceivedDate = draft.receivedDateOverride ?? formatDateOnly(todayDateOnly());
   const displayedRequestDate = draft.requestDateOverride ?? (entryDefaultRequestDate ?? "");
 
+  // The §6.1 chain, composed AT RENDER from the picked parts (2C-3: derive, never store) —
+  // `certRequired ?? inheritedCertRequired` per line IS `part ?? customer ?? plant`, because
+  // parts.ts folds the customer default and the plant setting into `inheritedCert*` server-side.
+  // Required is OR'd across every picked line (a rider's requirement is never dropped); scope
+  // reads the LEAD alone. Until a lead part is picked there is nothing to resolve — `null` here
+  // renders the controls disabled with that reason (§5.16), never a made-up "No".
+  const linePartRows = draft.lines.map((l) => (l.partId ? parts.find((p) => p.id === l.partId) ?? null : null));
+  const leadPartRow = linePartRows[0];
+  const resolvedCertRequired: boolean | null = leadPartRow
+    ? linePartRows.some((p) => p !== null && (p.certRequired ?? p.inheritedCertRequired))
+    : null;
+  const resolvedCertScope: CertScopeValue | null = leadPartRow
+    ? (leadPartRow.certScope ?? leadPartRow.inheritedCertScope)
+    : null;
+  const displayedCertRequired = draft.certRequiredOverride ?? resolvedCertRequired;
+  const displayedCertScope = draft.certScopeOverride ?? resolvedCertScope;
+  const certPreviewReady = resolvedCertRequired !== null;
+
   const customerOptions: ComboboxOption[] = customers.map((c) => ({ value: c.id, label: `${c.code} · ${c.name}` }));
 
   // ---- typed-state mutators ----
@@ -468,6 +516,12 @@ export default function NewOrderPage() {
       clientRequestId: draft.clientRequestId,
       poNumber: displayedPo,
       vsOrderNumber: draft.vsOrderNumber,
+      customerJobNo: draft.customerJobNo,
+      // Omitted (never frozen to the client's preview) while untouched — the SERVER resolves and
+      // freezes the chain at the moment it saves (spec §6.1), exactly like receivedDate below.
+      // Only an explicit override travels.
+      certRequired: draft.certRequiredOverride ?? undefined,
+      certScope: draft.certScopeOverride ?? undefined,
       // Omitted (not frozen to the client's preview) while untouched — the server computes its
       // own "today"/business-day default at the moment it actually saves, which is the more
       // correct instant to read "today" from than whenever the form happened to render.
@@ -495,6 +549,7 @@ export default function NewOrderPage() {
         qty: c.qty.trim() === "" ? null : Number(c.qty),
         tareWeight: c.tareWeight.trim() === "" ? null : c.tareWeight.trim(),
         grossWeight: c.grossWeight.trim() === "" ? null : c.grossWeight.trim(),
+        customerContainerId: c.customerContainerId,
       })),
       charges: draft.charges.map((c) => ({
         description: c.description.trim(),
@@ -677,6 +732,13 @@ export default function NewOrderPage() {
                            className="mt-1 w-full rounded border px-2 py-1" />
                   </label>
                   <label className="block">
+                    Customer job #
+                    {/* §3.22 (Task 17): the customer's own job number, printed on the shipping
+                        ticket beside the PO. Plain typed state, no derivation to override. */}
+                    <input value={draft.customerJobNo} onChange={(e) => patch({ customerJobNo: e.target.value })}
+                           className="mt-1 w-full rounded border px-2 py-1" />
+                  </label>
+                  <label className="block">
                     Received date
                     <input type="date" value={displayedReceivedDate}
                            onChange={(e) => patch({ receivedDateOverride: e.target.value })}
@@ -703,7 +765,7 @@ export default function NewOrderPage() {
                 {draft.containers.map((c, i) => {
                   const net = netWeight(c.grossWeight, c.tareWeight);
                   return (
-                    <div key={c.id} className="mb-2 grid grid-cols-6 items-end gap-2 text-sm">
+                    <div key={c.id} className="mb-2 grid grid-cols-7 items-end gap-2 text-sm">
                       <label className="block">
                         Type
                         <select value={c.typeId ?? ""} onChange={(e) => patchContainer(c.id, { typeId: e.target.value || null })}
@@ -733,6 +795,14 @@ export default function NewOrderPage() {
                         <input value={c.grossWeight} inputMode="decimal" onChange={(e) => patchContainer(c.id, { grossWeight: e.target.value })}
                                aria-label={`Container ${i + 1} gross weight`} className="mt-1 w-full rounded border px-2 py-1" />
                       </label>
+                      <label className="block">
+                        Cust Cont Id
+                        {/* §3.22 (Task 17): the customer's own bin id — the ticket's "Cust Cont
+                            Id" column. Sibling of the hub ContainersSection's identical column
+                            (the sibling-grid rule, spec §11). */}
+                        <input value={c.customerContainerId} onChange={(e) => patchContainer(c.id, { customerContainerId: e.target.value })}
+                               aria-label={`Container ${i + 1} customer container id`} className="mt-1 w-full rounded border px-2 py-1" />
+                      </label>
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-slate-600">Net: {net ?? "—"}</span>
                         <button type="button" onClick={() => removeContainer(c.id)} className="text-xs text-red-600">Remove</button>
@@ -754,6 +824,65 @@ export default function NewOrderPage() {
                                  onLeadValidity={i === 0 ? onLeadValidity : undefined} />
                 ))}
                 <button type="button" onClick={addLine} className="text-sm text-blue-700 underline">Add part line</button>
+              </section>
+
+              <section className="mb-6 rounded border bg-white p-4">
+                <h2 className="mb-2 font-medium">Certification</h2>
+                {/* Spec §6.1/§11 (Task 17): the RESOLVED preview with an override. The untouched
+                    state re-derives from the picked parts on every render (the 2C-3 rule — see
+                    the derivation beside displayedPo above); touching a control records an
+                    explicit override that wins until "reset to resolved", and only an override
+                    ever travels in the create body — the server re-resolves and freezes its own
+                    answer otherwise. Until a lead part is picked there is nothing to resolve, so
+                    the controls are disabled saying exactly that (§5.16), never showing a
+                    made-up "No". */}
+                {!certPreviewReady && (
+                  <p className="mb-2 text-sm text-slate-500">Pick a lead part to resolve the certification requirement.</p>
+                )}
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="block">
+                    <span className="flex items-center gap-2">
+                      <input type="checkbox" id="entry-cert-required" checked={displayedCertRequired ?? false}
+                             disabled={!certPreviewReady}
+                             title={certPreviewReady ? undefined : "Pick a lead part first"}
+                             onChange={(e) => patch({ certRequiredOverride: e.target.checked })} />
+                      <label htmlFor="entry-cert-required">Certification required</label>
+                      {draft.certRequiredOverride !== null && (
+                        <button type="button" onClick={() => patch({ certRequiredOverride: null })}
+                                className="text-xs text-blue-700 underline">
+                          overridden — reset to resolved
+                        </button>
+                      )}
+                    </span>
+                    {certPreviewReady && draft.certRequiredOverride === null && (
+                      <span className="mt-1 block text-xs text-slate-500">
+                        Resolved from the part/customer settings: {resolvedCertRequired ? "Yes" : "No"}.
+                      </span>
+                    )}
+                  </div>
+                  <div className="block">
+                    <label className="block">
+                      Scope
+                      <select value={displayedCertScope ?? ""} disabled={!certPreviewReady}
+                              title={certPreviewReady ? undefined : "Pick a lead part first"}
+                              onChange={(e) => patch({ certScopeOverride: e.target.value === "" ? null : e.target.value as CertScopeValue })}
+                              className="mt-1 w-full rounded border px-2 py-1 disabled:bg-slate-100">
+                        {!certPreviewReady && <option value="">—</option>}
+                        {CERT_SCOPES.map((s) => <option key={s} value={s}>{CERT_SCOPE_LABELS[s]}</option>)}
+                      </select>
+                    </label>
+                    {certPreviewReady && (draft.certScopeOverride === null ? (
+                      <span className="mt-1 block text-xs text-slate-500">
+                        Resolved from the lead part: {CERT_SCOPE_LABELS[resolvedCertScope!]}.
+                      </span>
+                    ) : (
+                      <button type="button" onClick={() => patch({ certScopeOverride: null })}
+                              className="mt-1 text-xs text-blue-700 underline">
+                        overridden — reset to resolved
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </section>
 
               <section className="mb-6 rounded border bg-white p-4">

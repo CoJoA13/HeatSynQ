@@ -119,7 +119,29 @@ live row goes untouched.`).toEqual([]);
     // same no-revival rationale as orderNumber, one step earlier in the sequence. NULLs never
     // collide in a Postgres unique index, so historic rows and every caller that sends no nonce
     // are unaffected without needing the partial-index treatment at all.
-    const ALLOWED = new Set(["User.username", "Order.orderNumber", "Order.clientRequestId"]);
+    //
+    // Shipper's three (Phase 4 §4.2) are the same no-reuse contract one document further along:
+    //
+    //   Shipper.shipperNumber   — a voided shipment keeps its packing-list number forever;
+    //                             allocation-only, never reused or re-entered (§3.19). The number
+    //                             is already printed on paper in a customer's hands, so freeing it
+    //                             up for a later shipment to claim would put two different
+    //                             shipments behind one packing-list number.
+    //   Shipper.bolNumber       — allocated lazily at first BOL print and never reissued; a voided
+    //                             shipment keeps it (§3.19). Same paper-in-hand reasoning, and a
+    //                             BOL number additionally travels with a carrier.
+    //   Shipper.clientRequestId — idempotency key; handing it back to a retry would recreate the
+    //                             duplicate it exists to stop (P3 §4). Exactly Order.clientRequestId's
+    //                             rationale, for the shipment save.
+    //
+    // Cert deliberately adds nothing here: it has no unique column at all (§3.19) — a cert carries
+    // no number of its own, and its per-scope-instance uniqueness is service-enforced under
+    // claimOrder because a partial index cannot express it (NULLs never collide, so two
+    // (orderId, ORDER, NULL, NULL) rows would not conflict). Do not add one.
+    const ALLOWED = new Set([
+      "User.username", "Order.orderNumber", "Order.clientRequestId",
+      "Shipper.shipperNumber", "Shipper.bolNumber", "Shipper.clientRequestId",
+    ]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
     // way the field-level match below used to (see comment there) — a schema reformat that

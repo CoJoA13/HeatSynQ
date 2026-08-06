@@ -5,10 +5,12 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { getSetting } from "./settings";
 import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
 import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
+import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import type { PasteResult } from "./paste";
 import type { Blocker } from "./reference-blockers";
 
@@ -18,6 +20,17 @@ export type PartRow = {
   materialId: string | null; materialName: string | null;
   eachWeight: number; loadQty: number | null; loadWeight: number | null;
   requestDaysOverride: number | null;
+  /** Certification chain (spec §6.1): null = inherit the customer's default, which in turn falls
+   *  back to the plant setting. Never resolved here — resolveCertSettings (certs.ts) walks the
+   *  chain; this is the part's own OWN override, or the absence of one. */
+  certRequired: boolean | null; certScope: CertScopeValue | null;
+  /** What a null `certRequired`/`certScope` would inherit RIGHT NOW — the customer's default,
+   *  else the plant setting (Task 17). Display-only companions: the part page's three-state
+   *  control labels its "Inherit" option with them, and order entry's untouched cert preview
+   *  composes `certRequired ?? inheritedCertRequired` per line client-side (the 2C-3 derive-at-
+   *  render convention) without needing a settings seam of its own. The authoritative save-time
+   *  resolution stays `resolveCertSettings` (certs.ts) — these never feed a write. */
+  inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   serializationRequired: boolean;
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; active: boolean;
@@ -43,6 +56,11 @@ const FIELDS = {
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the lead part's own override.
   requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
+  // Certification chain (spec §6.1): `null` (or an omitted key on create) means "inherit" — the
+  // resolver treats `null` and "not sent" identically. An explicit `false`/`true` is the part's
+  // own override and stays distinct from that inherited `null` end to end.
+  certRequired: z.boolean().nullable().optional(),
+  certScope: z.enum(CERT_SCOPES).nullable().optional(),
   serializationRequired: z.boolean().optional(),
   setupCharge: decimalField(12, 2, { min: "nonnegative" }),
   unitPrice: decimalField(12, 4, { min: "nonnegative" }),
@@ -56,14 +74,24 @@ const UPDATE = z.object(FIELDS).partial().strict();   // no customerId — immut
 const SELECT = {
   id: true, customerId: true, partNumber: true, name: true, description: true,
   materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
+  certRequired: true, certScope: true,
   serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
   pricePer: true, active: true,
-  customer: { select: { code: true, name: true } },
+  customer: { select: { code: true, name: true, certRequiredDefault: true, certScopeDefault: true } },
   material: { select: { name: true } },
 } as const;
 
+/** The two plant-level cert settings, read once per list/get call (not per row) so `toRow` can
+ *  compose each row's `inheritedCert*` companions without an N+1 on the settings table. */
+async function plantCertDefaults(): Promise<{ required: boolean; scope: CertScopeValue }> {
+  return {
+    required: await getSetting("cert_required_default"),
+    scope: (await getSetting("cert_scope_default")) as CertScopeValue,
+  };
+}
+
 type Raw = Prisma.PartGetPayload<{ select: typeof SELECT }>;
-function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
+function toRow(r: Raw, hasProcessSteps: boolean, plant: { required: boolean; scope: CertScopeValue }): PartRow {
   const { customer, material, eachWeight, loadWeight, setupCharge, unitPrice, minimumCharge, ...rest } = r;
   return {
     ...rest, customerCode: customer.code, customerName: customer.name,
@@ -71,6 +99,9 @@ function toRow(r: Raw, hasProcessSteps: boolean): PartRow {
     eachWeight: eachWeight.toNumber(), loadWeight: num(loadWeight),
     setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
     pricePer: r.pricePer as PricePerValue,
+    certScope: r.certScope as CertScopeValue | null,
+    inheritedCertRequired: customer.certRequiredDefault ?? plant.required,
+    inheritedCertScope: (customer.certScopeDefault as CertScopeValue | null) ?? plant.scope,
     hasProcessSteps,
   };
 }
@@ -113,14 +144,15 @@ export async function listParts(opts?: { includeInactive?: boolean; search?: str
     orderBy: [{ customer: { code: "asc" } }, { partNumber: "asc" }],
   });
   const stepsByPart = await hasProcessStepsByPart(rows.map((r) => r.id));
-  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false));
+  const plant = await plantCertDefaults();
+  return rows.map((r) => toRow(r, stepsByPart.get(r.id) ?? false, plant));
 }
 
 export async function getPart(id: string): Promise<PartRow> {
   const row = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: SELECT });
   if (!row) throw new HttpError(404, "Part not found");
   const stepsByPart = await hasProcessStepsByPart([id]);
-  return toRow(row, stepsByPart.get(id) ?? false);
+  return toRow(row, stepsByPart.get(id) ?? false, await plantCertDefaults());
 }
 
 export async function createPart(input: Record<string, unknown>): Promise<{ id: string }> {
