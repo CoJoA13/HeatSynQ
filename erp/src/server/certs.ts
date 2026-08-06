@@ -553,6 +553,22 @@ export async function readCertPdfData(
     };
   });
 
+  // Requirement lines the order no longer carries (snapshot + release, rulings 23–24): the cert
+  // stays live with those readings frozen, so the archived paper must still NAME the parts they
+  // belong to. One row per released line off the requirement snapshots, quantities honest-blank
+  // (the live line — and any qty to print — is gone), in the line's own frozen position.
+  const releasedReqs = await db.certRequirement.findMany({
+    where: { certId, orderLineId: null },
+    orderBy: { linePosition: "asc" },
+    select: { linePosition: true, partNumber: true, partName: true },
+  });
+  const seenReleased = new Set<number>();
+  for (const r of releasedReqs) {
+    if (seenReleased.has(r.linePosition)) continue;
+    seenReleased.add(r.linePosition);
+    parts.push({ qty: null, pounds: null, partNumber: r.partNumber, partName: r.partName, partDescription: "" });
+  }
+
   const serialRows = await db.orderSerial.findMany({
     where: { orderId: detail.orderId },
     orderBy: { position: "asc" },

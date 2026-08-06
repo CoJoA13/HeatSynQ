@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createOrder, voidOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, voidOrder, removeLine, type OrderDetail } from "@/server/orders";
 import {
   createCert, printCert, readCertPdfData, certPrintSettings, voidCert, updateCert, type CertDetail,
 } from "@/server/certs";
@@ -329,6 +329,30 @@ describe("printCert", () => {
     await asSystem(() => voidCert(cert.id, "typed against the wrong order"));
     await expect(asSystem(() => printCert(cert.id, user.id))).rejects.toThrow(VOIDED_PRINT);
     expect((await getDocument(printed.documentId)).fileData.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a removed line's frozen identity on the parts table (round-5 finding)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const rider = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => removeLine(order.id, order.lines[1].id)); // unshipped rider — removable
+
+    // The cert stays live with the rider's frozen requirements — the archived paper must still
+    // NAME the part those readings belong to, not print orphaned values under a shrunken table.
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const row = data.parts.find((p) => p.partNumber === rider.partNumber);
+    expect(row).toBeTruthy();
+    expect(row!.partName).toBe(rider.name);
+    expect(row!.qty).toBeNull();    // honest blanks — the live line (and its qty) is gone
+    expect(row!.pounds).toBeNull();
   });
 
   it("404s a cert that does not exist", async () => {
