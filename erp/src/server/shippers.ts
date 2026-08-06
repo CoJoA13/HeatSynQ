@@ -468,17 +468,10 @@ async function saveNewShipper(
 
     // Credit hold (spec §5.4, owner ruling §3.7) — the first real gate in this system. Named and
     // linked (the §5.14 blocked-delete discoverability rule applied to a permission-shaped
-    // block), never merely "refused".
-    let creditHoldOverrideReason: string | undefined;
-    if (customer.creditHold) {
-      if (!opts.canOverrideCreditHold) {
-        throw new HttpError(400,
-          `${customer.code} · ${customer.name} is on credit hold — see /customers/${customer.id} to lift it`);
-      }
-      const reason = (data.creditHoldReason ?? "").trim();
-      if (!reason) throw new HttpError(400, "A reason is required to override a credit hold");
-      creditHoldOverrideReason = reason;
-    }
+    // block), never merely "refused". Through the SAME claiming gate the extension mutators use
+    // (round-6 finding): the earlier customer read above was unlocked, so a concurrently
+    // committed hold was invisible here too.
+    const creditHoldOverrideReason = await creditHoldGate(tx, data.customerId, opts, data.creditHoldReason);
 
     // Numbering (spec §3.19/§5.3), inside the same claim: the shipment's own packing-list number,
     // then every order's own never-reused shipment sequence.
@@ -800,6 +793,11 @@ async function creditHoldGate(
   tx: Prisma.TransactionClient, customerId: string,
   opts: { canOverrideCreditHold: boolean }, reason: string | undefined,
 ): Promise<string | undefined> {
+  // The order-locks.ts house rule (round-6 finding): `creditHold` lives on the Customer row, so
+  // the row is CLAIMED before the read — a hold committed concurrently touches no order/shipper
+  // row and was otherwise invisible to this gate. Always the LAST claim (Orders → Shipper →
+  // Customer; setCustomer-side writers lock only their own row, so no ABBA window).
+  await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
   const customer = await tx.customer.findFirst({
     where: { id: customerId }, select: { id: true, code: true, name: true, creditHold: true },
   });
@@ -945,13 +943,17 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
         "instead of removing its last order.");
     }
 
+    // Any shipment-owned paper naming this order: its own ticket (`orderId` = this order), a
+    // whole-set ticket, or the BOL (both `orderId: null` — the BOL lists every covered order
+    // number permanently, round-6 finding). CERT documents never carry `shipperId` (the DB
+    // CHECK) and get their own guard just below.
     const printed = await tx.storedDocument.findFirst({
-      where: { kind: "SHIPPER", shipperId: id, OR: [{ orderId: target.orderId }, { orderId: null }] },
+      where: { shipperId: id, OR: [{ orderId: target.orderId }, { orderId: null }] },
       select: { id: true },
     });
     if (printed) {
       throw new HttpError(400,
-        `A shipping ticket for this order has already printed (Packing List ${shipper.shipperNumber}) — ` +
+        `Shipment paper covering this order has already printed (Packing List ${shipper.shipperNumber}) — ` +
         "void the shipment instead of removing it.");
     }
 

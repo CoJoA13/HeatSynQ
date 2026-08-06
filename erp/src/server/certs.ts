@@ -23,6 +23,7 @@ import { storeDocument, assertPrintable } from "./documents";
 import { listAddresses } from "./customer-addresses";
 import { formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
+import { INT4_MAX } from "../lib/order-constants";
 
 // Either the top-level client or a `tx` — the `readDetail` precedent (orders.ts): callers pass a
 // `tx` when the resolution has to see this same transaction's own writes (createOrder, Task 5's
@@ -142,7 +143,7 @@ export type CertRequirementDetail = {
 const CREATE_CERT = z.object({
   orderId: z.string().min(1),
   scope: z.enum(CERT_SCOPES),
-  loadNumber: z.number().int().positive().nullable().optional(),
+  loadNumber: z.number().int().positive().max(INT4_MAX).nullable().optional(),
   shipperId: z.string().min(1).nullable().optional(),
 }).strict();
 

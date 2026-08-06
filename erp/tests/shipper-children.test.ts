@@ -267,6 +267,14 @@ describe("removeOrderFromShipper", () => {
       .rejects.toThrow(/certification.*printed|void the shipment/i);
   });
 
+  it("refuses to remove an order once the BOL has printed — the BOL names its order number permanently", async () => {
+    const { shipper, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, Buffer.from("%PDF-1.4 b")));
+    await expect(removeOrderFromShipper(shipper.id, second.id))
+      .rejects.toThrow(/already printed|void the shipment/i);
+  });
+
   it("treats a whole-set ticket print as covering every order on the shipment", async () => {
     const { shipper, second } = await twoOrderShipment();
     await prisma.$transaction((tx) =>
@@ -696,6 +704,44 @@ describe("credit hold gates shipment extension", () => {
     expect(after.orders[0].lines[0].qty).toBe(9);
     const [entry] = await readAudit("shipper", shipper.id);
     expect(entry.reason).toBe("owner approved");
+  });
+
+  // Round-6 finding, the order-locks.ts house rule applied to the hold: `creditHold` lives on
+  // the Customer row, which the gate read WITHOUT a claim — a hold committed concurrently (its
+  // own transaction touches no claimed row) was invisible, and the extension slipped through
+  // un-overridden. The gate now claims the Customer row (always LAST: Orders → Shipper →
+  // Customer), so this holder-transaction race is deterministic: the extension must BLOCK on the
+  // held customer lock and then refuse — under Serializable the post-commit read raises the
+  // honest 40001→409, and a Read Committed caller would see the fresh hold's 400. Pre-fix, the
+  // extension sails through and COMMITS while the holder still holds the customer row.
+  it("blocks the extension until a concurrent hold-set commits, then refuses (row-lock discipline)", async () => {
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    const { customerId } = await prisma.shipper.findUniqueOrThrow({
+      where: { id: shipper.id }, select: { customerId: true },
+    });
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Customer" WHERE "id" = ${customerId} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      await tx.customer.update({ where: { id: customerId }, data: { creditHold: true } });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const addCall = addOrderToShipper(shipper.id, orderB.id)
+      .then(() => "resolved" as const, (e: unknown) => e as Error);
+    await new Promise((r) => setTimeout(r, 300)); // ample time to reach the gate either way
+    mayRelease();
+    await holder;
+
+    const settled = await addCall;
+    expect(settled).not.toBe("resolved");
+    expect(await prisma.shipperOrder.count({ where: { shipperId: shipper.id, orderId: orderB.id } })).toBe(0);
   });
 
   it("stays un-gated for a customer not on hold", async () => {

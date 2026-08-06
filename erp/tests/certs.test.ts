@@ -209,6 +209,14 @@ describe("createCert", () => {
       .rejects.toThrow(/already has a certification/i);
   });
 
+  it("refuses an out-of-int4-range load number with a field 400, not a Prisma 500", async () => {
+    const { order } = await savedOrder();
+    // The zod bound (handle() maps ZodError to a field 400) — the raw Prisma int4 overflow this
+    // used to escape as names no bound and carried no HTTP mapping.
+    await expect(createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2147483648 }))
+      .rejects.toThrow(/2147483647/);
+  });
+
   it("refuses a LOAD-scope cert for a load the order does not currently have", async () => {
     const { order } = await savedOrder(); // no loadQty cap → exactly one load
     await expect(createCert({ orderId: order.id, scope: "LOAD", loadNumber: 2 }))
