@@ -244,6 +244,16 @@ describe("removeOrderFromShipper", () => {
     await expect(removeOrderFromShipper(s2.id, sec2.id)).rejects.toThrow(/already printed|void the shipment/i);
   });
 
+  it("refuses to remove the order carrying the shipment's only positive-qty line", async () => {
+    // Order B joins with NO lines (addOrderToShipper creates only the shell) — removing order A
+    // would leave a live shipment with no positive quantity, the §4.2 invariant creation and
+    // replaceShipperLines both enforce.
+    const { shipper, orderB } = await shipmentPlusSpareOrder();
+    await addOrderToShipper(shipper.id, orderB.id);
+    await expect(removeOrderFromShipper(shipper.id, shipper.orders[0].id))
+      .rejects.toThrow(/positive quantity/i);
+  });
+
   it("refuses to remove an order whose shipment-scope cert has printed", async () => {
     const { shipper, second } = await twoOrderShipment();
     const cert = await prisma.cert.create({

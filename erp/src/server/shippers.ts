@@ -886,6 +886,17 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
         "void the shipment instead of removing it.");
     }
 
+    // The other half of §4.2's invariant, the replaceShipperLines shape: the SURVIVING orders
+    // must still carry a positive-qty line — an order that joined with no lines yet must not be
+    // what "another order remains" hangs on.
+    const survivorPositive = await tx.shipperLine.findFirst({
+      where: { qty: { gt: 0 }, shipperOrder: { shipperId: id, id: { not: shipperOrderId } } },
+      select: { id: true },
+    });
+    if (!survivorPositive) {
+      throw new HttpError(400, "A shipment needs at least one line with a positive quantity");
+    }
+
     // The same guard for the OTHER paper that permanently carries this order's
     // `orderNumber-sequence` identity (certs.ts's orderLabel): a shipment-scope cert printed
     // before any ticket. Deliberately unfiltered on `deletedAt` — a voided cert's stored print
