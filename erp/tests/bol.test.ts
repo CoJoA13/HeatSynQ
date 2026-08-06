@@ -251,6 +251,31 @@ describe("printBol", () => {
     expect(text).toContain(String(orderB.orderNumber));
   });
 
+  it("defaults packageCount to the shipment's container-count sum when none was entered", async () => {
+    const customer = await makeCustomer();
+    const shipTo = await makeShipTo(customer.id);
+    const order = await orderFor(customer);
+    const containerType = await prisma.containerType.create({ data: { name: "Basket" } });
+    const bin = await prisma.orderContainer.create({
+      data: { orderId: order.id, position: 1, typeId: containerType.id, count: 3 },
+    });
+    const pallet = await prisma.orderContainer.create({
+      data: { orderId: order.id, position: 2, typeId: containerType.id, count: 4 },
+    });
+    const input = shipOrderInput(order) as ReturnType<typeof shipOrderInput> & {
+      containers: { orderContainerId: string; count: number }[];
+    };
+    input.containers = [{ orderContainerId: bin.id, count: 3 }, { orderContainerId: pallet.id, count: 4 }];
+    // No packageCount — the forms promise "Blank uses the current container count".
+    const { shipper } = await asSystem(() => createShipper({
+      customerId: customer.id, shipDate: "2026-07-06", shipToAddressId: shipTo.id, orders: [input],
+    }, { canOverrideCreditHold: false }));
+
+    const { bolNumber } = await asSystem(() => printBol(shipper.id));
+    const data = await readBolData(prisma, shipper.id, bolNumber, await bolSettings());
+    expect(data.packageCount).toBe(7);
+  });
+
   it("assembles the consignee from the ship-to address and the orders' POs and weight total", async () => {
     const { shipper, orderA, orderB } = await twoOrderShipment();
     const { bolNumber } = await asSystem(() => printBol(shipper.id));

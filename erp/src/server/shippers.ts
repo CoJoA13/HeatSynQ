@@ -1356,6 +1356,12 @@ export async function bolSettings(): Promise<BolSettings> {
   return { company: { name, address } };
 }
 
+/** Every container count across the shipment — the same sum the detail page displays for a
+ *  blank package-count field. */
+function containerSum(detail: ShipperDetail): number {
+  return detail.orders.reduce((sum, so) => sum + so.containers.reduce((s, c) => s + c.count, 0), 0);
+}
+
 /**
  * Assembles the BOL payload off the same claim-held `db` the print transaction passes (the
  * `readShippingTicketData` rule). `bolNumber` is the CALLER's — inside `printBol` it may have
@@ -1399,7 +1405,11 @@ export async function readBolData(
     // sample's own "TRV NO. 71955,71957,71959,71960,71961" list (§3.20).
     orderNumbers: detail.orders.map((o) => o.orderNumber),
     poNumbers: detail.orders.map((o) => o.poNumber),
-    packageCount: detail.packageCount,
+    // A stored null means "track the containers" (both shipment forms promise "Blank uses the
+    // current container count"), so the default path derives the sum at print time rather than
+    // printing an empty No. Packages cell. A container-less shipment stays blank — a printed "0"
+    // would assert a count nobody entered.
+    packageCount: detail.packageCount ?? (containerSum(detail) || null),
     freightDescription: detail.freightDescription,
     totalWeight: weightCents / 100,
     freightClass: detail.freightClass,
