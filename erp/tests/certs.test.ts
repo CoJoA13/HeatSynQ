@@ -518,9 +518,11 @@ describe("exportCerts", () => {
     await createCert({ orderId: order.id, scope: "LOAD", loadNumber: 4 });
 
     const sheet = await sheetOf(await exportCerts({}));
+    // Passed and Pending ride beside Readings/Fails — a row of 10 readings all still pending must
+    // not read as 10 passing (the worklist's own three-state rule, exported).
     expect(sheet.getRow(1).values).toEqual([undefined,
       "Order #", "Seq", "Customer code", "Customer name", "Scope", "Load #", "Shipper #",
-      "Printed", "Readings", "Fails", "Voided"]);
+      "Printed", "Readings", "Passed", "Fails", "Pending", "Voided"]);
     const cells = (n: number) => sheet.getRow(2).getCell(n).value;
     expect(cells(1)).toBe(order.orderNumber);
     expect(cells(5)).toBe("LOAD");
@@ -528,7 +530,9 @@ describe("exportCerts", () => {
     expect(cells(8)).toBe("no");
     expect(cells(9)).toBe(0);
     expect(cells(10)).toBe(0);
-    expect(cells(11)).toBe("no");
+    expect(cells(11)).toBe(0);
+    expect(cells(12)).toBe(0);
+    expect(cells(13)).toBe("no");
     expect(sheet.rowCount).toBe(2);
   });
 });

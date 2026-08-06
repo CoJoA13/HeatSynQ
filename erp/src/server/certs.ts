@@ -381,7 +381,11 @@ const CERT_COLUMNS = [
   { key: "shipperNumber", header: "Shipper #" },
   { key: "printed", header: "Printed" },
   { key: "readingCount", header: "Readings" },
+  // All three states, explicitly (CertRow's own rule): pending is a distinct state, and a row of
+  // N readings / 0 fails must not read as N passing while all N are still blank.
+  { key: "passedCount", header: "Passed" },
   { key: "failCount", header: "Fails" },
+  { key: "pendingCount", header: "Pending" },
   { key: "voided", header: "Voided" },
 ];
 
@@ -392,6 +396,7 @@ export async function exportCerts(filter: CertFilter): Promise<Buffer> {
   const xlsxRows = rows.map((r) => ({
     ...r,
     printed: r.printedAt ? "yes" : "no",
+    pendingCount: r.readingCount - r.passedCount - r.failCount,
     voided: r.deletedAt ? "yes" : "no",
   }));
   return toXlsx("Certifications", CERT_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
