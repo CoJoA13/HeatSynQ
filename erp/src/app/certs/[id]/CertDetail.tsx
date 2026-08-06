@@ -424,8 +424,12 @@ export function CertDetail({ id }: { id: string }) {
 
       {/* ---- Print + documents (brief Step 5; live via POST /api/certs/[id]/print) ---- */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded border bg-slate-50 p-3 text-sm">
+        {/* §5.16: while a print is in flight the button is disabled for a reason the gate cannot
+            name (printGate.title is undefined when allowed), so the in-progress state says why
+            itself (fix-wave 2026-08-06). */}
         <button type="button" onClick={() => void printCertAction()}
-                disabled={printGate.disabled || printing} title={printGate.title}
+                disabled={printGate.disabled || printing}
+                title={printing ? "A print is already in progress — wait for it to finish" : printGate.title}
                 className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
           {printing ? "Printing…" : "Print certification"}
         </button>

@@ -673,8 +673,12 @@ export function ShipmentDetail({ id }: { id: string }) {
                 className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
           {printing ? "Printing…" : "Print all tickets"}
         </button>
+        {/* §5.16: the checkbox can be disabled for TWO reasons — the missing certs.view names
+            itself, and on a voided shipment (certs.view held, so certsGate.title is undefined)
+            the title falls through to printGate's voided reason rather than saying nothing
+            (fix-wave 2026-08-06; the ShipmentOrderPanel checkbox carries the same pair). */}
         <label className={`flex items-center gap-1 ${certsGate.allowed ? "" : "text-slate-400"}`}
-               title={certsGate.title}>
+               title={certsGate.title ?? printGate.title}>
           <input type="checkbox" checked={withCerts && certsGate.allowed}
                  disabled={!certsGate.allowed || !printGate.allowed}
                  onChange={(e) => setWithCerts(e.target.checked)} />
