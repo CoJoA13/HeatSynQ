@@ -37,7 +37,8 @@ export type CertReadingRow = {
   passed: boolean | null; overridden: boolean; note: string;
 };
 export type CertRequirementRow = {
-  id: string; orderLineId: string | null; linePosition: number; partNumber: string; partName: string;
+  id: string; orderLineId: string | null; orderLineIdAtSeed: string;
+  linePosition: number; partNumber: string; partName: string;
   position: number; inspectionCodeName: string; scaleName: string | null;
   min: number | null; max: number | null; sampleQty: string; location: string;
   readings: CertReadingRow[];
@@ -342,14 +343,22 @@ export function CertDetail({ id }: { id: string }) {
   // consecutive grouping keeps both orders intact. Grouped on the FROZEN `linePosition` (round-4
   // finding): `orderLineId` goes null for every released line (snapshot + release), so two
   // removed riders would otherwise merge into one block under the first part's heading.
-  const groups: { linePosition: number; partNumber: string; partName: string; requirements: CertRequirementRow[] }[] = [];
+  const identityOf = (req: CertRequirementRow) => (req.orderLineIdAtSeed !== ""
+    ? req.orderLineIdAtSeed
+    : `${req.linePosition}\u0000${req.partNumber}\u0000${req.partName}`);
+  const groups: { identity: string; linePosition: number; partNumber: string; partName: string; requirements: CertRequirementRow[] }[] = [];
   for (const req of cert.requirements) {
     const last = groups[groups.length - 1];
-    if (last && last.linePosition === req.linePosition) last.requirements.push(req);
-    else groups.push({
-      linePosition: req.linePosition,
-      partNumber: req.partNumber, partName: req.partName, requirements: [req],
-    });
+    // The never-reused seed-line identity (#57 review; the PDF groups the same way): positions
+    // are freed and re-used by later riders, so no display-field composite can be the key.
+    if (last && last.identity === identityOf(req)) {
+      last.requirements.push(req);
+    } else {
+      groups.push({
+        identity: identityOf(req), linePosition: req.linePosition,
+        partNumber: req.partNumber, partName: req.partName, requirements: [req],
+      });
+    }
   }
 
   const subject = scopeSubject(cert);
@@ -450,7 +459,7 @@ export function CertDetail({ id }: { id: string }) {
         </p>
       )}
       {groups.map((group) => (
-        <section key={group.linePosition} className="mb-4 rounded border bg-white p-4">
+        <section key={group.identity} className="mb-4 rounded border bg-white p-4">
           <h2 className="mb-3 font-medium">
             Line {group.linePosition} — <span className="font-mono">{group.partNumber}</span>
             <span className="ml-2 font-normal text-slate-600">{group.partName}</span>

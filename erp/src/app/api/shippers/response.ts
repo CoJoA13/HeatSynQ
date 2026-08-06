@@ -11,8 +11,12 @@
 // hand-copied call sites that could drift apart, so the wire shape matches `createShipper`'s own
 // `{ shipper, warnings }` contract exactly.
 import { NextResponse } from "next/server";
-import { overshipWarnings, type ShipperDetail } from "@/server/shippers";
+import { prisma } from "@/server/db";
+import { shipmentWarnings, type ShipperDetail } from "@/server/shippers";
 
-export function shipperResponse(detail: ShipperDetail): NextResponse {
-  return NextResponse.json({ shipper: detail, warnings: overshipWarnings(detail) });
+export async function shipperResponse(detail: ShipperDetail): Promise<NextResponse> {
+  // The FULL §5.7 surface — missing-cert, serialization, over-ship — on every edit response
+  // (#54): the detail page swaps its whole warning banner for this array, so an edit that
+  // computed less than creation does silently un-warned the operator.
+  return NextResponse.json({ shipper: detail, warnings: await shipmentWarnings(prisma, detail) });
 }

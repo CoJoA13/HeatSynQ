@@ -39,7 +39,14 @@ export type CertParty = { name: string; street: string; city: string; state: str
  *  prints a blank cell, never an invented zero. */
 export type CertPartRow = { qty: number | null; partNumber: string; partName: string; partDescription: string; pounds: number | null };
 /** One §10.3 requirement block: the line naming the specification and scale, then bare values. */
-export type CertRequirementBlock = { specification: string; scale: string; readings: number[] };
+export type CertRequirementBlock = {
+  /** Frozen line identity (ruling 24) — consumed only when the cert spans more than one part
+   *  (ruling 27): a single-part cert renders heading-free, identical to the §3.21 sample.
+   *  `lineIdentity` is the never-reused grouping key (#57 review — the seed-line cuid, or the
+   *  composite fallback for rows released before the backfill). */
+  lineIdentity: string; linePosition: number; partNumber: string; partName: string;
+  specification: string; scale: string; readings: number[];
+};
 export type CertSerialBlock = { partNumber: string; serials: { serial: string; description: string }[] };
 /** §3.11: the PRINTING user's signature image above their typed name/title/company — or the name
  *  typed over the rule when no image is on file. `title` prints only when non-empty: the sample
@@ -209,6 +216,33 @@ function requirementBlock(r: CertRequirementBlock): Content {
   };
 }
 
+/**
+ * The requirement blocks, grouped by frozen line (ruling 27, issue #55): a cert spanning MORE
+ * than one part heads each line group with its frozen part identity — without it, two parts
+ * sharing an inspection code print indistinguishable grids of readings. A single-part cert emits
+ * the bare blocks exactly as before: the owner's §3.21 sample carries no headings, and this
+ * deviates from it only where the sample's shape could not answer which part a grid certifies.
+ */
+function requirementSection(d: CertPdfData): Content[] {
+  // Multi-part detection reads the PARTS TABLE, not the requirement rows (#57 review): a cert
+  // listing two parts where only one is inspected still needs its one grid attributed. The
+  // grouping key is the full frozen identity, never `linePosition` alone — `removeLine` frees
+  // positions and a later rider re-uses them (#57 review, P1), so two different parts can share
+  // a number; the composite keeps each part's readings under its own heading.
+  if (d.parts.length <= 1) return d.requirements.map(requirementBlock);
+
+  const out: Content[] = [];
+  let current: string | null = null;
+  for (const r of d.requirements) {
+    if (r.lineIdentity !== current) {
+      current = r.lineIdentity;
+      out.push({ text: `${r.partNumber} — ${r.partName}`, bold: true, fontSize: 9.5, margin: [0, 6, 0, 2] });
+    }
+    out.push(requirementBlock(r));
+  }
+  return out;
+}
+
 /** Each part line's serials with their description — the heat/lot field Phase 3 added for exactly
  *  this (§10.3). The sample order carried none, so the shape is the ticket's own serial block,
  *  per part. Renders nothing when no line has serials. */
@@ -281,7 +315,7 @@ export function buildCertDefinition(input: CertPdfData): TDocumentDefinitions {
       rule([0, 2, 0, 4]),
       partsTable(input),
       { text: input.statement, fontSize: 9.5, margin: [0, 2, 0, 8] },
-      ...input.requirements.map(requirementBlock),
+      ...requirementSection(input),
       ...serialBlocks(input),
       ...(input.freeform === "" ? [] : [{ text: input.freeform, fontSize: 9.5, margin: [0, 6, 0, 0] as [number, number, number, number] }]),
       signatureBlock(input),

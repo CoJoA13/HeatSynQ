@@ -38,6 +38,17 @@ function uploadReq(
   return new Request(url, { method: "PUT", headers, body: form });
 }
 
+// A real 1×1 PNG and a minimal JPEG SOI prefix — the sniff (#49) checks magic bytes, so garbage
+// declared as an image no longer reaches the database.
+const REAL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64");
+const JPEG_PREFIX = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43]);
+/** Bytes that BEGIN as the declared type padded to `size` — for the byte-cap tests. */
+function paddedPng(size: number): Buffer {
+  return Buffer.concat([REAL_PNG, Buffer.alloc(size - REAL_PNG.length)]);
+}
+
 async function makeUser(username = "signer"): Promise<string> {
   const { id } = await asSystem(() => createUser({ username, displayName: "Signer", password: "pw123456" }));
   return id;
@@ -50,7 +61,7 @@ describe("per-user signature image (Task 12)", () => {
     const userId = await makeUser();
     expect(await getSignature(userId)).toBeNull();
 
-    const bytes = Buffer.from("fake-png-bytes");
+    const bytes = REAL_PNG;
     await asSystem(() => setSignature(userId, bytes, "image/png"));
 
     const got = await getSignature(userId);
@@ -62,7 +73,7 @@ describe("per-user signature image (Task 12)", () => {
 
   it("clearSignature sets both columns null", async () => {
     const userId = await makeUser();
-    await asSystem(() => setSignature(userId, Buffer.from("x"), "image/jpeg"));
+    await asSystem(() => setSignature(userId, JPEG_PREFIX, "image/jpeg"));
     expect(await getSignature(userId)).not.toBeNull();
 
     await asSystem(() => clearSignature(userId));
@@ -88,10 +99,29 @@ describe("per-user signature image (Task 12)", () => {
 
   it("allows exactly the 2 MB cap", async () => {
     const userId = await makeUser();
-    const exact = Buffer.alloc(SIGNATURE_MAX_BYTES);
+    const exact = paddedPng(SIGNATURE_MAX_BYTES);
     await asSystem(() => setSignature(userId, exact, "image/png"));
     const got = await getSignature(userId);
     expect(got!.data.byteLength).toBe(SIGNATURE_MAX_BYTES);
+  });
+
+  it("rejects bytes that are not the declared PNG (#49)", async () => {
+    const userId = await makeUser();
+    await expect(asSystem(() => setSignature(userId, Buffer.from("not a png at all"), "image/png")))
+      .rejects.toThrow(/not a valid/i);
+    expect(await getSignature(userId)).toBeNull(); // nothing poisoned the print path
+  });
+
+  it("rejects PNG bytes declared as JPEG (#49)", async () => {
+    const userId = await makeUser();
+    await expect(asSystem(() => setSignature(userId, REAL_PNG, "image/jpeg")))
+      .rejects.toThrow(/not a valid/i);
+  });
+
+  it("accepts a real JPEG prefix declared as JPEG (#49)", async () => {
+    const userId = await makeUser();
+    await asSystem(() => setSignature(userId, JPEG_PREFIX, "image/jpeg"));
+    expect((await getSignature(userId))!.mimeType).toBe("image/jpeg");
   });
 
   it("rejects a MIME type outside the allowlist, naming the allowed types", async () => {
@@ -114,14 +144,15 @@ describe("per-user signature image (Task 12)", () => {
   it("accepts every allowlisted type", async () => {
     const userId = await makeUser();
     for (const mimeType of SIGNATURE_MIME) {
-      await asSystem(() => setSignature(userId, Buffer.from(`bytes-${mimeType}`), mimeType));
+      await asSystem(() => setSignature(userId,
+        mimeType === "image/png" ? REAL_PNG : JPEG_PREFIX, mimeType));
       const got = await getSignature(userId);
       expect(got!.mimeType).toBe(mimeType);
     }
   });
 
   it("404s setSignature/clearSignature/getSignature for a user that does not exist", async () => {
-    await expect(asSystem(() => setSignature("bogus-id", Buffer.from("x"), "image/png")))
+    await expect(asSystem(() => setSignature("bogus-id", REAL_PNG, "image/png")))
       .rejects.toThrow("User not found");
     await expect(asSystem(() => clearSignature("bogus-id"))).rejects.toThrow("User not found");
     await expect(getSignature("bogus-id")).rejects.toThrow("User not found");
@@ -134,7 +165,7 @@ describe("per-user signature image (Task 12)", () => {
   it("the audit entry for a signature upload/clear contains no image bytes", async () => {
     const userId = await makeUser("audited-signer");
     const marker = "TOTALLY-SECRET-SIGNATURE-BYTE-MARKER-XYZ";
-    await asSystem(() => setSignature(userId, Buffer.from(marker), "image/png"));
+    await asSystem(() => setSignature(userId, Buffer.concat([REAL_PNG, Buffer.from(marker)]), "image/png"));
     await asSystem(() => clearSignature(userId));
 
     const entries = await readAudit("user", userId);
@@ -162,7 +193,7 @@ describe("per-user signature image (Task 12)", () => {
     it("gates GET/PUT/DELETE on manage_users and round-trips a real upload end to end", async () => {
       const userId = await makeUser("route-target");
       const base = `http://t/api/admin/users/${userId}/signature`;
-      const bytes = new TextEncoder().encode("hello signature bytes");
+      const bytes = new Uint8Array(REAL_PNG); // must sniff as the declared PNG (#49)
 
       expect((await getSignatureRoute(getReq(base), withParams({ id: userId }))).status).toBe(401);
       expect((await putSignatureRoute(

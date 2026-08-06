@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
-import { createOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, addLine, type OrderDetail } from "@/server/orders";
 import { addPartInspection } from "@/server/part-inspections";
 import { createCert, getCert, type CertDetail } from "@/server/certs";
 import { replaceReadings } from "@/server/cert-results";
@@ -164,6 +164,47 @@ describe("seedRequirements (via createCert)", () => {
     expect(cert.requirements[0]).toMatchObject({
       sampleQty: "8", location: "flange OD", scaleName: "HRC",
     });
+  });
+});
+
+describe("addLine seeds rider requirements into live certs (ruling 28, #56)", () => {
+  beforeEach(truncateAll);
+
+  it("seeds the rider's frozen requirements and keeps typed readings intact", async () => {
+    const { cert, order } = await seededCert({ min: 28, max: 32 });
+    const typed = await asSystem(() => replaceReadings(cert.id, {
+      requirements: [{ id: cert.requirements[0].id, readings: [{ value: "30.0" }] }],
+    }, { afterPrint: false }));
+    expect(typed.requirements[0].readings).toHaveLength(1);
+
+    const customer = await prisma.customer.findUniqueOrThrow({ where: { id: order.customerId } });
+    const riderPart = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: `CRP-RIDER-${Date.now() % 100000}`, eachWeight: "1.0000" },
+    });
+    const code = await makeInspectionCode();
+    await asSystem(() => addPartInspection(riderPart.id, { inspectionCodeId: code.id, sort: 0, min: 40, max: 45 }));
+
+    const { order: after } = await asSystem(() => addLine(order.id, { partId: riderPart.id, qty: 5, weight: "10.00" }));
+    const riderLine = after.lines[1];
+
+    const detail = await getCert(cert.id);
+    expect(detail.requirements).toHaveLength(2);
+    const riderReq = detail.requirements.find((r) => r.orderLineId === riderLine.id);
+    expect(riderReq).toBeTruthy();
+    expect(riderReq!.partNumber).toBe(riderPart.partNumber); // frozen at add time
+    expect(riderReq!.min).toBe(40);
+    // The lead's typed reading survived untouched.
+    expect(detail.requirements.find((r) => r.orderLineId === after.lines[0].id)!.readings).toHaveLength(1);
+  });
+
+  it("does nothing for a rider whose part carries no inspections", async () => {
+    const { cert, order } = await seededCert({});
+    const customer = await prisma.customer.findUniqueOrThrow({ where: { id: order.customerId } });
+    const plainPart = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: `CRP-PLAIN-${Date.now() % 100000}`, eachWeight: "1.0000" },
+    });
+    await asSystem(() => addLine(order.id, { partId: plainPart.id, qty: 1, weight: "1.00" }));
+    expect((await getCert(cert.id)).requirements).toHaveLength(1);
   });
 });
 

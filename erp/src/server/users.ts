@@ -152,12 +152,28 @@ export const SIGNATURE_MIME = ["image/png", "image/jpeg"] as const;
  * rather than an unbounded list, so there is no separate list/get-by-id shape, just the three
  * verbs a single optional field needs.
  */
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** Magic-byte sniff (#49): the declared MIME alone let renamed/corrupt bytes persist and poison
+ *  that user's cert prints until an admin cleared the signature. A prefix check is deliberate —
+ *  pdfkit performs the full parse at render time, and since round 5 the bundled print survives a
+ *  bad image with a warning; this closes the ordinary case (a mis-named file) at upload time. */
+function matchesDeclaredImage(mimeType: string, data: Buffer): boolean {
+  if (mimeType === "image/png") {
+    return data.byteLength >= PNG_MAGIC.byteLength && data.subarray(0, PNG_MAGIC.byteLength).equals(PNG_MAGIC);
+  }
+  // image/jpeg: SOI marker then another marker byte.
+  return data.byteLength >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+}
+
 export async function setSignature(userId: string, data: Buffer, mimeType: string): Promise<void> {
   if (!(SIGNATURE_MIME as readonly string[]).includes(mimeType)) {
     throw new HttpError(400, `Signature images must be one of: ${SIGNATURE_MIME.join(", ")}`);
   }
   if (data.byteLength > SIGNATURE_MAX_BYTES) {
     throw new HttpError(400, `Signature images cannot exceed ${SIGNATURE_MAX_BYTES / (1024 * 1024)} MB`);
+  }
+  if (!matchesDeclaredImage(mimeType, data)) {
+    throw new HttpError(400, `The uploaded file is not a valid ${mimeType} image`);
   }
   // No upfront findFirst/existence check: `tx.user.update` on an id that doesn't exist raises
   // Prisma's P2025, which withDbErrors already translates to the same "User not found" 404 —

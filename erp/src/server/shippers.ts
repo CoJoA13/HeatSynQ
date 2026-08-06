@@ -552,6 +552,7 @@ async function saveNewShipper(
                   return {
                     orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
                     serial: serial.serial, description: serial.description,
+                    orderLineIdAtSave: serial.lineId,
                   };
                 }),
               },
@@ -578,17 +579,26 @@ async function saveNewShipper(
     await recomputeOrderStatus(tx, orderIds);
 
     // Warnings (spec §5.7) — collected AFTER the cert/status writes above, so a SHIPMENT-scope
-    // cert this very save just created is never reported as "missing".
-    const liveCertOrderIds = new Set(
-      (await tx.cert.findMany({
-        where: { orderId: { in: orderIds }, deletedAt: null }, select: { orderId: true },
-      })).map((c) => c.orderId),
+    // cert this very save just created is never reported as "missing". Matched to the order's
+    // CURRENT scope (#53): a stale live cert of another scope (deliberately kept live when the
+    // frozen scope was overridden) must not satisfy a requirement nothing has created yet. For
+    // SHIPMENT scope only THIS shipment's cert counts — the print resolution's own rule.
+    const liveCerts = await tx.cert.findMany({
+      where: { orderId: { in: orderIds }, deletedAt: null },
+      select: { orderId: true, scope: true, shipperId: true },
+    });
+    const scopeSatisfiedOrderIds = new Set(
+      liveCerts.filter((c) => {
+        const order = ordersById.get(c.orderId);
+        if (!order || c.scope !== order.certScope) return false;
+        return c.scope !== "SHIPMENT" || c.shipperId === shipper.id;
+      }).map((c) => c.orderId),
     );
 
     const warnings: string[] = [];
     for (const o of data.orders) {
       const order = ordersById.get(o.orderId)!;
-      if (order.certRequired && !liveCertOrderIds.has(o.orderId)) {
+      if (order.certRequired && !scopeSatisfiedOrderIds.has(o.orderId)) {
         warnings.push(
           `Order #${order.orderNumber} requires a certification and none exists yet — see /orders/${order.id}`);
       }
@@ -648,7 +658,10 @@ export async function createShipper(
         where: { clientRequestId: data.clientRequestId }, select: { id: true },
       });
       if (!existing) throw err;
-      return { shipper: await readShipperDetail(prisma, existing.id), warnings: [], deduped: true };
+      // The replay carries the SAME advisory surface the original response did (#50) — the
+      // lost-response retry is exactly when the operator never saw it.
+      const detail = await readShipperDetail(prisma, existing.id);
+      return { shipper: detail, warnings: await shipmentWarnings(prisma, detail), deduped: true };
     }
   });
 }
@@ -1036,6 +1049,74 @@ export function overshipWarnings(detail: ShipperDetail): string[] {
 }
 
 /**
+ * EVERY §5.7 warning derivable from a fresh `ShipperDetail` (#50/#54): the scope-matched
+ * missing-cert warning (#53's rule), unserialized serialization-required lines, and over-ship —
+ * the same advisory surface creation computes, recomputable at any later moment. Consumed by the
+ * idempotent-replay path (a lost-response retry must not silently drop the warnings the original
+ * response carried) and by `shipperResponse`, so every edit response carries the full surface
+ * rather than over-ship alone. Released rows (null order-side ids) contribute nothing — their
+ * order-side rows are gone, so there is nothing left to warn about.
+ */
+export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<string[]> {
+  const orderIds = detail.orders.map((o) => o.orderId);
+  const orders = await db.order.findMany({
+    where: { id: { in: orderIds } },
+    select: { id: true, certRequired: true, certScope: true },
+  });
+  const orderById = new Map(orders.map((o) => [o.id, o]));
+
+  const liveCerts = await db.cert.findMany({
+    where: { orderId: { in: orderIds }, deletedAt: null },
+    select: { orderId: true, scope: true, shipperId: true },
+  });
+  const certSatisfied = new Set(
+    liveCerts.filter((c) => {
+      const order = orderById.get(c.orderId);
+      if (!order || c.scope !== order.certScope) return false;
+      return c.scope !== "SHIPMENT" || c.shipperId === detail.id;
+    }).map((c) => c.orderId),
+  );
+
+  const lineIds = detail.orders.flatMap((so) => so.lines.map((l) => l.orderLineId))
+    .filter((id): id is string => id !== null);
+  const lines = lineIds.length === 0 ? [] : await db.orderLine.findMany({
+    where: { id: { in: lineIds } },
+    select: { id: true, position: true, part: { select: { partNumber: true, serializationRequired: true } } },
+  });
+  const lineById = new Map(lines.map((l) => [l.id, l]));
+  // A RELEASED selection (orderSerialId nulled by snapshot + release) still satisfies its line
+  // (#57 review): the shipment displays and prints that serial, so the line linkage rides the
+  // `orderLineIdAtSave` snapshot — live rows prefer the live join, same convention as reads.
+  const shipSerials = await db.shipperSerial.findMany({
+    where: { shipperOrder: { shipperId: detail.id } },
+    select: { orderLineIdAtSave: true, orderSerial: { select: { lineId: true } } },
+  });
+  const serialLineIds = new Set(
+    shipSerials.map((sr) => sr.orderSerial?.lineId ?? sr.orderLineIdAtSave).filter((id) => id !== ""),
+  );
+
+  const warnings: string[] = [];
+  for (const so of detail.orders) {
+    const order = orderById.get(so.orderId);
+    if (order?.certRequired && !certSatisfied.has(so.orderId)) {
+      warnings.push(
+        `Order #${so.orderNumber} requires a certification and none exists yet — see /orders/${so.orderId}`);
+    }
+    for (const l of so.lines) {
+      if (l.orderLineId === null) continue;
+      const line = lineById.get(l.orderLineId);
+      if (line?.part.serializationRequired && !serialLineIds.has(l.orderLineId)) {
+        warnings.push(
+          `Order #${so.orderNumber} line ${line.position} (${line.part.partNumber}): ` +
+          "requires serialization but no serial numbers were selected for this shipment");
+      }
+    }
+  }
+  warnings.push(...overshipWarnings(detail));
+  return warnings;
+}
+
+/**
  * Bulk PUT of one `ShipperOrder`'s lines — delete-then-recreate at positions 1..n (the
  * `replaceContainers`/`replaceSerials` precedent, orders.ts). Over-shipping still warns and never
  * blocks (spec §5.7): `overshipWarnings` above is what a caller uses to see it in the fresh detail
@@ -1225,6 +1306,7 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
             return {
               shipperOrderId, orderSerialId: s.orderSerialId, printOnShipper: s.printOnShipper,
               serial: serial.serial, description: serial.description,
+              orderLineIdAtSave: serial.lineId,
             };
           }),
         });

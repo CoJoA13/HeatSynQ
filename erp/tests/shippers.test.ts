@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
-import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
+import { createOrder, getOrder, updateOrder, type OrderDetail } from "@/server/orders";
 import { createShipper, getShipper, voidShipper, type ShipperCreateResult } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
@@ -176,11 +176,32 @@ describe("createShipper", () => {
     expect(await prisma.shipper.count()).toBe(1);
   });
 
+  it("recomputes creation warnings on an idempotent replay (#50)", async () => {
+    const { order } = await savedOrder({ certRequired: true }); // LOAD default — no cert exists
+    const input = { ...oneOrderInput(order), clientRequestId: "nonce-warn" };
+    const a = await createShipper(input, { canOverrideCreditHold: false });
+    expect(a.warnings.join(" ")).toMatch(/requires a certification/i);
+
+    // The lost-response retry the nonce exists for must not silently drop the advisory surface.
+    const b = await createShipper(input, { canOverrideCreditHold: false });
+    expect(b.deduped).toBe(true);
+    expect(b.warnings.join(" ")).toMatch(/requires a certification/i);
+  });
+
   it("warns without blocking on a missing cert and unserialised lines", async () => {
     const { order } = await savedOrder({ certRequired: true, serializationRequired: true });
     const { warnings } = await createShipper(oneOrderInput(order), { canOverrideCreditHold: false });
     expect(warnings.join(" ")).toMatch(/requires a certification/i);
     expect(warnings.join(" ")).toMatch(/no serial numbers/i);
+  });
+
+  it("warns when the REQUIRED scope's cert is missing though a stale other-scope cert is live (#53)", async () => {
+    // ORDER cert auto-created at order save; the scope override to LOAD leaves it live (that is
+    // deliberate) — but it must not satisfy a LOAD requirement nothing has created yet.
+    const { order } = await savedOrder({ certRequired: true, certScope: "ORDER" });
+    await asSystem(() => updateOrder(order.id, { certScope: "LOAD" }));
+    const { warnings } = await createShipper(oneOrderInput(order), { canOverrideCreditHold: false });
+    expect(warnings.join(" ")).toMatch(/requires a certification/i);
   });
 
   it("refuses a shipment with no positive quantity", async () => {

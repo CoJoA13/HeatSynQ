@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createOrder, voidOrder, removeLine, type OrderDetail } from "@/server/orders";
+import { createOrder, voidOrder, removeLine, addLine, type OrderDetail } from "@/server/orders";
 import {
   createCert, printCert, readCertPdfData, certPrintSettings, voidCert, updateCert, type CertDetail,
 } from "@/server/certs";
@@ -162,7 +162,11 @@ function sampleCert(overrides: Partial<CertPdfData> = {}): CertPdfData {
     material: "steel",
     parts: [{ qty: 192, partNumber: "500031-HT", partName: "Track Shoe, Vehicular", partDescription: "T-130", pounds: 4128 }],
     statement: "We certify that the listed Parts / Materials were heat treated in accordance with the QAM and customer requirements as follows:",
-    requirements: [{ specification: "Were heat treated as per P.O. NONE", scale: "HRC", readings: [28, 30, 29, 30, 29, 30.1, 29.7, 25.6, 27.1] }],
+    requirements: [{
+      lineIdentity: "line-1", linePosition: 1, partNumber: "500031-HT", partName: "Track Shoe, Vehicular",
+      specification: "Were heat treated as per P.O. NONE", scale: "HRC",
+      readings: [28, 30, 29, 30, 29, 30.1, 29.7, 25.6, 27.1],
+    }],
     serialBlocks: [{ partNumber: "500031-HT", serials: [{ serial: "SN-0001", description: "Heat A1" }] }],
     freeform: "FREEFORM BLOCK UNDER TEST",
     signer: { name: "Colton Jones", title: "", company: "American Heat Treating - Alabama, LLC", signatureDataUri: `data:image/png;base64,${TINY_PNG.toString("base64")}` },
@@ -399,6 +403,105 @@ describe("printCert", () => {
     // not "survivors first, released appended" (round-6 finding).
     expect(data.parts.map((p) => p.partNumber))
       .toEqual([lead.partNumber, riderA.partNumber, riderB.partNumber]);
+  });
+
+  it("renders a part heading per line group when the cert spans multiple parts (ruling 27)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const rider = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const text = allText(buildCertDefinition(data)).join("\n");
+    expect(text).toContain(`${lead.partNumber} — ${lead.name}`);
+    expect(text).toContain(`${rider.partNumber} — ${rider.name}`);
+  });
+
+  it("heads the readings when the CERT spans multiple parts even if only one is inspected (ruling 27)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    // The rider carries NO inspections — the cert still lists it in the parts table, so the one
+    // readings grid needs its heading to say which listed part it certifies.
+    const rider = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: `PLAIN-${Date.now() % 100000}`, eachWeight: "1.0000" },
+    });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const text = allText(buildCertDefinition(data)).join("\n");
+    expect(text).toContain(`${lead.partNumber} — ${lead.name}`);
+  });
+
+  it("re-using a freed line position never groups a new part under an old part's heading (K3)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const riderA = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: riderA.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => removeLine(order.id, order.lines[1].id));   // frees position 2
+    const riderB = await makeInspectedPart(customer.id);
+    await asSystem(() => addLine(order.id, { partId: riderB.id, qty: 3, weight: "64.50" })); // takes position 2
+
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const text = allText(buildCertDefinition(data)).join("\n");
+    // BOTH identities head their own groups — riderB's readings must not sit under riderA's
+    // heading merely because both froze linePosition 2.
+    expect(text).toContain(`${riderA.partNumber} — ${riderA.name}`);
+    expect(text).toContain(`${riderB.partNumber} — ${riderB.name}`);
+    // And the parts table keeps both rows distinct.
+    expect(data.parts.filter((p) => [riderA.partNumber, riderB.partNumber].includes(p.partNumber))).toHaveLength(2);
+  });
+
+  it("two incarnations of the SAME part at the same freed position stay distinct rows (K4)", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const rider = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [{ partId: lead.id, qty: 10, weight: "215.00" }, { partId: rider.id, qty: 5, weight: "107.50" }],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => removeLine(order.id, order.lines[1].id));                     // incarnation 1 released
+    const { order: withSecond } = await asSystem(() => addLine(order.id, { partId: rider.id, qty: 3, weight: "64.50" }));
+    await asSystem(() => removeLine(order.id, withSecond.lines[1].id));                // incarnation 2 released
+
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    // Same part, same freed position, but two distinct certified line incarnations — the paper
+    // lists BOTH released rows rather than folding them into one.
+    expect(data.parts.filter((p) => p.partNumber === rider.partNumber)).toHaveLength(2);
+  });
+
+  it("keeps a single-part cert heading-free — the §3.21 sample shape unchanged (ruling 27)", async () => {
+    const { cert, order, user } = await certWithReadings({ readings: [30.0] });
+    const settings = await certPrintSettings();
+    const signer = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    const line = await prisma.orderLine.findFirstOrThrow({
+      where: { orderId: order.id }, select: { part: { select: { partNumber: true } } },
+    });
+    const text = allText(buildCertDefinition(data)).join("\n");
+    expect(text).not.toContain(`${line.part.partNumber} — `);
   });
 
   it("404s a cert that does not exist", async () => {
