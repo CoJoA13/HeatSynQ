@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-04 — **machine-move handoff.** Phase 4 (Certifications & Shipping) is IN PROGRESS on branch `phase-4-certs-shipping`; start at §4a, then read `.superpowers/sdd/progress.md` (now tracked in git). Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-05 — **Phase 4 (Certifications & Shipping) is COMPLETE on branch `phase-4-certs-shipping`** (all 21 tasks, both lanes folded in, gates green). What remains before merge is the finish sequence in §4a: the whole-branch review, one fix wave, and the PR. Phase 3 merged as `12a17f9` (PR #39).
 
 ---
 
@@ -73,93 +73,114 @@ What Phase 1 delivers (all in `erp/`):
 
 Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
 
-### 4a. RESUME HERE — Phase 4 (Certifications & Shipping) is IN PROGRESS on a branch
+### 4a. Phase 4 (Certifications & Shipping) — COMPLETE on `phase-4-certs-shipping`, awaiting the whole-branch review and PR
 
-**Written 2026-08-04 as a machine-move handoff. Everything load-bearing is in git; nothing you
-need is left on the old laptop.**
+**Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
+mid-execution — are implemented and individually reviewed on the combined branch. Gates: **1357
+tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
+harness is now **15 flows** (the ten inherited plus this phase's five, spec §13), run three times
+consecutively to confirm stability. Both databases migrated (19 migrations; the three Phase 4 ones
+hand-written via the TTY-less `migrate diff` recipe). Owner demo walkthrough:
+`docs/2026-08-05-phase-4-demo.md`.
 
-**Branches — both must be pushed before the old machine is wiped.**
+**What remains is the finish sequence the owner ruled on 2026-08-05** (revising the 2026-08-04
+ruling's letter, keeping its intent — nothing reaches the PR unreviewed): the lanes are already
+folded in, so next is **ONE whole-branch review of everything on the strongest model** (merge
+resolutions and the E2E flows included), then one fix wave with scoped re-review, then the PR —
+attribution in the **PR body**, never a commit trailer. The **deferred-minors list lives in
+`.superpowers/sdd/progress.md`, per task**, and is the whole-branch reviewer's triage input; that
+ledger is the authoritative record of what every review found, refuted, or deferred.
 
-| Branch | Commits | Holds |
-|---|---|---|
-| `phase-4-certs-shipping` | 44 from `586a569` | Tasks 1–13 + the spec, plan and samples |
-| `phase-4-lane-b` | 2 from `893dc5e` | Task 15 only (certifications worklist) — **must be merged into the main phase branch** |
+**Documents (binding, committed):** spec
+`docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3's 18 owner rulings, the
+four samples-driven amendments §3.19–§3.22, and the dated amendments added during execution (see
+the rulings list below); plan `docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md`,
+amended in place as reviews found things the plan itself had caused. **The owner's four production
+samples are in `docs/samples/`** — the layout contract (§7 item 1 closed); they overturned four of
+the design's own decisions before code was written.
 
-`phase-4-lane-b` exists because Tasks 13/15 ran as two parallel lanes; git will not check out one
-branch in two worktrees, so the second lane needed its own. The two lanes touch disjoint
-directories (`src/app/shipping/` vs `src/app/certs/`), so the eventual merge should be uneventful.
+**What Phase 4 delivered:**
 
-**OWNER RULING 2026-08-04: do NOT merge `phase-4-lane-b` yet.** Nothing merges until the whole
-branch is **pushed and reviewed**. Keep both branches separate on the remote, finish the remaining
-tasks, run the whole-branch review, and fold the lane in as part of that finish sequence — not as a
-convenience step at the start of a session.
+- **Certs**: the required/scope resolution chain (part → customer → plant setting, frozen at order
+  save, overridable at entry), all three scopes (order / load / shipment), one cert per order per
+  scope-instance with a part block per line, requirements seeded and FROZEN from the part's
+  inspections, many readings each with computed pass/fail plus a flagged, audited override — all
+  screen-only: **the printed cert carries bare reading values, no min/max/scale/verdict (§3.21)**.
+  Certs have **no number of their own** (§3.19; identified by order + scope instance), and
+  `cert_number_next` sits in Settings deliberately unused.
+- **Shipping**: shipments as documents — one global packing-list number, a per-order never-reused
+  shipment sequence (the `-3` in `72036-3`), emergent multi-order shipments with one ship-to, the
+  per-order-line ship ledger (`ship-ledger.ts`: shipped-to-date, remainder prefill, over-ship
+  warns-and-never-blocks), status derivation from the human line-complete flags alone
+  (`PARTIAL_SHIPPED`/`SHIPPED` now reachable), §5.5 invariant-based order-edit tightening, the
+  **credit-hold gate with `override_credit_hold` + required reason-in-audit** (this phase's
+  headline; human-reachable since 14b), idempotent creation (`clientRequestId`), and
+  void-with-reason that locks every control, restores order statuses, keeps stored PDFs
+  reprintable forever, and never frees a number or a sequence.
+- **Documents**: `StoredDocument` widened to the one document table for traveler/ticket/BOL/cert
+  with a hand-written kind→owner DB `CHECK`; shipping ticket (one per order, never an MOS sheet —
+  §3.20), BOL (the multi-order document, its number allocated lazily at first print), and
+  certification layouts built to the samples, every print stored byte-for-byte; the printing
+  user's own signature (upload in Admin → Users) prints on the cert.
+- **Screens**: shipping list, `/shipping/new` (14b — one atomic nested POST), the shipment page
+  (per-order panels over the three shared grids), certifications worklist, cert detail
+  (three-state pass/fail — passed/failed/pending, never inferred by subtraction), order-hub
+  Certifications + Shipments sections, and the §3.22 fields built without a present-day user on
+  the owner's explicit instruction (`Cust Cont Id`, `Customer Job No`).
 
-**The execution record now travels.** `.superpowers/sdd/` was local-only scratch through Phase 3 —
-which is why this document had to restate that phase's lessons by hand. As of commit `4a3cb6b` its
-task briefs, implementer reports, reviewer verdicts and `progress.md` ledger are **tracked in git**.
-`progress.md` is the authoritative per-task record: what was found, what was refuted, what was
-deferred and why. Read it before resuming. Only the `review-*.diff` packages stay ignored, since
-they are `git diff` between commits already in history.
+**How it was built.** Tasks 1–12 sequential (the service chain), then the UI block ran as **two
+parallel lanes** (owner-approved): lane A (the phase branch) took T13/T14/14b, lane B (branch
+`phase-4-lane-b`, its own git worktree and its own `erp_test2` test database — isolation verified,
+not assumed) took T15/T16/T17; T18/T19 (the PDF layouts) ran on the main lane. The lanes were
+**folded in by true merge `89bd01c`** (zero textual conflicts; the three predicted semantic zones
+hand-verified on both sides) plus wiring commit `7b171d5` (cert printing live on the cert page),
+and T20 ran on the combined tree. A mid-phase **machine move** (2026-08-04) is why
+`.superpowers/sdd/` is now tracked in git — the execution record travels; only the `review-*.diff`
+packages stay ignored. The lane-b worktree and `erp_test2` are disposable local infrastructure;
+the rebuild recipe is in `progress.md` under "SECOND LANE BUILT".
 
-**Documents (both binding, both committed):**
-- Spec: `docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3 carries **18 owner
-  rulings** from the design session plus **four amendments (§3.19–§3.22)** forced by the owner's real
-  printed samples arriving mid-session, plus three more dated amendments added during execution
-  (§5.5's printed-ticket removal refusal, §5.6's cert-voids-when-its-order-leaves rule, §8's
-  permission-filtered document list).
-- Plan: `docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md` — 20 tasks, amended in place
-  seven times as reviews found things the plan itself had caused.
-- **The owner's four production samples are in `docs/samples/`** (shipping ticket, BOL,
-  certification, invoice) — **HANDOFF §7 item 1 is CLOSED.** They are the layout contract, and they
-  overturned four of the design's own decisions before code was written.
+**Review record.** Every task went implementer → independent review → fix rounds → re-review.
+**Five first-pass approvals by the ledger's own count** (T13, T16, T14b, T18, T17,
+chronologically — all in the phase's second half, the loop visibly converging); most earlier
+tasks took at least one fix round (T4 took two, T5 three — the ledger has each round's findings). **Task 14
+is the exception worth knowing about**: it landed unreviewed when the machine move was called, its
+implementer report was lost (a labeled controller-written stand-in exists in the ledger), and it
+was reviewed retroactively on the new machine — its out-of-spec route was adjudicated a faithful
+gap-fill (now a dated spec §9 amendment), its one Important (the add-grid prefill offered the full
+ordered quantity instead of `ordered − shipped`) was fixed and re-reviewed, and its lost browser
+verification was recaptured durably by T20's E2E flows. **Task 14b** exists because Task 14's
+implementer found the plan had NO shipment-creation flow anywhere — `createShipper` and
+`POST /api/shippers` existed with no screen calling either, leaving the credit-hold gate
+unreachable by a human — and correctly refused to invent the screen unilaterally (prime directive).
 
-**Task status at handoff:**
+**Owner rulings taken during execution** (each recorded as a dated spec amendment):
 
-| Tasks | State |
-|---|---|
-| 1–13, 15 | **Complete**, each through implementation → independent review → fix rounds → re-review Approved |
-| 14 (shipment page) | **Landed as `e54684c` and pushed, but deliberately NEVER REVIEWED** — the machine move was called first. **Review it before building on it**, with two specific things to adjudicate (below) |
-| **14b (shipment creation flow)** | **NEW — a hole in the plan, found by Task 14's implementer.** See below; it blocks three of Task 20's E2E flows |
-| 16 (cert detail), 17 (order hub sections) | Not started |
-| 18–19 (the three PDF layouts) | Not started — **not blocked**, the samples are in hand |
-| 20 (E2E, demo doc, docs) | Not started |
+- 2026-08-04 — document lists are permission-filtered per kind (the `globalSearch` shape); a BOL
+  belongs to exactly ONE shipment and does not exist until printed; §5.5: removing an order from a
+  shipment is refused once its ticket has printed; §5.6: removing an order from a shipment voids
+  that order's shipment-scoped cert at removal time; stay sequential through T12 and build the
+  second lane for the UI block.
+- 2026-08-05 — the four Task 19 rulings: a cert-requiring order with no live cert **prints its
+  tickets and warns** (`x-print-warnings`), never refuses; BMP dropped from accepted signature
+  image types; `certs.view` required for cert-bearing prints, ratified; LOAD scope prints all live
+  load certs including the printedAt freeze. Plus the revised finish-sequence ruling above (fold
+  in first, one review of the true final tree).
 
-**Gates at handoff:** 1279 tests on the phase branch and 1275 on the lane branch (from 1010 at
-branch start), `tsc`, `eslint` and `npm run build` all clean. Both databases migrated (18
-migrations).
+**Owner pings to carry into the PR / finish report** (accumulated in the ledger):
 
-**Two things to settle before writing new code — both came out of Task 14.**
+1. The shipping ticket prints no **"Page N of M"** — spec §10.1 lists it, but a pure-JSON template
+   cannot carry page-count functions and a render-level footer would number across the multi-ticket
+   PDF; Phase 7's template designer is the natural home.
+2. **Serial re-shipment has no warning**: no per-serial shipped fact exists, so re-selecting an
+   already-shipped serial on a later shipment gets no §5.7-class notice — worth an owner decision.
+3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
+   (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
+   follow-up).
+4. **No `User.title` column exists**, so the cert signature block prints name + company with no
+   title line (the sample shows one) — a small follow-up migration if the owner wants it.
 
-1. **Task 14 is unreviewed.** Review `e54684c` first, and adjudicate two things its own report
-   raises. It added **`GET /api/shippers/[id]/documents`, a route not in spec §9's table** — almost
-   certainly a genuine gap (Task 3 built `listDocumentsForShipper`, Task 11 built the *orders*
-   equivalent, and nothing ever exposed the shipment one, which this page needs for its stored-
-   documents list), but a route appearing outside the spec's route table should be adjudicated, not
-   waved through. It also reports browser-verifying the voided state by checking `disabled` **and**
-   `readOnly`, which is worth confirming, since "looks disabled" and "cannot be edited" are different
-   claims.
-
-2. **There is no shipment creation flow, and the plan never had one — this is a real hole, not a
-   deferral.** `createShipper` exists (Task 8), `POST /api/shippers` exists (Task 11), but **no
-   screen calls either.** Consequences: **the credit-hold gate — this phase's headline feature and
-   the blocking half of owner ruling §3.7 — is unreachable by a human**, since it fires only in
-   `createShipper` and the edit page never calls it; the `clientRequestId` idempotency nonce has no
-   producer; and **three of Task 20's five E2E flows assume the literal route `/shipping/new`** and
-   cannot run without it. Task 14's implementer found this and correctly refused to invent the
-   screen unilaterally, since its shape (one atomic nested POST) is architecturally unlike the edit
-   page's model. **Task 14b is now written into the plan** with the shape and reasoning; build it
-   before Task 20.
-
-**Local-only infrastructure that does NOT travel, and does not need to.** A second test database
-`erp_test2` and a git worktree at `../HeatSynQ-laneB` were created so two UI tasks could run in
-parallel. Both are disposable. On the new machine, do the standard §8 setup and ignore them; if you
-want the second lane again, the recipe is in `progress.md` under "SECOND LANE BUILT". The isolation
-property that makes it safe was verified rather than assumed: `tests/helpers/db.ts` truncates every
-table in `beforeEach`, so two lanes sharing one test database would silently destroy each other's
-fixtures.
-
-**Nine lessons from this phase's reviews, all with real defects behind them.** These are the ones
-worth carrying — the full per-task detail is in `progress.md`.
+**Eleven lessons from this phase's reviews, all with real defects behind them.** These are the
+ones worth carrying — the full per-task detail is in `progress.md`.
 
 1. **A concurrency test that passes is not evidence.** Task 5's race test passed with the row lock
    it guarded **deleted** — both sides ran Serializable, so Postgres's SSI caught the anomaly and
@@ -191,15 +212,30 @@ worth carrying — the full per-task detail is in `progress.md`.
 9. **Test fixtures quietly demonstrate forbidden states.** Task 9's own test built a one-order
    shipment and removed its only order — exercising a state the spec forbids, green, with no
    assertion against it.
+10. **A lane's copies of shared documents are stale by design until fold-in.** Task 17's brief was
+    extracted by line numbers from the LANE's plan copy (cut before 14b shifted the plan), yielding
+    garbage; the implementer correctly blocked instead of improvising. Anything extracted by
+    position from a document that exists on both branches must come from the branch where that
+    document is current.
+11. **The `/new`-route URL trap held for a second phase.** `page.waitForURL(/\/shipping\/[^/?]+$/)`
+    also matches the literal `/shipping/new` still on screen at the instant Save is clicked — the
+    Phase 3 `/orders/new` lesson, re-armed. The E2E flows wait for post-navigation-only content
+    (the "Packing List N" badge), never a URL pattern.
 
-**What to do next, in order:**
-1. **Push both branches** if that did not happen before the move (`git push -u origin
-   phase-4-certs-shipping` and the same for `phase-4-lane-b`). Keep them **separate**.
-2. **Settle Task 14** — check whether it landed and whether it was reviewed.
-3. **Resume at the first unfinished task** using the §9 prompt, keeping the per-task
-   implement → review → fix → re-review loop. It has found something in every single task.
-4. **Only after every task is done and the whole-branch review has run**, fold `phase-4-lane-b` in
-   and open the PR (owner ruling above).
+**What to do next, in order** (the finish sequence, owner ruling 2026-08-05):
+1. **Run the whole-branch review on the strongest model** over `586a569..HEAD` of
+   `phase-4-certs-shipping` — everything: the merge resolutions from fold-in `89bd01c`, the E2E
+   flows, and this task's docs. Feed it the per-task deferred-minors lists in
+   `.superpowers/sdd/progress.md` for triage.
+2. **One fix wave** from that review, with scoped re-review of the fixes.
+3. **Open the PR** — attribution and the Claude-Session link go in the PR body (a hook blocks
+   commit trailers). Carry the four owner pings above into the PR description so the owner rules
+   on them with the merge in front of them.
+4. **Present the demo** (`docs/2026-08-05-phase-4-demo.md`) before merge — the 2C-2/2C-3/Phase 3
+   precedent.
+5. After the squash-merge: verify the squashed tree is byte-identical to the branch tip, all four
+   gates plus `npm run test:e2e` green on `main`, both databases migrated — then kick off Phase 5
+   with the §9 prompt.
 
 ---
 
@@ -445,6 +481,28 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 - **Reference pick-lists are gated on `admin.view`, but data-entry screens need to read them.** Surfaced by the Phase 2B code review: the customer detail page's Terms select fetches `/api/admin/reference/terms`, so a user holding only `customers.*` sees an empty dropdown (it fails soft — the page works). Not reachable today because the owner is an admin, but **2C makes it four times worse**: parts need material, specification, inspection-code and inspection-scale pick-lists on the same screen. **Ruled 2026-07-31 — see §5.15; 2C builds the route.**
 - **Smaller, none blocking:** ~~child routes parse `[id]` and discard it~~ (**CLOSED by 2C-2** — address/contact services take the customer id and scope both reads and the atomic claim-live writes; parts children were born scoped); ~~renaming onto a *soft-deleted* unique value 400s "already exists" for an invisible row, in both `customers.ts` and `reference.ts` — the create path solves this, the update path never got it~~ (**closed by the Prisma 7 work** — the same partial-unique fix that removed revival-on-create means a soft-deleted row no longer occupies the constraint, for create or update; see §5.18); `assertNoCycle` does not filter `deletedAt`, so a parent can be set to a soft-deleted customer; no `@@index([parentId])`; the address default-normalizer is invoked manually per call site rather than enforced; `HistoryPanel` on the customer page covers only the customer, so address/contact audit rows are reachable only via the admin log; no pagination on the customer list; no search debounce; `onDelete: Cascade` on the child tables is a latent trap in a soft-delete-only system.
 
+**Carried out of Phase 4 (2026-08-05) — triaged, not fixed.** The complete per-task deferred-minors
+lists live in `.superpowers/sdd/progress.md` (each task's entry names its own); they are the
+whole-branch review's triage input. The ones worth naming here because they span tasks or surfaced
+after the per-task reviews closed:
+
+- **The notes-pair optimistic-PATCH clobber is a THREE-page sibling group** — a save of one field
+  in flight can reset text typed into its sibling field, byte-for-byte the same code on
+  `CertDetail`, `ShipmentDetail`, and the customers page (reproduced live during Task 16's
+  verification). Fix-wave candidate: fix all three together, never one.
+- **The shipment page's cert-print info line points at the wrong list**: after "Print all tickets"
+  with certs, it says the archived certifications are "in Documents below", but cert documents are
+  owned by `certId` and surface on the cert page and the order hubs — `listDocumentsForShipper`
+  filters on `shipperId` and never returns them (observed in Task 20's browser run; copy-only).
+- **The order hub's Documents list renders non-traveler kinds by raw enum name** ("SHIPPER",
+  "BOL", "CERT") — its `KIND_LABELS` map only ever learned `TRAVELER`; the shipping and cert
+  pages' own lists have friendly labels (cosmetic, observed in Task 20's flows).
+- **Serials prefill over-includes on repeat shipments** (no per-serial shipped fact exists —
+  owner ping #2 in §4a), and `OrderDetail.orderLineShippedToDate` rides unused in the edit page's
+  catalog payload (dead weight; trim or keep at the whole-branch review).
+- Assorted per-task §5.16 title gaps on state-disabled buttons and a missing 404/401 case on two
+  document/print routes — all enumerated in the ledger under their tasks.
+
 **Toolchain upgrades blocked on what `eslint-config-next` vendors (2026-08-02).** Next 16 landed, and neither of the two remaining Dependabot majors can follow it yet. Both are blocked by packages bundled *inside* `eslint-config-next@16.2.12`, not by anything in this codebase:
 
 - **ESLint 10 (#19).** Not the peer range — `eslint-config-next@16` peers `eslint: ">=9.0.0"`, which would allow it. The blocker is `eslint-plugin-react@7.37.5` vendored inside it, which peers up to `^9.7` and calls a rule-context API ESLint 10 removed: `TypeError: contextOrFilename.getFilename is not a function`.
@@ -533,47 +591,71 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — RESUME Phase 4 (Certifications & Shipping), already in progress on a branch. Paste the
-block below into a fresh session on the new machine.**
+**Next up — Phase 5 (Invoicing & A/R + the QuickBooks Online summary export), once Phase 4's
+finish sequence (§4a: whole-branch review → fix wave → PR → merge) has completed and
+`phase-4-certs-shipping` is merged to `main`. Paste the block below into a fresh session.**
 
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` §4a — **Phase 4 is mid-execution on branch
-> `phase-4-certs-shipping`, not unstarted.** Then read
-> `.superpowers/sdd/progress.md`, which is the per-task execution ledger (now tracked in git) and
-> the authoritative record of what each review found, refuted or deferred.
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
+> backlog. **Phase 4 (Certifications & Shipping) is complete** (§4a — 21 tasks, all four gates
+> green, the E2E harness 15/15 ×3; confirm it has actually merged to `main` before branching, and
+> if it hasn't, finishing §4a's sequence — whole-branch review, fix wave, PR, demo — is the very
+> first thing to do). Next is **Phase 5 (Invoicing & A/R + QBO)** per the roadmap
+> (`docs/superpowers/plans/2026-07-29-roadmap.md`): invoices from shipments, pricing resolution,
+> surcharges and extra-charge pricing, payments and A/R, finance charges, statements, the reversing
+> shipment, and the **summary GL export to QuickBooks Online** — testable outcome "invoice shipped
+> orders and reconcile a month". Brainstorm it (superpowers:brainstorming) against the roadmap and
+> the original spec's §3 non-goals and §15 decision log, then write the spec and plan and execute
+> with subagent-driven-development on a `phase-5-invoicing-ar` branch.
 >
-> Before anything else: confirm both `phase-4-certs-shipping` and `phase-4-lane-b` are on the
-> remote, and settle Task 14 — check `git log` and `.superpowers/sdd/task-14-report.md` for whether
-> the shipment page landed and whether it was ever reviewed. **Do NOT merge `phase-4-lane-b`**
-> (owner ruling 2026-08-04: nothing merges until the whole branch is pushed and reviewed — the lane
-> folds in at the finish, not at the start). Then run the §8 fresh-machine setup and confirm the
-> gates are green before writing anything new: `npm test` (expect ~1278), `npx tsc --noEmit`,
-> `npx eslint src tests`, `npm run build`. Note Task 15's own fix round may still have been in
-> flight on the lane branch — check its report before assuming that task is closed.
+> **What Phase 5 inherits from Phase 4** (design spec §16,
+> `docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md`) — read this before
+> designing anything, since every one of these is a real hook Phase 4 built on purpose for this
+> phase to use:
 >
-> The binding documents are the spec
-> (`docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3's 18 owner rulings,
-> §3.19–§3.22's samples-driven amendments, and three further dated amendments added during
-> execution) and the plan
-> (`docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md` — 20 tasks, amended seven times in
-> place as reviews found things the plan itself caused). **The owner's four production samples are
-> in `docs/samples/` and are the layout contract for Tasks 18–19 — nothing is blocked on paper any
-> more.**
+> - **`Order.status` reaches `PARTIAL_SHIPPED` and `SHIPPED`**, derived from ship-line-complete.
+>   `INVOICED` and `REOPENED` are still unreachable and are Phase 5's to make reachable —
+>   `REOPENED` specifically by the **reversing shipment** deferred in §3.8, which is the
+>   negative-quantity counterpart to `voidShipper` and should reuse its sorted-claim and
+>   status-recompute machinery.
+> - **`ship-ledger.ts` is the shipped-quantity source of truth** — invoice-from-shipments reads
+>   it rather than re-deriving totals. `ShipperOrder` is the natural grouping unit for spec §7.6's
+>   per-shipper / per-order / per-PO invoice grouping.
+> - **`allocateNumber` is proven on three counters** (order, shipper, BOL) with issue #34's guard;
+>   `invoice_number_next` is the fourth and needs no new pattern. Note `cert_number_next` is
+>   deliberately unused (§3.19) — do not "fix" it by wiring it up.
+> - **`StoredDocument` is the one document table** with a kind-to-owner `CHECK`; invoices, credits
+>   and statements widen `DocumentKind` and add their own owner column the same way — the
+>   permanence, redaction and byte-exact reprint guarantees already exist once, in `documents.ts`.
+>   (The `CHECK` is hand-written SQL — CLAUDE.md "Constraints that will bite you".)
+> - **`Shipper.billFreight`/`freightAmount`/`freightTerms`** are captured and unpriced; Phase 5
+>   bills them. `OrderCharge.amount = null` still means "needs price" (P3 §3.6).
+> - **Credit hold's override action and its reason-in-audit shape** are the template for Phase 5's
+>   invoice unlock and A/R period close.
+> - **The invoice sample is already in `docs/samples/`** and answers several Phase 5 questions
+>   early: the invoice number reads `7 − 72026` against `Our Order #: 72026`; it prints `Material`
+>   and `Process: Austemper` (the same process-name slot the traveler renders blank, P3 §3.9d — it
+>   recurs here, and Phase 7's designer owns it); it shows a per-line pricing block with `Price per
+>   Each` and `Minimum Charge` side by side; and it carries a named surcharge line (`EnergySur`).
+> - **Email is owed** (§3.2) with issue #4's visible-skip ruling attached; whichever phase builds
+>   it inherits the recipient flags already on `CustomerContact`.
+> - Cert charges, "bill for cert" and per-customer cert suppression are Visual Shop behaviours
+>   Phase 4 deliberately does not model; Phase 5 decides whether the shop wants any of them.
 >
-> Resume with `superpowers:subagent-driven-development` at the first unfinished task, keeping the
-> loop that has found something in **every single task so far**: fresh subagent per task →
-> independent review → fix rounds → re-review → only then mark it done. Dispatch reviews with the
-> repo's own `task-reviewer` agent. §4a lists nine lessons from this phase's reviews; the two that
-> will bite a new session fastest are that **a concurrency test which passes is not evidence**
-> (verify it by deleting the guard and watching it go red) and that **when a fix lands on one member
-> of a sibling group, enumerate the whole group in the report** so the sweep is checkable.
+> Owner homework that now gates this phase (HANDOFF §7): the QuickBooks Online finance-charge
+> treatment (settle with the bookkeeper) and the GL account list for operations, surcharges and
+> payment types — chase both before the QBO export is designed. Also carry §4a's four owner pings
+> (Page-N-of-M, serial re-shipment warning, tear-off threshold, `User.title`) if the owner has not
+> yet ruled on them at the PR.
 >
-> Remaining: 16 (cert detail page), 17 (order hub sections + cert fields), 18–19 (shipping ticket,
-> BOL and certification layouts, built to the samples), 20 (five E2E flows, demo walkthrough,
-> HANDOFF and CLAUDE.md updates). Then the whole-branch review on the strongest model, one fix wave,
-> and the PR. Attribution goes in the **PR body**, never in a commit — a hook blocks trailers.
-> Remember the prime directive: do not assume — ask the owner.
-
----
+> Keep the process that has now held for four phases: fresh subagent per task → independent review
+> (dispatch the repo's own `task-reviewer` agent) → fix rounds → re-review → whole-branch review on
+> the strongest model → one fix wave → PR, with attribution in the **PR body**, never a commit
+> trailer (a hook blocks them). §4a lists eleven lessons from Phase 4's reviews; the three that
+> will bite a new session fastest: **a concurrency test that passes is not evidence** (verify by
+> deleting the guard and watching it go red — and pin the competing caller to Read Committed);
+> **multi-order writes claim rows only through `claimOrdersInOrder`** (one sorted statement, never
+> a loop); and **when a fix lands on one member of a sibling group, enumerate the whole group in
+> the report**. Remember the prime directive: do not assume — ask the owner.
 
 **Historical — the prompt that started Phase 4. Phase 3 was merged as `12a17f9`, PR #39.**
 
