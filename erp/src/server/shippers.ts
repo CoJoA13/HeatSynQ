@@ -799,6 +799,15 @@ export async function addOrderToShipper(id: string, orderId: string): Promise<Sh
       throw err;
     }
 
+    // The saveNewShipper rule (spec §6.2), symmetric with `removeOrderFromShipper`'s void: an
+    // order whose frozen scope is SHIPMENT gets its shipment-scope cert the moment it joins the
+    // shipment — the HTTP cert routes deliberately refuse a client-supplied `shipperId`, so
+    // nothing else could create it later. The order is already claimed (`extraOrderIds` above)
+    // and the shipper row is claim-held live, so `createCert` can never see a voided shipperId.
+    if (order.certRequired && order.certScope === "SHIPMENT") {
+      await createCert({ orderId, scope: "SHIPMENT", shipperId: id }, tx);
+    }
+
     await recomputeOrderStatus(tx, allOrderIds);
     return readShipperDetail(tx, id);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));

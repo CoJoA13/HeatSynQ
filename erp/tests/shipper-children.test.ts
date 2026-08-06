@@ -175,6 +175,23 @@ describe("addOrderToShipper", () => {
     expect(after.orders[1].position).toBe(2); // second ticket on this shipment
   });
 
+  it("creates the shipment-scope cert for a cert-requiring order, like the initial save", async () => {
+    const { shipper, customer } = await oneOrderShipment();
+    const part = await makePart(customer.id);
+    await prisma.part.update({ where: { id: part.id }, data: { certRequired: true, certScope: "SHIPMENT" } });
+    await giveSteps(part.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: part.id, qty: 5, weight: "5.00" }],
+    }));
+
+    await addOrderToShipper(shipper.id, order.id);
+
+    const cert = await prisma.cert.findFirst({
+      where: { orderId: order.id, shipperId: shipper.id, deletedAt: null },
+    });
+    expect(cert).not.toBeNull();
+  });
+
   it("refuses an order belonging to a different customer", async () => {
     const { shipper, foreignOrder } = await shipmentPlusForeignOrder();
     await expect(addOrderToShipper(shipper.id, foreignOrder.id)).rejects.toThrow(/same customer/i);
