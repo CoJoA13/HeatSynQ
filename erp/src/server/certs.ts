@@ -537,7 +537,35 @@ export async function readCertPdfData(
     ? await db.load.findFirst({ where: { orderId: detail.orderId, loadNumber: detail.loadNumber } })
     : null;
 
-  const parts: CertPartRow[] = lines.map((l) => {
+  // FROZEN identity for every requirement-carrying line (ruling 24, refined round 6): the
+  // requirement headings print the seed-time snapshot, so the parts table and serial blocks on
+  // the SAME permanent sheet must agree with them — a post-seed part rename or line removal must
+  // never make one document name the same inspected line two ways. Live lines key by
+  // `orderLineId`; released lines key by their frozen `linePosition`. Uninspected lines have no
+  // snapshot anywhere and keep their live identity — nothing frozen exists to contradict it.
+  // (`partDescription` stays live/blank: the snapshot deliberately carries identity, not prose.)
+  const reqRows = await db.certRequirement.findMany({
+    where: { certId },
+    orderBy: { linePosition: "asc" },
+    select: { orderLineId: true, linePosition: true, partNumber: true, partName: true },
+  });
+  type FrozenIdentity = { linePosition: number; partNumber: string; partName: string };
+  const frozenByLineId = new Map<string, FrozenIdentity>();
+  const releasedByPosition = new Map<number, FrozenIdentity>();
+  for (const r of reqRows) {
+    if (r.orderLineId !== null) {
+      if (!frozenByLineId.has(r.orderLineId)) frozenByLineId.set(r.orderLineId, r);
+    } else if (!releasedByPosition.has(r.linePosition)) {
+      releasedByPosition.set(r.linePosition, r);
+    }
+  }
+
+  // Rows carry their FROZEN position as the sort key where one exists (removeLine renumbers the
+  // surviving lines, so live `position` drifts) — the parts table then prints in the seeded
+  // order the requirement blocks already print in, released rows in place, never appended
+  // (round-6 finding). The sort is stable, so a released row landing on a renumbered live row's
+  // key keeps live-first order deterministically.
+  const partRows = lines.map((l) => {
     let qty: number | null = l.qty;
     let pounds: number | null = l.weight.toNumber();
     if (detail.scope === "SHIPMENT") {
@@ -548,27 +576,26 @@ export async function readCertPdfData(
       qty = load?.qty ?? null;
       pounds = load === null || load.weight === null ? null : load.weight.toNumber();
     }
+    const frozen = frozenByLineId.get(l.id);
     return {
-      qty, pounds,
-      partNumber: l.part.partNumber, partName: l.part.name, partDescription: l.part.description,
+      key: frozen?.linePosition ?? l.position,
+      row: {
+        qty, pounds,
+        partNumber: frozen?.partNumber ?? l.part.partNumber,
+        partName: frozen?.partName ?? l.part.name,
+        partDescription: l.part.description,
+      },
     };
   });
-
-  // Requirement lines the order no longer carries (snapshot + release, rulings 23–24): the cert
-  // stays live with those readings frozen, so the archived paper must still NAME the parts they
-  // belong to. One row per released line off the requirement snapshots, quantities honest-blank
-  // (the live line — and any qty to print — is gone), in the line's own frozen position.
-  const releasedReqs = await db.certRequirement.findMany({
-    where: { certId, orderLineId: null },
-    orderBy: { linePosition: "asc" },
-    select: { linePosition: true, partNumber: true, partName: true },
-  });
-  const seenReleased = new Set<number>();
-  for (const r of releasedReqs) {
-    if (seenReleased.has(r.linePosition)) continue;
-    seenReleased.add(r.linePosition);
-    parts.push({ qty: null, pounds: null, partNumber: r.partNumber, partName: r.partName, partDescription: "" });
+  for (const [linePosition, r] of releasedByPosition) {
+    // Quantities honest-blank: the live line — and any qty to print — is gone (round-5 rule).
+    partRows.push({
+      key: linePosition,
+      row: { qty: null, pounds: null, partNumber: r.partNumber, partName: r.partName, partDescription: "" },
+    });
   }
+  partRows.sort((a, b) => a.key - b.key);
+  const parts: CertPartRow[] = partRows.map((p) => p.row);
 
   const serialRows = await db.orderSerial.findMany({
     where: { orderId: detail.orderId },
@@ -576,7 +603,7 @@ export async function readCertPdfData(
     select: { lineId: true, serial: true, description: true },
   });
   const serialBlocks: CertSerialBlock[] = lines.map((l) => ({
-    partNumber: l.part.partNumber,
+    partNumber: frozenByLineId.get(l.id)?.partNumber ?? l.part.partNumber,
     serials: serialRows.filter((s) => s.lineId === l.id).map((s) => ({ serial: s.serial, description: s.description })),
   }));
 

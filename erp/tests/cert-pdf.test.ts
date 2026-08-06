@@ -355,6 +355,52 @@ describe("printCert", () => {
     expect(row!.pounds).toBeNull();
   });
 
+  it("prints frozen part identity on the parts table and serial blocks after a post-seed rename", async () => {
+    const { cert, order, user } = await certWithReadings({});
+    const line = await prisma.orderLine.findFirstOrThrow({ where: { orderId: order.id } });
+    await prisma.orderSerial.create({
+      data: { orderId: order.id, lineId: line.id, position: 1, serial: "SN-FRZ" },
+    });
+    await prisma.part.update({
+      where: { id: line.partId }, data: { partNumber: "RENAMED-77", name: "Renamed Part" },
+    });
+
+    const settings = await certPrintSettings();
+    const signer = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    // The requirement headings already print frozen identity — the parts table and serial block
+    // must agree with them on the same permanent sheet (round-6 finding).
+    expect(data.parts[0].partNumber).not.toBe("RENAMED-77");
+    expect(data.serialBlocks.find((b) => b.serials.some((sr) => sr.serial === "SN-FRZ"))!.partNumber)
+      .not.toBe("RENAMED-77");
+  });
+
+  it("keeps released parts at their frozen positions among surviving lines", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const lead = await makeInspectedPart(customer.id);
+    const riderA = await makeInspectedPart(customer.id);
+    const riderB = await makeInspectedPart(customer.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PT24115",
+      lines: [
+        { partId: lead.id, qty: 10, weight: "215.00" },
+        { partId: riderA.id, qty: 5, weight: "107.50" },
+        { partId: riderB.id, qty: 2, weight: "43.00" },
+      ],
+    }));
+    const cert = await asSystem(() => createCert({ orderId: order.id, scope: "ORDER" }));
+    await asSystem(() => removeLine(order.id, order.lines[1].id)); // the MIDDLE rider
+
+    const settings = await certPrintSettings();
+    const signer = await makeSigner("png");
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-06");
+    // Seeded order preserved: lead, released riderA, riderB — matching the requirement blocks,
+    // not "survivors first, released appended" (round-6 finding).
+    expect(data.parts.map((p) => p.partNumber))
+      .toEqual([lead.partNumber, riderA.partNumber, riderB.partNumber]);
+  });
+
   it("404s a cert that does not exist", async () => {
     const user = await makeSigner("png");
     await expect(asSystem(() => printCert("nope", user.id))).rejects.toThrow(/not found/i);
