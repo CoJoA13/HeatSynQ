@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -38,6 +39,7 @@ function buildQuery(filters: Filters): string {
 }
 
 export function ShippingList() {
+  const router = useRouter();
   const { permissions: perms, error: permsError } = usePermissions();
   const [rows, setRows] = useState<ShipperRow[]>([]);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -45,6 +47,7 @@ export function ShippingList() {
   const [error, setError] = useState<string | null>(null);
 
   const customersGate = gate(perms, "customers.view");
+  const createGate = gate(perms, "shipping.create");
 
   // Customer filter picker: fetched only once the caller is known to hold customers.view, never
   // left silently empty for someone who lacks it (§5.16) — the orders board (src/app/page.tsx)
@@ -82,7 +85,15 @@ export function ShippingList() {
 
   return (
     <div className="p-6">
-      <h1 className="mb-4 text-2xl font-semibold">Shipping</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Shipping</h1>
+        {/* The entry point to /shipping/new (Task 14b) — §5.16: disabled with the missing
+            permission named, never hidden (the orders board's New Order precedent). */}
+        <button onClick={() => router.push("/shipping/new")} disabled={createGate.disabled} title={createGate.title}
+                className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+          New Shipment
+        </button>
+      </div>
 
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
