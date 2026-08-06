@@ -116,3 +116,69 @@ describe("resolveCertSettings", () => {
     expect((await resolveCertSettings(prisma, c.id, [p.id])).certRequired).toBe(false);
   });
 });
+
+// Spec §6.1: the resolution is "overridable at entry and after". The AFTER half is updateOrder's
+// certRequired/certScope patch (order-routes tests); this block is the AT-ENTRY half — createOrder
+// accepting an explicit override that beats what the chain would have resolved, with the frozen
+// order columns AND the §6.2 order-scope cert creation both following the EFFECTIVE values, not
+// the chain's own answer.
+describe("createOrder cert override (spec §6.1 'overridable at entry')", () => {
+  beforeEach(truncateAll);
+
+  async function orderableFixture(opts: {
+    partCertRequired?: boolean | null; partCertScope?: "ORDER" | "LOAD" | "SHIPMENT" | null;
+  } = {}): Promise<{ customer: Customer; part: Part }> {
+    const customer = await makeCustomer();
+    const part = await makePart(customer.id, {
+      certRequired: opts.partCertRequired, certScope: opts.partCertScope,
+    });
+    await giveSteps(part.id);
+    return { customer, part };
+  }
+
+  it("certRequired: false beats a chain that resolves true, and suppresses the order-scope cert", async () => {
+    const { customer, part } = await orderableFixture({ partCertRequired: true, partCertScope: "ORDER" });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, certRequired: false,
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    expect(order.certRequired).toBe(false);
+    expect(order.certScope).toBe("ORDER");
+    expect(await prisma.cert.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("certRequired: true beats a chain that resolves false, and creates the order-scope cert", async () => {
+    await setSetting("cert_required_default", false);
+    await setSetting("cert_scope_default", "ORDER");
+    const { customer, part } = await orderableFixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, certRequired: true,
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    expect(order.certRequired).toBe(true);
+    const certs = await prisma.cert.findMany({ where: { orderId: order.id } });
+    expect(certs).toHaveLength(1);
+    expect(certs[0].scope).toBe("ORDER");
+  });
+
+  it("certScope: LOAD beats the chain's ORDER, so no cert is created eagerly (§6.2 lazy load scope)", async () => {
+    const { customer, part } = await orderableFixture({ partCertRequired: true, partCertScope: "ORDER" });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, certScope: "LOAD",
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    expect(order.certRequired).toBe(true);
+    expect(order.certScope).toBe("LOAD");
+    expect(await prisma.cert.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("an omitted override changes nothing: the chain's own resolution still freezes on", async () => {
+    const { customer, part } = await orderableFixture({ partCertRequired: true, partCertScope: "SHIPMENT" });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: part.id, qty: 10, weight: "25.00" }],
+    }));
+    expect(order.certRequired).toBe(true);
+    expect(order.certScope).toBe("SHIPMENT");
+  });
+});
