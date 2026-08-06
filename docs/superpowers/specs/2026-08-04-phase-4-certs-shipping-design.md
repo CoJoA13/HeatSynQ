@@ -798,6 +798,13 @@ same footing — the cert detail page's stored-documents list mirrors the shippe
 the same CHECK (`certId` non-null only for kind CERT) plus `AREA_FOR_KIND`'s `CERT → certs` mapping
 make the §8 per-kind filter vacuously satisfied behind `mustCan(certs.view)`.
 
+**Amendment 2026-08-05 (Task 17 review adjudication):** `POST /api/orders` also accepts optional
+`certRequired`/`certScope`. §6.1's "overridable at entry" cannot be implemented create-then-PATCH:
+§6.2 creates the ORDER-scope cert *inside* `saveNewOrder`'s transaction when the effective pair is
+(true, ORDER), and `updateOrder` writes the columns as plain scalars without creating or destroying
+certs — so the entry-time override must ride the create body. Validation and audit parity with the
+PATCH path is maintained (identical zod shapes; the audit entry records the effective frozen pair).
+
 ## 10. Documents
 
 Three layouts on `src/server/pdf/`'s existing plumbing, each a JSON document definition — the same
