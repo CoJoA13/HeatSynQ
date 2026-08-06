@@ -223,15 +223,19 @@ function SerialsGrid({
 // The panel itself.
 // -------------------------------------------------------------------------------------------
 
-const PRINT_TOOLTIP = "Available once the shipping ticket and certification layouts land (Tasks 18–19)";
+const CERT_TOOLTIP = "Available once the certification layout lands (Task 19)";
 
 export function ShipmentOrderPanel({
   shipperId, order, catalog, editGate, applyMutation, onError, onRemove,
+  printGate, printing, onPrintTicket,
 }: {
   shipperId: string; order: ShipperOrder; catalog: OrderCatalog | undefined;
   editGate: Gate; applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
   onRemove: () => void;
+  /** Ticket printing went live with Task 18 — the gate, the shared in-flight flag and the POST
+   *  itself all live on ShipmentDetail (one print pipeline for the whole page). */
+  printGate: Gate; printing: boolean; onPrintTicket: () => void;
 }) {
   return (
     <section className="mb-6 rounded border bg-white p-4">
@@ -257,14 +261,15 @@ export function ShipmentOrderPanel({
       <SerialsGrid shipperId={shipperId} shipperOrderId={order.id} serials={order.serials} catalog={catalog}
                     editGate={editGate} applyMutation={applyMutation} onError={onError} />
 
-      {/* Print (spec §11) — the routes don't land until Tasks 18–19 (task-14-brief.md); disabled
-          with a tooltip naming why, never wired to a route that would 404. */}
+      {/* Print (spec §11) — the ticket path is live (Task 18: POST ?doc=ticket&order=<id>); the
+          cert checkbox stays disabled until its layout lands (Task 19), tooltip naming why. */}
       <div className="mt-4 flex flex-wrap items-center gap-3 border-t pt-3 text-sm">
-        <button type="button" disabled title={PRINT_TOOLTIP}
-                className="cursor-not-allowed rounded border px-3 py-1.5 text-slate-400">
-          Print this order&apos;s ticket
+        <button type="button" onClick={onPrintTicket} disabled={!printGate.allowed || printing}
+                title={printGate.title}
+                className="rounded border px-3 py-1.5 disabled:cursor-not-allowed disabled:text-slate-400">
+          {printing ? "Printing…" : "Print this order's ticket"}
         </button>
-        <label className="flex items-center gap-1 text-slate-400" title={PRINT_TOOLTIP}>
+        <label className="flex items-center gap-1 text-slate-400" title={CERT_TOOLTIP}>
           <input type="checkbox" checked readOnly disabled /> Also print certification
         </label>
       </div>

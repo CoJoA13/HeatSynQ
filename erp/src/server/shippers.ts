@@ -6,8 +6,12 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
-import { allocateNumber } from "./settings";
+import { allocateNumber, getSetting } from "./settings";
 import { claimOrdersInOrder } from "./order-locks";
+import { listAddresses } from "./customer-addresses";
+import { renderPdf } from "./pdf/render";
+import { buildShippingTicketDefinition, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
 import { createCert } from "./certs";
 import { isDuplicateClientRequestId } from "./orders";
@@ -1158,6 +1162,165 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
     }
 
     await recomputeOrderStatus(tx, orderIds);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 18: the shipping ticket's print entry point (spec §10.1, §3.20). The traveler's three-layer
+// shape, applied to shipments: `readShippingTicketData` (the reads, all on the caller's `db`),
+// `buildShippingTicketDefinition` (pdf/shipping-ticket.ts — PURE), `renderPdf` (bytes). One sheet
+// per order of the shipment in ONE PDF; a named order prints alone.
+// -------------------------------------------------------------------------------------------
+
+/** Every SETTING the ticket needs, read in one place BEFORE the print transaction opens — the
+ *  `travelerSettings` precedent (traveler.ts, fix-wave R4 finding 8): settings are read-only and
+ *  not shipment state, so the transaction below never waits on their round trips. */
+export type TicketSettings = {
+  company: { name: string; address: string; phone: string };
+  liabilityText: string;
+};
+
+export async function ticketSettings(): Promise<TicketSettings> {
+  const [name, address, phone, liabilityText] = await Promise.all([
+    getSetting("company_name"),
+    getSetting("company_address"),
+    getSetting("company_phone"),
+    getSetting("shipper_liability_text"),
+  ]);
+  return { company: { name, address, phone }, liabilityText };
+}
+
+/**
+ * Assembles the print payload — one `TicketData` per order of the shipment, in ticket print order
+ * (`ShipperOrder.position`, which `readShipperDetail` already sorts by), or just the named
+ * order's. Reads EVERYTHING through `db` (the `readTravelerData` rule): inside `printShippingTickets`
+ * that is the claim-holding `tx`, so every read sees the snapshot the claim covers and no second
+ * pooled connection is borrowed mid-transaction.
+ *
+ * Address semantics (spec §10.1):
+ *  - **Sold To** is the CUSTOMER (code in the corner, name on the first line) at their default
+ *    `BILL_TO` address — default flag first, else the first live one, the traveler's
+ *    RECEIVED_FROM idiom. Live-and-active only (`listAddresses`' own filter): "the customer's
+ *    default BILL_TO" is a current fact, not a historical one.
+ *  - **Ship To** is the shipment's own `shipToAddressId` row, read UNFILTERED on
+ *    deletedAt/active — the shipment references it and the paper has to name where the truck
+ *    went, whatever has happened to the address book since (the traveler's deliberately-unfiltered
+ *    parts read, same reasoning). Its `name` is the destination's name (spec §3's closing note:
+ *    a third-party consignee IS a named SHIP_TO address); blank name falls back to the customer.
+ *    Its corner code prints empty — a `CustomerAddress` has no short code in this system, and a
+ *    cuid is not paper (the sample's "73753" is Visual Shop's internal row id).
+ */
+export async function readShippingTicketData(
+  db: Db, shipperId: string, settings: TicketSettings, orderId?: string,
+): Promise<TicketData[]> {
+  const detail = await readShipperDetail(db, shipperId); // 404s a missing shipment
+
+  const orders = orderId === undefined ? detail.orders : detail.orders.filter((o) => o.orderId === orderId);
+  if (orderId !== undefined && orders.length === 0) {
+    throw new HttpError(404, "That order is not on this shipment");
+  }
+
+  const addresses = await listAddresses(detail.customerId, undefined, db);
+  const billTos = addresses.filter((a) => a.kind === "BILL_TO");
+  const billTo = billTos.find((a) => a.isDefault) ?? billTos[0] ?? null;
+  const soldTo: TicketParty = {
+    code: detail.customerCode, name: detail.customerName,
+    street: billTo?.street ?? "", city: billTo?.city ?? "", state: billTo?.state ?? "", zip: billTo?.zip ?? "",
+  };
+
+  const shipToRow = detail.shipToAddressId === null ? null
+    : await db.customerAddress.findFirst({ where: { id: detail.shipToAddressId } });
+  const shipTo: TicketParty = {
+    code: "",
+    name: shipToRow !== null && shipToRow.name !== "" ? shipToRow.name : detail.customerName,
+    street: shipToRow?.street ?? "", city: shipToRow?.city ?? "",
+    state: shipToRow?.state ?? "", zip: shipToRow?.zip ?? "",
+  };
+
+  // Part DESCRIPTIONS in one batched read — `ShipperLineDetail` carries number and name already,
+  // and the ticket's stacked part cell (spec §10.1) needs the third line too.
+  const orderLineIds = [...new Set(orders.flatMap((o) => o.lines.map((l) => l.orderLineId)))];
+  const descriptionRows = orderLineIds.length === 0 ? [] : await db.orderLine.findMany({
+    where: { id: { in: orderLineIds } },
+    select: { id: true, part: { select: { description: true } } },
+  });
+  const descriptionByLineId = new Map(descriptionRows.map((r) => [r.id, r.part.description]));
+
+  return orders.map((o): TicketData => {
+    // Weight summed in cents (the `toShipperRow` idiom) so 0.1 + 0.2 shapes never print as
+    // 0.30000000000000004.
+    let totalQty = 0;
+    let weightCents = 0;
+    for (const l of o.lines) {
+      totalQty += l.qty;
+      weightCents += Math.round(l.weight * 100);
+    }
+    return {
+      company: { ...settings.company, liabilityText: settings.liabilityText },
+      soldTo, shipTo,
+      orderLabel: o.label, orderNumber: o.orderNumber,
+      shipDate: detail.shipDate, poNumber: o.poNumber,
+      packingListNo: detail.shipperNumber, customerJobNo: o.customerJobNo,
+      route: detail.route, carrierName: detail.carrierName ?? "",
+      lines: o.lines.map((l) => ({
+        qty: l.qty, partNumber: l.partNumber, partName: l.partName,
+        partDescription: descriptionByLineId.get(l.orderLineId) ?? "", pounds: l.weight,
+      })),
+      containers: o.containers.map((c) => ({
+        typeName: c.typeName, count: c.count, customerContainerId: c.customerContainerId,
+      })),
+      serials: o.serials.filter((s) => s.printOnShipper).map((s) => ({ serial: s.serial, description: s.description })),
+      // "every line on this ticket is lineComplete" (spec §10.1) — vacuously false for an order
+      // shell with no lines yet: paper must not claim completeness nothing asserted.
+      shippedComplete: o.lines.length > 0 && o.lines.every((l) => l.lineComplete),
+      totalQty, totalWeight: weightCents / 100,
+    };
+  });
+}
+
+/**
+ * Renders and archives the shipping ticket(s), returning the exact bytes stored — `printTraveler`'s
+ * mechanic applied to a shipment (task-18-brief.md Step 4): settings OUTSIDE the transaction, then
+ * one Serializable transaction bracketing claim → read → render → archive, so the stored PDF always
+ * describes a fully-committed state no concurrent shipment edit can tear (traveler.ts's fix-wave R3
+ * finding 1 reasoning, inherited wholesale).
+ *
+ * The claim is `claimOrdersInOrder` over every order on the shipment — `Shipper` has no row-lock
+ * instrument of its own (claimLiveShipper's own comment); its mutators all serialize through the
+ * orders' row locks, so holding those same locks is what makes this print's read/render/archive
+ * atomic against them. The shipper row is re-read AFTER the claim and checked with `assertPrintable`
+ * (documents.ts): a voided shipment refuses a NEW print with the shared 400 while every stored
+ * print stays reprintable forever (spec §5.6) — deliberately NOT `claimLiveShipper`, whose 404
+ * would misname a void as "not found".
+ *
+ * `orderNumber` rides along (null for the whole set) purely so the route can name the download —
+ * the `printTraveler` precedent.
+ */
+export async function printShippingTickets(
+  shipperId: string, orderId?: string,
+): Promise<{ documentId: string; shipperNumber: number; orderNumber: number | null; pdf: Buffer }> {
+  const settings = await ticketSettings();
+
+  return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
+    // The pre-claim read exists ONLY to learn which orders to claim (the addOrderToShipper
+    // shape — some unlocked read is unavoidable when the lock lives on the orders); everything
+    // acted on below is re-read under the claim.
+    const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
+    if (!stub) throw new HttpError(404, "Shipment not found");
+    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+
+    const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
+    if (!shipper) throw new HttpError(404, "Shipment not found");
+    assertPrintable(shipper);
+
+    const data = await readShippingTicketData(tx, shipperId, settings, orderId);
+    const pdf = await renderPdf(buildShippingTicketDefinition(data));
+
+    const doc = await storeDocument(tx, { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf);
+    return {
+      documentId: doc.id, shipperNumber: shipper.shipperNumber,
+      orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
+    };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 

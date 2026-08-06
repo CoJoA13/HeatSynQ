@@ -126,14 +126,19 @@ function voidLocked(g: Gate, voided: boolean): Gate {
  *  (Tasks 18–19 own that); a plain link to the existing, already-gated `GET /api/documents/[id]`
  *  download route, the DocumentsSection.tsx precedent minus the print/blob plumbing this page has
  *  nothing to trigger yet. */
-function ShipmentDocumentsList({ shipperId, viewGate }: { shipperId: string; viewGate: Gate }) {
+function ShipmentDocumentsList({ shipperId, viewGate, refresh }: {
+  shipperId: string; viewGate: Gate;
+  /** Bumped by every successful print above, so a just-archived ticket appears without a page
+   *  reload (Task 18 — printing became live on this page). */
+  refresh: number;
+}) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     if (!viewGate.allowed) return;
     api<StoredDoc[]>(`/api/shippers/${shipperId}/documents`).then(setDocs)
       .catch((e) => setErr((e as Error).message));
-  }, [shipperId, viewGate.allowed]);
+  }, [shipperId, viewGate.allowed, refresh]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -222,6 +227,45 @@ export function ShipmentDetail({ id }: { id: string }) {
   const voidGate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
     : gateDo(perms, "void_shipper");
+
+  // Ticket printing (Task 18; spec §9's POST /api/shippers/[id]/print). Gated shipping.view like
+  // the route; a voided shipment refuses NEW prints while stored ones stay downloadable (§5.6), so
+  // the button says exactly that (§5.16 — disabled with a truthful title, never hidden). The
+  // DocumentsSection.tsx print shape, minus the auto-print machinery this page has no entry for.
+  const printGate: Gate = voided
+    ? { allowed: false, disabled: true, title: "Shipment is voided — stored prints stay available" }
+    : docsGate;
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [docsRefresh, setDocsRefresh] = useState(0);
+  const printTicket = useCallback(async (orderId?: string) => {
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      const query = orderId === undefined ? "" : `&order=${orderId}`;
+      const res = await fetch(`/api/shippers/${id}/print?doc=ticket${query}`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const opened = window.open(url, "_blank");
+      if (opened) opened.opener = null;
+      if (opened === null) {
+        // Never silent (the DocumentsSection rule): the print HAPPENED and is archived — the
+        // refreshed Documents list below is the escape hatch, and this message says so.
+        setPrintError("The browser blocked the print window — the ticket was archived and is in Documents below.");
+      }
+      // Revoked on a delay either way — revoking immediately would race the new tab's own load
+      // (the DocumentsSection precedent, fix-wave finding 6).
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setDocsRefresh((n) => n + 1);
+    } catch (e) {
+      setPrintError((e as Error).message);
+    } finally {
+      setPrinting(false);
+    }
+  }, [id]);
 
   const customerId = shipper?.customerId;
 
@@ -586,17 +630,19 @@ export function ShipmentDetail({ id }: { id: string }) {
         </div>
       </section>
 
-      {/* ---- Print (top-level: all tickets / BOL) — Tasks 18–19 (task-14-brief.md) ---- */}
+      {/* ---- Print (top-level: all tickets live per Task 18; BOL stays Task 19's) ---- */}
       <div className="mb-6 flex flex-wrap items-center gap-3 rounded border bg-slate-50 p-3 text-sm">
-        <button type="button" disabled title="Available once the shipping ticket layout lands (Task 18)"
-                className="cursor-not-allowed rounded border px-3 py-1.5 text-slate-400">
-          Print all tickets
+        <button type="button" onClick={() => void printTicket()} disabled={!printGate.allowed || printing}
+                title={printGate.title}
+                className="rounded border bg-white px-3 py-1.5 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
+          {printing ? "Printing…" : "Print all tickets"}
         </button>
         <button type="button" disabled title="Available once the bill-of-lading layout lands (Task 19)"
                 className="cursor-not-allowed rounded border px-3 py-1.5 text-slate-400">
           Print BOL
         </button>
-        <span className="text-xs text-slate-500">Printing lands with the shipping ticket, BOL and certification layouts (Tasks 18–19).</span>
+        <span className="text-xs text-slate-500">BOL and certification printing land with their layouts (Task 19).</span>
+        {printError && <span className="text-xs text-red-700">{printError}</span>}
       </div>
 
       {/* ---- Add order ---- */}
@@ -629,13 +675,15 @@ export function ShipmentDetail({ id }: { id: string }) {
           key={so.id} shipperId={id} order={so} catalog={catalogs.get(so.orderId)}
           editGate={editGate} applyMutation={applyMutation} onError={setError}
           onRemove={() => void removeOrder(so.id, so.label)}
+          printGate={printGate} printing={printing}
+          onPrintTicket={() => void printTicket(so.orderId)}
         />
       ))}
 
       {/* ---- Documents + History ---- */}
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Documents</h2>
-        <ShipmentDocumentsList shipperId={id} viewGate={docsGate} />
+        <ShipmentDocumentsList shipperId={id} viewGate={docsGate} refresh={docsRefresh} />
       </section>
 
       <div className="mb-6">
