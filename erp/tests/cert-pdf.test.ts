@@ -77,10 +77,11 @@ async function makeInspectedPart(customerId: string, opts: {
   certRequired?: boolean; certScope?: "ORDER" | "LOAD" | "SHIPMENT";
 } = {}) {
   partSeq += 1;
-  const material = await prisma.material.create({ data: { name: "steel" } });
-  const scale = await prisma.inspectionScale.create({ data: { name: "HRC" } });
+  // Registry names are live-unique (partial @@unique) — suffixed so two parts can coexist in one test.
+  const material = await prisma.material.create({ data: { name: `steel ${partSeq}` } });
+  const scale = await prisma.inspectionScale.create({ data: { name: `HRC${partSeq}` } });
   const code = await prisma.inspectionCode.create({
-    data: { name: "Were heat treated as per P.O. NONE", defaultScaleId: scale.id },
+    data: { name: `Were heat treated as per P.O. NONE (${partSeq})`, defaultScaleId: scale.id },
   });
   const part = await prisma.part.create({
     data: {
@@ -493,7 +494,7 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     expect((await getDocument(certDocIds[0])).certId).toBe(orderCert.id);
   });
 
-  it("refuses when a covered order requires a cert and none exists, archiving nothing", async () => {
+  it("prints the tickets and WARNS when a covered order requires a cert and none exists (§9 amendment 2026-08-05)", async () => {
     const customer = await makeCustomer();
     await makeBillTo(customer.id);
     const shipTo = await makeShipTo(customer.id);
@@ -515,9 +516,68 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     const cookie = await signInWith(["shipping.view", "certs.view"]);
     const res = await shipperPrintRoute(
       postReq(`http://t/api/shippers/${shipper.id}/print?doc=ticket&cert=1`, cookie), withParams({ id: shipper.id }));
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain(`#${order.orderNumber}`);
-    expect(await listDocumentsForShipper(shipper.id)).toEqual([]);
+    // §3.13's "warns and never blocks" honored in the pre-ticked flow: the tickets print and
+    // archive exactly as a cert-less print would; no cert is archived; the warning names the order.
+    expect(res.status).toBe(200);
+    const docs = await listDocumentsForShipper(shipper.id);
+    expect(docs.map((d) => d.kind)).toEqual(["SHIPPER"]);
+    // A CERT document never carries shipperId (the DB CHECK), so assert its absence directly.
+    expect(await prisma.storedDocument.count({ where: { kind: "CERT" } })).toBe(0);
+    expect(res.headers.get("x-cert-document-ids")).toBeNull();
+    const warnings = JSON.parse(decodeURIComponent(res.headers.get("x-print-warnings")!)) as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`#${order.orderNumber}`);
+    expect(warnings[0]).toMatch(/requires a certification/i);
+  });
+
+  it("prints the covered order that HAS a cert and warns for the one that lacks one, on the same request", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    const shipTo = await makeShipTo(customer.id);
+    const partWith = await makeInspectedPart(customer.id, { certRequired: true, certScope: "SHIPMENT" });
+    const partWithout = await makeInspectedPart(customer.id, { certRequired: true, certScope: "LOAD" });
+    const { order: orderWith } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PO-HAS",
+      lines: [{ partId: partWith.id, qty: 192, weight: "4128.00" }],
+    }));
+    const { order: orderWithout } = await asSystem(() => createOrder({
+      customerId: customer.id, poNumber: "PO-LACKS",
+      lines: [{ partId: partWithout.id, qty: 8, weight: "96.00" }],
+    }));
+    const { shipper } = await asSystem(() => createShipper({
+      customerId: customer.id, shipDate: "2026-07-29", shipToAddressId: shipTo.id,
+      orders: [
+        {
+          orderId: orderWith.id,
+          lines: [{ orderLineId: orderWith.lines[0].id, qty: 192, weight: "4128.00", lineComplete: true }],
+          containers: [], serials: [],
+        },
+        {
+          orderId: orderWithout.id,
+          lines: [{ orderLineId: orderWithout.lines[0].id, qty: 8, weight: "96.00", lineComplete: true }],
+          containers: [], serials: [],
+        },
+      ],
+    }, { canOverrideCreditHold: false }));
+
+    const cookie = await signInWith(["shipping.view", "certs.view"]);
+    const res = await shipperPrintRoute(
+      postReq(`http://t/api/shippers/${shipper.id}/print?doc=ticket&cert=1`, cookie), withParams({ id: shipper.id }));
+    expect(res.status).toBe(200);
+
+    // The first order's SHIPMENT-scope cert printed and archived; the second only warned.
+    const certDocIds = res.headers.get("x-cert-document-ids")!.split(",");
+    expect(certDocIds).toHaveLength(1);
+    const shipmentCert = await prisma.cert.findFirstOrThrow({ where: { orderId: orderWith.id, scope: "SHIPMENT" } });
+    expect((await getDocument(certDocIds[0])).certId).toBe(shipmentCert.id);
+
+    const warnings = JSON.parse(decodeURIComponent(res.headers.get("x-print-warnings")!)) as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`#${orderWithout.orderNumber}`);
+    expect(warnings[0]).not.toContain(`#${orderWith.orderNumber}`);
+
+    // Exactly one CERT archived on the whole request — the covered order that had one.
+    expect(await prisma.storedDocument.count({ where: { kind: "CERT" } })).toBe(1);
   });
 
   it("treats cert=0 as not requested (the honest parse) and refuses other values", async () => {

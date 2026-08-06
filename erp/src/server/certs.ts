@@ -435,9 +435,11 @@ export type CertSignerRow = {
   displayName: string; signatureImage: Uint8Array | null; signatureMimeType: string | null;
 };
 
-/** pdfkit embeds PNG and JPEG only — a BMP upload (users.ts allows it) cannot reach the page, so
- *  it falls back to the typed-name-over-the-rule rendering exactly as "no signature on file" does
- *  (§3.11's own fallback; a broken render at the printer would serve nobody). */
+/** pdfkit embeds PNG and JPEG only. New uploads are constrained to exactly these (users.ts's
+ *  SIGNATURE_MIME, §9 amendment 2026-08-05), so this filter is defense in depth for rows uploaded
+ *  while image/bmp was still allowed: a non-embeddable image falls back to the
+ *  typed-name-over-the-rule rendering exactly as "no signature on file" does (§3.11's own
+ *  fallback; a broken render at the printer would serve nobody). */
 const EMBEDDABLE_SIGNATURE_MIME = ["image/png", "image/jpeg"];
 
 function signatureDataUri(signer: CertSignerRow): string | null {

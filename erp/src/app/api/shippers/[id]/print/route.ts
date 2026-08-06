@@ -66,12 +66,14 @@ export const POST = handle(async (req, { params }) => {
 
   const order = search.get("order") ?? undefined;
 
-  // Resolved BEFORE the ticket prints so a covered order that requires a cert and has none
-  // refuses the WHOLE request with nothing archived (printableShipmentCertIds's own contract).
+  // Resolved BEFORE the ticket prints (a voided shipment still refuses with nothing archived).
+  // A cert-REQUIRING order with no cert WARNS instead of refusing (§9 amendment 2026-08-05):
+  // the tickets print exactly as a cert-less print would and the warning rides the response.
   let certIds: string[] = [];
+  let warnings: string[] = [];
   if (withCerts) {
     mustCan(user, "certs", "view");
-    certIds = await printableShipmentCertIds(id, order);
+    ({ certIds, warnings } = await printableShipmentCertIds(id, order));
   }
 
   const printed = await printShippingTickets(id, order);
@@ -91,5 +93,10 @@ export const POST = handle(async (req, { params }) => {
     // does not have to re-list the shipment's documents to find it (the traveler route's rule).
     "x-document-id": printed.documentId,
     ...(certDocumentIds.length > 0 ? { "x-cert-document-ids": certDocumentIds.join(",") } : {}),
+    // The response body is PDF bytes, so §5.7-style warnings cannot ride a JSON payload the way
+    // every mutation's do — they travel as a URI-encoded JSON header instead (header values must
+    // be ISO-8859-1-safe and the warning text carries em-dashes; encodeURIComponent makes the
+    // transport lossless). The shipment page decodes and surfaces them beside the print bar.
+    ...(warnings.length > 0 ? { "x-print-warnings": encodeURIComponent(JSON.stringify(warnings)) } : {}),
   });
 });

@@ -1449,15 +1449,20 @@ export async function printBol(
  *  - LOAD     — every live load-scope cert the order has (a shipment cannot know which loads went,
  *    and load certs exist only on demand, §3.17).
  *
- * An order that REQUIRES a cert (its frozen `certRequired`) with nothing to print refuses the
- * whole request — the Task 18 refusal ethos: honouring the ticket half while silently dropping
- * the cert half would tell the person at the printer their quality paperwork went out when it did
- * not. An order that doesn't require one and has none simply contributes nothing. A voided
- * shipment refuses here with the shared refusal, BEFORE any ticket could print — its ORDER-scope
- * certs are still live (only shipment-scope certs are voided with the shipment, spec §5.6), so
- * without this check a voided shipment's print could still archive cert paper.
+ * An order that REQUIRES a cert (its frozen `certRequired`) with nothing to print gets a named
+ * WARNING, never a refusal (§9 amendment 2026-08-05, owner-ratified — §3.13's "a missing cert
+ * warns and never blocks", honored in the default pre-ticked flow): the tickets print and archive
+ * exactly as a cert-less print would, no cert is archived for that order, and the warning names
+ * it so the shipment page can surface the gap to the operator — never a silent drop (the Task 18
+ * rule the original refusal over-served). Orders that DO have certs on the same request still
+ * print theirs. An order that doesn't require one and has none simply contributes nothing. A
+ * voided shipment refuses here with the shared refusal, BEFORE any ticket could print — its
+ * ORDER-scope certs are still live (only shipment-scope certs are voided with the shipment, spec
+ * §5.6), so without this check a voided shipment's print could still archive cert paper.
  */
-export async function printableShipmentCertIds(shipperId: string, orderId?: string): Promise<string[]> {
+export async function printableShipmentCertIds(
+  shipperId: string, orderId?: string,
+): Promise<{ certIds: string[]; warnings: string[] }> {
   const shipper = await prisma.shipper.findFirst({ where: { id: shipperId }, select: { deletedAt: true } });
   if (!shipper) throw new HttpError(404, "Shipment not found");
   assertPrintable(shipper);
@@ -1475,6 +1480,7 @@ export async function printableShipmentCertIds(shipperId: string, orderId?: stri
   }
 
   const certIds: string[] = [];
+  const warnings: string[] = [];
   for (const so of shipperOrders) {
     const scope = so.order.certScope as CertScopeValue;
     const certs = await prisma.cert.findMany({
@@ -1486,13 +1492,14 @@ export async function printableShipmentCertIds(shipperId: string, orderId?: stri
       select: { id: true },
     });
     if (certs.length === 0 && so.order.certRequired) {
-      throw new HttpError(400,
+      // The saveNewShipper §5.7 warning's own shape, adapted to the print moment.
+      warnings.push(
         `Order #${so.order.orderNumber} requires a certification and none exists to print — ` +
-        `create it from /orders/${so.order.id}, or print without certifications.`);
+        `its ticket printed without one; create it from /orders/${so.order.id}`);
     }
     certIds.push(...certs.map((c) => c.id));
   }
-  return certIds;
+  return { certIds, warnings };
 }
 
 // -------------------------------------------------------------------------------------------

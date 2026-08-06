@@ -242,6 +242,10 @@ export function ShipmentDetail({ id }: { id: string }) {
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
   const [printInfo, setPrintInfo] = useState<string | null>(null);
+  // §9 amendment 2026-08-05: a cert-requiring covered order with no cert prints its tickets and
+  // WARNS — the route carries the named warnings in x-print-warnings (URI-encoded JSON, since the
+  // body is PDF bytes) and this page surfaces them beside the print bar.
+  const [printWarnings, setPrintWarnings] = useState<string[]>([]);
   const [docsRefresh, setDocsRefresh] = useState(0);
   const [withCerts, setWithCerts] = useState(true);   // pre-ticked (§3.14)
 
@@ -250,6 +254,7 @@ export function ShipmentDetail({ id }: { id: string }) {
     setPrinting(true);
     setPrintError(null);
     setPrintInfo(null);
+    setPrintWarnings([]);
     try {
       const res = await fetch(`/api/shippers/${id}/print?${query}`, { method: "POST" });
       if (!res.ok) {
@@ -270,6 +275,15 @@ export function ShipmentDetail({ id }: { id: string }) {
       if (certDocs !== null) {
         const n = certDocs.split(",").length;
         setPrintInfo(`${n} certification${n === 1 ? "" : "s"} archived — open them from Documents below.`);
+      }
+      const warned = res.headers.get("x-print-warnings");
+      if (warned !== null) {
+        try {
+          setPrintWarnings(JSON.parse(decodeURIComponent(warned)) as string[]);
+        } catch {
+          // A malformed header must not hide that something warned (never a silent drop).
+          setPrintWarnings(["The print reported a warning that could not be read — check the shipment's certifications."]);
+        }
       }
       // Revoked on a delay either way — revoking immediately would race the new tab's own load
       // (the DocumentsSection precedent, fix-wave finding 6).
@@ -673,6 +687,9 @@ export function ShipmentDetail({ id }: { id: string }) {
         </button>
         {printError && <span className="text-xs text-red-700">{printError}</span>}
         {printInfo && <span className="text-xs text-slate-600">{printInfo}</span>}
+        {printWarnings.map((w) => (
+          <span key={w} className="w-full text-xs text-amber-700">{w}</span>
+        ))}
       </div>
 
       {/* ---- Add order ---- */}

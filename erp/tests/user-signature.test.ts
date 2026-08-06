@@ -103,6 +103,14 @@ describe("per-user signature image (Task 12)", () => {
     expect(await getSignature(userId)).toBeNull();
   });
 
+  it("rejects image/bmp — pdfkit cannot embed it on the cert (§9 amendment 2026-08-05)", async () => {
+    const userId = await makeUser();
+    const err = await asSystem(() => setSignature(userId, Buffer.from("x"), "image/bmp")).catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect(await getSignature(userId)).toBeNull();
+  });
+
   it("accepts every allowlisted type", async () => {
     const userId = await makeUser();
     for (const mimeType of SIGNATURE_MIME) {

@@ -136,8 +136,11 @@ export async function setUserOverrides(id: string, overrides: { permission: stri
 // pressure for a value nothing there ever needs (SNAPSHOT_SELECT's `user` entry, audit.ts, is the
 // other half of that guarantee); large enough for a real scanned or drawn signature.
 export const SIGNATURE_MAX_BYTES = 2 * 1024 * 1024;
-// Per task-12-brief.md's interface — png/jpeg cover the common web image types, bmp besides.
-export const SIGNATURE_MIME = ["image/png", "image/jpeg", "image/bmp"] as const;
+// png/jpeg only (§9 amendment 2026-08-05, owner-ratified): Task 12 also allowed image/bmp, but
+// pdfkit cannot embed BMP — a BMP signature rendered on screen while every cert silently printed
+// the typed-name fallback. Existing BMP rows keep falling back safely (certs.ts's
+// EMBEDDABLE_SIGNATURE_MIME null-out stays as defense in depth); new uploads must be embeddable.
+export const SIGNATURE_MIME = ["image/png", "image/jpeg"] as const;
 
 /**
  * Owner ruling (spec §3.11): the signature that prints on a certification is the PRINTING user's

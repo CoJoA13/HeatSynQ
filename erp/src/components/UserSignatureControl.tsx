@@ -91,7 +91,7 @@ export function UserSignatureControl({ userId, gate }: { userId: string; gate: G
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,image/bmp"
+        accept="image/png,image/jpeg"
         onChange={onFileChosen}
         disabled={gate.disabled || busy}
         title={gate.title}
