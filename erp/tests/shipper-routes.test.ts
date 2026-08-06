@@ -447,5 +447,13 @@ describe("shipper routes", () => {
     const docs = await withDoc.json();
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({ id: bol.id, kind: "BOL", shipperId: shipper.id, orderId: null, certId: null });
+    // Metadata only, never the bytes — the cert sibling's own assertion (cert-routes.test.ts),
+    // mirrored here (fix-wave 2026-08-06): a route that started selecting `fileData` would ship
+    // every stored PDF's bytes with every list render.
+    expect("fileData" in docs[0]).toBe(false);
+
+    // An unknown shipper is a 404, not an empty list (the cert sibling's case, mirrored).
+    expect((await shipperDocumentsRoute(
+      getReq("http://t/api/shippers/nope/documents", viewer), withParams({ id: "nope" }))).status).toBe(404);
   });
 });
