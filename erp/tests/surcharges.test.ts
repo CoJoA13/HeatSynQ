@@ -550,6 +550,10 @@ describe("GET /api/admin/surcharges/[id]/blockers(/export)", () => {
     const blockers = await res.json();
     expect(blockers[0].entityLabel).toBe("Customer");
     expect(blockers[0].name).toContain("ACME");
+    // Fix 3, fix wave 1 review: this route opts `findBlockers` into `includeLabel`, which
+    // admin/surcharges/page.tsx pairs with `entityLabel` for a sturdier "is this a customer
+    // override" check than `entityLabel === "Customer"` alone.
+    expect(blockers[0].label).toBe("Surcharge");
 
     const exportRes = await blockersExportRoute(
       getReq(`http://t/api/admin/surcharges/${id}/blockers/export`, viewer), withParams({ id }));
@@ -667,5 +671,21 @@ describe("GET/PUT/DELETE /api/customers/[id]/surcharges", () => {
     expect(delRes.status).toBe(200);
 
     await expect(asSystem(() => deleteSurcharge(surchargeId))).resolves.toBeUndefined();
+  });
+
+  // Fix 2, fix wave 1 review: a body-less DELETE (`api(path, { method: "DELETE" })`, the
+  // ordinary shape a caller with nothing to say would use — parts/[id]/PricingSection.tsx:158's
+  // own shape) used to throw a raw SyntaxError out of `await req.json()`, which `handle` does not
+  // map to a clean response (only ZodError/HttpError are), surfacing as an unhandled 500 instead
+  // of the field-anchored 400 every other missing-required-field case on this route already gets.
+  it("DELETE with no body at all returns 400 for the missing surchargeId, not 500", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const editor = await signInWith(["customers.edit", "action.change_prices"], "editor");
+
+    const res = await customerSurchargeDeleteRoute(
+      noBodyReq(`http://t/api/customers/${customer.id}/surcharges`, "DELETE", editor),
+      withParams({ id: customer.id }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("surchargeId is required");
   });
 });

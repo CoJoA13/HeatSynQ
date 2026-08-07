@@ -17,11 +17,22 @@ function moneyText(value: number | null): string {
 }
 
 export function SurchargeOverridesSection({
-  customerId, perms, onError,
+  customerId, perms, onError, onOptionsError,
 }: {
   customerId: string;
   perms: string[] | undefined;
   onError: (message: string | null) => void;
+  /** Fix wave 1, Fix 1 (review): the mount fetch's own failure channel, mirroring
+   *  parts/[id]/PricingSection.tsx's `onOptionsError` prop. `onError` is wired to the page's
+   *  shared banner (page.tsx's `setError`), which the page's OWN `load()` — running concurrently
+   *  on mount — clears on its own unrelated success (`setError(null)`). A load failure reported
+   *  through `onError` could therefore vanish before the user ever saw it, leaving `rows` at its
+   *  initial `[]` with nothing on screen to say the list never actually loaded (HANDOFF §5.15: a
+   *  failed request must say so rather than impersonate an empty list). `onOptionsError` is wired
+   *  to the page's `optionsError` state instead — its own channel that no unrelated refresh can
+   *  clear (page.tsx's F4 comment). Every write this section makes (save/clearOverride) still
+   *  reports through `onError`, matching PricingSection's own saveRow/removeRow. */
+  onOptionsError: (message: string) => void;
 }) {
   const canEdit = gate(perms, "customers.edit");
   const priceGate = gateDo(perms, "change_prices");
@@ -36,6 +47,12 @@ export function SurchargeOverridesSection({
   const title = canEdit.disabled ? canEdit.title : priceGate.title;
 
   const [rows, setRows] = useState<SurchargeRow[]>([]);
+  // Set only once `load()` has actually landed a real list — the PricingSection `rowsReady`
+  // precedent (its comment at :53-58). `rows` starts `[]` the same as "loaded, genuinely empty",
+  // so without this flag the empty-state text below could not tell a customer with zero active
+  // surcharges apart from a mount fetch that is still in flight OR has already failed — and a
+  // failed load is the steady state on an error, not a momentary race (Fix 1, fix wave 1 review).
+  const [rowsReady, setRowsReady] = useState(false);
 
   // rowsRef mirrors `rows` for save-time reads (surcharges/page.tsx's `rowsRef` precedent): a
   // queued save must compose its payload from the FRESHEST known row, not whatever was on screen
@@ -51,8 +68,11 @@ export function SurchargeOverridesSection({
     rowsRef.current = r;
     if (!latest.isCurrent(ticket)) return;
     setRows(r);
+    setRowsReady(true);
   }, [customerId, latest]);
-  useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
+  // Routed to `onOptionsError`, not `onError` — see the prop's own doc comment above (Fix 1, fix
+  // wave 1 review).
+  useEffect(() => { load().catch((e) => onOptionsError((e as Error).message)); }, [load, onOptionsError]);
 
   // What the user has actually typed into a free-text numeric field (rate%, amount) but not yet
   // blurred, keyed by `${surchargeId}.${field}` — composed with the server value at render time,
@@ -105,8 +125,16 @@ export function SurchargeOverridesSection({
    *  which is what actually frees this surcharge to be deleted — a live override row blocks its
    *  surcharge's deletion even when every field on it reads empty (task-8 brief's opening
    *  blockquote; `customerSurchargeOptions`' own `hasOverride` distinguishes the two). Same queue
-   *  as `save`: must serialize against edits to this same row too. */
-  function clearOverride(surchargeId: string): Promise<void> {
+   *  as `save`: must serialize against edits to this same row too.
+   *
+   *  Fix 4, fix wave 1 review: was a one-click destructive write with no confirmation, unlike the
+   *  surcharge delete on admin/surcharges/page.tsx that surfaces this same escape hatch — the
+   *  established `confirm()` idiom used across 14 files in this app. Plain wording, not alarming:
+   *  the change is audited and therefore recoverable (re-entering the override recreates it). */
+  function clearOverride(surchargeId: string, surchargeName: string): Promise<void> {
+    if (!confirm(`Clear the "${surchargeName}" override? This customer will bill at the plant rate instead.`)) {
+      return Promise.resolve();
+    }
     const run = async () => {
       try {
         await api(`/api/customers/${customerId}/surcharges`, {
@@ -125,7 +153,11 @@ export function SurchargeOverridesSection({
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Surcharge overrides</h2>
-      {rows.length === 0 && (
+      {/* Gated on `rowsReady` (Fix 1, fix wave 1 review): without it this read exactly as "no
+          active surcharges" while the mount fetch was still in flight or had already failed —
+          the empty array `rows` starts at is indistinguishable from a genuinely empty, loaded
+          list. */}
+      {rowsReady && rows.length === 0 && (
         <p className="text-sm text-slate-500">No active surcharges are configured.</p>
       )}
       <div className="divide-y">
@@ -174,7 +206,7 @@ export function SurchargeOverridesSection({
                   override row actually exists — `hasOverride`, not the field values, which read
                   identically to "no override" once every field is cleared back to empty. */}
               {row.hasOverride ? (
-                <button onClick={() => void clearOverride(row.surchargeId)} disabled={disabled} title={title}
+                <button onClick={() => void clearOverride(row.surchargeId, row.surchargeName)} disabled={disabled} title={title}
                         className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
                   Clear override
                 </button>

@@ -230,8 +230,17 @@ export default function SurchargesPage() {
    *  trying to delete THIS surcharge), closes the loop without requiring the customer itself to
    *  be reachable. Reuses `deleteCustomerSurcharge` through the customer-facing DELETE route —
    *  the same one the customer page's own "Clear override" control uses — since the service
-   *  itself checks only the override row's own liveness, never the customer's (surcharges.ts). */
-  async function clearCustomerOverride(customerId: string, surchargeId: string) {
+   *  itself checks only the override row's own liveness, never the customer's (surcharges.ts).
+   *
+   *  Fix 4, fix wave 1 review: was a one-click destructive write with no confirmation — an
+   *  asymmetry against the surcharge delete that surfaces this very panel, which IS
+   *  confirm-guarded (`removeRow` above). The established `confirm()` idiom, worded plainly since
+   *  the change is audited and therefore recoverable (re-entering the override on the customer
+   *  recreates it), including for a live (non-deleted) customer reached from this admin panel. */
+  async function clearCustomerOverride(customerId: string, surchargeId: string, customerName: string, surchargeName: string) {
+    if (!confirm(`Clear "${customerName}"'s override for "${surchargeName}"? They will bill at the plant rate instead.`)) {
+      return;
+    }
     try {
       await api(`/api/customers/${customerId}/surcharges`, {
         method: "DELETE", body: JSON.stringify({ surchargeId }),
@@ -479,7 +488,16 @@ export default function SurchargesPage() {
             </label>
 
             {blocked && blocked.row.id === current.id && (() => {
-              const customerBlockers = blocked.list.filter((b) => b.entityLabel === "Customer");
+              // Fix 3, fix wave 1 review: `entityLabel === "Customer"` alone was correct only
+              // because no OTHER surcharge-targeting link happens to use that entityLabel today —
+              // a future one would silently pick up this "Clear override" button and 404 when
+              // clicked (it POSTs to /api/customers/{id}/surcharges, which only exists for an
+              // actual customer). Paired with `label === "Surcharge"` — the customerSurcharge ->
+              // surcharge registry entry's own column-header label
+              // (src/lib/reference-links.ts) — so the button only ever renders for the ONE link
+              // this escape hatch was built for (its own comment two lines below).
+              const customerBlockers = blocked.list.filter(
+                (b) => b.label === "Surcharge" && b.entityLabel === "Customer");
               return (
                 <>
                   <BlockerPanel
@@ -503,7 +521,7 @@ export default function SurchargesPage() {
                         {customerBlockers.map((b) => (
                           <li key={b.id} className="flex items-center justify-between gap-2">
                             <span>{b.name}</span>
-                            <button onClick={() => void clearCustomerOverride(b.id, blocked.row.id)}
+                            <button onClick={() => void clearCustomerOverride(b.id, blocked.row.id, b.name, blocked.row.name)}
                                     disabled={clearOverrideDisabled} title={clearOverrideTitle}
                                     className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
                               Clear override

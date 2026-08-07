@@ -625,7 +625,7 @@ function CustomerDetail({ id }: { id: string }) {
         </div>
       </section>
 
-      <SurchargeOverridesSection customerId={id} perms={perms} onError={setError} />
+      <SurchargeOverridesSection customerId={id} perms={perms} onError={setError} onOptionsError={addOptionsError} />
 
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Standing notes</h2>

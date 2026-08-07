@@ -46,9 +46,18 @@ export const DELETE = handle(async (req, { params }) => {
   const user = requireUser();
   mustCan(user, "customers", "edit");
   mustDo(user, "change_prices");
-  const body: unknown = await req.json();
-  assertRecord(body);
-  const { surchargeId } = body;
+  // A request with no body at all, or a body that isn't a JSON object (e.g. `null`), is
+  // deliberately not a parse error — the house convention every other body-reading DELETE route
+  // follows (customers/[id], parts/[id], certs/[id], orders/[id], shippers/[id],
+  // process-templates/[id], admin/roles/[id]; http.ts's `reasonFromBody` documents it for the
+  // reason-only case). Fix 2, fix wave 1 review: the bare `await req.json()` this used to be threw
+  // a raw SyntaxError for a body-less DELETE, which `handle` does not map to a clean 400 (only
+  // ZodError/HttpError are), surfacing as an unhandled 500. The missing surchargeId is reported
+  // below as the same field-anchored 400 a body of `{}` would get.
+  const body: unknown = await req.json().catch(() => null);
+  const rec = body !== null && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>) : {};
+  const { surchargeId } = rec;
   if (typeof surchargeId !== "string" || surchargeId.length === 0) {
     throw new HttpError(400, "surchargeId is required");
   }
