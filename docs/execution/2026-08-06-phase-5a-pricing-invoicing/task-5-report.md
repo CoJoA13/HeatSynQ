@@ -76,3 +76,102 @@ Verified, with concrete observations:
 ## Not done (explicitly out of scope)
 
 No plan or service change — the open decision resolved to a UI-only warning, not a service guard, so `part-prices.ts` and its migration were left untouched.
+
+## Fix wave 1
+
+Fixes for the review findings on this task (Important #1, plus Minors #2/#3/#5/#7, plus #8). All commands run from `erp/`.
+
+### Finding 1 (IMPORTANT) — atomic reorder route replaces the two-PATCH position swap
+
+- **`erp/src/server/part-prices.ts`**: added `reorderPartPrices(partId, orderedIds)`, modelled on `reorderPartInspections` (`part-inspections.ts:151`) exactly — same live-id-set check (`The order must list every price row exactly once`), same Serializable transaction, same "only write/audit rows whose position actually changed" loop, reusing the existing `claimLivePrice` helper.
+- **`erp/src/app/api/parts/[id]/prices/order/route.ts`** (new): `PUT`, modelled on `.../inspections/order/route.ts`, but gates on **both** `mustCan(user, "parts", "edit")` **and** `mustDo(user, "change_prices")` — matching the four existing price routes, not the inspections route's single gate (deliberate, per the brief).
+- **`erp/src/app/parts/[id]/PricingSection.tsx`**: `move()` rewritten to compute the new id order client-side and send it in one `PUT /api/parts/{id}/prices/order`, then `load()`. Deleted the two-PATCH swap and its now-wrong comment.
+- **`addRow`'s position source fixed**: added a `rowsReady` flag, set only once `load()` has actually landed a list. `addRow()` now refuses (with an `onError` message) rather than minting `position: 0` while `rowsReady` is false — closing the exact race/failure-mode the finding described. The "Add operation" button also now disables and re-titles on `!rowsReady`, mirroring the existing `codesReady` idiom in the same file.
+- **Tests**: `erp/tests/part-prices.test.ts` — new `describe("reorderPartPrices", ...)` block (7 cases: persists order atomically, rejects missing/duplicate/extra id with the exactly-once message, wrong-part scoping is the set-check's 400 not a 404, only touched rows are audited, 404s a soft-deleted part). `erp/tests/parts-routes.test.ts` — new route test `PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically` (401 with no cookie, 403 with `parts.edit` alone, 403 with an unrelated permission, 200 with both, plus the 400 set-check cases and the cross-part 400).
+
+Commands and output:
+
+```
+$ npx vitest run tests/part-prices.test.ts
+ ✓ tests/part-prices.test.ts (18 tests) 934ms
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+
+$ npx vitest run tests/parts-routes.test.ts
+ ✓ tests/parts-routes.test.ts (22 tests) 4575ms
+ Test Files  1 passed (1)
+      Tests  22 passed (22)
+```
+
+**403-discrimination proof** (per the brief: remove `mustDo`, watch the new route test fail, restore, watch it pass). Temporarily deleted the `mustDo(user, "change_prices");` line (and its comment) from `erp/src/app/api/parts/[id]/prices/order/route.ts`, then:
+
+```
+$ npx vitest run tests/parts-routes.test.ts -t "PUT /api/parts/\[id\]/prices/order gates"
+ × parts routes > PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically 388ms
+   → expected 200 to be 403 // Object.is equality
+ FAIL  tests/parts-routes.test.ts > ... > PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically
+AssertionError: expected 200 to be 403 // Object.is equality
+- Expected: 403
++ Received: 200
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+```
+
+Restored the `mustDo` line, reran the same filter:
+
+```
+$ npx vitest run tests/parts-routes.test.ts -t "PUT /api/parts/\[id\]/prices/order gates"
+ ✓ parts routes > PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically  511ms
+ Test Files  1 passed (1)
+      Tests  1 passed | 21 skipped (22)
+```
+
+Confirms the test genuinely discriminates on the `mustDo` gate rather than passing regardless.
+
+### Finding 2 (Minor) — basis-change warning now names the prices, not just the thresholds
+
+`PricingSection.tsx`'s `changePricePer()` confirm text rewritten: now names the row's Unit price and every break's own threshold **and** price as all being read in the current basis, not just the thresholds. Also reworded "stated in Each units" / "in Per lb units" to "read today as Each amounts" / "read as a Per lb amount", which reads naturally regardless of which `PRICE_PER_LABELS` value is substituted in.
+
+### Finding 3 (Minor) — disabled break-draft inputs now carry a title, in both files
+
+- `PricingSection.tsx`: added `title={title}` to the two add-break draft inputs (Threshold/Price).
+- `InspectionsSection.tsx`: added `title={canEdit.title}` to the four bare draft inputs (Min/Max/Sample qty/Location) that had the identical gap.
+
+### Finding 5 (Minor) — blanking a break field is refused client-side with a plain reason
+
+`blurSaveBreak` in `PricingSection.tsx` now short-circuits on `value === ""`: reverts the field to what it held at focus time (so the UI never shows a "cleared" value the server never received) and reports `"Threshold cannot be blank — delete the break instead."` / `"Price cannot be blank — delete the break instead."` instead of firing a save that could only fail with the generic decimal-format message. The row money fields' existing `"" → null` handling (`:122`) is untouched — those columns are genuinely nullable, unlike a break's.
+
+### Finding 7 (Minor) — DEV database litter removed
+
+Confirmed via `psql` that `task5_nocp`/`task5_noedit` were `active:false` but not removed, and additionally found **two now-orphaned throwaway roles** the prior session's report claimed were hard-deleted but were not: `Task5 NoChangePrices` and `Task5 NoPartsEdit`. There is no user-delete route in this app by design (`src/app/admin/users/page.tsx`: "Users are never deleted — deactivate instead" — audit history must keep resolving their names), so the finding's premise ("Users have a delete route") does not hold for `User` (it does for `Role`, via `deleteRole`/`DELETE /api/admin/roles/[id]`). Since these are throwaway QA fixtures with zero audit/business value — not real users — cleanup followed the exact precedent `e2e/lib/db-fixtures.ts` already sets for its own throwaway rows ("this script is not a user of the app's UI"): a one-off, guarded (`erp` + localhost only) Prisma script, run once and deleted, that removed both users (after confirming zero dependent Session/OrderDraft/SavedView/Invoice/override rows) and both orphaned roles. Verified clean afterward via `psql` (`count = 0` for both).
+
+### Finding 8 — E2E coverage for the double gate
+
+- **`erp/e2e/lib/db-fixtures.ts`**: added a dedicated fixture step code (`E2E-PRICE`, not `stepCodeA`/`stepCodeB` — those are load-bearing for `blocked-code-delete.mjs`'s exact blocker count) with one `PartPrice` row on the fixture part, plus a new fixture role/user (`E2E Price Editor Role` / `e2e_price_editor`: `parts.view` + `parts.edit`, deliberately **not** `action.change_prices`). Added `deletePartPrices()` (both `PartPrice`/`PartPriceBreak` are plain restrict-on-delete FKs off `Part` and `ProcessStepCode`) wired into both `reapLeftovers()` and `cleanup()`, ahead of the step-code and part deletes it would otherwise 23503 against.
+- **`erp/e2e/flows/permission-gating.mjs`**: added a Pricing-section case after the existing Process-steps assertions. Case 1, still logged in as the plain restricted user (holds neither `parts.edit` nor `change_prices`): the Price-per select and Remove-operation button (both `disabled={disabled}` alone, no other confound, unlike the money inputs which are `readOnly` not `disabled`) are disabled with title `"Requires parts.edit"` — the edit-gate tie-break. Case 2, re-logged-in mid-flow (the `credit-hold-block-and-override.mjs` precedent) as the new price-editor fixture user (holds `parts.edit`, not `change_prices`): the same two controls are disabled with title `"Requires change_prices"` — proving the second gate bites once the first is satisfied, which the plain restricted user alone could never demonstrate.
+- Generalized `assertDisabledWithTooltip` to accept an expected-title parameter (default unchanged) rather than adding a second near-duplicate helper.
+
+Verified end to end by the full `npm run test:e2e` run below (`permission-gating` passed with the new assertions included; fixture create/cleanup both succeeded).
+
+### Full gate run
+
+```
+$ npx tsc --noEmit          # clean, no output
+$ npx eslint src tests      # clean, no output
+$ npm test                  # 99 test files, 1445 tests, all passed (was 1437 before this wave: +8 new)
+$ npm run build             # standalone build succeeded; /api/parts/[id]/prices/order listed in the route table
+$ npm run test:e2e          # All 15 flows passed, including permission-gating with the new Pricing case; dev-DB fixture cleanup ok
+```
+
+### Files changed
+
+- `erp/src/server/part-prices.ts` (new `reorderPartPrices`)
+- `erp/src/app/api/parts/[id]/prices/order/route.ts` (new)
+- `erp/src/app/parts/[id]/PricingSection.tsx` (findings 1/2/3/5)
+- `erp/src/app/parts/[id]/InspectionsSection.tsx` (finding 3)
+- `erp/tests/part-prices.test.ts` (new `reorderPartPrices` suite)
+- `erp/tests/parts-routes.test.ts` (new reorder-route test)
+- `erp/e2e/lib/db-fixtures.ts` (finding 8 fixtures)
+- `erp/e2e/flows/permission-gating.mjs` (finding 8 assertions)
+
+DEV database (`erp`) also had `task5_nocp`/`task5_noedit` (users) and `Task5 NoChangePrices`/`Task5 NoPartsEdit` (roles) removed via a one-off script (not committed — see finding 7 above).

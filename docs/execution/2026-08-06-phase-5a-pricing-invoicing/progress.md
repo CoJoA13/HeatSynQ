@@ -231,6 +231,64 @@ Task 5: implementer DONE — commit 48284f7, PricingSection.tsx created fresh (+
 Task 5: review dispatched (task-reviewer, opus — a 403-line client component with no unit-test
   seam, the delegated design decision, §5.16/§5.13, and 2C-3's draft-preservation trap)
 
+Task 5: review — Spec ⚠️ (substantially compliant), quality NEEDS FIXES. 1 Important, 7 Minor.
+  DESIGN DECISION RATIFIED by the reviewer: warn is right. Refusing would make a legitimate
+  correction unreachable (a user who mis-set the basis, whose thresholds are already the numbers
+  they meant, would have to delete every break to fix it), and re-stating needs an EACH↔LB ratio
+  this screen does not have — using Part.eachWeight would be exactly the assumption the prime
+  directive forbids.
+  Important (FIXED): move() rebuilt the TWO-PATCH position swap that BOTH siblings on this same
+    page carry explicit comments warning against (InspectionsSection.tsx:109-113,
+    ProcessStepsSection.tsx:279-281). The swap permutes the multiset of position values, so no
+    sequence of clicks can ever remove a duplicate: once two rows tie, their relative order is
+    frozen forever and the up/down buttons between them become permanent no-ops — on the ordering
+    an invoice prints in. Three entries into that state, one of them not even a race: on a FAILED
+    prices GET, `rows` is [] so addRow's nextPosition computes 0 and collides on every add.
+  CONTROLLER DECISION on the fix: build the atomic reorder route rather than patch the swap.
+    Precedent is threefold and unambiguous (reorderPartInspections, reorderSteps,
+    reorderTemplateSteps — each with a route), and both siblings on this page were converted away
+    from the two-PATCH shape already. It does NOT contradict the brief: still up/down buttons,
+    still no drag handle — only the mechanism changed. One deliberate divergence from the
+    inspections model it mirrors: that route gates on parts.edit alone, but every price route
+    gates on parts.edit AND change_prices, so the new one matches the price routes.
+    PLAN AMENDMENT: Task 4's file list did not contain this route; it is added here.
+  Minors 2/3/5/7/8 FIXED in the same wave; #3 fixed in BOTH PricingSection and InspectionsSection
+    (sibling-split rule applied deliberately rather than leaving a known-identical gap).
+  #8 is the one that matters beyond this task: the reviewer established NOTHING in CI could catch
+    a regression in PricingSection.tsx — no vitest seam, no E2E flow touched pricing, and the only
+    automated check that sees the file is the client-import sweep. An e2e/flows/permission-gating
+    case now covers the double gate, using a NEW fixture user/role so both halves of the AND are
+    exercised (reusing the existing "restricted" user would have varied only one half).
+  Minor 4 DEFERRED (own task, not this one): PricingSection's synthesized fallback <option> is
+    BETTER than what InspectionsSection and customers/[id] do — so the siblings now diverge in the
+    good direction. The sweep to backport it is filed, not folded in.
+  Minor 6 RECORDED, no action: the component holds a full editable `rows` copy, the shape 2C-3
+    warns about — but the reviewer confirmed the actual 2C-3 failure (a stale clean copy masking
+    another user's edit) is unreachable here, and it matches InspectionsSection exactly.
+Task 5: fix wave 1 (sonnet) — commit 2a31ea8, 1445 tests, E2E 15/15, 403 discrimination proven.
+  The fixer CORRECTED TWO FACTUAL ERRORS rather than working around them, both accepted: my
+  dispatch claimed "users have a delete route" (this app NEVER hard-deletes User rows —
+  "deactivate instead"), and the previous session's report had claimed two roles were deleted when
+  they were not. Cleanup used a guarded one-off script on the E2E harness's own precedent.
+Task 5: CONTROLLER VERIFICATION of the review's ⚠️ — nobody had ever LOOKED at this 400-line
+  section, so I seeded one part + price row + two breaks into the DEV database and inspected it.
+  Screenshots failed here too ("the Browser pane is not displayed, so the page is not compositing
+  frames") — INDEPENDENTLY CONFIRMING the implementer's disclosed limitation was environmental,
+  not a failure on their part. Measured geometry instead of pixels:
+    Desktop (1385px card): 0 overflowing elements, no horizontal page scroll, the grid-cols-4
+      money row renders as four equal 258px columns on ONE line (Setup charge / Unit price /
+      Minimum charge / Price per, all at y=1112), nested break table 1095px CONTAINED in the card.
+    Narrow (644px): 2 overflowing inputs, table wider than its card, grid stays 4 columns at 73px.
+      NOT a Task 5 finding — measured Inspections and Process steps at the same width and all
+      three are IDENTICAL (2 overflowing, table overflows card). House baseline for a desktop
+      office ERP of 1-5 users, not a regression. Recorded so it is not rediscovered as one.
+  Scratch data removed afterward. The residual DEV rows ("Task 5 Test Customer/Part") are the
+  implementer's, are all SOFT-deleted, and are correctly left alone — hard-deleting them would
+  break the house rule that deletion is always soft outside tests.
+Task 5: re-review dispatched (task-reviewer, opus — the new reorder route/service, and 106 new
+  lines in the shared e2e/lib/db-fixtures.ts, whose reaper hard-deleted a developer's own rows in
+  2C-3 behind a guard that checked only the database NAME)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
