@@ -788,6 +788,17 @@ export async function updateShipper(id: string, input: unknown): Promise<Shipper
   return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
     const { shipper, orderIds } = await claimLiveShipper(tx, id);
 
+    // Guard ONLY when the patch touches a BILLED field (fix wave 1, controller-approved scope
+    // extension of Task 10). `freightAmount`/`billFreight` are the only two fields of this patch
+    // the pricing engine reads (`PricingInput.freight`, pricing.ts) — `freightTerms`/
+    // `freightClass`/`freightDescription`/`proNumber`/`scacCode`/`route`/`comments`/etc. are
+    // descriptive shipping-doc fields the engine never touches. A header-only edit (route,
+    // comments, ship-to, …) on an invoiced shipment must stay allowed — over-blocking a comment
+    // edit would be a real usability regression the brief specifically calls out.
+    if (data.billFreight !== undefined || data.freightAmount !== undefined) {
+      await refuseIfInvoiced(tx, orderIds, "This shipment's freight cannot be changed");
+    }
+
     if (data.shipToAddressId) {
       const addr = await tx.customerAddress.findFirst({
         where: { id: data.shipToAddressId, customerId: shipper.customerId, kind: "SHIP_TO", deletedAt: null },
@@ -1000,6 +1011,13 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
         `Shipment paper covering this order has already printed (Packing List ${shipper.shipperNumber}) — ` +
         "void the shipment instead of removing it.");
     }
+
+    // The exact mirror of `addOrderToShipper`'s guard (fix wave 1, controller-approved scope
+    // extension of Task 10): removing an order from the shipment removes THAT order's shipped
+    // quantity — exactly what a finalized invoice already billed. Scoped to `target.orderId`
+    // alone, not the whole claimed set, because this is the one order whose billed facts this
+    // write actually changes; the other survivors' shipped quantity is untouched by this call.
+    await refuseIfInvoiced(tx, [target.orderId], "This order cannot be removed from the shipment");
 
     // The other half of §4.2's invariant, the replaceShipperLines shape: the SURVIVING orders
     // must still carry a positive-qty line — an order that joined with no lines yet must not be
@@ -1235,7 +1253,14 @@ export async function replaceShipperLines(
 
 /** Bulk PUT of one `ShipperOrder`'s containers — delete-then-recreate at positions 1..n, each
  *  `orderContainerId` validated to belong to this SAME order (the create-path's own per-order
- *  membership check, `saveNewShipper`, scoped down to one order here). */
+ *  membership check, `saveNewShipper`, scoped down to one order here).
+ *
+ *  **Deliberately NOT invoice-guarded** (fix wave 1, controller-approved scope extension of
+ *  Task 10 — the other candidate flagged in the same review, ruled lower-risk and left alone).
+ *  A container is customer packaging (a box/skid the parts ride in); its count is never an input
+ *  to `priceOrder` (pricing.ts's `PricingInput` has no container field at all — only
+ *  `OrderLineInput.shippedQty`/`shippedWeight` feed the engine). Replacing the container list
+ *  after finalize cannot change what a finalized invoice billed. */
 export async function replaceShipperContainers(id: string, shipperOrderId: string, input: unknown): Promise<ShipperDetail> {
   const data = z.array(SHIP_CONTAINER).parse(input);
 
@@ -1300,7 +1325,15 @@ export async function replaceShipperContainers(id: string, shipperOrderId: strin
 
 /** Bulk PUT of one `ShipperOrder`'s serials — delete-then-recreate, each `orderSerialId` validated
  *  to belong to this SAME order. No position write of its own (`ShipperSerial` has none — a serial
- *  is either on the ticket or it isn't, schema.prisma's own comment on its `orderBy`). */
+ *  is either on the ticket or it isn't, schema.prisma's own comment on its `orderBy`).
+ *
+ *  **Deliberately NOT invoice-guarded** (fix wave 1, controller-approved scope extension of
+ *  Task 10 — the other candidate flagged in the same review, ruled lower-risk and left alone).
+ *  A serial is per-piece identity, not quantity or weight: selecting a different subset of an
+ *  order line's existing serials changes which units are individually named on the ticket, not
+ *  how many shipped or how much they weighed — `priceOrder` prices off `shippedQty`/
+ *  `shippedWeight` alone (pricing.ts), never off which serials were attached. Replacing the
+ *  serial list after finalize cannot change what a finalized invoice billed. */
 export async function replaceShipperSerials(id: string, shipperOrderId: string, input: unknown): Promise<ShipperDetail> {
   const data = z.array(SHIP_SERIAL).parse(input);
 

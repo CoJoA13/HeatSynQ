@@ -5,7 +5,8 @@ import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, replaceCharges, voidOrder, type OrderDetail } from "@/server/orders";
 import {
-  createShipper, voidShipper, replaceShipperLines, addOrderToShipper, type ShipperDetail,
+  createShipper, voidShipper, replaceShipperLines, addOrderToShipper, removeOrderFromShipper,
+  updateShipper, type ShipperDetail,
 } from "@/server/shippers";
 import { finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage } from "@/server/invoice-guards";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -308,6 +309,68 @@ describe("shipment edits freeze once an invoice is finalized", () => {
       { orderLineId: order.lines[0].id, qty: 3, weight: 7.5, lineComplete: true },
     ]));
     expect(after.orders[0].lines[0].qty).toBe(3);
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Fix wave 1 (controller-approved scope extension of Task 10): `removeOrderFromShipper` and
+  // `updateShipper` were the two review-flagged holes ruled real. `replaceShipperContainers` and
+  // `replaceShipperSerials` were also flagged, ruled NOT to be guarded (neither touches a billed
+  // quantity/weight — see the doc comments at their definitions in shippers.ts), so they get no
+  // test here.
+  // ---------------------------------------------------------------------------------------------
+
+  it("refuses to remove an invoiced order from a multi-order shipment — the addOrderToShipper mirror", async () => {
+    const customer = await makeCustomer();
+    const orderA = await orderFor(customer);
+    const orderB = await orderFor(customer);
+    const { shipper } = await asSystem(() =>
+      createShipper(twoOrderInput(customer.id, orderA, orderB), { canOverrideCreditHold: false }));
+    await finalizedInvoice(orderA.id, customer.id);
+
+    const soA = shipper.orders.find((o) => o.orderId === orderA.id)!;
+    await expect(asSystem(() => removeOrderFromShipper(shipper.id, soA.id)))
+      .rejects.toThrow(new RegExp(`Invoice ${orderA.orderNumber}`));
+    // Refused, not half-applied: both orders (and their lines) are still on the shipment.
+    expect(await prisma.shipperOrder.count({ where: { shipperId: shipper.id } })).toBe(2);
+  });
+
+  it("still allows removing a NON-invoiced order from a shipment that carries an invoiced one", async () => {
+    // The guard is scoped to the TARGET order being removed, not the whole claimed set — removing
+    // orderB (clean) must succeed even though orderA (staying on the shipment) is invoiced.
+    const customer = await makeCustomer();
+    const orderA = await orderFor(customer);
+    const orderB = await orderFor(customer);
+    const { shipper } = await asSystem(() =>
+      createShipper(twoOrderInput(customer.id, orderA, orderB), { canOverrideCreditHold: false }));
+    await finalizedInvoice(orderA.id, customer.id);
+
+    const soB = shipper.orders.find((o) => o.orderId === orderB.id)!;
+    const after = await asSystem(() => removeOrderFromShipper(shipper.id, soB.id));
+    expect(after.orders.map((o) => o.orderId)).toEqual([orderA.id]);
+  });
+
+  it("refuses to change freight on an invoiced shipment", async () => {
+    const { order, customer } = await savedOrder();
+    const shipper = await shipmentFor(order);
+    await finalizedInvoice(order.id, customer.id);
+
+    await expect(asSystem(() => updateShipper(shipper.id, { billFreight: true, freightAmount: "125.00" })))
+      .rejects.toThrow(new RegExp(`Invoice ${order.orderNumber}`));
+    const row = await prisma.shipper.findUniqueOrThrow({ where: { id: shipper.id } });
+    expect(row.billFreight).toBe(false); // refused, not half-applied
+    expect(row.freightAmount).toBeNull();
+  });
+
+  // The discriminating negative (without it, a guard that refuses EVERY updateShipper call would
+  // pass the test above just as well): a patch that touches only a non-billed field must still
+  // succeed on an invoiced shipment — over-blocking a comment edit is a real usability regression.
+  it("still allows a non-billed field edit (comments) on an invoiced shipment", async () => {
+    const { order, customer } = await savedOrder();
+    const shipper = await shipmentFor(order);
+    await finalizedInvoice(order.id, customer.id);
+
+    const after = await asSystem(() => updateShipper(shipper.id, { comments: "carrier called ahead" }));
+    expect(after.comments).toBe("carrier called ahead");
   });
 });
 
