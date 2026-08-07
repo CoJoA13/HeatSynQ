@@ -220,6 +220,78 @@ export async function listInvoiceCandidates(
 }
 
 // -------------------------------------------------------------------------------------------
+// List — every invoice/credit (Task 16, the routes task: the worklist's second section, and the
+// order hub's Invoices section, both need the actual documents rather than the candidates above).
+// Row shape stays a thin summary — `getInvoice`/`readInvoiceDetail` is still the source of the
+// full detail a single page reads — the `listShippers`/`ShipperRow` precedent (shippers.ts).
+// -------------------------------------------------------------------------------------------
+
+export type InvoiceListRow = {
+  id: string; kind: InvoiceKindValue; status: InvoiceStatusValue;
+  orderId: string; orderNumber: number; documentNumber: string;
+  customerId: string; customerCode: string; customerName: string;
+  invoiceDate: string; total: number; finalizedAt: string | null; deletedAt: string | null;
+};
+
+export type InvoiceFilter = { customerId?: string; status?: InvoiceStatusValue; from?: string; to?: string };
+
+const LIST_SELECT = {
+  id: true, kind: true, status: true, orderId: true, customerId: true, creditNumber: true,
+  order: { select: { orderNumber: true } },
+  customer: { select: { code: true, name: true } },
+  invoiceDate: true, total: true, finalizedAt: true, deletedAt: true,
+} satisfies Prisma.InvoiceSelect;
+
+type ListRowShape = Prisma.InvoiceGetPayload<{ select: typeof LIST_SELECT }>;
+
+function toListRow(row: ListRowShape, prefix: string): InvoiceListRow {
+  return {
+    id: row.id, kind: row.kind, status: row.status,
+    orderId: row.orderId, orderNumber: row.order.orderNumber,
+    documentNumber: documentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
+    customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
+    invoiceDate: formatDateOnly(row.invoiceDate), total: row.total.toNumber(),
+    finalizedAt: row.finalizedAt ? row.finalizedAt.toISOString() : null,
+    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+  };
+}
+
+function invoiceListWhere(filter: InvoiceFilter): Prisma.InvoiceWhereInput {
+  const invoiceDate = filter.from || filter.to ? {
+    ...(filter.from ? { gte: parseDate(filter.from, "Invoice date from") } : {}),
+    ...(filter.to ? { lte: parseDate(filter.to, "Invoice date to") } : {}),
+  } : undefined;
+  return {
+    deletedAt: null, // a discarded draft never printed and is a candidate again (listInvoiceCandidates)
+    ...(filter.customerId ? { customerId: filter.customerId } : {}),
+    ...(filter.status ? { status: filter.status } : {}),
+    ...(invoiceDate ? { invoiceDate } : {}),
+  };
+}
+
+/** Every live invoice/credit, newest first — Task 17's worklist "Invoices" section. */
+export async function listInvoices(filter: InvoiceFilter): Promise<InvoiceListRow[]> {
+  const prefix = await getSetting("invoice_number_prefix");
+  const rows = await prisma.invoice.findMany({
+    where: invoiceListWhere(filter), select: LIST_SELECT,
+    orderBy: [{ invoiceDate: "desc" }, { createdAt: "desc" }],
+  });
+  return rows.map((r) => toListRow(r, prefix));
+}
+
+/** Every invoice/credit ever raised against this order, discarded drafts included — the order
+ *  hub's own Invoices section, the `shipmentsForOrder` precedent (shippers.ts): full history, not
+ *  just the live state. */
+export async function invoicesForOrder(orderId: string): Promise<InvoiceListRow[]> {
+  const prefix = await getSetting("invoice_number_prefix");
+  const rows = await prisma.invoice.findMany({
+    where: { orderId }, select: LIST_SELECT,
+    orderBy: [{ invoiceDate: "desc" }, { createdAt: "desc" }],
+  });
+  return rows.map((r) => toListRow(r, prefix));
+}
+
+// -------------------------------------------------------------------------------------------
 // Create — the bracket is `saveNewShipper` with the shipment parts removed: read deps outside,
 // then claim -> refuse -> read state -> build the engine input -> price -> write.
 // -------------------------------------------------------------------------------------------
