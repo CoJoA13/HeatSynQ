@@ -960,6 +960,21 @@ const SAVE = z.object({
 
 ### Task 7: Admin → Surcharges page + routes
 
+> **Carried in from Task 6's re-review (2026-08-07). This task owns the surcharge editor, so two
+> things bind it:**
+>
+> 1. **The editor must post the WHOLE surcharge row, not a partial patch.** Task 6 fixed its
+>    headline defect with normalize-on-write: `updateSurcharge` pins every optional column to its
+>    explicit empty value, so a payload that OMITS a field CLEARS it. That is deliberate — it is
+>    what makes the `kind` ↔ `rate`/`amount` invariant actually hold on the persisted row — but it
+>    means `updateSurcharge(id, {name, kind, amount, position})` on an inactive surcharge silently
+>    re-activates it and wipes `minimumAmount`. `SAVE` still marks `scope`/`active` `.optional()`,
+>    so nothing in the type system will force your form to submit them. **Submit every field.**
+> 2. **`src/app/admin/page.tsx` does not exist** — the Files list above names it, but there is no
+>    `/admin` index page in this app. Admin sections are reached from the `ADMIN` array in
+>    `src/components/Shell.tsx`. Add `{ label: "Surcharges", href: "/admin/surcharges" }` there;
+>    do **not** create an index page. (Task 3 hit the identical error in its own brief.)
+
 **Files:**
 - Create: `src/app/api/admin/surcharges/route.ts`, `src/app/api/admin/surcharges/[id]/route.ts`, `src/app/api/admin/surcharges/[id]/step-codes/route.ts`, `src/app/api/admin/surcharges/[id]/blockers/route.ts`, `src/app/api/admin/surcharges/[id]/blockers/export/route.ts`, `src/app/admin/surcharges/page.tsx`
 - Modify: `src/app/admin/page.tsx`

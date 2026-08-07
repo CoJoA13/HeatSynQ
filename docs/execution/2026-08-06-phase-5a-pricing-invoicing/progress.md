@@ -439,6 +439,16 @@ Task 6: Minors 2 and 4 folded into Task 8's plan section rather than fixed here 
   still blocks its surcharge, with the blocker panel linking at /customers/{deletedId}, so Task 8
   must decide deliberately how that override gets cleared.
 Task 6: complete (commits 9d5a70c..b764412, re-review clean)
+CONTROLLER MIS-FILING, corrected: I folded the "editor must post the whole row" carry-forward into
+  Task 8 only, following the reviewer's own wording. Wrong — `updateSurcharge` is called by
+  TASK 7's route (Admin → Surcharges IS the surcharge editor); Task 8 is the customer-side
+  override editor and needs the same discipline for `setCustomerSurcharge`. Now recorded on BOTH
+  task sections, each naming the function it actually calls. A carry-forward is only useful if it
+  lands on the task that owns the code.
+Task 7: brief extracted. PLAN DEFECT, same one Task 3 hit: the Files list names
+  `src/app/admin/page.tsx`, which does not exist — there is no /admin index page; admin sections
+  live in Shell.tsx's ADMIN array. Pre-resolved in the plan and in the dispatch rather than left
+  for the implementer to trip over a second time.
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
