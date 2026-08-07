@@ -127,6 +127,15 @@ describe("settings", () => {
     expect(await getSetting("shipper_liability_text")).toBe("Custom liability text");
   });
 
+  it("round-trips the invoice number prefix", async () => {
+    await setSetting("invoice_number_prefix", "7");
+    expect(await getSetting("invoice_number_prefix")).toBe("7");
+  });
+
+  it("rejects a zero credit number seed", async () => {
+    await expect(setSetting("credit_number_next", 0)).rejects.toThrow(/Invalid|Too small/i);
+  });
+
   it("allSettings consistency: invalid stored value falls back to default", async () => {
     await prisma.setting.create({
       data: { key: "request_days_default", value: "garbage" },

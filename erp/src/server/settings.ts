@@ -43,9 +43,14 @@ export const SETTINGS = {
   company_phone: { schema: z.string(), default: "", label: "Company phone", group: "Company" },
   order_number_next: { schema: numberSeed, default: 1000, label: "Next order number", group: "Numbering" },
   shipper_number_next: { schema: numberSeed, default: 1000, label: "Next shipper number", group: "Numbering" },
+  credit_number_next: { schema: numberSeed, default: 1000, label: "Next credit number", group: "Numbering" },
+  // The invoice's number IS the order number (spec §3.2 — the sample's "7 −" is a plant/form
+  // code, not a sequence). This prefix is what prints ahead of it.
+  invoice_number_prefix: { schema: z.string(), default: "", label: "Invoice number prefix", group: "Numbering" },
+  // Intentionally unused for the rest of the project — certifications carry no number of their own
+  // (P4 §3.19) and an invoice is identified by its order number (5A §3.2). Left in place rather
+  // than removed; do not wire either of these up to anything.
   invoice_number_next: { schema: numberSeed, default: 1000, label: "Next invoice number", group: "Numbering" },
-  // Intentionally unused for the rest of the project (spec §3.19: certifications carry no number
-  // of their own). Left in place rather than removed; do not wire this up to anything.
   cert_number_next: { schema: numberSeed, default: 1000, label: "Next certification number", group: "Numbering" },
   quote_number_next: { schema: numberSeed, default: 1000, label: "Next quote number", group: "Numbering" },
   bol_number_next: { schema: numberSeed, default: 1000, label: "Next bill-of-lading number", group: "Numbering" },
