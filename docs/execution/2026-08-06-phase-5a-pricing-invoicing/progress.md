@@ -208,6 +208,29 @@ Task 4: re-review (task-reviewer, sonnet, scoped to the five fixes) — Spec ✅
   It also verified finding 4 was precisely scoped (only claimLivePrice's comment carried the stale
   citation; claimLiveBreak's never did and was correctly left alone).
 Task 4: complete (commits 04133db..e343a16, re-review clean)
+Task 5: dispatched (implementer, sonnet) — BASE 2a52093, brief task-5-brief.md, carrying the
+  delegated basis-change design decision in the brief's opening blockquote.
+Task 5: implementer DONE — commit 48284f7, PricingSection.tsx created fresh (+403) plus 2 lines
+  in parts/[id]/page.tsx. 1437 tests, tsc+eslint+build clean, E2E 15/15.
+  DESIGN DECISION MADE (the one delegated to this task): a basis change among the non-LOT units
+  on a row with live breaks **warns via confirm()**, naming the break count and the old/new units
+  — rather than refusing it or re-stating the thresholds. Implementer's reasoning: refusing would
+  foreclose a state Task 9's engine is explicitly scoped to handle, and re-stating would require
+  inventing a unit conversion this screen has no basis for. Controller check before review:
+  `confirm()` is an ESTABLISHED idiom here, not an invention — 14 files use it, including the
+  sibling ProcessStepsSection.tsx on this very page. Sent to review to judge on the merits.
+  VERIFICATION CAVEAT, disclosed by the implementer rather than hidden: this sandbox's Browser
+  pane could not composite frames (screenshots timed out) and synthetic pointer events were
+  unreliable, so some interactions were driven with `element.click()`. That fires the same React
+  handler, so handler LOGIC is genuinely exercised — but it bypasses pointer delivery, so it
+  cannot establish that a control is reachable, unobscured, or truly (not just visually) disabled.
+  Claims are backed by network bodies, DOM reads and server-state reads. Flagged to the reviewer
+  to separate what is evidenced from what is merely asserted; honest disclosure is neither a
+  defect in itself nor a free pass. This component has NO vitest seam, so that evidence is the
+  only test it has.
+Task 5: review dispatched (task-reviewer, opus — a 403-line client component with no unit-test
+  seam, the delegated design decision, §5.16/§5.13, and 2C-3's draft-preservation trap)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
