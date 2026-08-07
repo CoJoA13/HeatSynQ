@@ -327,6 +327,34 @@ Task 5: report's stale opening corrected in place with a controller note rather 
   the original wording is the historical record of what the implementer believed (re-review M6).
 Task 5: complete (commits 2a52093..48ce7e8, re-review clean)
 
+Task 6: dispatched (implementer, sonnet) — BASE 9d5a70c, brief task-6-brief.md
+Task 6: implementer DONE — commit fb7a2d9, 18/18 new tests (6 surcharges + 12 sweep), full suite
+  1453/1453, tsc+eslint clean. Verified against the tree before writing that Task 2 had ALREADY
+  extended AuditableModel and SNAPSHOT_INCLUDE — no change needed (claim passed to the reviewer
+  to confirm rather than accept).
+  THREE DEVIATIONS, all DISCLOSED by the implementer rather than slipped in:
+  1. A NEW MIGRATION outside the brief's file list — 20260807024446_surcharge_step_code_cascade,
+     dropping and re-adding SurchargeStepCode_surchargeId_fkey with ON DELETE CASCADE. Reasoning:
+     SurchargeStepCode is an OWNED CHILD (setSurchargeStepCodes deletes/recreates the whole set on
+     every save), same shape as ProcessStepFieldDef.codeId; without Cascade, making `surcharge` a
+     BlockerTarget would let a surcharge's own step-code list block its own deletion.
+  2. updateSurcharge takes the FULL SAVE shape, not a partial patch — the implementer's reading of
+     "consistency rules live in the superRefine, not the service body". Brief does not test it.
+  3. A 3-line duplicate-step-code-id guard in setSurchargeStepCodes, not brief-specified, for a
+     clean message against a real unique constraint.
+  CONTROLLER VERIFICATION of the migration (mechanical only — the DESIGN question went to the
+  reviewer, since a wrong FK is far cheaper to fix now than after Task 9 depends on it):
+    purely corrective, no data loss; applied to BOTH databases (26 migrations, "up to date" on
+    each); schema.prisma carries the matching onDelete: Cascade; `migrate diff` reports zero drift
+    ("This is an empty migration"). The two-database rule was honored without being reminded.
+  OPEN QUESTION I put to the reviewer rather than settling myself: ON DELETE CASCADE is a HARD
+  delete of child rows, in a system whose house rule is that deletion is ALWAYS soft and hard
+  deletes happen "only in tests". Whether the ProcessStepFieldDef precedent genuinely matches, and
+  whether registering `surcharge` as a BlockerTarget was even required by the brief, are design
+  calls — not something to wave through because the mechanics check out.
+Task 6: review dispatched (task-reviewer, opus — a hand-written migration, a schema FK change, and
+  reference-links.ts + its sweep, which is the EXACT area Task 2 shipped a 500-ing defect in)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
