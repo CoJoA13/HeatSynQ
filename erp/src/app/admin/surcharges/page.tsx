@@ -84,8 +84,13 @@ export default function SurchargesPage() {
       api<Gl[]>("/api/admin/reference/glAccount"),
       api<StepCodeOption[]>("/api/picklists/processStepCode"),
     ]);
-    if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the race
-    setRows(r); rowsRef.current = r; setGls(g); setStepCodeOptions(sc);
+    // rowsRef always takes this fetch's result, ticket or no: it exists to hand a QUEUED run the
+    // freshest server truth, not to gate what the user sees, so a superseded load must still land
+    // it (Task 7 re-review — a save queued between a superseded load and the load that supersedes
+    // it was composing from the PRE-save row instead). Only the rendered state below is gated.
+    rowsRef.current = r;
+    if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+    setRows(r); setGls(g); setStepCodeOptions(sc);
   }, [latest]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
@@ -102,10 +107,13 @@ export default function SurchargesPage() {
   // save #1; the click starts save #2 before #1 has returned. Serializing the requests is only
   // half of it: `save`/`toggleStepCode` below look their row up from `rowsRef.current` INSIDE the
   // queued run, not at call time, so save #2 composes against the row as it stands on ITS OWN
-  // turn — after save #1's `load()` has already landed — instead of the stale snapshot that
-  // existed when the click first fired. Shared by both functions because they must serialize
-  // against EACH OTHER too: a rate edit and a step-code toggle fired in quick succession are
-  // exactly as ordinary an overlap as two field saves.
+  // turn — after `rowsRef.current` has been updated by save #1's `load()` fetch (or a later one
+  // still, if another load's fetch landed after it; `load()` writes the ref unconditionally on
+  // every completed fetch, never gated by the `useLatest` ticket that guards only the rendered
+  // state, so a queued run is never left composing from a pre-save ref — Task 7 re-review) —
+  // instead of the stale snapshot that existed when the click first fired. Shared by both
+  // functions because they must serialize against EACH OTHER too: a rate edit and a step-code
+  // toggle fired in quick succession are exactly as ordinary an overlap as two field saves.
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
 
   /** The one save path every field on the detail pane goes through. `patch` carries only what
