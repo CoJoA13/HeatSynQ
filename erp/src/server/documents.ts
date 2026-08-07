@@ -29,6 +29,7 @@ import { can, type Area, type PermUser } from "./permissions";
  */
 export const AREA_FOR_KIND: Record<DocumentKind, Area> = {
   TRAVELER: "orders", SHIPPER: "shipping", BOL: "shipping", CERT: "certs",
+  INVOICE: "invoicing", CREDIT: "invoicing",
 };
 
 /**
@@ -43,11 +44,14 @@ export type DocumentOwner =
   | { kind: "TRAVELER"; orderId: string; loadNumber: number | null }
   | { kind: "SHIPPER"; shipperId: string; orderId: string | null }
   | { kind: "BOL"; shipperId: string }
-  | { kind: "CERT"; certId: string };
+  | { kind: "CERT"; certId: string }
+  | { kind: "INVOICE"; invoiceId: string }
+  | { kind: "CREDIT"; invoiceId: string };
 
 export type DocumentMeta = {
   id: string; kind: DocumentKind; createdAt: Date;
-  orderId: string | null; shipperId: string | null; certId: string | null; loadNumber: number | null;
+  orderId: string | null; shipperId: string | null; certId: string | null; invoiceId: string | null;
+  loadNumber: number | null;
 };
 
 /** Every scalar column except `fileData` — a list of documents has no reason to pull N PDFs into
@@ -55,7 +59,7 @@ export type DocumentMeta = {
  *  rather than keeping a second column list that could drift from this one. */
 const DOCUMENT_SELECT = {
   id: true, kind: true, createdAt: true,
-  orderId: true, shipperId: true, certId: true, loadNumber: true,
+  orderId: true, shipperId: true, certId: true, invoiceId: true, loadNumber: true,
 } satisfies Prisma.StoredDocumentSelect;
 
 /** `DocumentOwner` → the four owner/scope columns `storedDocument.create` needs, matching the DB
@@ -63,17 +67,23 @@ const DOCUMENT_SELECT = {
  *  module's shape can never silently drift apart. */
 function ownerColumns(owner: DocumentOwner): {
   kind: DocumentKind;
-  orderId: string | null; shipperId: string | null; certId: string | null; loadNumber: number | null;
+  orderId: string | null; shipperId: string | null; certId: string | null; invoiceId: string | null;
+  loadNumber: number | null;
 } {
+  const none = { orderId: null, shipperId: null, certId: null, invoiceId: null, loadNumber: null };
   switch (owner.kind) {
     case "TRAVELER":
-      return { kind: "TRAVELER", orderId: owner.orderId, shipperId: null, certId: null, loadNumber: owner.loadNumber };
+      return { ...none, kind: "TRAVELER", orderId: owner.orderId, loadNumber: owner.loadNumber };
     case "SHIPPER":
-      return { kind: "SHIPPER", orderId: owner.orderId, shipperId: owner.shipperId, certId: null, loadNumber: null };
+      return { ...none, kind: "SHIPPER", orderId: owner.orderId, shipperId: owner.shipperId };
     case "BOL":
-      return { kind: "BOL", orderId: null, shipperId: owner.shipperId, certId: null, loadNumber: null };
+      return { ...none, kind: "BOL", shipperId: owner.shipperId };
     case "CERT":
-      return { kind: "CERT", orderId: null, shipperId: null, certId: owner.certId, loadNumber: null };
+      return { ...none, kind: "CERT", certId: owner.certId };
+    case "INVOICE":
+      return { ...none, kind: "INVOICE", invoiceId: owner.invoiceId };
+    case "CREDIT":
+      return { ...none, kind: "CREDIT", invoiceId: owner.invoiceId };
   }
 }
 
@@ -223,7 +233,9 @@ export async function getDocument(docId: string): Promise<DocumentMeta & { fileD
  * still a unique, safe filename, just not a pretty one. `resolveDocumentFilename` below is the
  * one caller that doesn't already have one and fetches it first.
  */
-export function documentFilename(meta: DocumentMeta, orderNumber?: number, shipperNumber?: number): string {
+export function documentFilename(
+  meta: DocumentMeta, orderNumber?: number, shipperNumber?: number, creditNumber?: number,
+): string {
   switch (meta.kind) {
     case "TRAVELER": {
       const order = orderNumber ?? meta.orderId;
@@ -237,6 +249,13 @@ export function documentFilename(meta: DocumentMeta, orderNumber?: number, shipp
       return `bol-${shipperNumber ?? meta.shipperId}.pdf`;
     case "CERT":
       return `cert-${orderNumber ?? meta.certId}.pdf`;
+    // An invoice is named by the order it bills; a credit carries a number of its own
+    // (P5A design spec §10). `creditNumber` is the CALLER's to supply, exactly as
+    // `orderNumber`/`shipperNumber` already are — this function performs no lookups.
+    case "INVOICE":
+      return `invoice-${orderNumber ?? meta.invoiceId}.pdf`;
+    case "CREDIT":
+      return `credit-${creditNumber ?? meta.invoiceId}.pdf`;
   }
 }
 
@@ -281,6 +300,15 @@ export async function resolveDocumentFilename(meta: DocumentMeta): Promise<strin
       const order = cert === null ? null
         : await prisma.order.findFirst({ where: { id: cert.orderId }, select: { orderNumber: true } });
       return documentFilename(meta, order?.orderNumber);
+    }
+    case "INVOICE":
+    case "CREDIT": {
+      const invoice = meta.invoiceId === null ? null
+        : await prisma.invoice.findFirst({
+            where: { id: meta.invoiceId },
+            select: { creditNumber: true, order: { select: { orderNumber: true } } },
+          });
+      return documentFilename(meta, invoice?.order.orderNumber, undefined, invoice?.creditNumber ?? undefined);
     }
   }
 }

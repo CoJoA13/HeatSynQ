@@ -221,7 +221,10 @@ describe("assertPrintable", () => {
 describe("documentFilename", () => {
   beforeEach(truncateAll);
 
-  const base = { id: "doc1", createdAt: new Date(), orderId: null, shipperId: null, certId: null, loadNumber: null };
+  const base = {
+    id: "doc1", createdAt: new Date(),
+    orderId: null, shipperId: null, certId: null, invoiceId: null, loadNumber: null,
+  };
 
   it("names a TRAVELER by order and, when given one, load number", async () => {
     const meta: DocumentMeta = { ...base, kind: "TRAVELER", orderId: "ord1" };

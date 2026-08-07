@@ -17,7 +17,8 @@ export type ReferenceLinkModel =
   | "customer" | "processStepCode" | "paymentType" | "inspectionCode"
   | "part" | "partSpecification" | "partInspection"
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
-  | "shipper" | "certRequirement";
+  | "shipper" | "certRequirement"
+  | "partPrice" | "surcharge" | "surchargeStepCode" | "invoiceLine" | "billingConfig";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -77,6 +78,48 @@ const CERT_VIA_REQUIREMENT = {
     `Cert · #${((r.cert as { order: { orderNumber: number } }).order).orderNumber}`,
 } as const;
 
+/** An InvoiceLine's FKs are held by a child row, but the blocker a person can act on is the
+ *  INVOICE — the PART_VIA_CHILD / CERT_VIA_REQUIREMENT shape, one model over. A credit names
+ *  itself by its own credit number; an invoice has no number of its own (ruling 2) and names
+ *  itself by the order it bills. */
+const INVOICE_VIA_LINE = {
+  entityLabel: "Invoice",
+  detailPath: (id: string) => `/invoicing/${id}`,
+  liveWhere: { invoice: { is: { deletedAt: null } } },
+  include: { invoice: { select: { id: true, kind: true, creditNumber: true,
+                                  order: { select: { orderNumber: true } } } } },
+  blockerId: (r: Record<string, unknown>) => String((r.invoice as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => {
+    const inv = r.invoice as { kind: string; creditNumber: number | null; order: { orderNumber: number } };
+    return inv.kind === "CREDIT" ? `Credit · ${inv.creditNumber}` : `Invoice · ${inv.order.orderNumber}`;
+  },
+} as const;
+
+/** A SurchargeStepCode is a replace-grid row with no `deletedAt` of its own (§4.2), so it needs
+ *  BOTH halves of the parent-via-child shape: `liveWhere` because `findBlockers`' default of
+ *  `{ deletedAt: null }` is not a column this model has (it would throw, not merely over-report),
+ *  and `blockerId`/`displayName` because the row a person can act on is the SURCHARGE. */
+const SURCHARGE_VIA_STEP_CODE = {
+  entityLabel: "Surcharge",
+  detailPath: () => "/admin/surcharges",
+  liveWhere: { surcharge: { is: { deletedAt: null } } },
+  include: { surcharge: { select: { id: true, name: true } } },
+  blockerId: (r: Record<string, unknown>) => String((r.surcharge as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => String((r.surcharge as { name: string }).name),
+} as const;
+
+/** BillingConfig is the singleton (§4.5): one row, never soft-deleted, no `deletedAt` column at
+ *  all — so `liveWhere: {}` is required, for the same reason as above, and the row is always live.
+ *  Its four FKs share one `blockerId` (the row's own `'singleton'` id), so a GL account used as
+ *  more than one of the three billing accounts lists ONCE, which is what findBlockers' dedupe on
+ *  `entityLabel:blockerId` gives us for free. */
+const BILLING_CONFIG_BLOCKER = {
+  entityLabel: "Billing settings",
+  detailPath: () => "/admin/billing",
+  liveWhere: {},
+  displayName: () => "Plant billing settings",
+} as const;
+
 /** The single source of truth for "which column points at which reference kind".
  *  Two consumers read it in opposite directions: name resolution forward (given a column,
  *  show the target's name), the delete guard inverted (given a kind, who points at me).
@@ -129,6 +172,33 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Inspection code", ...CERT_VIA_REQUIREMENT },
   { model: "certRequirement", column: "scaleId", targetKind: "inspectionScale",
     label: "Scale", ...CERT_VIA_REQUIREMENT },
+  // Phase 5A (design spec §7). Consequence, stated so it is a decision and not a surprise: a
+  // Process Step Code or GL account an invoice has BILLED through can never be deleted. That is
+  // correct under §5.14 — deletion is for rows typed by mistake, and ordinary retirement is
+  // `active: false`, which keeps existing references rendering.
+  //
+  // `Surcharge` is deliberately NOT a blocker target yet, so `invoiceLine.surchargeId` and
+  // `customerSurcharge.surchargeId` have no entries here: the sweep only walks FKs whose target is
+  // a ReferenceKind plus `processStepCode`, so both are invisible to it today. Task 6 makes
+  // `surcharge` a BlockerTarget and adds those two entries in the same change.
+  { model: "partPrice", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...PART_VIA_CHILD },
+  { model: "surcharge", column: "glAccountId", targetKind: "glAccount",
+    label: "GL account", entityLabel: "Surcharge", detailPath: () => "/admin/surcharges" },
+  { model: "surchargeStepCode", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...SURCHARGE_VIA_STEP_CODE },
+  { model: "invoiceLine", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...INVOICE_VIA_LINE },
+  { model: "invoiceLine", column: "glAccountId", targetKind: "glAccount",
+    label: "GL account", ...INVOICE_VIA_LINE },
+  { model: "billingConfig", column: "salesTaxGlAccountId", targetKind: "glAccount",
+    label: "Sales tax GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "freightGlAccountId", targetKind: "glAccount",
+    label: "Freight GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "otherChargeGlAccountId", targetKind: "glAccount",
+    label: "Other charge GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "certChargeStepCodeId", targetKind: "processStepCode",
+    label: "Certification charge step code", ...BILLING_CONFIG_BLOCKER },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

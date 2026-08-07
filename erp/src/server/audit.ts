@@ -8,10 +8,13 @@ export type AuditableModel =
   | "glAccount" | "material" | "inspectionScale" | "inspectionCode" | "containerType"
   | "carrier" | "terms" | "paymentType" | "commentSnippet" | "specification"
   | "processStepCode" | "customer" | "customerAddress" | "customerContact"
-  | "part" | "partSpecification" | "partInspection" | "partPriceBreak" | "partFieldDef" | "partFieldValue"
+  | "part" | "partSpecification" | "partInspection" | "partPrice" | "partPriceBreak"
+  | "partFieldDef" | "partFieldValue"
   | "partProcessRevision" | "processTemplate"
   | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument"
-  | "cert" | "shipper";
+  | "cert" | "shipper"
+  | "surcharge" | "surchargeStepCode" | "customerSurcharge"
+  | "invoice" | "invoiceLine" | "billingConfig";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -51,6 +54,13 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // history reads "ASTM A536", not a cuid
   partSpecification: { specification: true },
   partInspection: { inspectionCode: true, scale: true },
+  // A price row's breaks are edited through the row, so the row-level diff is only meaningful
+  // with them included (ordered — issue #24), and its step code is selected in so history reads
+  // "HT — Harden", not a cuid. Breaks are ALSO audited as their own model when edited directly.
+  partPrice: {
+    breaks: { orderBy: { threshold: "asc" } },
+    processStepCode: { select: { code: true, name: true } },
+  },
   partPriceBreak: undefined,
   partFieldDef: undefined,
   // history names the field the value belongs to
@@ -158,6 +168,34 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
       },
     },
   },
+  // Phase 5A. A surcharge's include/exclude list is a replace-grid edited through the parent, so
+  // the parent's diff needs it; a customer's override row names the surcharge it refines. Every
+  // collection is explicitly orderBy'd — issue #24 applied at the point of writing.
+  surcharge: {
+    stepCodes: {
+      orderBy: { processStepCodeId: "asc" },
+      include: { processStepCode: { select: { code: true, name: true } } },
+    },
+    glAccount: { select: { name: true } },
+  },
+  surchargeStepCode: undefined,
+  customerSurcharge: { surcharge: { select: { name: true } } },
+  // Invoice lines have no deletedAt of their own — editing them IS editing the invoice (§5.5),
+  // audited as the invoice's own before/after diff. Live customer/order/step-code/GL names are
+  // selected in so the diff reads "ACME" and "4010", never a cuid.
+  invoice: {
+    customer: { select: { code: true, name: true } },
+    order: { select: { orderNumber: true } },
+    lines: {
+      orderBy: { position: "asc" },
+      include: {
+        processStepCode: { select: { code: true, name: true } },
+        glAccount: { select: { name: true } },
+      },
+    },
+  },
+  invoiceLine: undefined,
+  billingConfig: undefined,
 };
 
 /**
@@ -192,7 +230,7 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   // fileData", so shipperId and certId belong here the moment they exist rather than being
   // something a later phase has to remember.
   storedDocument: {
-    id: true, orderId: true, shipperId: true, certId: true,
+    id: true, orderId: true, shipperId: true, certId: true, invoiceId: true,
     kind: true, loadNumber: true, createdAt: true,
   },
   // Task 12: `User.signatureImage` is a bytes column exactly like the three above, and gets the

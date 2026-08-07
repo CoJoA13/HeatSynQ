@@ -376,8 +376,8 @@ describe("attachments service — one implementation, two owners", () => {
   // Fix-wave R4 finding 2: attachment writes pair with deletePart's Serializable cascade scan.
   //
   // `deletePart` (parts.ts) runs Serializable specifically so a child added mid-delete cannot
-  // outlive its parent — F2's own reasoning, already shared by addPartSpec/addPartInspection/
-  // addPartBreak, every one of which reads the part live on `tx` under Serializable before adding
+  // outlive its parent — F2's own reasoning, already shared by addPartSpec and
+  // addPartInspection, both of which read the part live on `tx` under Serializable before adding
   // a child. Attachments joined the cascade in R3 finding 5 but never joined that pairing: their
   // transactions ran at the default isolation, and a disjoint INSERT into PartAttachment does not
   // conflict with anything deletePart does under READ COMMITTED. So the cascade could snapshot

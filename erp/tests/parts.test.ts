@@ -43,7 +43,7 @@ describe("parts core", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       partNumber: "12345", customerCode: "ACME", customerName: "Acme Foundry",
-      materialName: "Ductile iron", eachWeight: 2.5, pricePer: "EACH", active: true,
+      materialName: "Ductile iron", eachWeight: 2.5, active: true,
     });
   });
 
@@ -73,9 +73,9 @@ describe("parts core", () => {
     await expect(asSystem(() => createPart({ customerId: acme.id, partNumber: "A", eachWeight: "1.00001" })))
       .rejects.toThrow("4 digits after the decimal point");
     const { id } = await asSystem(() => createPart({
-      customerId: acme.id, partNumber: "A", eachWeight: "0.0500", unitPrice: "0.0575", pricePer: "LB",
+      customerId: acme.id, partNumber: "A", eachWeight: "0.0500",
     }));
-    expect((await getPart(id)).unitPrice).toBe(0.0575);
+    expect((await getPart(id)).eachWeight).toBe(0.05);
   });
 
   it("customerId is immutable after create", async () => {
@@ -95,14 +95,6 @@ describe("parts core", () => {
     const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "X2", eachWeight: 1 }));
     await expect(asSystem(() => updatePart(id, { materialId: dead.id })))
       .rejects.toThrow("That material does not exist");
-  });
-
-  it("switching pricePer to LOT with live breaks is refused", async () => {
-    const { acme } = await twoCustomers();
-    const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "L", eachWeight: 1 }));
-    await prisma.partPriceBreak.create({ data: { partId: id, threshold: "500", price: "0.95" } });
-    await expect(asSystem(() => updatePart(id, { pricePer: "LOT" })))
-      .rejects.toThrow("delete the price breaks first");
   });
 
   it("delete requires a reason and cascades children in one transaction", async () => {

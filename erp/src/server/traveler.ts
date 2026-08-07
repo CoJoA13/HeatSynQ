@@ -686,7 +686,8 @@ export const listDocuments = listDocumentsForOrder;
  *  but `documentFilename` never reads them for this kind. */
 export function travelerFilename(orderNumber: number, loadNumber: number | null): string {
   return documentFilename(
-    { id: "", createdAt: new Date(0), kind: "TRAVELER", orderId: null, shipperId: null, certId: null, loadNumber },
+    { id: "", createdAt: new Date(0), kind: "TRAVELER",
+      orderId: null, shipperId: null, certId: null, invoiceId: null, loadNumber },
     orderNumber,
   );
 }

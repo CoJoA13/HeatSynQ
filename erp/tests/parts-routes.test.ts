@@ -13,8 +13,6 @@ import {
   PATCH as patchInspectionRoute, DELETE as deleteInspectionRoute,
 } from "@/app/api/parts/[id]/inspections/[inspId]/route";
 import { PUT as reorderInspectionsRoute } from "@/app/api/parts/[id]/inspections/order/route";
-import { GET as listBreaks, POST as addBreakRoute } from "@/app/api/parts/[id]/breaks/route";
-import { PATCH as patchBreakRoute, DELETE as deleteBreakRoute } from "@/app/api/parts/[id]/breaks/[breakId]/route";
 import { GET as getFieldsRoute, PUT as putFieldsRoute } from "@/app/api/parts/[id]/fields/route";
 
 import { GET as listFieldDefs, POST as createFieldDefRoute } from "@/app/api/admin/part-fields/route";
@@ -76,54 +74,24 @@ describe("parts routes", () => {
     expect(typeof (await res.json()).id).toBe("string");
   });
 
-  // F8: `PRICING_FIELDS.some((f) => f in body)` threw a raw TypeError for a null (or number)
-  // body before it ever reached zod, escaping handle()'s error mapping as an unhandled 500.
+  // F8: a null (or number) body used to reach `f in body` and throw a raw TypeError before zod
+  // ever saw it, escaping handle()'s error mapping as an unhandled 500. `assertRecord` is what
+  // makes it a 400 now, and it stays load-bearing after the pricing guard itself was removed.
   it("POST /api/parts with a non-object JSON body is 400, not 500", async () => {
     const creator = await signInWith(["parts.create"], "non-object-create-1");
     const res = await createPartRoute(bodyReq("http://t/api/parts", "POST", creator, null), noParams);
     expect(res.status).toBe(400);
   });
 
-  it("POST with any pricing field present requires change_prices — even pricePer or a null", async () => {
-    const { customer } = await partFixture();
-    const createOnly = await signInWith(["parts.create"], "create-only-1");
-    const body = { customerId: customer.id, partNumber: "PX1", eachWeight: 1, unitPrice: null };
-
-    const denied = await createPartRoute(bodyReq("http://t/api/parts", "POST", createOnly, body), noParams);
-    expect(denied.status).toBe(403);
-
-    const priced = await signInWith(["parts.create", "action.change_prices"], "create-price-1");
-    const allowed = await createPartRoute(bodyReq("http://t/api/parts", "POST", priced, {
-      ...body, partNumber: "PX2",
-    }), noParams);
-    expect(allowed.status).toBe(200);
-
-    // pricePer alone (no dollar value) still counts as a pricing field.
-    const pricePerOnly = await createPartRoute(bodyReq("http://t/api/parts", "POST", createOnly, {
-      customerId: customer.id, partNumber: "PX3", eachWeight: 1, pricePer: "EACH",
-    }), noParams);
-    expect(pricePerOnly.status).toBe(403);
-  });
-
-  it("PATCH /api/parts/[id] pricing fields likewise; plain edits pass with parts.edit alone", async () => {
+  it("PATCH /api/parts/[id] passes with parts.edit alone", async () => {
     const { partId } = await partFixture();
     expect((await patchPart(
       bodyReq(`http://t/api/parts/${partId}`, "PATCH", undefined, { name: "x" }), withParams({ id: partId }))).status).toBe(401);
 
     const editOnly = await signInWith(["parts.edit"], "edit-only-1");
-
     const plain = await patchPart(
       bodyReq(`http://t/api/parts/${partId}`, "PATCH", editOnly, { name: "Renamed" }), withParams({ id: partId }));
     expect(plain.status).toBe(200);
-
-    const denied = await patchPart(
-      bodyReq(`http://t/api/parts/${partId}`, "PATCH", editOnly, { unitPrice: null }), withParams({ id: partId }));
-    expect(denied.status).toBe(403);
-
-    const editPrice = await signInWith(["parts.edit", "action.change_prices"], "edit-price-1");
-    const allowed = await patchPart(
-      bodyReq(`http://t/api/parts/${partId}`, "PATCH", editPrice, { unitPrice: null }), withParams({ id: partId }));
-    expect(allowed.status).toBe(200);
   });
 
   it("PATCH /api/parts/[id] rejects an empty body with 400 rather than a no-op 200", async () => {
@@ -400,56 +368,6 @@ describe("parts routes", () => {
       withParams({ id: otherPartId }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/exactly once/);
-  });
-
-  it("break routes demand change_prices unconditionally", async () => {
-    const { partId } = await partFixture();
-    expect((await listBreaks(getReq(`http://t/api/parts/${partId}/breaks`), withParams({ id: partId }))).status).toBe(401);
-    expect((await addBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks`, "POST", undefined, { threshold: 500, price: "0.95" }),
-      withParams({ id: partId }))).status).toBe(401);
-    expect((await patchBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks/x`, "PATCH", undefined, { price: "1.00" }),
-      withParams({ id: partId, breakId: "x" }))).status).toBe(401);
-    expect((await deleteBreakRoute(
-      noBodyReq(`http://t/api/parts/${partId}/breaks/x`, "DELETE"),
-      withParams({ id: partId, breakId: "x" }))).status).toBe(401);
-
-    const editOnly = await signInWith(["parts.view", "parts.edit"], "break-editor-1");
-    const editPrice = await signInWith(["parts.view", "parts.edit", "action.change_prices"], "break-editor-price-1");
-
-    expect((await listBreaks(getReq(`http://t/api/parts/${partId}/breaks`, editOnly), withParams({ id: partId }))).status).toBe(200);
-
-    const deniedAdd = await addBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks`, "POST", editOnly, { threshold: 500, price: "0.95" }),
-      withParams({ id: partId }));
-    expect(deniedAdd.status).toBe(403);
-
-    const added = await addBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks`, "POST", editPrice, { threshold: 500, price: "0.95" }),
-      withParams({ id: partId }));
-    expect(added.status).toBe(200);
-    const { id: breakId } = await added.json();
-
-    const deniedPatch = await patchBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks/${breakId}`, "PATCH", editOnly, { price: "1.00" }),
-      withParams({ id: partId, breakId }));
-    expect(deniedPatch.status).toBe(403);
-
-    const patched = await patchBreakRoute(
-      bodyReq(`http://t/api/parts/${partId}/breaks/${breakId}`, "PATCH", editPrice, { price: "1.00" }),
-      withParams({ id: partId, breakId }));
-    expect(patched.status).toBe(200);
-
-    const deniedDelete = await deleteBreakRoute(
-      noBodyReq(`http://t/api/parts/${partId}/breaks/${breakId}`, "DELETE", editOnly),
-      withParams({ id: partId, breakId }));
-    expect(deniedDelete.status).toBe(403);
-
-    const deleted = await deleteBreakRoute(
-      noBodyReq(`http://t/api/parts/${partId}/breaks/${breakId}`, "DELETE", editPrice),
-      withParams({ id: partId, breakId }));
-    expect(deleted.status).toBe(200);
   });
 
   it("child routes 404 a child of a different part", async () => {

@@ -84,7 +84,7 @@ export function contentDisposition(mimeType: string, filename: string): string {
  * The in-transaction owner check (`assertOwnerVisible` below) was only ever half of a guard. Its
  * other half is the deleting side's own scan, and `deletePart` (parts.ts) does that scan
  * Serializable precisely so a child added mid-delete cannot outlive its parent — the F2 pairing
- * `addPartSpec`/`addPartInspection`/`addPartBreak` already hold up from their end. Attachments
+ * `addPartSpec`/`addPartInspection` already hold up from their end. Attachments
  * joined the delete cascade (R3 finding 5) without joining that pairing: at the default isolation
  * a disjoint `INSERT INTO "PartAttachment"` conflicts with nothing `deletePart` does, so the
  * cascade could snapshot the live attachments, soft-delete exactly those, and commit, while a

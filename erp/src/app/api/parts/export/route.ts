@@ -23,10 +23,6 @@ export const GET = handle(async (req) => {
     { key: "loadWeight", header: "Load wt" },
     { key: "requestDaysOverride", header: "Request days override" },
     { key: "serializationRequired", header: "Serialization" },
-    { key: "setupCharge", header: "Setup" },
-    { key: "unitPrice", header: "Unit price" },
-    { key: "minimumCharge", header: "Min charge" },
-    { key: "pricePer", header: "Price per" },
     { key: "active", header: "Active" },
   ];
   // materialName/customerCode/customerName already resolved to names (never cuids) by listParts.

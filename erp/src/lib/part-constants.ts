@@ -8,12 +8,11 @@ export const PRICE_PER_LABELS: Record<PricePerValue, string> = {
 export const PART_FIELD_TYPES = ["TEXT", "NUMBER", "DATE", "CHECKBOX"] as const;
 export type PartFieldTypeValue = (typeof PART_FIELD_TYPES)[number];
 
-/** Fields whose presence in a patch demands the change_prices special action (spec §7). */
-export const PRICING_FIELDS = ["setupCharge", "unitPrice", "minimumCharge", "pricePer"] as const;
-
-/** Column order for spreadsheet paste (Task 9), and the header hint above the paste box. */
+/** Column order for spreadsheet paste (Task 9), and the header hint above the paste box.
+ *  Pricing is deliberately absent: Phase 5A moved it off `Part` onto `PartPrice` rows keyed by
+ *  process step code, edited on their own grid and NOT part of the parts paste contract
+ *  (P5A design spec §4.1). */
 export const PART_PASTE_COLUMNS = [
   "customerCode", "partNumber", "name", "description", "materialName",
   "eachWeight", "loadQty", "loadWeight", "serializationRequired",
-  "setupCharge", "unitPrice", "minimumCharge", "pricePer",
 ] as const;

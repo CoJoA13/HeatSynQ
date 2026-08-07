@@ -110,20 +110,34 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
   // letting the main sweep above pass while silently checking nothing.
   it("finds every known reference FK when nothing is registered", () => {
     expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
+      "billingConfig.certChargeStepCodeId -> processStepCode",
+      "billingConfig.freightGlAccountId -> glAccount",
+      "billingConfig.otherChargeGlAccountId -> glAccount",
+      "billingConfig.salesTaxGlAccountId -> glAccount",
       "certRequirement.inspectionCodeId -> inspectionCode",
       "certRequirement.scaleId -> inspectionScale",
       "customer.termsId -> terms",
       "inspectionCode.defaultScaleId -> inspectionScale",
+      // onDelete: SetNull, not Cascade — the exemption in schemaLinks covers cascades only, so
+      // these two stay visible to the sweep, which is what forces them into REFERENCE_LINKS.
+      "invoiceLine.glAccountId -> glAccount",
+      "invoiceLine.processStepCodeId -> processStepCode",
       "orderContainer.typeId -> containerType",
       "part.materialId -> material",
       "partInspection.inspectionCodeId -> inspectionCode",
       "partInspection.scaleId -> inspectionScale",
+      "partPrice.processStepCodeId -> processStepCode",
       "partProcessStep.codeId -> processStepCode",
       "partSpecification.specificationId -> specification",
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
       "processTemplateStep.codeId -> processStepCode",
       "shipper.carrierId -> carrier",
+      "surcharge.glAccountId -> glAccount",
+      "surchargeStepCode.processStepCodeId -> processStepCode",
+      // invoiceLine.surchargeId and customerSurcharge.surchargeId are deliberately ABSENT:
+      // `surcharge` is not a BlockerTarget yet, so this walk cannot see them. Task 6 widens the
+      // union, TARGET_LABELS and the `kinds` set above, and adds both entries in the same change.
     ]);
   });
 
