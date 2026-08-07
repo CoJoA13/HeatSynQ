@@ -765,6 +765,32 @@ Task 10: review dispatched (task-reviewer, opus — money-adjacent concurrency g
   reads invoice state UNDER the claim, the updateShipper scoping, the packaging ruling, and the
   Task 13 cross-task dependency note)
 
+Task 10: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 2 Minor.
+  The reviewer VERIFIED the packaging-mutator ruling against the code rather than accepting it:
+  pricing.ts's PricingInput has no container/serial field, and ship-ledger.ts selects only
+  orderLineId/qty/weight from ShipperLine — so neither packaging mutator can touch a billed
+  quantity. Confirmed every guard reads finalized state UNDER its claim (the print-vs-void defect
+  class from Phase 4, avoided here), and ran its own mutation spot-checks: blanketing
+  updateShipper's guard fails the comments-allowed negative; batching removeOrderFromShipper fails
+  the clean-removal negative; deleting the voidShipper guard fails its refusal test. Scope
+  decisions are pinned, not merely present.
+  Two ⚠️ cross-task seams, both mine and both already held: freight must bill FROM
+  Shipper.freightAmount/billFreight into PricingInput.freight (Task 11 — the updateShipper scoping
+  is correct only if it does), and finalize/unlock must claimOrder before flipping Invoice.status
+  (Task 13 — documented in finalizedInvoiceFor's doc comment AND folded into Task 13's plan).
+  DEFERRED to whole-branch triage (both Minor, both message/consistency, neither correctness —
+  stopping-rule discipline: an approved task does not get another fix+re-review cycle for polish):
+    M1 — removeOrderFromShipper runs its printed-paper check BEFORE its invoice guard, so an
+      invoiced+printed order gets the two-hop runaround (told to void the shipment, which then
+      refuses naming the invoice) that voidOrder's ordering was specifically designed to avoid.
+      Removal is still correctly blocked; message quality only. One-line reorder if picked up.
+    M2 — batched (voidShipper/replaceShipperLines/addOrderToShipper) vs precise
+      (removeOrderFromShipper) guard scoping is internally inconsistent: a user can fully REMOVE a
+      clean order B from an invoiced-sibling truck but cannot EDIT B's lines. Reviewer ruled
+      acceptable — every path over-blocks, never under-blocks; the brief's literal shape; unlock
+      undoes it. Recorded for the record, not for a fix.
+Task 10: complete (commits 24aed12..59dcdca, review clean — approved first pass)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
