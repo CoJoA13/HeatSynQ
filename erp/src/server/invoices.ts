@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { Prisma } from "../../prisma/generated/prisma/client";
+import { Prisma, type Order } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { auditedCreate } from "./audit";
+import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -16,12 +17,14 @@ import { shippedTotals } from "./ship-ledger";
 import {
   priceOrder,
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
+  type PricingResult, type ComputedLine,
 } from "./pricing";
 import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
-import type {
-  InvoiceKindValue, InvoiceStatusValue, InvoiceLineKindValue, PriceSourceValue,
+import {
+  INVOICE_LINE_KINDS, PRICE_SOURCES,
+  type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
-import type { PricePerValue } from "../lib/part-constants";
+import { PRICE_PER, type PricePerValue } from "../lib/part-constants";
 
 // -------------------------------------------------------------------------------------------
 // Task 11 (P5A §5.4/§5.7/§10): where pricing becomes a customer-facing invoice. `listInvoice
@@ -392,6 +395,108 @@ async function buildPricingInput(
   };
 }
 
+// -------------------------------------------------------------------------------------------
+// Shared line-writing helpers. Create and recalculate MUST turn `priceOrder`'s output into
+// InvoiceLine rows the same way — same seam #1 assignment, same FK guards, same parent wiring —
+// or the two paths drift and a recalculated invoice stops matching a freshly created one (the
+// task's single most important correctness property). So the mapping lives here, once, and both
+// callers use it. `replaceInvoiceLines` shares only the FK guard and the totals math; its lines
+// come from the caller, not the engine, so it wires parents from payload keys instead.
+// -------------------------------------------------------------------------------------------
+
+/** The columns of one InvoiceLine, minus `invoiceId`/`parentLineId` (both wired after insert). */
+type InvoiceLineWrite = {
+  position: number; kind: InvoiceLineKindValue;
+  orderLineId: string | null; processStepCodeId: string | null;
+  surchargeId: string | null; orderChargeId: string | null; glAccountId: string | null;
+  partNumber: string; partName: string; partDescription: string;
+  description: string; glAccountName: string;
+  qty: number | null; weight: number | null; eachWeight: number | null;
+  pricePer: PricePerValue | null;
+  unitPrice: number | null; setupCharge: number | null; minimumCharge: number | null;
+  breakThreshold: number | null; minimumApplied: boolean;
+  rate: number | null; priceSource: PriceSourceValue | null; needsPrice: boolean;
+  amount: number;
+};
+
+/** `priceOrder`'s computed lines → InvoiceLine write rows at positions 1..n. Seam #1 lands here
+ *  (CLAUDE.md / this file's header): a CHARGE line arrives from the pure engine with a null GL
+ *  account, so the config's `otherChargeGlAccountId` (and its resolved name) is assigned to CHARGE
+ *  lines HERE, exactly as create always did — factored out so recalculate cannot post them to a
+ *  different account than create would. */
+function mapComputedLines(computed: PricingResult, otherChargeGl: GlRef): InvoiceLineWrite[] {
+  return computed.lines.map((l, i) => ({
+    position: i + 1, kind: l.kind,
+    orderLineId: l.orderLineId, processStepCodeId: l.processStepCodeId,
+    surchargeId: l.surchargeId, orderChargeId: l.orderChargeId,
+    glAccountId: l.kind === "CHARGE" ? otherChargeGl.glAccountId : l.glAccountId,
+    partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
+    description: l.description,
+    glAccountName: l.kind === "CHARGE" ? otherChargeGl.glAccountName : l.glAccountName,
+    qty: l.qty, weight: l.weight, eachWeight: l.eachWeight,
+    pricePer: l.pricePer, unitPrice: l.unitPrice, setupCharge: l.setupCharge, minimumCharge: l.minimumCharge,
+    breakThreshold: l.breakThreshold, minimumApplied: l.minimumApplied,
+    rate: l.rate, priceSource: l.priceSource, needsPrice: l.needsPrice, amount: l.amount,
+  }));
+}
+
+/** `assertRefExists` on every registered FK the lines carry (CLAUDE.md's FK-writer pattern; the
+ *  Serializable isolation is what this pairs WITH, never a substitute for it). `extraStepCodeIds`
+ *  covers the cert charge's step code, which never lands on any line's `processStepCodeId` column
+ *  (only its GL account rides along) and so is invisible to the scan otherwise. */
+async function assertLineRefs(
+  tx: Db,
+  lines: { glAccountId: string | null; processStepCodeId: string | null; surchargeId: string | null }[],
+  extraStepCodeIds: string[] = [],
+): Promise<void> {
+  const glAccountIds = new Set(lines.map((l) => l.glAccountId).filter((id): id is string => id !== null));
+  const processStepCodeIds = new Set(
+    lines.map((l) => l.processStepCodeId).filter((id): id is string => id !== null));
+  for (const id of extraStepCodeIds) processStepCodeIds.add(id);
+  const surchargeIds = new Set(lines.map((l) => l.surchargeId).filter((id): id is string => id !== null));
+  for (const id of glAccountIds) await assertRefExists("glAccount", id, tx);
+  for (const id of processStepCodeIds) await assertRefExists("processStepCode", id, tx);
+  for (const id of surchargeIds) await assertRefExists("surcharge", id, tx);
+}
+
+/** Second pass for the self-relation an OPERATION line has to its PART line: the parent's id does
+ *  not exist until its own row is written, so a single nested create cannot express it. The engine's
+ *  line order is stable, so `position = index + 1` maps each computed line's `key`/`parentKey` back
+ *  to the rows just written. Derived lines occupy positions 1..computed.length; any manual lines
+ *  appended after are untouched (they carry no engine key). */
+async function wireComputedParents(tx: Db, invoiceId: string, computedLines: ComputedLine[]): Promise<void> {
+  const rows = await tx.invoiceLine.findMany({ where: { invoiceId }, select: { id: true, position: true } });
+  const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
+  const positionByKey = new Map(computedLines.map((l, i) => [l.key, i + 1]));
+  for (const [i, l] of computedLines.entries()) {
+    if (l.parentKey === null) continue;
+    const childId = idByPosition.get(i + 1)!;
+    const parentId = idByPosition.get(positionByKey.get(l.parentKey)!)!;
+    await tx.invoiceLine.update({ where: { id: childId }, data: { parentLineId: parentId } });
+  }
+}
+
+/** The six buckets + grand total, as sums of already-rounded line amounts in integer cents (the
+ *  pricing engine's own rule: totals are never rebuilt out of dollars that were already rounded).
+ *  Used by every path that recomputes totals from a final line set — `replaceInvoiceLines` and
+ *  `recalculateInvoice`. PART lines carry `amount = 0` and fall into no bucket. */
+function totalsFromLines(lines: { kind: InvoiceLineKindValue; amount: number }[]) {
+  const centsFor = (kind: InvoiceLineKindValue) =>
+    lines.reduce((sum, l) => (l.kind === kind ? sum + Math.round(l.amount * 100) : sum), 0);
+  const buckets = {
+    subtotal: centsFor("OPERATION"), surchargeTotal: centsFor("SURCHARGE"),
+    chargeTotal: centsFor("CHARGE"), certTotal: centsFor("CERT"),
+    freightTotal: centsFor("FREIGHT"), taxTotal: centsFor("TAX"),
+  };
+  const total = Object.values(buckets).reduce((sum, b) => sum + b, 0);
+  return {
+    subtotal: buckets.subtotal / 100, surchargeTotal: buckets.surchargeTotal / 100,
+    chargeTotal: buckets.chargeTotal / 100, certTotal: buckets.certTotal / 100,
+    freightTotal: buckets.freightTotal / 100, taxTotal: buckets.taxTotal / 100,
+    total: total / 100,
+  };
+}
+
 async function createInvoiceInTx(
   tx: Db, data: CreateInvoiceInput, deps: InvoiceDeps,
 ): Promise<{ detail: InvoiceDetail; deduped: boolean }> {
@@ -475,44 +580,18 @@ async function createInvoiceInTx(
     glAccountId: deps.config.otherChargeGlAccountId, glAccountName: otherChargeGlName,
   };
 
-  // Seam #1: CHARGE lines arrive from the engine with a null GL account — assign the config's
-  // `otherChargeGlAccountId` (and its name) here, or these lines post to no account.
-  const lineData = computed.lines.map((l, i) => ({
-    position: i + 1,
-    kind: l.kind,
-    orderLineId: l.orderLineId,
-    processStepCodeId: l.processStepCodeId,
-    surchargeId: l.surchargeId,
-    orderChargeId: l.orderChargeId,
-    glAccountId: l.kind === "CHARGE" ? otherChargeGl.glAccountId : l.glAccountId,
-    partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
-    description: l.description,
-    glAccountName: l.kind === "CHARGE" ? otherChargeGl.glAccountName : l.glAccountName,
-    qty: l.qty, weight: l.weight, eachWeight: l.eachWeight,
-    pricePer: l.pricePer, unitPrice: l.unitPrice, setupCharge: l.setupCharge, minimumCharge: l.minimumCharge,
-    breakThreshold: l.breakThreshold, minimumApplied: l.minimumApplied,
-    rate: l.rate, priceSource: l.priceSource, needsPrice: l.needsPrice,
-    amount: l.amount,
-  }));
-
-  // Fix 1 (spec §5.1): this transaction is Serializable specifically to pair with `assertRefExists`
-  // on every registered FK it assigns (CLAUDE.md's FK-writer pattern, `createShipper`'s `carrierId`
-  // precedent) — glAccountId/processStepCodeId/surchargeId are all registered `BlockerTarget`
-  // kinds. Checked fresh on `tx`, after the claim: `deps.config`/`deps.surcharges` were read on the
-  // TOP-LEVEL client, before this transaction even opened (`loadInvoiceDeps`), so a GL account,
-  // step code or surcharge could have been soft-deleted in the gap — a distant delete-blocker
-  // (e.g. `BILLING_CONFIG_BLOCKER`) is not a substitute for this local, permanent check.
-  const glAccountIds = new Set(lineData.map((l) => l.glAccountId).filter((id): id is string => id !== null));
-  const processStepCodeIds = new Set(
-    lineData.map((l) => l.processStepCodeId).filter((id): id is string => id !== null));
-  // The cert charge's step code never lands on the CERT line's own `processStepCodeId` column
-  // (only its GL account rides along, via `certStep.glAccountId` in `buildPricingInput`) — guarded
-  // here explicitly since it is otherwise invisible to the scan of `lineData` above.
-  if (input.cert && deps.config.certChargeStepCodeId) processStepCodeIds.add(deps.config.certChargeStepCodeId);
-  const surchargeIds = new Set(lineData.map((l) => l.surchargeId).filter((id): id is string => id !== null));
-  for (const id of glAccountIds) await assertRefExists("glAccount", id, tx);
-  for (const id of processStepCodeIds) await assertRefExists("processStepCode", id, tx);
-  for (const id of surchargeIds) await assertRefExists("surcharge", id, tx);
+  // Engine output -> line rows, with seam #1 assigned inside `mapComputedLines`. Then Fix 1
+  // (spec §5.1): this transaction is Serializable specifically to pair with `assertLineRefs`'
+  // `assertRefExists` on every registered FK it assigns (CLAUDE.md's FK-writer pattern,
+  // `createShipper`'s `carrierId` precedent). Checked fresh on `tx`, after the claim:
+  // `deps.config`/`deps.surcharges` were read on the TOP-LEVEL client before this transaction even
+  // opened (`loadInvoiceDeps`), so a GL account, step code or surcharge could have been soft-deleted
+  // in the gap — a distant delete-blocker (e.g. `BILLING_CONFIG_BLOCKER`) is not a substitute for
+  // this local, permanent check. Both the mapping and the guard are shared verbatim with
+  // `recalculateInvoice`, so the two write paths cannot drift.
+  const lineData = mapComputedLines(computed, otherChargeGl);
+  const certStepIds = input.cert && deps.config.certChargeStepCodeId ? [deps.config.certChargeStepCodeId] : [];
+  await assertLineRefs(tx, lineData, certStepIds);
 
   // The `after` snapshot, composed by hand like shippers.ts's `auditPayload` — every FK travels
   // with the live name it points at, and the lines' amounts are included so line changes show in
@@ -554,21 +633,8 @@ async function createInvoiceInTx(
       select: { id: true },
     });
 
-    // Second pass for the self-relation: an OPERATION line hangs off its PART line, which a single
-    // nested create cannot express (the parent's id does not exist until its own row is written).
-    // The engine's line order is stable, so `position = index + 1` maps each computed line's `key`
-    // back to the row just written.
-    const rows = await tx.invoiceLine.findMany({
-      where: { invoiceId: created.id }, select: { id: true, position: true },
-    });
-    const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
-    const positionByKey = new Map(computed.lines.map((l, i) => [l.key, i + 1]));
-    for (const [i, l] of computed.lines.entries()) {
-      if (l.parentKey === null) continue;
-      const childId = idByPosition.get(i + 1)!;
-      const parentId = idByPosition.get(positionByKey.get(l.parentKey)!)!;
-      await tx.invoiceLine.update({ where: { id: childId }, data: { parentLineId: parentId } });
-    }
+    // Second pass for the OPERATION -> PART self-relation (shared with recalculate).
+    await wireComputedParents(tx, created.id, computed.lines);
     return created;
   }, { tx });
 
@@ -639,4 +705,306 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
     }
   }
   return warnings;
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 12 (§5.5): draft edits, recalculate, discard. Every mutator here shares one bracket —
+// `withDbErrors` → Serializable `$transaction` → `claimLiveInvoice` → `audited*` → writes on
+// `tx` — and every one refuses a FINALIZED invoice (immutable until Task 13's unlock) and a
+// discarded one, each naming what blocks it. A FINALIZED invoice is customer-facing paper; the
+// corrections are unlock or credit, never a silent edit.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * The DRAFT-edit claim, factored like `claimLiveShipper` (shippers.ts): an UNLOCKED stub read to
+ * learn which order to claim (404 on missing), `claimOrder` on that order, then `FOR UPDATE` on the
+ * Invoice row itself — uniformly AFTER the order claim, one fixed order (Order row, then the
+ * entity's own row), so no ABBA window opens (order-locks.ts house rule). Only then the liveness
+ * re-read, off rows this transaction actually holds.
+ *
+ * `Invoice.status`/`deletedAt` live on the Invoice row, so a concurrent finalize, unlock or discard
+ * — every one of which also claims this order — serializes through these two locks: the refusal
+ * below and the write it guards see the same state, and a Serializable caller whose Invoice row
+ * changed under it raises 40001 (withDbErrors' honest 409) rather than acting on a stale snapshot.
+ *
+ * Returns the fresh invoice detail row and the claimed Order row (recalculate reads the order's
+ * live state off it).
+ */
+async function claimLiveInvoice(tx: Db, id: string): Promise<{ invoice: DetailRow; order: Order }> {
+  const stub = await tx.invoice.findFirst({ where: { id }, select: { orderId: true } });
+  if (!stub) throw new HttpError(404, "Invoice not found");
+  const order = await claimOrder(tx, stub.orderId);
+  if (!order) throw new HttpError(404, "Invoice not found");
+  await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${id} FOR UPDATE`;
+  const invoice = await tx.invoice.findFirst({ where: { id }, include: DETAIL_INCLUDE });
+  if (!invoice || invoice.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (invoice.status === "FINALIZED") {
+    throw new HttpError(400,
+      `Invoice #${invoice.order.orderNumber} is finalized and locked — unlock it before editing`);
+  }
+  return { invoice, order };
+}
+
+// -------------------------------------------------------------------------------------------
+// updateInvoice — header only.
+// -------------------------------------------------------------------------------------------
+
+const UPDATE_INVOICE = z.object({
+  poNumber: z.string().max(200).optional(),
+  invoiceDate: z.string().min(1).optional(),
+  termsName: z.string().max(200).optional(),
+  billTo: z.string().max(4000).optional(),
+  shipTo: z.string().max(4000).optional(),
+}).strict();
+
+/**
+ * Header-only draft edit (§5.5). Customer/order identity, the line-derived totals and the lifecycle
+ * columns are all off-limits here — the correctable header snapshots are PO, invoice date, terms and
+ * the two address blocks. A partial patch persists exactly the keys the caller sent: every field is
+ * an independent scalar, so there is no interdependent state a partial write could leave stale (the
+ * Task 6 defect), and an unspecified field keeps its value rather than being blanked.
+ */
+export async function updateInvoice(id: string, input: unknown): Promise<InvoiceDetail> {
+  const data = UPDATE_INVOICE.parse(input);
+  const patch: Prisma.InvoiceUpdateInput = {
+    ...(data.poNumber !== undefined ? { poNumber: data.poNumber } : {}),
+    ...(data.invoiceDate !== undefined ? { invoiceDate: parseDate(data.invoiceDate, "Invoice date") } : {}),
+    ...(data.termsName !== undefined ? { termsName: data.termsName } : {}),
+    ...(data.billTo !== undefined ? { billTo: data.billTo } : {}),
+    ...(data.shipTo !== undefined ? { shipTo: data.shipTo } : {}),
+  };
+
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    await claimLiveInvoice(tx, id);
+    await auditedUpdate("invoice", id, () => tx.invoice.update({ where: { id }, data: patch }), { tx });
+    return readInvoiceDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// replaceInvoiceLines — whole-array replace (the replaceCharges / replaceShipperLines precedent).
+// The lines come from the CALLER, not the engine, so amounts and snapshots are trusted as given;
+// only the registered FKs are guarded and the totals recomputed. Grouping (OPERATION -> PART) is
+// expressed by caller-supplied `key`/`parentKey`, re-wired in a second pass — positions are
+// reassigned 1..n and row ids reminted, so an id-based parent link could never survive the replace.
+// -------------------------------------------------------------------------------------------
+
+const LINE_INPUT = z.object({
+  key: z.string().min(1).optional(),
+  parentKey: z.string().min(1).nullable().optional(),
+  kind: z.enum(INVOICE_LINE_KINDS),
+  orderLineId: z.string().min(1).nullable().optional(),
+  processStepCodeId: z.string().min(1).nullable().optional(),
+  surchargeId: z.string().min(1).nullable().optional(),
+  orderChargeId: z.string().min(1).nullable().optional(),
+  glAccountId: z.string().min(1).nullable().optional(),
+  partNumber: z.string().max(200).optional(),
+  partName: z.string().max(200).optional(),
+  partDescription: z.string().max(4000).optional(),
+  description: z.string().max(4000).optional(),
+  glAccountName: z.string().max(200).optional(),
+  qty: z.number().int().nullable().optional(),
+  weight: decimalField(12, 2),
+  eachWeight: decimalField(10, 4),
+  pricePer: z.enum(PRICE_PER).nullable().optional(),
+  unitPrice: decimalField(12, 4),
+  setupCharge: decimalField(12, 2),
+  minimumCharge: decimalField(12, 2),
+  breakThreshold: decimalField(12, 2),
+  minimumApplied: z.boolean().optional(),
+  rate: decimalField(9, 6),
+  priceSource: z.enum(PRICE_SOURCES).nullable().optional(),
+  needsPrice: z.boolean().optional(),
+  amount: decimalField(12, 2, { required: true }),
+}).strict();
+
+type LineInput = z.infer<typeof LINE_INPUT>;
+const REPLACE_LINES = z.array(LINE_INPUT);
+
+/** One payload item -> its InvoiceLine columns (minus `invoiceId`/`position`/`parentLineId`, all
+ *  assigned by the caller). Every column is persisted, defaulted the same way the schema defaults
+ *  it — so a whole row is written, never a subset (the Task 6 normalize-on-write rule). */
+function lineColumns(l: LineInput) {
+  return {
+    kind: l.kind,
+    orderLineId: l.orderLineId ?? null, processStepCodeId: l.processStepCodeId ?? null,
+    surchargeId: l.surchargeId ?? null, orderChargeId: l.orderChargeId ?? null, glAccountId: l.glAccountId ?? null,
+    partNumber: l.partNumber ?? "", partName: l.partName ?? "", partDescription: l.partDescription ?? "",
+    description: l.description ?? "", glAccountName: l.glAccountName ?? "",
+    qty: l.qty ?? null, weight: l.weight ?? null, eachWeight: l.eachWeight ?? null,
+    pricePer: l.pricePer ?? null, unitPrice: l.unitPrice ?? null,
+    setupCharge: l.setupCharge ?? null, minimumCharge: l.minimumCharge ?? null,
+    breakThreshold: l.breakThreshold ?? null, minimumApplied: l.minimumApplied ?? false,
+    rate: l.rate ?? null, priceSource: l.priceSource ?? null, needsPrice: l.needsPrice ?? false,
+    amount: l.amount,
+  };
+}
+
+export async function replaceInvoiceLines(id: string, input: unknown): Promise<InvoiceDetail> {
+  const data = REPLACE_LINES.parse(input);
+  const columns = data.map(lineColumns);
+
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    await claimLiveInvoice(tx, id);
+    await assertLineRefs(tx, columns); // every registered FK the payload writes (the create guard)
+
+    await auditedUpdate("invoice", id, async () => {
+      await tx.invoiceLine.deleteMany({ where: { invoiceId: id } });
+      if (columns.length > 0) {
+        await tx.invoiceLine.createMany({ data: columns.map((c, i) => ({ invoiceId: id, position: i + 1, ...c })) });
+        await wirePayloadParents(tx, id, data);
+      }
+      await tx.invoice.update({ where: { id }, data: totalsFromLines(columns) });
+    }, { tx });
+
+    return readInvoiceDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+/** Wires parents from caller keys: each input's `key` -> its new row id (position = index + 1),
+ *  then each `parentKey` -> that id. A `parentKey` naming no line in the payload leaves the child
+ *  flat rather than dangling. */
+async function wirePayloadParents(tx: Db, invoiceId: string, lines: LineInput[]): Promise<void> {
+  const rows = await tx.invoiceLine.findMany({ where: { invoiceId }, select: { id: true, position: true } });
+  const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
+  const idByKey = new Map<string, string>();
+  lines.forEach((l, i) => { if (l.key) idByKey.set(l.key, idByPosition.get(i + 1)!); });
+  for (const [i, l] of lines.entries()) {
+    if (!l.parentKey) continue;
+    const parentId = idByKey.get(l.parentKey);
+    if (parentId) await tx.invoiceLine.update({ where: { id: idByPosition.get(i + 1)! }, data: { parentLineId: parentId } });
+  }
+}
+
+// -------------------------------------------------------------------------------------------
+// recalculateInvoice — re-price from CURRENT data (new part prices, new surcharges, current shipped
+// totals) and replace every DERIVED line (priceSource ≠ MANUAL), keeping manual lines at the end.
+// It re-runs Task 11's whole build — `buildPricingInput` + `priceOrder` + the shared
+// `mapComputedLines`/`assertLineRefs`/`wireComputedParents` — so it produces exactly what a fresh
+// `createInvoice` would for the same order today. There is no second pricing path to drift from.
+// -------------------------------------------------------------------------------------------
+
+export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
+  const deps = await loadInvoiceDeps(); // plant-wide reads OUTSIDE the tx — the create precedent
+
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    const { order } = await claimLiveInvoice(tx, id);
+    if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
+
+    const customer = await tx.customer.findFirst({
+      where: { id: order.customerId },
+      select: {
+        taxable: true, salesTaxRate: true, certChargeSuppressed: true, surchargeOptOut: true,
+        surchargeRules: {
+          where: { deletedAt: null },
+          select: { surchargeId: true, optOut: true, rate: true, amount: true },
+        },
+      },
+    });
+    if (!customer) throw new HttpError(404, "Customer not found");
+
+    const orderLines: OrderLineRow[] = await tx.orderLine.findMany({
+      where: { orderId: order.id },
+      orderBy: { position: "asc" },
+      select: {
+        id: true, position: true, partId: true,
+        part: {
+          select: {
+            partNumber: true, name: true, description: true, eachWeight: true,
+            billForCert: true, certCharge: true, material: { select: { name: true } },
+          },
+        },
+      },
+    });
+
+    const { input, otherChargeGlName } =
+      await buildPricingInput(tx, deps.config, deps.surcharges, order, customer, orderLines);
+    const computed = priceOrder(input);
+    const otherChargeGl: GlRef = {
+      glAccountId: deps.config.otherChargeGlAccountId, glAccountName: otherChargeGlName,
+    };
+    const derived = mapComputedLines(computed, otherChargeGl);
+
+    // Manual lines survive untouched and ride at the END (§5.5). Read before the delete, recreated
+    // after the regenerated derived lines.
+    const manual = await tx.invoiceLine.findMany({
+      where: { invoiceId: id, priceSource: "MANUAL" }, orderBy: { position: "asc" },
+    });
+
+    const certStepIds = input.cert && deps.config.certChargeStepCodeId ? [deps.config.certChargeStepCodeId] : [];
+    await assertLineRefs(tx, [...derived, ...manual], certStepIds);
+
+    const taxRate = input.tax?.rate ?? null;
+    const totals = totalsFromLines([
+      ...derived, ...manual.map((m) => ({ kind: m.kind, amount: m.amount.toNumber() })),
+    ]);
+
+    await auditedUpdate("invoice", id, async () => {
+      await tx.invoiceLine.deleteMany({ where: { invoiceId: id } });
+      await tx.invoiceLine.createMany({ data: derived.map((c) => ({ invoiceId: id, ...c })) });
+      const base = derived.length;
+      if (manual.length > 0) {
+        await tx.invoiceLine.createMany({
+          data: manual.map((m, j) => ({
+            invoiceId: id, position: base + j + 1, kind: m.kind,
+            orderLineId: m.orderLineId, processStepCodeId: m.processStepCodeId,
+            surchargeId: m.surchargeId, orderChargeId: m.orderChargeId, glAccountId: m.glAccountId,
+            partNumber: m.partNumber, partName: m.partName, partDescription: m.partDescription,
+            description: m.description, glAccountName: m.glAccountName,
+            qty: m.qty, weight: m.weight, eachWeight: m.eachWeight,
+            pricePer: m.pricePer, unitPrice: m.unitPrice, setupCharge: m.setupCharge,
+            minimumCharge: m.minimumCharge, breakThreshold: m.breakThreshold, minimumApplied: m.minimumApplied,
+            rate: m.rate, priceSource: m.priceSource, needsPrice: m.needsPrice, amount: m.amount,
+          })),
+        });
+      }
+      // Derived parents wire off the engine keys (positions 1..base). A preserved manual line keeps
+      // a parent only if that parent was ALSO manual (remapped old->new id); a parent that was a
+      // derived line has been regenerated with a new id, so the link is dropped, never left
+      // dangling.
+      await wireComputedParents(tx, id, computed.lines);
+      if (manual.some((m) => m.parentLineId !== null)) {
+        const rows = await tx.invoiceLine.findMany({ where: { invoiceId: id }, select: { id: true, position: true } });
+        const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
+        const newIdByOldManualId = new Map(manual.map((m, j) => [m.id, idByPosition.get(base + j + 1)!]));
+        for (const [j, m] of manual.entries()) {
+          if (m.parentLineId === null) continue;
+          const parentId = newIdByOldManualId.get(m.parentLineId);
+          if (parentId) await tx.invoiceLine.update({ where: { id: idByPosition.get(base + j + 1)! }, data: { parentLineId: parentId } });
+        }
+      }
+
+      // taxRate is inseparable from the regenerated TAX line — leaving the header column stale would
+      // make it disagree with the line. The descriptive header snapshots (PO, terms, addresses,
+      // material, process names) are NOT touched: recalculate replaces derived lines, not a user's
+      // header edits.
+      await tx.invoice.update({ where: { id }, data: { taxRate, ...totals } });
+    }, { tx });
+
+    return readInvoiceDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// discardInvoice — soft-delete a DRAFT that has never printed (§5.5/§5.17). It frees the order for
+// a new invoice: the live-rows-only unique on `orderId` sees a discarded row as gone.
+// -------------------------------------------------------------------------------------------
+
+export async function discardInvoice(id: string, reason: string): Promise<void> {
+  // §5.17: the reason is required and trimmed IN THE SERVICE (the `voidOrder` precedent) — a
+  // discard frees the order number, exactly the unique-identifier case that rule governs, so no
+  // future caller can bypass it.
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to discard an invoice");
+
+  await withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    await claimLiveInvoice(tx, id);
+    // A printed invoice is paper the customer may hold — it can never be discarded, only credited
+    // (§5.5). Any StoredDocument naming this invoice is proof it printed. Read under the claim.
+    const printed = await tx.storedDocument.findFirst({ where: { invoiceId: id }, select: { id: true } });
+    if (printed) {
+      throw new HttpError(400, "This invoice has already printed and cannot be discarded — credit it instead");
+    }
+    await auditedSoftDelete("invoice", id, why, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

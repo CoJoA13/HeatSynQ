@@ -7,7 +7,11 @@ import { addPartPrice } from "@/server/part-prices";
 import { createSurcharge, setCustomerSurcharge } from "@/server/surcharges";
 import { setSetting } from "@/server/settings";
 import { setBillingConfig } from "@/server/billing-config";
-import { createInvoice, listInvoiceCandidates } from "@/server/invoices";
+import {
+  createInvoice, listInvoiceCandidates, getInvoice,
+  updateInvoice, replaceInvoiceLines, recalculateInvoice, discardInvoice,
+  type InvoiceDetail, type InvoiceLineDetail,
+} from "@/server/invoices";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
 
@@ -445,5 +449,161 @@ describe("createInvoice", () => {
       status: 400, message: expect.stringMatching(/already has an invoice/i),
     });
     expect(await prisma.invoice.count({ where: { orderId: order.id, deletedAt: null } })).toBe(1);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 12: draft edits, recalculate, discard. These extend the create surface above, so they
+// reuse `pricedShippedOrder` and add four invoicing-specific helpers.
+// -------------------------------------------------------------------------------------------
+
+/** A priced, shipped order with a DRAFT invoice already created against it. */
+async function draftFixture(opts: { qty?: number } = {}) {
+  const fixture = await pricedShippedOrder({ qty: opts.qty ?? 144, unitPrice: "6.5100", minimumCharge: "600.00" });
+  const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+  return { ...fixture, invoice };
+}
+
+/** The same, then flipped to FINALIZED directly (Task 13 builds `finalizeInvoice`). */
+async function finalizedFixture() {
+  const fixture = await draftFixture();
+  await prisma.invoice.update({
+    where: { id: fixture.invoice.id }, data: { status: "FINALIZED", finalizedAt: new Date() },
+  });
+  return { ...fixture, invoice: await asSystem(() => getInvoice(fixture.invoice.id)) };
+}
+
+/** Ships `addQty` more of the order's single line — additive over the ledger (spec: over-ship
+ *  warns, never blocks), so the recalculated invoice sees a higher shipped total. */
+async function shipMore(order: OrderDetail, addQty: number): Promise<void> {
+  await asSystem(() => createShipper({
+    customerId: order.customerId, shipDate: "2026-08-05",
+    orders: [{
+      orderId: order.id,
+      lines: [{ orderLineId: order.lines[0].id, qty: addQty, weight: addQty, lineComplete: false }],
+      containers: [], serials: [],
+    }],
+  }, { canOverrideCreditHold: false }));
+}
+
+/** Maps a stored line back to a `replaceInvoiceLines` payload item. `key`/`parentKey` carry the
+ *  grouping across the whole-array replace (positions are reassigned, ids are reminted). */
+function toLineInput(l: InvoiceLineDetail) {
+  return {
+    key: l.id, parentKey: l.parentLineId, kind: l.kind,
+    orderLineId: l.orderLineId, processStepCodeId: l.processStepCodeId,
+    surchargeId: l.surchargeId, orderChargeId: l.orderChargeId, glAccountId: l.glAccountId,
+    partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
+    description: l.description, glAccountName: l.glAccountName,
+    qty: l.qty, weight: l.weight, eachWeight: l.eachWeight,
+    pricePer: l.pricePer, unitPrice: l.unitPrice,
+    setupCharge: l.setupCharge, minimumCharge: l.minimumCharge,
+    breakThreshold: l.breakThreshold, minimumApplied: l.minimumApplied,
+    rate: l.rate, priceSource: l.priceSource, needsPrice: l.needsPrice,
+    amount: l.amount,
+  };
+}
+
+describe("updateInvoice", () => {
+  it("refuses every draft edit on a finalized invoice, naming the state", async () => {
+    const { invoice } = await finalizedFixture();
+    await expect(asSystem(() => updateInvoice(invoice.id, { poNumber: "X" })))
+      .rejects.toThrow(/finalized/i);
+    await expect(asSystem(() => replaceInvoiceLines(invoice.id, [])))
+      .rejects.toThrow(/finalized/i);
+    await expect(asSystem(() => recalculateInvoice(invoice.id))).rejects.toThrow(/finalized/i);
+    await expect(asSystem(() => discardInvoice(invoice.id, "wrong one"))).rejects.toThrow(/finalized/i);
+  });
+
+  it("edits header fields on a draft and audits the before/after diff", async () => {
+    const { invoice } = await draftFixture();
+    const updated = await asSystem(() => updateInvoice(invoice.id, {
+      poNumber: "PO-99", termsName: "Net 30", invoiceDate: "2026-08-10",
+    }));
+    expect(updated.poNumber).toBe("PO-99");
+    expect(updated.termsName).toBe("Net 30");
+    expect(updated.invoiceDate).toBe("2026-08-10");
+    expect((await asSystem(() => getInvoice(invoice.id))).poNumber).toBe("PO-99");
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "invoice", entityId: invoice.id, action: "update" } });
+    expect((entry!.before as Record<string, unknown>).poNumber).toBe("");
+    expect((entry!.after as Record<string, unknown>).poNumber).toBe("PO-99");
+  });
+});
+
+describe("replaceInvoiceLines", () => {
+  it("recomputes the totals after a line edit", async () => {
+    const { invoice } = await draftFixture();
+    const edited = await asSystem(() => replaceInvoiceLines(invoice.id,
+      invoice.lines.map((l) => (l.kind === "OPERATION" ? { ...toLineInput(l), amount: "100.00" } : toLineInput(l)))));
+    expect(edited.subtotal).toBe(100);
+    expect(edited.total).toBe(100);
+  });
+
+  it("refuses a replaced line that references a soft-deleted GL account (assertRefExists)", async () => {
+    const { invoice, glAccount } = await draftFixture();
+    await prisma.glAccount.update({ where: { id: glAccount!.id }, data: { deletedAt: new Date() } });
+    await expect(asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map(toLineInput))))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/that gl account does not exist/i) });
+  });
+});
+
+describe("recalculateInvoice", () => {
+  it("recalculates from the order and preserves manual lines", async () => {
+    const { order, invoice } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE", description: "Hand-typed", amount: "25.00", priceSource: "MANUAL" },
+    ]));
+    await shipMore(order, 6); // ship 6 more of the line -> 150 net
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.lines.find((l) => l.kind === "PART")!.qty).toBe(150);
+    expect(after.lines.some((l) => l.description === "Hand-typed")).toBe(true);
+    // Manual line rides at the end, after the regenerated derived lines.
+    expect(after.lines[after.lines.length - 1].description).toBe("Hand-typed");
+  });
+
+  it("produces the same derived lines as a fresh create for the same order (no drift)", async () => {
+    const { order, invoice } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE", description: "Manual note", amount: "25.00", priceSource: "MANUAL" },
+    ]));
+    await shipMore(order, 6);
+    const recalced = await asSystem(() => recalculateInvoice(invoice.id));
+
+    // Baseline: discard and re-create, i.e. exactly what a fresh createInvoice yields for this
+    // order in its current state. Recalculate's derived lines must equal it, or the two pricing
+    // paths have drifted.
+    await asSystem(() => discardInvoice(invoice.id, "rebaseline for comparison"));
+    const { invoice: fresh } = await asSystem(() => createInvoice({ orderId: order.id }));
+
+    const derived = (inv: InvoiceDetail) =>
+      inv.lines.filter((l) => l.priceSource !== "MANUAL")
+        .map((l) => ({ kind: l.kind, qty: l.qty, amount: l.amount, description: l.description, gl: l.glAccountName }));
+    expect(derived(recalced)).toEqual(derived(fresh));
+    expect(recalced.subtotal).toBe(fresh.subtotal);
+  });
+});
+
+describe("discardInvoice", () => {
+  it("discards a draft with a reason and frees the order to be invoiced again", async () => {
+    const { order, invoice } = await draftFixture();
+    await expect(asSystem(() => discardInvoice(invoice.id, "  "))).rejects.toThrow(/reason/i);
+    await asSystem(() => discardInvoice(invoice.id, "keyed against the wrong order"));
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "invoice", entityId: invoice.id, action: "delete" } });
+    expect(entry!.reason).toBe("keyed against the wrong order");
+    const again = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(again.invoice.id).not.toBe(invoice.id);
+  });
+
+  it("refuses to discard a draft that has printed", async () => {
+    const { invoice } = await draftFixture();
+    await prisma.storedDocument.create({
+      data: { kind: "INVOICE", invoiceId: invoice.id, fileData: new Uint8Array([1]) } });
+    await expect(asSystem(() => discardInvoice(invoice.id, "mistake")))
+      .rejects.toThrow(/has already printed/i);
   });
 });
