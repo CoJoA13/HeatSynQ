@@ -148,6 +148,18 @@ describe("pricing — needs price", () => {
     expect(result.lines.find((l) => l.kind === "OPERATION")!.needsPrice).toBe(true);
   });
 
+  // Discriminates the resolved price (`price` at pricing.ts:227, break-or-list) from the row's raw
+  // list price. A row with no list price and no minimum, priced entirely off a break the shipped
+  // qty clears, has a real price — it must not be flagged, and the flag must not depend on which
+  // field supplied that price.
+  it("does not flag a row with no list price when a break resolves the price", () => {
+    const o = op({ unitPrice: null, minimumCharge: null, breaks: [{ threshold: 100, price: 6 }] });
+    expect(o.needsPrice).toBe(false);
+    expect(o.unitPrice).toBe(6);
+    expect(o.breakThreshold).toBe(100);
+    expect(o.amount).toBe(864); // 144 × 6.00, default shippedQty from `input()`
+  });
+
   it("flags an extra charge with no amount", () => {
     const result = priceOrder(input({
       charges: [{ orderChargeId: "c1", position: 1, description: "Rush", amount: null }],
@@ -615,5 +627,10 @@ describe("pricing — the module is pure", () => {
     const imports = [...src.matchAll(/^import\s+(?:type\s+)?.*?from\s+"([^"]+)"/gm)].map((m) => m[1]);
     expect(imports.length).toBeGreaterThan(0);
     expect(imports.every((i) => i.startsWith("../lib/"))).toBe(true);
+    // Static `import ... from "..."` is only one way to pull in a module. Guard the forms that
+    // slip past it too: `require(...)` and dynamic `import(...)` — either would still let a
+    // callable path to the database into a module this suite runs with no DB reachable.
+    expect(/\brequire\s*\(/.test(src)).toBe(false);
+    expect(/\bimport\s*\(/.test(src)).toBe(false);
   });
 });

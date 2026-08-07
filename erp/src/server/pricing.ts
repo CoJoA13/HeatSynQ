@@ -115,7 +115,15 @@ function fromCents(cents: number): number {
 }
 
 /** Half away from zero, to cents. Exported for the callers that have to round a dollar figure
- *  they did not get from here (a hand-typed invoice line, a credit's negation). */
+ *  they did not get from here (a hand-typed invoice line, a credit's negation).
+ *
+ *  Assumes its input already carries at most 2 decimal places of real precision (a dollar
+ *  figure, not an arbitrary float) — the `1 + Number.EPSILON` lift in `toCents` that correctly
+ *  nudges a value like `1.005 * 100 === 100.49999999999999` up to the next cent can, for a value
+ *  representing an actual half-cent-minus-a-hair boundary a few ulps further out (e.g.
+ *  `12.344999999999999`), round it the wrong way (12.35, not 12.34). Every value this module
+ *  itself feeds `toCents` is a 2- or 4-decimal `Decimal` and never lands that close to a
+ *  boundary; a caller passing in a computed float should round to cents before calling this. */
 export function roundCents(value: number): number {
   return fromCents(toCents(value));
 }
@@ -240,7 +248,7 @@ export function priceOrder(input: PricingInput): PricingResult {
         setupCharge: row.setupCharge, minimumCharge: row.minimumCharge,
         breakThreshold: chosen?.threshold ?? null, minimumApplied: minimum > extended,
         priceSource: "PART_PRICE",
-        needsPrice: row.unitPrice === null && row.minimumCharge === null,
+        needsPrice: price === null && row.minimumCharge === null,
       });
       operations.push({ processStepCodeId: row.processStepCodeId, cents: amount });
     }
