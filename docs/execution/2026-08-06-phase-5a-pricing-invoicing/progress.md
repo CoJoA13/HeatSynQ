@@ -714,6 +714,57 @@ Task 9: review (task-reviewer, opus) — Spec ⚠️, quality NEEDS FIXES. 1 Imp
     requirement on Task 11 rather than an assumption spanning two tasks.
 Task 9: complete (commits 8227931..96026bc, Important closed with a discriminating test)
 
+Task 10: dispatched (implementer, OPUS) — BASE 24aed12, brief task-10-brief.md.
+  CONTROLLER ERROR in the dispatch, caught by the implementer: my scene-setting prose described
+  Task 10 as the order-pricing layer that "feeds the engine real data". That is TASK 11. The brief
+  and plan (line 1510) both say Task 10 is `invoice-guards.ts` + the new order/shipment invariants.
+  The implementer read the brief FIRST (as the template instructs), built the brief, and flagged
+  the mismatch rather than trying to reconcile my prose — exactly right. The brief is the source of
+  truth and it won; nothing in the commit touches the pricing seam. Lesson: the dispatch's prose is
+  scene-setting, the brief is the contract — when I get the prose wrong, a good implementer follows
+  the brief. (My prose being wrong cost nothing here only because the brief was right and the
+  implementer trusted it over me.)
+Task 10: implementer DONE_WITH_CONCERNS — commit cfc904c, invoice-guards.ts + guards threaded into
+  the brief's five mutators (replaceCharges, voidOrder, voidShipper, replaceShipperLines,
+  addOrderToShipper). 17 new tests, full suite 1584, tsc+eslint+build clean. E2E correctly SKIPPED
+  and said so — service-layer only, and nothing browser-reachable can create a FINALIZED invoice
+  yet (that is Task 11+), so no flow could exercise a single new refusal. 12 mutation checks run,
+  all caught, two tests strengthened first.
+  FOUR concerns, all disclosed, none acted on unilaterally:
+  1. Four shipment mutators unguarded and not in the brief; two flagged as likely real holes
+     (removeOrderFromShipper, updateShipper). The implementer explicitly did NOT expand scope —
+     "undisclosed scope expansion is its own failure mode" — and asked the controller to rule.
+     That restraint is correct; a plan hole is the human's call, per the skill.
+  2. The shipment guard batches over the whole shipment, so an invoiced order A blocks correcting
+     order E's grid on the same truck. Conservative on purpose (over-blocks, never under-blocks).
+  3. voidOrder's guard runs before shipmentBlockers, so the message names the invoice rather than
+     sending the user to void a shipment voidShipper would then refuse. Pinned by a test.
+  4. Task 13's finalize/unlock MUST claimOrder first or the guards' freshness argument fails.
+Task 10: CONTROLLER RULINGS on the concerns:
+  #1 — VERIFIED both holes myself before ruling (read removeOrderFromShipper and updateShipper in
+     full, not just the implementer's description). removeOrderFromShipper strips an order's
+     shipped qty and is the exact mirror of the guarded addOrderToShipper — sibling-split, the
+     defect this project keeps paying for. updateShipper patches billFreight/freightAmount, both
+     billed. Both already claim the shipper, so the guard has a claimed row to hang off. RULED:
+     guard both; leave the two packaging mutators (containers/serials) unguarded WITH a comment,
+     since neither changes a billed qty/weight. Fix wave 59dcdca.
+  #2 — accepted as the brief's shape; safe (over-blocks). Flagged for the whole-branch review / an
+     owner UX call rather than changed now.
+  #3 — accepted; sound and tested.
+  #4 — folded into Task 13's plan section (claim the order in claimOrdersInOrder order at the top of
+     both finalize and unlock, before reading or writing invoice state).
+Task 10: fix wave 1 (sonnet) — commit 59dcdca. removeOrderFromShipper guards the removed order;
+  updateShipper's guard is SCOPED to billFreight/freightAmount with a passing negative test proving
+  a comment-only edit on an invoiced shipment still succeeds (without that negative, a
+  refuse-everything guard would pass too). Both packaging mutators carry a comment explaining why
+  they are deliberately not guarded (pricing bills off shippedQty/shippedWeight alone, never off
+  containers or which serials were attached). Controller ran the gates: 1588 tests, tsc/eslint/
+  build clean, guards verified scoped in the diff. (Implementer stalled on a background test run —
+  fourth in a row — controller ran gates and committed.)
+Task 10: review dispatched (task-reviewer, opus — money-adjacent concurrency guards; verifying each
+  reads invoice state UNDER the claim, the updateShipper scoping, the packaging ruling, and the
+  Task 13 cross-task dependency note)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
