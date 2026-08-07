@@ -511,6 +511,57 @@ Task 7: review — Spec ✅, quality NEEDS FIXES. 2 Important, 5 Minor.
     alone. Extracted to src/lib/surcharge-body.ts with its own tests. The highest-risk logic in the
     task had no test while the lowest-risk (the percent helpers) did.
 
+Task 7: fix wave 1 — commit daf1cfd. The implementer completed the code and gates but LOOPED
+  waiting on its own E2E run and never reported; two prompts produced no written report. Controller
+  ran the gates (1483 tests / 102 files, tsc, eslint, build, E2E 15/15), verified the fixes against
+  the tree, and committed. Evidence assembled into task-7-fix-wave-1-note.md, labelled by source.
+  CONTROLLER ERROR, corrected in that note: I first recorded Fix 1 as "reasoned, not empirically
+  demonstrated" because no report existed. Wrong — the implementer HAD reproduced both loss cases;
+  it simply never wrote them down. Asking produced audit timestamps and response codes specific
+  enough to check. ABSENCE OF A REPORT IS NOT ABSENCE OF VERIFICATION — ask before concluding.
+  The evidence, worth keeping: BEFORE, two audit entries 6ms apart, PUT#2's `before` snapshot still
+  read the pre-typed rate (the typed value lives only in textDrafts, never mirrored into rowsRef),
+  final state reverted silently. AFTER, PUT#2's `before` carried the already-updated rate — that
+  snapshot is the tell that it ran only once PUT#1's load had landed. Case (b) was WORSE than
+  predicted: two quick step-code clicks did not merely lose one, the concurrent Serializable
+  transactions collided outright and returned a 409 — a user-visible error on an ordinary
+  interaction, not just silent loss.
+Task 7: re-review — Spec ✅ (all seven fixes present), quality NEEDS FIXES. 1 Important, 5 Minor.
+  Important: THE QUEUE'S FRESHNESS INVARIANT WAS DEFEATED BY useLatest. `load()` returned without
+    writing rowsRef.current when its ticket was superseded, so a save queued between a superseded
+    load and the load that superseded it composed from the PRE-save row — re-opening the identical
+    silent whole-row revert the wave had just closed, narrower window, same silence. And it was a
+    divergence from the sibling in exactly the cited spot: step-codes/page.tsx:45-51 writes
+    codesRef.current unconditionally. The queue's own comment asserted the invariant the code did
+    not hold. Reviewer traced the entry: rate blur -> add() -> Active click.
+Task 7: fix wave 2 (sonnet) — commit cfe2d45. Chose to drop the latest gate on the REF write only
+  (the sibling's shape, one localized change) over plumbing load()'s return through six call sites.
+  useLatest still guards the RENDERED state, which is what it exists for (issues #5/#15/#23); the
+  ref exists for a different purpose — handing queued runs fresh server truth — and was wrongly
+  sharing the ticket. REPRODUCED before the fix with the reviewer's own interleave: audit showed
+  before.rate "0.3" -> after.rate "0.09", the typed value reverting; after the fix, before.rate
+  "0.4" -> after.rate "0.4", only `active` changed. Race window widened with a fetch-delay shim,
+  DISCLOSED as such — real PUT/POST/audit calls throughout, nothing fabricated.
+  Controller verified the diff rather than dispatching a third review: rowsRef.current = r now
+  lands BEFORE the ticket check with only setRows/setGls/setStepCodeOptions gated, matching
+  step-codes exactly, and the stale comment was rewritten to state the invariant actually held.
+  Stated plainly because it departs from the loop: round 3 on one task, a single localized change,
+  matching a precedent I checked myself, with empirical before/after.
+Task 7: Minor 4 CLOSED by the controller — the committed task-7-report.md described the pre-ruling
+  gates (POST/DELETE on admin.edit) and carried "Concerns: none outstanding" over the very
+  deviation that was escalated and ruled against. Corrected with a header note rather than an edit;
+  the original text is the record of what was built and why.
+Task 7: DEFERRED to whole-branch triage — (a) NOTHING FENCES THIS PAGE'S WRITE PATH: no vitest
+  seam, and `grep -rn surcharge e2e/` returns zero hits across all 15 flows, so fixes 1/3/4/7 are
+  protected by nothing and both race demonstrations were manual and unrepeatable in CI. The right
+  instrument is an E2E case firing overlapping surcharge saves — and per the reviewer it should
+  drive an add()/delete interleave, not just two field saves, so it would also cover the freshness
+  hole. (b) Draft clearing is keyed to the queue TAIL, so a backlog can wipe typing still in
+  progress. (c) removeRow stays outside the queue — no integrity risk (updateSurcharge scopes
+  `deletedAt: null`), but a save queued behind a delete surfaces "Surcharge not found" just as the
+  row correctly disappears. (d) No fix-wave TDD RED record from the implementer.
+Task 7: complete (commits fc37830..cfe2d45, Important closed and verified)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in

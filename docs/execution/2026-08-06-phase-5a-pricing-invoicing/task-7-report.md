@@ -1,5 +1,28 @@
 # Task 7 report — Admin → Surcharges page + routes
 
+> **CONTROLLER CORRECTION — parts of this report describe code that no longer exists.** It was
+> committed in `39a3372` and contradicted by `daf1cfd` in the same wave, so read it as the
+> as-first-built record, not as a description of the tree.
+>
+> **The permission gates changed by owner ruling (2026-08-07).** Everywhere below that says POST
+> and DELETE gate on `admin.edit` — including the rationale paragraph and the "every mutating
+> control gates on `canEdit`" line — is superseded:
+>
+> - `POST   /api/admin/surcharges`      → `admin.create`
+> - `PUT    /api/admin/surcharges/[id]` → `admin.edit`
+> - `DELETE /api/admin/surcharges/[id]` → `admin.delete`
+>
+> matching every other admin CRUD list; the page's Add and Delete controls gate to match. The
+> "Concerns: none outstanding" line covering the single-gate deviation is likewise superseded — the
+> deviation was real, was escalated, and was ruled against.
+>
+> Two further changes landed after this text: saves are serialized through a `saveQueue`
+> (`daf1cfd`), and `rowsRef` is now written unconditionally so a superseded load still hands queued
+> runs fresh server truth (`cfe2d45`). Evidence for both is in `task-7-fix-wave-1-note.md`.
+>
+> The original wording is left intact rather than edited — it is the record of what the implementer
+> built and why. (Re-review Minor 4.)
+
 ## What was implemented
 
 Five routes under `src/app/api/admin/surcharges/**`, all thin `handle(...)` wrappers over Task
