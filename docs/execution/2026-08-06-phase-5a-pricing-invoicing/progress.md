@@ -1049,6 +1049,39 @@ Task 15: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Mino
   defects — defensible (a reversal is a ledger correction, not packaging).
 Task 15: complete (commit dddf064, review clean — approved first pass)
 
+Task 16: dispatched (implementer, sonnet — route wiring on established patterns; the permission
+  discrimination is the crux) — BASE dddf064, brief task-16-brief.md (carries change_prices split
+  + no-tx form notes).
+Task 16: implementer DONE — commit c737322, 10 route files + invoices.ts (+72 read helpers) + the
+  sweep + invoice-routes.test.ts (+409). 12 route tests, full suite 1667, gates clean. E2E skipped
+  (no page yet). Reported promptly. Discrimination proven (deleted mustDo change_prices from lines
+  → the edit-only 403 assertion failed; restored → green).
+  Implementer flagged concern 1: the brief's per-route TABLE said recalculate=edit-alone and
+  credit=create-alone, contradicting the brief's own binding header note AND spec §5.5. It resolved
+  toward the spec (added change_prices to both) and flagged it.
+Task 16: CONTROLLER VERIFICATION of the gates against the BINDING SPEC (§5.5/§5.6), before review —
+  because these are the only authorization on the invoice surface and two are contested:
+  - unlock = mustDo("unlock_invoice") + reason (§5.5 line 483). The implementer used unlock_invoice;
+    MY OWN folded note (Tasks 13/16) wrongly said unlock=invoicing.edit. The implementer followed
+    the SPEC over my note — correct. Recording my note's error so it doesn't propagate: finalize is
+    invoicing.edit, but UNLOCK is the unlock_invoice special action.
+  - recalculate = invoicing.edit + change_prices — spec-correct (recalculate replaces every derived
+    line = changes money = the §5.5 general rule). The brief's table was stale; implementer right.
+  - credit = GENUINELY AMBIGUOUS, sent to the reviewer to adjudicate against §5.6's actual text.
+    §5.6 says a credit's "permissions are the invoice's", and raising an invoice is invoicing.create
+    ALONE (§5.5, amounts derived not user-set) — a credit's lines are likewise derived (negated from
+    source), so a literal read says the credit-creation route is invoicing.create ALONE, matching the
+    brief's original table. The implementer added change_prices; TWO prior reviews (Task 11, Task 14
+    ⚠️) and MY folded note asserted credit needs change_prices citing "§5.6" — but §5.6's text says
+    the opposite. Did not pre-decide: the reviewer reads §5.6 and rules. If create-alone, the added
+    change_prices comes off; if create+change_prices, it stays with the reasoning recorded.
+    LESSON: three sources (two reviews + my note) asserted a gate citing a spec section whose text
+    contradicts them — a citation is not a quote; check the section actually says what the citation
+    claims, especially on a money gate.
+Task 16: review dispatched (task-reviewer, opus — every gate vs the spec, the credit-gate
+  adjudication against §5.6, discrimination of the money-route 403s, the sweep not weakened,
+  no-tx form on every route)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
