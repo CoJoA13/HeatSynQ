@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
-import { gate } from "@/lib/permission-ui";
+import { gate, gateDo } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { percentToDecimal, decimalToPercentText } from "@/lib/surcharge-percent";
@@ -71,6 +71,14 @@ export default function SurchargesPage() {
   const canCreate = gate(perms, "admin.create");
   const canEdit = gate(perms, "admin.edit");
   const canDelete = gate(perms, "admin.delete");
+  // Gates the "Clear override" escape hatch below (task-8 brief's opening blockquote, concern 2)
+  // on the exact same permissions the DELETE route enforces
+  // (src/app/api/customers/[id]/surcharges/route.ts) — customers.edit AND change_prices, the
+  // PricingSection.tsx "whichever is actually the blocker" title rule.
+  const canEditC = gate(perms, "customers.edit");
+  const canChangePricesC = gateDo(perms, "change_prices");
+  const clearOverrideDisabled = canEditC.disabled || canChangePricesC.disabled;
+  const clearOverrideTitle = canEditC.disabled ? canEditC.title : canChangePricesC.title;
 
   // Mirrors `rows` for save-time reads: a save must compose its payload from the FRESHEST known
   // row, not a value captured when the input was first focused (the step-codes/page.tsx
@@ -209,6 +217,29 @@ export default function SurchargesPage() {
           return;
         }
       }
+      setError((e as Error).message);
+    }
+  }
+
+  /** The escape hatch for a stale override belonging to a SOFT-DELETED customer (task-8 brief's
+   *  opening blockquote, concern 2): `customerSurcharge -> surcharge`'s blocker entry links to
+   *  `/customers/{id}`, but a deleted customer's detail page 404s (getCustomer filters
+   *  `deletedAt: null`) — soft-deleted customers are invisible to every list and every detail
+   *  page in this app by design, so that page is never reachable again once the customer is
+   *  gone. Clearing the override right here, where the block is actually discovered (an admin
+   *  trying to delete THIS surcharge), closes the loop without requiring the customer itself to
+   *  be reachable. Reuses `deleteCustomerSurcharge` through the customer-facing DELETE route —
+   *  the same one the customer page's own "Clear override" control uses — since the service
+   *  itself checks only the override row's own liveness, never the customer's (surcharges.ts). */
+  async function clearCustomerOverride(customerId: string, surchargeId: string) {
+    try {
+      await api(`/api/customers/${customerId}/surcharges`, {
+        method: "DELETE", body: JSON.stringify({ surchargeId }),
+      });
+      setError(null);
+      const list = await api<Blocker[]>(`/api/admin/surcharges/${surchargeId}/blockers`);
+      if (list.length) { setBlocked((b) => (b ? { ...b, list } : b)); } else { setBlocked(null); }
+    } catch (e) {
       setError((e as Error).message);
     }
   }
@@ -447,15 +478,44 @@ export default function SurchargesPage() {
               Active
             </label>
 
-            {blocked && blocked.row.id === current.id && (
-              <BlockerPanel
-                label="surcharge"
-                rowName={blocked.row.name}
-                list={blocked.list}
-                exportHref={`/api/admin/surcharges/${blocked.row.id}/blockers/export`}
-                onDismiss={() => setBlocked(null)}
-              />
-            )}
+            {blocked && blocked.row.id === current.id && (() => {
+              const customerBlockers = blocked.list.filter((b) => b.entityLabel === "Customer");
+              return (
+                <>
+                  <BlockerPanel
+                    label="surcharge"
+                    rowName={blocked.row.name}
+                    list={blocked.list}
+                    exportHref={`/api/admin/surcharges/${blocked.row.id}/blockers/export`}
+                    onDismiss={() => setBlocked(null)}
+                  />
+                  {/* Task-8 brief, concern 2: a Customer blocker here is a live CustomerSurcharge
+                      override — including one belonging to a soft-deleted customer, whose own
+                      detail page (the panel's link above) 404s and can never be visited again.
+                      This clears it directly, right where the block is discovered, regardless of
+                      whether that customer is still reachable. */}
+                  {customerBlockers.length > 0 && (
+                    <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-sm">
+                      <p className="mb-1 text-slate-600">
+                        Clear a customer&apos;s override directly (works even if that customer has since been deleted):
+                      </p>
+                      <ul className="space-y-1">
+                        {customerBlockers.map((b) => (
+                          <li key={b.id} className="flex items-center justify-between gap-2">
+                            <span>{b.name}</span>
+                            <button onClick={() => void clearCustomerOverride(b.id, blocked.row.id)}
+                                    disabled={clearOverrideDisabled} title={clearOverrideTitle}
+                                    className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
+                              Clear override
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
 
             <div className="mt-6">
               <h3 className="mb-2 font-medium">History</h3>

@@ -223,6 +223,48 @@ export async function listCustomerSurcharges(customerId: string): Promise<Custom
   }));
 }
 
+export type CustomerSurchargeOptionRow = CustomerSurchargeRow & {
+  kind: SurchargeKindValue;
+  /** Whether a live `CustomerSurcharge` row exists for this pair — distinct from
+   *  `optOut`/`rate`/`amount` reading their "no override" defaults, since a row that explicitly
+   *  holds those same empty values is functionally identical (both bill at the plant-wide
+   *  definition) but only the former has anything for `deleteCustomerSurcharge` to remove, and
+   *  only the former is what blocks this surcharge's own deletion
+   *  (customerSurcharge -> surcharge in reference-links.ts). The customer page's per-row "Clear
+   *  override" control is gated on this, not on the field values. */
+  hasOverride: boolean;
+};
+
+/**
+ * Every ACTIVE plant-wide surcharge, each merged with this customer's own override where one
+ * exists — the exact shape the customer page's Surcharge overrides section renders directly
+ * (task-8 brief). Composed here, behind `customers` permissions only, specifically so that
+ * screen never needs `admin.view` (the gate on `GET /api/admin/surcharges`) just to see what
+ * surcharges exist to override — `change_prices` + `customers.edit` is already the complete,
+ * correct gate for touching a customer's pricing (parts/[id]'s PricingSection precedent), and a
+ * second, unrelated permission requirement here would be a silent capability gap, not a feature.
+ *
+ * A surcharge with no override row reads `optOut: false, rate: null, amount: null` — per
+ * `listCustomerSurcharges`' own doc comment, indistinguishable in EFFECT from an override row
+ * that explicitly holds those same values (both bill at the plant-wide definition); `hasOverride`
+ * is what tells the two apart for the UI's "Clear override" control.
+ */
+export async function customerSurchargeOptions(customerId: string): Promise<CustomerSurchargeOptionRow[]> {
+  const [surcharges, overrides] = await Promise.all([
+    listSurcharges(),
+    listCustomerSurcharges(customerId),
+  ]);
+  const byId = new Map(overrides.map((o) => [o.surchargeId, o]));
+  return surcharges.map((s) => {
+    const o = byId.get(s.id);
+    return {
+      surchargeId: s.id, surchargeName: s.name, kind: s.kind,
+      optOut: o?.optOut ?? false, rate: o?.rate ?? null, amount: o?.amount ?? null,
+      hasOverride: o !== undefined,
+    };
+  });
+}
+
 const CUSTOMER_SURCHARGE = z.object({
   optOut: z.boolean().optional(),
   rate: decimalField(9, 6, { min: "nonnegative" }),

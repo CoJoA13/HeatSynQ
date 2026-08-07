@@ -9,6 +9,7 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
+import { SurchargeOverridesSection } from "./SurchargeOverridesSection";
 
 type Customer = {
   id: string; code: string; name: string; parentId: string | null; parentCode: string | null;
@@ -23,6 +24,12 @@ type Customer = {
   // commit path (below) parses it to a number itself rather than forwarding the typed text.
   requestDaysOverride: number | string | null;
   creditHold: boolean; cod: boolean; taxable: boolean; surchargeOptOut: boolean;
+  // number|null once loaded, string mid-edit — the creditLimit precedent above. Overrides
+  // BillingConfig.salesTaxRate (P5A §4.4); only ever applied when `taxable` is true.
+  salesTaxRate: number | string | null;
+  // Suppresses the certification charge for this customer regardless of the part/plant "bill for
+  // cert" chain (P5A §4.4) — a blanket opt-out, the surchargeOptOut shape.
+  certChargeSuppressed: boolean;
   /** Certification chain (spec §6.1): null = inherit the plant setting; a part can override
    *  either way. The `inheritedCert*` companions are what that null currently resolves to —
    *  computed server-side (customers.ts) so the three-state controls can label their "Inherit"
@@ -497,6 +504,11 @@ function CustomerDetail({ id }: { id: string }) {
                    onChange={(e) => save({ surchargeOptOut: e.target.checked })} />
             Surcharge opt-out
           </label>
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={c.certChargeSuppressed} disabled={!canEdit.allowed} title={canEdit.title}
+                   onChange={(e) => save({ certChargeSuppressed: e.target.checked })} />
+            Suppress certification charge
+          </label>
         </div>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <label className="block text-sm">
@@ -547,6 +559,18 @@ function CustomerDetail({ id }: { id: string }) {
                    onChange={(e) => setC({ ...c, financeChargeRate: e.target.value })}
                    onBlur={(e) => onBlurSave(e, {}, (v) => void save({ financeChargeRate: v === "" ? null : v }))}
                    className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
+          </label>
+          <label className="block text-sm">
+            {/* Overrides BillingConfig.salesTaxRate (P5A §4.4) — a raw decimal, not a percent
+                display, matching the plant setting it overrides (admin/billing/page.tsx's own
+                "0.0400" placeholder convention). Blank inherits the plant rate. */}
+            Sales tax rate
+            <input value={c.salesTaxRate ?? ""} inputMode="decimal" placeholder="0.0400"
+                   onFocus={noteFocusC("salesTaxRate")} readOnly={!canEdit.allowed}
+                   onChange={(e) => setC({ ...c, salesTaxRate: e.target.value })}
+                   onBlur={(e) => onBlurSave(e, {}, (v) => void save({ salesTaxRate: v === "" ? null : v }))}
+                   className="ml-2 w-32 rounded border px-2 py-1 read-only:bg-slate-50" />
+            <span className="ml-2 text-xs text-slate-500">Blank uses the plant default.</span>
           </label>
           <label className="block text-sm">
             Request days override
@@ -600,6 +624,8 @@ function CustomerDetail({ id }: { id: string }) {
           </label>
         </div>
       </section>
+
+      <SurchargeOverridesSection customerId={id} perms={perms} onError={setError} />
 
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Standing notes</h2>

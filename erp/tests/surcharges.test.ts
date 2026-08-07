@@ -5,6 +5,7 @@ import { runWithContext } from "@/server/context";
 import {
   listSurcharges, createSurcharge, updateSurcharge, deleteSurcharge,
   setSurchargeStepCodes, listCustomerSurcharges, setCustomerSurcharge, deleteCustomerSurcharge,
+  customerSurchargeOptions,
 } from "@/server/surcharges";
 import { deleteStepCode } from "@/server/process-step-codes";
 import { findBlockers } from "@/server/reference-blockers";
@@ -15,6 +16,9 @@ import { PUT as updateRoute, DELETE as deleteRoute } from "@/app/api/admin/surch
 import { PUT as setStepCodesRoute } from "@/app/api/admin/surcharges/[id]/step-codes/route";
 import { GET as blockersRoute } from "@/app/api/admin/surcharges/[id]/blockers/route";
 import { GET as blockersExportRoute } from "@/app/api/admin/surcharges/[id]/blockers/export/route";
+import {
+  GET as customerSurchargesRoute, PUT as customerSurchargePutRoute, DELETE as customerSurchargeDeleteRoute,
+} from "@/app/api/customers/[id]/surcharges/route";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -355,6 +359,49 @@ describe("surcharges", () => {
         .rejects.toMatchObject({ status: 404 });
     });
   });
+
+  // Task 8 (P5A): the merged view the customer page's Surcharge overrides section renders —
+  // every ACTIVE plant-wide surcharge, with this customer's own override (if any) folded in.
+  describe("customerSurchargeOptions", () => {
+    it("lists every active surcharge, folding in the customer's own override where one exists", async () => {
+      const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+      const { id: overridden } = await asSystem(() => createSurcharge({
+        name: "EnergySur", kind: "PERCENT", rate: "0.040000", position: 1 }));
+      const { id: plain } = await asSystem(() => createSurcharge({
+        name: "FuelSur", kind: "FLAT", amount: "5.00", position: 2 }));
+      // Inactive surcharges are excluded — same as listSurcharges' own default.
+      const { id: inactive } = await asSystem(() => createSurcharge({
+        name: "OldSur", kind: "FLAT", amount: "1.00", position: 3, active: false }));
+      await asSystem(() => setCustomerSurcharge(customer.id, overridden, { rate: "0.010000" }));
+
+      const rows = await customerSurchargeOptions(customer.id);
+      expect(rows.map((r) => r.surchargeId)).toEqual([overridden, plain]);
+      expect(rows.some((r) => r.surchargeId === inactive)).toBe(false);
+
+      const overriddenRow = rows.find((r) => r.surchargeId === overridden)!;
+      expect(overriddenRow).toMatchObject({
+        surchargeName: "EnergySur", kind: "PERCENT", optOut: false, rate: 0.01, amount: null, hasOverride: true,
+      });
+      const plainRow = rows.find((r) => r.surchargeId === plain)!;
+      expect(plainRow).toMatchObject({
+        surchargeName: "FuelSur", kind: "FLAT", optOut: false, rate: null, amount: null, hasOverride: false,
+      });
+    });
+
+    // The point of `hasOverride`: a row with no CustomerSurcharge at all and a row whose override
+    // explicitly holds the same empty values read IDENTICALLY on optOut/rate/amount (both bill at
+    // the plant-wide definition) — only `hasOverride` tells a caller whether there is anything for
+    // deleteCustomerSurcharge to actually remove.
+    it("distinguishes a bare row from an override that holds only empty values", async () => {
+      const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+      const { id: surchargeId } = await asSystem(() => createSurcharge({
+        name: "S", kind: "FLAT", amount: "5.00", position: 1 }));
+      await asSystem(() => setCustomerSurcharge(customer.id, surchargeId, {}));
+
+      const [row] = await customerSurchargeOptions(customer.id);
+      expect(row).toMatchObject({ optOut: false, rate: null, amount: null, hasOverride: true });
+    });
+  });
 });
 
 describe("GET/POST /api/admin/surcharges", () => {
@@ -508,5 +555,117 @@ describe("GET /api/admin/surcharges/[id]/blockers(/export)", () => {
       getReq(`http://t/api/admin/surcharges/${id}/blockers/export`, viewer), withParams({ id }));
     expect(exportRes.status).toBe(200);
     expect(exportRes.headers.get("content-type")).toContain("spreadsheetml");
+  });
+});
+
+// Task 8 (P5A): the customer-side route. GET is gated on customers.view alone (Fix: it must NOT
+// require admin.view — customerSurchargeOptions' own doc comment); PUT/DELETE are gated on
+// customers.edit PLUS change_prices, since a per-customer surcharge override — setting one or
+// removing one — is a price change (task-8 brief's opening blockquote).
+describe("GET/PUT/DELETE /api/customers/[id]/surcharges", () => {
+  beforeEach(truncateAll);
+
+  it("requires login on all three verbs", async () => {
+    expect((await customerSurchargesRoute(getReq("http://t/api/customers/x/surcharges"), withParams({ id: "x" })))
+      .status).toBe(401);
+    expect((await customerSurchargePutRoute(
+      bodyReq("http://t/api/customers/x/surcharges", "PUT", undefined, {}), withParams({ id: "x" }))).status)
+      .toBe(401);
+    expect((await customerSurchargeDeleteRoute(
+      bodyReq("http://t/api/customers/x/surcharges", "DELETE", undefined, {}), withParams({ id: "x" }))).status)
+      .toBe(401);
+  });
+
+  it("GET needs customers.view only — not admin.view", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+
+    const noPerms = await signInWith(["admin.view"], "admin-only");
+    expect((await customerSurchargesRoute(
+      getReq(`http://t/api/customers/${customer.id}/surcharges`, noPerms), withParams({ id: customer.id })))
+      .status).toBe(403);
+
+    const viewer = await signInWith(["customers.view"], "customers-viewer");
+    const res = await customerSurchargesRoute(
+      getReq(`http://t/api/customers/${customer.id}/surcharges`, viewer), withParams({ id: customer.id }));
+    expect(res.status).toBe(200);
+    const rows = await res.json();
+    expect(rows).toMatchObject([{ surchargeName: "S", kind: "FLAT", optOut: false, hasOverride: false }]);
+  });
+
+  it("PUT/DELETE need customers.edit AND change_prices — either alone is refused", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const { id: surchargeId } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+
+    const editOnly = await signInWith(["customers.edit"], "edit-only");
+    expect((await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", editOnly, { surchargeId, optOut: true }),
+      withParams({ id: customer.id }))).status).toBe(403);
+    expect((await customerSurchargeDeleteRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "DELETE", editOnly, { surchargeId }),
+      withParams({ id: customer.id }))).status).toBe(403);
+
+    const priceOnly = await signInWith(["action.change_prices"], "price-only");
+    expect((await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", priceOnly, { surchargeId, optOut: true }),
+      withParams({ id: customer.id }))).status).toBe(403);
+
+    const both = await signInWith(["customers.edit", "action.change_prices"], "both-perms");
+    expect((await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", both, { surchargeId, optOut: true }),
+      withParams({ id: customer.id }))).status).toBe(200);
+  });
+
+  it("PUT requires surchargeId, and posts the WHOLE row through setCustomerSurcharge — a caller cannot resend only the changed field", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const { id: surchargeId } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+    const editor = await signInWith(["customers.edit", "action.change_prices"], "editor");
+
+    expect((await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", editor, { optOut: true }),
+      withParams({ id: customer.id }))).status).toBe(400);
+
+    // First save sets amount. Second save omits amount entirely (only optOut) — the whole-row
+    // contract means amount must come back null, not survive from the first call (Fix 1 from
+    // Task 6's fix wave, applied to this route: an omitted field clears it).
+    await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", editor,
+        { surchargeId, optOut: false, amount: "2.50" }),
+      withParams({ id: customer.id }));
+    await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", editor,
+        { surchargeId, optOut: true, amount: null }),
+      withParams({ id: customer.id }));
+
+    const row = await prisma.customerSurcharge.findFirstOrThrow({
+      where: { customerId: customer.id, surchargeId, deletedAt: null } });
+    expect(row.optOut).toBe(true);
+    expect(row.amount).toBeNull();
+  });
+
+  it("DELETE requires surchargeId, 404s with no live override, and frees the surcharge to delete once cleared", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const { id: surchargeId } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+    const editor = await signInWith(["customers.edit", "action.change_prices"], "editor");
+
+    expect((await customerSurchargeDeleteRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "DELETE", editor, {}),
+      withParams({ id: customer.id }))).status).toBe(400);
+
+    expect((await customerSurchargeDeleteRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "DELETE", editor, { surchargeId }),
+      withParams({ id: customer.id }))).status).toBe(404);
+
+    await customerSurchargePutRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "PUT", editor, { surchargeId, optOut: true }),
+      withParams({ id: customer.id }));
+    await expect(asSystem(() => deleteSurcharge(surchargeId))).rejects.toThrow(/still in use/);
+
+    const delRes = await customerSurchargeDeleteRoute(
+      bodyReq(`http://t/api/customers/${customer.id}/surcharges`, "DELETE", editor, { surchargeId }),
+      withParams({ id: customer.id }));
+    expect(delRes.status).toBe(200);
+
+    await expect(asSystem(() => deleteSurcharge(surchargeId))).resolves.toBeUndefined();
   });
 });
