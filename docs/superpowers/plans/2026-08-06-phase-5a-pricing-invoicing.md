@@ -367,7 +367,11 @@ export async function getBillingConfig(db?: Prisma.TransactionClient): Promise<B
 export async function setBillingConfig(input: unknown): Promise<BillingConfigRow>;
 ```
 
-- [ ] **Step 1: Write the failing test** `tests/billing-config.test.ts`, on the `tests/part-price-breaks.test.ts` harness (`beforeEach(truncateAll)`, `asSystem` wrapping `runWithContext({ actor: { id: null, name: "test" }, user: null }, fn)`):
+> **Amended after Task 2 (2026-08-06).** `tests/part-price-breaks.test.ts` **no longer exists** — Task 2 deleted it with the rest of the old pricing surface. Take the harness idiom (`beforeEach(truncateAll)`, `asSystem` wrapping `runWithContext({ actor: { id: null, name: "test" }, user: null }, fn)`) from any current service test, e.g. `tests/certs.test.ts`.
+>
+> **And `truncateAll()` now RE-SEEDS the `BillingConfig` singleton** (`tests/helpers/db.ts`, Task 2). That is deliberate and correct — production can never have zero rows (the migration seeds it and a CHECK pins the id), so a test database without it would encode a state production cannot reach. The consequence for you: **`getBillingConfig`'s `if (!row) return EMPTY` branch is unreachable under `truncateAll`.** Keep the fallback — a fresh clone or a restore can genuinely arrive without the row — but a test of it must delete the row explicitly first, or it asserts nothing. Both cases are written out below.
+
+- [ ] **Step 1: Write the failing test** `tests/billing-config.test.ts`:
 
 ```ts
 it("returns the seeded singleton with everything unset", async () => {
@@ -377,6 +381,31 @@ it("returns the seeded singleton with everything unset", async () => {
     otherChargeGlAccountId: null, certChargeStepCodeId: null,
     certChargeDefault: null, billForCertDefault: false,
   });
+});
+
+// The fallback branch, which truncateAll's re-seed would otherwise make unreachable: delete the
+// row first, so this test can actually fail if the `if (!row) return EMPTY` guard is removed.
+it("returns the defaults when the row is genuinely absent (a fresh clone, a restore)", async () => {
+  await prisma.billingConfig.deleteMany({});
+  const cfg = await getBillingConfig();
+  expect(cfg.salesTaxRate).toBeNull();
+  expect(cfg.billForCertDefault).toBe(false);
+});
+
+// Task 2 hand-wrote BILLING_CONFIG_BLOCKER to repair a defect in this plan's own registry
+// snippet, and nothing exercises its displayName/blockerId yet — the queries are proven valid
+// (they run on every GL-account delete), but no test has ever had a matching row. BillingConfig
+// has no `name` column, so findBlockers' default would print "singleton" at a user.
+it("refuses to delete a GL account the billing settings point at, naming it usefully", async () => {
+  const gl = await prisma.glAccount.create({ data: { name: "4300", description: "Freight" } });
+  await asSystem(() => setBillingConfig({ freightGlAccountId: gl.id }));
+  await expect(asSystem(() => deleteReference("glAccount", gl.id)))
+    .rejects.toThrow(/still in use by 1 record/);
+  const blockers = await findBlockers("glAccount", gl.id);
+  expect(blockers).toHaveLength(1);
+  expect(blockers[0].entityLabel).toBe("Billing settings");
+  expect(blockers[0].name).not.toBe("singleton");     // a person must be able to read this
+  expect(blockers[0].href).toBe("/admin/billing");
 });
 
 it("saves a rate and a GL account, and audits the diff", async () => {
@@ -612,6 +641,21 @@ it("scopes every mutator to its part and its price row", async () => {
     .rejects.toThrow("Price row not found");
 });
 
+// Task 2 changed `deletePart` to cascade-soft-delete PartPrice rows (parts.ts) and left it
+// untested. It is load-bearing: `partPrice` reuses PART_VIA_CHILD in the FK registry, so if the
+// cascade were ever dropped, a deleted part's live price rows would block a step-code delete
+// forever behind a blocker naming a part nobody can see. Add this to `tests/parts.test.ts`'s
+// existing "delete requires a reason and cascades children" case rather than a new one.
+it("soft-deletes a part's price rows when the part is deleted", async () => {
+  const { partId, austemper } = await fixture();
+  const { id } = await asSystem(() => addPartPrice(partId, { processStepCodeId: austemper.id, position: 1 }));
+  await asSystem(() => deletePart(partId, "keyed against the wrong customer"));
+  const row = await prisma.partPrice.findUniqueOrThrow({ where: { id } });
+  expect(row.deletedAt).not.toBeNull();
+  // Its breaks are deliberately left alone — they hang off a dead row under a dead part and no
+  // live read can reach them (deletePartPrice follows the same rule).
+});
+
 it("audits a price row create/update/delete with a real diff", async () => {
   const { partId, austemper } = await fixture();
   const { id } = await asSystem(() => addPartPrice(partId, {
@@ -826,6 +870,22 @@ it("refuses to delete a surcharge a customer rule points at, and names the block
   const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
   await asSystem(() => setCustomerSurcharge(customer.id, id, { optOut: true }));
   await expect(asSystem(() => deleteSurcharge(id))).rejects.toThrow(/still in use by 1 record/);
+  const blockers = await findBlockers("surcharge", id);
+  expect(blockers[0].entityLabel).toBe("Customer");
+  expect(blockers[0].name).toContain("ACME");
+});
+
+// Task 2 hand-wrote SURCHARGE_VIA_STEP_CODE to repair a defect in this plan's own registry
+// snippet; its displayName/blockerId have never run. SurchargeStepCode is a join row with no
+// name of its own, so without them a blocker panel would show a bare cuid at a person.
+it("refuses to delete a step code a surcharge scopes on, naming the surcharge", async () => {
+  const code = await prisma.processStepCode.create({ data: { code: "WASH", name: "Hot wash" } });
+  const { id } = await asSystem(() => createSurcharge({
+    name: "EnergySur", kind: "FLAT", amount: "1.00", scope: "EXCLUDE", position: 1 }));
+  await asSystem(() => setSurchargeStepCodes(id, [code.id]));
+  await expect(asSystem(() => deleteStepCode(code.id))).rejects.toThrow(/still in use by 1 record/);
+  const blockers = await findBlockers("processStepCode", code.id);
+  expect(blockers.some((b) => b.name.includes("EnergySur"))).toBe(true);
 });
 ```
 
@@ -2235,6 +2295,7 @@ export async function printInvoice(invoiceId: string): Promise<{ documentId: str
 - [ ] **Step 1: Finish widening `documents.ts`.** **Task 2 already did the schema-shaped half** — widening `DocumentKind` made `Record<DocumentKind, Area>` a compile error until it was done, which is exactly the point of that type. Already in place, verified: `AREA_FOR_KIND` has `INVOICE: "invoicing"` / `CREDIT: "invoicing"`; `DocumentOwner` has both arms; so do `ownerColumns`, `DocumentMeta.invoiceId`, `documentFilename` and `resolveDocumentFilename`. **What is still owed here:**
   - `listDocumentsForOrder`'s `OR` gains `{ invoice: { orderId } }`, so an invoice appears on its order's hub (it currently has only the `orderId` / `cert` / `shipper` branches, `src/server/documents.ts:174`);
   - `KIND_LABELS` in `src/app/orders/[id]/DocumentsSection.tsx:18` — today it is `{ TRAVELER: "Traveler" }` alone, so every other kind renders as a raw enum name (the cosmetic gap HANDOFF §6 recorded). Make it exhaustive over all six kinds.
+  - **Cover Task 2's untested filename arms.** `documentFilename`'s `INVOICE`/`CREDIT` cases (`src/server/documents.ts:255-258`) and `resolveDocumentFilename`'s new case (`:304-312`) are new production code with no test. `documentFilename` now takes **four optional positionals, three of them numbers** — a caller passing a credit number in the `shipperNumber` slot compiles silently. Add cases to the existing `describe("documentFilename")` block in `tests/documents.test.ts` asserting `invoice-72026.pdf` and `credit-1000.pdf`.
 - [ ] **Step 2: Fill in `KIND_LABELS`** on the order hub's Documents list for every kind — the cosmetic gap HANDOFF §6 recorded (non-traveler kinds render as raw enum names today). Enumerate all six so the map is exhaustive.
 - [ ] **Step 3: Write the failing tests** `tests/invoice-pdf.test.ts`, on `tests/cert-pdf.test.ts`'s shape:
 
