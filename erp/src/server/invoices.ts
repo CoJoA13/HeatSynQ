@@ -4,6 +4,7 @@ import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate } from "./audit";
+import { assertRefExists } from "./reference-guards";
 import { claimOrder } from "./order-locks";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -291,7 +292,7 @@ async function buildPricingInput(
   order: { id: string; certRequired: boolean },
   customer: { taxable: boolean; salesTaxRate: Prisma.Decimal | null; certChargeSuppressed: boolean; surchargeOptOut: boolean; surchargeRules: { surchargeId: string; optOut: boolean; rate: Prisma.Decimal | null; amount: Prisma.Decimal | null }[] },
   orderLines: OrderLineRow[],
-): Promise<PricingInput> {
+): Promise<{ input: PricingInput; otherChargeGlName: string }> {
   const shipped = await shippedTotals(tx, orderLines.map((l) => l.id));
 
   // GL account names for the config-driven line kinds (freight, other-charge, sales tax). The cert
@@ -303,6 +304,10 @@ async function buildPricingInput(
   });
   const glNameById = new Map(glRows.map((r) => [r.id, r.name]));
   const glRef = (id: string | null): GlRef => ({ glAccountId: id, glAccountName: id === null ? "" : (glNameById.get(id) ?? "") });
+  // Seam #1's name half: `otherChargeGlAccountId` is already in `glIds` above, so its name is
+  // already resolved here — the caller (createInvoiceInTx) reuses it rather than re-querying.
+  const otherChargeGlName = config.otherChargeGlAccountId === null
+    ? "" : (glNameById.get(config.otherChargeGlAccountId) ?? "");
 
   // Operation lines — one per order line with a NON-ZERO net shipped total (seam #3).
   const lines: OrderLineInput[] = [];
@@ -381,7 +386,10 @@ async function buildPricingInput(
   const taxRate = customer.taxable ? (customer.salesTaxRate?.toNumber() ?? config.salesTaxRate) : null;
   const tax = taxRate !== null ? { ...glRef(config.salesTaxGlAccountId), rate: taxRate } : null;
 
-  return { lines, surcharges: buildSurcharges(surcharges, customer), charges, freight, cert, tax };
+  return {
+    input: { lines, surcharges: buildSurcharges(surcharges, customer), charges, freight, cert, tax },
+    otherChargeGlName,
+  };
 }
 
 async function createInvoiceInTx(
@@ -452,7 +460,8 @@ async function createInvoiceInTx(
     },
   });
 
-  const input = await buildPricingInput(tx, deps.config, deps.surcharges, order, customer, orderLines);
+  const { input, otherChargeGlName } =
+    await buildPricingInput(tx, deps.config, deps.surcharges, order, customer, orderLines);
   const computed = priceOrder(input); // the pure engine — all the arithmetic
 
   // The lead line's priced operations, comma-joined — the invoice header's "process names" (§10).
@@ -463,10 +472,7 @@ async function createInvoiceInTx(
   const invoiceDate = data.invoiceDate ? parseDate(data.invoiceDate, "Invoice date") : deps.today;
   const taxRate = input.tax?.rate ?? null;
   const otherChargeGl: GlRef = {
-    glAccountId: deps.config.otherChargeGlAccountId,
-    glAccountName: deps.config.otherChargeGlAccountId === null
-      ? ""
-      : (await tx.glAccount.findFirst({ where: { id: deps.config.otherChargeGlAccountId }, select: { name: true } }))?.name ?? "",
+    glAccountId: deps.config.otherChargeGlAccountId, glAccountName: otherChargeGlName,
   };
 
   // Seam #1: CHARGE lines arrive from the engine with a null GL account — assign the config's
@@ -488,6 +494,25 @@ async function createInvoiceInTx(
     rate: l.rate, priceSource: l.priceSource, needsPrice: l.needsPrice,
     amount: l.amount,
   }));
+
+  // Fix 1 (spec §5.1): this transaction is Serializable specifically to pair with `assertRefExists`
+  // on every registered FK it assigns (CLAUDE.md's FK-writer pattern, `createShipper`'s `carrierId`
+  // precedent) — glAccountId/processStepCodeId/surchargeId are all registered `BlockerTarget`
+  // kinds. Checked fresh on `tx`, after the claim: `deps.config`/`deps.surcharges` were read on the
+  // TOP-LEVEL client, before this transaction even opened (`loadInvoiceDeps`), so a GL account,
+  // step code or surcharge could have been soft-deleted in the gap — a distant delete-blocker
+  // (e.g. `BILLING_CONFIG_BLOCKER`) is not a substitute for this local, permanent check.
+  const glAccountIds = new Set(lineData.map((l) => l.glAccountId).filter((id): id is string => id !== null));
+  const processStepCodeIds = new Set(
+    lineData.map((l) => l.processStepCodeId).filter((id): id is string => id !== null));
+  // The cert charge's step code never lands on the CERT line's own `processStepCodeId` column
+  // (only its GL account rides along, via `certStep.glAccountId` in `buildPricingInput`) — guarded
+  // here explicitly since it is otherwise invisible to the scan of `lineData` above.
+  if (input.cert && deps.config.certChargeStepCodeId) processStepCodeIds.add(deps.config.certChargeStepCodeId);
+  const surchargeIds = new Set(lineData.map((l) => l.surchargeId).filter((id): id is string => id !== null));
+  for (const id of glAccountIds) await assertRefExists("glAccount", id, tx);
+  for (const id of processStepCodeIds) await assertRefExists("processStepCode", id, tx);
+  for (const id of surchargeIds) await assertRefExists("surcharge", id, tx);
 
   // The `after` snapshot, composed by hand like shippers.ts's `auditPayload` — every FK travels
   // with the live name it points at, and the lines' amounts are included so line changes show in
@@ -602,7 +627,10 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
   const warnings: string[] = [];
   for (const l of detail.lines) {
     if (l.needsPrice) {
-      warnings.push(`Line ${l.position} · ${l.partNumber} — ${l.description} needs a price`);
+      // A CHARGE line (and any other non-part line) carries a blank `partNumber` — fall back to
+      // its own description as the label so the message never renders a dangling "·  —".
+      const label = l.partNumber === "" ? `${l.description} —` : `${l.partNumber} — ${l.description}`;
+      warnings.push(`Line ${l.position} · ${label} needs a price`);
     }
   }
   for (const l of detail.lines) {

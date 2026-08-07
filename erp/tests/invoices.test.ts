@@ -344,6 +344,57 @@ describe("createInvoice", () => {
     expect(JSON.stringify(entry!.after)).toContain("937.44");
   });
 
+  // Fix wave 1, Fix 1: the writer's Serializable isolation exists specifically to pair with
+  // `assertRefExists` on every registered FK it assigns (CLAUDE.md's FK-writer pattern) — closing
+  // the staleness window between `loadInvoiceDeps`' outside-tx reads and this transaction's own
+  // commit. A GL account is the easiest FK to exercise: the priced fixture's operation line posts
+  // to `glAccount`, and soft-deleting it out from under the create must refuse, not silently post
+  // an OPERATION line to a dead account.
+  it("refuses to create an invoice whose GL account was soft-deleted before creation (assertRefExists)", async () => {
+    const { order, glAccount } = await pricedShippedOrder();
+    await prisma.glAccount.update({ where: { id: glAccount!.id }, data: { deletedAt: new Date() } });
+    await expect(asSystem(() => createInvoice({ orderId: order.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/that gl account does not exist/i) });
+    expect(await prisma.invoice.count()).toBe(0);
+  });
+
+  // Fix wave 1, Fix 2: a CHARGE line carries a blank `partNumber`, so the old
+  // `${partNumber} — ${description} needs a price` template rendered a dangling "·  — Rush" with
+  // nothing before the dash. The fix uses the line's own label (its description) in that slot.
+  it("formats a CHARGE needsPrice warning off its own label, not a blank part number", async () => {
+    const { order } = await pricedShippedOrder();
+    await asSystem(() => replaceCharges(order.id, [{ description: "Rush" }])); // no amount -> needsPrice
+    const { warnings } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(warnings).toContain("Line 3 · Rush — needs a price");
+  });
+
+  // Fix wave 1, Fix 4: `renderAddress` (default-address pick, name fallback, blank-line drop) had
+  // no direct coverage. Exercised here through `createInvoice`'s billTo/shipTo, the only way it is
+  // reachable — the function itself is a private helper.
+  it("renders billTo/shipTo — default address pick, name fallback, and blank-line drop", async () => {
+    const { order, customer } = await pricedShippedOrder();
+    // BILL_TO: two rows: the alphabetically-first one is NOT the default, so picking it correctly
+    // requires honoring `isDefault` rather than the `listAddresses` name ordering. The default
+    // row's own name is blank (-> customer name fallback) and its zip is blank (-> blank-line drop
+    // inside the city/state/zip line, no trailing gap).
+    await prisma.customerAddress.create({
+      data: { customerId: customer.id, kind: "BILL_TO", name: "AAA Not Default",
+        street: "1 Alt St", city: "Alt City", state: "OH", zip: "44444" },
+    });
+    await prisma.customerAddress.create({
+      data: { customerId: customer.id, kind: "BILL_TO", name: "",
+        street: "100 Main St", city: "Springfield", state: "OH", zip: "", isDefault: true },
+    });
+    // SHIP_TO: one row with no street/city/state/zip at all -> only the name line prints.
+    await prisma.customerAddress.create({
+      data: { customerId: customer.id, kind: "SHIP_TO", name: "Dock 4", isDefault: true },
+    });
+
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.billTo).toBe(`${customer.name}\n100 Main St\nSpringfield, OH`);
+    expect(invoice.shipTo).toBe("Dock 4");
+  });
+
   // The discriminating concurrency test, copied in shape from tests/certs.test.ts:110-177 —
   // including the reasoning for why the competing caller must be pinned to Read Committed.
   //
