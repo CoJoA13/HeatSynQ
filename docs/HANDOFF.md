@@ -21,6 +21,7 @@ HeatSynQ is a self-hosted web ERP for a commercial **heat-treating shop**, built
 | `docs/superpowers/specs/2026-07-29-heat-treat-erp-design.md` | **The approved spec — the contract.** §3 non-goals and §15 decision log are binding. Owner approved it with four review changes (already applied): qty+weight both required, auto load-split, no order duplication, CAR removed |
 | `docs/superpowers/plans/2026-07-29-roadmap.md` | The 8-phase build order (owner-approved) |
 | `docs/history/` | **The merged phases' full narratives**, one dated file per phase, moved verbatim out of this file's §4 as each phase closed. They record rulings, defect post-mortems and the lessons behind them — nothing there steers today's work, so read one only when you need a merged phase's detail. **The rule: when a phase merges, its narrative moves here and §4 keeps one paragraph** |
+| `docs/execution/<date>-phase-*/` | **The execution ledger** — per-task briefs, implementer reports, reviewer verdicts, and the `progress.md` that records what every review found, refuted or deferred. This is the account of *why* each task landed as it did, and none of it is reproducible from source. Written here from Phase 5A on, and **committed on the first task** — see `.superpowers/sdd/README.md` for why it is no longer under `.superpowers/` |
 | `docs/superpowers/specs/<date>-phase-N-*-design.md` + the matching `plans/` file | One design spec and one implementation plan per phase, each dated. The **current** phase's pair is binding for the work in flight; §4 names them |
 | `docs/superpowers/plans/2026-07-29-phase-1-foundation.md` | Phase 1's executed plan (historical record; two mid-execution corrections were committed to it) |
 | `docs/superpowers/plans/2026-07-30-phase-2-kickoff.md` | **Start here for Phase 2** — scope, model notes, pre-work, and the context this handoff's author held |
@@ -65,7 +66,11 @@ from §9's kickoff prompt. Its three binding documents:
 - Spec: `docs/superpowers/specs/2026-08-06-phase-5a-pricing-invoicing-design.md`
 - Plan: `docs/superpowers/plans/2026-08-06-phase-5a-pricing-invoicing.md`
 - Execution ledger (per-task briefs, reports, reviews, deferred minors):
-  `.superpowers/sdd/2026-08-06-phase-5a-pricing-invoicing/progress.md`
+  `docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md` — moved out of
+  `.superpowers/sdd/` on 2026-08-06 because that directory's `.gitignore` is skill-owned and kept
+  being clobbered back to a bare `*`, hiding every uncommitted file under it. See
+  `.superpowers/sdd/README.md`. Earlier phases' ledgers stay at the old path; they are already
+  committed, and therefore already immune.
 
 Those three are where the branch's actual state lives; this section deliberately does not duplicate
 them, and gets its one merged paragraph when 5A lands.

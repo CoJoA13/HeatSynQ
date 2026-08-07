@@ -2438,7 +2438,7 @@ it("prints a credit with its credit number and negative amounts", async () => {
 
 Per the process that has held for four phases: **a fresh subagent per task → the repo's own `task-reviewer` agent on each task's diff → fix rounds until approved → re-review**. Then, on the whole branch:
 
-1. **One whole-branch review on the strongest model** over `main..HEAD` of `phase-5a-pricing-invoicing`, fed the per-task deferred-minors lists from `.superpowers/sdd/progress.md` as triage input.
+1. **One whole-branch review on the strongest model** over `main..HEAD` of `phase-5a-pricing-invoicing`, fed the per-task deferred-minors lists from `docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md` as triage input.
 2. **One fix wave** from that review, with scoped re-review of the fixes.
 3. **The owner demo** (`docs/<date>-phase-5a-demo.md`) before the merge.
 4. **Open the PR** — attribution and the Claude-Session link in the **PR body**, never a commit trailer (a hook blocks them).
