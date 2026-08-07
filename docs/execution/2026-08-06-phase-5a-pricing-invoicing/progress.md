@@ -289,6 +289,44 @@ Task 5: re-review dispatched (task-reviewer, opus — the new reorder route/serv
   lines in the shared e2e/lib/db-fixtures.ts, whose reaper hard-deleted a developer's own rows in
   2C-3 behind a guard that checked only the database NAME)
 
+Task 5: re-review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 6 Minor.
+  The reviewer established something better than "the bug is gone": because the route renumbers to
+  0..n-1 BY INDEX, an ALREADY-TIED pair is repaired by a single up/down click. The fix does not
+  merely avoid new ties, it makes the permanently-frozen state both unreachable AND escapable.
+  It also verified the reaper did NOT widen — assertDevDb untouched (database name `erp` AND
+  localhost, no override), the three new fixture rows keyed on exact literals, no prefix scan
+  reintroduced — and confirmed the new E2E case genuinely varies BOTH halves of the AND (case 1
+  asserts "Requires parts.edit", case 2, holding parts.edit, asserts "Requires change_prices"),
+  on two controls that are unconfounded by any second condition.
+  HONEST COVERAGE ACCOUNTING from that review, worth carrying: of the six fixes, only the SERVER
+  half of fix 1 and the E2E gate case would fail if regressed. Reverting move() to two PATCHes,
+  or dropping the rowsReady guard, still breaks nothing in CI — PricingSection.tsx has no vitest
+  seam and the E2E case exercises only the disabled state, never a reorder or an add. The defect
+  we found is fenced server-side only. Not a defect in the fix; a standing fact about this file.
+Task 5: fix wave 2 (controller-initiated, sonnet) — commit 48ce7e8, 1445 tests, E2E 15/15.
+  Closed four Minors rather than deferring them, because two were latent traps in SHARED E2E
+  infrastructure that Tasks 6+ will extend: cleanup() swept prices for one part while
+  reapLeftovers() swept all of them (the next flow to price a second fixture part would have
+  23503'd cleanup), and deletePartPrices swept no AuditLog rows — a bug THIS FILE HAS HAD BEFORE
+  (its own comment records it as "fix-wave finding 12"), which would leak one permanent orphaned
+  audit row per mutation into the developer's dev DB from the first flow that prices through the
+  app. Also: the reorder route test never discriminated its parts.edit half (both 403 cases also
+  lacked change_prices, so deleting mustCan left everything green) — fixed here AND on the four
+  sibling price routes carrying the identical pre-existing hole, per the sibling-split rule.
+  Discrimination proven for the new case. Verified by the controller against the diff rather than
+  by a third review dispatch: fix 1 now passes a list, fix 2's audit sweep is scoped by exact
+  entityId lists (not a blanket `entity:` wipe), 10 changeOnly assertions landed, assertDevDb
+  shows zero lines in the diff. Stated plainly because it is a departure from the normal loop:
+  the task was already APPROVED, and these were hygiene items on top of it.
+Task 5: DEFERRED to whole-branch triage — reorder tests assert audit entry identity rather than
+  before/after diff content (mirrors the part-inspections precedent verbatim, and real behavior is
+  asserted separately via listPartPrices); and Minor 4 from the first review, the synthesized
+  fallback <option> sweep into InspectionsSection + customers/[id] (PricingSection's version is
+  the BETTER one — the divergence is in the good direction).
+Task 5: report's stale opening corrected in place with a controller note rather than an edit —
+  the original wording is the historical record of what the implementer believed (re-review M6).
+Task 5: complete (commits 2a52093..48ce7e8, re-review clean)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in

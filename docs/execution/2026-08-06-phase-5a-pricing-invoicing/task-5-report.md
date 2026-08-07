@@ -2,6 +2,19 @@
 
 Commit: `feat(parts): pricing section rebuilt on per-operation price rows`
 
+> **CONTROLLER NOTE — this section describes the code as first written, and one claim below is now
+> false of the tree.** The bullet under "What I implemented" saying `part-prices.ts` ships no
+> atomic `/reorder` route and that `move()` does two sequential PATCHes was true at commit
+> `48284f7` and is **not** true now. Task 5's review found that two-PATCH swap to be a permanent-tie
+> defect (it permutes the multiset of positions, so no sequence of clicks can untie two rows), and
+> I ruled that it be replaced with an atomic route mirroring `reorderPartInspections`. See
+> **Fix wave 1** below for what actually shipped: `reorderPartPrices` plus
+> `PUT /api/parts/[id]/prices/order`, gated on `parts.edit` AND `change_prices`.
+>
+> The original wording is left intact rather than edited, because this file is the historical
+> record of what the implementer believed and why — but a reader must not take the top half as a
+> description of live code. (Re-review Minor 6.)
+
 ## What I implemented
 
 - **`erp/src/app/parts/[id]/PricingSection.tsx`** (new — the old file was deleted outright by Task 2, per the brief there is no marker/stub to edit). One card per live `PartPrice` row instead of the old four flat part-level inputs + one flat break table:
@@ -175,3 +188,135 @@ $ npm run test:e2e          # All 15 flows passed, including permission-gating w
 - `erp/e2e/flows/permission-gating.mjs` (finding 8 assertions)
 
 DEV database (`erp`) also had `task5_nocp`/`task5_noedit` (users) and `Task5 NoChangePrices`/`Task5 NoPartsEdit` (roles) removed via a one-off script (not committed — see finding 7 above).
+
+## Fix wave 2
+
+Four Minor items from the fix-wave-1 re-review, closed as their own pass because two are latent traps in shared E2E infrastructure that upcoming tasks (more pricing flows) will extend. All commands run from `erp/`.
+
+### Fix 1 — `cleanup()` now sweeps the same part-id list as `reapLeftovers()`
+
+`deletePartPrices([partId])` at the end of `cleanup()` only ever covered the single price-carrying fixture part (`E2E-PART-1`). `reapLeftovers()` already passes the full fixture part-id list to `deletePartProcessData` two lines above the equivalent call — `cleanup()`'s own `deletePartProcessData` call three lines up already receives that same full list too, just not `deletePartPrices`. Changed `cleanup()`'s call to:
+
+```ts
+await deletePartPrices([
+  partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+]);
+```
+
+matching exactly the list `deletePartProcessData` receives immediately above it. This closes the 23503 trap the moment a second fixture part (e.g. `shipPartA`) ever gets a price row through some future flow.
+
+### Fix 2 — `deletePartPrices` now sweeps its own `AuditLog` rows
+
+Followed `deletePartProcessData` (`:202-214`) and `deleteTemplatesAndSteps` (`:228-233`)'s exact shape: look up the child ids first, delete their `AuditLog` rows, then delete the rows themselves. `PartPriceBreak`'s audit entity id is the break's own id (`auditedCreate`'s `created.id`, not the parent price's id — confirmed by reading `auditedCreate` in `src/server/audit.ts:350-356`), so the fix queries `PartPriceBreak` ids scoped through the already-resolved `PartPrice` ids, not the price ids themselves:
+
+```ts
+async function deletePartPrices(partIds: string[]): Promise<void> {
+  if (partIds.length === 0) return;
+  const prices = await prisma.partPrice.findMany({ where: { partId: { in: partIds } }, select: { id: true } });
+  const priceIds = prices.map((p) => p.id);
+  const breaks = await prisma.partPriceBreak.findMany({
+    where: { partPriceId: { in: priceIds } }, select: { id: true },
+  });
+  const breakIds = breaks.map((b) => b.id);
+  await prisma.auditLog.deleteMany({ where: { entity: "partPriceBreak", entityId: { in: breakIds } } });
+  await prisma.partPriceBreak.deleteMany({ where: { partPrice: { partId: { in: partIds } } } });
+  await prisma.auditLog.deleteMany({ where: { entity: "partPrice", entityId: { in: priceIds } } });
+  await prisma.partPrice.deleteMany({ where: { partId: { in: partIds } } });
+}
+```
+
+Confirmed the entity-key strings (`"partPrice"` / `"partPriceBreak"`) against every `auditedCreate`/`auditedUpdate`/`auditedSoftDelete` call site in `src/server/part-prices.ts` and the `AuditableModel` union in `src/server/audit.ts:11`.
+
+### Fix 3 — the reorder route test, and its four siblings, now discriminate their `parts.edit` half
+
+Both `parts-routes.test.ts` tests that assert the price/reorder routes' double gate (the six-endpoint `"price and price-break routes gate on parts.edit AND change_prices"` test, and the `"PUT /api/parts/[id]/prices/order gates..."` test) previously only exercised a `parts.edit`-alone user for the 403 case. Since `mustCan(user, "parts", "edit")` runs before `mustDo(user, "change_prices")` in every one of these five route files, a `parts.edit`-alone user 403s off the `mustDo` line regardless of whether the `mustCan` line exists — so `mustCan` had zero discriminating coverage.
+
+Added a `signInWith(["action.change_prices"], ...)` user (`change_prices`, no `parts.edit`) to both tests and asserted 403 immediately after each existing `parts.edit`-alone 403 check — for the reorder route, and for all six mutating endpoints across the four sibling price/break route files (`POST prices`, `PATCH price`, `DELETE price`, `POST breaks`, `PATCH break`, `DELETE break`), per the project's sibling-split rule (leaving four known-identical holes beside one fixed one is exactly the pattern that rule exists to prevent).
+
+**Discrimination proof** — reorder route (`src/app/api/parts/[id]/prices/order/route.ts`). Temporarily deleted the `mustCan(user, "parts", "edit");` line:
+
+```
+$ npx vitest run tests/parts-routes.test.ts -t "prices/order"
+ × parts routes > PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically 511ms
+   → expected 200 to be 403 // Object.is equality
+AssertionError: expected 200 to be 403 // Object.is equality
+- Expected: 403
++ Received: 200
+ ❯ tests/parts-routes.test.ts:597:44
+ Test Files  1 failed (1)
+      Tests  1 failed | 21 skipped (22)
+```
+
+Restored the line, reran the same filter:
+
+```
+$ npx vitest run tests/parts-routes.test.ts -t "prices/order"
+ ✓ tests/parts-routes.test.ts (22 tests | 21 skipped) 605ms
+   ✓ parts routes > PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically  604ms
+ Test Files  1 passed (1)
+      Tests  1 passed | 21 skipped (22)
+```
+
+Confirms the new `changeOnly` case genuinely discriminates on the `mustCan` line rather than passing regardless. (Not repeated per-sibling-route: all four sibling files' `mustCan`/`mustDo` pair is structurally identical to the reorder route's, confirmed by reading all five route files side by side before writing the new cases.)
+
+Explicitly left alone per the brief: the reorder tests' audit assertions were not changed to before/after diff content (they mirror `part-inspections.test.ts:188-197` verbatim; real behavior is asserted separately, deferred deliberately), and `assertDevDb`/the reaper's match scope in `db-fixtures.ts` were not touched.
+
+### Fix 4 — the Add-operation button's in-flight title now tells the truth
+
+`PricingSection.tsx`'s Add-operation button titled itself `"Price rows failed to load — reload the page"` for every `!rowsReady` state, including the normal in-flight first render before any fetch could possibly have failed — a different, contradictory story from `addRow()`'s own message for the identical state ("have not finished loading yet"). Reworded the button's title to match `addRow`'s wording, keeping the same ternary idiom as the neighbouring `codesReady` title one line up:
+
+```tsx
+<button onClick={addRow} disabled={disabled || !addCodeId || addingRow || !rowsReady}
+        title={!rowsReady ? "Price rows have not finished loading yet — reload the page and try again."
+          : addingRow ? "Adding…" : title}
+```
+
+Wording-only change; the loading-state logic (`rowsReady`, `addingRow`, `disabled`) is untouched.
+
+### Full gate run
+
+```
+$ npx vitest run tests/parts-routes.test.ts tests/part-prices.test.ts
+ ✓ tests/part-prices.test.ts (18 tests) 805ms
+ ✓ tests/parts-routes.test.ts (22 tests) 4804ms
+ Test Files  2 passed (2)
+      Tests  40 passed (40)
+
+$ npx tsc --noEmit          # clean, no output
+$ npx eslint src tests      # clean, no output
+
+$ npm test                  # 99 test files, 1445 tests, all passed (unchanged from fix-wave 1 — no new
+                             # vitest cases were added by this wave; the two new route-test cases replace
+                             # 403 checks that already existed, they don't add new `it()` blocks)
+ Test Files  99 passed (99)
+      Tests  1445 passed (1445)
+
+$ npm run test:e2e          # All 15 flows passed, dev-DB fixture create/cleanup both ok
+=== Results ===
+  PASS  template-build-and-load
+  PASS  typed-fields
+  PASS  revision-cut
+  PASS  blocked-code-delete
+  PASS  permission-gating
+  PASS  processes-list
+  PASS  order-entry-full
+  PASS  board-search-scan
+  PASS  loads-after-print
+  PASS  void-order
+  PASS  ship-partial-then-complete
+  PASS  multi-order-shipment
+  PASS  cert-results-print
+  PASS  void-shipment
+  PASS  credit-hold-block-and-override
+All 15 flows passed.
+```
+
+### Files changed
+
+- `erp/e2e/lib/db-fixtures.ts` (fixes 1 and 2)
+- `erp/tests/parts-routes.test.ts` (fix 3, both the six-endpoint test and the reorder test)
+- `erp/src/app/parts/[id]/PricingSection.tsx` (fix 4)
+
+### Concerns
+
+None. All four fixes were exactly as scoped; nothing else in the touched files was changed.
