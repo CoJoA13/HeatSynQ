@@ -1002,6 +1002,32 @@ Task 14: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Mino
   folded note (it names lines/recalculate/credit); credit page/print rendering is Tasks 17-19.
 Task 14: complete (commit 7af7c00, review clean — approved first pass)
 
+Task 15: dispatched (implementer, OPUS — one of the phase's most dangerous: negative-qty lines,
+  REOPENED status, shared claim path) — BASE 7af7c00, brief task-15-brief.md (carries the
+  REOPENED-direct / no-`released` requirement).
+Task 15: implementer DONE_WITH_CONCERNS — commit dddf064, shippers.ts (+235) + ship-ledger.ts +
+  reverse route + tests. 12 reverse tests + 1 route-permission test, full suite 1654, gates clean.
+  E2E correctly skipped (route is the only surface, no page wired). Reported promptly.
+  REOPENED written DIRECTLY (auditedUpdate on order); seam test proves the invoiced order never
+  reaches recomputeOrderStatus and `released` is always []. Net shipped total drops (negated lines
+  share orderLineId → nets to 0), with a below-zero guard refusing a second reversal. Claim
+  serializes (claimOrdersInOrder + claimShipperRow; RED with the claim removed).
+  SPEC-VS-BRIEF CONFLICT RESOLVED ON EVIDENCE (concern 1): the brief's illustrative test expected
+  OPEN for a NON-invoiced reversal; the implementer implemented SHIPPED and flagged it. I verified
+  §5.2 myself: OPEN/PARTIAL_SHIPPED/SHIPPED are ship-derived from the human line-complete flags and
+  "quantities never enter this decision" — a reversal adds negative-qty lines without touching those
+  flags, so recompute derives SHIPPED. The brief's OPEN would require quantities to drive status,
+  which the spec forbids. Implementer followed the BINDING SPEC over the brief's illustrative test —
+  correct precedence. No owner question needed (the spec resolves it); flagged for the Task 20 demo
+  as a behavior to confirm in context, since "reverse a shipment, order still shows SHIPPED" may
+  surprise a user — but that would be a spec amendment to the derivation rule, not this task's call.
+  Two conservative spec-silent refusals (concern 3): reversing a voided original → 404, reversing a
+  reversal → 400 (avoid netting a different shipment / driving the ledger up). Sent to the reviewer
+  to rule on as scope.
+Task 15: review dispatched (task-reviewer, opus — grep that no shipment path passes `released`, the
+  SHIPPED-vs-OPEN resolution being genuinely spec-DERIVED not hardcoded, the below-zero netting
+  guard, claim discipline, and the two conservative refusals)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
