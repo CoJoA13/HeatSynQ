@@ -706,15 +706,14 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — Phase 5 (Invoicing & A/R + the QuickBooks Online summary export), once Phase 4's
-finish sequence (§4a: whole-branch review → fix wave → PR → merge) has completed and
-`phase-4-certs-shipping` is merged to `main`. Paste the block below into a fresh session.**
+**Next up — Phase 5 (Invoicing & A/R + the QuickBooks Online summary export). Phase 4 merged to
+`main` as `f129aae` (PR #47) and the backlog burn-down as `8647a7d` (PR #57), both 2026-08-06.
+Paste the block below into a fresh session.**
 
 > Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
-> backlog. **Phase 4 (Certifications & Shipping) is complete** (§4a — 21 tasks, all four gates
-> green, the E2E harness 15/15 ×3; confirm it has actually merged to `main` before branching, and
-> if it hasn't, finishing §4a's sequence — whole-branch review, fix wave, PR, demo — is the very
-> first thing to do). Next is **Phase 5 (Invoicing & A/R + QBO)** per the roadmap
+> backlog. **Phase 4 (Certifications & Shipping) is MERGED** (`f129aae`, plus the `8647a7d`
+> burn-down: 1406 tests, 25 migrations, E2E 15/15, backlog down to #51–#52 and the older triaged
+> issues). Next is **Phase 5 (Invoicing & A/R + QBO)** per the roadmap
 > (`docs/superpowers/plans/2026-07-29-roadmap.md`): invoices from shipments, pricing resolution,
 > surcharges and extra-charge pricing, payments and A/R, finance charges, statements, the reversing
 > shipment, and the **summary GL export to QuickBooks Online** — testable outcome "invoice shipped
@@ -753,6 +752,18 @@ finish sequence (§4a: whole-branch review → fix wave → PR → merge) has co
 >   Each` and `Minimum Charge` side by side; and it carries a named surcharge line (`EnergySur`).
 > - **Email is owed** (§3.2) with issue #4's visible-skip ruling attached; whichever phase builds
 >   it inherits the recipient flags already on `CustomerContact`.
+> - **Post-merge additions Phase 5 must design against (2026-08-06, rulings 23–28):** shipper
+>   children and cert requirements are **snapshot + release** — their order-side FKs are nullable
+>   `SET NULL`, identity/print fields are frozen copies at save/seed, reads go live-join-first
+>   with snapshot fallback, and released rows (null FK) are preserved frozen history. **Invoicing
+>   reads shipper lines: qty/weight are the shipment's own columns (safe), but any join through
+>   `orderLineId` must handle null** — grouping identities use the never-reused
+>   `orderLineIdAtSeed`-style snapshots, never positions or display fields (CLAUDE.md has the
+>   full rule). Credit hold now also gates shipment EXTENSION with the customer row claimed
+>   (Orders → Shipper → Customer lock order). And the **owner-ratified stopping rule** governs
+>   review loops: after the stated round, findings triage to issues unless correctness,
+>   concurrency, or data-integrity — plus two standing owner rules: run the Playwright E2E suite
+>   whenever a change touches any UI/flow, and update the appropriate docs as part of the work.
 > - Cert charges, "bill for cert" and per-customer cert suppression are Visual Shop behaviours
 >   Phase 4 deliberately does not model; Phase 5 decides whether the shop wants any of them.
 >
