@@ -470,3 +470,114 @@ defaults to `liveWhere: { deletedAt: null }` with no override needed.
 
 No route change — Fix 5 is the service half only, per the task brief; the owner is amending the
 plan to add the matching DELETE route to Task 8.
+
+## Fix wave 2
+
+Two coverage gaps the re-review of Fix wave 1 found — test-only, `tests/surcharges.test.ts` is the
+only file touched, no production code changed.
+
+### Fix 1 — the three unexercised `toSurchargeRow` pins
+
+Added a test to the `updateSurcharge` describe block: creates a surcharge carrying
+`minimumAmount: "50.00"`, `scope: "EXCLUDE"`, and `active: false`, then calls `updateSurcharge`
+omitting all three, and asserts they come back `null` / `"ALL"` / `true`.
+
+Discrimination proof — each pin was removed from `toSurchargeRow` in turn (`src/server/
+surcharges.ts`), the new test run, the RED captured, then the pin restored and GREEN reconfirmed.
+No production file was left modified between checks (`git diff src/server/surcharges.ts` was empty
+before and after this whole fix wave).
+
+**`minimumAmount: data.minimumAmount ?? null` -> `data.minimumAmount`:**
+
+```
+FAIL  tests/surcharges.test.ts > surcharges > updateSurcharge > resets minimumAmount, scope, and
+active to their empty defaults when the update omits them
+AssertionError: expected 50 to be null
+ ❯ tests/surcharges.test.ts:179:33
+    179|       expect(row.minimumAmount).toBeNull();
+```
+
+**`scope: data.scope ?? "ALL"` -> `data.scope`:**
+
+```
+FAIL  tests/surcharges.test.ts > surcharges > updateSurcharge > resets minimumAmount, scope, and
+active to their empty defaults when the update omits them
+AssertionError: expected 'EXCLUDE' to be 'ALL'
+ ❯ tests/surcharges.test.ts:180:25
+    180|       expect(row.scope).toBe("ALL");
+```
+
+**`active: data.active ?? true` -> `data.active`:**
+
+```
+FAIL  tests/surcharges.test.ts > surcharges > updateSurcharge > resets minimumAmount, scope, and
+active to their empty defaults when the update omits them
+AssertionError: expected false to be true
+ ❯ tests/surcharges.test.ts:181:26
+    181|       expect(row.active).toBe(true);
+```
+
+GREEN with all three pins restored:
+
+```
+✓ tests/surcharges.test.ts (18 tests | 17 skipped) — resets minimumAmount, scope, and active...
+```
+
+### Fix 2 — the sort-away-the-ordering assertion
+
+The brief's minimal fix (drop `.sort()` on the actual side only) turned out not to discriminate on
+its own: with `setSurchargeStepCodes(id, [a.id, b.id])` (creation order), Prisma's default cuid is
+timestamp-prefixed and close to monotonic, so a plain unordered scan handed rows back in insertion
+order, which already happened to equal ascending-id order — the first discrimination attempt
+(`orderBy` removed from `listSurcharges`) passed 3/3 runs when it should have failed.
+
+Fixed by inserting the two step codes in **descending** id order — `setSurchargeStepCodes(id,
+[hi, lo])` where `[lo, hi] = [a.id, b.id].sort()` — deliberately the reverse of the ascending order
+`orderBy: { processStepCodeId: "asc" }` must produce, so insertion order and expected order can
+never coincide by chance. The two-element intermediate-state check (M5, proving replace-not-append)
+is unchanged; only the ordering of the insert and the actual-side assertion changed.
+
+Discrimination proof, `orderBy: { processStepCodeId: "asc" }` removed from `listSurcharges`
+(`src/server/surcharges.ts:67`), run 3 times:
+
+```
+FAIL  tests/surcharges.test.ts > surcharges > replaces the step-code list wholesale, recording the
+real before/after diff in one audit row
+AssertionError: expected [ 'cmsiok4t20001w8f667fu1wre', …(1) ] to deeply equal
+[ 'cmsiok4sz0000w8f66gh7fcvx', …(1) ]
+ ❯ tests/surcharges.test.ts:70:39
+    70|     expect(afterFirst[0].stepCodeIds).toEqual([lo, hi]);
+```
+
+(Two further runs failed the same way with fresh cuids, same shape — order reversed.)
+
+`orderBy` restored, GREEN 3 times:
+
+```
+✓ tests/surcharges.test.ts (18 tests | 17 skipped) 174ms
+✓ tests/surcharges.test.ts (18 tests | 17 skipped) 154ms
+✓ tests/surcharges.test.ts (18 tests | 17 skipped) 145ms
+```
+
+### Final verification
+
+`npx vitest run tests/surcharges.test.ts`: 18 tests passed.
+
+`npx tsc --noEmit` — clean, no output.
+
+`npx eslint src tests` — clean, no output.
+
+`npm test` (`npx vitest run`), full suite:
+
+```
+ Test Files  100 passed (100)
+      Tests  1465 passed (1465)
+   Duration  132.64s
+```
+
+1465 = the prior 1464 plus the one net-new test (Fix 1). Fix 2 changed an existing test's body,
+adding no new test case. Zero regressions elsewhere.
+
+### Files changed in this fix wave
+
+- `tests/surcharges.test.ts` only. No production code changed.

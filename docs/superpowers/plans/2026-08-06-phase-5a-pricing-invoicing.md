@@ -999,6 +999,23 @@ const SAVE = z.object({
 > `mustDo(user, "change_prices")`, since removing an override is a price change just as setting
 > one is — and a control in the customer UI that reaches it. Removing an override must be as
 > discoverable as adding one.
+>
+> **Two more carried in from Task 6's re-review, both this task's to honor:**
+>
+> 1. **The surcharge editor must post the WHOLE row, not a partial patch.** Task 6 fixes its
+>    headline defect with normalize-on-write: `updateSurcharge` pins every optional column to its
+>    explicit empty value, so a payload that omits a field CLEARS it. That is the coherent reading
+>    of the whole-row `SAVE` design and it is deliberate — but it means
+>    `updateSurcharge(id, {name, kind, amount, position})` on an inactive surcharge silently
+>    re-activates it and wipes `minimumAmount`. `SAVE` still marks `scope`/`active` `.optional()`,
+>    so nothing in the type system forces your form to submit them. **Submit every field.**
+> 2. **An override belonging to a soft-deleted customer still blocks its surcharge.** The
+>    `customerSurcharge → surcharge` registry entry (`reference-links.ts:192-200`) takes the
+>    default `liveWhere` on the override row only, so the blocker panel will link at
+>    `/customers/{deletedId}`. `deleteCustomerSurcharge` is the escape hatch — but only if this
+>    task exposes it somewhere reachable for that case. Pre-existing, and Task 6's fix is what
+>    makes it reachable at all; decide deliberately how a deleted customer's override gets cleared
+>    rather than discovering it from a support call.
 
 **Files:**
 - Modify: `src/server/customers.ts`, `src/app/customers/[id]/page.tsx`

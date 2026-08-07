@@ -412,6 +412,34 @@ Task 6: re-review dispatched (task-reviewer, opus — verifying the normalizatio
   every optional on both models and both write paths; one unpinned optional reproduces the whole
   defect for that field)
 
+Task 6: re-review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 4 Minor.
+  The reviewer verified the Fix 1 RED claim MECHANICALLY rather than trusting the captured output
+  (zod drops absent optionals; Prisma treats undefined as no-op), and checked the normalization is
+  TOTAL column by column against the schema — all six of Surcharge's settable optionals pinned,
+  all three of CustomerSurcharge's, in BOTH the create and update paths. Also confirmed the
+  pinned literals equal the schema defaults, so routing create through the same helper is
+  behavior-preserving rather than a silent semantic change.
+  Its ⚠️ (confirm the Task 8 amendment actually landed, since deleteCustomerSurcharge has no
+  caller in src/ yet): CONFIRMED in HEAD, commit 6f2790a.
+Task 6: fix wave 2 (sonnet) — commit b764412, 1465 tests. Closed the two coverage minors that
+  mattered: three of the six normalization pins had NO discriminating test — minimumAmount
+  appeared nowhere in the file at all, so deleting its pin reproduced the exact headline defect
+  for that column with the suite green; and scope/active were only ever passed explicitly.
+  LESSON — THE FIXER CAUGHT A BAD FIX OF MINE. My dispatch said the ordering assertion could be
+  repaired by dropping `.sort()` from the actual side. It tested that and found it did NOT
+  discriminate: cuid ids are near-monotonic, so insertion order coincided with sorted order and
+  removing `orderBy` still passed 3/3. It strengthened the test to insert step codes in
+  deliberately DESCENDING id order — now fails reliably without `orderBy` (3/3) and passes with it
+  (3/3). "Prove it discriminates" earned its place here by catching the proposed remedy, not the
+  original defect. Do not assume cuid ordering in any test that means to assert an ordering.
+Task 6: Minors 2 and 4 folded into Task 8's plan section rather than fixed here (they are that
+  task's to honor): the surcharge editor must post the WHOLE row, because normalize-on-write means
+  an omitted field CLEARS it — an inactive surcharge saved from a partial form silently
+  re-activates and loses its minimumAmount; and an override belonging to a SOFT-DELETED customer
+  still blocks its surcharge, with the blocker panel linking at /customers/{deletedId}, so Task 8
+  must decide deliberately how that override gets cleared.
+Task 6: complete (commits 9d5a70c..b764412, re-review clean)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
