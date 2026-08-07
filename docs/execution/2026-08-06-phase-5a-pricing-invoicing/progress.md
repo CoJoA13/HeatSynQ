@@ -791,6 +791,60 @@ Task 10: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 2 Mino
       undoes it. Recorded for the record, not for a fix.
 Task 10: complete (commits 24aed12..59dcdca, review clean — approved first pass)
 
+Task 11: dispatched (implementer, OPUS — money-critical: pricing becomes a real invoice) — BASE
+  907f25c, brief task-11-brief.md (356 lines), carrying the three seams folded in from Tasks 9-10.
+Task 11: implementer DONE — commit efe54bc, invoices.ts (+614) + tests (+398). 17 new tests, full
+  suite 1603, gates clean. REPORTED PROMPTLY (broke the four-in-a-row stall). Three seams handled
+  and each pinned: CHARGE lines get BillingConfig.otherChargeGlAccountId; surcharge glAccountName
+  ?? "" (compile-enforced); zero-net lines skipped (a $600-minimum line contributing nothing keeps
+  the total at $100, the correct discriminator). The row-lock concurrency test discriminates —
+  deadlock with claimOrder removed, clean refusal restored.
+  Implementer flagged multi-order freight as a possible over-bill, deferring it to "the §5 grouping
+  task".
+Task 11: CONTROLLER — the freight concern is NOT a later task's; the spec explicitly says there IS
+  no grouping task (ruling 5: one invoice per order, §7.6 grouping SUPERSEDED). It is a genuine
+  contradiction in the spec: ruling 5 (per-order invoicing) vs the freight rule §582 (each order's
+  invoice sums its shipments' billFreight) — and a Shipper carries ONE freight amount for the whole
+  truck, so N orders on one billable-freight truck each bill the full freight, an N× over-bill.
+  I verified the spec myself before ruling, then put it to the OWNER as a billing-policy decision
+  (four options: single-order-only / freight-on-one-order / split / defer).
+  OWNER RULING 2026-08-07: DEFER. "We do not pay for freight at my work. So will probably have to
+  look into how other shops do it." The shop does not bill freight, so the over-bill is LATENT for
+  this deployment — no billable-freight-on-a-multi-order-truck data exists to be wrong. Recorded as
+  a dated amendment beside the spec's freight rule AND in HANDOFF §6. Do not invent a split; when
+  picked up it must sum back to the truck's exact freight once. The code is spec-faithful to §582
+  (reviewer confirmed: sums live shipments' billFreight, deduped by shipper, no split) so nothing
+  changes in the code now.
+Task 11: review — Spec ✅, quality APPROVED. 1 Important, 4 Minor. Money verified correct end to
+  end (tax base excludes freight and only freight; customer-rate-over-plant precedence pinned at
+  $5.40 on $135 @ 0.1-over-0.04; every line maps to the right column/scale). Candidacy exact,
+  idempotency via findFirst (not findUnique) against the partial index, row locks right, audit
+  after-snapshot carries every line amount + total with orderBy on the lines collection.
+  Important (FIXED) — createInvoiceInTx ran SERIALIZABLE but called assertRefExists for NONE of its
+    registered FKs. Backwards: in this codebase Serializable-on-a-writer exists specifically to
+    pair with assertRefExists (the FK-writer pattern), spec §5.1 names the three FKs, and the
+    createShipper precedent guards its carrierId. The implementer kept the isolation and dropped
+    the guard — the isolation cost without the protection it buys. Reviewer's concrete concern: the
+    config GL read does not filter deletedAt, so a soft-deleted GL could in principle reach a line.
+    RULING: add the guards. Spec-mandated, cheap, precedent exists, and the guard is the local
+    permanent protection rather than depending on a distant blocker (BILLING_CONFIG_BLOCKER) staying
+    in place. Not over-fixing — over-fixing adds what the spec did NOT ask for; this adds what it
+    explicitly did.
+Task 11: fix wave 1 (sonnet) — commit 556e367, 20/20 in-file, full suite 1608. Guards every
+  distinct glAccountId/processStepCodeId/surchargeId on tx after the claim, PLUS
+  BillingConfig.certChargeStepCodeId (which never lands on the CERT line's own column but is still
+  referenced — the implementer caught that itself). Soft-deleted-GL refusal proven: 400 "That gl
+  account does not exist", zero invoices written. Also fixed the empty-partNumber CHARGE warning,
+  a redundant GL-name query, and added a renderAddress test. Reported promptly.
+Task 11: DEFERRED to whole-branch triage — listPartPrices called without tx inside the Serializable
+  transaction (reads the global singleton, opens a second connection, could disagree with a
+  concurrent price edit). NOT folded in: fixing it means threading tx through Task 4's shared
+  listPartPrices signature and its callers, out of scope for a Task 11 polish; the order claim +
+  Task 10 invoice guards keep the practical window narrow. Plus: billTo/shipTo rendering and the
+  no-GL warning path had thin coverage (renderAddress now tested in the fix wave).
+Task 11: re-review dispatched (task-reviewer, sonnet — scoped to the FK-guard completeness,
+  placement under the claim, and the three minors)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in

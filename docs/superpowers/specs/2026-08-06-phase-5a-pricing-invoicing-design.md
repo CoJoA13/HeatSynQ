@@ -580,6 +580,18 @@ either its `optOut` or `Customer.surchargeOptOut` suppresses the line entirely. 
 soft-deleted surcharges are skipped.
 
 **Freight** is one line summing `billFreight` amounts across the order's **live** shipments.
+
+> **Owner ruling, 2026-08-07 — the multi-order freight over-bill is DEFERRED, knowingly.** Ruling 5
+> (one invoice per order, grouping superseded) and this freight rule collide on a multi-order
+> shipment: a Shipper carries one `freightAmount` for the whole truck, so N orders on one
+> billable-freight truck each sum that same freight — an N× over-bill. Task 11's code implements
+> this rule faithfully; the contradiction is the spec's, not the code's. The owner's own shop
+> **does not bill freight at all**, so the defect is latent for this deployment and there is no
+> billable-freight-on-a-multi-order-truck data to be wrong. Deferred rather than fixed because the
+> correct split (freight on one order / proportional by weight or value / single-order-only) is a
+> billing-policy question the owner wants to research against how other shops actually do it. Filed
+> in HANDOFF §6. **Do not invent a split.** When it is picked up, whichever rule is chosen must sum
+> back to the truck's exact freight, once.
 **Extra charges** are one `CHARGE` line per live `OrderCharge`, `amount = null` → `needsPrice`.
 **Certification charge** is one line when the order resolved cert-required and the lead part's
 `billForCert` (or the plant default) says bill, priced from `Part.certCharge` else

@@ -174,6 +174,16 @@ which `fileParallelism` can be re-enabled. Deliberately **not** done inside Phas
 infrastructure change with no business riding in a pricing PR, and it touches the harness every
 other task depends on. Wall-clock now: ~127s for vitest alone.
 
+**DEFERRED, owner ruling 2026-08-07 — multi-order freight over-bills, and it is knowingly left.**
+Phase 5A invoices one order at a time (spec ruling 5, no grouping), but freight is a shipment-level
+amount, so N orders on one billable-freight truck each bill the full truck freight — an N× over-bill.
+Task 11's code follows the spec's freight rule faithfully; the contradiction is in the spec. The
+owner's shop **does not bill freight**, so nothing is wrong in this deployment, and the correct split
+(freight-on-one-order / proportional / single-order-only) is a billing-policy question the owner
+wants to research against other shops before it is built. Full context: the dated amendment beside
+the freight rule in the P5A spec (§5). When picked up, the chosen rule must sum back to the truck's
+exact freight exactly once. **Do not invent a split.**
+
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
 **Deferred (fine to ride along):** health-route DB-down path; roles page deselect papercut; users page error banner doesn't clear on success; updateUser password truthy-check inconsistency; Shell loading indicator; settings page empty-blur cosmetic; searchAudit filter route tests; HistoryPanel changedFields unit test; session-row cleanup job (**sharpened 2026-08-02 by the PR #22 Codex review**: `getSessionUser` (`sessions.ts:28`) rejects an expired session but never deletes it, and nothing anywhere else reaps one, so `Session` grows a row per login for the life of the deployment — the dev DB held 144 rows for `admin` alone, 77 already expired. The E2E harness's own four-rows-per-run leak is closed on the 2C-3 branch, which is what made this visible; the general case is untouched. Open decision when it is picked up: a nightly `DELETE FROM "Session" WHERE "expiresAt" < now()` in the backup container that already runs in the prod profile, vs. an opportunistic delete inside `getSessionUser` — the latter adds a write to the hot path, so it is a real trade-off, not an obvious win); login rate limiting; backup alerting + backup-now button; SESSION_SECRET consumed by nothing yet; ~~`renameRole` to a soft-deleted role's name → 500 edge~~ (**closed by the Prisma 7 work** — `Role.name` is now unique only among live rows, so a soft-deleted role's name no longer occupies the constraint and renaming onto it just creates/renames cleanly; see §5.18).
