@@ -767,6 +767,21 @@ export async function listPartPrices(partId: string): Promise<PartPriceRow[]> {
 
 ### Task 5: Part page — the Pricing section rebuilt on price rows
 
+> **Carried in from Task 4's review (2026-08-06) — this task owns the UI half of it.**
+> `updatePartPrice` will move a price row's basis among the **non-LOT** units (EACH → LB →
+> PER_1000) while that row still has live breaks, and a break's `threshold` is defined as being
+> expressed *in the parent row's price-per unit* (`schema.prisma:490`). So changing the basis
+> silently changes what every existing threshold means — a 500-piece break becomes a 500-pound
+> break with no warning and no re-statement. The LOT case is already refused in the service
+> (LOT cannot carry breaks at all); this is the unguarded gap among the other three units. The old
+> flat-column surface behaved the same way, and no requirement covers it, so it was deliberately
+> NOT fixed in Task 4.
+>
+> **Decide and implement the UI behavior here:** warn on the basis change, refuse it while live
+> breaks exist, or offer to re-state the thresholds. If you believe the right answer is a service
+> guard rather than a UI one, say so and stop — that is a plan change, not your call. Task 9 owns
+> what the pricing engine does with a row whose breaks predate a basis change.
+
 **Files:**
 - Modify: `src/app/parts/[id]/PricingSection.tsx` (full rewrite), `src/app/parts/[id]/page.tsx` (the `Part` type loses the four pricing fields)
 - Test: browser verification (below) — this component has no vitest seam
@@ -1001,6 +1016,21 @@ it("rejects a sales tax rate with too many decimals", async () => {
 ---
 
 ### Task 9: `pricing.ts` — the pure resolution engine
+
+> **Two things carried in from Task 4's review (2026-08-06).**
+>
+> 1. **There is no effective dating on price rows.** `PartPrice` has no effective-from/to columns
+>    and never did. Do not build date-window selection, and do not assume a price row can be
+>    scheduled. What guarantees a deterministic winner is the **live partial unique
+>    `(partId, processStepCodeId)`** — exactly one live row per operation per part — plus explicit
+>    `orderBy` on the rows (`position asc, id asc`) and on their breaks (`threshold asc`), both
+>    already in `listPartPrices`. Rely on those, and do not re-derive an ordering of your own.
+> 2. **A row's breaks can predate a change to its basis.** `updatePartPrice` permits moving a row
+>    among the non-LOT units while live breaks exist, and `threshold` is expressed in the parent
+>    row's price-per unit — so a stored threshold may have been entered under a different unit
+>    than the row now carries. Task 5 owns the UI half; decide here what the engine does when it
+>    meets such a row, and make the choice explicit in the code rather than implicit in the
+>    arithmetic.
 
 **Files:**
 - Create: `src/server/pricing.ts`

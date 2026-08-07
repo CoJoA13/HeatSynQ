@@ -160,6 +160,51 @@ Task 4: implementer DONE — commit e0cfa77, 99 files / 1433 tests passing, tsc+
   rather than slipped in; sent to the reviewer to rule on as scope, with no pre-judgement.
 Task 4: review dispatched (task-reviewer, opus — money decimals differ by column, partial-unique
   columns, child-route scoping, and the LOT-vs-breaks rule that MIGRATED services in Task 2)
+Task 4: review — Spec ✅, quality NEEDS FIXES. 1 Important, 5 Minor. The service itself was found
+  sound and the reviewer verified rather than assumed: every decimal scale checked against its
+  column (unitPrice 12,4 and break price 12,4 vs the 12,2 money fields), no findUnique/upsert near
+  either partial-unique pair, canonical nesting in all six mutators, refusals naming the real
+  blocker, child scoping enforced twice (read + claim WHERE).
+  It also confirmed the LOT rule is whole: break-on-LOT refused, LOT-while-live-breaks-exist
+  refused, and it looked for a third path and established there isn't one (partId/partPriceId are
+  immutable, so updatePriceBreak needs no re-check). The Serializable use is legitimate here for
+  a reason worth recording: the addPriceBreak / updatePartPrice pairing is a genuinely TWO-SIDED
+  write-skew structure Postgres will abort — not the one-sided Serializable the house rules ban.
+  CONTROLLER ERROR, corrected here: my review dispatch told the reviewer to check "effective
+  dating" — overlapping ranges, open-ended ranges, ties. **PartPrice has no such columns and the
+  plan never claimed it did** (`grep -n effective` over the plan returns nothing); I invented the
+  concept from the phase's general shape. The reviewer checked the schema, found no date dimension,
+  and said so rather than inventing findings to match the prompt — the correct behavior. Worth
+  recording because a dispatch that asserts a false premise can manufacture work: state what to
+  verify, not what is true. The real determinism guarantee, confirmed: the live partial unique
+  (partId, processStepCodeId) gives exactly one live row per operation, plus explicit orderBy on
+  both the rows and their breaks.
+  Important (FIXED): the four new price routes had ZERO executed test coverage, and `change_prices`
+    was by then enforced NOWHERE ELSE in the suite — Task 2 deleted the PRICING_FIELDS guard tests.
+    Deleting any `mustDo(user, "change_prices")` left every gate green (permissions-sweep only
+    checks that requireUser() is *called*, and its gating walk covers src/app/api/admin only), so
+    plain parts.edit could have rewritten the pricing Task 9 turns into invoices. Inherited — the
+    deleted breaks routes had the same hole — but this is now the only pricing write surface.
+  Reviewer CORRECTED the implementer's report on two points, both upheld: the report claimed the
+    routes were "exercised indirectly by the sweeps" (the sweeps read files as TEXT and never
+    invoke a handler), and claimed the eighth test covered the "Price row" vs "Price break" not-
+    found distinction (it did not — both paths asserted "Price row not found"). Do not take an
+    implementer's coverage claim as coverage.
+  Eighth-test scope question RULED: justified, not creep — test-only, covers two exported
+    functions the brief mandates but never exercises, assertions have teeth, and it was disclosed.
+  Minors 2-5 FIXED in the same wave: the second scoping tier (a break under a different price row
+    on the SAME part — the case where an edit lands on the wrong row), the untested step-code-change
+    branch, a stale comment citing the deleted part-price-breaks.ts, and duplicate-threshold
+    refusals.
+Task 4: fix wave 1 dispatched (sonnet) — commit e343a16, 99 files / 1437 tests. Discrimination
+  PROVEN for the Important: with `mustDo` removed from prices/route.ts's POST the gate test failed
+  `expected 200 to be 403`, and passed once restored.
+Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
+  reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
+  (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
+  the parent row's price-per unit — so every existing break silently changes meaning. The old
+  surface behaved the same way, and no requirement covers it. Task 5 owns the UI question (warn?
+  refuse? re-state thresholds?), Task 9 owns what pricing does with it.
 
 Repo-hygiene pass (owner-approved mid-phase, 2026-08-06, riding along with this PR — commits
 974852f, b7e8008, 1cdad25). Not part of Task 3; scope-fenced to docs and config so it could run

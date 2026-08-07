@@ -89,3 +89,96 @@ Expected failure: the brief's Step 2 calls for exactly this — module not found
 ## Concerns
 
 None blocking. The one deviation (the added breaks-CRUD test) is called out above for visibility rather than silently included.
+## Fix wave 1
+
+Reviewer findings on Task 4 (`part-prices.ts`, commit `e0cfa77`): five fixes, all applied. Details below.
+
+### Finding 1 (IMPORTANT) — zero executed coverage of the `change_prices` gate
+
+Added `tests/parts-routes.test.ts`, new test `"price and price-break routes gate on parts.edit AND change_prices"`. Follows the file's existing idiom (`partFixture`, `withParams`, `bodyReq`/`noBodyReq`, `signInWith`) rather than inventing a new one, imported the four route files' handlers alongside the existing parts-child-route imports. Covers all six `change_prices`-gated endpoints across the four files: `POST .../prices`, `PATCH .../prices/[priceId]`, `DELETE .../prices/[priceId]`, `POST .../breaks`, `PATCH .../breaks/[breakId]`, `DELETE .../breaks/[breakId]` — each asserted 401 (no cookie), 403 (`parts.edit` only, via `signInWith(["parts.edit"], ...)`), 200 (`parts.edit` + `action.change_prices`, via `signInWith(["parts.edit", "action.change_prices"], ...)`).
+
+Command: `npx vitest run tests/parts-routes.test.ts`
+Output:
+```
+ ✓ tests/parts-routes.test.ts (21 tests) 4174ms
+
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+```
+
+**Discrimination proof** — per the brief, temporarily deleted the `mustDo(user, "change_prices")` line (and its comment) from `src/app/api/parts/[id]/prices/route.ts`'s `POST` handler, then ran the new test alone.
+
+Command: `npx vitest run tests/parts-routes.test.ts -t "price and price-break routes gate"` (with the `mustDo` line removed)
+Output (FAILURE, confirming the test discriminates):
+```
+ FAIL  tests/parts-routes.test.ts > parts routes > price and price-break routes gate on parts.edit AND change_prices
+AssertionError: expected 200 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 200
+
+ ❯ tests/parts-routes.test.ts:466:44
+    464|     expect((await addPriceRoute(
+    465|       bodyReq(`http://t/api/parts/${partId}/prices`, "POST", editOnly,…
+    466|       withParams({ id: partId }))).status).toBe(403);
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 20 skipped (21)
+```
+
+Restored the `mustDo` line (`git diff` on the route file confirmed a clean no-op afterward), re-ran the same command.
+Output (PASS):
+```
+ ✓ tests/parts-routes.test.ts (21 tests | 20 skipped) 395ms
+   ✓ parts routes > price and price-break routes gate on parts.edit AND change_prices  394ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 20 skipped (21)
+```
+
+### Finding 2 (Minor) — untested second scoping tier ("Price break not found")
+
+Added `tests/part-prices.test.ts`, new test `"404s 'Price break not found' for a break on a different price row of the same part"`. Creates two live price rows on the SAME part, adds a break to the first, then calls `updatePriceBreak`/`deletePriceBreak` with the second price row's id and the first row's break id — a same-part, wrong-price-row id — and asserts `"Price break not found"` specifically (not the first-tier `"Price row not found"` the existing test only ever exercised).
+
+Command: `npx vitest run tests/part-prices.test.ts`
+Output:
+```
+ ✓ tests/part-prices.test.ts (11 tests) 554ms
+
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+```
+
+### Finding 3 (Minor) — untested step-code-change branch
+
+Added `tests/part-prices.test.ts`, new test `"changes a price row's step code, and the duplicate re-check catches a collision on that change"`. Adds a price row on one step code, calls `updatePartPrice` to move it to a second (unused) step code, and reads it back through `listPartPrices` to confirm both `processStepCodeId` and the joined `stepCode` moved. Then adds a second price row on a third step code and attempts to `updatePartPrice` it onto the now-occupied second step code, asserting the duplicate re-check (`part-prices.ts:126-135`) refuses with `"That operation is already priced on this part"`. Covered by the same run above (11/11 passing).
+
+### Finding 4 (Minor) — stale comment
+
+`src/server/part-prices.ts:100-101`: changed `"the claimLive precedent (parts.ts, part-price-breaks.ts)"` to `"the claimLive precedent (part-inspections.ts:80)"` — `part-price-breaks.ts` no longer exists (deleted in `269f525`); `part-inspections.ts:80` carries the actual live precedent comment (`"Writes only if still live and still scoped to this part, one statement — the claimLive precedent (parts.ts)."`, confirmed by reading that file). `parts.ts` itself was dropped from the citation since it's the referent one hop further back, not the direct precedent.
+
+### Finding 5 (Minor) — untested duplicate-threshold refusals
+
+Added `tests/part-prices.test.ts`, new test `"refuses a duplicate threshold on add and on update"`. Adds a break at threshold 500 on a price row, then asserts `addPriceBreak` at the same threshold refuses (`part-prices.ts:171`); adds a second break at threshold 1000, then asserts `updatePriceBreak` moving it to threshold 500 also refuses (`part-prices.ts:202-208`) — both against `"A price break with that threshold already exists"`. Covered by the same run above (11/11 passing).
+
+## Full gate run
+
+```
+npx tsc --noEmit         # clean, zero errors
+npx eslint src tests     # clean, zero warnings/errors
+npm test                 # 99 test files, 1437 tests, all passing (1433 baseline + 4 new: 3 in
+                          # part-prices.test.ts, 1 in parts-routes.test.ts)
+```
+
+## Files changed
+
+- `erp/src/server/part-prices.ts` (comment fix only, finding 4)
+- `erp/tests/part-prices.test.ts` (3 new tests, findings 2/3/5)
+- `erp/tests/parts-routes.test.ts` (1 new test + 5 new imports, finding 1)
+
+## Not done (explicitly out of scope)
+
+Per the brief, no guard was added for `updatePartPrice` silently reinterpreting `threshold` when moving a price row EACH → LB → PER_1000 while live breaks exist. The task owner is carrying that forward themselves as a design question for Task 5's UI and Task 9's pricing.
