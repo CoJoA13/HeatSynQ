@@ -902,6 +902,45 @@ Task 12: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Mino
       StoredDocument — the print-vs-discard serialization, the Phase 4 print-vs-void lesson.
 Task 12: complete (commit cb66551, review clean — approved first pass)
 
+STALE-CONSTRAINTS DEFECT FOUND (2026-08-07, controller). The `.superpowers/sdd/global-constraints.md`
+  I was handed at session start and pointed implementers/reviewers at is **PHASE 4's** — left at the
+  old flat ledger path, never updated for 5A. Its owner-rulings bullet says "void only, NO REVERSING
+  SHIPMENTS, REOPENED stays unreachable." The 5A spec REPEALS that: §5.2 line 356 "INVOICED and
+  REOPENED become reachable", line 430 "finalizing an INVOICE writes INVOICED", and Task 15 IS the
+  reversing shipment. Caught when Task 13's commit message ("INVOICED and REOPENED become reachable")
+  contradicted the constraint I thought was binding — I verified the spec before reviewing rather
+  than flagging the implementer, and the implementer was RIGHT (spec-mandated).
+  Blast-radius assessment: NO harm to Tasks 1-12 — none touched reversing shipments or the
+  invoice-owned statuses, the durable technical constraints in the Phase 4 file are all still
+  accurate, and every task's brief (extracted from the 5A plan) carried the correct phase-specific
+  requirements, which is the source of truth an implementer follows. The live risk was Task 15
+  being reviewed against "no reversing shipments." Fixed: wrote a correct Phase 5A
+  global-constraints.md at the phase ledger (durable technical constraints restated + 5A's actual
+  owner rulings incl. INVOICED/REOPENED invoice-owned, the reversing shipment reusing void_shipper,
+  one-invoice-per-order/no-grouping, the freight deferral). Tasks 13-20 point at THAT file; the
+  Phase 4 one is not cited again. LESSON: a "global constraints" file is phase-scoped context that
+  can go stale like any other; verify a surprising constraint against the phase spec before trusting
+  it, and the phase spec/brief outranks a leftover constraints file.
+
+Task 13: dispatched (implementer, OPUS) — BASE cb66551, brief task-13-brief.md (carries the two
+  folded-in requirements: claim-before-flip, unlock->DRAFT).
+Task 13: implementer DONE — commit 9ddc2db, invoices.ts (+133) + ship-ledger.ts (+24) + tests.
+  Full suite green, gates clean, reported promptly. INVOICED/REOPENED now reachable (spec-mandated).
+  finalize/unlock share claimInvoiceRow (order claim -> invoice FOR UPDATE); Read-Committed
+  concurrency test RED with the claim removed. unlock->DRAFT proved by all four Task-12 edits
+  refusing while finalized and succeeding after unlock. finalize refuses on needsPrice (resolved
+  price, so a break-only line does not block), freezes, re-prices nothing.
+  Two disclosed concerns: (1) the recompute skip stayed order.status-based (ship-ledger tests
+  demand it) and unlock un-invoices via a `released` escape-hatch param on recomputeOrderStatus —
+  this is spec-correct (§5.2: skip while invoice-owned; unlock calls recompute to return
+  ship-derived), sent to the reviewer to confirm ONLY unlock passes `released`. (2) added a
+  voided-order refusal to finalize beyond the brief's steps (consistent with create/recalculate,
+  upholds §5.7, and needed to make the claim test discriminate on outcome) — disclosed, sent to
+  review to rule on as scope.
+Task 13: review dispatched (task-reviewer, opus, pointed at the CORRECT 5A constraints file — the
+  status-ownership skip vs arithmetic status, the `released` escape-hatch being unlock-only, both
+  transitions claiming before the flip, unlock->DRAFT, needsPrice freeze)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
