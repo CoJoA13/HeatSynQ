@@ -562,6 +562,73 @@ Task 7: DEFERRED to whole-branch triage — (a) NOTHING FENCES THIS PAGE'S WRITE
   row correctly disappears. (d) No fix-wave TDD RED record from the implementer.
 Task 7: complete (commits fc37830..cfe2d45, Important closed and verified)
 
+Task 8: dispatched (implementer, sonnet) — BASE e85c5d4, brief task-8-brief.md, whose opening
+  blockquote carries the plan hole I closed (the DELETE route) plus two Task 6 carry-forwards.
+Task 8: implementer DONE — commit 05b2293, 10 files / +710. 1501 tests, E2E 15/15, gates clean.
+  Two deviations, BOTH disclosed, BOTH ruled sound by the review:
+  1. Gated the surcharge options behind `customers` permissions rather than the brief's literal
+     admin.view route. I sent this up as a possible unilateral security loosening. The reviewer
+     found it does NOT contradict the brief — Step 4's own binding language says
+     mustCan(..., "customers", "view"), and the "Consumes:" line I read as a gate is an interface
+     note. It also checked the DIRECTION: the payload carries only surchargeId/name/kind plus this
+     customer's own override values; every plant-wide monetary field stays behind admin.view. That
+     is TIGHTER than the established precedent for the same need (PricingSection reads step codes
+     from /api/picklists, gated on session presence alone, §5.15). Lesson for me: check what a
+     payload actually exposes before calling something a loosening.
+  2. Touched admin/surcharges/page.tsx outside its file list to close the deleted-customer escape
+     hatch. Right place; the reviewer verified the load-bearing assumption (the blocker's id for
+     customerSurcharge->surcharge is the CUSTOMER's id, not the override row's).
+  All three behaviors this phase has already paid for were verified GENUINELY PRESENT, not merely
+  claimed: the payload type is total (omitting a field is a compile error), one shared saveQueue
+  covers both write paths with the payload composed inside the run, and rowsRef is written BEFORE
+  the isCurrent check. Task 7's defects did not recur.
+Task 8: review — Spec ✅, quality NEEDS FIXES. 2 Important.
+  Important 1 (FIXED) — A FAILED LOAD IMPERSONATED AN EMPTY LIST, violating an owner ruling. The
+    section routed its load failure into the page's SHARED banner, which the page's own concurrent
+    mount load() clears (setError(null)) — so a failed request left "No active surcharges are
+    configured." asserted to someone editing pricing. HANDOFF §5.15 rules exactly against this, and
+    the page ALREADY CARRIED the dedicated channel: optionsError/addOptionsError, documented as
+    "its own state specifically so that no unrelated refresh can clear it out from under the user",
+    added for an earlier review finding on this very file. The sibling it was modelled on
+    (PricingSection) uses it AND keeps a rowsReady flag so "loaded and empty" is distinguishable
+    from "never loaded". Sibling-split rule, third distinct instance this phase.
+  Important 2 (FIXED) — the only body-reading DELETE in the app parsing without .catch, so a
+    body-less request threw SyntaxError out of the handler (500) instead of the intended 400.
+    Seven other DELETE routes use the catch; http.ts documents the convention.
+Task 8: fix wave 1 — commit 8227931. THIRD consecutive implementer to finish the work and then
+  stall in a wait loop instead of reporting; controller ran the gates (1502 tests / 103 files,
+  tsc, eslint, build) and committed. That is now a pattern, not an accident.
+  SCOPE EXPANSION, and the careful kind: Fix 3 needed a typed discriminator instead of branching on
+  the display string entityLabel === "Customer". The fixer added `label` to Blocker as OPT-IN
+  (off by default) rather than always-populated, after discovering an always-on field would have
+  broken strict toEqual assertions in reference-blockers/process-step-codes tests across the app —
+  then ran nine test files to prove the opt-in leaves them untouched. Wrote the reasoning down.
+  That is how to widen shared infrastructure.
+  IMPLEMENTER HONESTY WORTH RECORDING: it disclosed a false start (monkey-patched fetch + synthetic
+  Link clicks, which silently caused full page reloads so the patch never applied — caught via the
+  network log and DISCARDED rather than reported as evidence), and a second false positive (React
+  Fast Refresh preserved component state across its edit, so rowsReady stayed true and the empty
+  text still showed — recognized as a test-method artifact, not the real fresh-mount case, and
+  discarded). It then forced a genuine full navigation and verified properly: optionsError banner
+  rendered, the page's own GET succeeded concurrently (so setError(null) really did run), and "No
+  active surcharges are configured." did NOT appear. Two discarded false results are worth more
+  than a clean claim.
+  It also stated plainly that Fix 2 was NEVER red/green checked — fix and test written in one pass.
+  CONTROLLER CLOSED THAT GAP: reverted the .catch, ran the test, confirmed RED (SyntaxError escaping
+  the handler, exactly as the review predicted), restored, confirmed GREEN 33/33.
+Task 8: DEFERRED to whole-branch triage — showing the plant-wide value beside the override field
+  (needs a permission-widening decision, owner ruling); two rate conventions on one screen (raw
+  decimal for sales tax, percent for the rate override — each matches the plant field it overrides,
+  which is the better rule, but `4` in the wrong box stores 400%); GET on an unknown customer
+  returning 200; save()'s silent no-op for a row missing from rowsRef; CustomerSurchargeOptionRow
+  duplicated between lib and server; no audit-content assertion for the two new scalar columns.
+  AND the standing one: `grep -rli surcharge e2e/` still returns nothing, so none of this task's
+  client behavior is fenced either.
+Task 8: dev-DB note — the fixer hard-deleted its own FIXW1 fixture via raw psql rather than the
+  app's soft-delete path. Dev-only and its own row, but worth naming: this system hard-deletes
+  outside tests nowhere else. Three older soft-deleted customers (ACME, T8CUST, TESTCUST) remain
+  from earlier sessions; correctly left alone.
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
