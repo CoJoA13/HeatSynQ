@@ -3,14 +3,17 @@ import type { ReferenceKind } from "./reference-constants";
 
 /** Everything `findBlockers`/`assertRefExists` can be asked about: every `ReferenceKind` plus
  *  the non-reference targets that share the same delete-guard machinery (Phase 2C-3 adds
- *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS). */
-export type BlockerTarget = ReferenceKind | "processStepCode";
+ *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS;
+ *  Task 6 adds `surcharge`, a maintained table with its own delete guard, exactly like a step
+ *  code). */
+export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge";
 
 /** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
  *  `REFERENCE_LABELS`. Kept separate rather than folded into `REFERENCE_LABELS` because that
  *  table is typed `Record<ReferenceKind, ...>` and widening it would let a reference kind be
  *  looked up here by mistake. */
-export const TARGET_LABELS: Record<"processStepCode", string> = { processStepCode: "process step code" };
+export const TARGET_LABELS: Record<"processStepCode" | "surcharge", string> =
+  { processStepCode: "process step code", surcharge: "surcharge" };
 
 /** Models that hold a foreign key pointing at a reference table. */
 export type ReferenceLinkModel =
@@ -18,7 +21,8 @@ export type ReferenceLinkModel =
   | "part" | "partSpecification" | "partInspection"
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
   | "shipper" | "certRequirement"
-  | "partPrice" | "surcharge" | "surchargeStepCode" | "invoiceLine" | "billingConfig";
+  | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
+  | "invoiceLine" | "billingConfig";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -176,21 +180,30 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
   // Process Step Code or GL account an invoice has BILLED through can never be deleted. That is
   // correct under §5.14 — deletion is for rows typed by mistake, and ordinary retirement is
   // `active: false`, which keeps existing references rendering.
-  //
-  // `Surcharge` is deliberately NOT a blocker target yet, so `invoiceLine.surchargeId` and
-  // `customerSurcharge.surchargeId` have no entries here: the sweep only walks FKs whose target is
-  // a ReferenceKind plus `processStepCode`, so both are invisible to it today. Task 6 makes
-  // `surcharge` a BlockerTarget and adds those two entries in the same change.
   { model: "partPrice", column: "processStepCodeId", targetKind: "processStepCode",
     label: "Step code", ...PART_VIA_CHILD },
   { model: "surcharge", column: "glAccountId", targetKind: "glAccount",
     label: "GL account", entityLabel: "Surcharge", detailPath: () => "/admin/surcharges" },
   { model: "surchargeStepCode", column: "processStepCodeId", targetKind: "processStepCode",
     label: "Step code", ...SURCHARGE_VIA_STEP_CODE },
+  // Task 6: `surcharge` becomes a BlockerTarget, so a customer's opt-out/override row and an
+  // invoice line that actually billed a surcharge both now block that surcharge's deletion —
+  // the same "billed history is permanent" call as the processStepCode/glAccount entries above.
+  { model: "customerSurcharge", column: "surchargeId", targetKind: "surcharge",
+    label: "Surcharge", entityLabel: "Customer",
+    detailPath: (id) => `/customers/${id}`,
+    include: { customer: { select: { id: true, code: true, name: true } } },
+    blockerId: (r) => String((r.customer as { id: string }).id),
+    displayName: (r) => {
+      const c = r.customer as { code: string; name: string };
+      return `${c.code} · ${c.name}`;
+    } },
   { model: "invoiceLine", column: "processStepCodeId", targetKind: "processStepCode",
     label: "Step code", ...INVOICE_VIA_LINE },
   { model: "invoiceLine", column: "glAccountId", targetKind: "glAccount",
     label: "GL account", ...INVOICE_VIA_LINE },
+  { model: "invoiceLine", column: "surchargeId", targetKind: "surcharge",
+    label: "Surcharge", ...INVOICE_VIA_LINE },
   { model: "billingConfig", column: "salesTaxGlAccountId", targetKind: "glAccount",
     label: "Sales tax GL account", ...BILLING_CONFIG_BLOCKER },
   { model: "billingConfig", column: "freightGlAccountId", targetKind: "glAccount",

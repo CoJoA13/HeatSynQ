@@ -42,17 +42,24 @@ function toKind(model: string): string {
  *  (`setStepFields`), never by this registry. This is the same distinction the design spec
  *  draws for the 2C-3 models themselves (no `onDelete: Cascade` anywhere in that chain,
  *  specifically so cascades stay confined to true ownership). The exemption is scoped to
- *  relations TARGETING `processStepCode` only — that is the one target this sweep knows has a
- *  legitimate owned-child FK today. A cascade relation targeting a genuine `ReferenceKind`
- *  (`material`, `terms`, ...) is not exempted: that shape is exactly the failure mode this sweep
- *  exists to catch (a real usage FK slipping in unregistered), so it still fails as
- *  unregistered — see the bite-proof fixtures below. */
+ *  relations TARGETING `processStepCode` or `surcharge` only — those are the two targets this
+ *  sweep knows have a legitimate owned-child FK today: `SurchargeStepCode.surchargeId` (Task 6)
+ *  is the replace-grid row itself, managed entirely by `setSurchargeStepCodes`, the same shape
+ *  as `ProcessStepFieldDef.codeId` one target over — without the annotation, a surcharge's own
+ *  step-code list would block its own deletion, a self-referential dead end. A cascade relation
+ *  targeting a genuine `ReferenceKind` (`material`, `terms`, ...) is not exempted: that shape is
+ *  exactly the failure mode this sweep exists to catch (a real usage FK slipping in
+ *  unregistered), so it still fails as unregistered — see the bite-proof fixtures below. */
 export function schemaLinks(schemaText: string): Map<string, string> {
   const kinds = new Set<string>(REFERENCE_KINDS);
   // "processStepCode" is a BlockerTarget (src/lib/reference-links.ts), not a ReferenceKind — it
   // is the one non-reference target the delete guard also covers, so an unregistered FK aimed at
   // ProcessStepCode (e.g. a future model) must still fail this sweep.
   kinds.add("processStepCode");
+  // "surcharge" (Task 6) is also a BlockerTarget, not a ReferenceKind — a surcharge is a
+  // maintained table with a delete guard, exactly like a step code, so an unregistered FK aimed
+  // at it (customerSurcharge.surchargeId, invoiceLine.surchargeId) must fail the sweep too.
+  kinds.add("surcharge");
   const out = new Map<string, string>();
 
   for (const [modelName, body] of models(schemaText)) {
@@ -61,10 +68,11 @@ export function schemaLinks(schemaText: string): Map<string, string> {
       if (isList) continue;                                       // back-relation, holds no FK
       const fields = /fields:\s*\[([^\]]+)\]/.exec(args);          // order-independent
       if (!fields || !kinds.has(toKind(targetModel))) continue;    // no FK here, or not a reference table
-      // Owned-child exemption, scoped to processStepCode only (see the doc comment above) — a
-      // cascade relation targeting any OTHER kind in `kinds` is a real usage FK and must still
-      // be reported as unregistered.
-      if (toKind(targetModel) === "processStepCode" && /onDelete:\s*Cascade/.test(args)) continue;
+      // Owned-child exemption, scoped to processStepCode and surcharge only (see the doc comment
+      // above) — a cascade relation targeting any OTHER kind in `kinds` is a real usage FK and
+      // must still be reported as unregistered.
+      const ownedChildTarget = toKind(targetModel) === "processStepCode" || toKind(targetModel) === "surcharge";
+      if (ownedChildTarget && /onDelete:\s*Cascade/.test(args)) continue;
       const column = fields[1].split(",")[0].trim();
       out.set(`${toKind(modelName)}.${column}`, toKind(targetModel));
     }
@@ -117,11 +125,14 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "certRequirement.inspectionCodeId -> inspectionCode",
       "certRequirement.scaleId -> inspectionScale",
       "customer.termsId -> terms",
+      // `surcharge` is a BlockerTarget (Task 6, kinds.add above) — this FK is now visible too.
+      "customerSurcharge.surchargeId -> surcharge",
       "inspectionCode.defaultScaleId -> inspectionScale",
       // onDelete: SetNull, not Cascade — the exemption in schemaLinks covers cascades only, so
-      // these two stay visible to the sweep, which is what forces them into REFERENCE_LINKS.
+      // these three stay visible to the sweep, which is what forces them into REFERENCE_LINKS.
       "invoiceLine.glAccountId -> glAccount",
       "invoiceLine.processStepCodeId -> processStepCode",
+      "invoiceLine.surchargeId -> surcharge",
       "orderContainer.typeId -> containerType",
       "part.materialId -> material",
       "partInspection.inspectionCodeId -> inspectionCode",
@@ -135,16 +146,13 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "shipper.carrierId -> carrier",
       "surcharge.glAccountId -> glAccount",
       "surchargeStepCode.processStepCodeId -> processStepCode",
-      // invoiceLine.surchargeId and customerSurcharge.surchargeId are deliberately ABSENT:
-      // `surcharge` is not a BlockerTarget yet, so this walk cannot see them. Task 6 widens the
-      // union, TARGET_LABELS and the `kinds` set above, and adds both entries in the same change.
     ]);
   });
 
   // Local, not the shared `kinds` inside schemaLinks: a BlockerTarget, not just a ReferenceKind
   // — REFERENCE_LINKS now carries the two processStepCode entries from §7 of the design spec.
   it("every registered link targets a real reference kind", () => {
-    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode"]);
+    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode", "surcharge"]);
     expect(REFERENCE_LINKS.filter((l) => !kinds.has(l.targetKind)).map((l) => l.targetKind)).toEqual([]);
   });
 
@@ -252,5 +260,42 @@ model ProcessStepFieldDef {
 }
 `;
     expect(unregisteredLinks(fixture, new Set())).toEqual([]);
+  });
+
+  // Task 6's own real example: SurchargeStepCode.surchargeId is the replace-grid row itself,
+  // owned by its Surcharge and managed entirely by setSurchargeStepCodes — the same shape as
+  // ProcessStepFieldDef.codeId one target over. Without the exemption this would register as a
+  // usage FK, and a surcharge's own step-code list would block its own deletion.
+  it("does not name a cascade FK that targets Surcharge (bite-proof fixture)", () => {
+    const fixture = `
+model Surcharge {
+  id   String @id
+}
+
+model SurchargeStepCode {
+  id          String    @id
+  surchargeId String
+  surcharge   Surcharge @relation(fields: [surchargeId], references: [id], onDelete: Cascade)
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual([]);
+  });
+
+  // The reverse: a non-cascade FK targeting Surcharge (customerSurcharge.surchargeId,
+  // invoiceLine.surchargeId in the real schema) is a genuine usage reference and must still be
+  // reported — the exemption is keyed off the Cascade annotation, not the target kind alone.
+  it("still names an unregistered non-cascade foreign key targeting Surcharge (bite-proof fixture)", () => {
+    const fixture = `
+model Surcharge {
+  id   String @id
+}
+
+model CustomerSurcharge {
+  id          String    @id
+  surchargeId String
+  surcharge   Surcharge @relation(fields: [surchargeId], references: [id])
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual(["customerSurcharge.surchargeId -> surcharge"]);
   });
 });

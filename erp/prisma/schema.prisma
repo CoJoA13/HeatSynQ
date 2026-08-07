@@ -1114,7 +1114,13 @@ model Surcharge {
 model SurchargeStepCode {
   id                String          @id @default(cuid())
   surchargeId       String
-  surcharge         Surcharge       @relation(fields: [surchargeId], references: [id])
+  // Cascade: this row is owned by the Surcharge (Task 6's replace-grid setSurchargeStepCodes
+  // deletes/recreates the whole set), the same "owned child, not a usage reference" shape as
+  // ProcessStepFieldDef.codeId -> ProcessStepCode above. Registering `surcharge` as a
+  // BlockerTarget (Task 6) would otherwise make a surcharge's OWN step-code list block its own
+  // deletion — a self-referential dead end (reference-links-sweep.test.ts's schemaLinks
+  // exemption keys off this annotation, scoped to processStepCode + surcharge targets only).
+  surcharge         Surcharge       @relation(fields: [surchargeId], references: [id], onDelete: Cascade)
   processStepCodeId String
   processStepCode   ProcessStepCode @relation(fields: [processStepCodeId], references: [id])
 
