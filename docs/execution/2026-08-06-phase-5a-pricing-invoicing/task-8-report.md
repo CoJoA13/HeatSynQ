@@ -322,3 +322,71 @@ check: `T8CUST`/`T8*`-surcharges/`T8-price-role` all absent from their respectiv
   stated list.** Small and additive, but worth a second look given it wasn't originally scoped
   there.
 - E2E result to be confirmed in the section above once the background run completes.
+
+## Fix wave 2
+
+Three fixes from the re-review, all applied.
+
+**Fix 1 (the discriminator was a tautology).** `label` (fix wave 1's marker) was true for
+100% of rows `findBlockers("surcharge", …)` can ever return — every link targeting `surcharge`
+has an FK column literally named `surchargeId`, whose column-header `label` reads "Surcharge" on
+all of them, so `b.label === "Surcharge" && b.entityLabel === "Customer"` carried no more
+information than `entityLabel === "Customer"` alone, which the marker was dispatched to stop
+relying on. Replaced `label` with `model` — the link's Prisma model identity
+(`ReferenceLinkModel`, e.g. `"customerSurcharge"`), genuine identity rather than a rendered
+string — throughout the same chain: `Blocker` type (`src/server/reference-blockers.ts`,
+mirrored in `src/components/BlockerPanel.tsx`), `findBlockers`'s opt-in option (renamed
+`includeLabel` → `includeModel`), the opting route
+(`src/app/api/admin/surcharges/[id]/blockers/route.ts`), and the page's filter
+(`src/app/admin/surcharges/page.tsx`), which now reads `b.model === "customerSurcharge"` alone —
+no `entityLabel` conjunct, since `model` needs no help discriminating. Rewrote every comment that
+had asserted the old (false) "pairs sturdily" guarantee to state what's actually true instead.
+
+**What was established about the new discriminator, and how:** `surcharge` has exactly two
+links targeting it today (`src/lib/reference-links.ts`) — `customerSurcharge` and `invoiceLine`
+(its `surchargeId` column) — and both carried the SAME `label` ("Surcharge"), which is exactly
+why `label` was tautological. Added a new test
+(`tests/surcharges.test.ts`, "model tells a billed invoice line apart from a customer override")
+that bills a surcharge onto a real `InvoiceLine` (created directly via `prisma.invoiceLine.create`
+with `kind: "SURCHARGE"`, mirroring `tests/invoicing-schema.test.ts`'s fixture pattern — no
+invoice-generation service needed) and confirms `GET /api/admin/surcharges/[id]/blockers` returns
+that row with `model: "invoiceLine"`, `entityLabel: "Invoice"`, and — the exact check the page
+runs — `blockers.filter(b => b.model === "customerSurcharge")` is empty. This proves discrimination
+against the one other link that exists today. It does **not** prove discrimination against an
+*as-yet-unwritten* link (e.g. the brief's hypothetical `customerSurchargeSchedule` presenting its
+own Customer) — no such link exists to construct a test against; the guarantee for that case rests
+on `model` being the Prisma model identity itself, which by construction can never collide across
+two different registered links (each `ReferenceLink.model` names exactly one model), rather than
+on an empirical test of a link that doesn't exist.
+
+**Fix 2 (unattributed load failure).** `SurchargeOverridesSection.tsx`'s mount-fetch catch now
+prefixes `Could not load surcharge overrides: ` before calling `onOptionsError`, matching the two
+established siblings on `customers/[id]/page.tsx` ("Could not load terms: …", "Could not load
+parent options: …"). `addOptionsError` concatenates rather than replaces, so an unprefixed message
+was indistinguishable from whichever of the other two also failed.
+
+**Fix 3 (opt-in was only true by undefined-erasure).** `reference-blockers.ts`'s push now uses a
+conditional spread (`...(opts.includeModel ? { model: link.model } : {})`) instead of always
+creating the key with `undefined` — carried over from the `label` field to the new `model` field
+name.
+
+### Gates (fix wave 2)
+
+- `npx vitest run tests/surcharges.test.ts tests/reference-blockers.test.ts tests/part-blockers.test.ts tests/process-step-codes.test.ts`
+  → **90/90 passed** (34 + 40 + 11 + 5), including the new discrimination test.
+- `npx tsc --noEmit` → clean.
+- `npx eslint src tests` → clean.
+- `npm run build` → succeeds, no errors.
+- `npm test` (full suite) → **1502/1503 passed**, 1 failed:
+  `tests/parts-routes.test.ts > PATCH /api/parts/[id] with a non-object JSON body is 400, not 500`
+  — `Test timed out in 5000ms`. Unrelated to every file this wave touched (parts routes, not
+  surcharges/blockers). Re-ran `npx vitest run tests/parts-routes.test.ts` alone: **22/22 passed**
+  in 4967ms — right at the 5000ms ceiling, consistent with contention under the full 103-file run
+  rather than a real regression. Pre-existing flake, not introduced by this change.
+- E2E not run per the brief's instruction (`grep -rli surcharge e2e/` returns nothing).
+
+### Files changed (fix wave 2)
+
+Modified: `src/server/reference-blockers.ts`, `src/components/BlockerPanel.tsx`,
+`src/app/api/admin/surcharges/[id]/blockers/route.ts`, `src/app/admin/surcharges/page.tsx`,
+`src/app/customers/[id]/SurchargeOverridesSection.tsx`, `tests/surcharges.test.ts`.

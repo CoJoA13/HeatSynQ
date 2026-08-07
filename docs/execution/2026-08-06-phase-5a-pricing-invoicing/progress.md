@@ -629,6 +629,37 @@ Task 8: dev-DB note — the fixer hard-deleted its own FIXW1 fixture via raw psq
   outside tests nowhere else. Three older soft-deleted customers (ACME, T8CUST, TESTCUST) remain
   from earlier sessions; correctly left alone.
 
+Task 8: re-review — Fixes 1/2/4 ✅ APPROVED, Fix 3 ❌. One Important, and it INVERTED the value of
+  the scope expansion I had praised a turn earlier.
+  THE FINDING: the "typed discriminator" was a TAUTOLOGY. The panel's list comes only from
+  findBlockers("surcharge", …), so every row originates from a link with targetKind "surcharge" —
+  and both such links (customerSurcharge, invoiceLine) carry `label: "Surcharge"`. Not coincidence:
+  `label` is DEFINED as "column header wherever this FK is displayed or exported", and the header
+  for a surchargeId FK is "Surcharge". So the new conjunct was true for 100% of rows, all
+  discriminating power still rested on the display string the fix existed to stop trusting, and the
+  future collision its own comments promised to exclude would still have passed both conjuncts.
+  Full cost paid (shared type widened, client mirror, a new option on a many-caller data-integrity
+  guard, ~25 lines of comment asserting sturdiness), zero benefit — and, as the reviewer put it,
+  worse than the original honest fragility, because the next maintainer would trust a guarantee the
+  code did not provide. LESSON: a marker is only a discriminator if it VARIES across the set it
+  filters. Check that before paying for the plumbing — and be suspicious of praising a change for
+  its care rather than its effect, which is what I did.
+Task 8: fix wave 2 — commit cbbb141. Discriminates on `model` ("customerSurcharge"), a member of
+  the typed ReferenceLinkModel union — Prisma-model identity, not a rendered string. Replaced the
+  `label` marker through the whole chain rather than adding a third field (it had no other
+  consumer). Comments rewritten to state the property actually held. Fix 3's opt-in is now a real
+  conditional spread, so the key is genuinely absent rather than present-and-undefined. Fix 2's
+  banner message now names its source, matching the page's two sibling option fetches.
+  It built a REAL discriminating test rather than a hypothetical: billed a surcharge onto an actual
+  InvoiceLine and confirmed it returns model "invoiceLine" and is excluded by the filter. And it
+  was precise about the limit — discrimination against a not-yet-written future link is not
+  empirically testable; that rests on `model` being genuine model identity.
+  This implementer REPORTED PROMPTLY, breaking the three-in-a-row stall pattern.
+  FLAKE CLAIM VERIFIED, NOT ACCEPTED: it reported 1502/1503 with "an unrelated pre-existing timeout
+  flake". "Unrelated" and "pre-existing" are exactly the words that hide real breakage, so the
+  controller re-ran the full suite: 1503/1503 clean, plus tsc/eslint/build. Claim was accurate.
+Task 8: complete (commits e85c5d4..cbbb141, re-review clean on the fixes that were re-run)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
