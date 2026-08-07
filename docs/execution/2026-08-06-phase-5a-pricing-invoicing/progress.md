@@ -660,6 +660,60 @@ Task 8: fix wave 2 — commit cbbb141. Discriminates on `model` ("customerSurcha
   controller re-ran the full suite: 1503/1503 clean, plus tsc/eslint/build. Claim was accurate.
 Task 8: complete (commits e85c5d4..cbbb141, re-review clean on the fixes that were re-run)
 
+Task 9: dispatched (implementer, OPUS — the arithmetic heart of the phase; an error here becomes a
+  wrong number on real paper, silently) — BASE 8227931, brief task-9-brief.md (421 lines).
+Task 9: implementer DONE_WITH_CONCERNS — commit 67b6a59, pricing.ts (+318) and its test (+619).
+  63 new tests, full suite 1566/1566, tsc+eslint+build clean.
+  It ran ELEVEN MUTATIONS of the arithmetic and reverted each, confirming every one was caught:
+  round-unit-before-multiply, banker's rounding, round-once-at-the-end, compounding surcharges,
+  qty/100 break basis, >= on the minimum tie, tax including freight, >= on the break threshold,
+  setup inside the minimum, a surcharge emitted with nothing qualifying, needsPrice zeroing the
+  amount. Mutation testing, unprompted, on money code — the right instinct.
+  Purity is enforced BY A TEST that re-reads the source and asserts every import starts with
+  ../lib/. The reviewer went further and ran the file with DATABASE_URL pointed at 127.0.0.1:1 —
+  63/63 pass, so the module genuinely needs no database, not merely "imports none".
+Task 9: review (task-reviewer, opus) — Spec ⚠️, quality NEEDS FIXES. 1 Important, 3 Minor.
+  The reviewer SPOT-CHECKED four of the eleven mutations itself rather than accepting the list,
+  reproduced the failure counts exactly, and added a fifth of its own. Also verified precision at
+  scale by hand: 999,999.99 lb at $0.0575/lb returns exactly 57500, no drift.
+  Important (FIXED) — needsPrice read the row's LIST price instead of the price that actually
+    RESOLVED. A break-only row (unitPrice null, minimumCharge null, one break at 100 @ $6.00,
+    shipped 144) prices CORRECTLY at $864.00 — and still returns needsPrice: true. The flag is
+    load-bearing: spec §5 refuses Finalize while any line has needsPrice, so a fully and correctly
+    priced invoice could not be finalized, and the warning told the operator that an operation
+    which HAS a price needs one. Both workarounds were bad (type a redundant list price onto a row
+    that deliberately prices by break only, or hand-edit and flip priceSource to MANUAL, removing
+    it from regeneration). Reachable, not hypothetical — part-prices.ts makes unitPrice optional
+    and only refuses LOT-with-breaks.
+    AND THE SUITE COULD NOT TELL THE TWO READINGS APART: the reviewer applied the fix and all 63
+    still passed. So the fix was only half the job; the discriminating test was the other half.
+    Plan-mandated in the letter (brief:393 states the literal condition) but NOT in the intent —
+    needsPrice means "this line has no price" and a break-only row HAS one. Treated as a plan
+    defect the controller corrects, not a deviation by the implementer. Fix wave commit 96026bc,
+    RED "expected true to be false" against the old condition, GREEN after. 64 tests, suite 1567.
+  SPEC CONTRADICTION RESOLVED WITH EVIDENCE, not escalated. The implementer flagged that the P5A
+    spec's basis pseudocode (PER_100 -> qty/100, thresholds compared against basis) contradicts
+    owner ruling 2C-2 §3.1 ("a per-each / per-100 / per-1000 part's break thresholds are PIECES").
+    I was ready to put this to the owner as a money decision — a PER_100 row with a 500 break and
+    1,000 pieces shipped either takes the break or does not. The reviewer settled it on evidence:
+    prisma/schema.prisma's PartPriceBreak.threshold column CITES THE 2C-2 RULING BY NAME, so the
+    ruling governs and the spec's pseudocode simply conflated the extension basis with the
+    break-comparison basis. Spec amended (§6, dated 2026-08-07) to write the two bases separately;
+    no total moves for a row without breaks. It also corrected the section number both the
+    implementer and I had wrong — the pseudocode is §6, not §5.
+  Minors 2 and 3 fixed (purity regex widened to catch require()/dynamic import(); roundCents's
+    assumed input precision documented — it can round 12.344999999999999 up to 12.35, unreachable
+    from this module's own inputs but it is EXPORTED for callers who compute their own floats).
+  Concerns 1 and 3 ruled correctly Task 11's, and folded into its plan section: every CHARGE line
+    arrives with a null GL (the engine cannot reach BillingConfig without breaking its purity
+    contract, so Task 11 must assign otherChargeGlAccountId), and glAccountName's ?? "" is a
+    CORRECT normalization since InvoiceLine.glAccountName is NOT NULL.
+  ⚠️ resolved by the controller and folded into Task 11: zero shipped quantity bills the FULL
+    minimum plus setup ($675 at qty 0, pinned deliberately as the spec's formula). Task 9's report
+    asserts Task 11 only feeds non-zero net lines — that assertion is now an explicit, testable
+    requirement on Task 11 rather than an assumption spanning two tasks.
+Task 9: complete (commits 8227931..96026bc, Important closed with a discriminating test)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in

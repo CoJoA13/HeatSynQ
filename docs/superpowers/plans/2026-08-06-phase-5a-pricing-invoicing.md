@@ -1660,9 +1660,17 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
 >    silently incomplete. Do not "fix" it by widening `ChargeInput` in `pricing.ts` — that module
 >    is pure by contract and takes no dependency on `billing-config.ts`.
 > 2. **`SurchargeRow.glAccountName` is `string | null` upstream but `string` in the engine's
->    output type.** There is a `?? ""` at this seam. Decide deliberately whether an empty string or
->    a null is what an invoice line should carry for "no GL account named", and make the two agree
->    rather than leaving the coercion buried.
+>    output type.** There is a `?? ""` at this seam. Task 9's review ruled `string` is the correct
+>    target — `InvoiceLine.glAccountName` is `String @default("")`, NOT NULL — so `?? ""` is a
+>    correct normalization rather than a workaround, and because the types genuinely do not unify
+>    it is a compile error and cannot be silently skipped. Just do it deliberately.
+> 3. **Never hand the engine a line whose net shipped total is zero.** `priceOrder` bills
+>    `max(extended, minimumCharge) + setupCharge`, so a zero-quantity line returns the **full
+>    minimum plus setup** — pinned in `tests/pricing.test.ts` as $600 + $75 = $675 at
+>    `shippedQty: 0`. That is the spec's stated formula and is deliberate, not a bug. But it means
+>    a fully-returned or zero-net line reaching the engine bills $675 for no work. Task 9's report
+>    asserts you only feed lines with a non-zero net shipped total — **make that explicit and test
+>    it**, because nothing downstream of the engine catches it.
 
 **Files:**
 - Create: `src/server/invoices.ts`

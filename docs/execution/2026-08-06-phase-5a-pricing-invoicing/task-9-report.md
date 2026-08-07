@@ -230,3 +230,84 @@ committed, per instruction).
    four-decimal price before crossing `2^53`. Far outside any real order (a million pieces at $6.51
    is pinned exact), and integer cents is the house pattern (`load-split.ts`). Recorded, not
    guarded.
+## Fix wave 1
+
+Three fixes applied to `src/server/pricing.ts` per the plan owner's review of Task 9.
+
+### Fix 1 — `needsPrice` now reads the resolved price, not the row's raw list price
+
+`needsPrice: row.unitPrice === null && row.minimumCharge === null` was changed to
+`needsPrice: price === null && row.minimumCharge === null` (`pricing.ts:243`), where `price` is
+the already-resolved value at `pricing.ts:227` (`chosen?.price ?? row.unitPrice`). A break-only
+row — `unitPrice: null`, a live break the shipped quantity clears — now correctly reports
+`needsPrice: false` while still snapshotting the break's price and threshold. Previously such a
+row priced and billed correctly but was flagged as needing a price anyway, which (per the P5A
+spec) would have refused finalize on a fully-priced invoice.
+
+**Discriminating test added** (`tests/pricing.test.ts`, `pricing — needs price` describe block):
+"does not flag a row with no list price when a break resolves the price" — a row with
+`unitPrice: null, minimumCharge: null` and one break `{ threshold: 100, price: 6 }`, at the
+default `shippedQty: 144` (clears the break), asserting `needsPrice === false`,
+`unitPrice === 6`, `breakThreshold === 100`, and `amount === 864`.
+
+Proved the test discriminates by reverting the fix, running only that test, and restoring:
+
+RED (old condition `row.unitPrice === null && row.minimumCharge === null` restored):
+```
+FAIL  tests/pricing.test.ts > pricing — needs price > does not flag a row with no list price when a break resolves the price
+AssertionError: expected true to be false
+ ❯ tests/pricing.test.ts:157:26
+Tests  1 failed | 63 skipped (64)
+```
+
+GREEN (fix restored):
+```
+✓ tests/pricing.test.ts (64 tests | 63 skipped) 3ms
+Tests  1 passed | 63 skipped (64)
+```
+
+The complementary case — a row with no price and no breaks at all still reports
+`needsPrice: true` — was already covered by the pre-existing test "flags a priced row carrying
+neither a unit price nor a minimum" (`tests/pricing.test.ts`), which was left unchanged.
+
+### Fix 2 — purity test now also rejects `require(`/dynamic `import(`
+
+`tests/pricing.test.ts`, `pricing — the module is pure` describe block: added
+`expect(/\brequire\s*\(/.test(src)).toBe(false)` and `expect(/\bimport\s*\(/.test(src)).toBe(false)`
+alongside the existing static-`import`-path assertion, so a `require("./db")`, a dynamic
+`import("./db")`, or a bare side-effect `import "./db"` (which the static-import regex's
+`from\s+"..."` capture would also have missed) all fail the test, matching what the test's name
+already claims.
+
+### Fix 3 — `roundCents` doc comment states its assumed input precision
+
+Comment-only change at `pricing.ts` (`roundCents`), no arithmetic touched. The doc now states
+that the function assumes its input already carries at most 2 decimal places of real precision,
+names the failure mode (`roundCents(12.344999999999999)` returns 12.35, not the mathematically
+correct 12.34, because the `1 + Number.EPSILON` lift in `toCents` is tuned for genuine
+half-cent-boundary float error, not an arbitrary nearby float), and notes that every value this
+module itself feeds `toCents` is a 2- or 4-decimal `Decimal` and never lands that close to a
+boundary, so a caller passing a computed float should round to cents itself first.
+
+### Verification
+
+```
+$ npx vitest run tests/pricing.test.ts
+ ✓ tests/pricing.test.ts (64 tests) 9ms
+ Test Files  1 passed (1)
+      Tests  64 passed (64)
+
+$ npx tsc --noEmit          → exit 0, no output
+$ npx eslint src tests      → exit 0, no output
+$ npm run build             → compiled, route table printed, no errors
+$ npm test                  → Test Files 104 passed (104) · Tests 1567 passed (1567)   (1566 before; +1 net)
+```
+
+E2E not run per instruction (pure module, no UI, no route touched).
+
+### Scope discipline
+
+No arithmetic in `priceOrder`/`extendedCents`/`divideRound`/`applyRate`/`selectBreak` was
+touched. `ChargeInput`'s missing `GlRef`, the `glAccountName` `string | null` → `string`
+normalization, the stale-basis decision, and zero-quantity billing (minimum + setup) were left
+exactly as Task 9 shipped them, per the plan owner's explicit out-of-scope list.

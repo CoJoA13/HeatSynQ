@@ -541,15 +541,32 @@ imports nothing from the rest of `src/server/`, and it is where the exhaustive t
 **Per-operation math**, in that row's `pricePer`:
 
 ```
-basis    = EACH      → shipped qty
-           PER_100   → shipped qty / 100
-           PER_1000  → shipped qty / 1000
-           LB        → shipped weight
-           LOT       → 1 (flat; basis is ignored)
-price    = the live break with the highest threshold <= basis, else unitPrice
-extended = basis × price
-amount   = max(extended, minimumCharge) + setupCharge      ← ruling 13
+basis      = EACH      → shipped qty
+             PER_100   → shipped qty / 100
+             PER_1000  → shipped qty / 1000
+             LB        → shipped weight
+             LOT       → 1 (flat; basis is ignored)
+breakBasis = LB        → shipped weight        (pounds)
+             otherwise → shipped qty           (pieces)   ← 2C-2 ruling 1
+price      = the live break with the highest threshold <= breakBasis, else unitPrice
+extended   = basis × price
+amount     = max(extended, minimumCharge) + setupCharge    ← ruling 13
 ```
+
+**Amendment, 2026-08-07 (from Task 9's review).** This block previously compared break thresholds
+against `basis`, which would have measured a per-100 row's thresholds in *hundreds*. That
+contradicted the owner decision of 2026-08-01 (2C-2 design §3, decision 1): *"Price-break basis
+follows the part's price-per unit. A per-lb part's break thresholds are pounds; a per-each /
+per-100 / per-1000 part's are **pieces**."* The ruling governs, and `prisma/schema.prisma`'s
+`PartPriceBreak.threshold` column cites it by name — so the two bases are now written out
+separately. Only the **break comparison** changes; `extended` still divides by 100 or 1000 as
+before, so no total moves for a row without breaks.
+
+Concretely: a PER_100 row with a 500 break, shipped 1,000 pieces. Under the old text the basis was
+10, the 500 break never triggered, and the customer paid list price. Under the ruling the 1,000
+pieces clear the threshold and the break applies. `pricing.ts`'s `breakBasis()` implements the
+ruling, with a test that moves a row across the `LB` boundary — the only crossing that reinterprets
+a stored threshold, since EACH/PER_100/PER_1000 all count pieces.
 
 `minimumApplied` is recorded when the floor won, and `breakThreshold` records which break did.
 Shipped qty and weight come from `ship-ledger.ts` and nowhere else — the invoice never re-derives
