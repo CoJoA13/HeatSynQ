@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Read first
 
-`docs/HANDOFF.md` is the portable project memory and the entry point for any new session — it carries the scope decisions, the model facts, the current backlog, and the next phase's kickoff instruction. Read it before planning work.
+`docs/HANDOFF.md` is the portable project memory and the entry point for any new session — it carries the scope decisions, the model facts, the current phase's state, the current backlog, and the next phase's kickoff instruction. Read it before planning work; it is kept short enough to read in one pass, and keeping it that way is part of the job.
+
+Every **merged** phase's full narrative — its owner rulings, review findings, and the lessons behind them — lives in `docs/history/`, one dated file per phase, moved verbatim out of the handoff when the phase closed. HANDOFF §4 keeps one paragraph per phase and points there. Read a history file only when you need that phase's detail; don't read them all.
 
 Two documents are binding, not advisory:
 
@@ -31,13 +33,13 @@ npm run db:seed                   # admin/admin
 npm run dev                       # http://localhost:3000
 ```
 
-Quality gates — all three must stay green:
+Quality gates — every one of these must stay green:
 
 ```bash
-npm test                          # vitest, 1010 integration tests against the real erp_test DB
+npm test                          # vitest integration suite against the real erp_test DB
 npx tsc --noEmit
 npx eslint src tests
-npm run test:e2e                  # 10 Playwright flows against `npm run dev` + the DEV db (erp, not erp_test); bundled Chromium
+npm run test:e2e                  # Playwright flows against `npm run dev` + the DEV db (erp, not erp_test); bundled Chromium
 ```
 
 Single test file or single case:
@@ -112,6 +114,8 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 TDD per task: failing test → implement → pass → commit. Conventional commit messages, with **no attribution trailer on individual commits** — owner's instruction, 2026-08-01. Every branch is squash-merged, so a per-commit `Co-Authored-By` / `Claude-Session` line gets concatenated N times into one squash message. Attribution goes in the **PR body**, where the squash preserves it exactly once. (Commits before 2026-08-01 carry the trailer; that is history, not the convention.)
 
 The Phase 1 process is worth keeping: a fresh subagent per task, an independent spec-and-quality review of each task, fix rounds until approved, then a final whole-branch review before merge. Those per-task reviews caught real bugs the plan itself contained — a plaintext password in an audit payload, a `__proto__` registry crash, silent empty backups. The review loop is not ceremony.
+
+**Maintaining this file.** No counts, totals, or version numbers that ordinary commits move (test tallies, E2E flow counts, migration counts) — say what a command does, not how much it currently runs; the moving numbers belong in `docs/HANDOFF.md`, where they are dated. Keep it curated at roughly its current length: new guidance should displace guidance it supersedes, not be appended beneath it.
 
 ## Environment notes (Fedora)
 
