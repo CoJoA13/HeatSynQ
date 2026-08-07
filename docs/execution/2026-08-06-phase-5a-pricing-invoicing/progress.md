@@ -199,6 +199,15 @@ Task 4: review — Spec ✅, quality NEEDS FIXES. 1 Important, 5 Minor. The serv
 Task 4: fix wave 1 dispatched (sonnet) — commit e343a16, 99 files / 1437 tests. Discrimination
   PROVEN for the Important: with `mustDo` removed from prices/route.ts's POST the gate test failed
   `expected 200 to be 403`, and passed once restored.
+Task 4: re-review (task-reviewer, sonnet, scoped to the five fixes) — Spec ✅, quality APPROVED,
+  0 Critical / 0 Important / 0 Minor. The reviewer did NOT just re-run the implementer's own proof:
+  it removed `mustDo` from the PATCH handler in the breaks/[breakId] route — a handler the
+  implementer's discrimination proof never touched — confirmed the gate test failed
+  `expected 200 to be 403`, reverted, re-ran, and verified a clean tree. That establishes the one
+  route test protects all SIX mustDo call sites across the four files, not just the sampled one.
+  It also verified finding 4 was precisely scoped (only claimLivePrice's comment carried the stale
+  citation; claimLiveBreak's never did and was correctly left alone).
+Task 4: complete (commits 04133db..e343a16, re-review clean)
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
