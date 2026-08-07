@@ -10,7 +10,7 @@ import { setBillingConfig } from "@/server/billing-config";
 import {
   createInvoice, listInvoiceCandidates, getInvoice,
   updateInvoice, replaceInvoiceLines, recalculateInvoice, discardInvoice,
-  finalizeInvoice, unlockInvoice,
+  finalizeInvoice, unlockInvoice, createCredit,
   type InvoiceDetail, type InvoiceLineDetail,
 } from "@/server/invoices";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -762,5 +762,142 @@ describe("unlockInvoice", () => {
     await expect(asSystem(() => replaceInvoiceLines(invoice.id, currentLines))).resolves.toBeTruthy();
     await expect(asSystem(() => recalculateInvoice(invoice.id))).resolves.toBeTruthy();
     await expect(asSystem(() => discardInvoice(invoice.id, "done"))).resolves.toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 14: credits. A credit is the correction for an already-FINALIZED invoice — it copies the
+// source's header and lines with the MONEY sign flipped (quantities unchanged), carries its own
+// `credit_number_next`, and has its own draft->finalized lifecycle. Finalizing a CREDIT writes no
+// order status: INVOICED/REOPENED are invoice-owned, and a credit owns none of them.
+// -------------------------------------------------------------------------------------------
+
+/** -0 reads back from Postgres as +0, and `toBe` uses Object.is, so a zero line's negation must be
+ *  compared as +0, not -0. Non-zero amounts negate as expected. */
+const flipped = (n: number) => (n === 0 ? 0 : -n);
+
+describe("createCredit", () => {
+  it("derives a credit from a finalized invoice with the sign flipped", async () => {
+    const { invoice } = await finalizedFixture(); // default op amount = 144 × 6.51 = 937.44
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.kind).toBe("CREDIT");
+    expect(credit.status).toBe("DRAFT");
+    expect(credit.sourceInvoiceId).toBe(invoice.id);
+    expect(credit.creditNumber).toBe(1000);
+    expect(credit.documentNumber).toBe("1000"); // the credit number, NOT the order/invoice number
+    expect(credit.total).toBe(-937.44);
+    expect(credit.subtotal).toBe(-937.44);
+
+    const op = credit.lines.find((l) => l.kind === "OPERATION")!;
+    const part = credit.lines.find((l) => l.kind === "PART")!;
+    expect(op.amount).toBe(-937.44);        // money negates
+    expect(part.qty).toBe(144);             // quantity does NOT negate — the paper says what was billed
+    expect(op.parentLineId).toBe(part.id);  // the OPERATION still hangs off its PART line (parents rewired)
+  });
+
+  it("copies the header and reuses the invoice's exact lines, only the money flipped (no drift)", async () => {
+    await setSetting("invoice_number_prefix", "7");
+    const { invoice } = await finalizedFixture();
+    const source = await asSystem(() => getInvoice(invoice.id));
+    const credit = await asSystem(() => createCredit(invoice.id));
+
+    // Header snapshots copied verbatim from the source.
+    expect(credit.orderId).toBe(source.orderId);
+    expect(credit.customerId).toBe(source.customerId);
+    expect(credit.poNumber).toBe(source.poNumber);
+    expect(credit.termsName).toBe(source.termsName);
+    expect(credit.billTo).toBe(source.billTo);
+    expect(credit.shipTo).toBe(source.shipTo);
+    expect(credit.materialName).toBe(source.materialName);
+    expect(credit.processNames).toBe(source.processNames);
+    expect(credit.taxRate).toBe(source.taxRate);
+
+    // Lines are the invoice's lines, position-for-position, with amount negated and everything else
+    // (kind, part identity, gl, qty, weight) untouched. This is the anti-drift guarantee.
+    expect(credit.lines.length).toBe(source.lines.length);
+    credit.lines.forEach((cl, i) => {
+      const sl = source.lines[i];
+      expect(cl.kind).toBe(sl.kind);
+      expect(cl.description).toBe(sl.description);
+      expect(cl.glAccountName).toBe(sl.glAccountName);
+      expect(cl.qty).toBe(sl.qty);       // unchanged
+      expect(cl.weight).toBe(sl.weight); // unchanged
+      expect(cl.amount).toBe(flipped(sl.amount)); // money flipped
+    });
+  });
+
+  it("refuses a credit against a draft", async () => {
+    const { invoice } = await draftFixture();
+    await expect(asSystem(() => createCredit(invoice.id))).rejects.toThrow(/finalized/i);
+  });
+
+  it("refuses to credit a credit, naming it not an invoice", async () => {
+    const { invoice } = await finalizedFixture();
+    const credit = await asSystem(() => createCredit(invoice.id));
+    await expect(asSystem(() => createCredit(credit.id))).rejects.toThrow(/not an invoice/i);
+  });
+
+  it("refuses a credit when the order has been voided", async () => {
+    const { order, invoice } = await finalizedFixture();
+    await prisma.order.update({ where: { id: order.id }, data: { deletedAt: new Date() } });
+    await expect(asSystem(() => createCredit(invoice.id))).rejects.toThrow(/voided/i);
+  });
+
+  it("allows a second credit against the same invoice, with its own number", async () => {
+    const { invoice } = await finalizedFixture();
+    const a = await asSystem(() => createCredit(invoice.id));
+    const b = await asSystem(() => createCredit(invoice.id));
+    expect(b.creditNumber).toBe(a.creditNumber! + 1);
+  });
+
+  it("keeps the source invoice live and finalized alongside its credit", async () => {
+    const { order, invoice } = await finalizedFixture();
+    await asSystem(() => createCredit(invoice.id));
+    // The one-live-invoice-per-order partial index is scoped to kind='INVOICE', so a CREDIT never
+    // collides with its source — both are live on the same order.
+    const live = await prisma.invoice.count({ where: { orderId: order.id, deletedAt: null } });
+    expect(live).toBe(2);
+    expect((await getInvoice(invoice.id)).status).toBe("FINALIZED");
+  });
+
+  it("audits the create with the negated lines and total in the snapshot", async () => {
+    const { invoice } = await finalizedFixture();
+    const credit = await asSystem(() => createCredit(invoice.id));
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "invoice", entityId: credit.id } });
+    expect(entry!.action).toBe("create");
+    expect(JSON.stringify(entry!.after)).toContain("-937.44");
+  });
+
+  it("can be reduced to a partial amount and finalized without touching the order status", async () => {
+    const { order, invoice } = await finalizedFixture();
+    expect((await getOrder(order.id)).status).toBe("SHIPPED"); // precondition — untouched by finalizing the credit
+    const credit = await asSystem(() => createCredit(invoice.id));
+    const reduced = await asSystem(() => replaceInvoiceLines(credit.id,
+      credit.lines.map((l) => (l.kind === "OPERATION" ? { ...toLineInput(l), amount: "-100.00" } : toLineInput(l)))));
+    expect(reduced.total).toBe(-100);
+    await asSystem(() => finalizeInvoice(credit.id));
+    expect((await getInvoice(credit.id)).status).toBe("FINALIZED");
+    expect((await getOrder(order.id)).status).toBe("SHIPPED"); // a credit finalize writes NO order status
+  });
+
+  it("finalizing a credit writes no order-status audit entry", async () => {
+    const { order, invoice } = await finalizedFixture();
+    const credit = await asSystem(() => createCredit(invoice.id));
+    // The order already carries update entries from shipping — measure the DELTA around the credit
+    // finalize, which must add none (an INVOICE finalize would add one setting the order INVOICED).
+    const before = await prisma.auditLog.count({
+      where: { entity: "order", entityId: order.id, action: "update" } });
+    await asSystem(() => finalizeInvoice(credit.id));
+    const after = await prisma.auditLog.count({
+      where: { entity: "order", entityId: order.id, action: "update" } });
+    expect(after).toBe(before); // finalizing the credit touched only the credit, never the order
+  });
+
+  it("never frees a credit number when the draft is discarded", async () => {
+    const { invoice } = await finalizedFixture();
+    const credit = await asSystem(() => createCredit(invoice.id));
+    await asSystem(() => discardInvoice(credit.id, "raised in error"));
+    const next = await asSystem(() => createCredit(invoice.id));
+    expect(next.creditNumber).toBe(credit.creditNumber! + 1);
   });
 });

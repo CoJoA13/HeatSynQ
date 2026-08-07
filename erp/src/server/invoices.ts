@@ -12,7 +12,7 @@ import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
 import { listPartPrices } from "./part-prices";
 import { listAddresses, type AddressRow } from "./customer-addresses";
-import { getSetting } from "./settings";
+import { getSetting, allocateNumber } from "./settings";
 import { isDuplicateClientRequestId } from "./orders";
 import { shippedTotals, recomputeOrderStatus } from "./ship-ledger";
 import {
@@ -880,8 +880,13 @@ export async function replaceInvoiceLines(id: string, input: unknown): Promise<I
 
 /** Wires parents from caller keys: each input's `key` -> its new row id (position = index + 1),
  *  then each `parentKey` -> that id. A `parentKey` naming no line in the payload leaves the child
- *  flat rather than dangling. */
-async function wirePayloadParents(tx: Db, invoiceId: string, lines: LineInput[]): Promise<void> {
+ *  flat rather than dangling. Typed on just `key`/`parentKey` so both `replaceInvoiceLines`' payload
+ *  (`LineInput[]`) and `createCredit`'s source-line copy (keyed off the source rows' own ids) reuse
+ *  it — the copy has the same "the parent id does not exist until its row is written" second-pass
+ *  shape, so it must not fork a second wiring path. */
+async function wirePayloadParents(
+  tx: Db, invoiceId: string, lines: readonly { key?: string; parentKey?: string | null }[],
+): Promise<void> {
   const rows = await tx.invoiceLine.findMany({ where: { invoiceId }, select: { id: true, position: true } });
   const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
   const idByKey = new Map<string, string>();
@@ -1060,8 +1065,13 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
       where: { id },
       data: { status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id },
     }), { tx });
-  await auditedUpdate("order", order.id,
-    () => tx.order.update({ where: { id: order.id }, data: { status: "INVOICED" } }), { tx });
+  // Only an INVOICE owns the order's status (§5.2): finalizing one writes INVOICED. A CREDIT is a
+  // correction against an already-invoiced order — it owns no order status, so finalizing it must
+  // NOT touch `Order.status` (Task 14). Branch on kind, do not write the order for a CREDIT.
+  if (invoice.kind === "INVOICE") {
+    await auditedUpdate("order", order.id,
+      () => tx.order.update({ where: { id: order.id }, data: { status: "INVOICED" } }), { tx });
+  }
   return readInvoiceDetail(tx, id);
 }
 
@@ -1107,5 +1117,131 @@ export async function unlockInvoice(id: string, reason: string): Promise<Invoice
       }), { tx, reason: why });
     await recomputeOrderStatus(tx, [order.id], [order.id]);
     return readInvoiceDetail(tx, id);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 14 (§5.5/§5.6): credits. A credit is the correction for an already-FINALIZED invoice — it
+// derives from a live FINALIZED INVOICE, copies its header and every line with the MONEY sign
+// flipped (quantities and weights stay as billed — the paper says what was billed, the money says
+// which way it flows), and carries its own `credit_number_next`, NOT an invoice number. It is a
+// DRAFT document with its own draft->finalized lifecycle (Task 12's edits, Task 13's finalize),
+// and finalizing it writes no order status (the `kind` branch in `finalizeInvoiceInTx`).
+// -------------------------------------------------------------------------------------------
+
+/** Money negates, quantity does not. `-0` reads back from Postgres as `+0`, so normalize a zero
+ *  line (a PART line always carries `amount = 0`) to `+0` rather than storing `-0`. A Decimal(12,2)
+ *  value round-trips through `toNumber()` exactly (its max, 9999999999.99, is well under 2^53), so
+ *  negating the number keeps the column's scale on write. */
+const negateMoney = (d: Prisma.Decimal) => {
+  const n = d.toNumber();
+  return n === 0 ? 0 : -n;
+};
+
+/**
+ * `createCredit` (§5.6). Derives a DRAFT credit from a live FINALIZED INVOICE under the same claim
+ * discipline every mutator here uses: `claimInvoiceRow` claims the order row, then locks the SOURCE
+ * invoice row `FOR UPDATE`, then re-reads — so the refusals below read the source's status off a row
+ * this transaction holds, not a stale snapshot. A credit and its source invoice coexist live: the
+ * one-live-invoice-per-order partial index is scoped to `kind = 'INVOICE'`, and a credit is a
+ * different kind, so an invoice may be credited more than once.
+ *
+ * Serializable, pairing with `assertLineRefs`' `assertRefExists` on every FK the copied lines carry
+ * (the file's FK-writer pattern) — a GL account / step code / surcharge the source pointed at could
+ * have been soft-deleted since it finalized, and fresh paper must not post to a dead account.
+ */
+export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    // Claim the order, lock and re-read the SOURCE invoice — the guarded state (its status/kind)
+    // must be read under the claim. `claimInvoiceRow` 404s a discarded source (deletedAt) already.
+    const { invoice: source, order } = await claimInvoiceRow(tx, invoiceId);
+    if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
+    // A credit derives ONLY from an INVOICE — a credit cannot itself be credited.
+    if (source.kind !== "INVOICE") {
+      throw new HttpError(400, "That document is a credit, not an invoice — a credit cannot itself be credited");
+    }
+    // ...and only from a FINALIZED one: a draft is not customer-facing paper, so there is nothing to
+    // correct yet (discard or edit it instead).
+    if (source.status !== "FINALIZED") {
+      throw new HttpError(400,
+        `Invoice #${order.orderNumber} is not finalized — only a finalized invoice can be credited`);
+    }
+
+    // A credit's number comes from its own series, allocated INSIDE the claim (never hand-rolled).
+    const creditNumber = await allocateNumber("credit_number_next", tx);
+
+    // Copy every source line, money sign flipped, everything else (part identity, gl, qty, weight,
+    // pricing snapshots) carried as billed. Source lines arrive position-asc (DETAIL_INCLUDE); the
+    // copy keeps 1..n so the second-pass parent wiring maps cleanly.
+    const lineData = source.lines.map((l, i) => ({
+      position: i + 1, kind: l.kind,
+      orderLineId: l.orderLineId, processStepCodeId: l.processStepCodeId,
+      surchargeId: l.surchargeId, orderChargeId: l.orderChargeId, glAccountId: l.glAccountId,
+      partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
+      description: l.description, glAccountName: l.glAccountName,
+      qty: l.qty, weight: num(l.weight), eachWeight: num(l.eachWeight),
+      pricePer: l.pricePer, unitPrice: num(l.unitPrice),
+      setupCharge: num(l.setupCharge), minimumCharge: num(l.minimumCharge),
+      breakThreshold: num(l.breakThreshold), minimumApplied: l.minimumApplied,
+      rate: num(l.rate), priceSource: l.priceSource, needsPrice: l.needsPrice,
+      amount: negateMoney(l.amount),
+    }));
+
+    // The FK-writer guard, shared verbatim with create/replace/recalculate — no cert extra step
+    // code here: a credit only copies the source's stored CERT line (its gl rides on the line), it
+    // does not re-resolve the cert charge from BillingConfig.
+    await assertLineRefs(tx, lineData);
+
+    // Totals from the already-negated lines, so the header totals and the lines share one sign
+    // (never a hand-negated total that could drift from the line it sums). Integer-cent summation.
+    const totals = totalsFromLines(lineData);
+
+    // The `after` snapshot, hand-composed like createInvoiceInTx's — the negated line amounts and
+    // total are included so the sign flip shows in history from the create entry on.
+    const auditData = {
+      kind: "CREDIT", status: "DRAFT",
+      orderId: source.orderId, orderNumber: order.orderNumber,
+      sourceInvoiceId: source.id, creditNumber,
+      customerId: source.customerId, customerCode: source.customer.code, customerName: source.customer.name,
+      invoiceDate: formatDateOnly(source.invoiceDate),
+      poNumber: source.poNumber, termsName: source.termsName,
+      materialName: source.materialName, processNames: source.processNames,
+      taxRate: num(source.taxRate),
+      subtotal: totals.subtotal, surchargeTotal: totals.surchargeTotal, chargeTotal: totals.chargeTotal,
+      certTotal: totals.certTotal, freightTotal: totals.freightTotal, taxTotal: totals.taxTotal,
+      total: totals.total,
+      lines: lineData.map((l) => ({
+        position: l.position, kind: l.kind, description: l.description,
+        glAccountName: l.glAccountName, amount: l.amount,
+      })),
+    };
+
+    const credit = await auditedCreate("invoice", auditData, async () => {
+      const created = await tx.invoice.create({
+        data: {
+          kind: "CREDIT",
+          orderId: source.orderId,
+          customerId: source.customerId,
+          sourceInvoiceId: source.id,
+          creditNumber,
+          status: "DRAFT",
+          invoiceDate: source.invoiceDate,
+          poNumber: source.poNumber, termsName: source.termsName,
+          billTo: source.billTo, shipTo: source.shipTo,
+          materialName: source.materialName, processNames: source.processNames,
+          taxRate: source.taxRate,
+          ...totals,
+          lines: { create: lineData },
+        },
+        select: { id: true },
+      });
+      // Second pass for the OPERATION -> PART self-relation, keyed off the SOURCE rows' own ids
+      // (positions are preserved 1..n, so `wirePayloadParents` remaps them to the new rows).
+      await wirePayloadParents(tx, created.id,
+        source.lines.map((l) => ({ key: l.id, parentKey: l.parentLineId })));
+      return created;
+    }, { tx });
+
+    return readInvoiceDetail(tx, credit.id);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
