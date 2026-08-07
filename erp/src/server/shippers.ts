@@ -67,7 +67,11 @@ export type ShipperDetail = {
   carrierId: string | null; carrierName: string | null; route: string; comments: string;
   billFreight: boolean; freightAmount: number | null; freightTerms: FreightTermsValue;
   freightClass: string; freightDescription: string; packageCount: number | null;
-  proNumber: string; scacCode: string; deletedAt: string | null;
+  proNumber: string; scacCode: string;
+  /** Set when this shipment is a reversing shipment (§5.6): the id of the shipment it reverses.
+   *  Its lines carry negative qty/weight, and a credit is built from it. */
+  reversesShipperId: string | null;
+  deletedAt: string | null;
   orders: ShipperOrderDetail[];
 };
 export type ShipperCreateResult = { shipper: ShipperDetail; warnings: string[]; deduped: boolean };
@@ -287,6 +291,7 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
     freightTerms: row.freightTerms as FreightTermsValue,
     freightClass: row.freightClass, freightDescription: row.freightDescription,
     packageCount: row.packageCount, proNumber: row.proNumber, scacCode: row.scacCode,
+    reversesShipperId: row.reversesShipperId,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     orders: row.orders.map((so) => ({
       id: so.id, orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,
@@ -1473,6 +1478,234 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
 
     await recomputeOrderStatus(tx, orderIds);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 15: the reversing shipment (spec §5.2, §5.6). A reversing shipment un-ships goods that were
+// shipped and (usually) invoiced: a `Shipper` with `reversesShipperId` set, whose lines carry the
+// NEGATION of the original's qty/weight. `shippedTotals` already sums `qty`, so the negatives net
+// the shipped ledger down by construction — no ledger change is needed. It REUSES the shared
+// machinery every shipment mutator uses — `claimOrdersInOrder` (one sorted FOR UPDATE statement,
+// never a per-row loop) and `recomputeOrderStatus` — rather than forking a second dangerous action
+// or a second locking path.
+//
+// STATUS (spec §5.2, and the binding requirement carried from Task 13's review): for an order with
+// a finalized invoice, this writes `Order.status = REOPENED` **directly**, through
+// `auditedUpdate("order", …)`. It does NOT pass `released` to `recomputeOrderStatus` — that third
+// arg forces a recompute PAST the invoice-owned skip and exists SOLELY for unlock (invoices.ts);
+// passing it from a shipment path is exactly the hole the skip closes (a shipment-side recompute
+// would drop an invoice-owned status back to SHIPPED). Every non-invoiced order is left to
+// `recomputeOrderStatus`'s two-arg form, which derives OPEN/PARTIAL_SHIPPED/SHIPPED from the human
+// line-complete flags exactly as Phase 4 built it — quantities never enter that decision, so a
+// fully-reversed but never-invoiced order stays at its flag-derived value (the original line is
+// still live and still complete), it does not fall to OPEN.
+// -------------------------------------------------------------------------------------------
+
+const REVERSE_SHIPPER = z.object({
+  // Non-blank-checked and trimmed IN THE SERVICE below (the voidShipper/discardInvoice precedent) —
+  // zod only pins the shape; a string of spaces is not a reason.
+  reason: z.string().max(1000),
+  // Defaults to the original shipment's ship date when omitted (spec §5.6).
+  shipDate: z.string().min(1).optional(),
+}).strict();
+
+type ReverseShipperInput = z.infer<typeof REVERSE_SHIPPER>;
+
+/** The reversal's create-entry `after` snapshot, composed by hand (the `auditPayload`/
+ *  `creditHoldOverrideReason` precedent): `auditedCreate` takes no `reason` arg, so the reason rides
+ *  IN this payload — it lands in the audit entry and prints on no piece of paper. Every negated line
+ *  travels with the live part identity captured off the original's snapshot columns. */
+function reverseAuditPayload(args: {
+  shipperNumber: number; reason: string;
+  original: { id: string; shipperNumber: number };
+  customer: { id: string; code: string; name: string };
+  shipDate: Date;
+  orders: {
+    orderId: string; orderNumber: number; sequence: number;
+    lines: { orderLineId: string | null; partNumber: string; qty: number; weight: Prisma.Decimal }[];
+  }[];
+}) {
+  return {
+    shipperNumber: args.shipperNumber,
+    reversesShipperId: args.original.id,
+    reversesShipperNumber: args.original.shipperNumber,
+    reason: args.reason,
+    customerId: args.customer.id, customerCode: args.customer.code, customerName: args.customer.name,
+    shipDate: formatDateOnly(args.shipDate),
+    orders: args.orders.map((o) => ({
+      orderId: o.orderId, orderNumber: o.orderNumber, sequence: o.sequence,
+      lines: o.lines.map((l) => ({
+        orderLineId: l.orderLineId, partNumber: l.partNumber, qty: l.qty, weight: l.weight,
+      })),
+    })),
+  };
+}
+
+/**
+ * The reversing-shipment transaction (spec §5.2/§5.6). `tx` is optional: the discriminating
+ * concurrency test passes a manually-opened (Read Committed) transaction so the row lock, not SSI,
+ * is what serializes a competing caller — the `finalizeInvoice` precedent. The public no-`tx` path
+ * runs Serializable, pairing `assertRefExists`-style FK safety with the claim exactly as
+ * `saveNewShipper` does.
+ */
+async function reverseShipperInTx(
+  tx: Prisma.TransactionClient, id: string, data: ReverseShipperInput, why: string,
+): Promise<ShipperCreateResult> {
+  // 1. Pre-claim stub — the ONLY unlocked read, and only to learn which orders to claim (the
+  //    `printShippingTickets`/`addOrderToShipper` shape); nothing acted on below is trusted from it.
+  const stub = await tx.shipper.findFirst({ where: { id }, select: { id: true } });
+  if (!stub) throw new HttpError(404, "Shipment not found");
+  const orderIds = await shipperOrderIds(tx, id);
+
+  // 2. Claim — the SAME single sorted FOR UPDATE statement every shipment mutator shares, never a
+  //    per-row loop (the ABBA-deadlock shape). Then the original Shipper's own row, AFTER the order
+  //    claims (order-locks.ts house rule: `Shipper.deletedAt`/`reversesShipperId` are guarded state
+  //    that lives on the Shipper row, so the post-claim re-read is only fresh under this lock).
+  const claimed = await claimOrdersInOrder(tx, orderIds);
+  const ordersById = new Map(claimed.map((o) => [o.id, o]));
+  await claimShipperRow(tx, id);
+
+  // 3. Re-read the original UNDER the claim. A voided original is read-only (404, the P3 shape) — and
+  //    reversing one would be a data-integrity hazard: a voided shipment already contributes 0 to the
+  //    ledger, so its negatives would net a DIFFERENT live shipment's quantity down. A reversal of a
+  //    reversal is refused too (its negatives negated would drive the ledger UP, spec §5.6 gives no
+  //    such path).
+  const original = await tx.shipper.findFirst({
+    where: { id },
+    include: {
+      customer: { select: { code: true, name: true } },
+      orders: { orderBy: { position: "asc" }, include: { lines: { orderBy: { position: "asc" } } } },
+    },
+  });
+  if (!original || original.deletedAt !== null) throw new HttpError(404, "Shipment not found");
+  if (original.reversesShipperId !== null) {
+    throw new HttpError(400, "That shipment is itself a reversal — reverse the original shipment instead");
+  }
+  for (const so of original.orders) {
+    const order = ordersById.get(so.orderId);
+    if (!order || order.deletedAt !== null) {
+      throw new HttpError(400, `Order #${order?.orderNumber ?? "?"} has been voided`);
+    }
+  }
+
+  // 4. Below-zero guard (spec §5.6): the net shipped-to-date after this reversal must stay >= 0 on
+  //    every line. Read the ledger UNDER the claim — this is the state the write acts on. Weight is
+  //    compared in integer cents (the `shippedTotals` idiom) so 0.1/0.2 float shapes cannot make a
+  //    genuine zero read as a hair below it.
+  const orderLineIds = [...new Set(original.orders.flatMap((so) =>
+    so.lines.map((l) => l.orderLineId).filter((x): x is string => x !== null)))];
+  const netBefore = await shippedTotals(tx, orderLineIds);
+  for (const so of original.orders) {
+    const order = ordersById.get(so.orderId)!;
+    for (const l of so.lines) {
+      if (l.orderLineId === null) continue; // released rows net nothing (no live order line)
+      const cur = netBefore.get(l.orderLineId) ?? { qty: 0, weight: 0 };
+      const newQty = cur.qty - l.qty;
+      const newWeightCents = Math.round(cur.weight * 100) - Math.round(l.weight.toNumber() * 100);
+      if (newQty < 0 || newWeightCents < 0) {
+        throw new HttpError(400,
+          `Order #${order.orderNumber} (${l.partNumber}): reversing ${l.qty} / ${l.weight} lbs would drive ` +
+          "its shipped-to-date below zero");
+      }
+    }
+  }
+
+  // 5. Ship date defaults to the original's (spec §5.6). Numbering: its OWN packing-list number and,
+  //    per order, its own never-reused shipment sequence — a reversal is a real shipment of that
+  //    order (`nextShipmentSequence`, the `saveNewShipper` shape).
+  const shipDate = data.shipDate ? parseDate(data.shipDate, "Ship date") : original.shipDate;
+  const shipperNumber = await allocateNumber("shipper_number_next", tx);
+  const sequenceByOrderId = new Map<string, number>();
+  for (const so of original.orders) {
+    if (!sequenceByOrderId.has(so.orderId)) {
+      sequenceByOrderId.set(so.orderId, await nextShipmentSequence(tx, so.orderId));
+    }
+  }
+
+  // 6. Create the reversal — negated lines, `reversesShipperId` set, `lineComplete: false`. Snapshot
+  //    columns are copied from the original's own snapshots (the paper's part identity), so the
+  //    reversal never has to re-read an order-side line that a correction may since have released.
+  const reversal = await auditedCreate(
+    "shipper",
+    reverseAuditPayload({
+      shipperNumber, reason: why,
+      original: { id: original.id, shipperNumber: original.shipperNumber },
+      customer: { id: original.customerId, code: original.customer.code, name: original.customer.name },
+      shipDate,
+      orders: original.orders.map((so) => ({
+        orderId: so.orderId, orderNumber: ordersById.get(so.orderId)!.orderNumber,
+        sequence: sequenceByOrderId.get(so.orderId)!,
+        lines: so.lines.map((l) => ({
+          orderLineId: l.orderLineId, partNumber: l.partNumber, qty: -l.qty, weight: l.weight.negated(),
+        })),
+      })),
+    }),
+    () => tx.shipper.create({
+      data: {
+        shipperNumber,
+        customerId: original.customerId,
+        shipToAddressId: original.shipToAddressId,
+        shipDate,
+        carrierId: original.carrierId,
+        route: original.route,
+        comments: original.comments,
+        reversesShipperId: original.id,
+        orders: {
+          create: original.orders.map((so, oi) => ({
+            orderId: so.orderId,
+            sequence: sequenceByOrderId.get(so.orderId)!,
+            position: oi + 1,
+            lines: {
+              create: so.lines.map((l, li) => ({
+                orderLineId: l.orderLineId, position: li + 1,
+                qty: -l.qty, weight: l.weight.negated(), lineComplete: false,
+                partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
+                orderedQty: l.orderedQty, orderedWeight: l.orderedWeight,
+              })),
+            },
+          })),
+        },
+      },
+      select: { id: true },
+    }),
+    { tx },
+  );
+
+  // 7. Status (spec §5.2). REOPENED is written DIRECTLY for every order that carries a finalized
+  //    invoice; the rest are left to `recomputeOrderStatus`'s TWO-arg form. `released` is NEVER
+  //    passed from here — see this section's header for why. The finalized-invoice state is read
+  //    under the claim (Task 10's guard pattern, `finalizedInvoicesFor`).
+  const reopenedIds = new Set((await finalizedInvoicesFor(tx, orderIds)).map((inv) => inv.orderId));
+  const deriveIds = orderIds.filter((oid) => !reopenedIds.has(oid));
+  await recomputeOrderStatus(tx, deriveIds);
+  for (const orderId of reopenedIds) {
+    // Skip a no-op write (recompute's own discipline) — an order already REOPENED from a prior
+    // reversal keeps its one status entry rather than gaining an empty-diff one.
+    if (ordersById.get(orderId)!.status === "REOPENED") continue;
+    await auditedUpdate("order", orderId,
+      () => tx.order.update({ where: { id: orderId }, data: { status: "REOPENED" } }),
+      { tx, reason: why });
+  }
+
+  const detail = await readShipperDetail(tx, reversal.id);
+  return { shipper: detail, warnings: await shipmentWarnings(tx, detail), deduped: false };
+}
+
+/**
+ * `reverseShipper` (spec §5.2/§5.6). `mustDo(user, "void_shipper")` is the route's job; the reason
+ * is required and trimmed HERE so no future caller can bypass it (the `voidShipper` precedent).
+ */
+export async function reverseShipper(
+  id: string, input: unknown, tx?: Prisma.TransactionClient,
+): Promise<ShipperCreateResult> {
+  const data = REVERSE_SHIPPER.parse(input);
+  const why = data.reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to reverse a shipment");
+
+  if (tx) return reverseShipperInTx(tx, id, data, why);
+  return withDbErrors({ entity: "Shipper", conflictField: "shipper number" }, () =>
+    prisma.$transaction((fresh) => reverseShipperInTx(fresh, id, data, why),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 // -------------------------------------------------------------------------------------------
