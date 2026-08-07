@@ -26,3 +26,19 @@ Two facts make `docs/execution/` the fix rather than a preference:
 **Historical phases (Prisma 7 upgrade, Phase 3, Phase 4) remain in this directory** and are already
 committed, so they are immune where they sit. They are left alone deliberately: moving them would
 break the paths that `docs/history/*.md` cites, for no gain.
+
+## Trap: the brief script overwrites Phase 4's ledger
+
+**Phase 4's ledger is stored FLAT in this directory** — `task-1-brief.md` … `task-20-report.md`,
+`progress.md`, `whole-branch-review.md` — while every later phase uses a dated subdirectory. The
+SDD skill's `scripts/task-brief` writes to `.superpowers/sdd/task-N-brief.md`, i.e. **straight on
+top of Phase 4's brief for that same N.** Running it for Task 4 silently overwrote Phase 4's
+"Cert resolution chain and the freeze at order save" with Phase 5A's pricing brief (caught and
+restored from git on 2026-08-06; it would have been unrecoverable had the file not been committed
+— which is the whole argument for committing the ledger early).
+
+**So: after running `scripts/task-brief`, move its output into the current phase's
+`docs/execution/<date>-<phase>/` directory, then `git status` before committing.** A ` D ` on a
+`.superpowers/sdd/task-N-*.md` path means you just clobbered Phase 4's copy — `git checkout --`
+that path to restore it. The same applies to `scripts/review-package`, which writes its `.diff`
+here too (harmless, since those are disposable and ignored).
