@@ -71,6 +71,25 @@ const FIXTURE = {
   clerkRoleName: "E2E Shipping Clerk Role",
   clerkUsername: "e2e_clerk",
   clerkPassword: "e2eClerk123!",
+  // Fix-wave 1 (Task 5 review, finding 8): closes the one automated gap on the Pricing section —
+  // nothing in CI touched it before this (no vitest seam, no E2E flow, only the client-import
+  // sweep). A step code of its own, priced on the process suite's own fixture part
+  // (E2E-PART-1), rather than reusing stepCodeA/stepCodeB: those two are already load-bearing for
+  // blocked-code-delete.mjs's EXACT blocker count ("2 record(s) use it" for stepCodeA), and a
+  // PartPrice referencing either would risk changing that count the moment PART_VIA_CHILD's
+  // blocker resolution (reference-links.ts) picked up a third live reference. A dedicated code
+  // stays fully decoupled from that assertion.
+  priceStepCodeCode: "E2E-PRICE",
+  priceStepCodeName: "E2E Price Op",
+  // Holds parts.view + parts.edit but NOT action.change_prices — the permission split PricingSec-
+  // tion.tsx's double gate exists to test: this user CAN edit the part in general but must still
+  // be refused on pricing specifically. permission-gating.mjs re-logs-in as this user mid-flow
+  // (the credit-hold-block-and-override.mjs precedent) to prove the second gate bites once the
+  // first is satisfied — the one thing the plain "restricted" user (which holds neither
+  // permission) can never demonstrate on its own.
+  priceEditRoleName: "E2E Price Editor Role",
+  priceEditUsername: "e2e_price_editor",
+  priceEditPassword: "e2ePriceEditor123!",
 } as const;
 
 /**
@@ -163,6 +182,15 @@ export type Fixtures = {
   clerkUserId: string;
   clerkUsername: string;
   clerkPassword: string;
+  /** Fix-wave 1 (Task 5 review, finding 8): the Pricing section's own E2E fixtures — see
+   *  FIXTURE's comment. */
+  priceStepCodeId: string;
+  priceStepCodeCode: string;
+  priceStepCodeName: string;
+  priceEditRoleId: string;
+  priceEditUserId: string;
+  priceEditUsername: string;
+  priceEditPassword: string;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -183,6 +211,18 @@ async function deletePartProcessData(partIds: string[]): Promise<void> {
     await prisma.partProcessStep.deleteMany({ where: { revision: { partId } } });
     await prisma.partProcessRevision.deleteMany({ where: { partId } });
   }
+}
+
+/** Fix-wave 1 (Task 5 review, finding 8): the Pricing section fixture's own child rows. Neither
+ *  `PartPrice.partId` nor `PartPrice.processStepCodeId` cascades (plain restrict-on-delete FKs,
+ *  prisma/schema.prisma) — both the fixture part and its price step code would otherwise 23503 on
+ *  delete once a live price row references them. Must run before both `deletePartsAndCustomers`
+ *  and `deleteStepCodes`. `PartPriceBreak` cascades from neither side automatically either, so it
+ *  goes first here too, even though this harness never gives its price row a break. */
+async function deletePartPrices(partIds: string[]): Promise<void> {
+  if (partIds.length === 0) return;
+  await prisma.partPriceBreak.deleteMany({ where: { partPrice: { partId: { in: partIds } } } });
+  await prisma.partPrice.deleteMany({ where: { partId: { in: partIds } } });
 }
 
 async function deleteTemplatesAndSteps(templateIds: string[]): Promise<void> {
@@ -374,15 +414,24 @@ async function reapLeftovers(): Promise<void> {
       select: { id: true },
     }),
     prisma.processStepCode.findMany({
-      where: { code: { in: [FIXTURE.stepCodeA, FIXTURE.stepCodeB] } }, select: { id: true },
+      where: { code: { in: [FIXTURE.stepCodeA, FIXTURE.stepCodeB, FIXTURE.priceStepCodeCode] } },
+      select: { id: true },
     }),
     prisma.customer.findMany({ where: { code: FIXTURE.customerCode }, select: { id: true } }),
     prisma.user.findMany({
-      where: { username: { in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername, FIXTURE.clerkUsername] } },
+      where: {
+        username: {
+          in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername, FIXTURE.clerkUsername, FIXTURE.priceEditUsername],
+        },
+      },
       select: { id: true },
     }),
     prisma.role.findMany({
-      where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName, FIXTURE.clerkRoleName] } },
+      where: {
+        name: {
+          in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName, FIXTURE.clerkRoleName, FIXTURE.priceEditRoleName],
+        },
+      },
       select: { id: true },
     }),
     // Task 17's own customer, looked up the same way as the process suite's above — its id is
@@ -450,6 +499,9 @@ async function reapLeftovers(): Promise<void> {
   await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
   await deleteTemplatesAndSteps(templateIds);
+  // Before both deleteStepCodes (the price step code's own restrict-on-delete FK) and
+  // deletePartsAndCustomers (the fixture part's).
+  await deletePartPrices(partIds);
   await deleteStepCodes(stepCodeIds);
   await deletePartsAndCustomers(partIds, customerIds);
   await deletePhase4Reference(scaleIds, codeIds, containerTypeIds);
@@ -482,9 +534,9 @@ async function create(): Promise<Fixtures> {
 
   // Hashed before the transaction opens: argon2 is deliberately slow, and holding a transaction
   // open across it for no reason is exactly the wrong place to spend that time.
-  const [adminHash, restrictedHash, clerkHash] = await Promise.all([
+  const [adminHash, restrictedHash, clerkHash, priceEditHash] = await Promise.all([
     hashPassword(FIXTURE.adminPassword), hashPassword(FIXTURE.restrictedPassword),
-    hashPassword(FIXTURE.clerkPassword),
+    hashPassword(FIXTURE.clerkPassword), hashPassword(FIXTURE.priceEditPassword),
   ]);
 
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
@@ -516,6 +568,19 @@ async function create(): Promise<Fixtures> {
     });
     const stepCodeB = await tx.processStepCode.create({
       data: { code: FIXTURE.stepCodeB, name: "E2E Hot Wash" },
+    });
+    // Fix-wave 1 (Task 5 review, finding 8): the Pricing section's own fixture — a single priced
+    // operation on the fixture part, on its own dedicated step code (see FIXTURE's comment on why
+    // it is not stepCodeA/stepCodeB). No break: the gating flow this feeds (permission-gating.mjs)
+    // only needs one card to render, not a break table.
+    const priceStepCode = await tx.processStepCode.create({
+      data: { code: FIXTURE.priceStepCodeCode, name: FIXTURE.priceStepCodeName },
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: part.id, processStepCodeId: priceStepCode.id, position: 0,
+        setupCharge: "25.00", unitPrice: "2.5000", minimumCharge: "50.00", pricePer: "EACH",
+      },
     });
     const decoyTemplate = await tx.processTemplate.create({
       data: { name: FIXTURE.decoyTemplateName },
@@ -687,6 +752,22 @@ async function create(): Promise<Fixtures> {
         passwordHash: clerkHash, roleId: clerkRole.id,
       },
     });
+    // Fix-wave 1 (Task 5 review, finding 8): parts.view + parts.edit, deliberately WITHOUT
+    // action.change_prices — see FIXTURE's comment. permission-gating.mjs re-logs-in as this user
+    // to prove PricingSection's second gate (change_prices) bites even once parts.edit is held,
+    // which the plain restricted user (holding neither) can't demonstrate on its own.
+    const priceEditRole = await tx.role.create({
+      data: {
+        name: FIXTURE.priceEditRoleName,
+        permissions: { create: [{ permission: "parts.view" }, { permission: "parts.edit" }] },
+      },
+    });
+    const priceEditUser = await tx.user.create({
+      data: {
+        username: FIXTURE.priceEditUsername, displayName: "E2E Price Editor",
+        passwordHash: priceEditHash, roleId: priceEditRole.id,
+      },
+    });
     return {
       customerId: customer.id, customerCode: customer.code,
       partId: part.id, partNumber: part.partNumber,
@@ -713,6 +794,10 @@ async function create(): Promise<Fixtures> {
       containerTypeId: toteType.id, containerTypeName: toteType.name,
       clerkRoleId: clerkRole.id, clerkUserId: clerkUser.id,
       clerkUsername: clerkUser.username, clerkPassword: FIXTURE.clerkPassword,
+      priceStepCodeId: priceStepCode.id, priceStepCodeCode: priceStepCode.code,
+      priceStepCodeName: priceStepCode.name,
+      priceEditRoleId: priceEditRole.id, priceEditUserId: priceEditUser.id,
+      priceEditUsername: priceEditUser.username, priceEditPassword: FIXTURE.priceEditPassword,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -769,7 +854,10 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
-  await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
+  // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
+  // restrict-on-delete FK) and deletePartsAndCustomers (partId's).
+  await deletePartPrices([partId]);
+  await deleteStepCodes([stepCodeA.id, stepCodeB.id, payload.priceStepCodeId]);
   await deletePartsAndCustomers(
     [
       partId, orderLeadPartId, orderRiderPartId,
@@ -782,12 +870,12 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     [payload.inspectionCodeAId, payload.inspectionCodeBId],
     [payload.containerTypeId],
   );
-  // All three users, not just the restricted one: deleteUsersAndRoles clears each user's Session
+  // All four users, not just the restricted one: deleteUsersAndRoles clears each user's Session
   // (and, as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears
   // the per-user rows the flows' own logins and the order-entry autosaves created.
   await deleteUsersAndRoles(
-    [payload.adminUserId, payload.restrictedUserId, payload.clerkUserId],
-    [payload.adminRoleId, payload.restrictedRoleId, payload.clerkRoleId],
+    [payload.adminUserId, payload.restrictedUserId, payload.clerkUserId, payload.priceEditUserId],
+    [payload.adminRoleId, payload.restrictedRoleId, payload.clerkRoleId, payload.priceEditRoleId],
   );
 
   return { ok: true };

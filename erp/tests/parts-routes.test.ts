@@ -14,8 +14,9 @@ import {
 } from "@/app/api/parts/[id]/inspections/[inspId]/route";
 import { PUT as reorderInspectionsRoute } from "@/app/api/parts/[id]/inspections/order/route";
 import { GET as getFieldsRoute, PUT as putFieldsRoute } from "@/app/api/parts/[id]/fields/route";
-import { POST as addPriceRoute } from "@/app/api/parts/[id]/prices/route";
+import { GET as getPriceListRoute, POST as addPriceRoute } from "@/app/api/parts/[id]/prices/route";
 import { PATCH as patchPriceRoute, DELETE as deletePriceRoute } from "@/app/api/parts/[id]/prices/[priceId]/route";
+import { PUT as reorderPricesRoute } from "@/app/api/parts/[id]/prices/order/route";
 import { POST as addBreakRoute } from "@/app/api/parts/[id]/prices/[priceId]/breaks/route";
 import {
   PATCH as patchBreakRoute, DELETE as deleteBreakRoute,
@@ -528,6 +529,81 @@ describe("parts routes", () => {
       noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "DELETE", full),
       withParams({ id: partId, priceId }))).status).toBe(200);
   });
+
+  // Fix-wave 1, finding 1: the atomic reorder route this UI's move() now calls instead of two
+  // sequential PATCHes swapping `position` (which can never recover from a tie — see
+  // part-prices.ts's reorderPartPrices doc comment). Gates on parts.edit AND change_prices, the
+  // one deliberate difference from the inspections order route this mirrors (that route gates on
+  // parts.edit alone) — this route writes pricing, so it matches the other four price routes.
+  it("PUT /api/parts/[id]/prices/order gates on parts.edit AND change_prices, and reorders atomically", async () => {
+    const { partId, otherPartId } = await partFixture();
+    const austemper = await prisma.processStepCode.create({ data: { code: "AUST", name: "Austemper" } });
+    const straighten = await prisma.processStepCode.create({ data: { code: "STRT", name: "Straighten" } });
+    const temper = await prisma.processStepCode.create({ data: { code: "TEMP", name: "Temper" } });
+    const full = await signInWith(["parts.view", "parts.edit", "action.change_prices"], "price-reorder-full-1");
+
+    const addRow = (codeId: string, position: number) => addPriceRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices`, "POST", full,
+        { processStepCodeId: codeId, position, pricePer: "EACH" }),
+      withParams({ id: partId }));
+    const a = await (await addRow(austemper.id, 0)).json();
+    const b = await (await addRow(straighten.id, 1)).json();
+    const c = await (await addRow(temper.id, 2)).json();
+
+    expect((await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", undefined, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(401);
+
+    // parts.edit alone (no change_prices) must 403 — the double gate the four sibling price
+    // routes already enforce.
+    const editOnly = await signInWith(["parts.edit"], "price-reorder-edit-only-1");
+    expect((await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", editOnly, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(403);
+
+    const wrong = await signInWith(["customers.view"], "price-reorder-wrong-1");
+    expect((await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", wrong, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(403);
+
+    const ok = await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", full, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(ok.status).toBe(200);
+
+    const rows = await listPartPricesThroughRoute(partId, full);
+    expect(rows.map((r) => r.id)).toEqual([c.id, a.id, b.id]);
+
+    // An id set that does not match the part's live rows is refused (400), not silently applied.
+    const missing = await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", full, { orderedIds: [a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toMatch(/exactly once/);
+
+    const duplicate = await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", full, { orderedIds: [a.id, a.id, b.id] }),
+      withParams({ id: partId }));
+    expect(duplicate.status).toBe(400);
+
+    const extra = await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", full,
+        { orderedIds: [a.id, b.id, c.id, "not-a-real-id"] }),
+      withParams({ id: partId }));
+    expect(extra.status).toBe(400);
+
+    // Cross-part: part B's URL with part A's row ids is the same set-check 400, not a 404.
+    const cross = await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${otherPartId}/prices/order`, "PUT", full, { orderedIds: [a.id, b.id, c.id] }),
+      withParams({ id: otherPartId }));
+    expect(cross.status).toBe(400);
+    expect((await cross.json()).error).toMatch(/exactly once/);
+  });
+
+  async function listPartPricesThroughRoute(partId: string, cookie: string) {
+    const res = await getPriceListRoute(getReq(`http://t/api/parts/${partId}/prices`, cookie), withParams({ id: partId }));
+    return res.json() as Promise<{ id: string }[]>;
+  }
 
   it("/api/admin/part-fields CRUD gates on admin area actions (create/edit/delete per method)", async () => {
     expect((await listFieldDefs(getReq("http://t/api/admin/part-fields"), noParams)).status).toBe(401);

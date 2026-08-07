@@ -4,7 +4,7 @@ import { runWithContext } from "@/server/context";
 import { createPart } from "@/server/parts";
 import {
   listPartPrices, addPartPrice, updatePartPrice, deletePartPrice,
-  addPriceBreak, updatePriceBreak, deletePriceBreak,
+  addPriceBreak, updatePriceBreak, deletePriceBreak, reorderPartPrices,
 } from "@/server/part-prices";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -177,5 +177,74 @@ describe("part prices", () => {
       addPriceBreak(partId, priceId, { threshold: 1000, price: "0.85" }));
     await expect(asSystem(() => updatePriceBreak(partId, priceId, otherBreakId, { threshold: 500 })))
       .rejects.toThrow("A price break with that threshold already exists");
+  });
+
+  // Fix-wave 1, finding 1: mirrors reorderPartInspections' own test suite (tests/part-inspections.
+  // test.ts) exactly — same atomic-reorder shape, same set-check refusals, same "only touched rows
+  // are audited" and 404 cases. reorderPartPrices exists precisely because the UI's old two-PATCH
+  // position swap could leave two rows permanently tied (see PricingSection.tsx's move() comment
+  // and part-prices.ts's own doc comment on this function).
+  describe("reorderPartPrices", () => {
+    async function threeRows() {
+      const { partId, otherPartId, austemper, straighten } = await fixture();
+      const temper = await prisma.processStepCode.create({ data: { code: "TEMP", name: "Temper" } });
+      const a = await asSystem(() => addPartPrice(partId, { processStepCodeId: austemper.id, position: 0 }));
+      const b = await asSystem(() => addPartPrice(partId, { processStepCodeId: straighten.id, position: 1 }));
+      const c = await asSystem(() => addPartPrice(partId, { processStepCodeId: temper.id, position: 2 }));
+      return { partId, otherPartId, a: a.id, b: b.id, c: c.id };
+    }
+
+    it("persists the new order atomically and lists in it", async () => {
+      const { partId, a, b, c } = await threeRows();
+      await asSystem(() => reorderPartPrices(partId, [c, a, b]));
+      const rows = await listPartPrices(partId);
+      expect(rows.map((r) => r.id)).toEqual([c, a, b]);
+      expect(rows.map((r) => r.position)).toEqual([0, 1, 2]);
+    });
+
+    it("rejects a missing id with the exactly-once message", async () => {
+      const { partId, a, b } = await threeRows();
+      await expect(asSystem(() => reorderPartPrices(partId, [a, b])))
+        .rejects.toThrow("The order must list every price row exactly once");
+    });
+
+    it("rejects a duplicate id (even at the right count) with the exactly-once message", async () => {
+      const { partId, a, b } = await threeRows();
+      await expect(asSystem(() => reorderPartPrices(partId, [a, a, b])))
+        .rejects.toThrow("The order must list every price row exactly once");
+    });
+
+    it("rejects an extra/unknown id with the exactly-once message", async () => {
+      const { partId, a, b, c } = await threeRows();
+      await expect(asSystem(() => reorderPartPrices(partId, [a, b, c, "not-a-real-id"])))
+        .rejects.toThrow("The order must list every price row exactly once");
+    });
+
+    // Deliberate: the URL's part is live, so the part-liveness check passes; the set check then
+    // compares orderedIds against THAT part's own live price ids (empty, here), not the ids'
+    // actual owning part — so this is the set check's 400, not a 404.
+    it("wrong-part scoping: part B's URL with part A's row ids is the set check's 400, not a 404", async () => {
+      const { otherPartId, a, b, c } = await threeRows();
+      await expect(asSystem(() => reorderPartPrices(otherPartId, [a, b, c])))
+        .rejects.toThrow("The order must list every price row exactly once");
+    });
+
+    it("only writes and audits rows whose position actually changes", async () => {
+      const { partId, a, b, c } = await threeRows();
+      // Swap only a and b; c (already at index 2) is unchanged and must not be touched.
+      await asSystem(() => reorderPartPrices(partId, [b, a, c]));
+      const entries = await prisma.auditLog.findMany({
+        where: { entity: "partPrice", action: "update" }, orderBy: { at: "asc" } });
+      expect(entries).toHaveLength(2);
+      expect(new Set(entries.map((e) => e.entityId))).toEqual(new Set([a, b]));
+      expect(entries.some((e) => e.entityId === c)).toBe(false);
+    });
+
+    it("404s a part that no longer exists / is soft-deleted", async () => {
+      const { partId, a, b, c } = await threeRows();
+      await prisma.part.update({ where: { id: partId }, data: { deletedAt: new Date() } });
+      await expect(asSystem(() => reorderPartPrices(partId, [a, b, c])))
+        .rejects.toThrow("Part not found");
+    });
   });
 });

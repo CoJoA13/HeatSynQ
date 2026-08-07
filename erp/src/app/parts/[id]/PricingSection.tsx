@@ -50,6 +50,12 @@ export function PricingSection({
   const title = canEdit.disabled ? canEdit.title : priceGate.title;
 
   const [rows, setRows] = useState<PriceRow[]>([]);
+  // Set only once `load()` has actually landed a real list (fix-wave 1, finding 1's "also fix"):
+  // `rows` starts `[]` the same as "loaded, genuinely empty", so `addRow` used to be unable to
+  // tell those apart and would happily mint position 0 while the initial GET was still in
+  // flight OR had already failed — a failed load is the steady state on an error, not a
+  // transient race, so without this a duplicate position-0 could sit there indefinitely.
+  const [rowsReady, setRowsReady] = useState(false);
   const [codes, setCodes] = useState<StepCodeOption[]>([]);
   const [codesReady, setCodesReady] = useState(false);
   const [addCodeId, setAddCodeId] = useState("");
@@ -70,7 +76,7 @@ export function PricingSection({
   const load = useCallback(async () => {
     const t = rowsLatest.next();
     const data = await api<PriceRow[]>(`/api/parts/${partId}/prices`);
-    if (rowsLatest.isCurrent(t)) setRows(data);
+    if (rowsLatest.isCurrent(t)) { setRows(data); setRowsReady(true); }
   }, [partId, rowsLatest]);
   useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
 
@@ -130,11 +136,17 @@ export function PricingSection({
   function changePricePer(row: PriceRow, next: PricePerValue) {
     if (next === row.pricePer) return;
     if (row.breaks.length > 0 && row.pricePer !== "LOT" && next !== "LOT") {
+      // Fix-wave 1, finding 2: the original wording named only the breaks' thresholds, but the
+      // row's own Unit price and every break's Price are stored per-unit in the exact same basis
+      // — an EACH -> LB switch silently turns $2.25/piece into $2.25/lb on every one of them, not
+      // just the thresholds. Both are named now. "stated in Each units" also read oddly next to
+      // these labels ("Per lb", "Per 100") — reworded to "read today as ... amounts".
       const ok = confirm(
-        `This operation has ${row.breaks.length} price break(s) with thresholds stated in ` +
-        `${PRICE_PER_LABELS[row.pricePer]} units. Switching to ${PRICE_PER_LABELS[next]} does not ` +
-        `change those threshold numbers — they will be read as ${PRICE_PER_LABELS[next]} amounts ` +
-        `from now on. Continue?`
+        `This operation has ${row.breaks.length} price break(s). Its Unit price, and every ` +
+        `break's own threshold and price, are all read today as ${PRICE_PER_LABELS[row.pricePer]} ` +
+        `amounts. Switching to ${PRICE_PER_LABELS[next]} does not change any of those stored ` +
+        `numbers — every one of them will be read as a ${PRICE_PER_LABELS[next]} amount from now ` +
+        `on. Continue?`
       );
       if (!ok) return; // Nothing was set locally, so the controlled <select> stays at row.pricePer.
     }
@@ -149,24 +161,29 @@ export function PricingSection({
     } catch (e) { onError((e as Error).message); }
   }
 
-  // part-prices.ts ships no atomic /reorder route (only a per-row PATCH that happens to accept
-  // `position`), so an up/down move is two sequential PATCHes rather than the Inspections/
-  // ProcessSteps sections' one-call swap. `position` carries no uniqueness constraint, so there is
-  // no transient-collision ordering to worry about between the two calls. Roll back to server
-  // truth FIRST, then report why (§5.13) on either call's failure.
+  // Fix-wave 1, finding 1: computes the full new order client-side and sends it as ONE call to
+  // the atomic /prices/order route (the InspectionsSection/ProcessStepsSection `move()`
+  // precedent). The old two-PATCH position swap (assign a.position = b.position, then
+  // b.position = a.position) is a permutation of the multiset of position values — no sequence of
+  // up/down clicks can ever remove a duplicate from it. If the second PATCH failed (network blip,
+  // session expiry, the row soft-deleted by another user mid-swap), both rows kept the SAME
+  // position, and since listPartPrices orders purely by position (then id), that tie is
+  // permanent: the up/down buttons between the tied rows become no-ops forever, with deleting and
+  // re-adding the row as the only escape. This ordering is what an invoice prints in.
   async function move(idx: number, dir: -1 | 1) {
     const reordered = swapAt(rows, idx, dir); // bounds check only — the buttons are already
     if (!reordered) return;                   // disabled at the ends of the list (belt + braces).
-    const a = rows[idx];
-    const b = rows[idx + dir];
     try {
-      await api(`/api/parts/${partId}/prices/${a.id}`, {
-        method: "PATCH", body: JSON.stringify({ position: b.position }) });
-      await api(`/api/parts/${partId}/prices/${b.id}`, {
-        method: "PATCH", body: JSON.stringify({ position: a.position }) });
+      await api(`/api/parts/${partId}/prices/order`, {
+        method: "PUT",
+        body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
+      });
       onError(null);
       await load();
     } catch (e) {
+      // Roll back to server truth FIRST, then report why (§5.13) — reload before setting the
+      // error, the saveRow() precedent above, so local rows never diverge from what the server
+      // actually has.
       await load().catch(() => {});
       onError((e as Error).message);
     }
@@ -176,6 +193,15 @@ export function PricingSection({
   // click from firing before the first POST returns.
   async function addRow() {
     if (!addCodeId || addingRow) return;
+    // Fix-wave 1, finding 1: `rows` reads `[]` both when the part genuinely has no priced
+    // operations yet AND when the initial GET is still in flight or has failed outright — on a
+    // failed load that empty array is the steady state, not a momentary race. Without this guard,
+    // `nextPosition` below computed `0` either way, so a failed prices fetch silently produced a
+    // duplicate position-0 the instant the user added an operation. Refuse rather than guess.
+    if (!rowsReady) {
+      onError("Price rows have not finished loading yet — reload the page and try again.");
+      return;
+    }
     setAddingRow(true);
     try {
       // The highest position actually present, plus one — not rows.length, which duplicates a
@@ -222,6 +248,21 @@ export function PricingSection({
   ) {
     const value = e.target.value;
     if (value === focusedValue.current) return;
+    // Fix-wave 1, finding 5: unlike the row money fields above (setupCharge/unitPrice/
+    // minimumCharge, all nullable — blurSaveRow sends `null` on ""), a break's threshold/price
+    // columns are NOT NULL, so there is no legal "cleared" value to send here. Sending raw ""
+    // used to reach decimalField(12,2,{required:true}), which rejects it with "Must be a decimal
+    // with at most 10 digits before and 2 digits after the decimal point" — a refusal that names
+    // the wrong problem (a house rule, not a format error). Short-circuit client-side: restore the
+    // field to what it held at focus time and say plainly why, instead of firing a save that can
+    // only fail.
+    if (value === "") {
+      setRows((cur) => cur.map((r) => (r.id === priceId
+        ? { ...r, breaks: r.breaks.map((b) => (b.id === breakId ? { ...b, [field]: focusedValue.current } : b)) }
+        : r)));
+      onError(`${field === "threshold" ? "Threshold" : "Price"} cannot be blank — delete the break instead.`);
+      return;
+    }
     void saveBreak(priceId, breakId, { [field]: value });
   }
   async function addBreak(priceId: string) {
@@ -365,11 +406,11 @@ export function PricingSection({
               </table>
               <div className="flex gap-2">
                 <input value={draftFor(row.id).threshold} placeholder="Threshold" inputMode="decimal"
-                       disabled={disabled}
+                       disabled={disabled} title={title}
                        onChange={(e) => setBreakDraft(row.id, "threshold", e.target.value)}
                        className="w-24 rounded border px-2 py-1 text-sm" />
                 <input value={draftFor(row.id).price} placeholder="Price" inputMode="decimal"
-                       disabled={disabled}
+                       disabled={disabled} title={title}
                        onChange={(e) => setBreakDraft(row.id, "price", e.target.value)}
                        className="w-24 rounded border px-2 py-1 text-sm" />
                 <button onClick={() => addBreak(row.id)}
@@ -392,8 +433,8 @@ export function PricingSection({
           <option value="">Add operation: code…</option>
           {codes.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        <button onClick={addRow} disabled={disabled || !addCodeId || addingRow}
-                title={addingRow ? "Adding…" : title}
+        <button onClick={addRow} disabled={disabled || !addCodeId || addingRow || !rowsReady}
+                title={!rowsReady ? "Price rows failed to load — reload the page" : addingRow ? "Adding…" : title}
                 className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
           {addingRow ? "Adding…" : "Add operation"}
         </button>

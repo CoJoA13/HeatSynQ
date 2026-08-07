@@ -141,6 +141,46 @@ export async function updatePartPrice(
     }, iso));
 }
 
+/**
+ * Atomically re-sorts a part's live price rows to `orderedIds`' order — mirrors
+ * `reorderPartInspections` (part-inspections.ts) exactly, for the same reason: a two-PATCH
+ * `position` swap is a permutation of the multiset of position values, so no sequence of up/down
+ * clicks can ever undo a tie once one forms (fix-wave 1, Task 5 review finding 1). If the second
+ * of the two PATCHes failed — a network blip, a session expiry, the row soft-deleted by another
+ * user mid-swap — or `addRow` raced a still-loading/failed list fetch and computed the same
+ * `Math.max + 1`, two rows ended up sharing one `position`, and since `listPartPrices` orders
+ * purely by `position` (then `id`), that tie is permanent: the up/down buttons between the tied
+ * rows become no-ops forever. This ordering is what an invoice prints in. One transaction makes
+ * the whole reorder all-or-nothing instead.
+ *
+ * Serializable, and the live id set is read on `tx` (the `addPartPrice`/`reorderPartInspections`
+ * precedent): a concurrent add/delete of a price row on this part between the client's last list
+ * load and this call must not let a now-stale `orderedIds` silently apply against a set that has
+ * since changed shape.
+ */
+export async function reorderPartPrices(partId: string, orderedIds: string[]): Promise<void> {
+  await withDbErrors({ entity: "Price row" }, () =>
+    prisma.$transaction(async (tx) => {
+      const part = await tx.part.findFirst({ where: { id: partId, deletedAt: null }, select: { id: true } });
+      if (!part) throw new HttpError(404, "Part not found");
+      const live = await tx.partPrice.findMany({
+        where: { partId, deletedAt: null }, select: { id: true, position: true },
+      });
+      const liveIds = new Set(live.map((r) => r.id));
+      const noDuplicates = new Set(orderedIds).size === orderedIds.length;
+      const sameSet = noDuplicates && orderedIds.length === liveIds.size &&
+        orderedIds.every((id) => liveIds.has(id));
+      if (!sameSet) {
+        throw new HttpError(400, "The order must list every price row exactly once");
+      }
+      const positionById = new Map(live.map((r) => [r.id, r.position]));
+      for (const [index, id] of orderedIds.entries()) {
+        if (positionById.get(id) === index) continue; // unchanged — no junk audit entry
+        await auditedUpdate("partPrice", id, () => claimLivePrice(tx, id, partId, { position: index }), { tx });
+      }
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
 /** Its breaks are left as they are: the row is gone from every live read, and soft-deleting
  *  children individually would write audit noise for rows nothing can reach. */
 export async function deletePartPrice(partId: string, priceId: string): Promise<void> {
