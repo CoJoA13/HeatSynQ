@@ -53,11 +53,21 @@ describe("surcharges", () => {
     const a = await prisma.processStepCode.create({ data: { code: "AUST", name: "Austemper" } });
     const b = await prisma.processStepCode.create({ data: { code: "WASH", name: "Hot wash" } });
     const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", scope: "EXCLUDE", position: 1 }));
-    await asSystem(() => setSurchargeStepCodes(id, [a.id, b.id]));
+    // Fix wave 2, Fix 2: inserted in descending id order, deliberately the reverse of the
+    // ascending order `orderBy: { processStepCodeId: "asc" }` must produce — a plain (unordered)
+    // scan tends to hand back rows in insertion order, so if the assertion below passed on
+    // insertion order alone (e.g. because cuids happened to already be ascending by creation
+    // order), it would prove nothing about the orderBy. Deriving [lo, hi] from the ids themselves,
+    // not hardcoding which of a/b sorts first, per the same cuid caveat.
+    const [lo, hi] = [a.id, b.id].sort();
+    await asSystem(() => setSurchargeStepCodes(id, [hi, lo]));
     // M5: the two-element intermediate state, not just the final single-element one — otherwise
-    // the replace's `orderBy` (and the fact that this is a replace, not an append) goes unexercised.
+    // the replace's `orderBy` (and the fact that this is a replace, not an append) goes
+    // unexercised. Only the expected side is sorted — the actual value is asserted in the real
+    // ascending order `listSurcharges`' `orderBy: { processStepCodeId: "asc" }` produces, so a
+    // regression that drops that `orderBy` (here or on SNAPSHOT_INCLUDE.surcharge) is caught.
     const afterFirst = await listSurcharges();
-    expect(afterFirst[0].stepCodeIds.slice().sort()).toEqual([a.id, b.id].sort());
+    expect(afterFirst[0].stepCodeIds).toEqual([lo, hi]);
 
     await asSystem(() => setSurchargeStepCodes(id, [b.id]));
     const rows = await listSurcharges();
@@ -156,6 +166,24 @@ describe("surcharges", () => {
       // glAccountId omitted from the payload above (Fix 1's normalize-on-write): a caller cannot
       // clear an FK by resending it, and the field must not be left stuck at the old value.
       expect(row.glAccountId).toBeNull();
+    });
+
+    // Fix wave 2, Fix 1: `toSurchargeRow` pins minimumAmount/scope/active to their explicit empty
+    // value on every write so an omitted key can't leave a stale column behind — but nothing in
+    // this file exercised minimumAmount at all, and the one test touching scope/active always
+    // sent both explicitly. Create a row carrying non-default values for all three, then update
+    // omitting all three, and assert each one actually reset.
+    it("resets minimumAmount, scope, and active to their empty defaults when the update omits them", async () => {
+      const { id } = await asSystem(() => createSurcharge({
+        name: "EnergySur", kind: "FLAT", amount: "5.00", minimumAmount: "50.00",
+        scope: "EXCLUDE", active: false, position: 1 }));
+
+      await asSystem(() => updateSurcharge(id, { name: "EnergySur", kind: "FLAT", amount: "5.00", position: 1 }));
+
+      const row = await prisma.surcharge.findUniqueOrThrow({ where: { id } });
+      expect(row.minimumAmount).toBeNull();
+      expect(row.scope).toBe("ALL");
+      expect(row.active).toBe(true);
     });
 
     it("404s on a nonexistent id and rejects an unknown glAccountId", async () => {
