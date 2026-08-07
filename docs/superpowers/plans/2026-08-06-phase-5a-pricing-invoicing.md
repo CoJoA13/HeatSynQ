@@ -256,11 +256,12 @@ ON CONFLICT ("id") DO NOTHING;
 
 - [ ] **Step 4: Apply to BOTH databases and regenerate** — `npx prisma migrate deploy`, then `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy`, then `npx prisma generate`. Confirm `npx prisma migrate status` is clean on both.
 
-- [ ] **Step 5: Fix the fallout from dropping the four `Part` columns.** `npx tsc --noEmit` now fails in a known set of places; work through them, deleting rather than adapting:
-  - `src/lib/part-constants.ts` — `PRICING_FIELDS` and the paste column order lose `setupCharge`/`unitPrice`/`minimumCharge`/`pricePer`. **`PRICING_FIELDS` becomes an empty tuple for now**; Task 4 replaces its role. Leave the `change_prices` route checks compiling against it.
-  - `src/server/parts.ts` — the four zod fields, the `SELECT`, the Decimal→number mapping, the paste handling, and the `pricePer`-change Serializable branch (which enforced "a LOT part cannot carry breaks") all come out. That rule moves to `part-prices.ts` in Task 4.
-  - `src/app/parts/[id]/PricingSection.tsx` — leave it broken-but-compiling by stubbing it to render nothing; **Task 5 rewrites it.** Add `// TASK 5: rewritten onto PartPrice rows` at the top so it is not mistaken for finished work.
-  - `src/server/part-price-breaks.ts` and its tests — leave in place, still keyed on `partId`, **failing to compile is expected here**; Task 4 deletes the file. If that blocks the gate, comment the file's body out in this task and delete it in Task 4.
+- [ ] **Step 5: Remove the old pricing surface entirely — delete, never stub or comment out.** Dropping the four `Part` columns breaks `npx tsc --noEmit` in a known set of places. **Every one is resolved by deletion**, so the tree compiles and every gate stays green with *no* part-pricing service or UI until Tasks 4 and 5 build the replacement. Commented-out bodies and render-nothing stubs are dead code a reviewer would rightly flag, and a temporarily-empty `PRICING_FIELDS` is worse than none — a guard that reads as protection while checking nothing.
+  - **Delete** `src/server/part-price-breaks.ts`, `tests/part-price-breaks.test.ts`, `src/app/api/parts/[id]/breaks/route.ts`, `src/app/api/parts/[id]/breaks/[breakId]/route.ts`. (Task 4 said it would delete these; it now only creates their replacements.)
+  - **Delete** `src/app/parts/[id]/PricingSection.tsx` and its `<PricingSection …>` usage in `src/app/parts/[id]/page.tsx`, along with the four pricing fields on that page's `Part` type. Task 5 creates the file fresh.
+  - `src/lib/part-constants.ts` — **delete** `PRICING_FIELDS` and drop the four columns from the paste column order. Then delete the two `PRICING_FIELDS.some(...)` guards in `src/app/api/parts/route.ts:22` and `src/app/api/parts/[id]/route.ts:23`: with the columns gone from `Part`, no parts-route body can carry pricing, so the guard has nothing left to guard.
+  - `src/server/parts.ts` — remove the four zod fields, their `SELECT` entries, the Decimal→number mapping, the paste handling, and the `pricePer`-change Serializable branch (which enforced "a LOT part cannot carry breaks"). **That rule is not lost — it moves to `part-prices.ts` in Task 4**, where Task 4's own tests assert it.
+  - Update `tests/parts.test.ts` and `tests/parts-paste.test.ts` — delete the cases that assert on the four dropped columns. **Do not weaken a case to keep it passing**; a test that no longer has a subject is deleted, not hollowed out.
 
 - [ ] **Step 6: Sweep exemptions** — extend the documented allowlist in `tests/partial-unique-sweep.test.ts` beside `Shipper.bolNumber`:
   - `Invoice.creditNumber` — "allocated from `credit_number_next` at credit creation and never reissued; a discarded draft must never free a number a customer holds on paper"
@@ -517,9 +518,9 @@ export const PUT = handle(async (req) => {
 
 **Files:**
 - Create: `src/server/part-prices.ts`, `src/app/api/parts/[id]/prices/route.ts`, `src/app/api/parts/[id]/prices/[priceId]/route.ts`, `src/app/api/parts/[id]/prices/[priceId]/breaks/route.ts`, `src/app/api/parts/[id]/prices/[priceId]/breaks/[breakId]/route.ts`
-- Delete: `src/server/part-price-breaks.ts`, `src/app/api/parts/[id]/breaks/route.ts`, `src/app/api/parts/[id]/breaks/[breakId]/route.ts`, `tests/part-price-breaks.test.ts`
-- Modify: `src/lib/part-constants.ts`
 - Test: `tests/part-prices.test.ts`
+
+> **Task 2 already deleted the old surface** (`part-price-breaks.ts`, its tests, its two routes, `PRICING_FIELDS` and the parts-route guards). This task only builds the replacement. If any of those still exist when you start, Task 2 is incomplete — say so rather than working around it.
 
 **Interfaces:**
 - Consumes: `decimalField(precision, scale, opts)` (`src/server/decimal-field.ts`), `assertRefExists`, `auditedCreate` / `auditedUpdate` / `auditedSoftDelete`, `PRICE_PER` (`src/lib/part-constants.ts`).
@@ -712,7 +713,7 @@ export async function listPartPrices(partId: string): Promise<PartPriceRow[]> {
 
 - [ ] **Step 5: The four routes.** Copy `src/app/api/parts/[id]/breaks/route.ts` and its `[breakId]` sibling, re-pathed and re-scoped. **Every one keeps `mustDo(user, "change_prices")` unconditionally** — pricing is gated by that named action, not by `parts.edit` alone. Params for the nested ones: `{ params: Promise.resolve({ id, priceId, breakId }) }`.
 
-- [ ] **Step 6: Delete the old surface** — `src/server/part-price-breaks.ts`, both old route files, and `tests/part-price-breaks.test.ts`. Then update `src/lib/part-constants.ts`: `PRICING_FIELDS` no longer names part columns, so **delete the constant and its two `PRICING_FIELDS.some(...)` guards in `src/app/api/parts/route.ts:22` and `src/app/api/parts/[id]/route.ts:23`** — with the four columns gone from `Part`, no parts-route body can carry pricing any more, and leaving an empty tuple behind would be a guard that reads as protection while checking nothing.
+- [ ] **Step 6: Confirm Task 2's deletions held** — `src/server/part-price-breaks.ts`, its tests, its two routes, `PRICING_FIELDS` and the two parts-route guards are all gone, and `npx tsc --noEmit` is clean with only the new surface in place.
 
 - [ ] **Step 7: Confirm the sweeps** — `npx vitest run tests/reference-links-sweep.test.ts tests/partial-unique-sweep.test.ts tests/permissions-sweep.test.ts`. All green.
 
