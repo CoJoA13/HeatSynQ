@@ -163,6 +163,17 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
+per-worker test databases, to lift the suite's serial-execution ceiling.** The suite is at 1425
+tests running strictly one file at a time — `vitest.config.ts` sets `fileParallelism: false`
+because every test file shares the single `erp_test` database and calls `truncateAll()` in
+`beforeEach`, so two files running at once would truncate each other's fixtures. That is correct
+today and must not simply be switched off. The fix is to give each vitest worker its own database
+(`erp_test_1..N`, selected from `VITEST_WORKER_ID`), migrated the same way `erp_test` is, after
+which `fileParallelism` can be re-enabled. Deliberately **not** done inside Phase 5A — it is an
+infrastructure change with no business riding in a pricing PR, and it touches the harness every
+other task depends on. Wall-clock now: ~127s for vitest alone.
+
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
 **Deferred (fine to ride along):** health-route DB-down path; roles page deselect papercut; users page error banner doesn't clear on success; updateUser password truthy-check inconsistency; Shell loading indicator; settings page empty-blur cosmetic; searchAudit filter route tests; HistoryPanel changedFields unit test; session-row cleanup job (**sharpened 2026-08-02 by the PR #22 Codex review**: `getSessionUser` (`sessions.ts:28`) rejects an expired session but never deletes it, and nothing anywhere else reaps one, so `Session` grows a row per login for the life of the deployment — the dev DB held 144 rows for `admin` alone, 77 already expired. The E2E harness's own four-rows-per-run leak is closed on the 2C-3 branch, which is what made this visible; the general case is untouched. Open decision when it is picked up: a nightly `DELETE FROM "Session" WHERE "expiresAt" < now()` in the backup container that already runs in the prod profile, vs. an opportunistic delete inside `getSessionUser` — the latter adds a write to the hot path, so it is a real trade-off, not an obvious win); login rate limiting; backup alerting + backup-now button; SESSION_SECRET consumed by nothing yet; ~~`renameRole` to a soft-deleted role's name → 500 edge~~ (**closed by the Prisma 7 work** — `Role.name` is now unique only among live rows, so a soft-deleted role's name no longer occupies the constraint and renaming onto it just creates/renames cleanly; see §5.18).
