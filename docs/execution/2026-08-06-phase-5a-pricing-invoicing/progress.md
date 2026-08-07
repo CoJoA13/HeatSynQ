@@ -854,7 +854,25 @@ Task 11: re-review — Spec ✅, quality APPROVED, 0 findings. The reviewer prov
   ($937.44); restored → 20/20 green, clean tree. Placement, dedup, and all three minors verified.
 Task 11: complete (commits 907f25c..556e367, re-review clean — approved)
 
-Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9
+Task 12: dispatched (implementer, OPUS) — BASE 556e367, brief task-12-brief.md.
+Task 12: implementer DONE — commit cb66551, invoices.ts (+484/-59) + tests (+162). 8 new tests
+  (28/28 in file), full suite 1616, gates clean. Reported promptly.
+  ANTI-DRIFT handled the right way: extracted the create path's engine->line mapping into shared
+  helpers (mapComputedLines, assertLineRefs, wireComputedParents, totalsFromLines) that BOTH
+  createInvoiceInTx and recalculateInvoice call — no second pricing path to fork. Proven by a
+  deep-equal test: recalc, then discard + re-create as baseline, and the derived lines match
+  including amounts/GL. The -59 is that refactor of Task 11's already-approved create path —
+  flagged to the reviewer as the regression risk (extraction must be behavior-preserving).
+  Draft-only: claimLiveInvoice (models claimLiveShipper) claims the order then FOR UPDATE on the
+  invoice, refuses FINALIZED (400, named) and discarded (404); all four mutators go through it.
+  Two concerns, both disclosed: (1) the spec doesn't enumerate editable header fields; it chose
+  poNumber/invoiceDate/termsName/billTo/shipTo, excluding identity/totals/lifecycle — a sensible
+  default, sent to the reviewer to rule on rather than to the owner (a one-line change if wrong,
+  and the owner said not to ask for routine calls). (2) recalc refreshes header taxRate but
+  preserves descriptive header snapshots so an edited PO survives — flagged as intended.
+Task 12: review dispatched (task-reviewer, opus — the create-path refactor must be
+  behavior-preserving, the anti-drift deep-equal must cover money fields, draft-only guards under
+  the claim, assertRefExists on the new write paths)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
