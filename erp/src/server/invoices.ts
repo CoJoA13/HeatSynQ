@@ -7,13 +7,14 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
+import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
 import { listPartPrices } from "./part-prices";
 import { listAddresses, type AddressRow } from "./customer-addresses";
 import { getSetting } from "./settings";
 import { isDuplicateClientRequestId } from "./orders";
-import { shippedTotals } from "./ship-ledger";
+import { shippedTotals, recomputeOrderStatus } from "./ship-ledger";
 import {
   priceOrder,
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
@@ -716,21 +717,27 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
 // -------------------------------------------------------------------------------------------
 
 /**
- * The DRAFT-edit claim, factored like `claimLiveShipper` (shippers.ts): an UNLOCKED stub read to
- * learn which order to claim (404 on missing), `claimOrder` on that order, then `FOR UPDATE` on the
- * Invoice row itself — uniformly AFTER the order claim, one fixed order (Order row, then the
- * entity's own row), so no ABBA window opens (order-locks.ts house rule). Only then the liveness
- * re-read, off rows this transaction actually holds.
+ * The lifecycle claim shared by EVERY invoice mutator — Task 12's draft edits (through
+ * `claimLiveInvoice` below) and Task 13's finalize/unlock. Factored like `claimLiveShipper`
+ * (shippers.ts): an UNLOCKED stub read to learn which order to claim (404 on missing), `claimOrder`
+ * on that order, then `FOR UPDATE` on the Invoice row itself — uniformly AFTER the order claim, one
+ * fixed order (Order row, then the entity's own row), so no ABBA window opens (order-locks.ts house
+ * rule). Only then the liveness re-read, off rows this transaction actually holds.
  *
- * `Invoice.status`/`deletedAt` live on the Invoice row, so a concurrent finalize, unlock or discard
- * — every one of which also claims this order — serializes through these two locks: the refusal
- * below and the write it guards see the same state, and a Serializable caller whose Invoice row
- * changed under it raises 40001 (withDbErrors' honest 409) rather than acting on a stale snapshot.
+ * `Invoice.status`/`deletedAt` live on the Invoice row, so a concurrent finalize, unlock, discard or
+ * draft edit — every one of which also claims this order first — serializes through these two locks:
+ * the caller's refusal and the write it guards see the same state, and a Serializable caller whose
+ * Invoice row changed under it raises 40001 (withDbErrors' honest 409) rather than acting on a stale
+ * snapshot. Taking the ORDER claim FIRST is the house-rule obligation Task 10's invoice guards rest
+ * on (invoice-guards.ts): they read the finalized-invoice state under THEIR order claim, so finalize
+ * and unlock must hold the same order claim before they read or write that state.
  *
- * Returns the fresh invoice detail row and the claimed Order row (recalculate reads the order's
- * live state off it).
+ * Returns the fresh invoice detail row and the claimed Order row. The FINALIZED check is the
+ * caller's, not this helper's — finalize allows a DRAFT, unlock allows a FINALIZED, and the edit
+ * mutators refuse a FINALIZED — so each names its own blocker (`claimLiveInvoice` below is the edit
+ * mutators' wrapper that adds theirs).
  */
-async function claimLiveInvoice(tx: Db, id: string): Promise<{ invoice: DetailRow; order: Order }> {
+async function claimInvoiceRow(tx: Db, id: string): Promise<{ invoice: DetailRow; order: Order }> {
   const stub = await tx.invoice.findFirst({ where: { id }, select: { orderId: true } });
   if (!stub) throw new HttpError(404, "Invoice not found");
   const order = await claimOrder(tx, stub.orderId);
@@ -738,11 +745,21 @@ async function claimLiveInvoice(tx: Db, id: string): Promise<{ invoice: DetailRo
   await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${id} FOR UPDATE`;
   const invoice = await tx.invoice.findFirst({ where: { id }, include: DETAIL_INCLUDE });
   if (!invoice || invoice.deletedAt !== null) throw new HttpError(404, "Invoice not found");
-  if (invoice.status === "FINALIZED") {
-    throw new HttpError(400,
-      `Invoice #${invoice.order.orderNumber} is finalized and locked — unlock it before editing`);
-  }
   return { invoice, order };
+}
+
+/**
+ * The DRAFT-edit claim: `claimInvoiceRow` plus the refusal that a FINALIZED invoice is immutable
+ * until unlock. A FINALIZED invoice is customer-facing paper; the corrections are unlock or credit,
+ * never a silent edit (§5.5).
+ */
+async function claimLiveInvoice(tx: Db, id: string): Promise<{ invoice: DetailRow; order: Order }> {
+  const claimed = await claimInvoiceRow(tx, id);
+  if (claimed.invoice.status === "FINALIZED") {
+    throw new HttpError(400,
+      `Invoice #${claimed.invoice.order.orderNumber} is finalized and locked — unlock it before editing`);
+  }
+  return claimed;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1006,5 +1023,89 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
       throw new HttpError(400, "This invoice has already printed and cannot be discarded — credit it instead");
     }
     await auditedSoftDelete("invoice", id, why, tx);
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 13 (§5.5/§5.2): finalize, unlock, and the INVOICED/REOPENED status ownership. Both take the
+// order claim FIRST (through the shared `claimInvoiceRow`) before they read or write invoice state,
+// so they serialize against every order/shipment mutator whose Task 10 invoice guard
+// (`finalizedInvoiceFor`) reads the finalized-invoice state under ITS own order claim (§5.7). Both
+// write `Order.status` through `auditedUpdate`, onto the order's own history.
+// -------------------------------------------------------------------------------------------
+
+async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
+  const { invoice, order } = await claimInvoiceRow(tx, id);
+  // Read under the claim (the whole point of taking it): the order's live state and the invoice's
+  // own status both decide the transition, and must be the state this write commits against.
+  if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
+  // Idempotent: a re-finalize is a 400 naming the state, never a second write (§5.5).
+  if (invoice.status === "FINALIZED") throw new HttpError(400, "That invoice is already finalized");
+  // Finalize is refused while any line still needs a price (§5.5) — the ONLY finalize block. It reads
+  // the RESOLVED price already snapshotted on the line (Task 9), so a break-only line does not block.
+  // No GL-account check: spec §15 puts that on 5C's export, not here.
+  const offending = invoice.lines.find((l) => l.needsPrice);
+  if (offending) {
+    const label = offending.partNumber === ""
+      ? offending.description
+      : `${offending.partNumber} — ${offending.description}`;
+    throw new HttpError(400, `Line ${offending.position} · ${label} needs a price — price every line before finalizing`);
+  }
+
+  // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
+  // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
+  const actor = currentActor();
+  await auditedUpdate("invoice", id,
+    () => tx.invoice.update({
+      where: { id },
+      data: { status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id },
+    }), { tx });
+  await auditedUpdate("order", order.id,
+    () => tx.order.update({ where: { id: order.id }, data: { status: "INVOICED" } }), { tx });
+  return readInvoiceDetail(tx, id);
+}
+
+/**
+ * Finalize a DRAFT invoice, locking it (§5.5). `tx` is optional: the discriminating concurrency test
+ * passes a manually-opened transaction so the row lock, not SSI, is what serializes a competing
+ * caller (the `createInvoice` shape). The public no-`tx` path runs Serializable, pairing with the
+ * claim exactly as every other invoice mutator does.
+ */
+export async function finalizeInvoice(id: string, tx?: Prisma.TransactionClient): Promise<InvoiceDetail> {
+  if (tx) return finalizeInvoiceInTx(tx, id);
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(
+    (fresh) => finalizeInvoiceInTx(fresh, id),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
+}
+
+/**
+ * Unlock a FINALIZED invoice back to DRAFT (§5.5), re-permitting every draft edit. The reason is
+ * required and trimmed IN THE SERVICE (§5.17 — the `voidShipper`/`discardInvoice` precedent) and
+ * recorded on the audit entry, never a column and never printed. Stays available after the invoice
+ * has printed.
+ *
+ * Order matters: clear the invoice's finalized state FIRST, then hand the order back to the ledger.
+ * The order sits at INVOICED — an invoice-owned state `recomputeOrderStatus` skips — so it is passed
+ * in the `released` set, which lifts the skip for THIS order alone (a shipment-side recompute still
+ * leaves INVOICED alone) and lets recompute settle it on its ship-derived value. Recomputing before
+ * clearing would leave the order INVOICED forever.
+ */
+export async function unlockInvoice(id: string, reason: string): Promise<InvoiceDetail> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to unlock an invoice");
+
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+    const { invoice, order } = await claimInvoiceRow(tx, id);
+    if (invoice.status !== "FINALIZED") {
+      throw new HttpError(400, "That invoice is not finalized — there is nothing to unlock");
+    }
+    await auditedUpdate("invoice", id,
+      () => tx.invoice.update({
+        where: { id },
+        data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
+      }), { tx, reason: why });
+    await recomputeOrderStatus(tx, [order.id], [order.id]);
+    return readInvoiceDetail(tx, id);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

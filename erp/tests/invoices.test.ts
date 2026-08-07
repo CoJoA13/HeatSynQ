@@ -10,6 +10,7 @@ import { setBillingConfig } from "@/server/billing-config";
 import {
   createInvoice, listInvoiceCandidates, getInvoice,
   updateInvoice, replaceInvoiceLines, recalculateInvoice, discardInvoice,
+  finalizeInvoice, unlockInvoice,
   type InvoiceDetail, type InvoiceLineDetail,
 } from "@/server/invoices";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -457,9 +458,19 @@ describe("createInvoice", () => {
 // reuse `pricedShippedOrder` and add four invoicing-specific helpers.
 // -------------------------------------------------------------------------------------------
 
-/** A priced, shipped order with a DRAFT invoice already created against it. */
-async function draftFixture(opts: { qty?: number } = {}) {
-  const fixture = await pricedShippedOrder({ qty: opts.qty ?? 144, unitPrice: "6.5100", minimumCharge: "600.00" });
+/** A priced, shipped order with a DRAFT invoice already created against it. `priced: false` skips
+ *  the price row, so every operation line lands `needsPrice` (finalize refuses it); `glAccount`
+ *  passes through to the step code's GL account (`null` -> a step code with no GL account). */
+async function draftFixture(opts: { qty?: number; priced?: boolean; glAccount?: string | null } = {}) {
+  if (opts.priced === false) {
+    const fixture = await shippedOrder({ qty: opts.qty ?? 144 });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    return { ...fixture, stepCode: null, glAccount: null, invoice };
+  }
+  const fixture = await pricedShippedOrder({
+    qty: opts.qty ?? 144, unitPrice: "6.5100", minimumCharge: "600.00",
+    ...(opts.glAccount !== undefined ? { glAccount: opts.glAccount } : {}),
+  });
   const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
   return { ...fixture, invoice };
 }
@@ -605,5 +616,151 @@ describe("discardInvoice", () => {
       data: { kind: "INVOICE", invoiceId: invoice.id, fileData: new Uint8Array([1]) } });
     await expect(asSystem(() => discardInvoice(invoice.id, "mistake")))
       .rejects.toThrow(/has already printed/i);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 13: finalize, unlock, and the INVOICED/REOPENED status ownership. Finalize and unlock both
+// route through the SAME order-claim-then-invoice-lock helper Task 12's `claimLiveInvoice` uses, so
+// they serialize against every order/shipment mutator whose Task 10 guard reads the finalized-invoice
+// state under its own order claim (§5.7).
+// -------------------------------------------------------------------------------------------
+
+describe("finalizeInvoice", () => {
+  it("refuses to finalize while a line needs a price", async () => {
+    const { invoice } = await draftFixture({ priced: false });
+    await expect(asSystem(() => finalizeInvoice(invoice.id))).rejects.toThrow(/needs a price/i);
+  });
+
+  it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {
+    const { order, invoice } = await draftFixture();
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.status).toBe("FINALIZED");
+    expect(done.finalizedAt).not.toBeNull();
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+  });
+
+  it("audits the finalize with the status before and after, on both the invoice and the order", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    const inv = await prisma.auditLog.findFirst({
+      where: { entity: "invoice", entityId: invoice.id, action: "update" }, orderBy: { at: "desc" } });
+    expect((inv!.before as Record<string, unknown>).status).toBe("DRAFT");
+    expect((inv!.after as Record<string, unknown>).status).toBe("FINALIZED");
+    const ord = await prisma.auditLog.findFirst({
+      where: { entity: "order", entityId: order.id, action: "update" }, orderBy: { at: "desc" } });
+    expect((ord!.before as Record<string, unknown>).status).toBe("SHIPPED");
+    expect((ord!.after as Record<string, unknown>).status).toBe("INVOICED");
+  });
+
+  it("finalizing twice is a 400, never a second write", async () => {
+    const { invoice } = await draftFixture();
+    const first = await asSystem(() => finalizeInvoice(invoice.id));
+    await expect(asSystem(() => finalizeInvoice(invoice.id))).rejects.toThrow(/already finalized/i);
+    // Never a second write: the finalize stamp is unchanged and there is exactly one FINALIZED entry.
+    expect((await asSystem(() => getInvoice(invoice.id))).finalizedAt).toBe(first.finalizedAt);
+    const finalizes = (await prisma.auditLog.findMany({
+      where: { entity: "invoice", entityId: invoice.id, action: "update" } }))
+      .filter((e) => (e.after as Record<string, unknown>).status === "FINALIZED");
+    expect(finalizes).toHaveLength(1);
+  });
+
+  it("finalizes with a step code that has no GL account (5C's export refuses, not this)", async () => {
+    const { invoice } = await draftFixture({ glAccount: null });
+    await expect(asSystem(() => finalizeInvoice(invoice.id))).resolves.toBeTruthy();
+  });
+
+  it("freezes the current lines — finalize re-prices nothing", async () => {
+    const { invoice } = await draftFixture();
+    // Hand-edit the operation line down to $1, then finalize: a finalize that re-ran pricing would
+    // restore the $937.44 the part price computes. It must NOT — finalize locks what is there.
+    const edited = await asSystem(() => replaceInvoiceLines(invoice.id,
+      invoice.lines.map((l) => (l.kind === "OPERATION" ? { ...toLineInput(l), amount: "1.00" } : toLineInput(l)))));
+    expect(edited.total).toBe(1);
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.total).toBe(1);
+    expect(done.lines.find((l) => l.kind === "OPERATION")!.amount).toBe(1);
+  });
+
+  // Note #1 (folded in from Task 10): finalize must `claimOrder` before it reads or writes invoice
+  // state. Discriminating shape copied from `createInvoice`'s own concurrency test: the competing
+  // caller runs at Read Committed (via a manually-opened tx) so ONLY `claimOrder`'s row lock — not
+  // SSI — can order the two. The holder claims the order row and, while holding it, voids the order,
+  // then commits. WITH the claim, finalize blocks on the order row, then reads the freshly-voided
+  // state and refuses. WITHOUT it (RED), finalize reads the order through an unlocked snapshot (still
+  // live), sails past the guard, and finalizes a voided order — resolving instead of rejecting.
+  it("reads the order under the claim: a void by an order-lock holder makes finalize refuse (row-lock discipline)", async () => {
+    const { order, invoice } = await draftFixture();
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
+      await tx.order.update({ where: { id: order.id }, data: { deletedAt: new Date() } });
+      hasClaimed();
+      await release;
+    }, { timeout: 20000 });
+
+    await claimed;
+    const finalizeCall = asSystem(() =>
+      prisma.$transaction((tx) => finalizeInvoice(invoice.id, tx)));
+
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      finalizeCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT); // blocked on the holder's order-row claim
+
+    mayRelease();
+    await holder;
+
+    await expect(finalizeCall).rejects.toThrow(/voided/i);
+  });
+});
+
+describe("unlockInvoice", () => {
+  it("unlocks with a reason, records it in the audit entry, and returns the order to SHIPPED", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    await expect(asSystem(() => unlockInvoice(invoice.id, "  "))).rejects.toThrow(/reason/i);
+    await asSystem(() => unlockInvoice(invoice.id, "wrong PO on the paper"));
+    expect((await getInvoice(invoice.id)).status).toBe("DRAFT");
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "invoice", entityId: invoice.id, action: "update" }, orderBy: { at: "desc" } });
+    expect(entry!.reason).toBe("wrong PO on the paper");
+  });
+
+  it("unlock stays available after the invoice has printed", async () => {
+    const { invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    await prisma.storedDocument.create({
+      data: { kind: "INVOICE", invoiceId: invoice.id, fileData: new Uint8Array([1]) } });
+    await expect(asSystem(() => unlockInvoice(invoice.id, "customer disputed a line"))).resolves.toBeTruthy();
+  });
+
+  it("refuses to unlock an invoice that is not finalized", async () => {
+    const { invoice } = await draftFixture();
+    await expect(asSystem(() => unlockInvoice(invoice.id, "nothing to do"))).rejects.toThrow(/not finalized/i);
+  });
+
+  // Note #2 (folded in from Task 12): unlock MUST return the invoice to DRAFT, or every Task 12
+  // mutator keeps refusing it and "unlock" does nothing. Prove all four edit paths work again after.
+  it("returns the invoice to DRAFT — every draft edit works again", async () => {
+    const { invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    // Finalized: the four refuse.
+    await expect(asSystem(() => updateInvoice(invoice.id, { poNumber: "X" }))).rejects.toThrow(/finalized/i);
+    await asSystem(() => unlockInvoice(invoice.id, "reopen to correct"));
+    // DRAFT again: the four succeed.
+    await expect(asSystem(() => updateInvoice(invoice.id, { poNumber: "PO-7" }))).resolves.toBeTruthy();
+    const currentLines = (await asSystem(() => getInvoice(invoice.id))).lines.map(toLineInput);
+    await expect(asSystem(() => replaceInvoiceLines(invoice.id, currentLines))).resolves.toBeTruthy();
+    await expect(asSystem(() => recalculateInvoice(invoice.id))).resolves.toBeTruthy();
+    await expect(asSystem(() => discardInvoice(invoice.id, "done"))).resolves.toBeUndefined();
   });
 });
