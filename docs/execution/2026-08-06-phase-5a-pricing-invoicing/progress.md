@@ -147,6 +147,20 @@ Task 3: FULL GATE CHAIN re-run by the controller (not taken on trust from the im
   and `npm run test:e2e` 15/15 flows PASS. E2E was run because this task added a UI screen —
   the owner's standing rule, now recorded in CLAUDE.md rather than only in session memory.
 
+Task 4: dispatched (implementer, sonnet) — BASE 04133db, brief task-4-brief.md
+Task 4: implementer DONE — commit e0cfa77, 99 files / 1433 tests passing, tsc+eslint+build clean,
+  sweeps (reference-links, partial-unique, permissions) 17/17. Precondition verified before
+  starting: Task 2's deletions (part-price-breaks.ts, its test, its two routes, PRICING_FIELDS,
+  parts.ts's flat pricing fields) all confirmed absent.
+  Implementer note: `AuditableModel`, `SNAPSHOT_INCLUDE` and the reference-links FK registration
+  were ALREADY in place from Task 2's schema commit, so those files show no diff — expected, not
+  an omission. Flagged for the reviewer to confirm against the tree rather than assume.
+  Implementer DISCLOSED one test beyond the brief's seven (updatePriceBreak/deletePriceBreak
+  scoping + read-back), on the grounds those two functions otherwise had zero coverage. Declared
+  rather than slipped in; sent to the reviewer to rule on as scope, with no pre-judgement.
+Task 4: review dispatched (task-reviewer, opus — money decimals differ by column, partial-unique
+  columns, child-route scoping, and the LOT-vs-breaks rule that MIGRATED services in Task 2)
+
 Repo-hygiene pass (owner-approved mid-phase, 2026-08-06, riding along with this PR — commits
 974852f, b7e8008, 1cdad25). Not part of Task 3; scope-fenced to docs and config so it could run
 in parallel with Task 3's review without touching erp/src, erp/tests, prisma/ or the ledger.
@@ -173,6 +187,17 @@ in parallel with Task 3's review without touching erp/src, erp/tests, prisma/ or
 - Memory consolidated: the two stored memories were owner RULES already duplicated in CLAUDE.md
   and HANDOFF, i.e. three copies free to drift. They now live in CLAUDE.md alone (versioned,
   reviewable, travels with the repo); memory keeps only what the repo cannot record.
+- TRAP FOUND THE HARD WAY (2026-08-06, controller): the SDD skill's `scripts/task-brief` writes
+  to `.superpowers/sdd/task-N-brief.md` — FLAT — and **Phase 4's ledger is stored flat in that
+  same directory**. Extracting Phase 5A's Task 4 brief silently overwrote Phase 4's
+  `task-4-brief.md` ("Cert resolution chain and the freeze at order save"), and moving the output
+  then showed up as a ` D ` deletion. Restored with `git checkout --`; it was recoverable ONLY
+  because Phase 4's ledger had been committed. Documented in `.superpowers/sdd/README.md`.
+  Standing procedure: after running task-brief or review-package, `git status` before committing,
+  and treat a ` D ` on any `.superpowers/sdd/task-N-*.md` path as a clobber to restore.
+  (The scripts also rewrite `.superpowers/sdd/.gitignore` to a bare `*` on nearly every run —
+  four times this session. Restore is `git checkout --`; the relocation to docs/execution is what
+  makes it harmless.)
 - CORRECTION worth carrying: the first diagnosis of the ledger-erasure bug was wrong. It looked
   like a one-time clobber, and the proposed fix was "commit early". Testing the actual mechanism
   showed (a) already-tracked files are wholly immune — git applies ignore rules only to UNTRACKED
