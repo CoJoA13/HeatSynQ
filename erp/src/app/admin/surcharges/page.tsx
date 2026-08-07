@@ -488,16 +488,21 @@ export default function SurchargesPage() {
             </label>
 
             {blocked && blocked.row.id === current.id && (() => {
-              // Fix 3, fix wave 1 review: `entityLabel === "Customer"` alone was correct only
+              // Fix 1, fix wave 2 review: `entityLabel === "Customer"` alone was correct only
               // because no OTHER surcharge-targeting link happens to use that entityLabel today —
               // a future one would silently pick up this "Clear override" button and 404 when
               // clicked (it POSTs to /api/customers/{id}/surcharges, which only exists for an
-              // actual customer). Paired with `label === "Surcharge"` — the customerSurcharge ->
-              // surcharge registry entry's own column-header label
-              // (src/lib/reference-links.ts) — so the button only ever renders for the ONE link
-              // this escape hatch was built for (its own comment two lines below).
-              const customerBlockers = blocked.list.filter(
-                (b) => b.label === "Surcharge" && b.entityLabel === "Customer");
+              // actual customer). Fix wave 1 tried pairing it with `label === "Surcharge"` — the
+              // customerSurcharge -> surcharge registry entry's own column-header label — but
+              // that conjunct adds nothing: every link `findBlockers("surcharge", …)` can ever
+              // return has an FK column named `surchargeId`, so its column-header `label` reads
+              // "Surcharge" on 100% of rows this panel can ever hold. `model` — the registry
+              // entry's own Prisma model identity (src/lib/reference-links.ts's
+              // `ReferenceLinkModel` union) — is genuine identity rather than a rendered string,
+              // so `model === "customerSurcharge"` alone is true only for the one link this
+              // escape hatch was built for, and stays true even if a future link shares this
+              // one's entityLabel or label.
+              const customerBlockers = blocked.list.filter((b) => b.model === "customerSurcharge");
               return (
                 <>
                   <BlockerPanel

@@ -71,8 +71,14 @@ export function SurchargeOverridesSection({
     setRowsReady(true);
   }, [customerId, latest]);
   // Routed to `onOptionsError`, not `onError` — see the prop's own doc comment above (Fix 1, fix
-  // wave 1 review).
-  useEffect(() => { load().catch((e) => onOptionsError((e as Error).message)); }, [load, onOptionsError]);
+  // wave 1 review). Prefixed with its own source (Fix 2, fix wave 2 review), matching page.tsx's
+  // two established siblings ("Could not load terms: …", "Could not load parent options: …") —
+  // `onOptionsError`/`addOptionsError` CONCATENATES rather than replaces, so an unprefixed message
+  // here was indistinguishable from whichever of those two also happened to fail, with nothing
+  // tying the blank section on screen to its share of the banner text.
+  useEffect(() => {
+    load().catch((e) => onOptionsError(`Could not load surcharge overrides: ${(e as Error).message}`));
+  }, [load, onOptionsError]);
 
   // What the user has actually typed into a free-text numeric field (rate%, amount) but not yet
   // blurred, keyed by `${surchargeId}.${field}` — composed with the server value at render time,

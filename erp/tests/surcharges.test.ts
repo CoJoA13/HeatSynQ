@@ -550,15 +550,52 @@ describe("GET /api/admin/surcharges/[id]/blockers(/export)", () => {
     const blockers = await res.json();
     expect(blockers[0].entityLabel).toBe("Customer");
     expect(blockers[0].name).toContain("ACME");
-    // Fix 3, fix wave 1 review: this route opts `findBlockers` into `includeLabel`, which
-    // admin/surcharges/page.tsx pairs with `entityLabel` for a sturdier "is this a customer
-    // override" check than `entityLabel === "Customer"` alone.
-    expect(blockers[0].label).toBe("Surcharge");
+    // Fix 1, fix wave 2 review: this route opts `findBlockers` into `includeModel`, which
+    // admin/surcharges/page.tsx filters on to find the customerSurcharge -> surcharge override
+    // rows specifically — `model` is the registry entry's own Prisma model identity, unlike the
+    // `label`/`entityLabel` fields it replaced (see reference-blockers.ts's Blocker-type comment
+    // for why those don't discriminate). The next test proves it actually discriminates against
+    // the OTHER link that targets a surcharge.
+    expect(blockers[0].model).toBe("customerSurcharge");
 
     const exportRes = await blockersExportRoute(
       getReq(`http://t/api/admin/surcharges/${id}/blockers/export`, viewer), withParams({ id }));
     expect(exportRes.status).toBe(200);
     expect(exportRes.headers.get("content-type")).toContain("spreadsheetml");
+  });
+
+  // Fix 1, fix wave 2 review: proves `model` actually discriminates, rather than merely asserting
+  // the one value the "Clear override" filter looks for. `surcharge` has exactly two targeting
+  // links today (src/lib/reference-links.ts) — customerSurcharge and invoiceLine (surchargeId) —
+  // and both share the SAME `label` ("Surcharge", the surchargeId column's own header), which is
+  // exactly why `label` was a tautological discriminator (fix wave 1) and why this test billing a
+  // surcharge onto an invoice, rather than overriding it on a customer, is the one that matters:
+  // it is a genuinely different link, and `model` must tell the two apart where `label` could not.
+  it("model tells a billed invoice line apart from a customer override — both target a surcharge, only one is 'customerSurcharge'", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME2", name: "Acme Two" } });
+    const order = await prisma.order.create({
+      data: { orderNumber: 72088, customerId: customer.id,
+              receivedDate: new Date("2026-08-01"), requestDate: new Date("2026-08-05") },
+    });
+    const { id: surchargeId } = await asSystem(() => createSurcharge({ name: "S2", kind: "FLAT", amount: "1.00", position: 1 }));
+    const invoice = await prisma.invoice.create({
+      data: { orderId: order.id, customerId: customer.id, invoiceDate: new Date("2026-08-06") },
+    });
+    await prisma.invoiceLine.create({
+      data: { invoiceId: invoice.id, position: 1, kind: "SURCHARGE", surchargeId, description: "S2" },
+    });
+
+    const viewer = await signInWith(["admin.view"], "surcharges-viewer5");
+    const res = await blockersRoute(
+      getReq(`http://t/api/admin/surcharges/${surchargeId}/blockers`, viewer), withParams({ id: surchargeId }));
+    expect(res.status).toBe(200);
+    const blockers: { entityLabel: string; model?: string }[] = await res.json();
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].entityLabel).toBe("Invoice");
+    expect(blockers[0].model).toBe("invoiceLine");
+    // The exact check admin/surcharges/page.tsx runs to decide whether to render its "Clear
+    // override" button — this billed invoice line must NOT pass it.
+    expect(blockers.filter((b) => b.model === "customerSurcharge")).toHaveLength(0);
   });
 });
 
