@@ -38,6 +38,7 @@ const ADMIN = [
   { label: "Part fields", href: "/admin/part-fields" },
   { label: "Settings", href: "/admin/settings" },
   { label: "Billing", href: "/admin/billing" },
+  { label: "Surcharges", href: "/admin/surcharges" },
   { label: "Audit log", href: "/admin/audit" },
 ];
 

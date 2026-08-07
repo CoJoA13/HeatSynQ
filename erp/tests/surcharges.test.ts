@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
+import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import {
   listSurcharges, createSurcharge, updateSurcharge, deleteSurcharge,
@@ -9,8 +10,31 @@ import { deleteStepCode } from "@/server/process-step-codes";
 import { findBlockers } from "@/server/reference-blockers";
 import { readAudit } from "@/server/audit";
 
+import { GET as listRoute, POST as createRoute } from "@/app/api/admin/surcharges/route";
+import { PUT as updateRoute, DELETE as deleteRoute } from "@/app/api/admin/surcharges/[id]/route";
+import { PUT as setStepCodesRoute } from "@/app/api/admin/surcharges/[id]/step-codes/route";
+import { GET as blockersRoute } from "@/app/api/admin/surcharges/[id]/blockers/route";
+import { GET as blockersExportRoute } from "@/app/api/admin/surcharges/[id]/blockers/export/route";
+
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
+
+const noParams = { params: Promise.resolve({}) };
+const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
+
+function getReq(url: string, cookie?: string): Request {
+  return new Request(url, { headers: cookie ? { cookie } : {} });
+}
+function bodyReq(url: string, method: string, cookie: string | undefined, body: unknown): Request {
+  return new Request(url, {
+    method,
+    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify(body),
+  });
+}
+function noBodyReq(url: string, method: string, cookie?: string): Request {
+  return new Request(url, { method, headers: cookie ? { cookie } : {} });
+}
 
 describe("surcharges", () => {
   beforeEach(truncateAll);
@@ -330,5 +354,139 @@ describe("surcharges", () => {
       await expect(asSystem(() => deleteCustomerSurcharge(customer.id, surchargeId)))
         .rejects.toMatchObject({ status: 404 });
     });
+  });
+});
+
+describe("GET/POST /api/admin/surcharges", () => {
+  beforeEach(truncateAll);
+
+  it("requires login", async () => {
+    expect((await listRoute(getReq("http://t/api/admin/surcharges"), noParams)).status).toBe(401);
+    expect((await createRoute(bodyReq("http://t/api/admin/surcharges", "POST", undefined, {}), noParams)).status)
+      .toBe(401);
+  });
+
+  it("requires admin.view for GET and admin.edit for POST", async () => {
+    const noPerms = await signInWith(["customers.view"], "no-admin");
+    expect((await listRoute(getReq("http://t/api/admin/surcharges", noPerms), noParams)).status).toBe(403);
+
+    const viewer = await signInWith(["admin.view"], "surcharges-viewer");
+    expect((await listRoute(getReq("http://t/api/admin/surcharges", viewer), noParams)).status).toBe(200);
+    expect((await createRoute(
+      bodyReq("http://t/api/admin/surcharges", "POST", viewer, { name: "S", kind: "FLAT", amount: "1.00", position: 1 }),
+      noParams,
+    )).status).toBe(403);
+  });
+
+  it("GET/POST succeed with admin.view/admin.edit, and the created row is listed", async () => {
+    const editor = await signInWith(["admin.view", "admin.edit"], "surcharges-editor");
+    const postRes = await createRoute(bodyReq("http://t/api/admin/surcharges", "POST", editor,
+      { name: "EnergySur", kind: "PERCENT", rate: "0.040000", position: 1 }), noParams);
+    expect(postRes.status).toBe(200);
+    const { id } = await postRes.json();
+    expect(typeof id).toBe("string");
+
+    const getRes = await listRoute(getReq("http://t/api/admin/surcharges", editor), noParams);
+    expect(getRes.status).toBe(200);
+    const rows = await getRes.json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, name: "EnergySur", kind: "PERCENT", rate: 0.04 });
+  });
+});
+
+describe("PUT/DELETE /api/admin/surcharges/[id]", () => {
+  beforeEach(truncateAll);
+
+  it("requires login", async () => {
+    expect((await updateRoute(bodyReq("http://t/api/admin/surcharges/x", "PUT", undefined, {}), withParams({ id: "x" })))
+      .status).toBe(401);
+    expect((await deleteRoute(noBodyReq("http://t/api/admin/surcharges/x", "DELETE"), withParams({ id: "x" })))
+      .status).toBe(401);
+  });
+
+  it("requires admin.edit for PUT and DELETE", async () => {
+    const editor = await signInWith(["admin.view", "admin.edit"], "surcharges-editor2");
+    const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+
+    const viewer = await signInWith(["admin.view"], "surcharges-viewer2");
+    expect((await updateRoute(
+      bodyReq(`http://t/api/admin/surcharges/${id}`, "PUT", viewer, { name: "S2", kind: "FLAT", amount: "2.00", position: 1 }),
+      withParams({ id }),
+    )).status).toBe(403);
+    expect((await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", viewer), withParams({ id })))
+      .status).toBe(403);
+
+    const putRes = await updateRoute(
+      bodyReq(`http://t/api/admin/surcharges/${id}`, "PUT", editor, { name: "S2", kind: "FLAT", amount: "2.00", position: 1 }),
+      withParams({ id }),
+    );
+    expect(putRes.status).toBe(200);
+    const row = await prisma.surcharge.findUniqueOrThrow({ where: { id } });
+    expect(row.name).toBe("S2");
+    expect(row.amount?.toNumber()).toBe(2);
+
+    const delRes = await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", editor), withParams({ id }));
+    expect(delRes.status).toBe(200);
+    expect((await prisma.surcharge.findUniqueOrThrow({ where: { id } })).deletedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("PUT /api/admin/surcharges/[id]/step-codes", () => {
+  beforeEach(truncateAll);
+
+  it("requires login, then admin.edit, then replaces the step-code list wholesale", async () => {
+    const code = await prisma.processStepCode.create({ data: { code: "WASH", name: "Hot wash" } });
+    const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", scope: "EXCLUDE", position: 1 }));
+
+    expect((await setStepCodesRoute(
+      bodyReq(`http://t/api/admin/surcharges/${id}/step-codes`, "PUT", undefined, { stepCodeIds: [code.id] }),
+      withParams({ id }),
+    )).status).toBe(401);
+
+    const viewer = await signInWith(["admin.view"], "surcharges-viewer3");
+    expect((await setStepCodesRoute(
+      bodyReq(`http://t/api/admin/surcharges/${id}/step-codes`, "PUT", viewer, { stepCodeIds: [code.id] }),
+      withParams({ id }),
+    )).status).toBe(403);
+
+    const editor = await signInWith(["admin.view", "admin.edit"], "surcharges-editor3");
+    const res = await setStepCodesRoute(
+      bodyReq(`http://t/api/admin/surcharges/${id}/step-codes`, "PUT", editor, { stepCodeIds: [code.id] }),
+      withParams({ id }),
+    );
+    expect(res.status).toBe(200);
+    const rows = await listSurcharges();
+    expect(rows[0].stepCodeIds).toEqual([code.id]);
+  });
+});
+
+describe("GET /api/admin/surcharges/[id]/blockers(/export)", () => {
+  beforeEach(truncateAll);
+
+  it("requires login, then admin.view, then names the blocking customer", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
+    await asSystem(() => setCustomerSurcharge(customer.id, id, { optOut: true }));
+
+    expect((await blockersRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers`), withParams({ id }))).status)
+      .toBe(401);
+    expect((await blockersExportRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers/export`), withParams({ id })))
+      .status).toBe(401);
+
+    const noPerms = await signInWith(["customers.view"], "no-admin2");
+    expect((await blockersRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers`, noPerms), withParams({ id })))
+      .status).toBe(403);
+
+    const viewer = await signInWith(["admin.view"], "surcharges-viewer4");
+    const res = await blockersRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers`, viewer), withParams({ id }));
+    expect(res.status).toBe(200);
+    const blockers = await res.json();
+    expect(blockers[0].entityLabel).toBe("Customer");
+    expect(blockers[0].name).toContain("ACME");
+
+    const exportRes = await blockersExportRoute(
+      getReq(`http://t/api/admin/surcharges/${id}/blockers/export`, viewer), withParams({ id }));
+    expect(exportRes.status).toBe(200);
+    expect(exportRes.headers.get("content-type")).toContain("spreadsheetml");
   });
 });
