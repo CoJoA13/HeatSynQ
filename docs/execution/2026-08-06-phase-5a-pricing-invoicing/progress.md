@@ -142,3 +142,41 @@ Task 3: MINORS DEFERRED to whole-branch review triage (reviewer's numbering):
   M8 — RESOLVED, not deferred: erp/.claude/launch.json (untracked, not ignored) is deleted; see
     the repo-hygiene entry below.
 Task 3: complete (commits fe5cb81..130b35a, re-review clean)
+Task 3: FULL GATE CHAIN re-run by the controller (not taken on trust from the implementer, and
+  the review's ⚠️ item 2): 98 files / 1425 tests passed, tsc exit 0, eslint exit 0, build clean,
+  and `npm run test:e2e` 15/15 flows PASS. E2E was run because this task added a UI screen —
+  the owner's standing rule, now recorded in CLAUDE.md rather than only in session memory.
+
+Repo-hygiene pass (owner-approved mid-phase, 2026-08-06, riding along with this PR — commits
+974852f, b7e8008, 1cdad25). Not part of Task 3; scope-fenced to docs and config so it could run
+in parallel with Task 3's review without touching erp/src, erp/tests, prisma/ or the ledger.
+- `.claude/launch.json` hardcoded `/home/cojoa13/Desktop/HeatSynQ/erp` — a user that does not
+  exist on this machine (machine-move residue). The dev server could not start from the canonical
+  config, and Task 3's implementer silently worked around it by creating an untracked, un-ignored
+  `erp/.claude/launch.json`. Root config now resolves via `git rev-parse --show-toplevel`; the
+  duplicate is deleted. Reviewer's Minor 8, resolved here rather than deferred.
+- CLAUDE.md's counts had rotted: "1010 integration tests" and "10 Playwright flows" against an
+  actual 1425 and 15. Counts removed rather than updated — they rot on the next commit and then
+  actively mislead — and a maintenance rule added banning numbers that ordinary commits move.
+- HANDOFF.md was 844 lines / ~16.3k words and could no longer be read in one call: a `Read` of it
+  truncated at line 436 of 845, so every session was silently reading half its own project memory.
+  Split to 416 lines; 535 lines of merged-phase narrative moved VERBATIM to four `docs/history/`
+  files. Preservation was verified, not asserted: each history file diffs empty against the block
+  it came from, and the surviving slices plus the moved blocks reconstruct the original
+  byte-identically under `cmp`. The 416 overshoots the 250 target because everything remaining is
+  a section that is still operative (§6 alone is 108 lines); the agent stopped rather than delete
+  live context, which was the right call.
+- Deliberately NOT done: the agent did not invent a Phase 5A status narrative for §4 (prime
+  directive — 5A has not merged). Whoever merges it writes that paragraph.
+- `.claude/settings.json` allowlist widened with safe, frequent commands (build, test:e2e,
+  migrate status, read-only git).
+- Memory consolidated: the two stored memories were owner RULES already duplicated in CLAUDE.md
+  and HANDOFF, i.e. three copies free to drift. They now live in CLAUDE.md alone (versioned,
+  reviewable, travels with the repo); memory keeps only what the repo cannot record.
+- CORRECTION worth carrying: the first diagnosis of the ledger-erasure bug was wrong. It looked
+  like a one-time clobber, and the proposed fix was "commit early". Testing the actual mechanism
+  showed (a) already-tracked files are wholly immune — git applies ignore rules only to UNTRACKED
+  paths, so the 122 committed historical ledger files were never at risk — and (b) the file is
+  rewritten REPEATEDLY, including twice within this single session, so hand-restoring it does not
+  hold. Both halves matter: (a) shrank the fix from a 122-file move to an 8-file one, (b) proved
+  the move was still necessary. Verify the mechanism before sizing the fix.
