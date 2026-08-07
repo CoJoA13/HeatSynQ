@@ -8,6 +8,7 @@ import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { allocateNumber, getSetting } from "./settings";
 import { claimOrdersInOrder } from "./order-locks";
+import { finalizedInvoicesFor, invoiceBlockMessage } from "./invoice-guards";
 import { listAddresses } from "./customer-addresses";
 import { renderPdf } from "./pdf/render";
 import { buildShippingTicketDefinition, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
@@ -735,6 +736,29 @@ async function shipperOrderIds(tx: Prisma.TransactionClient, shipperId: string):
   return rows.map((r) => r.orderId);
 }
 
+/**
+ * P5A spec §5.7: "voiding or editing a shipment on an order with a finalized invoice is refused —
+ * it would change what was billed; the corrections are unlock, or a reversing shipment."
+ *
+ * Batched over the WHOLE claimed set, not just the one `ShipperOrder` a mutator happens to be
+ * touching. A shipment is one document: freight rides the Shipper, and the ticket/BOL a customer
+ * already holds describes every order on it — so an edit anywhere on a shipment that carries an
+ * invoiced order is refused. Deliberately conservative; over-blocking is undone by unlocking the
+ * invoice, whereas under-blocking silently changes paper that has already been billed.
+ *
+ * Always called on `tx` AFTER `claimLiveShipper` (which claims the orders, then the Shipper row)
+ * and before any write — same rule as every other guard in this file: the claim is what makes the
+ * answer still true by the time the write lands.
+ */
+async function refuseIfInvoiced(
+  tx: Prisma.TransactionClient, orderIds: string[], action: string,
+): Promise<void> {
+  // `finalizedInvoicesFor` sorts by order number, so a shipment carrying two invoiced orders names
+  // the same one on every attempt.
+  const [inv] = await finalizedInvoicesFor(tx, orderIds);
+  if (inv) throw new HttpError(400, invoiceBlockMessage(inv, action));
+}
+
 // -------------------------------------------------------------------------------------------
 // updateShipper: header only (customerId, clientRequestId, shipperNumber and bolNumber are all
 // immutable — the first because every order on the shipment is validated against it at add-time
@@ -859,6 +883,13 @@ export async function addOrderToShipper(
     if (order.customerId !== shipper.customerId) {
       throw new HttpError(400, `Order #${order.orderNumber} does not belong to the same customer as this shipment`);
     }
+
+    // Over `allOrderIds` — the shipment's current orders AND the incoming one. Both directions are
+    // real: adding any order changes a shipment whose other orders are already billed, and adding
+    // an ALREADY-invoiced order bolts new shipped quantity onto an order whose paper is closed.
+    // After the resolution checks above so a bogus/foreign/voided orderId still gets its own,
+    // truer message; before the duplicate check and every write.
+    await refuseIfInvoiced(tx, allOrderIds, "This shipment cannot be changed");
 
     const dup = await tx.shipperOrder.findFirst({ where: { shipperId: id, orderId }, select: { id: true } });
     if (dup) throw new HttpError(400, "That order is already on this shipment");
@@ -1141,6 +1172,7 @@ export async function replaceShipperLines(
     const overrideReason = await creditHoldGate(tx, shipper.customerId, opts, creditHoldReason);
     const so = await findShipperOrder(tx, id, shipperOrderId);
     const order = claimed.find((o) => o.id === so.orderId)!;
+    await refuseIfInvoiced(tx, orderIds, "This shipment cannot be changed");
 
     const lineIds = [...new Set(data.map((l) => l.orderLineId))];
     const orderLines: ResolvedLine[] = lineIds.length === 0 ? [] : await tx.orderLine.findMany({
@@ -1397,6 +1429,7 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
 
   await withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
     const { orderIds } = await claimLiveShipper(tx, id);
+    await refuseIfInvoiced(tx, orderIds, "This shipment cannot be voided");
 
     await auditedSoftDelete("shipper", id, why, tx);
 

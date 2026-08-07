@@ -13,6 +13,7 @@ import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail }
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
+import { finalizedInvoiceFor, invoiceBlockMessage } from "./invoice-guards";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
@@ -1322,6 +1323,13 @@ export async function replaceCharges(orderId: string, input: unknown): Promise<O
     const order = await claimOrder(tx, orderId);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
+    // P5A spec §5.7 / §7.1 ("then the invoice owns them"): extra charges freeze the moment a
+    // finalized invoice exists on this order — its lines are already on paper the customer holds.
+    // Read on `tx`, under the claim taken immediately above, so the answer cannot go stale between
+    // here and the write below.
+    const inv = await finalizedInvoiceFor(tx, orderId);
+    if (inv) throw new HttpError(400, invoiceBlockMessage(inv, "Charges cannot be changed"));
+
     await auditedUpdate("order", orderId, async () => {
       await tx.orderCharge.deleteMany({ where: { orderId } });
       if (data.length > 0) {
@@ -1352,6 +1360,14 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
   await withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
     const order = await claimOrder(tx, id);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+
+    // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.
+    // Checked BEFORE `shipmentBlockers`, deliberately: an invoiced order has necessarily shipped
+    // (you bill what shipped), so the shipment check would fire first for essentially every real
+    // case and send the user to void the shipment — which `voidShipper`'s own guard then refuses
+    // for this same reason. Only naming the invoice first points at a fix that actually works.
+    const inv = await finalizedInvoiceFor(tx, id);
+    if (inv) throw new HttpError(400, invoiceBlockMessage(inv, "This order cannot be voided"));
 
     // Spec §5.5: void the shipments first, otherwise the shipment is left pointing at an order
     // (and lines) that have vanished from every list.
