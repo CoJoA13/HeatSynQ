@@ -2081,6 +2081,18 @@ it("recomputes the totals after a line edit", async () => {
 
 ### Task 13: `invoices.ts` — finalize, unlock, and status ownership
 
+> **Carried in from Task 10 (2026-08-07). Finalize and unlock MUST `claimOrder` before they
+> flip invoice state.** Task 10's invoice guards (`refuseIfInvoiced` across the order and shipment
+> mutators) rest on the house rule that the guarded state is read under the claimed row — each of
+> those mutators claims its order/shipper, then reads the finalized-invoice state fresh. For that
+> to actually serialize, the *other* side — the transition that makes an invoice FINALIZED, and the
+> unlock that clears it — must take the same order claim first. If finalize flips the invoice
+> without claiming the order, a shipment edit and a finalize can interleave: the edit's
+> `refuseIfInvoiced` reads "not yet finalized" while the finalize commits, and the edit changes
+> what the invoice then bills. Claim the order(s) in `claimOrdersInOrder` order at the top of both
+> finalize and unlock, before reading or writing invoice state. Task 10's source documents this
+> dependency at the guard; do not treat it as optional.
+
 **Files:**
 - Modify: `src/server/invoices.ts`, `src/server/ship-ledger.ts`
 - Test: `tests/invoices.test.ts` (appended), `tests/ship-ledger.test.ts` (appended)
