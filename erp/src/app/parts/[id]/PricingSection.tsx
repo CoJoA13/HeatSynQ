@@ -434,7 +434,8 @@ export function PricingSection({
           {codes.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <button onClick={addRow} disabled={disabled || !addCodeId || addingRow || !rowsReady}
-                title={!rowsReady ? "Price rows failed to load — reload the page" : addingRow ? "Adding…" : title}
+                title={!rowsReady ? "Price rows have not finished loading yet — reload the page and try again."
+                  : addingRow ? "Adding…" : title}
                 className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
           {addingRow ? "Adding…" : "Add operation"}
         </button>

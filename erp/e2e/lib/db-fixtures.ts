@@ -221,7 +221,21 @@ async function deletePartProcessData(partIds: string[]): Promise<void> {
  *  goes first here too, even though this harness never gives its price row a break. */
 async function deletePartPrices(partIds: string[]): Promise<void> {
   if (partIds.length === 0) return;
+  // Fix-wave 2 (finding 2): sweep AuditLog rows the same way deletePartProcessData and
+  // deleteTemplatesAndSteps already do for their own entities — see the finding-12 comment above
+  // in deleteOrdersAndChildren for what happens to a fixture file that skips this. Harmless today
+  // (this fixture writes its price row directly on `tx`, bypassing auditedCreate), but the first
+  // flow that mutates a price through the app would otherwise leak one permanent orphaned
+  // AuditLog row per mutation into the dev DB.
+  const prices = await prisma.partPrice.findMany({ where: { partId: { in: partIds } }, select: { id: true } });
+  const priceIds = prices.map((p) => p.id);
+  const breaks = await prisma.partPriceBreak.findMany({
+    where: { partPriceId: { in: priceIds } }, select: { id: true },
+  });
+  const breakIds = breaks.map((b) => b.id);
+  await prisma.auditLog.deleteMany({ where: { entity: "partPriceBreak", entityId: { in: breakIds } } });
   await prisma.partPriceBreak.deleteMany({ where: { partPrice: { partId: { in: partIds } } } });
+  await prisma.auditLog.deleteMany({ where: { entity: "partPrice", entityId: { in: priceIds } } });
   await prisma.partPrice.deleteMany({ where: { partId: { in: partIds } } });
 }
 
@@ -855,8 +869,14 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   ]);
   await deleteTemplatesAndSteps(templateIds);
   // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
-  // restrict-on-delete FK) and deletePartsAndCustomers (partId's).
-  await deletePartPrices([partId]);
+  // restrict-on-delete FK) and deletePartsAndCustomers (partId's). Fix-wave 2 (finding 1): sweep
+  // the same full part-id list deletePartProcessData receives above, not just partId — otherwise
+  // the day a second fixture part (e.g. shipPartA) gets priced, this leaves its PartPrice row
+  // behind to 23503 deletePartsAndCustomers below, exactly as reapLeftovers() already does two
+  // screens up.
+  await deletePartPrices([
+    partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+  ]);
   await deleteStepCodes([stepCodeA.id, stepCodeB.id, payload.priceStepCodeId]);
   await deletePartsAndCustomers(
     [

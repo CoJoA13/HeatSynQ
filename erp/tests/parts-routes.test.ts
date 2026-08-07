@@ -449,12 +449,20 @@ describe("parts routes", () => {
   // "change_prices") call sites across the four price route files would still pass every gate
   // that existed (permissions-sweep only checks requireUser() is called; parts-routes.test.ts
   // didn't import these files at all). This exercises 401 / 403 (parts.edit alone, no
-  // change_prices) / 200 (both) across every change_prices-gated endpoint.
+  // change_prices) / 403 (change_prices alone, no parts.edit) / 200 (both) across every
+  // change_prices-gated endpoint.
+  //
+  // Fix-wave 2 (finding 3): the `changeOnly` case is new. Without it, nothing in this test
+  // discriminates the `mustCan(user, "parts", "edit")` line from the `mustDo(user,
+  // "change_prices")` line that follows it — `editOnly` (parts.edit, no change_prices) 403s
+  // whether or not the mustCan line exists, because mustDo alone already refuses it. A user who
+  // holds change_prices but not parts.edit is the only case that isolates the mustCan half.
   it("price and price-break routes gate on parts.edit AND change_prices", async () => {
     const { partId } = await partFixture();
     const austemper = await prisma.processStepCode.create({ data: { code: "AUST", name: "Austemper" } });
 
     const editOnly = await signInWith(["parts.edit"], "price-edit-only-1");
+    const changeOnly = await signInWith(["action.change_prices"], "price-change-only-1");
     const full = await signInWith(["parts.edit", "action.change_prices"], "price-full-1");
 
     // POST /api/parts/[id]/prices
@@ -464,6 +472,9 @@ describe("parts routes", () => {
       withParams({ id: partId }))).status).toBe(401);
     expect((await addPriceRoute(
       bodyReq(`http://t/api/parts/${partId}/prices`, "POST", editOnly, addPriceBody),
+      withParams({ id: partId }))).status).toBe(403);
+    expect((await addPriceRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices`, "POST", changeOnly, addPriceBody),
       withParams({ id: partId }))).status).toBe(403);
     const added = await addPriceRoute(
       bodyReq(`http://t/api/parts/${partId}/prices`, "POST", full, addPriceBody),
@@ -479,6 +490,9 @@ describe("parts routes", () => {
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "PATCH", editOnly, { position: 2 }),
       withParams({ id: partId, priceId }))).status).toBe(403);
     expect((await patchPriceRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "PATCH", changeOnly, { position: 2 }),
+      withParams({ id: partId, priceId }))).status).toBe(403);
+    expect((await patchPriceRoute(
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "PATCH", full, { position: 2 }),
       withParams({ id: partId, priceId }))).status).toBe(200);
 
@@ -489,6 +503,9 @@ describe("parts routes", () => {
       withParams({ id: partId, priceId }))).status).toBe(401);
     expect((await addBreakRoute(
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks`, "POST", editOnly, addBreakBody),
+      withParams({ id: partId, priceId }))).status).toBe(403);
+    expect((await addBreakRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks`, "POST", changeOnly, addBreakBody),
       withParams({ id: partId, priceId }))).status).toBe(403);
     const addedBreak = await addBreakRoute(
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks`, "POST", full, addBreakBody),
@@ -504,6 +521,9 @@ describe("parts routes", () => {
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "PATCH", editOnly, { price: "1.00" }),
       withParams({ id: partId, priceId, breakId }))).status).toBe(403);
     expect((await patchBreakRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "PATCH", changeOnly, { price: "1.00" }),
+      withParams({ id: partId, priceId, breakId }))).status).toBe(403);
+    expect((await patchBreakRoute(
       bodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "PATCH", full, { price: "1.00" }),
       withParams({ id: partId, priceId, breakId }))).status).toBe(200);
 
@@ -515,6 +535,9 @@ describe("parts routes", () => {
       noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "DELETE", editOnly),
       withParams({ id: partId, priceId, breakId }))).status).toBe(403);
     expect((await deleteBreakRoute(
+      noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "DELETE", changeOnly),
+      withParams({ id: partId, priceId, breakId }))).status).toBe(403);
+    expect((await deleteBreakRoute(
       noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, "DELETE", full),
       withParams({ id: partId, priceId, breakId }))).status).toBe(200);
 
@@ -524,6 +547,9 @@ describe("parts routes", () => {
       withParams({ id: partId, priceId }))).status).toBe(401);
     expect((await deletePriceRoute(
       noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "DELETE", editOnly),
+      withParams({ id: partId, priceId }))).status).toBe(403);
+    expect((await deletePriceRoute(
+      noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "DELETE", changeOnly),
       withParams({ id: partId, priceId }))).status).toBe(403);
     expect((await deletePriceRoute(
       noBodyReq(`http://t/api/parts/${partId}/prices/${priceId}`, "DELETE", full),
@@ -559,6 +585,15 @@ describe("parts routes", () => {
     const editOnly = await signInWith(["parts.edit"], "price-reorder-edit-only-1");
     expect((await reorderPricesRoute(
       bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", editOnly, { orderedIds: [c.id, a.id, b.id] }),
+      withParams({ id: partId }))).status).toBe(403);
+
+    // Fix-wave 2 (finding 3): change_prices alone (no parts.edit) must also 403 — without this
+    // case, nothing here discriminates the `mustCan(user, "parts", "edit")` line from the
+    // `mustDo(user, "change_prices")` line that follows it; `editOnly` above 403s on the mustDo
+    // line alone regardless of whether mustCan exists.
+    const changeOnly = await signInWith(["action.change_prices"], "price-reorder-change-only-1");
+    expect((await reorderPricesRoute(
+      bodyReq(`http://t/api/parts/${partId}/prices/order`, "PUT", changeOnly, { orderedIds: [c.id, a.id, b.id] }),
       withParams({ id: partId }))).status).toBe(403);
 
     const wrong = await signInWith(["customers.view"], "price-reorder-wrong-1");
