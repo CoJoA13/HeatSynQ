@@ -10,6 +10,7 @@ import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { IdentitySection } from "./IdentitySection";
 import { SpecsSection } from "./SpecsSection";
 import { InspectionsSection } from "./InspectionsSection";
+import { PricingSection } from "./PricingSection";
 import { CustomFieldsSection } from "./CustomFieldsSection";
 import { ProcessStepsSection } from "./ProcessStepsSection";
 import { AttachmentsSection } from "@/components/AttachmentsSection";
@@ -189,6 +190,7 @@ function PartDetail({ id }: { id: string }) {
                         onOptionsError={addLoadError} />
       <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
+      <PricingSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
       <AttachmentsSection owner="part" ownerId={id} canEdit={gate(perms, "parts.edit").allowed} />
       <ProcessStepsSection partId={id} perms={perms} onError={setError} />
