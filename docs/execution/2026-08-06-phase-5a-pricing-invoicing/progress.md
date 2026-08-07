@@ -844,6 +844,17 @@ Task 11: DEFERRED to whole-branch triage — listPartPrices called without tx in
   no-GL warning path had thin coverage (renderAddress now tested in the fix wave).
 Task 11: re-review dispatched (task-reviewer, sonnet — scoped to the FK-guard completeness,
   placement under the claim, and the three minors)
+Task 11: re-review — Spec ✅, quality APPROVED, 0 findings. The reviewer proved the guarded FK set
+  COMPLETE by cross-checking InvoiceLine/Invoice's FK columns in the schema against the registered
+  BlockerTargets in reference-links.ts (only glAccountId/processStepCodeId/surchargeId qualify;
+  orderLineId/orderChargeId target non-reference child rows read live under the same claim), and
+  confirmed the cert-step-code special case closes a real gap (buildPricingInput's own
+  processStepCode.findFirst does not filter deletedAt). Spot-checked load-bearing: disabled the
+  three guards → soft-deleted-GL test went red, invoice silently created against the dead account
+  ($937.44); restored → 20/20 green, clean tree. Placement, dedup, and all three minors verified.
+Task 11: complete (commits 907f25c..556e367, re-review clean — approved)
+
+Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
