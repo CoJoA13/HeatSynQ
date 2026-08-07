@@ -471,6 +471,45 @@ Task 7: implementer DONE — commit 689d698, 10 files / +760. 1476 tests (25 new
   verification done via DOM/event driving and fetch() against the real authenticated session.
 Task 7: review dispatched (task-reviewer, opus — five routes, a 440-line page with no vitest seam,
   and the percent<->decimal round trip, which is the likeliest real bug in the task)
+CONTROLLER ERROR, corrected: I told the reviewer surcharge-percent.ts was an UNDISCLOSED addition.
+  It was disclosed — the report file documents it in four places (lines 34-36, 93-102, 219, 222).
+  I read the implementer's short report-BACK summary and treated its silence as the report's
+  silence. The report-back is a 15-line digest by design; the report file is the disclosure. Check
+  the file before accusing anyone of not declaring something. (The reviewer ruled the extraction
+  justified on the merits either way: a "use client" page cannot import src/server/**, and
+  src/lib/invoice-constants.ts is already shared by both sides — same precedent as
+  permission-constants.ts.)
+Task 7: review — Spec ✅, quality NEEDS FIXES. 2 Important, 5 Minor.
+  Reviewer singled out two things as genuinely right, both worth keeping: the whole-row payload is
+  TYPE-ENFORCED (SaveFields is a total type and buildBody returns it, so adding a control that
+  sends a partial patch is a COMPILE ERROR, not a silent regression — Task 6's headline defect is
+  structurally closed, not merely avoided); and the percent conversion is correct across
+  Decimal(9,6)'s ENTIRE range, checked at the boundaries (999.999999 round-trips exactly; 1e-6
+  still stringifies as "0.000001" rather than flipping to exponent form and failing the regex;
+  percentToDecimal("0") returns 0, not null, so a 0% surcharge saves).
+  Important 1 (FIXED) — SIBLING-SPLIT RULE AGAIN, and the sharpest instance yet: the page inherited
+    step-codes' idioms WITHOUT its saveQueue, and the sibling's own comment
+    (step-codes/page.tsx:75-86) reads like a description of this file — "two overlapping saves are
+    last-writer-wins over the whole set, and they overlap on the most ordinary interaction there
+    is: editing a label and then clicking a control." Because buildBody makes every PUT a whole-row
+    write, exactly one of two overlapping edits ALWAYS dies, silently, with no error. Two traced
+    losses: (a) type a rate then click Active — the typed rate lives only in textDrafts and is
+    never mirrored into rowsRef, so the second PUT carries the OLD rate; (b) check two step codes
+    in succession — THE BRIEF'S OWN STEP 4 SCENARIO — where the non-optimistic checkbox invites
+    the second click during the window and the second PUT drops the first code. Fenced by nothing:
+    no vitest seam, no E2E flow, and the verification script awaited each interaction so it could
+    not reproduce either.
+  Important 2 — PLAN-MANDATED AND SELF-CONTRADICTORY, so escalated to the owner rather than
+    decided by me: Step 1 specified a single admin.edit gate, Step 2 said copy from step-codes,
+    which splits. OWNER RULED (2026-08-07): SPLIT — POST admin.create, PUT admin.edit, DELETE
+    admin.delete, matching every other admin CRUD list. Recorded as a plan amendment superseding
+    Step 1. Rationale: admin.edit-without-admin.delete is the only lever the model offers, and
+    under one gate anyone who could edit a surcharge could soft-delete a definition Task 9 consumes.
+  Minors 3-7 folded into the same wave. Minor 5 is the one worth remembering: buildBody IS the
+    whole-row guarantee — the single thing this task was dispatched to get right — and it was
+    unexported inside a client component, so nothing could assert it; it was held up by TypeScript
+    alone. Extracted to src/lib/surcharge-body.ts with its own tests. The highest-risk logic in the
+    task had no test while the lowest-risk (the percent helpers) did.
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units

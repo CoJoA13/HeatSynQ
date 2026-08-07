@@ -974,6 +974,24 @@ const SAVE = z.object({
 >    `/admin` index page in this app. Admin sections are reached from the `ADMIN` array in
 >    `src/components/Shell.tsx`. Add `{ label: "Surcharges", href: "/admin/surcharges" }` there;
 >    do **not** create an index page. (Task 3 hit the identical error in its own brief.)
+>
+> **OWNER RULING, 2026-08-07 — the permission gates SPLIT. This supersedes Step 1 below.**
+> Step 1 as written specified a single `admin.edit` gate for GET/POST/PUT/DELETE, while Step 2 said
+> to copy the routes from `src/app/api/admin/step-codes/**` — which splits them. The plan
+> contradicted itself, and the first implementation followed Step 1. The owner ruled for the split,
+> matching **every** other admin CRUD list (step-codes, part-fields, reference/[kind]):
+>
+> - `POST   /api/admin/surcharges`      → `mustCan(requireUser(), "admin", "create")`
+> - `PUT    /api/admin/surcharges/[id]` → `mustCan(requireUser(), "admin", "edit")`
+> - `DELETE /api/admin/surcharges/[id]` → `mustCan(requireUser(), "admin", "delete")`
+>
+> Reason: `admin.edit`-without-`admin.delete` is the only lever the permission model offers, and
+> under the single gate anyone who could edit a surcharge could also soft-delete a definition that
+> Task 9's pricing engine consumes. The page's controls gate to match — Add on `admin.create`,
+> delete on `admin.delete` — still §5.16 (disabled with a title, never hidden). Each 403 test must
+> **discriminate**: a subject holding `admin.edit` but not `admin.create` must be refused by POST,
+> and one holding `admin.edit` but not `admin.delete` refused by DELETE. A 403 whose subject lacks
+> every admin grant proves nothing about which gate fired.
 
 **Files:**
 - Create: `src/app/api/admin/surcharges/route.ts`, `src/app/api/admin/surcharges/[id]/route.ts`, `src/app/api/admin/surcharges/[id]/step-codes/route.ts`, `src/app/api/admin/surcharges/[id]/blockers/route.ts`, `src/app/api/admin/surcharges/[id]/blockers/export/route.ts`, `src/app/admin/surcharges/page.tsx`
