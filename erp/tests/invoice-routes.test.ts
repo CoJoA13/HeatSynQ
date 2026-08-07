@@ -360,28 +360,27 @@ describe("invoice routes", () => {
   });
 
   // ---------------------------------------------------------------------------------------
-  // POST /api/invoices/[id]/credit — invoicing.create AND change_prices (a new money-bearing
-  // document, the same AND shape as lines/recalculate).
+  // POST /api/invoices/[id]/credit — invoicing.create ALONE (§5.6: "Its lifecycle is the
+  // invoice's; its permissions are the invoice's" — same shape as POST /api/invoices).
   // ---------------------------------------------------------------------------------------
 
-  it("POST /api/invoices/[id]/credit requires invoicing.create AND change_prices", async () => {
+  it("POST /api/invoices/[id]/credit requires invoicing.create", async () => {
     const { invoice } = await finalizedInvoice();
 
     expect((await creditRoute(noBodyReq("http://t/api/invoices/x/credit", "POST"), withParams({ id: invoice.id }))).status).toBe(401);
 
-    // DISCRIMINATION PROOF for this route: invoicing.create only -> 403; add change_prices -> 200.
+    // DISCRIMINATION PROOF: a subject WITHOUT invoicing.create -> 403, even holding an unrelated
+    // permission. Proves the create gate is still enforced.
+    const noCreate = await signInWith(["action.change_prices"], "inv-credit-no-create");
+    expect((await creditRoute(
+      noBodyReq("http://t/api/invoices/x/credit", "POST", noCreate), withParams({ id: invoice.id }),
+    )).status).toBe(403);
+
+    // invoicing.create ALONE, no change_prices -> succeeds. A credit's lines are derived (copied
+    // from the finalized source with the sign flipped), just like a fresh invoice's are derived
+    // from prices — no change_prices needed to raise it.
     const createOnly = await signInWith(["invoicing.create"], "inv-credit-create-only");
-    expect((await creditRoute(
-      noBodyReq("http://t/api/invoices/x/credit", "POST", createOnly), withParams({ id: invoice.id }),
-    )).status).toBe(403);
-
-    const pricesOnly = await signInWith(["action.change_prices"], "inv-credit-prices-only");
-    expect((await creditRoute(
-      noBodyReq("http://t/api/invoices/x/credit", "POST", pricesOnly), withParams({ id: invoice.id }),
-    )).status).toBe(403);
-
-    const both = await signInWith(["invoicing.create", "action.change_prices"], "inv-credit-both");
-    const res = await creditRoute(noBodyReq("http://t/api/invoices/x/credit", "POST", both), withParams({ id: invoice.id }));
+    const res = await creditRoute(noBodyReq("http://t/api/invoices/x/credit", "POST", createOnly), withParams({ id: invoice.id }));
     expect(res.status).toBe(200);
     const created = await res.json();
     expect(created.invoice.kind).toBe("CREDIT");
