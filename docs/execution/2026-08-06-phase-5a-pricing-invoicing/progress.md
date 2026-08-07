@@ -1081,6 +1081,24 @@ Task 16: CONTROLLER VERIFICATION of the gates against the BINDING SPEC (§5.5/§
 Task 16: review dispatched (task-reviewer, opus — every gate vs the spec, the credit-gate
   adjudication against §5.6, discrimination of the money-route 403s, the sweep not weakened,
   no-tx form on every route)
+Task 16: review — Spec ⚠️ (11 of 12 gates spec-correct), quality NEEDS FIXES. 1 Important, 1 Minor.
+  The reviewer RULED the credit gate = invoicing.create ALONE, reading §5.6's actual text ("a
+  credit's permissions are the invoice's") against §5.5 (invoice creation = create alone, amounts
+  derived). Inputs→harm: a subject with invoicing.create but not change_prices can raise an invoice
+  (POST /api/invoices needs only create) but was 403'd on the corrective credit — the asymmetry
+  §5.6 forbids. It also CONFIRMED the implementer's unlock=unlock_invoice was right and my folded
+  note (unlock=invoicing.edit) was wrong, and that recalculate correctly carries change_prices.
+  Discrimination verified live (removed a mustDo → the specific 403 assertion redded).
+  Important (FIXED, commit 685e9bf): credit route now gates invoicing.create alone; dead mustDo
+  import removed; test flipped (createOnly → 200, no-create → 403 kept so create still discriminates,
+  proven by removing the gate → 403→200). Full suite 1667 green, tsc/eslint clean.
+  Minor DEFERRED: the permission sweep is file-level not handler-level, so a NEW handler bolted onto
+  an existing multi-verb route file with no gate would slip through (a brand-new route FILE is
+  caught). Pre-existing, shared with the admin sweep; issue #35-class. Filed for whole-branch.
+  CONTROLLER: corrected the plan's Task 16 note (it had asserted credit needs change_prices, and
+  had unlock=invoicing.edit) so the whole-branch review isn't misled; struck both errors with the
+  §5.6 reasoning and the "a citation is not a quote" lesson.
+Task 16: complete (commits dddf064..685e9bf, review clean after the one-gate fix)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units

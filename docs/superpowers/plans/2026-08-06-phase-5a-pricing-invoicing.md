@@ -2334,18 +2334,23 @@ it("raises no over-ship warning for a reversal", async () => {
 
 ### Task 16: Routes + the 401/403 sweep
 
-> **Carried in from Task 12's review (2026-08-07). Money-changing invoice edits need
-> `change_prices`, not just `invoicing.edit`.** Spec §5.5 requires `mustDo(user, "change_prices")`
-> on any edit that changes what is billed — that is `.../[id]/lines` (`replaceInvoiceLines`),
-> `.../[id]/recalculate`, and the credit route, in addition to `invoicing.edit`. A header-only
-> `updateInvoice` (`.../[id]` PATCH of PO/date/terms/addresses) does **not** change money and takes
-> `invoicing.edit` alone. `finalize`/`unlock` gate on `invoicing.edit` (they change lifecycle, not
-> line amounts). The 401/403 sweep must **discriminate**: a subject holding `invoicing.edit` but
-> not `change_prices` must be refused by the lines/recalculate/credit routes and accepted by the
-> header PATCH — a 403 whose subject lacks both proves nothing about which gate fired (the exact
-> gap Task 7's route tests had). The service layer deliberately does NOT gate `change_prices`
-> (`invoices.ts` mutators are permission-free by design); the routes are the only place it lives, so
-> a missing `mustDo` here has no backstop.
+> **Carried in from Task 12's review (2026-08-07), CORRECTED at Task 16's review (2026-08-07).**
+> **The authoritative gate table is now in the Phase 5A constraints file and spec §5.5/§5.6 — this
+> note's ORIGINAL claim that the credit route needs `change_prices` was WRONG and is struck.**
+> `change_prices` gates edits that change money **on existing lines** — `.../[id]/lines`
+> (`replaceInvoiceLines`) and `.../[id]/recalculate`, each in addition to `invoicing.edit`. A
+> header-only `updateInvoice` (`.../[id]` PATCH) takes `invoicing.edit` alone. `finalize` gates
+> `invoicing.edit`; **`unlock` gates `mustDo(user, "unlock_invoice")` + reason** (an earlier draft
+> of this note wrongly said `invoicing.edit`). **The credit route (`.../[id]/credit`) gates
+> `invoicing.create` ALONE** — spec §5.6 "a credit's permissions are the invoice's," and raising an
+> invoice is `invoicing.create` alone (amounts derived, not user-set); adding `change_prices` there
+> wrongly locked out a user who can raise invoices but lacks `change_prices`. The 401/403 sweep must
+> **discriminate**: a `change_prices`-lacking subject is refused by lines/recalculate and accepted
+> by the header PATCH and the credit route; a 403 whose subject lacks *both* the base verb and the
+> special action proves nothing about which gate fired (the gap Task 7's tests had). The service
+> layer deliberately does NOT gate these actions (`invoices.ts` mutators are permission-free) — the
+> routes are the only backstop. **Lesson recorded: a citation is not a quote — this note, and two
+> reviews, asserted `change_prices` on credit citing "§5.6" while §5.6's text says the opposite.**
 >
 > **Also carried in from Task 13's review: the finalize/credit routes must call the NO-`tx` service
 > form.** `finalizeInvoice(id)` (like `createInvoice`) exposes a `tx`-taking overload used only by

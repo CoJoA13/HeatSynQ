@@ -192,3 +192,101 @@ called through their public, wrapped bracket — every route runs inside the Ser
    multi-select status filtering, `listInvoices`/`parseInvoiceFilter` will need a small follow-up
    change (the `orders.ts`/`query.ts` `parseStatus` array-of-values shape is the precedent to
    reach for).
+
+## Fix wave 1
+
+### The fix
+
+`src/app/api/invoices/[id]/credit/route.ts` was gated `mustCan(user, "invoicing", "create")` **and**
+`mustDo(user, "change_prices")`. The `change_prices` gate was wrong and has been removed; the route
+now gates on `invoicing.create` alone.
+
+**Why.** Spec §5.6 states of a credit — *"Its lifecycle is the invoice's; its permissions are the
+invoice's."* Raising an invoice needs `invoicing.create` alone (§5.5 line 444) — the amounts are
+derived from prices, not user-set. A credit's lines are likewise derived (copied from the finalized
+source with the sign flipped), so raising a credit gates exactly like raising an invoice:
+`invoicing.create` alone. `change_prices` gates *editing money on existing lines* (the `.../lines`
+and `.../recalculate` routes) — which a credit reaches later through those same routes, already
+gated. The "Permission gate resolution" section above (original implementation) cited a binding
+header note demanding `change_prices` on this route "alongside `lines`/`recalculate`" and read that
+as corroborated by §5.6 — but §5.6's actual text says the opposite of what that note claimed. The
+code review caught this and ruled create-alone.
+
+**Concrete consequence being fixed:** a user with `invoicing.create` but not `change_prices` could
+raise a new invoice (POST `/api/invoices` needs only `create`) but could NOT raise the corrective
+credit — the exact asymmetry §5.6 forbids.
+
+### What changed
+
+- `src/app/api/invoices/[id]/credit/route.ts`: deleted `mustDo(requireUser(), "change_prices")`.
+  The `mustDo` import was now unused in this file (only `mustCan` remains used) and was removed
+  too. The route now has exactly one gate: `mustCan(user, "invoicing", "create")`.
+- `tests/invoice-routes.test.ts`: renamed the credit test to `"POST /api/invoices/[id]/credit
+  requires invoicing.create"`. The subject holding `invoicing.create` alone (`inv-credit-create-
+  only`) now asserts **200** (was 403). A new discrimination case (`inv-credit-no-create`, holding
+  `action.change_prices` but NOT `invoicing.create`) asserts **403**, proving the `create` gate is
+  still enforced and still the load-bearing one. The 401 (unauthenticated) case is unchanged.
+
+### Proof — exactly one gate
+
+```
+$ sed -n '1,20p' src/app/api/invoices/\[id\]/credit/route.ts
+import { handle, requireUser } from "@/server/http";
+import { mustCan } from "@/server/permissions";
+import { createCredit } from "@/server/invoices";
+import { invoiceResponse } from "../../response";
+...
+export const POST = handle(async (_req, { params }) => {
+  const user = requireUser();
+  mustCan(user, "invoicing", "create");
+  const detail = await createCredit((await params).id);
+  return invoiceResponse(detail);
+});
+```
+
+No `mustDo`/`change_prices` reference remains in the file.
+
+### Proof — test green after the fix
+
+```
+$ npx vitest run tests/invoice-routes.test.ts
+ ✓ tests/invoice-routes.test.ts (12 tests) 3536ms
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+```
+
+### Proof — the create gate still discriminates (deliberately broken, then restored)
+
+With `mustCan(user, "invoicing", "create")` temporarily commented out of the route:
+
+```
+$ npx vitest run tests/invoice-routes.test.ts -t "credit"
+ × invoice routes > POST /api/invoices/[id]/credit requires invoicing.create
+   AssertionError: expected 200 to be 403 // Object.is equality
+   - Expected: 403
+   + Received: 200
+   at tests/invoice-routes.test.ts:377 (the `noCreate` assertion)
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 skipped (12)
+```
+
+This is direct evidence the test would catch a missing `invoicing.create` gate. After restoring the
+line:
+
+```
+$ npx vitest run tests/invoice-routes.test.ts
+ ✓ tests/invoice-routes.test.ts (12 tests) 3598ms
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+```
+
+### Full gates
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests` — clean (no unused-import warning for the removed `mustDo`).
+- `npm test` (full suite) — **108 files, 1667 tests, all pass**.
+
+### Not touched
+
+No other route or gate in this file's table was changed. The other 11 gates remain as originally
+implemented and reviewed.
