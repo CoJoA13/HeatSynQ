@@ -963,6 +963,31 @@ Task 13: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Mino
       Serializable + withDbErrors bracket) — added beside the change_prices note already there.
 Task 13: complete (commit 9ddc2db, review clean — approved first pass)
 
+Task 14: dispatched (implementer, OPUS) — BASE 9ddc2db, brief task-14-brief.md.
+Task 14: implementer DONE — commit 7af7c00, invoices.ts (+146) + tests (+139). 11 new tests, full
+  suite 1641, gates clean, reported promptly.
+  CROSS-TASK CORRECTNESS CATCH: the brief assumed Task 13's finalize already branched on `kind`,
+  but it wrote Order.status = INVOICED UNCONDITIONALLY. Left as-is, finalizing a CREDIT would have
+  written INVOICED to the order, violating spec §5.2 ("finalizing a CREDIT changes no order
+  status"). This is a LATENT defect in already-approved Task 13 code that could not manifest until
+  credits existed — Task 13's review could not have caught it (no CREDIT to finalize). The
+  implementer added `if (invoice.kind === "INVOICE")` around the order write, proven RED on both
+  branches. The "property untestable in Task N becomes testable in N+1" pattern, exactly.
+  Sign flip: amounts negate, qty/weight stay as billed, total negative, header+lines share one
+  sign (totalsFromLines over the negated lines); negateMoney normalizes a zero line's -0 to +0.
+  FINALIZED-INVOICE-only: refuses DRAFT source, CREDIT source, voided order — each named, read
+  under claimInvoiceRow. credit_number from allocateNumber; CREDIT coexists live with its source
+  INVOICE (partial index scoped to kind='INVOICE'). Anti-drift: reuses claimInvoiceRow/
+  assertLineRefs/totalsFromLines/wirePayloadParents (widened to a structural {key,parentKey}); does
+  NOT use mapComputedLines (credit lines are stored rows, not engine output).
+  Disclosed concern: the credit copies the source's invoiceDate verbatim (brief said "copy every
+  header snapshot") rather than stamping today. 5A has no aging machinery (5B), so date is
+  display-only now; sent to the reviewer to rule on, flagged for the owner demo rather than a
+  mid-flow interrupt (one-line change, brief-faithful as built).
+Task 14: review dispatched (task-reviewer, opus — the Task-13 finalize kind-guard fix on the
+  money-status path, the sign flip incl. -0, FINALIZED-invoice-only refusals under the claim,
+  anti-drift reuse, and the CREDIT/INVOICE coexistence)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
