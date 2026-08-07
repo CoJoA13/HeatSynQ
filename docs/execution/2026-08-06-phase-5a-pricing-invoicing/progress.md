@@ -940,6 +940,28 @@ Task 13: implementer DONE — commit 9ddc2db, invoices.ts (+133) + ship-ledger.t
 Task 13: review dispatched (task-reviewer, opus, pointed at the CORRECT 5A constraints file — the
   status-ownership skip vs arithmetic status, the `released` escape-hatch being unlock-only, both
   transitions claiming before the flip, unlock->DRAFT, needsPrice freeze)
+Task 13: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Minor.
+  THE IMPLEMENTER CAUGHT A BROKEN BRIEF. The brief's literal step-5 code
+  (recomputeOrderStatus(tx, [orderId]), 2-arg) would have stranded orders at INVOICED FOREVER:
+  unlock clears the invoice's status but the ORDER is still INVOICED when recompute runs, so the
+  status-based skip skips it. The `released` third arg is the minimal correct repair, and the
+  reviewer grep-verified it is confined to unlock — all eight shippers.ts and three orders.ts
+  recompute sites use the 2-arg form, so no shipment path can drop INVOICED. All six hard checks
+  pass; claim-before-flip on both transitions; unlock->DRAFT restores all four Task-12 edits;
+  needsPrice reads the resolved price and finalize freezes (edited $1 line stays $1).
+  Voided-order-refusal addition RULED in-scope and correct (consistent with create/recalculate,
+  §5.7). Status skip confirmed status-OWNERSHIP not arithmetic (ship-derived derivation untouched).
+  3 Minors DEFERRED to whole-branch triage: unlock's audit test asserts reason + end-state but not
+  the status before/after diff (finalize covers that pattern); the brief's mandated ordering test
+  was correctly NOT added because the `released` design makes the ordering non-load-bearing (a test
+  that can't discriminate) — I ACCEPT that design change as controller, it repairs a broken brief;
+  and the finalizeInvoice(id, tx?) seam used only by the concurrency test.
+  TWO cross-task ⚠️ folded into the tasks that own them:
+    - Task 15: the reversing shipment writes REOPENED DIRECTLY and must NOT pass `released` to
+      recomputeOrderStatus (that would re-open the exact hole the skip closes).
+    - Task 16: finalize/credit routes call the NO-tx service form (the tx? overload bypasses the
+      Serializable + withDbErrors bracket) — added beside the change_prices note already there.
+Task 13: complete (commit 9ddc2db, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units

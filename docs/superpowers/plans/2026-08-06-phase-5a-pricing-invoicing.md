@@ -2252,6 +2252,17 @@ it("never frees a credit number when the draft is discarded", async () => {
 
 ### Task 15: The reversing shipment
 
+> **Carried in from Task 13's review (2026-08-07). Write `REOPENED` DIRECTLY; do NOT pass
+> `released` to `recomputeOrderStatus`.** Task 13 added a `released` third arg to
+> `recomputeOrderStatus` (`ship-ledger.ts`) that forces a recompute past the invoice-owned skip —
+> it exists **solely so unlock can return an order to its ship-derived value**, and a grep-verified
+> invariant is that unlock (`invoices.ts`) is its only caller. A reversing shipment against an order
+> with a finalized invoice must set `Order.status = REOPENED` **directly** (spec §5.2), NOT by
+> calling `recomputeOrderStatus(..., released)` — passing `released` from a shipment path is exactly
+> the hole the skip exists to close (it would let a shipment-side recompute drop an invoice-owned
+> status). Keep `recomputeOrderStatus`'s two-arg form on every shipment path, as all eight existing
+> `shippers.ts` sites already do.
+
 **Files:**
 - Modify: `src/server/shippers.ts`, `prisma/schema.prisma` (already done in Task 2 — `reversesShipperId`), `src/server/ship-ledger.ts` (over-ship warning against the net total)
 - Create: `src/app/api/shippers/[id]/reverse/route.ts`
@@ -2335,6 +2346,12 @@ it("raises no over-ship warning for a reversal", async () => {
 > gap Task 7's route tests had). The service layer deliberately does NOT gate `change_prices`
 > (`invoices.ts` mutators are permission-free by design); the routes are the only place it lives, so
 > a missing `mustDo` here has no backstop.
+>
+> **Also carried in from Task 13's review: the finalize/credit routes must call the NO-`tx` service
+> form.** `finalizeInvoice(id)` (like `createInvoice`) exposes a `tx`-taking overload used only by
+> the concurrency test; the no-`tx` form is what wraps the work in the Serializable `$transaction` +
+> `withDbErrors` bracket. Routes must call the no-`tx` form, or they bypass the isolation and the
+> error mapping. Same for any other invoice mutator with a `tx?` seam.
 
 **Files:**
 - Create: `src/app/api/invoices/route.ts`, `src/app/api/invoices/response.ts`, `src/app/api/invoices/query.ts`, `src/app/api/invoices/[id]/route.ts`, `.../[id]/lines/route.ts`, `.../[id]/recalculate/route.ts`, `.../[id]/finalize/route.ts`, `.../[id]/unlock/route.ts`, `.../[id]/credit/route.ts`, `src/app/api/orders/[id]/invoices/route.ts`
