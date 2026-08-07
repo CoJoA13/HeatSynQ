@@ -124,4 +124,58 @@ describe("part prices", () => {
     rows = await listPartPrices(partId);
     expect(rows[0].breaks).toEqual([]);
   });
+
+  // Fix wave 1, finding 2: the existing "scoped to its price row" test above only exercises the
+  // FIRST scoping tier (a price row belonging to a different PART), so both rejections there
+  // actually assert "Price row not found". This covers the second tier: a break id that belongs
+  // to a DIFFERENT price row on the SAME part — where a wrong-row edit would otherwise succeed.
+  it("404s 'Price break not found' for a break on a different price row of the same part", async () => {
+    const { partId, austemper, straighten } = await fixture();
+    const { id: priceA } = await asSystem(() =>
+      addPartPrice(partId, { processStepCodeId: austemper.id, position: 1, pricePer: "EACH" }));
+    const { id: priceB } = await asSystem(() =>
+      addPartPrice(partId, { processStepCodeId: straighten.id, position: 2, pricePer: "EACH" }));
+    const { id: breakId } = await asSystem(() => addPriceBreak(partId, priceA, { threshold: 500, price: "0.95" }));
+
+    await expect(asSystem(() => updatePriceBreak(partId, priceB, breakId, { price: "1.00" })))
+      .rejects.toThrow("Price break not found");
+    await expect(asSystem(() => deletePriceBreak(partId, priceB, breakId)))
+      .rejects.toThrow("Price break not found");
+  });
+
+  // Fix wave 1, finding 3: exercises the step-code-change branch (part-prices.ts:126-135) — both
+  // the happy path (change + read-back) and the duplicate re-check that branch performs. The
+  // helper's declared param type omits processStepCodeId, so only a runtime test catches a wrong
+  // FK field name here (see part-prices.ts:103's comment).
+  it("changes a price row's step code, and the duplicate re-check catches a collision on that change", async () => {
+    const { partId, austemper, straighten } = await fixture();
+    const temper = await prisma.processStepCode.create({ data: { code: "TEMP", name: "Temper" } });
+    const { id: priceId } = await asSystem(() => addPartPrice(partId, { processStepCodeId: austemper.id, position: 1 }));
+
+    await asSystem(() => updatePartPrice(partId, priceId, { processStepCodeId: temper.id }));
+    const rows = await listPartPrices(partId);
+    expect(rows[0].processStepCodeId).toBe(temper.id);
+    expect(rows[0].stepCode).toBe("TEMP");
+
+    const { id: otherPriceId } = await asSystem(() =>
+      addPartPrice(partId, { processStepCodeId: straighten.id, position: 2 }));
+    await expect(asSystem(() => updatePartPrice(partId, otherPriceId, { processStepCodeId: temper.id })))
+      .rejects.toThrow("That operation is already priced on this part");
+  });
+
+  // Fix wave 1, finding 5: breaks now hang off a price row rather than the part, so the
+  // duplicate-threshold refusal deserves its own case on both addPriceBreak and updatePriceBreak.
+  it("refuses a duplicate threshold on add and on update", async () => {
+    const { partId, austemper } = await fixture();
+    const { id: priceId } = await asSystem(() =>
+      addPartPrice(partId, { processStepCodeId: austemper.id, position: 1, pricePer: "EACH" }));
+    await asSystem(() => addPriceBreak(partId, priceId, { threshold: 500, price: "0.95" }));
+    await expect(asSystem(() => addPriceBreak(partId, priceId, { threshold: 500, price: "0.90" })))
+      .rejects.toThrow("A price break with that threshold already exists");
+
+    const { id: otherBreakId } = await asSystem(() =>
+      addPriceBreak(partId, priceId, { threshold: 1000, price: "0.85" }));
+    await expect(asSystem(() => updatePriceBreak(partId, priceId, otherBreakId, { threshold: 500 })))
+      .rejects.toThrow("A price break with that threshold already exists");
+  });
 });

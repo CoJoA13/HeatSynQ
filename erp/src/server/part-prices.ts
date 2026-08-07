@@ -98,7 +98,7 @@ export async function addPartPrice(partId: string, input: Record<string, unknown
 }
 
 /** Writes only if still live and still scoped to this part, one statement — the claimLive
- *  precedent (parts.ts, part-price-breaks.ts). */
+ *  precedent (part-inspections.ts:80). */
 async function claimLivePrice(
   tx: Prisma.TransactionClient, id: string, partId: string, data: Prisma.PartPriceUpdateManyMutationInput,
 ) {
