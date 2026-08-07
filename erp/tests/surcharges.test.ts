@@ -366,7 +366,7 @@ describe("GET/POST /api/admin/surcharges", () => {
       .toBe(401);
   });
 
-  it("requires admin.view for GET and admin.edit for POST", async () => {
+  it("requires admin.view for GET and admin.create for POST", async () => {
     const noPerms = await signInWith(["customers.view"], "no-admin");
     expect((await listRoute(getReq("http://t/api/admin/surcharges", noPerms), noParams)).status).toBe(403);
 
@@ -376,17 +376,26 @@ describe("GET/POST /api/admin/surcharges", () => {
       bodyReq("http://t/api/admin/surcharges", "POST", viewer, { name: "S", kind: "FLAT", amount: "1.00", position: 1 }),
       noParams,
     )).status).toBe(403);
+
+    // Discriminating case (review Fix 2, fix wave 1): admin.edit alone must not satisfy POST's
+    // admin.create gate — an editor with no create grant is still refused, proving POST checks
+    // its own permission rather than "holds some admin grant."
+    const editorNoCreate = await signInWith(["admin.view", "admin.edit"], "surcharges-editor-no-create");
+    expect((await createRoute(
+      bodyReq("http://t/api/admin/surcharges", "POST", editorNoCreate, { name: "S2", kind: "FLAT", amount: "1.00", position: 1 }),
+      noParams,
+    )).status).toBe(403);
   });
 
-  it("GET/POST succeed with admin.view/admin.edit, and the created row is listed", async () => {
-    const editor = await signInWith(["admin.view", "admin.edit"], "surcharges-editor");
-    const postRes = await createRoute(bodyReq("http://t/api/admin/surcharges", "POST", editor,
+  it("GET/POST succeed with admin.view/admin.create, and the created row is listed", async () => {
+    const creator = await signInWith(["admin.view", "admin.create"], "surcharges-creator");
+    const postRes = await createRoute(bodyReq("http://t/api/admin/surcharges", "POST", creator,
       { name: "EnergySur", kind: "PERCENT", rate: "0.040000", position: 1 }), noParams);
     expect(postRes.status).toBe(200);
     const { id } = await postRes.json();
     expect(typeof id).toBe("string");
 
-    const getRes = await listRoute(getReq("http://t/api/admin/surcharges", editor), noParams);
+    const getRes = await listRoute(getReq("http://t/api/admin/surcharges", creator), noParams);
     expect(getRes.status).toBe(200);
     const rows = await getRes.json();
     expect(rows).toHaveLength(1);
@@ -404,7 +413,7 @@ describe("PUT/DELETE /api/admin/surcharges/[id]", () => {
       .status).toBe(401);
   });
 
-  it("requires admin.edit for PUT and DELETE", async () => {
+  it("requires admin.edit for PUT and admin.delete for DELETE", async () => {
     const editor = await signInWith(["admin.view", "admin.edit"], "surcharges-editor2");
     const { id } = await asSystem(() => createSurcharge({ name: "S", kind: "FLAT", amount: "1.00", position: 1 }));
 
@@ -416,6 +425,12 @@ describe("PUT/DELETE /api/admin/surcharges/[id]", () => {
     expect((await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", viewer), withParams({ id })))
       .status).toBe(403);
 
+    // Discriminating case (review Fix 2, fix wave 1): admin.edit alone must not satisfy DELETE's
+    // admin.delete gate — an editor with no delete grant is refused by DELETE specifically,
+    // proving PUT and DELETE check different permissions rather than sharing one.
+    expect((await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", editor), withParams({ id })))
+      .status).toBe(403);
+
     const putRes = await updateRoute(
       bodyReq(`http://t/api/admin/surcharges/${id}`, "PUT", editor, { name: "S2", kind: "FLAT", amount: "2.00", position: 1 }),
       withParams({ id }),
@@ -425,7 +440,8 @@ describe("PUT/DELETE /api/admin/surcharges/[id]", () => {
     expect(row.name).toBe("S2");
     expect(row.amount?.toNumber()).toBe(2);
 
-    const delRes = await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", editor), withParams({ id }));
+    const deleter = await signInWith(["admin.view", "admin.delete"], "surcharges-deleter");
+    const delRes = await deleteRoute(noBodyReq(`http://t/api/admin/surcharges/${id}`, "DELETE", deleter), withParams({ id }));
     expect(delRes.status).toBe(200);
     expect((await prisma.surcharge.findUniqueOrThrow({ where: { id } })).deletedAt).toBeInstanceOf(Date);
   });
@@ -475,6 +491,10 @@ describe("GET /api/admin/surcharges/[id]/blockers(/export)", () => {
 
     const noPerms = await signInWith(["customers.view"], "no-admin2");
     expect((await blockersRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers`, noPerms), withParams({ id })))
+      .status).toBe(403);
+    // Fix 6 (review, fix wave 1): the export route carries the same mustCan as the plain
+    // blockers route, but only the plain route's 403 was ever asserted.
+    expect((await blockersExportRoute(getReq(`http://t/api/admin/surcharges/${id}/blockers/export`, noPerms), withParams({ id })))
       .status).toBe(403);
 
     const viewer = await signInWith(["admin.view"], "surcharges-viewer4");

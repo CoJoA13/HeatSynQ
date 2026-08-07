@@ -14,8 +14,11 @@ export const PUT = handle(async (req, { params }) => {
   return NextResponse.json({ ok: true });
 });
 
+// admin.delete, not admin.edit — matching every other admin CRUD list (step-codes, part-fields,
+// reference/[kind]); see route.ts's POST comment for the same owner ruling (review Fix 2, fix
+// wave 1).
 export const DELETE = handle(async (_req, { params }) => {
-  mustCan(requireUser(), "admin", "edit");
+  mustCan(requireUser(), "admin", "delete");
   await deleteSurcharge((await params).id);
   return NextResponse.json({ ok: true });
 });

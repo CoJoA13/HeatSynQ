@@ -9,10 +9,11 @@ export const GET = handle(async (req) => {
   return NextResponse.json(await listSurcharges({ includeInactive }));
 });
 
-// Gated on admin.edit, not admin.create — surcharges carry no separate create/delete grant
-// (task-7 brief): the whole CRUD surface for this admin screen turns on view/edit alone, the
-// same shape as /api/admin/billing.
+// admin.create, matching every other admin CRUD list (step-codes, part-fields,
+// reference/[kind]) — an owner ruling (review Fix 2, fix wave 1) that supersedes the brief's
+// original single admin.edit gate for POST/PUT/DELETE. PUT stays admin.edit; see [id]/route.ts
+// for the DELETE -> admin.delete split.
 export const POST = handle(async (req) => {
-  mustCan(requireUser(), "admin", "edit");
+  mustCan(requireUser(), "admin", "create");
   return NextResponse.json(await createSurcharge(await req.json()));
 });
