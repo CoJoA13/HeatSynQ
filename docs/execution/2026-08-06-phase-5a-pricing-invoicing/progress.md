@@ -873,6 +873,34 @@ Task 12: implementer DONE — commit cb66551, invoices.ts (+484/-59) + tests (+1
 Task 12: review dispatched (task-reviewer, opus — the create-path refactor must be
   behavior-preserving, the anti-drift deep-equal must cover money fields, draft-only guards under
   the claim, assertRefExists on the new write paths)
+Task 12: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Minor.
+  The reviewer verified the create-path extraction is FIELD-FOR-FIELD behavior-preserving
+  (mapComputedLines identical to the prior inline lineData incl. the CHARGE-GL seam; assertLineRefs
+  reproduces the FK-guard loop; create's totals path untouched), and proved anti-drift discriminates
+  by mutating recalc's derived amounts +$0.01 → the "no drift" test went red on both PART and
+  OPERATION lines, reverted clean. Draft-only guard confirmed discriminating (neutered the FINALIZED
+  throw → test 1 red). Precision exact against every column (and noted the brief mislabeled
+  breakThreshold as 12,4 — it is 12,2 in the schema; the code follows the schema).
+  BOTH report concerns ruled sound: the editable-header set includes invoiceDate (spec §4 line 453
+  mandates it editable while draft) and exposes no immutable field; recalc refreshing taxRate is
+  correct (it is inseparable from the regenerated TAX line) while preserving edited PO/terms/addrs.
+  3 Minors DEFERRED to whole-branch triage (all coverage/polish, none correctness — the shared
+  helper makes the drift they'd guard structurally impossible): anti-drift test compares a subset
+  of money fields (omits position/unitPrice/rate/glAccountId); no audit-CONTENT assertion on the
+  replace/recalc paths specifically (update and discard have theirs); materialName/processNames
+  header snapshots are write-once at create, so a re-priced invoice can show a stale process-name
+  summary while its OPERATION lines regenerate fresh (display-only, no money impact).
+  THREE cross-task ⚠️ items folded into the tasks that own them (controller):
+    - Task 13: unlock MUST set status back to DRAFT, or Task 12's FINALIZED-only refusal keeps
+      every edit blocked and "unlock" does nothing actionable. Added beside the existing
+      claim-before-finalize note.
+    - Task 16: money-changing invoice routes (lines/recalculate/credit) need change_prices, not
+      just invoicing.edit; the service layer deliberately does not gate it, so the route is the
+      only backstop. The 401/403 sweep must discriminate (invoicing.edit-without-change_prices
+      refused by those routes, accepted by the header PATCH).
+    - Task 19: printInvoice must claim the invoice row FOR UPDATE before inserting the
+      StoredDocument — the print-vs-discard serialization, the Phase 4 print-vs-void lesson.
+Task 12: complete (commit cb66551, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units

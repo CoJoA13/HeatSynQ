@@ -2092,6 +2092,14 @@ it("recomputes the totals after a line edit", async () => {
 > what the invoice then bills. Claim the order(s) in `claimOrdersInOrder` order at the top of both
 > finalize and unlock, before reading or writing invoice state. Task 10's source documents this
 > dependency at the guard; do not treat it as optional.
+>
+> **Also carried in from Task 12 (2026-08-07): unlock MUST return status to `DRAFT`.** Only
+> `DRAFT` and `FINALIZED` exist (`invoice-constants.ts`), and Task 12's `claimLiveInvoice` refuses
+> edits on a FINALIZED invoice specifically (`invoices.ts` ~line 741) — so the entire editability
+> of an unlocked invoice hinges on unlock setting the status back to `DRAFT`. If unlock leaves it
+> `FINALIZED` (or invents a third state the guard doesn't know), every Task 12 mutator keeps
+> refusing and "unlock" does nothing a user can act on. Test that after unlock, `updateInvoice` /
+> `replaceInvoiceLines` / `recalculateInvoice` / `discardInvoice` all succeed again.
 
 **Files:**
 - Modify: `src/server/invoices.ts`, `src/server/ship-ledger.ts`
@@ -2315,6 +2323,19 @@ it("raises no over-ship warning for a reversal", async () => {
 
 ### Task 16: Routes + the 401/403 sweep
 
+> **Carried in from Task 12's review (2026-08-07). Money-changing invoice edits need
+> `change_prices`, not just `invoicing.edit`.** Spec §5.5 requires `mustDo(user, "change_prices")`
+> on any edit that changes what is billed — that is `.../[id]/lines` (`replaceInvoiceLines`),
+> `.../[id]/recalculate`, and the credit route, in addition to `invoicing.edit`. A header-only
+> `updateInvoice` (`.../[id]` PATCH of PO/date/terms/addresses) does **not** change money and takes
+> `invoicing.edit` alone. `finalize`/`unlock` gate on `invoicing.edit` (they change lifecycle, not
+> line amounts). The 401/403 sweep must **discriminate**: a subject holding `invoicing.edit` but
+> not `change_prices` must be refused by the lines/recalculate/credit routes and accepted by the
+> header PATCH — a 403 whose subject lacks both proves nothing about which gate fired (the exact
+> gap Task 7's route tests had). The service layer deliberately does NOT gate `change_prices`
+> (`invoices.ts` mutators are permission-free by design); the routes are the only place it lives, so
+> a missing `mustDo` here has no backstop.
+
 **Files:**
 - Create: `src/app/api/invoices/route.ts`, `src/app/api/invoices/response.ts`, `src/app/api/invoices/query.ts`, `src/app/api/invoices/[id]/route.ts`, `.../[id]/lines/route.ts`, `.../[id]/recalculate/route.ts`, `.../[id]/finalize/route.ts`, `.../[id]/unlock/route.ts`, `.../[id]/credit/route.ts`, `src/app/api/orders/[id]/invoices/route.ts`
 - Modify: `tests/permissions-sweep.test.ts`
@@ -2405,6 +2426,17 @@ export async function invoiceResponse(detail: InvoiceDetail): Promise<NextRespon
 ---
 
 ### Task 19: `pdf/invoice.ts` — the layout, print and archive
+
+> **Carried in from Task 12's review (2026-08-07). `printInvoice` MUST claim the invoice row
+> `FOR UPDATE` before inserting the `StoredDocument`.** Task 12's `discardInvoice` refuses to
+> discard a *printed* invoice by reading `storedDocument` under its invoice-row claim — but that
+> invariant lives on the `StoredDocument` rows, not on the claimed `Invoice` row, so the two sides
+> only serialize if the print path takes the **same** invoice-row claim before it archives. This is
+> the Phase 4 print-vs-void lesson exactly (whole-branch review found print-vs-void completely
+> unprotected because one side rested on an SSI accident): claim the invoice row, THEN insert the
+> StoredDocument, inside one transaction. Serializable isolation alone is not the guarantee. Without
+> this, a discard and a first-print can interleave — the discard reads "not printed" while the
+> print commits, and you get a discarded invoice with an archived PDF that reprints forever.
 
 **Files:**
 - Create: `src/server/pdf/invoice.ts`, `src/app/api/invoices/[id]/print/route.ts`
