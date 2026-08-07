@@ -450,6 +450,28 @@ Task 7: brief extracted. PLAN DEFECT, same one Task 3 hit: the Files list names
   live in Shell.tsx's ADMIN array. Pre-resolved in the plan and in the dispatch rather than left
   for the implementer to trip over a second time.
 
+Task 7: dispatched (implementer, sonnet) — BASE fc37830, brief task-7-brief.md, carrying the two
+  pre-resolutions (no /admin index page; the editor MUST post the whole row).
+Task 7: implementer DONE — commit 689d698, 10 files / +760. 1476 tests (25 new route tests + 4
+  percent-conversion unit tests), tsc+eslint+build clean, E2E 15/15.
+  WHOLE-ROW VERIFIED LIVE, and verified the way I asked: set minimumAmount=75 and active=false,
+  then edited ONLY position (1->5), reloaded, and confirmed minimumAmount/active/rate/scope/
+  stepCodeIds all survived — from captured network bodies, not inference. That is the exact trap
+  normalize-on-write creates, checked against the running server rather than reasoned about.
+  Disclosed deviation: a single admin.edit gate rather than step-codes' create/edit/delete split,
+  on the grounds the brief's own route-test spec calls for exactly that. Sent to the reviewer.
+  UNDISCLOSED addition, caught by the controller reading the diff rather than the summary:
+  src/lib/surcharge-percent.ts (+35) and tests/surcharge-percent.test.ts (+35) are NOT in the
+  brief's file list and were not mentioned in the report-back. Probably right — a client component
+  cannot import from src/server/**, so a shared pure module in src/lib is the sanctioned pattern
+  (permission-constants.ts is the precedent) — but it went to the reviewer to rule on, WITH the
+  note that unlike this phase's other deviations it was not declared. Read the diff, not the
+  summary: three deviations this phase were disclosed, this one was not.
+  Same environmental limitation as Task 5 (no frame compositing, unreliable coordinate clicks);
+  verification done via DOM/event driving and fetch() against the real authenticated session.
+Task 7: review dispatched (task-reviewer, opus — five routes, a 440-line page with no vitest seam,
+  and the percent<->decimal round trip, which is the likeliest real bug in the task)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
