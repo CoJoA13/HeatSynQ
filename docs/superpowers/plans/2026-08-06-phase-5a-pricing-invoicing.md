@@ -979,6 +979,27 @@ const SAVE = z.object({
 
 ### Task 8: Customer-side — surcharge overrides, tax rate, cert suppression
 
+> **PLAN HOLE CLOSED (2026-08-07, from Task 6's review). This task now owns a DELETE route.**
+> As originally written, this phase gave a customer surcharge override **no removal path at all**:
+> Task 6's interface had only `listCustomerSurcharges`/`setCustomerSurcharge`, Task 7's route is
+> GET + PUT, and this task's UI consumed those. But a live `CustomerSurcharge` row **blocks
+> deletion of the surcharge it points at** (`reference-links.ts:192-200`), and `optOut: false`
+> still leaves the row — so creating one override made that surcharge undeletable forever. That is
+> precisely the shape `reference-blockers.ts:12-22` names as the Visual Shop dead end this system
+> exists to escape: "a block without discoverability looks like data integrity while actually
+> being a permanent dead end."
+>
+> **Task 6's fix wave already added the service half:** `deleteCustomerSurcharge(customerId,
+> surchargeId)`, a soft delete through `auditedSoftDelete` (the row has `deletedAt`), 404 if no
+> live override exists for the pair, with a test proving a soft-deleted override actually frees
+> the blocked surcharge delete.
+>
+> **What this task owes:** a `DELETE` on `src/app/api/customers/[id]/surcharges/route.ts` calling
+> it, gated exactly like the PUT — `mustCan(requireUser(), "customers", "edit")` **plus**
+> `mustDo(user, "change_prices")`, since removing an override is a price change just as setting
+> one is — and a control in the customer UI that reaches it. Removing an override must be as
+> discoverable as adding one.
+
 **Files:**
 - Modify: `src/server/customers.ts`, `src/app/customers/[id]/page.tsx`
 - Create: `src/app/api/customers/[id]/surcharges/route.ts`

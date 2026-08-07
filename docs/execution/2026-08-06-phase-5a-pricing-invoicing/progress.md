@@ -355,6 +355,63 @@ Task 6: implementer DONE — commit fb7a2d9, 18/18 new tests (6 surcharges + 12 
 Task 6: review dispatched (task-reviewer, opus — a hand-written migration, a schema FK change, and
   reference-links.ts + its sweep, which is the EXACT area Task 2 shipped a 500-ing defect in)
 
+Task 6: review — Spec ⚠️, quality NEEDS FIXES. 5 Important, 6 Minor.
+  ALL THREE DEVIATIONS RULED ON:
+  1. The CASCADE migration: APPROVED, and for a better reason than the implementer gave — the
+     cascade can NEVER FIRE. deleteSurcharge is auditedSoftDelete and no code path hard-deletes a
+     Surcharge; the only physical delete is truncateAll's TRUNCATE … CASCADE, which cascades
+     regardless of the annotation. No history destroyed, AuditLog independent of the FK. The
+     ProcessStepFieldDef precedent is exact (owned child, no deletedAt, hard-deleted by its
+     parent's replace service, hanging off a soft-deletable parent), four more such cascades
+     already exist, and the alternative was worse: registering the FK would have made a
+     surcharge's own step-code list block its own deletion and name the surcharge as its own
+     blocker. Registering `surcharge` as a BlockerTarget WAS brief-mandated, so the sweep failure
+     was unavoidable rather than self-inflicted. My worry that Cascade contradicts the soft-delete
+     house rule was answered on the facts, not waved off.
+  2. updateSurcharge's full-shape SAVE: the SHAPE is defensible, the IMPLEMENTATION was not.
+  3. The duplicate-step-code guard: JUSTIFIED. Without it a raw P2002 would have surfaced as
+     "A surcharge with that value already exists" — actively misleading.
+  Important 1 (FIXED) — THE HEADLINE. updateSurcharge validated the whole row but persisted only
+    the keys the caller SENT: zod DROPS an absent optional key entirely, so Prisma left the column
+    untouched. Flipping a PERCENT surcharge to FLAT persisted kind=FLAT WITH THE OLD RATE STILL
+    SET — a state the superRefine declares impossible, produced by the only payload the service
+    accepts (the caller cannot resend `rate`; the refine rejects it). Mirror case left a stale
+    `amount`; glAccountId could never be cleared, and that path also skipped assertRefExists.
+    The deviation's own justification collapsing: "the rule lives in the superRefine" only holds
+    if the row reaching the database is the row the superRefine validated.
+  Important 2 (FIXED) — setCustomerSurcharge meant two different things: create took schema
+    defaults for omitted fields, update RETAINED them. set(rate) then set(optOut) left both, while
+    the same second call on a fresh customer yielded rate=null. A `set…` that half-replaces.
+  Important 3 (FIXED) — updateSurcharge and listCustomerSurcharges had ZERO coverage;
+    setCustomerSurcharge's update branch had never executed, so SNAPSHOT_INCLUDE.customerSurcharge
+    was unexercised on the one path that calls snapshot(); and nothing asserted an audit DIFF.
+  Important 4 (FIXED) — updateSurcharge mutated soft-deleted rows. Brief-mandated (it said follow
+    updateStepCode verbatim, and that function does this), but the NEWER precedent in the same
+    file uses `where: { id, deletedAt: null }` with a comment recording why (Codex, PR #22:
+    "audited as an update after its own delete entry, describing a change to a row nothing can
+    ever see again"). The file was internally inconsistent — setSurchargeStepCodes already 404s.
+  Important 5 (FIXED) — PLAN HOLE, not an implementer miss, and the controller's to close. A
+    customer override could never be REMOVED: Task 6's interface had no delete, Task 7's route is
+    GET+PUT, Task 8 consumed those — verified across the whole plan, no removal path anywhere. But
+    a live CustomerSurcharge row blocks deleting the surcharge it points at, and optOut:false
+    still leaves the row, so one override made a surcharge undeletable FOREVER. That is the exact
+    shape reference-blockers.ts:12-22 names as the Visual Shop dead end this system exists to
+    escape. Added deleteCustomerSurcharge (soft delete via auditedSoftDelete, 404 when no live
+    override), with a test proving a soft-deleted override actually FREES the blocked delete
+    rather than assuming the default liveWhere handles it.
+    PLAN AMENDED: Task 8 now owns the matching DELETE route, gated like the PUT
+    (customers.edit + change_prices — removing an override is a price change just as setting one
+    is) plus a UI control. Removing must be as discoverable as adding.
+  Minors M1-M5 all fixed. M1 mattered more than its grade: detailPath ignores its argument, so a
+    regressed blockerId changed only b.id — which nothing asserted — silently producing a 404 link.
+Task 6: fix wave 1 (sonnet) — commit fd7925d, tests 6 -> 17, full suite 1464/1464, tsc+eslint
+  clean, no migration needed. Fix 1 chose NORMALIZE-ON-WRITE over merge-then-validate (merging
+  would reintroduce the "service body re-derives merged state" shape the full-row SAVE design
+  exists to avoid). RED confirmed before the fix: `expected 0.04 to be null`.
+Task 6: re-review dispatched (task-reviewer, opus — verifying the normalization is TOTAL across
+  every optional on both models and both write paths; one unpinned optional reproduces the whole
+  defect for that field)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
