@@ -1650,6 +1650,20 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
 
 ### Task 11: `invoices.ts` — candidates and creation
 
+> **Carried in from Task 9 (2026-08-07). Two seams the pricing engine deliberately left for you.**
+>
+> 1. **Every CHARGE line arrives with a null GL account.** `ChargeInput` carries no `GlRef`, while
+>    freight, cert and tax all do — so `priceOrder` cannot attach one, and it was implemented that
+>    way deliberately (exactly as the brief specified; no amount is affected). `BillingConfig`
+>    already holds `otherChargeGlAccountId` for precisely this. **Assign it here** when you build
+>    the invoice line, or a whole class of charge lines posts to no account and the GL export is
+>    silently incomplete. Do not "fix" it by widening `ChargeInput` in `pricing.ts` — that module
+>    is pure by contract and takes no dependency on `billing-config.ts`.
+> 2. **`SurchargeRow.glAccountName` is `string | null` upstream but `string` in the engine's
+>    output type.** There is a `?? ""` at this seam. Decide deliberately whether an empty string or
+>    a null is what an invoice line should carry for "no GL account named", and make the two agree
+>    rather than leaving the coercion buried.
+
 **Files:**
 - Create: `src/server/invoices.ts`
 - Test: `tests/invoices.test.ts`
