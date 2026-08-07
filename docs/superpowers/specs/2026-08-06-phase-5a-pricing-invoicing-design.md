@@ -818,6 +818,12 @@ rounds, then the whole-branch review before the PR. Roughly eighteen tasks:
 - **`Terms` is a name with no day count.** A due date and any aging bucket needs `Terms.netDays`,
   which 5A deliberately does **not** add (no dangling columns). **5B adds it**, together with
   `Invoice.dueDate` computed at finalize.
+- **A credit copies its source invoice's `invoiceDate` verbatim** (Task 14, brief "copy every
+  header snapshot"). Harmless in 5A — there is no aging or date-filtered credit query, so the date
+  is display-only and no money figure depends on it — but the printed credit therefore bears the
+  *source invoice's* issue date, not the date the credit was raised. **When 5B adds issue-date /
+  aging semantics, decide whether a credit carries its own raise-date** (`createCredit` in
+  `invoices.ts` is the one-line change; owner ruling needed).
 - **`Customer.financeChargeRate` and `Customer.parentId` are already modelled and still unread.** 5B
   is the phase that consumes both — the parent link so one check can pay several children's invoices
   and a statement can roll up, exactly as Phase 2B modelled it for.

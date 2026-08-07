@@ -987,6 +987,20 @@ Task 14: implementer DONE — commit 7af7c00, invoices.ts (+146) + tests (+139).
 Task 14: review dispatched (task-reviewer, opus — the Task-13 finalize kind-guard fix on the
   money-status path, the sign flip incl. -0, FINALIZED-invoice-only refusals under the claim,
   anti-drift reuse, and the CREDIT/INVOICE coexistence)
+Task 14: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Minor. The reviewer proved
+  the Task-13 kind-guard discriminating in BOTH directions itself (mutated to if(true) → both
+  credit-branch tests red; if(false) → Task 13's INVOICE test red; clean-tree revert, 50/50). Sign
+  flip drift-proof (totals from the already-negated lines, -0 normalized to +0), refusals read
+  under claimInvoiceRow, coexistence verified against the real partial index (kind='INVOICE'), and
+  it confirmed createCredit has NO tx? seam so no bypass footgun. invoiceDate verbatim-copy ruled
+  acceptable for 5A (brief-mandated, cosmetic only — printed credit bears the source's date), filed
+  in spec §16 for 5B to decide issue-date semantics.
+  3 Minors DEFERRED to whole-branch triage: no credit-specific test for the copied-FK guard (rests
+  on inherited create/replace coverage); the audit-content assertion is a stringify-contains rather
+  than a structural field check; and the invoiceDate 5B note (now in spec §16).
+  Both ⚠️ downstream seams already covered: the credit ROUTE's change_prices gate is in Task 16's
+  folded note (it names lines/recalculate/credit); credit page/print rendering is Tasks 17-19.
+Task 14: complete (commit 7af7c00, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
