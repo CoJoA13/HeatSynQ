@@ -1027,6 +1027,27 @@ Task 15: implementer DONE_WITH_CONCERNS — commit dddf064, shippers.ts (+235) +
 Task 15: review dispatched (task-reviewer, opus — grep that no shipment path passes `released`, the
   SHIPPED-vs-OPEN resolution being genuinely spec-DERIVED not hardcoded, the below-zero netting
   guard, claim discipline, and the two conservative refusals)
+Task 15: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Minor. The reviewer
+  grep-verified the whole codebase: the only 3-arg recomputeOrderStatus call is unlock
+  (invoices.ts); every shippers.ts site incl. the new one is 2-arg — so REOPENED can only be the
+  direct write, confirmed by a discriminating seam test. SHIPPED confirmed genuinely FLAG-DERIVED
+  (the original line stays live and lineComplete, so recompute derives SHIPPED — not hardcoded).
+  Both conservative refusals RULED correct and in-scope: a voided original already contributes 0
+  (re-shipping its negatives would net down a DIFFERENT shipment), and reversing a reversal negates
+  negatives → drives the ledger UP (a phantom re-ship the spec gives no path for; undo a mistaken
+  reversal by voiding it). Below-zero guard sound; concurrency test discriminates (competitor at
+  Read Committed). REOPENED scoped strictly to a finalized INVOICE (a finalized CREDIT never
+  triggers it). Numbering clean.
+  3 Minors DEFERRED to whole-branch triage: a spurious cert/serialization warning on a reversal
+  RESPONSE (the reversal has no cert of its own; advisory-only, never blocks, but noise on a
+  correction document); the create-entry audit content is not test-asserted (only the REOPENED
+  order-update entry is); the claim choreography is inlined rather than reusing claimLiveShipper
+  (justified — the reversal needs a wider include — but a second copy to keep in sync).
+  Two ⚠️ carried to later tasks: when the reversal UI lands (Task 17/18), §5.16 disabled-with-
+  tooltip on void_shipper + an E2E flow; and the spec-silent header choices (reversal copies no
+  freight/containers/serials, creates no cert) are owner-demo confirmation items (Task 20), not
+  defects — defensible (a reversal is a ledger correction, not packaging).
+Task 15: complete (commit dddf064, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
