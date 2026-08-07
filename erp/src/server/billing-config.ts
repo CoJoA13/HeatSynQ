@@ -64,6 +64,14 @@ export async function setBillingConfig(input: unknown): Promise<BillingConfigRow
       if (data.freightGlAccountId) await assertRefExists("glAccount", data.freightGlAccountId, tx);
       if (data.otherChargeGlAccountId) await assertRefExists("glAccount", data.otherChargeGlAccountId, tx);
       if (data.certChargeStepCodeId) await assertRefExists("processStepCode", data.certChargeStepCodeId, tx);
+      // upsert, not a plain update: the `create` arm only exists as self-healing for a genuinely
+      // rowless database (a partial restore, a hand-run DELETE) — it is unreachable against any
+      // migrated database, since the migration seeds this row and truncateAll (tests/helpers/db)
+      // re-seeds it after every TRUNCATE. The CHECK ("id" = 'singleton') plus the primary key
+      // mean the only row this arm can ever create is the correct one. A plain `update` would
+      // instead raise P2025 on a missing row, surfacing as a 404 with no in-app recovery. If the
+      // create arm ever did run, auditedUpdate logs it as an update with a null `before` (there
+      // was no prior row to snapshot), which is expected and not a bug.
       await auditedUpdate("billingConfig", ID, () =>
         tx.billingConfig.upsert({ where: { id: ID }, create: { id: ID, ...data }, update: data }), { tx });
     }, assigns ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));

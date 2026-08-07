@@ -49,8 +49,8 @@ export default function BillingPage() {
       setCfg(updated); setError(null);
       setSaved(field); setTimeout(() => setSaved(null), 1500);
     } catch (e) {
+      void load().catch(() => {}); // roll back to server truth first, then report why (§5.13)
       setError((e as Error).message);
-      void load().catch(() => {}); // roll back to server truth on a failed save, before reporting why
     }
   }
 

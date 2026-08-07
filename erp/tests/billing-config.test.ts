@@ -73,6 +73,41 @@ describe("getBillingConfig / setBillingConfig", () => {
     expect(Number(after.salesTaxRate)).toBe(0.04);
   });
 
+  // Finding 1 (Task 3 review): the other tests in this file only ever exercise salesTaxRate /
+  // salesTaxGlAccountId / billForCertDefault. otherChargeGlAccountId and certChargeDefault are
+  // never written or read by any test at all, and salesTaxGlAccountId/freightGlAccountId are
+  // read back straight off the DB row rather than through getBillingConfig's mapping. That gap
+  // means a transposition inside getBillingConfig's seven-field mapping (e.g. reading
+  // freightGlAccountId off row.otherChargeGlAccountId) would pass the whole suite. Three
+  // *distinct* GL accounts are used so a transposition between any pair of the three GL fields
+  // is caught — if they all pointed at the same account, swapping two field reads would be
+  // invisible to `toBe`.
+  it("round-trips all seven fields through a single save, none transposed", async () => {
+    const glTax = await prisma.glAccount.create({ data: { name: "4010", description: "Sales tax payable" } });
+    const glFreight = await prisma.glAccount.create({ data: { name: "4020", description: "Freight expense" } });
+    const glOther = await prisma.glAccount.create({ data: { name: "4030", description: "Other charges" } });
+    const code = await prisma.processStepCode.create({ data: { code: "CERTX", name: "Certification charge" } });
+
+    await asSystem(() => setBillingConfig({
+      salesTaxRate: "0.055000",
+      salesTaxGlAccountId: glTax.id,
+      freightGlAccountId: glFreight.id,
+      otherChargeGlAccountId: glOther.id,
+      certChargeStepCodeId: code.id,
+      certChargeDefault: "125.50",
+      billForCertDefault: true,
+    }));
+
+    const cfg = await getBillingConfig();
+    expect(cfg.salesTaxRate).toBe(0.055);
+    expect(cfg.salesTaxGlAccountId).toBe(glTax.id);
+    expect(cfg.freightGlAccountId).toBe(glFreight.id);
+    expect(cfg.otherChargeGlAccountId).toBe(glOther.id);
+    expect(cfg.certChargeStepCodeId).toBe(code.id);
+    expect(cfg.certChargeDefault).toBe(125.5);
+    expect(cfg.billForCertDefault).toBe(true);
+  });
+
   it("refuses a GL account that does not exist", async () => {
     await expect(asSystem(() => setBillingConfig({ freightGlAccountId: "nope" })))
       .rejects.toThrow("That gl account does not exist");
