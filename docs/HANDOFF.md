@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-07 — **Phase 5A (Pricing & Invoicing)'s Task 20 (the E2E flow, the demo doc, and this update) is complete**; the branch `phase-5a-pricing-invoicing` now heads to the whole-branch review, one fix wave, and the owner demo before the PR and squash-merge (§4a has the pre-merge summary; §9 is 5B's kickoff prompt, ready for when 5A lands). Gates on the branch: **1688 tests**, `tsc`/`eslint`/`build` clean, E2E **16/16**, run three times consecutively. Phase 4 merged as `f129aae` (PR #47); the **backlog burn-down merged as `8647a7d` (PR #57)**, closing #48–#50 and #53–#56 (rulings 27–28) plus its own review round's four fixes (the seed-line identity, the parts-table multi-part detection, the released-serial warning credit). 25 migrations on `main`; remaining backlog there: #51–#52 plus the older triaged issues. Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-08 — **Phase 5A (Pricing & Invoicing) is MERGED to `main` as `359c707` (PR #58, 2026-08-08).** Its full narrative is in `docs/history/2026-08-08-phase-5a-pricing-invoicing.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 5B (Accounts Receivable) kickoff — the next work.** Final 5A gates: **1692 tests**, `tsc`/`eslint`/`build` clean, E2E **16/16**. Codex's review of the PR raised **7 findings — all verified real against the branch, none already fixed** — deferred to issues **#59–#65** for the post-5A burn-down (the #48–#56 pattern). Earlier: Phase 4 merged as `f129aae` (PR #47) with the **backlog burn-down `8647a7d` (PR #57)** closing #48–#50 and #53–#56; Phase 3 as `12a17f9` (PR #39). **26 migrations on `main`**; open backlog there: #51–#52 and #59–#65 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -62,83 +62,18 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**Phase 5A (Pricing & Invoicing) is in flight** on branch `phase-5a-pricing-invoicing`, started
-from §9's kickoff prompt. Its three binding documents:
+**No phase is in flight.** Phase 5A (Pricing & Invoicing) merged 2026-08-08 (`359c707`, PR #58) — its one-paragraph entry is in the "Merged, in build order" list below, its full narrative in
+`docs/history/2026-08-08-phase-5a-pricing-invoicing.md`, and its execution ledger (per-task briefs,
+implementer reports, reviewer verdicts, deferred minors) in
+`docs/execution/2026-08-06-phase-5a-pricing-invoicing/` — see `.superpowers/sdd/README.md` for why
+that ledger sits there rather than under `.superpowers/`.
 
-- Spec: `docs/superpowers/specs/2026-08-06-phase-5a-pricing-invoicing-design.md`
-- Plan: `docs/superpowers/plans/2026-08-06-phase-5a-pricing-invoicing.md`
-- Execution ledger (per-task briefs, reports, reviews, deferred minors):
-  `docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md` — moved out of
-  `.superpowers/sdd/` on 2026-08-06 because that directory's `.gitignore` is skill-owned and kept
-  being clobbered back to a bare `*`, hiding every uncommitted file under it. See
-  `.superpowers/sdd/README.md`. Earlier phases' ledgers stay at the old path; they are already
-  committed, and therefore already immune.
-
-Those three are where the branch's actual state lives; this section deliberately does not duplicate
-them, and gets its one merged paragraph when 5A lands. **All 20 tasks are now built and
-individually reviewed** (Task 20 — the E2E flow, the demo doc, and this update — closed
-2026-08-07); §4a below is the pre-merge summary the "Review and merge" process (the plan's own
-closing section) works from next: one whole-branch review, one fix wave, the owner demo
-(`docs/2026-08-07-phase-5a-demo.md`), then the PR and squash-merge.
-
-### 4a. Phase 5A — what it delivered (pre-merge summary, drafted at Task 20)
-
-**This subsection is scaffolding, not a merged-phase entry** — §2's rule (one paragraph per merged
-phase, full narrative in `docs/history/`) applies once 5A actually lands; until then this is the
-fuller account §4's "one paragraph" discipline can't carry. When 5A merges, condense this to one
-paragraph in the "Merged, in build order" list below and move the rest to `docs/history/`, the same
-move every earlier phase made.
-
-**What it delivered.** Part pricing moved off four flat columns on `Part` onto **price rows keyed
-by Process Step Code** (ruling 3 — a part bills more than one operation, e.g. austempering and
-straightening as separate invoice lines), each row carrying setup/unit/minimum charges, a
-price-per unit, and its own price breaks, resolved through a pure engine (`pricing.ts`).
-**Surcharges** (`surcharges.ts`, spec §7.5) are named, percent-or-flat add-ons with an
-include/exclude step-code list, a minimum floor, and a per-customer opt-out/rate override.
-**`BillingConfig`** (a one-row singleton — CLAUDE.md) holds the plant sales-tax rate and the
-freight/other-charge/cert-charge GL defaults. **`Invoice`/`InvoiceLine`** (plus `Surcharge`/
-`PartPrice`/`PartPriceBreak`/`BillingConfig` — six new tables) carry the whole model, gated by one
-new hand-written CHECK (`BillingConfig_singleton_check`) and a re-statement of
-`StoredDocument_kind_owner_check` to add `INVOICE`/`CREDIT`. `/invoicing` is the new worklist
-(Ready-to-invoice + a filterable Invoices list); `/invoicing/[id]` is the invoice page — draft
-edit, Recalculate, Finalize (locks the draft, writes `Order.status = INVOICED`), Print (byte-exact
-archive, the traveler/cert/ticket pattern), Unlock (a reason, returns to Draft and the order to its
-ship-derived status), Raise credit (`kind = CREDIT`, its own `credit_number_next` counter), and
-Discard (a never-printed draft only). The **reversing shipment** (`reverseShipper`, Task 15)
-un-ships goods already shipped, reusing `void_shipper`'s own dangerous-action and
-`claimOrdersInOrder` machinery rather than a second locking path, and writes `Order.status =
-REOPENED` when the order carries a finalized invoice. Twenty tasks in build order: invoice
-constants + settings; the schema; `BillingConfig` + Admin → Billing; part prices + breaks; the part
-page's Pricing section; surcharges + Admin → Surcharges; customer-side tax/surcharge/cert
-overrides; the pricing engine; `invoice-guards.ts` + the new order/shipment invariants; invoice
-candidates/creation; draft edits/recalculate/discard; finalize/unlock/status-ownership; credits;
-the reversing shipment; routes + the 401/403 sweep; `/invoicing`; `/invoicing/[id]` + the order
-hub's Invoices section; the invoice/credit PDF/print/archive; and this task (E2E, demo, docs).
-
-**Owner rulings taken during the phase** (spec §3 has the full text): the restructure REPLACES the
-old flat-column pricing rather than coexisting with it (ruling 4 — the dev DB was empty, so free
-today); one invoice per order, billed once, at SHIPPED — no per-shipper/per-order/per-PO grouping
-(ruling 5, spec §7.6 superseded); sales tax is one plant rate with a per-customer override, freight
-excluded from the tax base (ruling 8); the cert charge resolves part → customer-suppression →
-plant default (ruling 9); corrections are unlock → correct → re-lock, or a credit — never a second
-edit-after-finalize path (ruling 10); a credit is one `Invoice` row with `kind = CREDIT`, not a
-separate table (ruling 11); the setup charge adds ON TOP of the minimum, not inside it (ruling 13).
-Mid-phase: **multi-order freight is a known N× over-bill, owner-DEFERRED 2026-08-07** (§6).
-
-**Notable lessons.** `invoice-guards.ts` is a dependency-free leaf (Phase 4 lesson 3 — pull a
-cross-module question into a leaf *before* the import cycle exists, not after it crashes), which is
-what lets `orders.ts`/`shippers.ts` refuse a mutation against an already-invoiced order without
-importing `invoices.ts`. Task 2's own plan snippet was wrong (missing `liveWhere` for two
-block-target kinds — caught by 21 failures on the first run; the code is right, the plan was not).
-**Task 20 found and closed a gap Task 19 left open:** `GET /api/invoices/[id]/documents` — the
-invoice page's own Documents panel had been calling a route that was never built (Task 19's brief
-never listed it), so every real print left that panel 404ing; closed with `listDocumentsForInvoice`
-and its route, mirroring the shipper/cert precedent, with its own coverage
-(`tests/documents.test.ts`, `tests/invoice-pdf.test.ts`) — the E2E flow was the first thing to
-exercise print-then-view-the-list, which is what surfaced it. Every task's per-task review came
-back Spec ✅ / Approved on the first or second pass; the per-task deferred-minors lists the
-whole-branch review will triage next are recorded in
-`docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md`.
+**The next work is Phase 5B (Accounts Receivable) — its kickoff prompt is live in §9;** paste it
+into a fresh session to begin. 5B has no spec or plan yet: brainstorm → spec → plan is its first
+step (§9 names what it inherits from 5A, carried verbatim from design-spec §16). The seven Codex
+findings deferred from the 5A PR (#59–#65, §6) and the per-worker-test-DB infra task (§6,
+"scheduled for immediately after Phase 5A merges" — now due) are open work that can be picked up
+alongside or before 5B.
 
 ### Merged, in build order
 
@@ -182,6 +117,18 @@ Vitest 3** (brought current 2026-08-02 across five PRs; the two majors still blo
   produced the **snapshot + release** rule and the **guarded-state-must-be-locked** house rule that
   CLAUDE.md now carries. Full record — including the six review rounds, the eleven lessons, and the
   owner rulings taken during execution: `docs/history/2026-08-06-phase-4-certs-shipping.md`.
+- **Phase 5A — Pricing & Invoicing.** Squash-merged `359c707` (PR #58, 2026-08-08). Part pricing
+  restructured off four flat `Part` columns onto **price rows keyed by Process Step Code** (setup/
+  unit/minimum charges + price breaks, a pure `pricing.ts` engine), **surcharges** with per-customer
+  opt-out/override, a one-row **`BillingConfig`**, and the full **invoice/credit lifecycle** —
+  candidacy at SHIPPED, draft → finalize (writes `Order.status = INVOICED`) → unlock, or raise a
+  credit (`kind = CREDIT`, own number series); the **reversing shipment** (reuses `void_shipper`'s
+  claim machinery, and reopens the order it reverses — `REOPENED` if invoiced, else re-derives
+  *Partial shipped*); and the invoice/credit PDF — six new tables behind two hand-written CHECKs.
+  Final gates: **1692 tests**, `tsc`/`eslint`/`build` clean, E2E **16/16**. Codex's PR review found
+  **7 real findings**, all deferred to issues **#59–#65** (§6). Full record — the twenty tasks, the
+  owner rulings, the demo, and the review triage:
+  `docs/history/2026-08-08-phase-5a-pricing-invoicing.md`.
 
 ## 5. Conventions Phase 2+ must follow (learned and enforced in Phase 1)
 
@@ -261,20 +208,33 @@ wants to research against other shops before it is built. Full context: the date
 the freight rule in the P5A spec (§5). When picked up, the chosen rule must sum back to the truck's
 exact freight exactly once. **Do not invent a split.**
 
-**Four more Phase 5A demo pings, named at Task 20 (2026-08-07), awaiting an owner ruling at the
-merge demo** — full context in `docs/2026-08-07-phase-5a-demo.md`'s "Six things to rule on" section
-(the multi-order-freight item above is the fifth of those six; it already has its own entry):
-1. **A reversing shipment on a NON-invoiced order leaves the order Shipped, not Open** — status is
-   the human line-complete flag (spec §5.2), never quantity, so un-shipping goods does not
-   un-complete the line that made the order Shipped. Changing it is a spec amendment, not a fix.
-2. **A credit's PDF titles itself "Credit", not "Invoice"** — spec §10 does not say which; Task 19's
-   call was that a credit is a distinct financial document. One line in `readInvoicePdfData`
-   (`src/server/invoices.ts`) if the owner wants the literal word "Invoice" instead.
-3. **Negative amounts render `"$-937.44"`** (sign between the `$` and the digits, not in front of
-   it) — Phase 7's template designer makes this editable; confirm the format reads clearly first.
-4. **A credit copies its source invoice's `invoiceDate` verbatim**, not its own raise date —
-   harmless in 5A (nothing ages or date-filters a credit yet) but worth a ruling once 5B adds
-   aging/statements. Already carried into §9's 5B kickoff prompt via spec §16.
+**Phase 5A demo (2026-08-07) — the six flagged deviations, all ruled** (full context
+`docs/2026-08-07-phase-5a-demo.md`): (1) a reversing shipment now **reopens the order it reverses**
+— RULED and BUILT (`aea35a3`, spec §5.2/§5.6 amended: non-invoiced → *Partial shipped*, invoiced
+→ *Reopened*); (2) the credit PDF's **"Credit" title** approved as-is; (3) the negative-amount
+**`"$-937.44"` format** approved as-is; (4) the three print-layout deviations accepted; (5)
+multi-order freight confirmed a deliberate deferral (its own entry above); (6) whether a credit
+carries its own raise-date vs the source invoice's `invoiceDate` — **deferred to 5B** (spec §16,
+carried in §9's kickoff). Only (6) is still open.
+
+**Deferred from the PR #58 Codex triage (2026-08-08), issues #59–#65 — all verified real against
+the branch, none already fixed; none data-loss, but three are money/status defects.** The owner
+elected to defer all seven to the post-5A burn-down rather than fix in-branch (the #48–#56
+pattern); every PR thread was replied to and resolved. **#59** unlocking a *credit* recomputes the
+order's invoice-owned status back to ship-derived (no `kind` branch, unlike finalize) — a
+still-finalized source invoice's INVOICED order silently drops to SHIPPED. **#60** `listPartPrices`
+reads the top-level client inside the Serializable invoice transaction (`part-prices.ts:51`),
+outside its snapshot/read-set, so SSI can't see a concurrent price edit (the pool-starvation half
+does not apply — the pg pool defaults to 10). **#61** Recalculate double-bills a manually-overridden
+operation — the derived line regenerates AND the `MANUAL` override is preserved. **#62** a
+manually-added charge line gets no GL account and no way to set one (grid GL is read-only; seam
+#1's backfill is engine-only), so it posts nowhere and 5C's export drops it. **#63** an emptied
+invoice finalizes into a $0 INVOICED order that is no longer a candidate (finalize's only block is
+`needsPrice`, vacuous on zero lines). **#64** Recalculate computes no tax on preserved manual
+charges (tax is priced before manual lines load; `totalsFromLines` re-sums the stale TAX line).
+**#65** voiding either side of a reversal pair corrupts the order (`voidShipper` is
+reversal-unaware — stuck *Partial shipped*, or negative `shippedTotals`); non-invoiced pairs are
+exposed, invoiced ones only incidentally protected by `refuseIfInvoiced`.
 
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
@@ -450,17 +410,16 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 5B (Accounts Receivable). Drafted at Phase 5A's Task 20 (2026-08-07), AHEAD of 5A's own
-merge** — 5A (branch `phase-5a-pricing-invoicing`) still has its whole-branch review, one fix wave,
-and the owner demo ahead of it (the plan's "Review and merge" section) before the PR and
-squash-merge. **This prompt has NOT been used yet.** Before pasting it into a fresh session: confirm
-5A actually merged, replace this paragraph and the bracketed merge commit below with the real one,
-and update §4 (move 5A's §4a into "Merged, in build order" as its one paragraph, its full narrative
-into `docs/history/`, the §2 rule every earlier phase followed).
+**Phase 5B (Accounts Receivable). This is the live kickoff — paste the prompt below into a fresh
+session to begin.** Phase 5A merged 2026-08-08 (`359c707`, PR #58); §4 carries its one-paragraph
+state and `docs/history/2026-08-08-phase-5a-pricing-invoicing.md` its full narrative. The prompt was
+drafted at 5A's Task 20; its bracketed merge references are now filled in, and the 5A demo pings it
+mentions have since been ruled (§6 — only the credit raise-date carries forward).
 
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4/§4a for where Phase 5A landed and §6 for the
-> carried backlog (including its four demo pings and the multi-order-freight deferral). **Phase 5A
-> (Pricing & Invoicing) is MERGED** (`[fill in the merge commit]`, PR `[fill in]`) — part pricing
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5A landed and §6 for the
+> carried backlog (the 5A demo pings are now ruled — only the credit raise-date carries — plus the
+> multi-order-freight deferral and the #59–#65 Codex-triage issues). **Phase 5A
+> (Pricing & Invoicing) is MERGED** (`359c707`, PR #58) — part pricing
 > restructured onto price rows keyed by Process Step Code, surcharges, `BillingConfig`, the full
 > invoice/credit lifecycle (draft → finalize → unlock, or credit), the reversing shipment, and their
 > PDFs. Next is **Phase 5B (Accounts Receivable)** per the roadmap
@@ -522,10 +481,10 @@ into `docs/history/`, the §2 rule every earlier phase followed).
 > - **An invoice is frozen paper, read unconditionally from its snapshot** (spec §5.4, CLAUDE.md) —
 >   a payment/application against it must not "helpfully" re-derive or rewrite any invoice-side
 >   snapshot field; it records against the invoice's id and its own `total`/balance, nothing more.
-> - Four owner pings from the 5A demo travel with this phase if not yet ruled on at the 5A PR
->   (HANDOFF §6): the reversing-shipment-leaves-Shipped-not-Open behavior, the credit PDF's
->   "Credit" title, the negative-amount `"$-937.44"` format, and the credit's copied `invoiceDate`
->   (the last one is also spec §16's own item above).
+> - The 5A demo (2026-08-07) ruled on all four of its open pings: the reversing shipment now
+>   reopens the order it reverses (built, `aea35a3`), and the credit PDF's "Credit" title and the
+>   `"$-937.44"` negative format were approved as-is. Only the credit's copied `invoiceDate`
+>   carries forward — and that is spec §16's own item above.
 > - Two standing owner rules apply to every phase: run the Playwright E2E suite whenever a change
 >   touches any UI/flow, and update the appropriate docs as part of the work — never deferred to a
 >   closing summary.
