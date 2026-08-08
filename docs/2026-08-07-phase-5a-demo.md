@@ -138,6 +138,20 @@ flipped and `title: "Credit"` / `documentNumber: "1000"`, titles itself **"Credi
 
 Named here individually — not one of these is hidden in the diff for you to find later.
 
+> **Owner rulings, 2026-08-07 (at demo):**
+> 1. **Reversing a non-invoiced order's status label — PENDING clarification.** Owner: "reversing a
+>    shipment reverses the shipment; I'm not sure I follow what you're asking." The reversal (the
+>    ledger) is correct and not in question; the only open point is the cosmetic status label
+>    (stays *Shipped*, does not reopen to *Open*, for a non-invoiced order). Awaiting a yes/no on
+>    whether that label should reopen. As-built (stays Shipped) is spec-correct; no code pending.
+> 2. **Deferred — confirmed.** Multi-order freight stays a deliberate deferral (shop bills no freight).
+> 3. **Approved as-is.** Credit PDF titled "Credit" — correct call, no change.
+> 4. **Approved as-is.** Negative amount format `"$-937.44"` — agreed and approved for production.
+> 5. **Deferred to 5B.** Whether a credit carries its own raise-date vs the source invoice's date —
+>    owner will decide at 5B planning/spec (already filed, spec §16).
+> 6. **Accepted.** The three print-layout deviations (Page No. line, internal row-id markers, no Fax
+>    line) are fine — same class already accepted on the Phase 4 documents.
+
 1. **Reversing a shipment on a NON-invoiced order leaves the order Shipped, not Open.** Order
    status is derived purely from the human "line complete" checkbox (spec §5.2), never from
    quantity — so un-shipping goods on an order that was never invoiced does not automatically
