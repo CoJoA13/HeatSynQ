@@ -1157,6 +1157,29 @@ Task 18: implementer DONE — commit 18042ac, InvoiceDetail.tsx (+807) + page sh
 Task 18: review dispatched (task-reviewer, opus — every UI gate MATCHING its route gate [a money
   control enabled that the route refuses = Critical], status-locking on every editing control,
   the sibling-group hooks key=/useMutationGate/useEditGuard, and the MANUAL-stamp choice)
+Task 18: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 4 Minor. The reviewer verified
+  the gate table STRUCTURALLY, citing both file:lines for each: every UI gate matches its Task 16
+  route gate, including the two mid-phase corrections (unlock=gateDo(unlock_invoice) not
+  invoicing.edit; credit=invoicing.create ALONE not change_prices). Double-gate title correct in
+  both directions in CODE (identical to PricingSection). MANUAL-stamp ruled consistent (it is the
+  intended mechanism by which an operator-corrected amount survives Recalculate — Tasks 9/12 preserve
+  MANUAL lines). key={id}, useMutationGate through load+every write, useEditGuard, §5.13 reload-then-
+  report all confirmed. Status-lock complete with unlock/print/credit correctly exempt.
+  Minor 1 (FIXED — it was the recurring empty-list-impersonation defect, and a sibling-split): the
+  hub InvoicesSection rendered "No invoices raised yet" on rows.length===0 with no loaded/error
+  guard, AND computed hasLiveInvoice from the empty rows so "Create invoice" stayed ENABLED on a
+  SHIPPED order after a FAILED load — the operator could double-create. Task 17's sibling
+  (InvoicingList) gates on loaded && !error; this diverged. Fixed to match: `loaded` flag,
+  hasLiveInvoice = loaded && !error && …, empty text gated, Create disabled with "Could not confirm
+  this order's invoice status" when unloaded/errored. Forced a real 500 to verify (error shows,
+  "none yet" does not, Create disabled). Commit da5773a.
+  Minor 2 (FIXED, same wave): Raise-credit was HIDDEN on a CREDIT (§5.16 says disabled-with-title,
+  and the tooltip "A credit cannot itself be credited" was already computed = dead code). Now shown
+  disabled with that tooltip.
+  Minors 3-4 DEFERRED (draft-only cosmetic, disclosed): a hand-added CHARGE line appends after the
+  TAX line (canonical-order §5.3, draft only); editing qty/weight on a derived line doesn't
+  recompute amount until Recalculate (inherent to amount-is-king; operator controls amount directly).
+Task 18: complete (commits 18042ac..da5773a, review clean after the two-minor fix)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units

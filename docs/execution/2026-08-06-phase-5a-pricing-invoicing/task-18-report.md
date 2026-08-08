@@ -178,6 +178,106 @@ the one edited line in `orders/[id]/page.tsx`.
 - `erp/src/app/orders/[id]/InvoicesSection.tsx` (new)
 - `erp/src/app/orders/[id]/page.tsx` (modified — registered `InvoicesSection`)
 
+## Fix wave 1
+
+Two Minor findings from the Task 18 review, closed in one pass (no vitest seam for either — this
+page's own established pattern — so both are verified live against `npm run dev` + the DEV
+database, `erp`, per the brief).
+
+### Fix 1 — the hub Invoices section impersonated an empty list on a load failure
+
+`InvoicesSection.tsx`'s `rows.length === 0 ? "No invoices..." : <table>` had no `loaded`/`error`
+guard, so a failed `GET /api/orders/[id]/invoices` rendered "No invoices raised against this order
+yet." right beside the error banner, and `hasLiveInvoice` (derived from the still-empty `rows`)
+left "Create invoice" enabled on a SHIPPED order whose invoice status was actually unknown — the
+exact empty-list-impersonation defect HANDOFF §5.15 rules out, this time on the sibling that
+*didn't* get the Task 17 treatment.
+
+Brought in line with `InvoicingList.tsx`'s own `loadCandidates`/`loadInvoices` shape:
+- Added a `loaded` boolean, set `true` only once a fetch actually resolves (success OR failure) —
+  never on mount.
+- Rewrote `load` around `useLatest`'s ticket gate (`latest.next()`/`latest.isCurrent(t)`) on both
+  the success and the rejection path, so an in-flight stale response can never stomp a newer one
+  in either direction. No `.catch(() => {})` anywhere in the new code — the one existing swallow
+  the old `.then().catch()` chain risked (a resolved-but-superseded promise silently clearing a
+  fresher error) is gone with it.
+- `hasLiveInvoice` now reads `loaded && !error && rows.some(...)` — untrustworthy until a load has
+  actually succeeded.
+- `createTitle`'s chain gained a new rung between "order not SHIPPED" and "has a live invoice":
+  `!loaded || error` → `"Could not confirm this order's invoice status — reload the page to try
+  again"`, disabling Create whenever the list hasn't loaded or errored, independent of what
+  `hasLiveInvoice` would otherwise say.
+- The empty-text / table conditional became `loaded && !error && rows.length === 0 ? <p>… none
+  yet</p> : rows.length > 0 ? <table>… : null` — the "none yet" text is now unreachable before a
+  successful load, and unreachable beside an error.
+
+**Browser verification (concrete, not inferred).** Built a throwaway fixture directly via the
+service layer (`tmp-fixwave1-fixture.ts`, `npx tsx`, deleted after use — the Task 18 fixture
+precedent): customer `FW1CUST`, part `FW1-PART`, order #1153 shipped to line-complete (20 pcs,
+`createShipper` with `lineComplete: true`) → order status `SHIPPED`, zero invoices.
+
+- **Happy path first:** `GET /api/orders/<id>/invoices` → 200 `[]`. DOM read of the Invoices
+  section: `"Invoices\nCreate invoice\n\nNo invoices raised against this order yet."`, Create
+  button `disabled: false`, `title: ""`.
+- **Forced failure:** temporarily added `throw new Error(...)` as the first line of
+  `src/app/api/orders/[id]/invoices/route.ts`'s `GET` handler (a real server-side 500, not a
+  client-side fetch stub — the brief's "temporary throw" option), confirmed via a direct
+  `fetch()` that the route now returns 500, then reloaded the order hub. DOM read: section text
+  was exactly `"Invoices\nCreate invoice\n\nRequest failed (500)"` — **no** "No invoices raised…"
+  text present anywhere — and the Create button read `disabled: true`, `title: "Could not confirm
+  this order's invoice status — reload the page to try again"`. Reverted the throw, reloaded
+  again: happy-path DOM state (above) came back exactly, confirming the guard doesn't leak into
+  the normal path.
+- Console showed no errors across either pass (`read_console_messages` not separately captured
+  this round, but no unhandled-rejection banners appeared in either DOM read and both fetches
+  resolved cleanly).
+
+### Fix 2 — Raise-credit was hidden on a CREDIT instead of disabled-with-tooltip
+
+`InvoiceDetail.tsx` wrapped the Raise-credit button in `invoice.kind === "INVOICE" && (...)`, so a
+CREDIT's own page showed no button at all — while `creditGate` (unchanged) already computed `{
+allowed: false, disabled: true, title: "A credit cannot itself be credited" }` for exactly that
+case. Removed the `kind === "INVOICE"` wrapper; the button is now always rendered, gated purely by
+`creditGate` (`disabled={!creditGate.allowed}` / `title={creditGate.title}`), matching this
+project's disabled-with-title rule (§5.16) instead of hide. No other logic changed — `creditGate`
+already had the right title computed and was simply unreachable code before this fix.
+
+**Browser verification.** On order #1153's invoice (priced one OPERATION line to $100, finalized):
+loaded `/invoicing/<invoiceId>` — Raise-credit button present, `disabled: false`, `title: ""`
+(finalized INVOICE, `invoicing.create` held). Called `POST .../credit` → new CREDIT
+`cmsjosi58000a71f6ll93aham` (`"Credit 1001"`, `sourceInvoiceId` pointing at the original). Loaded
+`/invoicing/<creditId>` and read the button directly: `{ text: "Raise credit", disabled: true,
+title: "A credit cannot itself be credited" }` — present and disabled-with-tooltip, not hidden, as
+required.
+
+**Cleanup.** Through the real app APIs, in dependency order: discarded the credit, unlocked +
+discarded the invoice, voided the shipper, voided the order, soft-deleted the part and the
+customer. `tmp-fixwave1-fixture.ts` deleted; `git status` after cleanup shows only the two source
+files this fix wave touched.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| `npm test` | 1667/1667 passed, 108 files |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npm run test:e2e` | 15/15 flows passed |
+
+### Files changed (this wave)
+
+- `erp/src/app/orders/[id]/InvoicesSection.tsx` — `loaded` flag, `useLatest`-gated load,
+  `hasLiveInvoice`/`createTitle`/empty-text all conditioned on a successful load.
+- `erp/src/app/invoicing/[id]/InvoiceDetail.tsx` — Raise-credit button un-wrapped from
+  `kind === "INVOICE"`, now always rendered and gated by the pre-existing `creditGate`.
+
+### Concerns
+
+None. Both fixes are narrowly scoped to the two Minor findings; the explicitly-deferred items
+(manually-added CHARGE line ordering, qty/weight-edit not recomputing `amount`) were left
+untouched.
+
 ## Self-review
 
 - Every action's UI gate matches its Task 16 route gate exactly (table above), verified against
