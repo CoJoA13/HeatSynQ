@@ -29,6 +29,8 @@ HeatSynQ is a self-hosted web ERP for a commercial **heat-treating shop**, built
 | `docs/2026-07-29-crossref-findings.md` | Cross-reference of the two Visual Shop reference docs — contradictions, gaps, and which source to trust where |
 | `Visual-Shop-ERP-Reference-Report.md` | Teardown of Visual Shop from the vendor KB (primary design reference, with known errors — see findings doc) |
 | `VisualShopTraining.pdf` | 2018 vendor training manual — **not in git** (44 MB, gitignored). Lives on the original machine; copy manually if needed. Printed page N = PDF page N+2 |
+| `docs/samples/00-…06-*` + `README.md` + `screen-index.csv` | **Visual Shop live screen library** — 125+ captured screens (dashboard, menus, orders/shipping, process/parts, billing/invoicing, A/R, notes/reports), VS 4342.0, captured read-only 2026-08-04. **Not in git** (gitignored, owner ruling 2026-08-07 — holds live company data; local reference only, do not commit/push/redistribute; same precedent as VisualShopTraining.pdf). Incomplete by design. The tracked layout-sample PDFs in `docs/samples/` are separate and stay in git |
+| `docs/visual-shop-capture-wishlist.md` | **Tracked** wishlist of VS screens NOT yet captured that would help the coming phases (5B A/R action flows, 5C close/QBO, then quoting/reports), keyed to VS's real menu labels. Living doc — extend as functions come up |
 | `erp/README.md` | App dev setup + production deployment + backup/restore |
 
 ## 3. Decisions that bind everything (condensed)

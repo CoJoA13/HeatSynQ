@@ -17,3 +17,18 @@ erp/node_modules/
 erp/.next/
 erp/.env
 erp/coverage/
+
+# Visual Shop screen-reference capture (added 2026-08-07) — kept LOCAL, never committed:
+# it contains live company data (customer/order/pricing/A/R), per docs/samples/README.md's own
+# redaction warning, and would travel to the remote on any push/PR. Owner ruling 2026-08-07:
+# gitignore, same precedent as VisualShopTraining.pdf. The tracked layout-sample PDFs in
+# docs/samples/ (Invoice/BOL/Cert/Shipping-Ticket/order-form) are NOT affected — they stay.
+docs/samples/00-dashboard/
+docs/samples/01-navigation-inventory/
+docs/samples/02-orders-and-shipping/
+docs/samples/03-process-parts-inventory/
+docs/samples/04-billing-and-invoicing/
+docs/samples/05-accounts-receivable/
+docs/samples/06-notes-crm-reports/
+docs/samples/README.md
+docs/samples/screen-index.csv
