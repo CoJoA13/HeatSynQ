@@ -1205,6 +1205,19 @@ Task 19: review dispatched (task-reviewer, opus — the print-claim-before-archi
   with claim removed], the stored-vs-fresh byte-comparison direction, discarded-refuses-new-reprints-
   stored, the documents.ts filename cases, whether the E2E flow edit matches an intended label change
   vs hides a regression, and the credit title vs §10)
+Task 19: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 1 Minor. The reviewer
+  INDEPENDENTLY removed the invoice-row claim and confirmed the concurrency test goes RED (print
+  archived against a freshly-discarded invoice instead of rejecting /voided/), both sides at Read
+  Committed so the row lock — not SSI — is the guarantee. Byte distinction verified NOT inverted
+  (stored compared with Buffer.compare; fresh renders pinned by %PDF-/pageCount/content). Credit
+  title ruled a sound reading of §10 (it lists "title and company" as a layout block, never mandates
+  the string "Invoice"). E2E flow edit ruled a correct label-update, not a weakening (same
+  assertion structure, friendly labels). documents.ts additions match the CHECK (INVOICE/CREDIT →
+  invoiceId alone). No schema change.
+  1 Minor DEFERRED → owner demo ping: negative money renders "$-937.44" (sign between $ and digits);
+  unusual customer-facing form, Phase-7 template-editable, spec §10 only says "negative amounts".
+  ⚠️ the Task 20 seam: no flow yet drives print→archive→reprint end to end — Task 20 adds it.
+Task 19: complete (commit e908b34, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
