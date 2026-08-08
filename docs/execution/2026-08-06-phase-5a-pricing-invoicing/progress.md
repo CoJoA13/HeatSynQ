@@ -1219,6 +1219,38 @@ Task 19: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 1 Mino
   ⚠️ the Task 20 seam: no flow yet drives print→archive→reprint end to end — Task 20 adds it.
 Task 19: complete (commit e908b34, review clean — approved first pass)
 
+Task 20: dispatched (implementer, sonnet — the close-out: 16th E2E flow, demo, docs) — BASE 0060f1a,
+  brief task-20-brief.md, carrying the accumulated demo pings.
+Task 20: implementer DONE — commit 026ff4c. 1688 tests (109 files), gates clean, E2E 16/16 run 3×
+  consecutively. Reported promptly.
+  E2E flow drives the full lifecycle incl. print→archive: two-PartPrice order → ship complete →
+  Ready-to-invoice → create → invoice shows 2 OPERATION rows + surcharge + tax → Finalize (lock,
+  board Invoiced) → Print → document appears in the invoice's Documents list → Unlock w/ reason
+  (board back to Shipped). Waits for post-navigation content (the doc-number badge), not the /new
+  URL trap. Reaper un-widened, AuditLog sweep added for the new fixtures.
+  GAP CLOSED, not worked around: the invoice page's Documents panel was calling
+  GET /api/invoices/[id]/documents — a route Task 19's brief never listed and never built, so every
+  real print left that panel 404ing. Task 20 built listDocumentsForInvoice + the route + tests
+  (mirroring the shipper/cert precedent). This is NEW production code in the close-out task — the
+  whole-branch review must cover it (route + service, not just docs/E2E).
+  Demo doc (docs/2026-08-07-phase-5a-demo.md) NAMES all deviations, verified by rendering real PDFs
+  vs the owner's sample (three named layout gaps): the freight deferral, reverse-leaves-SHIPPED,
+  credit titled "Credit", "$-937.44" sign format, credit's copied invoiceDate.
+  Docs drafted: CLAUDE.md (frozen-paper invoice reads, invoice-guards leaf, creditNumber sweep
+  exemption), HANDOFF §4a (pre-merge scaffolding, condenses at merge per the split rule), §6 pings,
+  §9 rewritten as the 5B kickoff carrying spec §16. Controller verified §4a factually accurate
+  (deliverables, ruling numbers, freight deferral, the invoice-guards leaf, Task 2's snippet defect,
+  the Task-20-found-Task-19 gap all correct).
+  Disclosed: the tax fixture uses Customer.salesTaxRate rather than mutating the global BillingConfig
+  singleton — a deliberate safety deviation (a shared-singleton mutation in a fixture could bleed
+  across the serial suite); sound.
+Task 20: complete (commit 026ff4c) — reviewed as part of the whole-branch pass, per the process.
+
+=== PHASE 5A FEATURE-COMPLETE: all 20 tasks done, each through implement→review→fix→re-review or
+    approved first pass. Next: the finish sequence — controller final gate run, then ONE whole-branch
+    review on the strongest model (fed this ledger's deferred-minors as triage), one fix wave, the
+    owner demo, the PR. ===
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
