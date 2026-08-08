@@ -34,7 +34,7 @@ than pre-litigated.
 - [x] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps — **complete** (code `2d639e2`; review clean, 2 deviations confirmed correct)
 - [x] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize — **complete** (code `3a0e8e9`; review clean)
 - [x] Task 4 — Terms & BillingConfig columns + admin UIs — **complete** (code `6ec3a3c`, fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
-- [ ] Task 5 — `ar-balances.ts` (pure)
+- [x] Task 5 — `ar-balances.ts` (pure) — **complete** (code `81beb71`; review clean)
 - [ ] Task 6 — `receipts.ts` + routes
 - [ ] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes
 - [ ] Task 8 — credit application
@@ -52,8 +52,13 @@ than pre-litigated.
 ## Deferred minors (fix-wave / whole-branch-review triage input)
 
 - **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
+- **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 5 — complete (BASE `6cbc7e8`, code `81beb71`; review clean)
+- Pure `ar-balances.ts` (36 lines): `invoiceOpenBalance` (subtracts all live types), `paymentOnAccount` (live PAYMENT only), `creditRemaining` (`|total|` − live). Voided-exclusion centralized in one `isLive`/`sumCents` helper (all three inherit it). Integer-cent math via a used `cents` helper; the `0.3 − 0.1 === 0.2` float-drift case passes. Only import is `type ApplicationTypeValue` from ar-constants (pure).
+- Gates: `npm test` 1718, tsc/eslint/build clean. Reviewer (sonnet): Spec ✅, Approved. Minors → deferred list (Decimal→number call-site obligation carried to consuming tasks).
 
 ### Task 4 — complete (BASE `8ed9792`, code `6ec3a3c` + fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
 - Terms gains `netDays`/`discountPercent`/`discountDays` via `reference.ts`'s `EXTRA_SCHEMAS.terms`; both-or-neither enforced merge-safely by `requireDiscountPair` on the composed create/update schema (NOT a `.refine` on the ZodObject entry, which would break `.merge`/`.partial` for every kind). `netDays` left zod-optional (DB `@default(30)` fills on create; a partial PATCH never resets it). `BillingConfig.financeChargeRate` added to the FIELDS registry + type + EMPTY + read/write. Admin UIs: reference editor gained a new `"decimal"` field kind (blank-drops cleanly, unlike bare text); billing page gained the finance-charge input.
