@@ -1296,6 +1296,29 @@ Fix re-review (task-reviewer, opus, scoped to f9cbc8d) — Spec ✅, quality APP
   path, createCredit refuses a non-INVOICE source, print reads stored negated lines) and no
   soft-deleted break reaches a user diff.
 
+POST-DEMO OWNER RULINGS (2026-08-07, at the demo walkthrough):
+- #2 freight deferral / #3 credit title "Credit" / #4 "$-937.44" format / #5 credit invoiceDate→5B /
+  #6 the three PDF layout gaps: all approved/deferred as-built, NO code change (recorded in the demo doc).
+- #1 REVERSING A SHIPMENT REOPENS THE ORDER — ruled and built. Owner's reasoning: a reversal is to
+  correct qty/weight (reverse → correct → reprint the corrected ship ticket), so the order must
+  reopen to be re-shippable. It is NOT the §5.2-quantity amendment I first feared: the clean fix is
+  that a reversal clears the line-complete flag on the lines it reverses, and the EXISTING
+  flag-derivation reopens the order to PARTIAL_SHIPPED — §5.2's "never from quantity" rule stays
+  intact. (I over-analyzed it in the first exchange; the owner's 1000-pc worked example clarified it.)
+  Owner's acceptance scenario (1000pc): ship 350 not-complete → PARTIAL; ship 650 complete → SHIPPED;
+  reverse the 650 → PARTIAL (350 still out); ship 463 → PARTIAL; ship 187 complete → SHIPPED.
+  Fix commit aea35a3 (reverseShipperInTx clears lineComplete on the reversed shipment's lines under
+  the existing claim; recompute rule untouched; spec §5.2/§5.6 amended). RED proven: scenario failed
+  at step 3 (stayed SHIPPED) before the fix. Invoiced path preserved: invoice→finalize(INVOICED)→
+  reverse(REOPENED, direct)→unlock derives PARTIAL_SHIPPED not SHIPPED; `released` still unlock-only.
+  Full suite 1692, E2E 16/16. Review dispatched (task-reviewer, opus, scoped to aea35a3).
+VS SCREEN LIBRARY (owner added 2026-08-07): 125+ Visual Shop screens under docs/samples/00-…06-.
+  Owner ruling: GITIGNORE (live company data, would push to the remote; VisualShopTraining.pdf
+  precedent). The 5 tracked layout-sample PDFs are unaffected. Created a TRACKED capture wishlist
+  (docs/visual-shop-capture-wishlist.md) of VS screens still worth grabbing for 5B/5C/later, keyed
+  to VS's real menu labels (read the A/R and Billing menus to name functions precisely). Both
+  registered in HANDOFF's document map. Commit for the gitignore+wishlist+map is separate.
+
 === PHASE 5A: REVIEW-COMPLETE (2026-08-07). 20 tasks + whole-branch review + 1 fix wave + scoped
     re-review, all clean. Final: 1690 tests / 109 files, tsc/eslint/build clean, E2E 16/16. 103
     commits on phase-5a-pricing-invoicing (LOCAL, not pushed). Remaining are OWNER actions:

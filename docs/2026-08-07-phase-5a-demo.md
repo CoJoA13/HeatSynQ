@@ -139,11 +139,15 @@ flipped and `title: "Credit"` / `documentNumber: "1000"`, titles itself **"Credi
 Named here individually — not one of these is hidden in the diff for you to find later.
 
 > **Owner rulings, 2026-08-07 (at demo):**
-> 1. **Reversing a non-invoiced order's status label — PENDING clarification.** Owner: "reversing a
->    shipment reverses the shipment; I'm not sure I follow what you're asking." The reversal (the
->    ledger) is correct and not in question; the only open point is the cosmetic status label
->    (stays *Shipped*, does not reopen to *Open*, for a non-invoiced order). Awaiting a yes/no on
->    whether that label should reopen. As-built (stays Shipped) is spec-correct; no code pending.
+> 1. **Reversing a shipment reopens the order — RULED and BUILT (owner, 2026-08-07).** Not cosmetic
+>    after all: a reversal exists to correct qty/weight (reverse → correct → reprint the corrected
+>    ship ticket), so the order must reopen to become re-shippable. Ruling: a reversal clears the
+>    "line complete" flag on the lines it reverses, and the order re-derives to **Partial shipped**
+>    (whatever shipment remains) — status stays flag-derived, §5.2 intact. Owner's own 1000-pc
+>    example (ship 350 → ship 650 complete → reverse the 650 → *Partial shipped*, ship corrected
+>    463 → still *Partial*, ship 187 complete → *Shipped*) is the acceptance test. Invoiced orders
+>    still go to *Reopened* on reverse, and a later unlock now correctly derives *Partial shipped*.
+>    Built in `aea35a3`; spec §5.2/§5.6 amended.
 > 2. **Deferred — confirmed.** Multi-order freight stays a deliberate deferral (shop bills no freight).
 > 3. **Approved as-is.** Credit PDF titled "Credit" — correct call, no change.
 > 4. **Approved as-is.** Negative amount format `"$-937.44"` — agreed and approved for production.
