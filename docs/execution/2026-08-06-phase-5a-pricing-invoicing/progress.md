@@ -1100,6 +1100,25 @@ Task 16: review — Spec ⚠️ (11 of 12 gates spec-correct), quality NEEDS FIX
   §5.6 reasoning and the "a citation is not a quote" lesson.
 Task 16: complete (commits dddf064..685e9bf, review clean after the one-gate fix)
 
+Task 17: dispatched (implementer, sonnet — UI on the ShippingList precedent) — BASE 685e9bf,
+  brief task-17-brief.md.
+Task 17: implementer DONE — commit e138f04, invoicing/page.tsx + InvoicingList.tsx (+317) + export
+  route. Full suite 1667, gates clean, E2E 15/15 (no new flow — that's Task 20). Reported promptly.
+  Thorough browser verification via real fetch/DOM against the authenticated session (pane can't
+  composite — 0x0 viewport confirmed): seeded 5 real SHIPPED uninvoiced orders, candidates appeared,
+  tick+Create moved them to Invoices, a FRONT-of-loop failure still let a later order succeed with
+  the error beside the failed row (which stayed a candidate, re-tickable — §5.13 reload-then-report),
+  filters narrowed per network request, export downloaded a real 6.8KB valid xlsx honoring the
+  filter, and a view-only user saw checkbox+Create disabled with title "Requires invoicing.create"
+  (not hidden). Fixtures cleaned via app APIs, 0 live rows after.
+  Commit scope clean — the report stayed untracked (implementer said "committed as required" but the
+  actual commit is 3 erp/src files only; report not in it).
+  Concern (non-blocking): Invoices show total 0.00/needsPrice because the DEV DB has no PartPrice
+  fixtures — out of scope, expected.
+Task 17: review dispatched (task-reviewer, opus — the four UI defect-classes this phase already paid
+  for: empty-list impersonation, stale-response race, §5.16 gating, per-order-independent create;
+  plus the export honoring the filter and the client/server boundary)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
