@@ -54,6 +54,9 @@ export const SETTINGS = {
   cert_number_next: { schema: numberSeed, default: 1000, label: "Next certification number", group: "Numbering" },
   quote_number_next: { schema: numberSeed, default: 1000, label: "Next quote number", group: "Numbering" },
   bol_number_next: { schema: numberSeed, default: 1000, label: "Next bill-of-lading number", group: "Numbering" },
+  receipt_batch_number_next: {
+    schema: numberSeed, default: 1000, label: "Next receipt-batch number", group: "Numbering",
+  },
   cert_required_default: {
     schema: z.boolean(), default: false, label: "Certification required by default", group: "Certifications",
   },

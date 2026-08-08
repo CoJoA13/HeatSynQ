@@ -152,10 +152,14 @@ live row goes untouched.`).toEqual([]);
     // Invoice's LIVE-rows-only guard is a separate thing and is NOT exempted: the one-live-
     // invoice-per-order rule is @@unique([orderId], where: raw("… AND kind = 'INVOICE'")), a
     // proper partial index, and it must stay that way.
+    //
+    // ReceiptBatch.batchNumber (Phase 5B, Task 2 — the model doesn't exist yet, so this entry
+    // sits unused until then): allocation-only, never reissued — a voided batch keeps its number.
     const ALLOWED = new Set([
       "User.username", "Order.orderNumber", "Order.clientRequestId",
       "Shipper.shipperNumber", "Shipper.bolNumber", "Shipper.clientRequestId",
       "Invoice.creditNumber", "Invoice.clientRequestId",
+      "ReceiptBatch.batchNumber",
     ]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same
