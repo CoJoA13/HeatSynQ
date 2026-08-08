@@ -1311,7 +1311,20 @@ POST-DEMO OWNER RULINGS (2026-08-07, at the demo walkthrough):
   the existing claim; recompute rule untouched; spec §5.2/§5.6 amended). RED proven: scenario failed
   at step 3 (stayed SHIPPED) before the fix. Invoiced path preserved: invoice→finalize(INVOICED)→
   reverse(REOPENED, direct)→unlock derives PARTIAL_SHIPPED not SHIPPED; `released` still unlock-only.
-  Full suite 1692, E2E 16/16. Review dispatched (task-reviewer, opus, scoped to aea35a3).
+  Full suite 1692, E2E 16/16. Review (task-reviewer, opus, scoped to aea35a3) — Spec ✅, quality
+  APPROVED, 0 Critical / 0 Important, 1 Minor. Reviewer did the revert-to-red itself: neutralizing
+  the flag-clear step reds exactly 3 tests (non-invoiced reopen, the 1000pc step 3, and the
+  invoiced→unlock path) — the invoiced→unlock red proves the flag-clear is what makes unlock derive
+  PARTIAL_SHIPPED. Confirmed recomputeOrderStatus is NOT in the diff (rule untouched, no quantity in
+  the decision), `released` still unlock-only across all 13 call sites, and no cross-order corruption
+  (completeLineIds drawn only from the reversed shipper's own lines). Spec §5.2/§5.6 amendment
+  accurate.
+  Minor (owner awareness, NOT a fix): clearing lineComplete on the reversed shipment's own lines
+  means the ORIGINAL shipment now reads "not complete" in the order-hub Shipments list, and a
+  not-yet-printed original ticket would omit "Shipped Complete." Already-printed tickets are
+  byte-immutable (unaffected). This is correct — a reversed shipment IS no longer a complete
+  shipment — and it feeds no status/money logic; it's the intended, §5.6-documented shadow of the
+  mechanism. Flagged to the owner.
 VS SCREEN LIBRARY (owner added 2026-08-07): 125+ Visual Shop screens under docs/samples/00-…06-.
   Owner ruling: GITIGNORE (live company data, would push to the remote; VisualShopTraining.pdf
   precedent). The 5 tracked layout-sample PDFs are unaffected. Created a TRACKED capture wishlist
