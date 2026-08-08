@@ -25,7 +25,7 @@ than pre-litigated.
 
 ## Task ledger
 
-- [ ] Task 1 — `ar-constants.ts`, `receivables` permission area + `write_off`, `receipt_batch_number_next` counter
+- [x] Task 1 — `ar-constants.ts`, `receivables` permission area + `write_off`, `receipt_batch_number_next` counter — **complete** (code `492bffe`, report `ac4680b`; review clean)
 - [ ] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps
 - [ ] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize
 - [ ] Task 4 — Terms & BillingConfig columns + admin UIs
@@ -50,4 +50,9 @@ _None yet._
 
 ## Task detail
 
-_(appended as each task completes)_
+### Task 1 — complete (BASE `c0af0a8`, code `492bffe`, report `ac4680b`; review clean)
+- Added `src/lib/ar-constants.ts` (pure/client-safe: `APPLICATION_TYPES`, `RECEIPT_BATCH_STATUSES`, `AGING_BUCKETS` + label maps), `"receivables"` to `AREAS`, `"write_off"` to `SPECIAL_ACTIONS`, and the `receipt_batch_number_next` counter (default 1000) to the settings registry.
+- Tests: permissions area/action case; `allocateNumber` returns 1000→1001; `partial-unique-sweep` allow-list gains `"ReceiptBatch.batchNumber"` (allocation-only exemption, inert until Task 2's schema adds the column — reviewer traced the sweep to confirm it is not a false-pass).
+- Gates: `npm test` 1694/1694, `tsc`/`eslint`/`build` clean (all foreground).
+- Reviewer verdict: Spec ✅, quality Approved, zero findings. Byte-diffed `ar-constants.ts` (incl. en-dash label bytes) and hand-counted 13 areas / 12 specials.
+- Process note: the first implementer dispatch stalled polling a backgrounded `npm test`; redirected via SendMessage to run gates foreground, which completed cleanly. It also self-recovered a stray `git stash` mid-task — verified afterward: clean tree, empty stash list, no lost work.
