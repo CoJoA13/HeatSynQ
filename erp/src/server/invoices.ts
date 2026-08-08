@@ -985,7 +985,16 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
   const deps = await loadInvoiceDeps(); // plant-wide reads OUTSIDE the tx — the create precedent
 
   return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
-    const { order } = await claimLiveInvoice(tx, id);
+    const { invoice, order } = await claimLiveInvoice(tx, id);
+    // A credit's lines are derived from its source invoice with the sign flipped (§5.6), not from
+    // the order — the order only ever prices at ordinary POSITIVE amounts. Recalculating a credit
+    // would silently overwrite its negated lines/total with a positive re-price of the order (the
+    // whole-branch review's money-inverting finding). There is no order pricing that should ever
+    // replace a credit's derived lines; the only corrections are line edits (`replaceInvoiceLines`)
+    // or discard.
+    if (invoice.kind === "CREDIT") {
+      throw new HttpError(400, "A credit cannot be recalculated — edit its lines or discard it");
+    }
     if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
 
     const customer = await tx.customer.findFirst({

@@ -98,6 +98,35 @@ describe("part prices", () => {
     expect(Number(after.unitPrice)).toBe(7);
   });
 
+  // Whole-branch review Fix 2: `threshold` is unique only among LIVE breaks (partial index), and
+  // `addPriceBreak` allows re-adding a break at a threshold a soft-deleted break still holds. If
+  // SNAPSHOT_INCLUDE.partPrice pulled `breaks` in unfiltered, a parent-row audit snapshot taken
+  // after the re-add would contain BOTH breaks sharing one threshold — non-deterministic order,
+  // and a soft-deleted row the live UI (`listPartPrices`, `deletedAt: null`) never shows. The
+  // include must filter to live breaks so the snapshot matches the live read.
+  it("snapshots only the live break when a re-added threshold collides with a soft-deleted one", async () => {
+    const { partId, austemper } = await fixture();
+    const { id: priceId } = await asSystem(() =>
+      addPartPrice(partId, { processStepCodeId: austemper.id, position: 1, pricePer: "EACH" }));
+    const { id: deletedBreakId } = await asSystem(() =>
+      addPriceBreak(partId, priceId, { threshold: 500, price: "0.95" }));
+    await asSystem(() => deletePriceBreak(partId, priceId, deletedBreakId));
+    const { id: liveBreakId } = await asSystem(() =>
+      addPriceBreak(partId, priceId, { threshold: 500, price: "0.90" }));
+    expect(liveBreakId).not.toBe(deletedBreakId);
+
+    // Any auditedUpdate on the parent row snapshots `breaks` — trigger one with an unrelated
+    // header edit so the break re-add itself isn't what's under test.
+    await asSystem(() => updatePartPrice(partId, priceId, { unitPrice: "7.0000" }));
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "partPrice", entityId: priceId, action: "update" }, orderBy: { at: "desc" } });
+    const after = entry!.after as { breaks: { id: string; threshold: string }[] };
+    expect(after.breaks).toHaveLength(1);
+    expect(after.breaks[0].id).toBe(liveBreakId);
+    expect(Number(after.breaks[0].threshold)).toBe(500);
+  });
+
   it("adds, updates, and deletes a price break, scoped to its price row", async () => {
     const { partId, otherPartId, austemper, straighten } = await fixture();
     const { id: priceId } = await asSystem(() =>

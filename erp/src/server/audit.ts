@@ -57,8 +57,13 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // A price row's breaks are edited through the row, so the row-level diff is only meaningful
   // with them included (ordered — issue #24), and its step code is selected in so history reads
   // "HT — Harden", not a cuid. Breaks are ALSO audited as their own model when edited directly.
+  // `threshold` is unique only among LIVE breaks (partial index) — a soft-deleted break's threshold
+  // can be re-added, so an unfiltered include can pull two breaks sharing one threshold into a
+  // snapshot (order becomes non-deterministic vs `threshold asc` alone) and surfaces a break the
+  // live UI (`getPartPrices`, `deletedAt: null`) never shows. Filtering to live rows makes
+  // `threshold` deterministic again and matches the live read.
   partPrice: {
-    breaks: { orderBy: { threshold: "asc" } },
+    breaks: { where: { deletedAt: null }, orderBy: [{ threshold: "asc" }] },
     processStepCode: { select: { code: true, name: true } },
   },
   partPriceBreak: undefined,

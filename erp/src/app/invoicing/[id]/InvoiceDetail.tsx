@@ -475,6 +475,13 @@ export function InvoiceDetail({ id }: { id: string }) {
     : !finalized
       ? { allowed: false, disabled: true, title: "Only a finalized invoice can be credited" }
       : gate(perms, "invoicing.create");
+  // A credit's lines are derived from its source invoice with the sign flipped (§5.6) — recalculate
+  // re-derives from the order at ordinary POSITIVE prices, which has no meaning for a credit and
+  // would overwrite its negated lines. Kind check takes precedence over moneyGate's own reasons,
+  // same shape as `creditGate` above.
+  const recalcGate: Gate = invoice && invoice.kind === "CREDIT"
+    ? { allowed: false, disabled: true, title: "A credit cannot be recalculated" }
+    : moneyGate;
   // Print (Task 19 — the route does not exist yet and 404s until then, per task-18-brief.md's
   // explicit license). Gated on the area's OWN .view permission, locked by "discarded" rather
   // than "finalized" (a finalized invoice prints — the stored-PDF case is the whole point) — the
@@ -771,7 +778,7 @@ export function InvoiceDetail({ id }: { id: string }) {
       {/* ---- Totals + Recalculate/Finalize ---- */}
       <section className="mb-6 rounded border bg-white p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <button onClick={() => void recalculate()} disabled={!moneyGate.allowed} title={moneyGate.title}
+          <button onClick={() => void recalculate()} disabled={!recalcGate.allowed} title={recalcGate.title}
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
             Recalculate
           </button>

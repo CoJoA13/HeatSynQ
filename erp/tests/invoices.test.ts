@@ -596,6 +596,28 @@ describe("recalculateInvoice", () => {
     expect(derived(recalced)).toEqual(derived(fresh));
     expect(recalced.subtotal).toBe(fresh.subtotal);
   });
+
+  // Whole-branch review Fix 1 (CRITICAL, money-inverting): a credit's lines are copied from its
+  // finalized source with the sign FLIPPED (§5.6) — there is no order pricing that should ever
+  // replace them. Without the guard, recalculate re-derives from the order at ordinary POSITIVE
+  // prices via the same shared `buildPricingInput`/`priceOrder`/mapper path an invoice uses, and
+  // silently overwrites the credit's negated lines/total with a positive re-price — a "Credit"
+  // that finalizes and prints as money owed TO the shop rather than a reduction.
+  it("refuses to recalculate a credit — its negated lines/total are unchanged", async () => {
+    const { invoice } = await finalizedFixture(); // default op amount = 144 × 6.51 = 937.44
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.subtotal).toBe(-937.44);
+    expect(credit.total).toBe(-937.44);
+
+    await expect(asSystem(() => recalculateInvoice(credit.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/credit cannot be recalculated/i) });
+
+    const after = await asSystem(() => getInvoice(credit.id));
+    expect(after.kind).toBe("CREDIT");
+    expect(after.subtotal).toBe(-937.44);
+    expect(after.total).toBe(-937.44);
+    expect(after.lines).toEqual(credit.lines);
+  });
 });
 
 describe("discardInvoice", () => {
