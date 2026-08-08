@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { truncateAll } from "./helpers/db";
+import { prisma, truncateAll } from "./helpers/db";
 import { listReference, createReference, deleteReference } from "@/server/reference";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
@@ -125,5 +125,49 @@ describe("flat reference tables", () => {
       expect(message.toLowerCase()).not.toContain("fkey");
       expect(message.toLowerCase()).toContain("does not exist");
     }
+  });
+});
+
+// Task 4: Terms carries netDays (required going forward, default 30) and an optional
+// discountPercent/discountDays early-pay-discount pair that is all-or-nothing.
+describe("terms: netDays + early-pay discount", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("defaults netDays to 30 when the create omits it", async () => {
+    const { id } = await createReference("terms", { name: "Net 30 (default)" });
+    const row = (await listReference("terms")).find((r) => r.id === id);
+    expect(row?.netDays).toBe(30);
+  });
+
+  it("rejects a negative netDays", async () => {
+    await expect(createReference("terms", { name: "Bad days", netDays: -1 })).rejects.toThrow();
+  });
+
+  it("rejects a non-integer netDays", async () => {
+    await expect(createReference("terms", { name: "Fractional days", netDays: 30.5 })).rejects.toThrow();
+  });
+
+  it("requires discountPercent and discountDays together, not one alone", async () => {
+    await expect(createReference("terms", { name: "Percent only", discountPercent: "2.00" }))
+      .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+    await expect(createReference("terms", { name: "Days only", discountDays: 10 }))
+      .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+  });
+
+  it("round-trips 2/10 net 30 and persists through the audited path", async () => {
+    const { id } = await createReference("terms", {
+      name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10,
+    });
+    const row = (await listReference("terms")).find((r) => r.id === id);
+    expect(row?.netDays).toBe(30);
+    expect(Number(row?.discountPercent)).toBe(2);
+    expect(row?.discountDays).toBe(10);
+
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "terms", entityId: id } });
+    expect(entry).not.toBeNull();
+    const after = entry!.after as { netDays: number; discountPercent: string; discountDays: number };
+    expect(after.netDays).toBe(30);
+    expect(Number(after.discountPercent)).toBe(2);
+    expect(after.discountDays).toBe(10);
   });
 });

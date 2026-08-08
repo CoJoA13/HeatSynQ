@@ -15,6 +15,9 @@ type Cfg = {
   certChargeStepCodeId: string | null;
   certChargeDefault: number | string | null;
   billForCertDefault: boolean;
+  // Task 4 (P5B §4.3, §7): plant default monthly finance-charge rate. Same string-mid-edit
+  // convention as the two decimal fields above.
+  financeChargeRate: number | string | null;
 };
 type GlAccount = { id: string; name: string; description?: string | null };
 type StepCodeOption = { id: string; name: string; active: boolean };
@@ -58,7 +61,7 @@ export default function BillingPage() {
   // focus time so tabbing through an untouched field doesn't write a no-op audit entry.
   const focused = useRef<Record<string, string>>({});
   function noteFocus(key: string, value: string) { focused.current[key] = value; }
-  function blurDecimal(key: "salesTaxRate" | "certChargeDefault", value: string) {
+  function blurDecimal(key: "salesTaxRate" | "certChargeDefault" | "financeChargeRate", value: string) {
     if (value === focused.current[key]) return;
     void save({ [key]: value === "" ? null : value } as Partial<Cfg>);
   }
@@ -156,6 +159,21 @@ export default function BillingPage() {
             onFocus={(e) => noteFocus("certChargeDefault", e.target.value)}
             onChange={(e) => setCfg({ ...cfg, certChargeDefault: e.target.value })}
             onBlur={(e) => blurDecimal("certChargeDefault", e.target.value)}
+            className="w-40 rounded border px-2 py-1 text-right disabled:cursor-not-allowed disabled:bg-slate-100"
+          />
+        </label>
+
+        <label className="flex items-center justify-between border-b p-2 text-sm">
+          <span>Finance charge (monthly %){savedMark("financeChargeRate")}</span>
+          <input
+            value={cfg.financeChargeRate ?? ""}
+            inputMode="decimal"
+            placeholder="1.5000"
+            disabled={canEdit.disabled}
+            title={canEdit.title}
+            onFocus={(e) => noteFocus("financeChargeRate", e.target.value)}
+            onChange={(e) => setCfg({ ...cfg, financeChargeRate: e.target.value })}
+            onBlur={(e) => blurDecimal("financeChargeRate", e.target.value)}
             className="w-40 rounded border px-2 py-1 text-right disabled:cursor-not-allowed disabled:bg-slate-100"
           />
         </label>

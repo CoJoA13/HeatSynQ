@@ -28,12 +28,25 @@ export const PICKLIST_KINDS = [
 ] as const;
 export type PickListKind = (typeof PICKLIST_KINDS)[number];
 
-/** Extra columns beyond name/active, for the generic list UI and Excel export. */
-export const REFERENCE_EXTRA_FIELDS: Record<ReferenceKind, { key: string; label: string; kind: "text" | "ref" }[]> = {
+/** Extra columns beyond name/active, for the generic list UI and Excel export.
+ *  `kind: "number"` is Task 4's addition, for Terms' netDays/discountDays — the ReferenceTable
+ *  Add row and the paste importer both only ever handle raw strings otherwise, and the server's
+ *  netDays/discountDays columns are plain `z.number().int()` (not string-accepting like
+ *  `decimalField`), so those two entry points coerce a "number" field to an actual JS number
+ *  before the value ever reaches the API. `hint` is optional, generic UI-note text shown under an
+ *  Add-row input — used here for the early-pay discount's all-or-nothing pairing. */
+export const REFERENCE_EXTRA_FIELDS: Record<
+  ReferenceKind, { key: string; label: string; kind: "text" | "ref" | "number"; hint?: string }[]
+> = {
   glAccount:       [{ key: "description",    label: "Description",   kind: "text" }],
   inspectionCode:  [{ key: "defaultScaleId", label: "Default scale", kind: "ref" }],
   paymentType:     [{ key: "glAccountId",    label: "GL account",    kind: "ref" }],
   commentSnippet:  [{ key: "text",           label: "Text",          kind: "text" }],
   specification:   [{ key: "text",           label: "Text",          kind: "text" }],
-  material: [], inspectionScale: [], containerType: [], carrier: [], terms: [],
+  material: [], inspectionScale: [], containerType: [], carrier: [],
+  terms: [
+    { key: "netDays", label: "Net days", kind: "number" },
+    { key: "discountPercent", label: "Discount %", kind: "text", hint: "needs Discount days too" },
+    { key: "discountDays", label: "Discount days", kind: "number", hint: "needs Discount % too" },
+  ],
 };

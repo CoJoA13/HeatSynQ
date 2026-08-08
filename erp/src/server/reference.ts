@@ -5,6 +5,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { decimalField } from "./decimal-field";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
 import { linksFrom, nameKey } from "../lib/reference-links";
 import { findBlockers } from "./reference-blockers";
@@ -23,8 +24,57 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
-  carrier: z.object({}), terms: z.object({}),
+  carrier: z.object({}),
+  // Task 4 (P5B spec §4.3): `netDays` mirrors the column's own `Int @default(30)` — optional
+  // here too, so a create that omits it lets Postgres apply the default rather than this schema
+  // re-asserting one. A zod-level `.default(30)` was tried and dropped: `EXTRA_SCHEMAS[kind]` is
+  // reused verbatim (via `.partial()`) for UPDATE, and `.default()` fires whenever the key is
+  // undefined — including on a partial PATCH that never meant to touch netDays — which would
+  // silently reset an existing row's netDays to 30 on every unrelated update (e.g. the Active
+  // toggle). Leaving it optional with no default keeps "omitted" meaning "don't touch" on update
+  // and "use the column default" on create, which is what each op actually needs.
+  // `discountPercent`/`discountDays` are both optional; their all-or-nothing pairing is enforced
+  // on the composed create/update schema by requireDiscountPair below, not here — see its comment
+  // for why it can't live on this entry.
+  terms: z.object({
+    netDays: z.number().int().min(0).optional(),
+    discountPercent: decimalField(5, 2, { min: "nonnegative" }),
+    discountDays: z.number().int().min(1).optional(),
+  }),
 };
+
+/**
+ * Terms' early-pay discount is all-or-nothing (Task 4): `discountPercent` and `discountDays`
+ * arrive as a pair or not at all. This can't live inside `EXTRA_SCHEMAS.terms` itself —
+ * `EXTRA_SCHEMAS` is typed `Record<ReferenceKind, z.ZodObject>` and every kind's create/update
+ * composes it via `.merge()`/`.partial()` below; a `.refine()`/`.superRefine()` there would
+ * return a `ZodEffects`, which has neither method, and would break every other kind's compose.
+ * Applied instead to the fully-composed schema, once, right before `.parse()` — for the other
+ * nine kinds neither key is ever in that schema's shape, so the check is a structural no-op.
+ *
+ * Update validates the raw PATCH, not the merged-with-existing-row state — the surcharge
+ * PERCENT/FLAT precedent (surcharges.ts's `SAVE.superRefine` plus its "takes the same full SAVE
+ * shape as create, not a partial patch" comment) resolves the same class of pairing rule by
+ * requiring the whole row on every save rather than re-deriving one from a partial. The generic
+ * reference admin UI never edits an existing row's extras at all — only the Add row sets them,
+ * and the Active-toggle PUT never touches these two keys — so a PATCH that supplies exactly one
+ * of the pair is not a path anything here exercises today; this guard exists for a future direct
+ * API caller, not to fix a live gap.
+ */
+function requireDiscountPair<S extends z.ZodTypeAny>(schema: S) {
+  return schema.superRefine((value, ctx) => {
+    const row = value as { discountPercent?: number | null; discountDays?: number | null };
+    const hasPercent = row.discountPercent != null;
+    const hasDays = row.discountDays != null;
+    if (hasPercent !== hasDays) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasPercent ? "discountDays" : "discountPercent"],
+        message: "an early-pay discount needs both a percent and a day count",
+      });
+    }
+  });
+}
 
 // `.trim()` mirrors customers.ts's CREATE.name — without it a name is stored exactly as typed
 // (e.g. "  Rockwell C  ") but resolveLinkNames() below trims before its lookup, so the grid could
@@ -132,7 +182,7 @@ export async function createReference(kind: string, input: Record<string, unknow
   // EXTRA_SCHEMAS[kind] widens to the Record's general value type once indexed by a non-literal
   // key, which in turn widens `name` on the merged shape's inferred type — cast back to what we
   // know BASE guarantees so `data.name` below type-checks as `string`, not `unknown`.
-  const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict()
+  const data = requireDiscountPair(BASE.merge(EXTRA_SCHEMAS[kind]).strict())
     .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
 
   // A soft-deleted row still occupies its unique `name`, but is invisible to every list — so a
@@ -171,7 +221,7 @@ export async function createReference(kind: string, input: Record<string, unknow
 
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
-  const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
+  const data = requireDiscountPair(BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict())
     .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
   // Same Serializable scoping as createReference above — see that comment. Clearing an FK to
   // null needs neither a target check nor Serializable: nothing points at anything after the

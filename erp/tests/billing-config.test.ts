@@ -31,7 +31,7 @@ describe("getBillingConfig / setBillingConfig", () => {
     expect(cfg).toEqual({
       salesTaxRate: null, salesTaxGlAccountId: null, freightGlAccountId: null,
       otherChargeGlAccountId: null, certChargeStepCodeId: null,
-      certChargeDefault: null, billForCertDefault: false,
+      certChargeDefault: null, billForCertDefault: false, financeChargeRate: null,
     });
   });
 
@@ -118,6 +118,19 @@ describe("getBillingConfig / setBillingConfig", () => {
     await prisma.processStepCode.update({ where: { id: code.id }, data: { deletedAt: new Date() } });
     await expect(asSystem(() => setBillingConfig({ certChargeStepCodeId: code.id })))
       .rejects.toThrow("That process step code does not exist");
+  });
+
+  // Task 4 (§4.3, §7): the plant default monthly finance-charge rate. Customer.financeChargeRate
+  // (customers.ts) overrides this per customer; that override chain is Task 11/12's concern, not
+  // this one — this only proves the plant-level setting itself reads/writes/validates.
+  it("saves the plant finance-charge rate and reads it back", async () => {
+    await asSystem(() => setBillingConfig({ financeChargeRate: "1.5" }));
+    const cfg = await getBillingConfig();
+    expect(cfg.financeChargeRate).toBe(1.5);
+  });
+
+  it("rejects a negative finance-charge rate", async () => {
+    await expect(asSystem(() => setBillingConfig({ financeChargeRate: "-1" }))).rejects.toThrow();
   });
 });
 
