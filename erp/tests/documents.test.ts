@@ -3,6 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import {
   storeDocument, listDocumentsForOrder, listDocumentsForShipper, listDocumentsForCert,
+  listDocumentsForInvoice,
   getDocument, documentFilename, assertPrintable, VOIDED_PRINT, type DocumentMeta,
 } from "@/server/documents";
 import type { PermUser } from "@/server/permissions";
@@ -191,6 +192,52 @@ describe("listDocumentsForShipper / listDocumentsForCert", () => {
   it("404s a missing shipper and a missing cert", async () => {
     await expect(listDocumentsForShipper("nope")).rejects.toMatchObject({ status: 404 });
     await expect(listDocumentsForCert("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("listDocumentsForInvoice", () => {
+  beforeEach(truncateAll);
+
+  /** Direct rows, not the real `createInvoice` service — this describe block is testing the
+   *  listing query alone, the `oneOrder`/`oneCert` precedent above. */
+  async function oneInvoice() {
+    const { customer, order } = await oneOrder();
+    const invoice = await prisma.invoice.create({
+      data: { orderId: order.id, customerId: customer.id, invoiceDate: new Date("2026-08-01") },
+    });
+    return { customer, order, invoice };
+  }
+
+  it("lists an invoice's own documents only, newest first, without a cert document leaking in", async () => {
+    const { invoice } = await oneInvoice();
+    const { cert } = await oneCert();
+
+    const first = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("1")));
+    const second = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("2")));
+    await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
+
+    const docs = await listDocumentsForInvoice(invoice.id);
+    expect(docs.map((d) => d.id)).toEqual([second.id, first.id]);
+    expect(docs.every((d) => !("fileData" in d))).toBe(true);
+  });
+
+  it("keeps a credit's own printed documents off its source invoice's list, and vice versa", async () => {
+    const { invoice, order, customer } = await oneInvoice();
+    const credit = await prisma.invoice.create({
+      data: {
+        kind: "CREDIT", orderId: order.id, customerId: customer.id,
+        invoiceDate: new Date("2026-08-01"), sourceInvoiceId: invoice.id, creditNumber: 1000,
+      },
+    });
+    const invoiceDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("i")));
+    const creditDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CREDIT", invoiceId: credit.id }, pdf("c")));
+
+    expect((await listDocumentsForInvoice(invoice.id)).map((d) => d.id)).toEqual([invoiceDoc.id]);
+    expect((await listDocumentsForInvoice(credit.id)).map((d) => d.id)).toEqual([creditDoc.id]);
+  });
+
+  it("404s a missing invoice", async () => {
+    await expect(listDocumentsForInvoice("nope")).rejects.toMatchObject({ status: 404 });
   });
 });
 

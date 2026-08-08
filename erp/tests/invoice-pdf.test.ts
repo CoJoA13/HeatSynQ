@@ -17,6 +17,7 @@ import { getDocument, VOIDED_PRINT } from "@/server/documents";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 import { POST as printRoute } from "@/app/api/invoices/[id]/print/route";
+import { GET as invoiceDocumentsRoute } from "@/app/api/invoices/[id]/documents/route";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -24,6 +25,8 @@ const asSystem = <T>(fn: () => Promise<T>) =>
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
 const postReq = (url: string, cookie?: string) =>
   new Request(url, { method: "POST", headers: cookie ? { cookie } : {} });
+const getReq = (url: string, cookie?: string) =>
+  new Request(url, { method: "GET", headers: cookie ? { cookie } : {} });
 
 /** Every `text` string anywhere in a document definition, flattened — content pins live on the
  *  DEFINITION, never on rendered bytes (pdfkit writes TTF-subset glyph ids, so a rendered PDF
@@ -404,5 +407,39 @@ describe("POST /api/invoices/[id]/print", () => {
     const res = await printRoute(postReq(`http://t/api/invoices/${credit.id}/print`, cookie), withParams({ id: credit.id }));
     expect(res.status).toBe(200);
     expect(res.headers.get("content-disposition")).toBe(`inline; filename="credit-${credit.creditNumber}.pdf"`);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// GET /api/invoices/[id]/documents — the invoice page's own stored-documents list (Task 20; the
+// route Task 19 owed but never built — see the route file's own comment). Gate invoicing.view,
+// the certs/[id]/documents and shippers/[id]/documents precedent.
+// -------------------------------------------------------------------------------------------
+
+describe("GET /api/invoices/[id]/documents", () => {
+  beforeEach(truncateAll);
+
+  it("401s without a session", async () => {
+    const { invoice } = await draftFixture();
+    const res = await invoiceDocumentsRoute(
+      getReq(`http://t/api/invoices/${invoice.id}/documents`), withParams({ id: invoice.id }));
+    expect(res.status).toBe(401);
+  });
+
+  it("requires invoicing.view, and lists only this invoice's own printed documents", async () => {
+    const { invoice } = await finalizedFixture();
+    const printed = await asSystem(() => printInvoice(invoice.id));
+
+    const wrong = await signInWith(["shipping.view"], "invoice-docs-wrong-1");
+    const forbidden = await invoiceDocumentsRoute(
+      getReq(`http://t/api/invoices/${invoice.id}/documents`, wrong), withParams({ id: invoice.id }));
+    expect(forbidden.status).toBe(403);
+
+    const viewer = await signInWith(["invoicing.view"], "invoice-docs-view-1");
+    const ok = await invoiceDocumentsRoute(
+      getReq(`http://t/api/invoices/${invoice.id}/documents`, viewer), withParams({ id: invoice.id }));
+    expect(ok.status).toBe(200);
+    const docs = await ok.json() as { id: string; kind: string }[];
+    expect(docs).toEqual([expect.objectContaining({ id: printed.documentId, kind: "INVOICE" })]);
   });
 });

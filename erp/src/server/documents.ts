@@ -210,6 +210,20 @@ export async function listDocumentsForCert(certId: string): Promise<DocumentMeta
   });
 }
 
+/** Every `INVOICE`/`CREDIT` document filed against THIS invoice row — a credit's own printed PDF
+ *  carries the CREDIT's own id in `invoiceId`, never its source invoice's (`storeDocument`'s
+ *  `INVOICE`/`CREDIT` branches both write `invoiceId` to the row being printed), so no union is
+ *  needed here either, the same shape as `listDocumentsForShipper`/`listDocumentsForCert` above. */
+export async function listDocumentsForInvoice(invoiceId: string): Promise<DocumentMeta[]> {
+  const invoice = await prisma.invoice.findFirst({ where: { id: invoiceId }, select: { id: true } });
+  if (!invoice) throw new HttpError(404, "Invoice not found");
+  return prisma.storedDocument.findMany({
+    where: { invoiceId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: DOCUMENT_SELECT,
+  });
+}
+
 /** The stored bytes, untouched — a reprint is a byte-for-byte reissue of what was printed, never
  *  a re-render (the source data behind any of the four kinds can keep changing after a print).
  *  Never filters on `deletedAt` either, for the same reason `listDocumentsFor*` above does not. */
