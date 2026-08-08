@@ -3,21 +3,26 @@ import type { ReferenceKind } from "./reference-constants";
 
 /** Everything `findBlockers`/`assertRefExists` can be asked about: every `ReferenceKind` plus
  *  the non-reference targets that share the same delete-guard machinery (Phase 2C-3 adds
- *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS). */
-export type BlockerTarget = ReferenceKind | "processStepCode";
+ *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS;
+ *  Task 6 adds `surcharge`, a maintained table with its own delete guard, exactly like a step
+ *  code). */
+export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge";
 
 /** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
  *  `REFERENCE_LABELS`. Kept separate rather than folded into `REFERENCE_LABELS` because that
  *  table is typed `Record<ReferenceKind, ...>` and widening it would let a reference kind be
  *  looked up here by mistake. */
-export const TARGET_LABELS: Record<"processStepCode", string> = { processStepCode: "process step code" };
+export const TARGET_LABELS: Record<"processStepCode" | "surcharge", string> =
+  { processStepCode: "process step code", surcharge: "surcharge" };
 
 /** Models that hold a foreign key pointing at a reference table. */
 export type ReferenceLinkModel =
   | "customer" | "processStepCode" | "paymentType" | "inspectionCode"
   | "part" | "partSpecification" | "partInspection"
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
-  | "shipper" | "certRequirement";
+  | "shipper" | "certRequirement"
+  | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
+  | "invoiceLine" | "billingConfig";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -77,6 +82,48 @@ const CERT_VIA_REQUIREMENT = {
     `Cert · #${((r.cert as { order: { orderNumber: number } }).order).orderNumber}`,
 } as const;
 
+/** An InvoiceLine's FKs are held by a child row, but the blocker a person can act on is the
+ *  INVOICE — the PART_VIA_CHILD / CERT_VIA_REQUIREMENT shape, one model over. A credit names
+ *  itself by its own credit number; an invoice has no number of its own (ruling 2) and names
+ *  itself by the order it bills. */
+const INVOICE_VIA_LINE = {
+  entityLabel: "Invoice",
+  detailPath: (id: string) => `/invoicing/${id}`,
+  liveWhere: { invoice: { is: { deletedAt: null } } },
+  include: { invoice: { select: { id: true, kind: true, creditNumber: true,
+                                  order: { select: { orderNumber: true } } } } },
+  blockerId: (r: Record<string, unknown>) => String((r.invoice as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => {
+    const inv = r.invoice as { kind: string; creditNumber: number | null; order: { orderNumber: number } };
+    return inv.kind === "CREDIT" ? `Credit · ${inv.creditNumber}` : `Invoice · ${inv.order.orderNumber}`;
+  },
+} as const;
+
+/** A SurchargeStepCode is a replace-grid row with no `deletedAt` of its own (§4.2), so it needs
+ *  BOTH halves of the parent-via-child shape: `liveWhere` because `findBlockers`' default of
+ *  `{ deletedAt: null }` is not a column this model has (it would throw, not merely over-report),
+ *  and `blockerId`/`displayName` because the row a person can act on is the SURCHARGE. */
+const SURCHARGE_VIA_STEP_CODE = {
+  entityLabel: "Surcharge",
+  detailPath: () => "/admin/surcharges",
+  liveWhere: { surcharge: { is: { deletedAt: null } } },
+  include: { surcharge: { select: { id: true, name: true } } },
+  blockerId: (r: Record<string, unknown>) => String((r.surcharge as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => String((r.surcharge as { name: string }).name),
+} as const;
+
+/** BillingConfig is the singleton (§4.5): one row, never soft-deleted, no `deletedAt` column at
+ *  all — so `liveWhere: {}` is required, for the same reason as above, and the row is always live.
+ *  Its four FKs share one `blockerId` (the row's own `'singleton'` id), so a GL account used as
+ *  more than one of the three billing accounts lists ONCE, which is what findBlockers' dedupe on
+ *  `entityLabel:blockerId` gives us for free. */
+const BILLING_CONFIG_BLOCKER = {
+  entityLabel: "Billing settings",
+  detailPath: () => "/admin/billing",
+  liveWhere: {},
+  displayName: () => "Plant billing settings",
+} as const;
+
 /** The single source of truth for "which column points at which reference kind".
  *  Two consumers read it in opposite directions: name resolution forward (given a column,
  *  show the target's name), the delete guard inverted (given a kind, who points at me).
@@ -129,6 +176,42 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Inspection code", ...CERT_VIA_REQUIREMENT },
   { model: "certRequirement", column: "scaleId", targetKind: "inspectionScale",
     label: "Scale", ...CERT_VIA_REQUIREMENT },
+  // Phase 5A (design spec §7). Consequence, stated so it is a decision and not a surprise: a
+  // Process Step Code or GL account an invoice has BILLED through can never be deleted. That is
+  // correct under §5.14 — deletion is for rows typed by mistake, and ordinary retirement is
+  // `active: false`, which keeps existing references rendering.
+  { model: "partPrice", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...PART_VIA_CHILD },
+  { model: "surcharge", column: "glAccountId", targetKind: "glAccount",
+    label: "GL account", entityLabel: "Surcharge", detailPath: () => "/admin/surcharges" },
+  { model: "surchargeStepCode", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...SURCHARGE_VIA_STEP_CODE },
+  // Task 6: `surcharge` becomes a BlockerTarget, so a customer's opt-out/override row and an
+  // invoice line that actually billed a surcharge both now block that surcharge's deletion —
+  // the same "billed history is permanent" call as the processStepCode/glAccount entries above.
+  { model: "customerSurcharge", column: "surchargeId", targetKind: "surcharge",
+    label: "Surcharge", entityLabel: "Customer",
+    detailPath: (id) => `/customers/${id}`,
+    include: { customer: { select: { id: true, code: true, name: true } } },
+    blockerId: (r) => String((r.customer as { id: string }).id),
+    displayName: (r) => {
+      const c = r.customer as { code: string; name: string };
+      return `${c.code} · ${c.name}`;
+    } },
+  { model: "invoiceLine", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...INVOICE_VIA_LINE },
+  { model: "invoiceLine", column: "glAccountId", targetKind: "glAccount",
+    label: "GL account", ...INVOICE_VIA_LINE },
+  { model: "invoiceLine", column: "surchargeId", targetKind: "surcharge",
+    label: "Surcharge", ...INVOICE_VIA_LINE },
+  { model: "billingConfig", column: "salesTaxGlAccountId", targetKind: "glAccount",
+    label: "Sales tax GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "freightGlAccountId", targetKind: "glAccount",
+    label: "Freight GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "otherChargeGlAccountId", targetKind: "glAccount",
+    label: "Other charge GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "certChargeStepCodeId", targetKind: "processStepCode",
+    label: "Certification charge step code", ...BILLING_CONFIG_BLOCKER },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

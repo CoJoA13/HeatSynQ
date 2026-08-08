@@ -6,7 +6,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-lc",
-        "cd /home/cojoa13/Desktop/HeatSynQ/erp && source ~/.nvm/nvm.sh && nvm use 26 >/dev/null 2>&1 && npm run dev"
+        "cd \"$(git rev-parse --show-toplevel)/erp\" && source ~/.nvm/nvm.sh && nvm use 26 >/dev/null 2>&1 && npm run dev"
       ],
       "port": 3000
     }

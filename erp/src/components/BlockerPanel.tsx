@@ -4,7 +4,15 @@
 // time — see CLAUDE.md's "blocked deletes need discoverable blockers" note. A refused delete is
 // not a dead end: this says plainly what is using the row, links to each one, and offers an
 // export instead of leaving the admin to guess (the Visual Shop trap this app is escaping).
-export type Blocker = { entityLabel: string; name: string; id: string; href: string | null };
+// `model` mirrors src/server/reference-blockers.ts's own Blocker type (kept as a separate literal
+// here rather than imported, same as always — client components must not import src/server/**).
+// Optional: only rows produced by `findBlockers` carry it (the registry entry's own Prisma model
+// identity, e.g. "customerSurcharge" — genuine identity, not a rendered string, which is what
+// lets a caller discriminate reliably; see that file's comment for why `entityLabel`/`label`
+// alone cannot). admin/surcharges/page.tsx's "Clear override" button is the first consumer (fix
+// wave 1, Fix 3 review; this field was `label` in that wave — fix wave 2 review found that
+// discriminator to be a tautology and replaced it with this one).
+export type Blocker = { entityLabel: string; name: string; id: string; href: string | null; model?: string };
 
 export function BlockerPanel({
   label, rowName, list, exportHref, onDismiss, action = "delete", note,

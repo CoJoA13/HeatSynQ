@@ -54,6 +54,19 @@ describe("permission sweep", () => {
     expect(offenders).toEqual([]);
   });
 
+  // Task 16: every invoicing route (money-adjacent, not under api/admin) also gates on a
+  // permission — the same structural check as the admin sweep above, walked over both trees a
+  // route can land under (src/app/api/invoices/** and the order-scoped
+  // src/app/api/orders/[id]/invoices route). A route that slips through with only `requireUser()`
+  // and no `mustCan`/`mustDo` fails here, not in production.
+  it("every invoicing route gates on a permission", () => {
+    const offenders = [
+      ...routeFiles(join(process.cwd(), "src/app/api/invoices")),
+      ...routeFiles(join(process.cwd(), "src/app/api/orders/[id]/invoices")),
+    ].filter((f) => !CALLS_PERMISSION_GATE.test(readFileSync(f, "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
   it("no client component imports from src/server", () => {
     function tsx(dir: string): string[] {
       return readdirSync(dir).flatMap((e) => {

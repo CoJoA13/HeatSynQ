@@ -1,18 +1,17 @@
 import { NextResponse } from "next/server";
 import { handle, requireUser } from "@/server/http";
 import { mustCan, mustDo } from "@/server/permissions";
-import { listPartBreaks, addPartBreak } from "@/server/part-price-breaks";
+import { listPartPrices, addPartPrice } from "@/server/part-prices";
 
 export const GET = handle(async (_req, { params }) => {
   mustCan(requireUser(), "parts", "view");
-  return NextResponse.json(await listPartBreaks((await params).id));
+  return NextResponse.json(await listPartPrices((await params).id));
 });
 
 export const POST = handle(async (req, { params }) => {
   const user = requireUser();
   mustCan(user, "parts", "edit");
-  // Price breaks are pricing, unconditionally — no key-presence check like the part's own
-  // pricing fields, unlike /api/parts and /api/parts/[id].
+  // Pricing is gated by change_prices unconditionally, not by parts.edit alone.
   mustDo(user, "change_prices");
-  return NextResponse.json(await addPartBreak((await params).id, await req.json()));
+  return NextResponse.json(await addPartPrice((await params).id, await req.json()));
 });

@@ -1,0 +1,31 @@
+# Phases 1, 2A and 2B — the foundation record
+
+*Moved verbatim out of `docs/HANDOFF.md` §4 on 2026-08-06, when the handoff was split into current state plus `docs/history/`. Nothing below is edited or summarised. Current one-paragraph state: HANDOFF §4.*
+
+---
+
+**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test`, `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
+
+**Phase 2A (foundation refactors + reference data) is complete.** The five Task-0 refactors from §6's backlog all landed: `HttpError` extracted to `src/server/errors.ts` (import-free, breaking the `settings → http → sessions → settings` cycle, enforced by a test asserting zero imports), one session resolution per request (`handle()` publishes it via `AsyncLocalStorage`, `requireUser` just reads it), a Prisma error-hygiene helper (`src/server/db-errors.ts` — maps P2002→400, P2025→404, and P2003→400 with the FK's field name recovered from the constraint name, e.g. "That gl account does not exist" instead of a raw Prisma message), settings values now redacted through the same `redact()` audit uses, and dotenv's promo line silenced in test output.
+
+Reference data ships with GL accounts, nine flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. (The tenth pick-list, `Salesperson`, was removed in Phase 2B — owner confirmed the shop assigns nobody.) The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped). ~~Re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.~~ **Superseded by the Prisma 7 work (§5.18):** each kind's `name` is now unique only among live rows, so re-typing a soft-deleted name creates a genuinely new row with its own id and history, not a revival.
+
+**Phase 2B (customers) is complete.** Customers carry an owner-assigned unique `code` alongside the
+name (Visual Shop's customer-id habit), an optional parent for divisions that bill together, the
+Phase 5 commercial fields (credit limit/hold, COD, taxable, terms, surcharge opt-out, finance-charge
+override), three standing note blocks, typed addresses with one default per kind, and contacts with
+per-document flags. The unused `Salesperson` reference table was removed. The Excel-quote-aware TSV
+parser moved to `src/server/tsv.ts` so customer paste reuses it rather than reimplementing it.
+
+Also fixed in Phase 2A's close-out: zod's specific validation messages (e.g. "Too small: expected string to have >=1 characters") were silently flattening to the generic "Invalid input" under Next's bundler, even though the identical code produced the specific text under vitest — zod's locale registration is a side-effecting `config(en())` call in its own entry point, and zod's `package.json` declares `"sideEffects": false`, so webpack tree-shook that call (and the locale module it pulls in) out of the server bundle. Fixed by re-registering the locale in `src/server/error-message.ts`, the one shared translation both `handle()` and `paste.ts` call — see that file's comment for the full mechanism. Caught only by checking a real built/dev server's HTTP responses, not by vitest, which never reproduced the bug.
+
+What Phase 1 delivers (all in `erp/`):
+- **Auth**: username/password (argon2id), hashed session tokens, sliding expiry driven by a setting, timing-attack-resistant login (DUMMY_HASH equalizer in `src/server/auth.ts`), proxy cookie gate (`src/proxy.ts`; Next 16 renamed the middleware convention).
+- **Permissions**: `src/server/permissions.ts` + `src/lib/permission-constants.ts` — 12 areas × view/create/edit/delete + 10 named special actions; resolution DENY override > GRANT override > role > deny. Roles and per-user overrides are owner-editable in Admin.
+- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers**; `settings.ts`'s direct `prisma.auditLog.create` was a documented exception in Phase 1 but was retired in Phase 2A (Task 4) — `audit.ts` is now the sole writer, enforced by a sweep test (`tests/permissions-sweep.test.ts`) that fails if any other file calls `prisma.auditLog.create` again. Phase 3 added two more sanctioned exceptions: `order-drafts.ts` (pre-entity scratch, spec-authorized and sweep-allowlisted rather than routed through `audited*`) and `allocateNumber`'s counter bump in `settings.ts` (the consuming entity's own create entry is the audit trail).
+- **Settings**: typed zod registry (`src/server/settings.ts`), 12 keys (company, numbering seeds, date defaults, session timeout), validated on read and write, audited, `Object.hasOwn`-guarded.
+- **Admin pages**: Users (no hard delete ever; self-lockout guards: can't deactivate yourself or the last user-manager), Roles (permission grid; ~~revival of a soft-deleted name clears stale permissions~~ — **superseded by the Prisma 7 work (§5.18):** re-using a soft-deleted role's name now creates a genuinely new role, so there is no revived row and no stale permissions to clear), Settings, Audit log.
+- **Shell**: permission-aware left nav (routes for future phases 404 until built), global search placeholder (wired in Phase 3), auth-refetch on navigation.
+- **Packaging**: multi-stage Dockerfile (standalone Next build, auto-`migrate deploy` on start), compose profiles (dev `db` only / prod db+app+backup), `restart: unless-stopped`, Postgres bound to 127.0.0.1, nightly **fail-loud** backups (verifies pg_dump's exit status; never writes an empty archive) with 30-day retention.
+
+Seeded credentials: `admin` / `admin` — **change immediately** on any real install.

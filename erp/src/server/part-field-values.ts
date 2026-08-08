@@ -76,9 +76,10 @@ export async function listPartFieldValues(partId: string): Promise<PartFieldValu
 
 /**
  * Serializable: this reads the live field defs and writes values — the write-skew partner of
- * `deletePartFieldDef`'s blocker guard (which reads values and writes the def), exactly like the
- * LOT/breaks pair in part-price-breaks.ts. Both Serializable is what lets Postgres abort the
- * interleaving that would otherwise leave a value pointing at a def this same instant deleted.
+ * `deletePartFieldDef`'s blocker guard (which reads values and writes the def). Both Serializable
+ * is what lets Postgres abort the interleaving that would otherwise leave a value pointing at a
+ * def this same instant deleted. (The other instance of this pattern used to be the LOT/breaks
+ * pair on Part; Phase 5A moved pricing onto PartPrice, and the pair moved with it.)
  */
 export async function setPartFieldValues(
   partId: string, values: { fieldId: string; value: string }[],

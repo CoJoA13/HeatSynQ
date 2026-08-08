@@ -33,6 +33,7 @@ model User {
   overrides         UserPermissionOverride[]
   orderDraft        OrderDraft?
   savedViews        SavedView[]
+  finalizedInvoices Invoice[]
 }
 
 model Session {
@@ -102,15 +103,22 @@ model AuditLog {
 }
 
 model GlAccount {
-  id               String            @id @default(cuid())
-  name             String // the account number, e.g. "4010"
-  description      String            @default("")
-  active           Boolean           @default(true)
-  deletedAt        DateTime?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  paymentTypes     PaymentType[]
-  processStepCodes ProcessStepCode[]
+  id                 String            @id @default(cuid())
+  name               String // the account number, e.g. "4010"
+  description        String            @default("")
+  active             Boolean           @default(true)
+  deletedAt          DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  paymentTypes       PaymentType[]
+  processStepCodes   ProcessStepCode[]
+  surcharges         Surcharge[]
+  invoiceLines       InvoiceLine[]
+  // Three separate FKs from BillingConfig to this one model, so each needs a NAME — Prisma
+  // cannot disambiguate them otherwise (the Customer.parentId/CustomerHierarchy precedent).
+  billingSalesTax    BillingConfig[]   @relation("BillingSalesTaxGl")
+  billingFreight     BillingConfig[]   @relation("BillingFreightGl")
+  billingOtherCharge BillingConfig[]   @relation("BillingOtherChargeGl")
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -123,19 +131,23 @@ enum StepFieldType {
 }
 
 model ProcessStepCode {
-  id            String                @id @default(cuid())
-  code          String
-  name          String
-  glAccountId   String?
-  glAccount     GlAccount?            @relation(fields: [glAccountId], references: [id])
-  equipmentTag  String                @default("")
-  active        Boolean               @default(true)
-  deletedAt     DateTime?
-  createdAt     DateTime              @default(now())
-  updatedAt     DateTime              @updatedAt
-  fields        ProcessStepFieldDef[]
-  partSteps     PartProcessStep[]
-  templateSteps ProcessTemplateStep[]
+  id                 String                @id @default(cuid())
+  code               String
+  name               String
+  glAccountId        String?
+  glAccount          GlAccount?            @relation(fields: [glAccountId], references: [id])
+  equipmentTag       String                @default("")
+  active             Boolean               @default(true)
+  deletedAt          DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  fields             ProcessStepFieldDef[]
+  partSteps          PartProcessStep[]
+  templateSteps      ProcessTemplateStep[]
+  partPrices         PartPrice[]
+  surchargeStepCodes SurchargeStepCode[]
+  invoiceLines       InvoiceLine[]
+  billingConfigs     BillingConfig[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -269,45 +281,54 @@ model Specification {
 }
 
 model Customer {
-  id                  String            @id @default(cuid())
-  code                String
-  name                String
-  parentId            String?
-  parent              Customer?         @relation("CustomerHierarchy", fields: [parentId], references: [id])
-  children            Customer[]        @relation("CustomerHierarchy")
-  termsId             String?
-  terms               Terms?            @relation(fields: [termsId], references: [id])
+  id                   String              @id @default(cuid())
+  code                 String
+  name                 String
+  parentId             String?
+  parent               Customer?           @relation("CustomerHierarchy", fields: [parentId], references: [id])
+  children             Customer[]          @relation("CustomerHierarchy")
+  termsId              String?
+  terms                Terms?              @relation(fields: [termsId], references: [id])
   // Decimal(12, 2): 10 integer digits, 2 fractional (max 9999999999.99). Validated to this exact
   // precision/scale by decimalField(12, 2) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  creditLimit         Decimal?          @db.Decimal(12, 2)
-  creditHold          Boolean           @default(false)
-  cod                 Boolean           @default(false)
-  taxable             Boolean           @default(true)
-  defaultPo           String            @default("")
-  orderNotes          String            @default("")
-  shippingNotes       String            @default("")
-  invoiceNotes        String            @default("")
-  surchargeOptOut     Boolean           @default(false)
+  creditLimit          Decimal?            @db.Decimal(12, 2)
+  creditHold           Boolean             @default(false)
+  cod                  Boolean             @default(false)
+  taxable              Boolean             @default(true)
+  defaultPo            String              @default("")
+  orderNotes           String              @default("")
+  shippingNotes        String              @default("")
+  invoiceNotes         String              @default("")
+  surchargeOptOut      Boolean             @default(false)
   // Decimal(6, 4): 2 integer digits, 4 fractional (max 99.9999). Validated to this exact
   // precision/scale by decimalField(6, 4) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  financeChargeRate   Decimal?          @db.Decimal(6, 4)
-  requestDaysOverride Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
+  financeChargeRate    Decimal?            @db.Decimal(6, 4)
+  requestDaysOverride  Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
   // Certification chain, most-specific-wins (spec §4.4): null = inherit the plant setting
   // (cert_required_default / cert_scope_default). Part overrides customer, order freezes the
   // resolved value at save.
-  certRequiredDefault Boolean?
-  certScopeDefault    CertScope?
-  active              Boolean           @default(true)
-  deletedAt           DateTime?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  addresses           CustomerAddress[]
-  contacts            CustomerContact[]
-  parts               Part[]
-  orders              Order[]
-  shippers            Shipper[]
+  certRequiredDefault  Boolean?
+  certScopeDefault     CertScope?
+  /// Overrides BillingConfig.salesTaxRate for this customer (P5A §4.4); null = inherit the plant
+  /// rate. Only ever applied when `taxable` is true — the flag decides IF tax is billed, this
+  /// decides at what rate.
+  salesTaxRate         Decimal?            @db.Decimal(9, 6)
+  /// Suppresses the certification charge for this customer regardless of the part/plant
+  /// "bill for cert" chain (P5A §4.4) — a blanket opt-out, the surchargeOptOut shape.
+  certChargeSuppressed Boolean             @default(false)
+  active               Boolean             @default(true)
+  deletedAt            DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  addresses            CustomerAddress[]
+  contacts             CustomerContact[]
+  parts                Part[]
+  orders               Order[]
+  shippers             Shipper[]
+  invoices             Invoice[]
+  surchargeRules       CustomerSurcharge[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -397,17 +418,19 @@ model Part {
   certRequired          Boolean?
   certScope             CertScope?
   serializationRequired Boolean               @default(false)
-  setupCharge           Decimal?              @db.Decimal(12, 2)
-  unitPrice             Decimal?              @db.Decimal(12, 4)
-  minimumCharge         Decimal?              @db.Decimal(12, 2)
-  pricePer              PricePer              @default(EACH)
+  // Certification CHARGE chain (P5A §4.4), distinct from the certRequired/certScope chain above:
+  // null = inherit BillingConfig.billForCertDefault. Pricing itself moved off Part entirely in
+  // Phase 5A — a part is priced by one PartPrice row PER process step code (`prices` below), not
+  // by four columns on the part.
+  billForCert           Boolean?
+  certCharge            Decimal?              @db.Decimal(12, 2)
   active                Boolean               @default(true)
   deletedAt             DateTime?
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   specifications        PartSpecification[]
   inspections           PartInspection[]
-  priceBreaks           PartPriceBreak[]
+  prices                PartPrice[]
   fieldValues           PartFieldValue[]
   processRevisions      PartProcessRevision[]
   orderLines            OrderLine[]
@@ -458,16 +481,19 @@ model PartInspection {
 }
 
 model PartPriceBreak {
-  id        String    @id @default(cuid())
-  partId    String
-  part      Part      @relation(fields: [partId], references: [id])
-  threshold Decimal   @db.Decimal(12, 2) // in the part's price-per unit (owner ruling §3.1)
-  price     Decimal   @db.Decimal(12, 4)
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  // Re-parented from Part to PartPrice in Phase 5A (§4.1): a break belongs to ONE priced
+  // operation, not to the part as a whole, because the threshold is expressed in that row's
+  // own `pricePer` unit and a part can now be priced per step code.
+  partPriceId String
+  partPrice   PartPrice @relation(fields: [partPriceId], references: [id])
+  threshold   Decimal   @db.Decimal(12, 2) // in the parent price row's price-per unit (owner ruling §3.1)
+  price       Decimal   @db.Decimal(12, 4)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  @@unique([partId, threshold], where: raw("\"deletedAt\" IS NULL"))
+  @@unique([partPriceId, threshold], where: raw("\"deletedAt\" IS NULL"))
 }
 
 model PartFieldDef {
@@ -611,6 +637,7 @@ model Order {
   documents       StoredDocument[]
   certs           Cert[]
   shipperOrders   ShipperOrder[]
+  invoices        Invoice[]
 
   @@index([customerId])
   @@index([status])
@@ -634,6 +661,7 @@ model OrderLine {
   serials          OrderSerial[]
   shipperLines     ShipperLine[]
   certRequirements CertRequirement[]
+  invoiceLines     InvoiceLine[]
 
   @@unique([orderId, position])
   @@index([partId])
@@ -686,12 +714,13 @@ model Load {
 }
 
 model OrderCharge {
-  id          String   @id @default(cuid())
-  orderId     String
-  order       Order    @relation(fields: [orderId], references: [id])
-  position    Int
-  description String
-  amount      Decimal? @db.Decimal(12, 2) // null = "needs price" (spec §7.5.3); Phase 5 bills
+  id           String        @id @default(cuid())
+  orderId      String
+  order        Order         @relation(fields: [orderId], references: [id])
+  position     Int
+  description  String
+  amount       Decimal?      @db.Decimal(12, 2) // null = "needs price" (spec §7.5.3); Phase 5 bills
+  invoiceLines InvoiceLine[]
 
   @@unique([orderId, position])
 }
@@ -755,6 +784,8 @@ enum DocumentKind {
   SHIPPER
   BOL
   CERT
+  INVOICE
+  CREDIT
 }
 
 model StoredDocument {
@@ -765,6 +796,8 @@ model StoredDocument {
   shipper    Shipper?     @relation(fields: [shipperId], references: [id])
   certId     String? // CERT: owner
   cert       Cert?        @relation(fields: [certId], references: [id])
+  invoiceId  String? // INVOICE, CREDIT: owner
+  invoice    Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   kind       DocumentKind
   loadNumber Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
@@ -778,10 +811,13 @@ model StoredDocument {
   // Which owner column is required is decided by `kind`, enforced by a hand-written DB CHECK
   // ("StoredDocument_kind_owner_check") — Prisma's schema language has no check-constraint
   // syntax, the same Part.loadQty situation. It lives in
-  // migrations/<ts>_certs_and_shipping/migration.sql; keep the two in step.
+  // migrations/<ts>_certs_and_shipping/migration.sql; keep the two in step. Phase 5A widened the
+  // enum with INVOICE and CREDIT and re-stated the CHECK in
+  // migrations/<ts>_pricing_and_invoicing/migration.sql — both own `invoiceId` alone.
   @@index([orderId])
   @@index([shipperId])
   @@index([certId])
+  @@index([invoiceId])
 }
 
 enum CertScope {
@@ -822,37 +858,37 @@ model Cert {
 }
 
 model CertRequirement {
-  id               String           @id @default(cuid())
-  certId           String
-  cert             Cert             @relation(fields: [certId], references: [id])
+  id                String           @id @default(cuid())
+  certId            String
+  cert              Cert             @relation(fields: [certId], references: [id])
   // Snapshot + release (ruling 23 extended, 2026-08-06): a frozen requirement must not block
   // removeLine — the line identity it prints is snapshotted below, the FK releases on delete.
-  orderLineId      String?
-  orderLine        OrderLine?       @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
-  linePosition     Int // snapshot at seed
-  partNumber       String
-  partName         String           @default("")
+  orderLineId       String?
+  orderLine         OrderLine?       @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  linePosition      Int // snapshot at seed
+  partNumber        String
+  partName          String           @default("")
   // Plain copy of the seeding OrderLine's cuid — never an FK, survives SET NULL, and unlike a
   // position it is NEVER reused, so it is the one grouping key two incarnations of the same part
   // at the same freed position cannot collide on (#57 review). "" only on rows released before
   // the backfill; consumers fall back to the composite identity there.
-  orderLineIdAtSeed String          @default("")
+  orderLineIdAtSeed String           @default("")
   // Cert-wide, not per line: requirements are seeded in order-line position order, and within
   // each line in the part's own PartInspection.sort order, so this orders the whole document
   // exactly as it prints.
-  position         Int
-  inspectionCodeId String
-  inspectionCode   InspectionCode   @relation(fields: [inspectionCodeId], references: [id])
-  scaleId          String?
-  scale            InspectionScale? @relation(fields: [scaleId], references: [id])
+  position          Int
+  inspectionCodeId  String
+  inspectionCode    InspectionCode   @relation(fields: [inspectionCodeId], references: [id])
+  scaleId           String?
+  scale             InspectionScale? @relation(fields: [scaleId], references: [id])
   // min/max/sampleQty/location are COPIED from PartInspection at seed time and frozen here —
   // editing the part next month must not rewrite a cert already being filled in. Precision
   // matches PartInspection.min/max exactly; validate with decimalField(10, 4) before Prisma.
-  min              Decimal?         @db.Decimal(10, 4)
-  max              Decimal?         @db.Decimal(10, 4)
-  sampleQty        String           @default("") // free text, never a number (spec §3.9)
-  location         String           @default("")
-  readings         CertReading[]
+  min               Decimal?         @db.Decimal(10, 4)
+  max               Decimal?         @db.Decimal(10, 4)
+  sampleQty         String           @default("") // free text, never a number (spec §3.9)
+  location          String           @default("")
+  readings          CertReading[]
 
   @@unique([certId, position])
   @@index([orderLineId])
@@ -906,6 +942,12 @@ model Shipper {
   packageCount       Int? // prefilled from the container sum, editable
   proNumber          String           @default("")
   scacCode           String           @default("")
+  /// The shipment this one reverses (P5A §5.6): a return/reversal carries negative qty/weight on
+  /// its lines and is what a credit is built from. Self-relation, not a flag, so the credit can
+  /// name exactly which shipment came back.
+  reversesShipperId  String?
+  reverses           Shipper?         @relation("ShipperReversal", fields: [reversesShipperId], references: [id])
+  reversedBy         Shipper[]        @relation("ShipperReversal")
   deletedAt          DateTime? // voided; reason in the audit entry, void_shipper
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
@@ -940,25 +982,25 @@ model ShipperOrder {
 }
 
 model ShipperLine {
-  id             String       @id @default(cuid())
-  shipperOrderId String
-  shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
+  id              String       @id @default(cuid())
+  shipperOrderId  String
+  shipperOrder    ShipperOrder @relation(fields: [shipperOrderId], references: [id])
   // Snapshot + release (owner ruling 2026-08-06): nullable, ON DELETE SET NULL — a removeLine
   // after every referencing shipment is voided releases this link instead of raising a raw FK
   // error, and the snapshot columns below keep rendering what shipped. Live rows still prefer
   // the join (current part identity, ordered totals); the snapshot is the fallback.
   orderLineId     String?
-  orderLine       OrderLine? @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  orderLine       OrderLine?   @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
   position        Int
   qty             Int // >= 0
-  weight          Decimal    @db.Decimal(12, 2) // >= 0
-  lineComplete    Boolean    @default(false)
+  weight          Decimal      @db.Decimal(12, 2) // >= 0
+  lineComplete    Boolean      @default(false)
   // What the ticket printed and the detail grid shows, captured at save time.
   partNumber      String
-  partName        String     @default("")
-  partDescription String     @default("")
+  partName        String       @default("")
+  partDescription String       @default("")
   orderedQty      Int
-  orderedWeight   Decimal    @db.Decimal(12, 2)
+  orderedWeight   Decimal      @db.Decimal(12, 2)
 
   @@unique([shipperOrderId, position])
   // One row per order line per shipment. Shipping the same line twice means two shipments,
@@ -969,9 +1011,9 @@ model ShipperLine {
 }
 
 model ShipperContainer {
-  id               String          @id @default(cuid())
-  shipperOrderId   String
-  shipperOrder     ShipperOrder    @relation(fields: [shipperOrderId], references: [id])
+  id                  String          @id @default(cuid())
+  shipperOrderId      String
+  shipperOrder        ShipperOrder    @relation(fields: [shipperOrderId], references: [id])
   // Snapshot + release (see ShipperLine): order-side container replacement stays free, the
   // shipment keeps what was selected at ship time through the snapshot columns.
   orderContainerId    String?
@@ -987,20 +1029,272 @@ model ShipperContainer {
 }
 
 model ShipperSerial {
-  id             String       @id @default(cuid())
-  shipperOrderId String
-  shipperOrder   ShipperOrder @relation(fields: [shipperOrderId], references: [id])
+  id                String       @id @default(cuid())
+  shipperOrderId    String
+  shipperOrder      ShipperOrder @relation(fields: [shipperOrderId], references: [id])
   // Snapshot + release (see ShipperLine).
-  orderSerialId  String?
-  orderSerial    OrderSerial? @relation(fields: [orderSerialId], references: [id], onDelete: SetNull)
-  printOnShipper Boolean      @default(true)
-  serial         String
-  description    String       @default("")
+  orderSerialId     String?
+  orderSerial       OrderSerial? @relation(fields: [orderSerialId], references: [id], onDelete: SetNull)
+  printOnShipper    Boolean      @default(true)
+  serial            String
+  description       String       @default("")
   // Plain snapshot of OrderSerial.lineId at save — deliberately NOT an FK (nothing about the
   // line's own life may touch this row): what lets a RELEASED selection keep satisfying the
   // line's serialization warning (#57 review). "" only on rows released before the backfill.
-  orderLineIdAtSave String    @default("")
+  orderLineIdAtSave String       @default("")
 
   @@unique([shipperOrderId, orderSerialId])
   @@index([orderSerialId])
+}
+
+// ─── Phase 5A: pricing and invoicing (design spec §4.1–§4.5) ────────────────────────────────
+//
+// Money is Decimal(12, 2); unit prices are Decimal(12, 4); rates and percentages are
+// Decimal(9, 6) (4% stores as 0.040000); weights follow Phase 3/4; quantities are integers.
+
+/// One priced operation on a part: a part is priced per PROCESS STEP CODE, not by four columns on
+/// the part itself (§4.1). `position` is the print order of the PRICE rows on the invoice.
+model PartPrice {
+  id                String           @id @default(cuid())
+  partId            String
+  part              Part             @relation(fields: [partId], references: [id])
+  processStepCodeId String
+  processStepCode   ProcessStepCode  @relation(fields: [processStepCodeId], references: [id])
+  position          Int
+  setupCharge       Decimal?         @db.Decimal(12, 2)
+  unitPrice         Decimal?         @db.Decimal(12, 4)
+  minimumCharge     Decimal?         @db.Decimal(12, 2)
+  pricePer          PricePer         @default(EACH)
+  breaks            PartPriceBreak[]
+  deletedAt         DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@unique([partId, processStepCodeId], where: raw("\"deletedAt\" IS NULL"))
+  @@index([partId])
+  @@index([processStepCodeId])
+}
+
+enum SurchargeKind {
+  PERCENT
+  FLAT
+}
+
+enum SurchargeScope {
+  ALL
+  INCLUDE
+  EXCLUDE
+}
+
+/// `scope = ALL` ignores `stepCodes`; `INCLUDE` bills only operation lines whose step code is
+/// listed; `EXCLUDE` bills every operation line whose step code is not listed (§4.2).
+model Surcharge {
+  id            String              @id @default(cuid())
+  name          String // prints on the invoice, e.g. "EnergySur"
+  kind          SurchargeKind       @default(PERCENT)
+  rate          Decimal?            @db.Decimal(9, 6) // PERCENT: 0.040000 = 4%
+  amount        Decimal?            @db.Decimal(12, 2) // FLAT
+  minimumAmount Decimal?            @db.Decimal(12, 2)
+  glAccountId   String?
+  glAccount     GlAccount?          @relation(fields: [glAccountId], references: [id])
+  scope         SurchargeScope      @default(ALL)
+  position      Int
+  active        Boolean             @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  stepCodes     SurchargeStepCode[]
+  customerRules CustomerSurcharge[]
+  invoiceLines  InvoiceLine[]
+
+  @@unique([name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+/// The INCLUDE or EXCLUDE list; replace-grid, no soft delete.
+model SurchargeStepCode {
+  id                String          @id @default(cuid())
+  surchargeId       String
+  // Cascade: this row is owned by the Surcharge (Task 6's replace-grid setSurchargeStepCodes
+  // deletes/recreates the whole set), the same "owned child, not a usage reference" shape as
+  // ProcessStepFieldDef.codeId -> ProcessStepCode above. Registering `surcharge` as a
+  // BlockerTarget (Task 6) would otherwise make a surcharge's OWN step-code list block its own
+  // deletion — a self-referential dead end (reference-links-sweep.test.ts's schemaLinks
+  // exemption keys off this annotation, scoped to processStepCode + surcharge targets only).
+  surcharge         Surcharge       @relation(fields: [surchargeId], references: [id], onDelete: Cascade)
+  processStepCodeId String
+  processStepCode   ProcessStepCode @relation(fields: [processStepCodeId], references: [id])
+
+  @@unique([surchargeId, processStepCodeId])
+}
+
+/// Per-customer opt-out and override. `Customer.surchargeOptOut` stays the BLANKET switch; a row
+/// here refines one surcharge only (§4.2).
+model CustomerSurcharge {
+  id          String    @id @default(cuid())
+  customerId  String
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  surchargeId String
+  surcharge   Surcharge @relation(fields: [surchargeId], references: [id])
+  optOut      Boolean   @default(false)
+  rate        Decimal?  @db.Decimal(9, 6)
+  amount      Decimal?  @db.Decimal(12, 2)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([customerId, surchargeId], where: raw("\"deletedAt\" IS NULL"))
+}
+
+enum InvoiceKind {
+  INVOICE
+  CREDIT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum InvoiceLineKind {
+  PART
+  OPERATION
+  SURCHARGE
+  FREIGHT
+  CHARGE
+  CERT
+  TAX
+}
+
+enum PriceSource {
+  PART_PRICE
+  MANUAL
+}
+
+/// The live-rows-only @@unique([orderId]), further filtered to kind = 'INVOICE', is the real guard
+/// behind ruling 5 — ONE live invoice per order, enforced by the database rather than by a service
+/// check a race could slip past. Credits are excluded because an invoice may be credited more than
+/// once. Keep that block on ONE line: tests/partial-unique-sweep.test.ts parses it with regexes
+/// that assume it.
+model Invoice {
+  id              String           @id @default(cuid())
+  kind            InvoiceKind      @default(INVOICE)
+  orderId         String
+  order           Order            @relation(fields: [orderId], references: [id])
+  sourceInvoiceId String? // CREDIT: the invoice it derives from
+  sourceInvoice   Invoice?         @relation("InvoiceCredits", fields: [sourceInvoiceId], references: [id])
+  credits         Invoice[]        @relation("InvoiceCredits")
+  /// CREDIT only. Allocated from `credit_number_next` and never reissued — plain @unique on a
+  /// soft-deletable model, deliberately NOT live-rows-only (sweep exemption, §7): a discarded
+  /// draft must never free a number a customer already holds on paper.
+  creditNumber    Int?             @unique
+  customerId      String
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  status          InvoiceStatus    @default(DRAFT)
+  invoiceDate     DateTime         @db.Date
+  // Snapshots of what the paper says — read unconditionally (§5.4)
+  poNumber        String           @default("")
+  termsName       String           @default("")
+  billTo          String           @default("") // rendered multi-line address block
+  shipTo          String           @default("")
+  materialName    String           @default("") // lead part
+  processNames    String           @default("") // lead part's priced operations, comma-joined
+  taxRate         Decimal?         @db.Decimal(9, 6)
+  // Totals, all rounded, all sums of already-rounded lines
+  subtotal        Decimal          @default(0) @db.Decimal(12, 2) // OPERATION lines
+  surchargeTotal  Decimal          @default(0) @db.Decimal(12, 2)
+  chargeTotal     Decimal          @default(0) @db.Decimal(12, 2)
+  certTotal       Decimal          @default(0) @db.Decimal(12, 2)
+  freightTotal    Decimal          @default(0) @db.Decimal(12, 2)
+  taxTotal        Decimal          @default(0) @db.Decimal(12, 2)
+  total           Decimal          @default(0) @db.Decimal(12, 2)
+  finalizedAt     DateTime?
+  finalizedById   String?
+  finalizedBy     User?            @relation(fields: [finalizedById], references: [id])
+  /// Idempotency nonce — same sweep exemption and the same reasoning as Order.clientRequestId:
+  /// handing it back to a retry would recreate the duplicate it exists to stop (P3 §4).
+  clientRequestId String?          @unique
+  deletedAt       DateTime? // discarded DRAFT only (§5.5)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  lines           InvoiceLine[]
+  documents       StoredDocument[]
+
+  @@unique([orderId], where: raw("\"deletedAt\" IS NULL AND \"kind\" = 'INVOICE'::\"InvoiceKind\""))
+  @@index([customerId])
+  @@index([status])
+  @@index([invoiceDate])
+  @@index([orderId])
+}
+
+/// `parentLineId` is a self-relation rather than a parent POSITION deliberately: a draft edit can
+/// renumber positions, and grouping identity must never rest on a value that can be reused.
+model InvoiceLine {
+  id           String          @id @default(cuid())
+  invoiceId    String
+  invoice      Invoice         @relation(fields: [invoiceId], references: [id])
+  position     Int
+  kind         InvoiceLineKind
+  parentLineId String? // OPERATION lines hang off their PART line
+  parentLine   InvoiceLine?    @relation("InvoiceLineTree", fields: [parentLineId], references: [id])
+  children     InvoiceLine[]   @relation("InvoiceLineTree")
+
+  // Every order-side link is nullable ON DELETE SET NULL — rulings 23-24
+  orderLineId       String?
+  orderLine         OrderLine?       @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
+  processStepCodeId String?
+  processStepCode   ProcessStepCode? @relation(fields: [processStepCodeId], references: [id], onDelete: SetNull)
+  surchargeId       String?
+  surcharge         Surcharge?       @relation(fields: [surchargeId], references: [id], onDelete: SetNull)
+  orderChargeId     String?
+  orderCharge       OrderCharge?     @relation(fields: [orderChargeId], references: [id], onDelete: SetNull)
+  glAccountId       String?
+  glAccount         GlAccount?       @relation(fields: [glAccountId], references: [id], onDelete: SetNull)
+
+  // Snapshots — what the paper says
+  partNumber      String   @default("")
+  partName        String   @default("")
+  partDescription String   @default("")
+  description     String   @default("") // operation / surcharge / freight / charge / cert / tax label
+  glAccountName   String   @default("") // the account number as text
+  qty             Int?
+  weight          Decimal? @db.Decimal(12, 2)
+  eachWeight      Decimal? @db.Decimal(10, 4)
+
+  // Pricing inputs, snapshotted so the line can explain itself forever
+  pricePer       PricePer?
+  unitPrice      Decimal?     @db.Decimal(12, 4)
+  setupCharge    Decimal?     @db.Decimal(12, 2)
+  minimumCharge  Decimal?     @db.Decimal(12, 2)
+  breakThreshold Decimal?     @db.Decimal(12, 2) // the break that won, null if none
+  minimumApplied Boolean      @default(false)
+  rate           Decimal?     @db.Decimal(9, 6) // SURCHARGE percent or TAX rate
+  priceSource    PriceSource?
+  needsPrice     Boolean      @default(false)
+
+  amount Decimal @default(0) @db.Decimal(12, 2)
+
+  @@unique([invoiceId, position])
+  @@index([invoiceId])
+  @@index([orderLineId])
+}
+
+/// Plant billing configuration (§4.5). These values need REAL foreign keys rather than cuids
+/// inside `Setting` JSON — otherwise deleting a GL account cannot name its blockers, which §5.14
+/// makes binding. A hand-written CHECK ("BillingConfig_singleton_check") pins it to one row, in
+/// the same migration and the same style as StoredDocument_kind_owner_check; the row itself is
+/// seeded by that migration so getBillingConfig stays a plain findFirst.
+model BillingConfig {
+  id                     String           @id @default("singleton")
+  salesTaxRate           Decimal?         @db.Decimal(9, 6)
+  salesTaxGlAccountId    String?
+  salesTaxGlAccount      GlAccount?       @relation("BillingSalesTaxGl", fields: [salesTaxGlAccountId], references: [id])
+  freightGlAccountId     String?
+  freightGlAccount       GlAccount?       @relation("BillingFreightGl", fields: [freightGlAccountId], references: [id])
+  otherChargeGlAccountId String?
+  otherChargeGlAccount   GlAccount?       @relation("BillingOtherChargeGl", fields: [otherChargeGlAccountId], references: [id])
+  certChargeStepCodeId   String?
+  certChargeStepCode     ProcessStepCode? @relation(fields: [certChargeStepCodeId], references: [id])
+  certChargeDefault      Decimal?         @db.Decimal(12, 2)
+  billForCertDefault     Boolean          @default(false)
+  updatedAt              DateTime         @updatedAt
 }

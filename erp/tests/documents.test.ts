@@ -3,6 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import {
   storeDocument, listDocumentsForOrder, listDocumentsForShipper, listDocumentsForCert,
+  listDocumentsForInvoice,
   getDocument, documentFilename, assertPrintable, VOIDED_PRINT, type DocumentMeta,
 } from "@/server/documents";
 import type { PermUser } from "@/server/permissions";
@@ -194,6 +195,52 @@ describe("listDocumentsForShipper / listDocumentsForCert", () => {
   });
 });
 
+describe("listDocumentsForInvoice", () => {
+  beforeEach(truncateAll);
+
+  /** Direct rows, not the real `createInvoice` service — this describe block is testing the
+   *  listing query alone, the `oneOrder`/`oneCert` precedent above. */
+  async function oneInvoice() {
+    const { customer, order } = await oneOrder();
+    const invoice = await prisma.invoice.create({
+      data: { orderId: order.id, customerId: customer.id, invoiceDate: new Date("2026-08-01") },
+    });
+    return { customer, order, invoice };
+  }
+
+  it("lists an invoice's own documents only, newest first, without a cert document leaking in", async () => {
+    const { invoice } = await oneInvoice();
+    const { cert } = await oneCert();
+
+    const first = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("1")));
+    const second = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("2")));
+    await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
+
+    const docs = await listDocumentsForInvoice(invoice.id);
+    expect(docs.map((d) => d.id)).toEqual([second.id, first.id]);
+    expect(docs.every((d) => !("fileData" in d))).toBe(true);
+  });
+
+  it("keeps a credit's own printed documents off its source invoice's list, and vice versa", async () => {
+    const { invoice, order, customer } = await oneInvoice();
+    const credit = await prisma.invoice.create({
+      data: {
+        kind: "CREDIT", orderId: order.id, customerId: customer.id,
+        invoiceDate: new Date("2026-08-01"), sourceInvoiceId: invoice.id, creditNumber: 1000,
+      },
+    });
+    const invoiceDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "INVOICE", invoiceId: invoice.id }, pdf("i")));
+    const creditDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CREDIT", invoiceId: credit.id }, pdf("c")));
+
+    expect((await listDocumentsForInvoice(invoice.id)).map((d) => d.id)).toEqual([invoiceDoc.id]);
+    expect((await listDocumentsForInvoice(credit.id)).map((d) => d.id)).toEqual([creditDoc.id]);
+  });
+
+  it("404s a missing invoice", async () => {
+    await expect(listDocumentsForInvoice("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
 describe("getDocument", () => {
   beforeEach(truncateAll);
 
@@ -221,7 +268,10 @@ describe("assertPrintable", () => {
 describe("documentFilename", () => {
   beforeEach(truncateAll);
 
-  const base = { id: "doc1", createdAt: new Date(), orderId: null, shipperId: null, certId: null, loadNumber: null };
+  const base = {
+    id: "doc1", createdAt: new Date(),
+    orderId: null, shipperId: null, certId: null, invoiceId: null, loadNumber: null,
+  };
 
   it("names a TRAVELER by order and, when given one, load number", async () => {
     const meta: DocumentMeta = { ...base, kind: "TRAVELER", orderId: "ord1" };
@@ -239,6 +289,20 @@ describe("documentFilename", () => {
     expect(documentFilename({ ...base, kind: "BOL", shipperId: "shp1" }, undefined, 72826)).toBe("bol-72826.pdf");
     expect(documentFilename({ ...base, kind: "CERT", certId: "cert1" })).toBe("cert-cert1.pdf");
     expect(documentFilename({ ...base, kind: "CERT", certId: "cert1" }, 72036)).toBe("cert-72036.pdf");
+  });
+
+  // Task 2 added the INVOICE/CREDIT arms; these cover them (P5A spec §10). Note `documentFilename`
+  // takes four optional positionals, THREE of them numbers — an INVOICE is named by its ORDER
+  // number (the first number slot), a CREDIT by its CREDIT number (the third), so a caller passing
+  // the wrong number in the wrong slot is exactly what these pin.
+  it("names an INVOICE by its order number, and a CREDIT by its own credit number", async () => {
+    const invoice: DocumentMeta = { ...base, kind: "INVOICE", invoiceId: "inv1" };
+    expect(documentFilename(invoice, 72026)).toBe("invoice-72026.pdf");
+    const credit: DocumentMeta = { ...base, kind: "CREDIT", invoiceId: "cr1" };
+    expect(documentFilename(credit, 72026, undefined, 1000)).toBe("credit-1000.pdf");
+    // Falls back to the raw invoice id when no friendly number is supplied.
+    expect(documentFilename(invoice)).toBe("invoice-inv1.pdf");
+    expect(documentFilename(credit)).toBe("credit-cr1.pdf");
   });
 
   it("falls back to the raw id when no friendly number is supplied", async () => {

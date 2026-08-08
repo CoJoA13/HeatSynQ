@@ -8,6 +8,7 @@ import {
 import { createOrder, voidOrder } from "@/server/orders";
 import { addAttachment } from "@/server/attachments";
 import { setSetting } from "@/server/settings";
+import { addPartPrice } from "@/server/part-prices";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -43,7 +44,7 @@ describe("parts core", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       partNumber: "12345", customerCode: "ACME", customerName: "Acme Foundry",
-      materialName: "Ductile iron", eachWeight: 2.5, pricePer: "EACH", active: true,
+      materialName: "Ductile iron", eachWeight: 2.5, active: true,
     });
   });
 
@@ -73,9 +74,9 @@ describe("parts core", () => {
     await expect(asSystem(() => createPart({ customerId: acme.id, partNumber: "A", eachWeight: "1.00001" })))
       .rejects.toThrow("4 digits after the decimal point");
     const { id } = await asSystem(() => createPart({
-      customerId: acme.id, partNumber: "A", eachWeight: "0.0500", unitPrice: "0.0575", pricePer: "LB",
+      customerId: acme.id, partNumber: "A", eachWeight: "0.0500",
     }));
-    expect((await getPart(id)).unitPrice).toBe(0.0575);
+    expect((await getPart(id)).eachWeight).toBe(0.05);
   });
 
   it("customerId is immutable after create", async () => {
@@ -97,14 +98,6 @@ describe("parts core", () => {
       .rejects.toThrow("That material does not exist");
   });
 
-  it("switching pricePer to LOT with live breaks is refused", async () => {
-    const { acme } = await twoCustomers();
-    const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "L", eachWeight: 1 }));
-    await prisma.partPriceBreak.create({ data: { partId: id, threshold: "500", price: "0.95" } });
-    await expect(asSystem(() => updatePart(id, { pricePer: "LOT" })))
-      .rejects.toThrow("delete the price breaks first");
-  });
-
   it("delete requires a reason and cascades children in one transaction", async () => {
     const { acme } = await twoCustomers();
     const spec = await prisma.specification.create({ data: { name: "ASTM A536" } });
@@ -117,18 +110,32 @@ describe("parts core", () => {
     const { id: attId } = await asSystem(() => addAttachment("part", id, {
       filename: "drawing.pdf", mimeType: "application/pdf", data: Buffer.from("pdf-bytes"),
     }));
+    // Task 2 changed `deletePart` to cascade-soft-delete PartPrice rows (parts.ts) and left it
+    // untested. It is load-bearing: `partPrice` reuses PART_VIA_CHILD in the FK registry, so if
+    // the cascade were ever dropped, a deleted part's live price rows would block a step-code
+    // delete forever behind a blocker naming a part nobody can see.
+    const code = await prisma.processStepCode.create({ data: { code: "HT", name: "Harden" } });
+    const { id: priceId } = await asSystem(() => addPartPrice(id, { processStepCodeId: code.id, position: 1 }));
     await expect(asSystem(() => deletePart(id, "  "))).rejects.toThrow("A reason is required");
     await asSystem(() => deletePart(id, "keyed wrong"));
     expect((await prisma.part.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
     expect((await prisma.partSpecification.findFirst({ where: { partId: id } }))!.deletedAt).not.toBeNull();
     const attachment = await prisma.partAttachment.findFirst({ where: { id: attId } });
     expect(attachment!.deletedAt).not.toBeNull();
+    // Its breaks are deliberately left alone — they hang off a dead row under a dead part and no
+    // live read can reach them (deletePartPrice follows the same rule).
+    const price = await prisma.partPrice.findUniqueOrThrow({ where: { id: priceId } });
+    expect(price.deletedAt).not.toBeNull();
     const entry = await prisma.auditLog.findFirst({ where: { entity: "part", entityId: id, action: "delete" } });
     expect(entry!.reason).toBe("keyed wrong");
     const attEntry = await prisma.auditLog.findFirst({
       where: { entity: "partAttachment", entityId: attId, action: "delete" },
     });
     expect(attEntry!.reason).toBe("parent part deleted");
+    const priceEntry = await prisma.auditLog.findFirst({
+      where: { entity: "partPrice", entityId: priceId, action: "delete" },
+    });
+    expect(priceEntry!.reason).toBe("parent part deleted");
   });
 
   it("search matches part number, customer code, and customer name", async () => {

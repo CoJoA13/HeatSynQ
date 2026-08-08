@@ -21,6 +21,13 @@ export type CustomerRow = {
   creditLimit: number | null; creditHold: boolean; cod: boolean; taxable: boolean;
   defaultPo: string; orderNotes: string; shippingNotes: string; invoiceNotes: string;
   surchargeOptOut: boolean; financeChargeRate: number | null; requestDaysOverride: number | null;
+  /** Overrides BillingConfig.salesTaxRate for this customer (P5A §4.4); null = inherit the plant
+   *  rate. Only ever applied when `taxable` is true — the flag decides IF tax is billed, this
+   *  decides at what rate. */
+  salesTaxRate: number | null;
+  /** Suppresses the certification charge for this customer regardless of the part/plant
+   *  "bill for cert" chain (P5A §4.4) — a blanket opt-out, the surchargeOptOut shape. */
+  certChargeSuppressed: boolean;
   /** Certification chain (spec §6.1): null = inherit the plant setting. Part overrides this;
    *  never resolved here — resolveCertSettings (certs.ts) walks the chain. */
   certRequiredDefault: boolean | null; certScopeDefault: CertScopeValue | null;
@@ -41,6 +48,9 @@ const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 // fields themselves.
 const creditLimitField = decimalField(12, 2);
 const financeChargeRateField = decimalField(6, 4);
+// Decimal(9, 6): 3 integer digits, 6 fractional (max 999.999999) — matches BillingConfig's own
+// salesTaxRate column and Surcharge.rate, the two other Decimal(9,6) rate columns in this schema.
+const salesTaxRateField = decimalField(9, 6, { min: "nonnegative" });
 
 const CREATE = z.object({
   code: z.string().trim().min(1).max(30),
@@ -57,6 +67,8 @@ const CREATE = z.object({
   invoiceNotes: z.string().max(4000).optional(),
   surchargeOptOut: z.boolean().optional(),
   financeChargeRate: financeChargeRateField,
+  salesTaxRate: salesTaxRateField,
+  certChargeSuppressed: z.boolean().optional(),
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the customer's own override.
   requestDaysOverride: z.number().int().min(0).max(3650).nullable().optional(),
@@ -74,6 +86,7 @@ const SELECT = {
   creditLimit: true, creditHold: true, cod: true, taxable: true,
   defaultPo: true, orderNotes: true, shippingNotes: true, invoiceNotes: true,
   surchargeOptOut: true, financeChargeRate: true, requestDaysOverride: true,
+  salesTaxRate: true, certChargeSuppressed: true,
   certRequiredDefault: true, certScopeDefault: true, active: true,
   parent: { select: { code: true } },
 } as const;
@@ -89,9 +102,9 @@ async function plantCertDefaults(): Promise<{ required: boolean; scope: CertScop
 
 type Raw = Prisma.CustomerGetPayload<{ select: typeof SELECT }>;
 function toRow(r: Raw, plant: { required: boolean; scope: CertScopeValue }): CustomerRow {
-  const { parent, creditLimit, financeChargeRate, ...rest } = r;
+  const { parent, creditLimit, financeChargeRate, salesTaxRate, ...rest } = r;
   return { ...rest, parentCode: parent?.code ?? null,
-    creditLimit: num(creditLimit), financeChargeRate: num(financeChargeRate),
+    creditLimit: num(creditLimit), financeChargeRate: num(financeChargeRate), salesTaxRate: num(salesTaxRate),
     certScopeDefault: r.certScopeDefault as CertScopeValue | null,
     inheritedCertRequired: plant.required, inheritedCertScope: plant.scope };
 }

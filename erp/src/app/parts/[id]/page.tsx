@@ -5,7 +5,6 @@ import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import type { PricePerValue } from "@/lib/part-constants";
 import type { CertScopeValue } from "@/lib/cert-constants";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { IdentitySection } from "./IdentitySection";
@@ -40,10 +39,6 @@ export type Part = {
   inheritedCertRequired: boolean;
   inheritedCertScope: CertScopeValue;
   serializationRequired: boolean;
-  setupCharge: number | string | null;
-  unitPrice: number | string | null;
-  minimumCharge: number | string | null;
-  pricePer: PricePerValue;
   active: boolean;
 };
 
@@ -88,10 +83,7 @@ function PartDetail({ id }: { id: string }) {
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
 
   // Per-key request queue + optimistic-then-persist save, the customers/[id]/page.tsx save()/
-  // serial() precedent. Shared by IdentitySection and PricingSection — each only ever includes
-  // ITS OWN field subset in `body`, which is what keeps a non-change_prices identity edit from
-  // tripping the route's PRICING_FIELDS-presence gate, and a name-only edit by a
-  // change_prices-less user out of the pricing audit path.
+  // serial() precedent.
   const queue = useRef<Map<string, Promise<unknown>>>(new Map());
   function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = queue.current.get(key) ?? Promise.resolve();
@@ -127,14 +119,14 @@ function PartDetail({ id }: { id: string }) {
   const canDelete = gate(perms, "parts.delete");
   // prompt() rather than confirm() — spec §9 requires a reason on a destructive action (the
   // customers/[id]/page.tsx removeCustomer() precedent). deletePart() soft-deletes the part's
-  // specifications, inspections, and price breaks with it (but not custom field values, which
-  // are never soft-deleted — "" means unset). The part number is unique only among live rows, so
-  // it becomes reusable by a fresh part for this customer, not a revival of this one.
+  // specifications, inspections, and price rows with it (but not custom field values, which are
+  // never soft-deleted — "" means unset). The part number is unique only among live rows, so it
+  // becomes reusable by a fresh part for this customer, not a revival of this one.
   async function removePart() {
     if (!part) return;
     const reason = prompt(
       `Delete part "${part.customerCode} · ${part.partNumber}"?\n\n` +
-      `Its specifications, inspections, and price breaks are deleted with it. The part number ` +
+      `Its specifications, inspections, and prices are deleted with it. The part number ` +
       `can be reused later for this customer, which starts a fresh part rather than restoring ` +
       `this one.\n\n` +
       `Reason for deleting (recorded in the audit history):`
@@ -198,7 +190,7 @@ function PartDetail({ id }: { id: string }) {
                         onOptionsError={addLoadError} />
       <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
-      <PricingSection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError} />
+      <PricingSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
       <AttachmentsSection owner="part" ownerId={id} canEdit={gate(perms, "parts.edit").allowed} />
       <ProcessStepsSection partId={id} perms={perms} onError={setError} />

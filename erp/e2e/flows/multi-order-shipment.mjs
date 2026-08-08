@@ -97,22 +97,23 @@ export async function run(page, shot, ctx) {
   await shot("bol-printed");
 
   // --- Both order hubs list the SAME stored documents (the §8 union: a shipment's documents
-  // surface on every order it covers). The hub's generic list renders non-traveler kinds by
-  // their raw kind name. ---
+  // surface on every order it covers). The hub's generic list names every kind by its friendly
+  // label now (P5A spec §10 completed DocumentsSection's KIND_LABELS — the cosmetic gap HANDOFF
+  // §6 recorded, which this flow used to encode by matching the raw enum names). ---
   await page.goto(`${ctx.baseURL}/orders/${orderC.id}`);
   await page.getByRole("heading", { name: /^Order #\d+/ }).waitFor({ state: "visible" });
-  const bolOnC = page.getByRole("link", { name: "BOL", exact: true });
+  const bolOnC = page.getByRole("link", { name: "Bill of lading", exact: true });
   await bolOnC.waitFor({ state: "visible", timeout: 15000 });
-  await page.getByRole("link", { name: "SHIPPER", exact: true }).waitFor({ state: "visible" });
-  await page.getByRole("link", { name: "CERT", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Shipping ticket", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Certification", exact: true }).waitFor({ state: "visible" });
   const bolHrefOnC = await bolOnC.getAttribute("href");
   await shot("hub-c-documents");
 
   await page.goto(`${ctx.baseURL}/orders/${orderD.id}`);
   await page.getByRole("heading", { name: /^Order #\d+/ }).waitFor({ state: "visible" });
-  const bolOnD = page.getByRole("link", { name: "BOL", exact: true });
+  const bolOnD = page.getByRole("link", { name: "Bill of lading", exact: true });
   await bolOnD.waitFor({ state: "visible", timeout: 15000 });
-  await page.getByRole("link", { name: "SHIPPER", exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("link", { name: "Shipping ticket", exact: true }).waitFor({ state: "visible" });
   assert.equal(await bolOnD.getAttribute("href"), bolHrefOnC,
     "both hubs must list the SAME stored BOL document, not two copies");
   // D's Shipments section names its own slice of the shared shipment.

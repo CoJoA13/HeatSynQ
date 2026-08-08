@@ -39,7 +39,7 @@ describe("parts paste and export", () => {
       tsvRow({ customerCode: "ACME", partNumber: "200", materialName: "Ductile iron", eachWeight: "1" }),
     ].join("\n");
 
-    const result = await pasteParts(text, { allowPricing: false });
+    const result = await pasteParts(text);
     expect(result.errors).toEqual([]);
     expect(result.created).toBe(2);
 
@@ -57,7 +57,7 @@ describe("parts paste and export", () => {
       tsvRow({ customerCode: "ACME", partNumber: "2", eachWeight: "1", materialName: "Unobtainium" }),
     ].join("\n");
 
-    const result = await pasteParts(text, { allowPricing: false });
+    const result = await pasteParts(text);
     expect(result.created).toBe(0);
     expect(result.errors).toHaveLength(2);
     expect(result.errors[0].message).toMatch(/Customer "ZZZ" does not exist/);
@@ -72,7 +72,7 @@ describe("parts paste and export", () => {
       tsvRow({ customerCode: "ACME", partNumber: "S3", eachWeight: "1", serializationRequired: "maybe" }),
     ].join("\n");
 
-    const result = await pasteParts(text, { allowPricing: false });
+    const result = await pasteParts(text);
     expect(result.created).toBe(2);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].message).toMatch(/must be Yes or No/i);
@@ -82,32 +82,6 @@ describe("parts paste and export", () => {
     const s2 = rows.find((r) => r.partNumber === "S2")!;
     expect(s1.serializationRequired).toBe(true);
     expect(s2.serializationRequired).toBe(false);
-  });
-
-  it("pricePer accepts the enum names case-insensitively", async () => {
-    await acme();
-    const text = [
-      tsvRow({ customerCode: "ACME", partNumber: "P1", eachWeight: "1", pricePer: "lb" }),
-      tsvRow({ customerCode: "ACME", partNumber: "P2", eachWeight: "1", pricePer: "per box" }),
-    ].join("\n");
-
-    const result = await pasteParts(text, { allowPricing: true });
-    expect(result.created).toBe(1);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0].message).toMatch(/Price per must be one of: EACH, LB, PER_100, PER_1000, LOT/);
-
-    const rows = await listParts();
-    expect(rows.find((r) => r.partNumber === "P1")!.pricePer).toBe("LB");
-  });
-
-  it("pricing cells without allowPricing are per-row errors", async () => {
-    await acme();
-    const text = tsvRow({ customerCode: "ACME", partNumber: "PR1", eachWeight: "1", unitPrice: "10" });
-
-    const result = await pasteParts(text, { allowPricing: false });
-    expect(result.created).toBe(0);
-    expect(result.errors).toEqual([{ row: 1, message: "Requires change_prices to paste pricing columns" }]);
-    expect(await listParts()).toHaveLength(0);
   });
 
   it("one bad row does not discard the rest; blank rows skipped; row numbers are 1-based lines", async () => {
@@ -120,7 +94,7 @@ describe("parts paste and export", () => {
       tsvRow({ customerCode: "BETA", partNumber: "B1", eachWeight: "1" }),
     ].join("\n");
 
-    const result = await pasteParts(text, { allowPricing: false });
+    const result = await pasteParts(text);
     expect(result.created).toBe(2);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].row).toBe(2);
@@ -132,7 +106,7 @@ describe("parts paste and export", () => {
     await acme();
     const text = tsvRow({ customerCode: "ACME", partNumber: "Z1", eachWeight: "0" });
 
-    const result = await pasteParts(text, { allowPricing: false });
+    const result = await pasteParts(text);
     expect(result.created).toBe(0);
     expect(result.errors[0].message).toMatch(/greater than zero/i);
   });
@@ -140,10 +114,9 @@ describe("parts paste and export", () => {
   it("export writes names not cuids and includes Active", async () => {
     const customer = await acme();
     const material = await ductileIron();
-    await pasteParts(
-      tsvRow({ customerCode: "ACME", partNumber: "E1", eachWeight: "1", materialName: "Ductile iron" }),
-      { allowPricing: false },
-    );
+    await pasteParts(tsvRow({
+      customerCode: "ACME", partNumber: "E1", eachWeight: "1", materialName: "Ductile iron",
+    }));
 
     const anon = await exportRoute(new Request("http://t/api/parts/export"), noParams);
     expect(anon.status).toBe(401);
@@ -163,8 +136,7 @@ describe("parts paste and export", () => {
     expect(sheet.getRow(1).values).toEqual([
       undefined,
       "Customer code", "Customer name", "Part number", "Name", "Description", "Material",
-      "Each wt", "Load qty", "Load wt", "Request days override", "Serialization", "Setup", "Unit price",
-      "Min charge", "Price per", "Active",
+      "Each wt", "Load qty", "Load wt", "Request days override", "Serialization", "Active",
     ]);
     const dataRow = sheet.getRow(2).values as ExcelJS.CellValue[];
     expect(dataRow).toContain("Ductile iron");
@@ -173,9 +145,12 @@ describe("parts paste and export", () => {
     expect(dataRow).toContain("yes"); // Active
   });
 
-  it("paste route: parts.create required; pricing per-row honors the caller's change_prices", async () => {
+  // Phase 5A removed pricing from the paste contract entirely (design spec §4.1) — price rows
+  // are keyed per process step code and edited on their own grid — so the route's only gate is
+  // parts.create, and change_prices no longer has anything to say about a paste.
+  it("paste route: parts.create required", async () => {
     await acme();
-    const body = JSON.stringify({ text: tsvRow({ customerCode: "ACME", partNumber: "R1", eachWeight: "1", unitPrice: "10" }) });
+    const body = JSON.stringify({ text: tsvRow({ customerCode: "ACME", partNumber: "R1", eachWeight: "1" }) });
 
     const anon = await pasteRoute(new Request("http://t/api/parts/paste", {
       method: "POST", headers: { "content-type": "application/json" }, body,
@@ -188,22 +163,13 @@ describe("parts paste and export", () => {
     }), noParams);
     expect(denied.status).toBe(403);
 
-    const noPricing = await signInWith(["parts.create"], "nopricing");
-    const resNoPricing = await pasteRoute(new Request("http://t/api/parts/paste", {
-      method: "POST", headers: { cookie: noPricing, "content-type": "application/json" }, body,
+    const creator = await signInWith(["parts.create"], "creator");
+    const res = await pasteRoute(new Request("http://t/api/parts/paste", {
+      method: "POST", headers: { cookie: creator, "content-type": "application/json" }, body,
     }), noParams);
-    expect(resNoPricing.status).toBe(200);
-    const resultNoPricing = await resNoPricing.json();
-    expect(resultNoPricing.created).toBe(0);
-    expect(resultNoPricing.errors[0].message).toBe("Requires change_prices to paste pricing columns");
-
-    const withPricing = await signInWith(["parts.create", "action.change_prices"], "pricing");
-    const resWithPricing = await pasteRoute(new Request("http://t/api/parts/paste", {
-      method: "POST", headers: { cookie: withPricing, "content-type": "application/json" }, body,
-    }), noParams);
-    expect(resWithPricing.status).toBe(200);
-    const resultWithPricing = await resWithPricing.json();
-    expect(resultWithPricing.errors).toEqual([]);
-    expect(resultWithPricing.created).toBe(1);
+    expect(res.status).toBe(200);
+    const result = await res.json();
+    expect(result.errors).toEqual([]);
+    expect(result.created).toBe(1);
   });
 });

@@ -9,7 +9,7 @@ import { getSetting } from "./settings";
 import { decimalField } from "./decimal-field";
 import { parseRecords, isBlankRecord, overflowError } from "./tsv";
 import { readableMessage } from "./error-message";
-import { PRICE_PER, PRICING_FIELDS, PART_PASTE_COLUMNS, type PricePerValue } from "../lib/part-constants";
+import { PART_PASTE_COLUMNS } from "../lib/part-constants";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import type { PasteResult } from "./paste";
 import type { Blocker } from "./reference-blockers";
@@ -32,8 +32,7 @@ export type PartRow = {
    *  resolution stays `resolveCertSettings` (certs.ts) — these never feed a write. */
   inheritedCertRequired: boolean; inheritedCertScope: CertScopeValue;
   serializationRequired: boolean;
-  setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
-  pricePer: PricePerValue; active: boolean;
+  active: boolean;
   /** Whether the part's CURRENT (highest-numbered) process revision carries at least one step —
    *  the same "orderable" check `lockCurrentRevision` performs at order-save time
    *  (part-process-steps.ts), read here so order entry's lead-part picker can show it up front
@@ -62,10 +61,6 @@ const FIELDS = {
   certRequired: z.boolean().nullable().optional(),
   certScope: z.enum(CERT_SCOPES).nullable().optional(),
   serializationRequired: z.boolean().optional(),
-  setupCharge: decimalField(12, 2, { min: "nonnegative" }),
-  unitPrice: decimalField(12, 4, { min: "nonnegative" }),
-  minimumCharge: decimalField(12, 2, { min: "nonnegative" }),
-  pricePer: z.enum(PRICE_PER).optional(),
   active: z.boolean().optional(),
 };
 const CREATE = z.object({ customerId: z.string().min(1), ...FIELDS }).strict();
@@ -75,8 +70,7 @@ const SELECT = {
   id: true, customerId: true, partNumber: true, name: true, description: true,
   materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
   certRequired: true, certScope: true,
-  serializationRequired: true, setupCharge: true, unitPrice: true, minimumCharge: true,
-  pricePer: true, active: true,
+  serializationRequired: true, active: true,
   customer: { select: { code: true, name: true, certRequiredDefault: true, certScopeDefault: true } },
   material: { select: { name: true } },
 } as const;
@@ -92,13 +86,11 @@ async function plantCertDefaults(): Promise<{ required: boolean; scope: CertScop
 
 type Raw = Prisma.PartGetPayload<{ select: typeof SELECT }>;
 function toRow(r: Raw, hasProcessSteps: boolean, plant: { required: boolean; scope: CertScopeValue }): PartRow {
-  const { customer, material, eachWeight, loadWeight, setupCharge, unitPrice, minimumCharge, ...rest } = r;
+  const { customer, material, eachWeight, loadWeight, ...rest } = r;
   return {
     ...rest, customerCode: customer.code, customerName: customer.name,
     materialName: material?.name ?? null,
     eachWeight: eachWeight.toNumber(), loadWeight: num(loadWeight),
-    setupCharge: num(setupCharge), unitPrice: num(unitPrice), minimumCharge: num(minimumCharge),
-    pricePer: r.pricePer as PricePerValue,
     certScope: r.certScope as CertScopeValue | null,
     inheritedCertRequired: customer.certRequiredDefault ?? plant.required,
     inheritedCertScope: (customer.certScopeDefault as CertScopeValue | null) ?? plant.scope,
@@ -192,22 +184,15 @@ export async function updatePart(id: string, input: Record<string, unknown>): Pr
   const current = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Part not found");
 
-  // Serializable only where a cross-row invariant exists: a materialId assignment (pairs with
-  // deleteReference's blocker scan) or a pricePer change (pairs with addPartBreak's LOT check).
-  const needsSerializable = data.materialId != null || data.pricePer !== undefined;
-  const iso = needsSerializable
+  // Serializable only where a cross-row invariant exists: a materialId assignment, which pairs
+  // with deleteReference's blocker scan. (Pricing left Part entirely in Phase 5A — the "a LOT
+  // price row cannot carry breaks" rule now lives with the price row, in part-prices.ts.)
+  const iso = data.materialId != null
     ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined;
 
   await withDbErrors({ entity: "Part", conflictField: "part number" }, () =>
     prisma.$transaction(async (tx) => {
       if (data.materialId) await assertRefExists("material", data.materialId, tx);
-      if (data.pricePer === "LOT") {
-        const breaks = await tx.partPriceBreak.count({ where: { partId: id, deletedAt: null } });
-        if (breaks > 0) {
-          throw new HttpError(400,
-            "A LOT-priced part cannot carry price breaks — delete the price breaks first");
-        }
-      }
       await auditedUpdate("part", id, () => claimLive(tx, id, data), { tx });
     }, iso));
 }
@@ -247,8 +232,8 @@ export async function deletePart(id: string, reason: string): Promise<void> {
   const current = await prisma.part.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
   if (!current) throw new HttpError(404, "Part not found");
 
-  // F2: Serializable, pairing with addPartSpec/addPartInspection/addPartBreak, which each read
-  // this part live ON tx (assertPartLive) under Serializable before adding a child. Without both
+  // F2: Serializable, pairing with addPartSpec/addPartInspection, which each read this part live
+  // ON tx (assertPartLive) under Serializable before adding a child. Without both
   // sides sharing Serializable, a concurrent "add a child to this part" and "delete this part"
   // can each pass their own pre-check (part still live there, cascade already snapshotted the
   // child list here) before either commits — a child added mid-delete outlives its now-dead
@@ -271,15 +256,19 @@ export async function deletePart(id: string, reason: string): Promise<void> {
     // permanently unreachable behind the live-part guard every attachment operation requires
     // (assertOwnerVisible, attachments.ts), and the parent's deletion never showed up in the
     // attachment's own history.
-    const [specs, inspections, breaks, attachments] = await Promise.all([
+    // Phase 5A re-parented price breaks under PartPrice, so the part's PRICE ROWS are what
+    // cascade here now. Their breaks are deliberately left alone — the price row is gone from
+    // every live read, and soft-deleting children individually would write audit noise for rows
+    // nothing can reach (the same call deletePartPrice makes).
+    const [specs, inspections, prices, attachments] = await Promise.all([
       tx.partSpecification.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partInspection.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
-      tx.partPriceBreak.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
+      tx.partPrice.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
       tx.partAttachment.findMany({ where: { partId: id, deletedAt: null }, select: { id: true } }),
     ]);
     for (const s of specs) await auditedSoftDelete("partSpecification", s.id, "parent part deleted", tx);
     for (const i of inspections) await auditedSoftDelete("partInspection", i.id, "parent part deleted", tx);
-    for (const b of breaks) await auditedSoftDelete("partPriceBreak", b.id, "parent part deleted", tx);
+    for (const p of prices) await auditedSoftDelete("partPrice", p.id, "parent part deleted", tx);
     for (const a of attachments) await auditedSoftDelete("partAttachment", a.id, "parent part deleted", tx);
     await auditedSoftDelete("part", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
@@ -292,12 +281,6 @@ function parseBool(cell: string, column: string): boolean {
   throw new HttpError(400, `${column} must be Yes or No`);
 }
 
-function parsePricePer(cell: string): string {
-  const v = cell.trim().toUpperCase().replace(/[\s-]+/g, "_");
-  if ((PRICE_PER as readonly string[]).includes(v)) return v;
-  throw new HttpError(400, `Price per must be one of: ${PRICE_PER.join(", ")}`);
-}
-
 /**
  * Creates every valid row and collects failures per row — the pasteCustomers precedent
  * (customers.ts). Two cells resolve against other tables before createPart ever sees them:
@@ -305,7 +288,7 @@ function parsePricePer(cell: string): string {
  * (findFirst, never findUnique — customer.code and material.name are both unique-among-live-rows
  * partial indexes, so findUnique would silently accept a soft-deleted match).
  */
-export async function pasteParts(text: string, opts: { allowPricing: boolean }): Promise<PasteResult> {
+export async function pasteParts(text: string): Promise<PasteResult> {
   const columns = [...PART_PASTE_COLUMNS];
   const { records, error } = parseRecords(text);
   const errors: PasteResult["errors"] = [];
@@ -319,14 +302,6 @@ export async function pasteParts(text: string, opts: { allowPricing: boolean }):
       Object.fromEntries(columns.map((c, i) => [c, record.fields[i] ?? ""]));
 
     try {
-      // Presence, not truthiness — an empty cell can't carry a price, so only a non-empty
-      // pricing cell needs the gate. Checked before any lookup so a paster without
-      // change_prices never triggers customer/material queries for a row that will be
-      // rejected anyway.
-      if (!opts.allowPricing && PRICING_FIELDS.some((c) => row[c] !== "")) {
-        throw new HttpError(400, "Requires change_prices to paste pricing columns");
-      }
-
       const customer = await prisma.customer.findFirst({
         where: { code: row.customerCode, deletedAt: null }, select: { id: true },
       });
@@ -362,10 +337,6 @@ export async function pasteParts(text: string, opts: { allowPricing: boolean }):
       if (materialId) input.materialId = materialId;
       if (loadQty !== undefined) input.loadQty = loadQty;
       if (row.loadWeight !== "") input.loadWeight = row.loadWeight;
-      if (row.setupCharge !== "") input.setupCharge = row.setupCharge;
-      if (row.unitPrice !== "") input.unitPrice = row.unitPrice;
-      if (row.minimumCharge !== "") input.minimumCharge = row.minimumCharge;
-      if (row.pricePer !== "") input.pricePer = parsePricePer(row.pricePer);
 
       await createPart(input);
       created++;

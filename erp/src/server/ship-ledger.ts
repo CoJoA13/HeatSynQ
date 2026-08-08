@@ -11,6 +11,13 @@ type Db = typeof prisma | Prisma.TransactionClient;
 
 export type ShippedTotal = { qty: number; weight: number };
 
+// INVOICED and REOPENED are INVOICE-OWNED states (5A §5.2): finalize writes INVOICED, a reversing
+// shipment writes REOPENED, unlock hands the order back to this function. Any shipment-side recompute
+// that ran while an order sat in one of them would silently drop it back to SHIPPED — the same reason
+// voided orders are skipped: this function derives one thing, and does not own the states another
+// subsystem set.
+const INVOICE_OWNED: OrderStatus[] = ["INVOICED", "REOPENED"];
+
 /**
  * Sum of `qty`/`weight` across every LIVE shipper line for each of `orderLineIds` (spec §5.1) — a
  * voided shipment (`Shipper.deletedAt` set) contributes nothing. `ShipperOrder`/`ShipperLine`
@@ -75,16 +82,23 @@ export async function shippedTotals(db: Db, orderLineIds: string[]): Promise<Map
  * does no claiming of its own.
  *
  * Voided orders (`deletedAt !== null`) are skipped outright — voidedness stays orthogonal to
- * status (P3 §4), and `INVOICED`/`REOPENED` are unreachable in Phase 4, so the only two writable
- * values this function ever produces are `OPEN`/`PARTIAL_SHIPPED`/`SHIPPED`. Written through
+ * status (P3 §4). Phase 5A makes `INVOICED`/`REOPENED` reachable and INVOICE-OWNED: an order sitting
+ * in one of those is skipped too (`INVOICE_OWNED`), so no shipment-side recompute silently drops it
+ * back to SHIPPED. `released` is unlock's escape hatch (§5.2): the one order it is explicitly handing
+ * back to the ledger IS recomputed despite its invoice-owned status, so unlock's post-clear recompute
+ * settles it on its ship-derived value instead of leaving it INVOICED forever — a shipment-side
+ * recompute, which passes no `released`, still leaves every invoice-owned order alone. Written through
  * `auditedUpdate` like every other mutation in this codebase (CLAUDE.md: "this phase adds no new
  * audit exceptions") and ONLY when the derived status actually differs from the stored one, so a
  * line edit that cannot possibly move the needle (spec §5.2's quantity-only case) never writes a
  * no-op "update" entry.
  */
-export async function recomputeOrderStatus(tx: Prisma.TransactionClient, orderIds: string[]): Promise<void> {
+export async function recomputeOrderStatus(
+  tx: Prisma.TransactionClient, orderIds: string[], released: string[] = [],
+): Promise<void> {
   const ids = [...new Set(orderIds)];
   if (ids.length === 0) return;
+  const releasedSet = new Set(released);
 
   const orders = await tx.order.findMany({
     where: { id: { in: ids }, deletedAt: null },
@@ -110,6 +124,10 @@ export async function recomputeOrderStatus(tx: Prisma.TransactionClient, orderId
   }
 
   for (const order of orders) {
+    // Invoice-owned states belong to another subsystem — leave them alone unless unlock has
+    // explicitly released this order back to the ledger (see the doc comment).
+    if (INVOICE_OWNED.includes(order.status) && !releasedSet.has(order.id)) continue;
+
     const lineIds = order.lines.map((l) => l.id);
     const anyLive = lineIds.some((id) => linesWithLiveShipment.has(id));
     const status: OrderStatus = !anyLive

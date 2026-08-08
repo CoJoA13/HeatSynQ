@@ -259,15 +259,19 @@ export function InspectionsSection({
           {scales.map((s) => <option key={s.id} value={s.id}>{s.name}{!s.active && " (inactive)"}</option>)}
         </select>
         <input value={draft.min} placeholder="Min" inputMode="decimal" disabled={!canEdit.allowed}
+               title={canEdit.title}
                onChange={(e) => setDraft({ ...draft, min: e.target.value })}
                className="w-16 rounded border px-2 py-1 text-sm" />
         <input value={draft.max} placeholder="Max" inputMode="decimal" disabled={!canEdit.allowed}
+               title={canEdit.title}
                onChange={(e) => setDraft({ ...draft, max: e.target.value })}
                className="w-16 rounded border px-2 py-1 text-sm" />
         <input value={draft.sampleQty} placeholder="Sample qty" disabled={!canEdit.allowed}
+               title={canEdit.title}
                onChange={(e) => setDraft({ ...draft, sampleQty: e.target.value })}
                className="w-24 rounded border px-2 py-1 text-sm" />
         <input value={draft.location} placeholder="Location" disabled={!canEdit.allowed}
+               title={canEdit.title}
                onChange={(e) => setDraft({ ...draft, location: e.target.value })}
                className="w-28 rounded border px-2 py-1 text-sm" />
         <button onClick={add} disabled={canEdit.disabled || !draft.inspectionCodeId} title={canEdit.title}

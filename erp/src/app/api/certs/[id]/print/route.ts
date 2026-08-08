@@ -21,7 +21,8 @@ export const POST = handle(async (req, { params }) => {
 
   const printed = await printCert(id, user.id);
   const filename = documentFilename(
-    { id: "", createdAt: new Date(0), kind: "CERT", orderId: null, shipperId: null, certId: id, loadNumber: null },
+    { id: "", createdAt: new Date(0), kind: "CERT",
+      orderId: null, shipperId: null, certId: id, invoiceId: null, loadNumber: null },
     printed.orderNumber,
   );
   return new NextResponse(new Uint8Array(printed.pdf), {

@@ -126,6 +126,15 @@ async function shipLine(
   });
 }
 
+/** A fully-shipped order — its one line shipped line-complete, so `recomputeOrderStatus` derives
+ *  SHIPPED. No invoice: Task 13's invoice-owned-state tests set `status` directly and prove the
+ *  skip is driven by the stored status, not by any invoice. */
+async function shippedOrder(opts: { qty?: number } = {}): Promise<{ order: OrderDetail; line: { id: string; orderId: string } }> {
+  const { order, line } = await oneLineOrder({ qty: opts.qty ?? 10 });
+  await shipLine(line, { qty: opts.qty ?? 10, lineComplete: true });
+  return { order, line };
+}
+
 /** One order line, shipped via TWO separate shipments of `qtyA` and `qtyB` — the
  *  `shippedTotals` void-exclusion test's own fixture. */
 async function twoShipmentsOf(qtyA: number, qtyB: number): Promise<{
@@ -222,6 +231,33 @@ describe("recomputeOrderStatus (via getOrder)", () => {
     });
     expect(row.deletedAt).not.toBeNull();
     expect(row.status).toBe("SHIPPED");
+  });
+});
+
+describe("recomputeOrderStatus — invoice-owned states (Task 13)", () => {
+  beforeEach(truncateAll);
+
+  it("leaves an INVOICED order alone", async () => {
+    const { order } = await shippedOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: "INVOICED" } });
+    await prisma.$transaction((tx) => recomputeOrderStatus(tx, [order.id]));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("INVOICED");
+  });
+
+  it("leaves a REOPENED order alone", async () => {
+    const { order } = await shippedOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: "REOPENED" } });
+    await prisma.$transaction((tx) => recomputeOrderStatus(tx, [order.id]));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("REOPENED");
+  });
+
+  it("recomputes an order that unlock explicitly releases, even though it is INVOICED", async () => {
+    const { order } = await shippedOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: "INVOICED" } });
+    // The `released` escape hatch unlock uses: the skip is lifted for this order only, so it settles
+    // back on its ship-derived value (SHIPPED) instead of being skipped INVOICED forever.
+    await prisma.$transaction((tx) => recomputeOrderStatus(tx, [order.id], [order.id]));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("SHIPPED");
   });
 });
 

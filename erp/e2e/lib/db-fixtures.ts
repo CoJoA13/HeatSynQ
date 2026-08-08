@@ -71,6 +71,50 @@ const FIXTURE = {
   clerkRoleName: "E2E Shipping Clerk Role",
   clerkUsername: "e2e_clerk",
   clerkPassword: "e2eClerk123!",
+  // Fix-wave 1 (Task 5 review, finding 8): closes the one automated gap on the Pricing section —
+  // nothing in CI touched it before this (no vitest seam, no E2E flow, only the client-import
+  // sweep). A step code of its own, priced on the process suite's own fixture part
+  // (E2E-PART-1), rather than reusing stepCodeA/stepCodeB: those two are already load-bearing for
+  // blocked-code-delete.mjs's EXACT blocker count ("2 record(s) use it" for stepCodeA), and a
+  // PartPrice referencing either would risk changing that count the moment PART_VIA_CHILD's
+  // blocker resolution (reference-links.ts) picked up a third live reference. A dedicated code
+  // stays fully decoupled from that assertion.
+  priceStepCodeCode: "E2E-PRICE",
+  priceStepCodeName: "E2E Price Op",
+  // Holds parts.view + parts.edit but NOT action.change_prices — the permission split PricingSec-
+  // tion.tsx's double gate exists to test: this user CAN edit the part in general but must still
+  // be refused on pricing specifically. permission-gating.mjs re-logs-in as this user mid-flow
+  // (the credit-hold-block-and-override.mjs precedent) to prove the second gate bites once the
+  // first is satisfied — the one thing the plain "restricted" user (which holds neither
+  // permission) can never demonstrate on its own.
+  priceEditRoleName: "E2E Price Editor Role",
+  priceEditUsername: "e2e_price_editor",
+  priceEditPassword: "e2ePriceEditor123!",
+  // Task 20 (Phase 5A): the invoicing flow's own customer/part — a TWO-PartPrice part (ruling 3's
+  // multi-operation case: a single order line whose part carries two priced operations, so the
+  // invoice's PART/OPERATION grid shows one PART row with two OPERATION children), each priced
+  // operation on its OWN dedicated step code with its OWN GL account. NOT stepCodeA/stepCodeB
+  // (blocked-code-delete's exact blocker count) and NOT priceStepCode (permission-gating's own
+  // exact gate count) — a fully independent pair, the priceStepCode precedent.
+  //
+  // Tax is exercised via `Customer.salesTaxRate` (`taxable: true` + a rate), NOT by mutating the
+  // global `BillingConfig` singleton row: BillingConfig is ONE row shared by the entire dev
+  // database (CLAUDE.md — "a one-row table by construction"), so setting its salesTaxRate here
+  // would risk leaving a stranger's dev database silently taxed if a crash ever skipped this
+  // harness's own cleanup — exactly the failure mode `db-fixtures.ts`'s exact-key, fully-owned-row
+  // discipline exists to rule out. `Customer.salesTaxRate` drives the IDENTICAL downstream
+  // computation (`customer.taxable ? (customer.salesTaxRate ?? config.salesTaxRate) : null`,
+  // invoices.ts's `buildPricingInput`) while staying entirely inside this one fixture customer's
+  // own, cleanly-deletable rows.
+  invCustomerCode: "E2EINVCUST",
+  invPartNumber: "E2E-INV-PART",
+  invPriceStepCodeACode: "E2E-INV-OPA",
+  invPriceStepCodeAName: "E2E Invoice Op A",
+  invPriceStepCodeBCode: "E2E-INV-OPB",
+  invPriceStepCodeBName: "E2E Invoice Op B",
+  invGlAccountAName: "E2E-4701",
+  invGlAccountBName: "E2E-4702",
+  invSurchargeName: "E2E Invoice Surcharge",
 } as const;
 
 /**
@@ -163,6 +207,28 @@ export type Fixtures = {
   clerkUserId: string;
   clerkUsername: string;
   clerkPassword: string;
+  /** Fix-wave 1 (Task 5 review, finding 8): the Pricing section's own E2E fixtures — see
+   *  FIXTURE's comment. */
+  priceStepCodeId: string;
+  priceStepCodeCode: string;
+  priceStepCodeName: string;
+  priceEditRoleId: string;
+  priceEditUserId: string;
+  priceEditUsername: string;
+  priceEditPassword: string;
+  /** Task 20 (Phase 5A): the invoicing flow's own fixtures — see FIXTURE's comment. */
+  invCustomerId: string;
+  invCustomerCode: string;
+  invPartId: string;
+  invPartNumber: string;
+  invPriceStepCodeAId: string;
+  invPriceStepCodeBId: string;
+  invGlAccountAId: string;
+  invGlAccountAName: string;
+  invGlAccountBId: string;
+  invGlAccountBName: string;
+  invSurchargeId: string;
+  invSurchargeName: string;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -183,6 +249,32 @@ async function deletePartProcessData(partIds: string[]): Promise<void> {
     await prisma.partProcessStep.deleteMany({ where: { revision: { partId } } });
     await prisma.partProcessRevision.deleteMany({ where: { partId } });
   }
+}
+
+/** Fix-wave 1 (Task 5 review, finding 8): the Pricing section fixture's own child rows. Neither
+ *  `PartPrice.partId` nor `PartPrice.processStepCodeId` cascades (plain restrict-on-delete FKs,
+ *  prisma/schema.prisma) — both the fixture part and its price step code would otherwise 23503 on
+ *  delete once a live price row references them. Must run before both `deletePartsAndCustomers`
+ *  and `deleteStepCodes`. `PartPriceBreak` cascades from neither side automatically either, so it
+ *  goes first here too, even though this harness never gives its price row a break. */
+async function deletePartPrices(partIds: string[]): Promise<void> {
+  if (partIds.length === 0) return;
+  // Fix-wave 2 (finding 2): sweep AuditLog rows the same way deletePartProcessData and
+  // deleteTemplatesAndSteps already do for their own entities — see the finding-12 comment above
+  // in deleteOrdersAndChildren for what happens to a fixture file that skips this. Harmless today
+  // (this fixture writes its price row directly on `tx`, bypassing auditedCreate), but the first
+  // flow that mutates a price through the app would otherwise leak one permanent orphaned
+  // AuditLog row per mutation into the dev DB.
+  const prices = await prisma.partPrice.findMany({ where: { partId: { in: partIds } }, select: { id: true } });
+  const priceIds = prices.map((p) => p.id);
+  const breaks = await prisma.partPriceBreak.findMany({
+    where: { partPriceId: { in: priceIds } }, select: { id: true },
+  });
+  const breakIds = breaks.map((b) => b.id);
+  await prisma.auditLog.deleteMany({ where: { entity: "partPriceBreak", entityId: { in: breakIds } } });
+  await prisma.partPriceBreak.deleteMany({ where: { partPrice: { partId: { in: partIds } } } });
+  await prisma.auditLog.deleteMany({ where: { entity: "partPrice", entityId: { in: priceIds } } });
+  await prisma.partPrice.deleteMany({ where: { partId: { in: partIds } } });
 }
 
 async function deleteTemplatesAndSteps(templateIds: string[]): Promise<void> {
@@ -313,6 +405,45 @@ async function deleteShippingAndCerts(customerIds: string[]): Promise<void> {
   await prisma.shipper.deleteMany({ where: { id: { in: shipperIds } } });
 }
 
+/**
+ * Task 20 (Phase 5A): every invoice/credit the invoicing flow produced, scoped through the
+ * fixture customer exactly like `deleteShippingAndCerts` above. Must run BEFORE
+ * `deleteOrdersAndChildren`: `Invoice.orderId` is a plain RESTRICT-on-delete FK
+ * (`prisma/migrations/20260806221500_pricing_and_invoicing/migration.sql:287`), so a live invoice
+ * blocks deleting its order.
+ *
+ * `StoredDocument.invoiceId` is declared `ON DELETE SET NULL`, unlike every other owner column on
+ * that table — but a SET NULL here would immediately violate `StoredDocument_kind_owner_check`
+ * (an INVOICE/CREDIT row's `invoiceId` may never be null), so in practice an invoice with a
+ * printed document still cannot be deleted until the document itself is gone first; this deletes
+ * those documents (and their own audit rows, the `deleteOrdersAndChildren`/`deleteShippingAndCerts`
+ * precedent) explicitly rather than relying on the FK action to do it.
+ *
+ * `InvoiceLine.invoiceId` is RESTRICT too, so lines go before the invoice row; `deletedAt` is
+ * deliberately NOT filtered (a discarded draft is exactly as unwelcome as a live one).
+ */
+async function deleteInvoicesAndLines(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const orders = await prisma.order.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const orderIds = orders.map((o) => o.id);
+  if (orderIds.length === 0) return;
+  const invoices = await prisma.invoice.findMany({ where: { orderId: { in: orderIds } }, select: { id: true } });
+  const invoiceIds = invoices.map((i) => i.id);
+  if (invoiceIds.length === 0) return;
+
+  const documents = await prisma.storedDocument.findMany({
+    where: { invoiceId: { in: invoiceIds } }, select: { id: true },
+  });
+  const documentIds = documents.map((d) => d.id);
+  if (documentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "storedDocument", entityId: { in: documentIds } } });
+    await prisma.storedDocument.deleteMany({ where: { id: { in: documentIds } } });
+  }
+  await prisma.auditLog.deleteMany({ where: { entity: "invoice", entityId: { in: invoiceIds } } });
+  await prisma.invoiceLine.deleteMany({ where: { invoiceId: { in: invoiceIds } } });
+  await prisma.invoice.deleteMany({ where: { id: { in: invoiceIds } } });
+}
+
 /** Phase 4 reference rows (created by this script, never through the app, so no audit rows).
  *  Runs LAST of the data deletes: `CertRequirement.inspectionCodeId`/`scaleId`,
  *  `PartInspection.inspectionCodeId`/`scaleId` and `OrderContainer.typeId` are restrict-on-delete
@@ -322,6 +453,17 @@ async function deletePhase4Reference(scaleIds: string[], codeIds: string[], type
   if (codeIds.length > 0) await prisma.inspectionCode.deleteMany({ where: { id: { in: codeIds } } });
   if (scaleIds.length > 0) await prisma.inspectionScale.deleteMany({ where: { id: { in: scaleIds } } });
   if (typeIds.length > 0) await prisma.containerType.deleteMany({ where: { id: { in: typeIds } } });
+}
+
+/** Task 20 (Phase 5A) reference rows — created directly on `tx`, never through the app, so no
+ *  audit rows of their own. Must run AFTER `deleteStepCodes`: `ProcessStepCode.glAccountId` is a
+ *  plain FK into `GlAccount` with no `onDelete` override (RESTRICT), so the two step codes that
+ *  reference these GL accounts must already be gone. `Surcharge` has no incoming FK left by this
+ *  point (`InvoiceLine.surchargeId` is `SET NULL`, and every invoice line is already gone via
+ *  `deleteInvoicesAndLines`), so it carries no ordering requirement of its own. */
+async function deleteInvoicingReference(glAccountIds: string[], surchargeIds: string[]): Promise<void> {
+  if (surchargeIds.length > 0) await prisma.surcharge.deleteMany({ where: { id: { in: surchargeIds } } });
+  if (glAccountIds.length > 0) await prisma.glAccount.deleteMany({ where: { id: { in: glAccountIds } } });
 }
 
 async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promise<void> {
@@ -360,6 +502,7 @@ async function reapLeftovers(): Promise<void> {
   const [
     templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts,
     shipCustomers, holdCustomers, phase4Parts, scales, codes, containerTypes,
+    invCustomers, invParts, invGlAccounts, invSurcharges,
   ] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
@@ -374,15 +517,31 @@ async function reapLeftovers(): Promise<void> {
       select: { id: true },
     }),
     prisma.processStepCode.findMany({
-      where: { code: { in: [FIXTURE.stepCodeA, FIXTURE.stepCodeB] } }, select: { id: true },
+      where: {
+        code: {
+          in: [
+            FIXTURE.stepCodeA, FIXTURE.stepCodeB, FIXTURE.priceStepCodeCode,
+            FIXTURE.invPriceStepCodeACode, FIXTURE.invPriceStepCodeBCode,
+          ],
+        },
+      },
+      select: { id: true },
     }),
     prisma.customer.findMany({ where: { code: FIXTURE.customerCode }, select: { id: true } }),
     prisma.user.findMany({
-      where: { username: { in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername, FIXTURE.clerkUsername] } },
+      where: {
+        username: {
+          in: [FIXTURE.adminUsername, FIXTURE.restrictedUsername, FIXTURE.clerkUsername, FIXTURE.priceEditUsername],
+        },
+      },
       select: { id: true },
     }),
     prisma.role.findMany({
-      where: { name: { in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName, FIXTURE.clerkRoleName] } },
+      where: {
+        name: {
+          in: [FIXTURE.adminRoleName, FIXTURE.restrictedRoleName, FIXTURE.clerkRoleName, FIXTURE.priceEditRoleName],
+        },
+      },
       select: { id: true },
     }),
     // Task 17's own customer, looked up the same way as the process suite's above — its id is
@@ -417,42 +576,77 @@ async function reapLeftovers(): Promise<void> {
       where: { name: { in: [FIXTURE.inspectionCodeAName, FIXTURE.inspectionCodeBName] } }, select: { id: true },
     }),
     prisma.containerType.findMany({ where: { name: FIXTURE.containerTypeName }, select: { id: true } }),
+    // Task 20 (Phase 5A): the invoicing flow's own fixtures, looked up the same exact-key,
+    // customer-scoped way as everything above.
+    prisma.customer.findMany({ where: { code: FIXTURE.invCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: { partNumber: FIXTURE.invPartNumber, customer: { code: FIXTURE.invCustomerCode } },
+      select: { id: true },
+    }),
+    prisma.glAccount.findMany({
+      where: { name: { in: [FIXTURE.invGlAccountAName, FIXTURE.invGlAccountBName] } }, select: { id: true },
+    }),
+    prisma.surcharge.findMany({ where: { name: FIXTURE.invSurchargeName }, select: { id: true } }),
   ]);
   const templateIds = templates.map((t) => t.id);
-  const partIds = [...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id)];
+  const invCustomerIds = invCustomers.map((c) => c.id);
+  const partIds = [
+    ...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id),
+    ...invParts.map((p) => p.id),
+  ];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  const shipHoldCustomerIds = [...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id)];
-  const customerIds = [...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds];
+  // Task 20: `invCustomerIds` rides along in this same set — the invoicing flow ships its own
+  // order (a real `Shipper`/`ShipperOrder` pair), so `deleteShippingAndCerts` must be scoped
+  // through it too, or a leftover order-flow shipment blocks `deleteOrdersAndChildren`'s delete of
+  // the order it covers with `ShipperOrder_orderId_fkey`'s RESTRICT (caught live: the first run of
+  // this flow's cleanup failed on exactly this).
+  const shipHoldCustomerIds = [
+    ...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id), ...invCustomerIds,
+  ];
+  const customerIds = [
+    ...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds,
+  ];
   const userIds = users.map((u) => u.id);
   const roleIds = roles.map((r) => r.id);
   const orderCustomerIds = [...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds];
   const scaleIds = scales.map((s) => s.id);
   const codeIds = codes.map((c) => c.id);
   const containerTypeIds = containerTypes.map((t) => t.id);
+  const invGlAccountIds = invGlAccounts.map((g) => g.id);
+  const invSurchargeIds = invSurcharges.map((s) => s.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
     + customerIds.length + userIds.length + roleIds.length
-    + scaleIds.length + codeIds.length + containerTypeIds.length;
+    + scaleIds.length + codeIds.length + containerTypeIds.length
+    + invGlAccountIds.length + invSurchargeIds.length;
   if (total === 0) return;
 
   console.error(
     `Reaping leftover E2E fixtures from a prior run: ${templateIds.length} template(s), ` +
     `${partIds.length} part(s), ${stepCodeIds.length} step code(s), ${customerIds.length} ` +
     `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s), ` +
-    `${scaleIds.length + codeIds.length + containerTypeIds.length} Phase 4 reference row(s).`,
+    `${scaleIds.length + codeIds.length + containerTypeIds.length} Phase 4 reference row(s), ` +
+    `${invGlAccountIds.length} GL account(s), ${invSurchargeIds.length} surcharge(s).`,
   );
 
-  // Shipments/certs first (their children FK into the order tables), then orders. Before parts:
-  // OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order (voided by a
-  // prior run's void-order/void-shipment flow, or left live by a crash before it) must be gone
-  // before deletePartsAndCustomers below can touch the fixture parts.
+  // Invoices/shipments/certs first (their children FK into the order tables), then orders. Before
+  // parts: OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order
+  // (voided by a prior run's void-order/void-shipment flow, left INVOICED by a crash mid-flow, or
+  // left live by a crash before it) must be gone before deletePartsAndCustomers below can touch
+  // the fixture parts.
+  await deleteInvoicesAndLines(invCustomerIds);
   await deleteShippingAndCerts(shipHoldCustomerIds);
   await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
   await deleteTemplatesAndSteps(templateIds);
+  // Before both deleteStepCodes (the price step code's own restrict-on-delete FK) and
+  // deletePartsAndCustomers (the fixture part's).
+  await deletePartPrices(partIds);
   await deleteStepCodes(stepCodeIds);
   await deletePartsAndCustomers(partIds, customerIds);
   await deletePhase4Reference(scaleIds, codeIds, containerTypeIds);
+  // After deleteStepCodes (the two invoicing step codes' own GL-account FKs).
+  await deleteInvoicingReference(invGlAccountIds, invSurchargeIds);
   await deleteUsersAndRoles(userIds, roleIds);
 }
 
@@ -482,9 +676,9 @@ async function create(): Promise<Fixtures> {
 
   // Hashed before the transaction opens: argon2 is deliberately slow, and holding a transaction
   // open across it for no reason is exactly the wrong place to spend that time.
-  const [adminHash, restrictedHash, clerkHash] = await Promise.all([
+  const [adminHash, restrictedHash, clerkHash, priceEditHash] = await Promise.all([
     hashPassword(FIXTURE.adminPassword), hashPassword(FIXTURE.restrictedPassword),
-    hashPassword(FIXTURE.clerkPassword),
+    hashPassword(FIXTURE.clerkPassword), hashPassword(FIXTURE.priceEditPassword),
   ]);
 
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
@@ -516,6 +710,19 @@ async function create(): Promise<Fixtures> {
     });
     const stepCodeB = await tx.processStepCode.create({
       data: { code: FIXTURE.stepCodeB, name: "E2E Hot Wash" },
+    });
+    // Fix-wave 1 (Task 5 review, finding 8): the Pricing section's own fixture — a single priced
+    // operation on the fixture part, on its own dedicated step code (see FIXTURE's comment on why
+    // it is not stepCodeA/stepCodeB). No break: the gating flow this feeds (permission-gating.mjs)
+    // only needs one card to render, not a break table.
+    const priceStepCode = await tx.processStepCode.create({
+      data: { code: FIXTURE.priceStepCodeCode, name: FIXTURE.priceStepCodeName },
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: part.id, processStepCodeId: priceStepCode.id, position: 0,
+        setupCharge: "25.00", unitPrice: "2.5000", minimumCharge: "50.00", pricePer: "EACH",
+      },
     });
     const decoyTemplate = await tx.processTemplate.create({
       data: { name: FIXTURE.decoyTemplateName },
@@ -634,6 +841,63 @@ async function create(): Promise<Fixtures> {
       name: "E2E Held Customer Part", eachWeight: "8.0000", certRequired: false,
     });
 
+    // ----- Task 20 (Phase 5A): the invoicing flow's own customer/part (see FIXTURE's comment).
+    // A two-PartPrice part — ruling 3's multi-operation case — each priced operation on its own
+    // dedicated step code with its own GL account. -----
+    const invCustomer = await tx.customer.create({
+      data: {
+        code: FIXTURE.invCustomerCode, name: "E2E Invoicing Customer",
+        taxable: true, salesTaxRate: "0.070000",
+      },
+    });
+    const invGlAccountA = await tx.glAccount.create({
+      data: { name: FIXTURE.invGlAccountAName, description: "E2E Invoice Op A Revenue" },
+    });
+    const invGlAccountB = await tx.glAccount.create({
+      data: { name: FIXTURE.invGlAccountBName, description: "E2E Invoice Op B Revenue" },
+    });
+    const invPriceStepCodeA = await tx.processStepCode.create({
+      data: {
+        code: FIXTURE.invPriceStepCodeACode, name: FIXTURE.invPriceStepCodeAName,
+        glAccountId: invGlAccountA.id,
+      },
+    });
+    const invPriceStepCodeB = await tx.processStepCode.create({
+      data: {
+        code: FIXTURE.invPriceStepCodeBCode, name: FIXTURE.invPriceStepCodeBName,
+        glAccountId: invGlAccountB.id,
+      },
+    });
+    // Orderable via the SAME reused recipe step (stepCodeB) as every other orderablePart() part
+    // above — PartPrice has no FK to PartProcessStep (part-prices.ts), so a part's actual recipe
+    // is irrelevant to what it prices. The two PRICED operations below are deliberately on their
+    // own dedicated step codes, decoupled from both the recipe step and from priceStepCode (which
+    // permission-gating.mjs already pins an exact gate count against).
+    const invPart = await orderablePart({
+      customerId: invCustomer.id, partNumber: FIXTURE.invPartNumber,
+      name: "E2E Invoice Part", eachWeight: "5.0000", certRequired: false,
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: invPart.id, processStepCodeId: invPriceStepCodeA.id, position: 0,
+        unitPrice: "10.0000", minimumCharge: "25.00", pricePer: "EACH",
+      },
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: invPart.id, processStepCodeId: invPriceStepCodeB.id, position: 1,
+        unitPrice: "4.0000", minimumCharge: "10.00", pricePer: "EACH",
+      },
+    });
+    // One active, plant-wide surcharge (scope ALL) — no INCLUDE/EXCLUDE list and no per-customer
+    // override row needed for a single always-on flow.
+    const invSurcharge = await tx.surcharge.create({
+      data: {
+        name: FIXTURE.invSurchargeName, kind: "PERCENT", rate: "0.050000",
+        scope: "ALL", position: 0, active: true,
+      },
+    });
+
     // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
     // both the parts/processes screens and the admin step-codes screen, so anything narrower would
     // have to be kept in step with them by hand.
@@ -687,6 +951,22 @@ async function create(): Promise<Fixtures> {
         passwordHash: clerkHash, roleId: clerkRole.id,
       },
     });
+    // Fix-wave 1 (Task 5 review, finding 8): parts.view + parts.edit, deliberately WITHOUT
+    // action.change_prices — see FIXTURE's comment. permission-gating.mjs re-logs-in as this user
+    // to prove PricingSection's second gate (change_prices) bites even once parts.edit is held,
+    // which the plain restricted user (holding neither) can't demonstrate on its own.
+    const priceEditRole = await tx.role.create({
+      data: {
+        name: FIXTURE.priceEditRoleName,
+        permissions: { create: [{ permission: "parts.view" }, { permission: "parts.edit" }] },
+      },
+    });
+    const priceEditUser = await tx.user.create({
+      data: {
+        username: FIXTURE.priceEditUsername, displayName: "E2E Price Editor",
+        passwordHash: priceEditHash, roleId: priceEditRole.id,
+      },
+    });
     return {
       customerId: customer.id, customerCode: customer.code,
       partId: part.id, partNumber: part.partNumber,
@@ -713,6 +993,16 @@ async function create(): Promise<Fixtures> {
       containerTypeId: toteType.id, containerTypeName: toteType.name,
       clerkRoleId: clerkRole.id, clerkUserId: clerkUser.id,
       clerkUsername: clerkUser.username, clerkPassword: FIXTURE.clerkPassword,
+      priceStepCodeId: priceStepCode.id, priceStepCodeCode: priceStepCode.code,
+      priceStepCodeName: priceStepCode.name,
+      priceEditRoleId: priceEditRole.id, priceEditUserId: priceEditUser.id,
+      priceEditUsername: priceEditUser.username, priceEditPassword: FIXTURE.priceEditPassword,
+      invCustomerId: invCustomer.id, invCustomerCode: invCustomer.code,
+      invPartId: invPart.id, invPartNumber: invPart.partNumber,
+      invPriceStepCodeAId: invPriceStepCodeA.id, invPriceStepCodeBId: invPriceStepCodeB.id,
+      invGlAccountAId: invGlAccountA.id, invGlAccountAName: invGlAccountA.name,
+      invGlAccountBId: invGlAccountB.id, invGlAccountBName: invGlAccountB.name,
+      invSurchargeId: invSurcharge.id, invSurchargeName: invSurcharge.name,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -761,33 +1051,58 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // every order the flows produced regardless of whether the run that created one ever recorded
   // its id anywhere, and regardless of whether void-order got to it — `deleteOrdersAndChildren`
   // doesn't filter on `deletedAt`. Before parts, same FK reason as `reapLeftovers`' own comment.
-  // Task 20: shipments/certs first (their children FK into the order tables), same scoping logic
-  // — a shipment/cert is only ever created live through the app, so the customer is the gate.
-  await deleteShippingAndCerts([payload.shipCustomerId, payload.holdCustomerId]);
-  await deleteOrdersAndChildren([orderCustomerId, payload.shipCustomerId, payload.holdCustomerId]);
+  // Task 20: invoices, then shipments/certs (their children FK into the order tables), same
+  // scoping logic — an invoice/shipment/cert is only ever created live through the app, so the
+  // customer is the gate.
+  await deleteInvoicesAndLines([payload.invCustomerId]);
+  // The invoicing flow ships its own order (a real Shipper/ShipperOrder pair) — invCustomerId
+  // MUST ride along here too, or `ShipperOrder_orderId_fkey`'s RESTRICT blocks the order delete
+  // below (caught live: the first run of this flow's cleanup failed on exactly this).
+  await deleteShippingAndCerts([payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId]);
+  await deleteOrdersAndChildren([
+    orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId,
+  ]);
   await deletePartProcessData([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+    payload.invPartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
-  await deleteStepCodes([stepCodeA.id, stepCodeB.id]);
+  // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
+  // restrict-on-delete FK) and deletePartsAndCustomers (partId's). Fix-wave 2 (finding 1): sweep
+  // the same full part-id list deletePartProcessData receives above, not just partId — otherwise
+  // the day a second fixture part (e.g. shipPartA) gets priced, this leaves its PartPrice row
+  // behind to 23503 deletePartsAndCustomers below, exactly as reapLeftovers() already does two
+  // screens up.
+  await deletePartPrices([
+    partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+    payload.invPartId,
+  ]);
+  await deleteStepCodes([
+    stepCodeA.id, stepCodeB.id, payload.priceStepCodeId,
+    payload.invPriceStepCodeAId, payload.invPriceStepCodeBId,
+  ]);
   await deletePartsAndCustomers(
     [
       partId, orderLeadPartId, orderRiderPartId,
-      payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
+      payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId, payload.invPartId,
     ],
-    [customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId],
+    [customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId],
   );
   await deletePhase4Reference(
     [payload.inspectionScaleId],
     [payload.inspectionCodeAId, payload.inspectionCodeBId],
     [payload.containerTypeId],
   );
-  // All three users, not just the restricted one: deleteUsersAndRoles clears each user's Session
+  // After deleteStepCodes (the two invoicing step codes' own GL-account FKs).
+  await deleteInvoicingReference(
+    [payload.invGlAccountAId, payload.invGlAccountBId], [payload.invSurchargeId],
+  );
+  // All four users, not just the restricted one: deleteUsersAndRoles clears each user's Session
   // (and, as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears
   // the per-user rows the flows' own logins and the order-entry autosaves created.
   await deleteUsersAndRoles(
-    [payload.adminUserId, payload.restrictedUserId, payload.clerkUserId],
-    [payload.adminRoleId, payload.restrictedRoleId, payload.clerkRoleId],
+    [payload.adminUserId, payload.restrictedUserId, payload.clerkUserId, payload.priceEditUserId],
+    [payload.adminRoleId, payload.restrictedRoleId, payload.clerkRoleId, payload.priceEditRoleId],
   );
 
   return { ok: true };

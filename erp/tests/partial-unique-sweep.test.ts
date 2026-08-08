@@ -138,9 +138,24 @@ live row goes untouched.`).toEqual([]);
     // no number of its own, and its per-scope-instance uniqueness is service-enforced under
     // claimOrder because a partial index cannot express it (NULLs never collide, so two
     // (orderId, ORDER, NULL, NULL) rows would not conflict). Do not add one.
+    //
+    // Invoice's two (Phase 5A §7) are the same no-reuse contract one document further along again:
+    //
+    //   Invoice.creditNumber   — allocated from `credit_number_next` at credit creation and never
+    //                            reissued; a discarded draft must never free a number a customer
+    //                            holds on paper. Exactly Shipper.bolNumber's reasoning for a
+    //                            document that travels to a customer's accounts-payable desk.
+    //   Invoice.clientRequestId — idempotency key; handing it back to a retry would recreate the
+    //                            duplicate it exists to stop (P3 §4). Order.clientRequestId's
+    //                            rationale, for the invoice save.
+    //
+    // Invoice's LIVE-rows-only guard is a separate thing and is NOT exempted: the one-live-
+    // invoice-per-order rule is @@unique([orderId], where: raw("… AND kind = 'INVOICE'")), a
+    // proper partial index, and it must stay that way.
     const ALLOWED = new Set([
       "User.username", "Order.orderNumber", "Order.clientRequestId",
       "Shipper.shipperNumber", "Shipper.bolNumber", "Shipper.clientRequestId",
+      "Invoice.creditNumber", "Invoice.clientRequestId",
     ]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same

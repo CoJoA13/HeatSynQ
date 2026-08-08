@@ -12,6 +12,13 @@ import { createOrder, voidOrder } from "@/server/orders";
 import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 import { setSetting } from "@/server/settings";
+import { runWithContext } from "@/server/context";
+
+// Task 8: the surcharges.test.ts precedent — an explicit system actor rather than relying on
+// context.ts's `{ id: null, name: "system" }` fallback for an unwrapped call, so these tests read
+// the same way the customer-surcharge tests beside them (in surcharges.test.ts) do.
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
 /** Gives a part revision 1 with one step — createOrder's orderability precondition for the LEAD
  *  of an order (spec §5.3), the orders.test.ts/parts.test.ts `giveSteps` shape, built with raw
@@ -510,6 +517,44 @@ describe("customers service", () => {
       });
       const row = (await listCustomers()).find((r) => r.id === id);
       expect(row).toMatchObject({ inheritedCertRequired: true, inheritedCertScope: "SHIPMENT" });
+    });
+  });
+
+  // Task 8 (P5A): the customer-side half of Task 6/7's surcharge work — this customer's own
+  // sales-tax-rate override and certification-charge suppression. salesTaxRate mirrors
+  // creditLimit/financeChargeRate's own decimalField-backed round trip; certChargeSuppressed is a
+  // plain boolean, the surchargeOptOut shape.
+  describe("salesTaxRate / certChargeSuppressed", () => {
+    it("stores a per-customer sales tax rate and cert suppression", async () => {
+      const { id } = await asSystem(() => createCustomer({ code: "ACME", name: "Acme" }));
+      await asSystem(() => updateCustomer(id, { salesTaxRate: "0.045000", certChargeSuppressed: true }));
+      const row = await getCustomer(id);
+      expect(row.salesTaxRate).toBe(0.045);
+      expect(row.certChargeSuppressed).toBe(true);
+    });
+
+    it("rejects a sales tax rate with too many decimals", async () => {
+      const { id } = await asSystem(() => createCustomer({ code: "ACME", name: "Acme" }));
+      await expect(asSystem(() => updateCustomer(id, { salesTaxRate: "0.0450001" })))
+        .rejects.toThrow(/at most 3 digits before and 6 digits after/);
+    });
+
+    it("defaults to null/false when omitted on create, and round-trips through create too", async () => {
+      const { id } = await asSystem(() => createCustomer({ code: "BETA", name: "Beta Co" }));
+      expect(await getCustomer(id)).toMatchObject({ salesTaxRate: null, certChargeSuppressed: false });
+
+      const { id: id2 } = await asSystem(() => createCustomer({
+        code: "GAMMA", name: "Gamma Co", salesTaxRate: "0.070000", certChargeSuppressed: true,
+      }));
+      expect(await getCustomer(id2)).toMatchObject({ salesTaxRate: 0.07, certChargeSuppressed: true });
+    });
+
+    it("clears the rate back to null (inherit) on update", async () => {
+      const { id } = await asSystem(() => createCustomer({
+        code: "ACME", name: "Acme", salesTaxRate: "0.045000",
+      }));
+      await asSystem(() => updateCustomer(id, { salesTaxRate: null }));
+      expect((await getCustomer(id)).salesTaxRate).toBeNull();
     });
   });
 });

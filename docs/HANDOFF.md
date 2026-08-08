@@ -1,6 +1,8 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-06 (evening) — Phase 4 merged as `f129aae` (PR #47); the **backlog burn-down merged as `8647a7d` (PR #57)**, closing #48–#50 and #53–#56 (rulings 27–28) plus its own review round's four fixes (the seed-line identity, the parts-table multi-part detection, the released-serial warning credit). 25 migrations; final gates **1406 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15, CI green. Remaining backlog: #51–#52 plus the older triaged issues. **Next: Phase 5 kickoff per §9, fresh session.** Phase 3 merged as `12a17f9` (PR #39).
+**Updated:** 2026-08-07 — **Phase 5A (Pricing & Invoicing)'s Task 20 (the E2E flow, the demo doc, and this update) is complete**; the branch `phase-5a-pricing-invoicing` now heads to the whole-branch review, one fix wave, and the owner demo before the PR and squash-merge (§4a has the pre-merge summary; §9 is 5B's kickoff prompt, ready for when 5A lands). Gates on the branch: **1688 tests**, `tsc`/`eslint`/`build` clean, E2E **16/16**, run three times consecutively. Phase 4 merged as `f129aae` (PR #47); the **backlog burn-down merged as `8647a7d` (PR #57)**, closing #48–#50 and #53–#56 (rulings 27–28) plus its own review round's four fixes (the seed-line identity, the parts-table multi-part detection, the released-serial warning credit). 25 migrations on `main`; remaining backlog there: #51–#52 plus the older triaged issues. Phase 3 merged as `12a17f9` (PR #39).
+
+**This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
 ---
 
@@ -18,12 +20,17 @@ HeatSynQ is a self-hosted web ERP for a commercial **heat-treating shop**, built
 |---|---|
 | `docs/superpowers/specs/2026-07-29-heat-treat-erp-design.md` | **The approved spec — the contract.** §3 non-goals and §15 decision log are binding. Owner approved it with four review changes (already applied): qty+weight both required, auto load-split, no order duplication, CAR removed |
 | `docs/superpowers/plans/2026-07-29-roadmap.md` | The 8-phase build order (owner-approved) |
+| `docs/history/` | **The merged phases' full narratives**, one dated file per phase, moved verbatim out of this file's §4 as each phase closed. They record rulings, defect post-mortems and the lessons behind them — nothing there steers today's work, so read one only when you need a merged phase's detail. **The rule: when a phase merges, its narrative moves here and §4 keeps one paragraph** |
+| `docs/execution/<date>-phase-*/` | **The execution ledger** — per-task briefs, implementer reports, reviewer verdicts, and the `progress.md` that records what every review found, refuted or deferred. This is the account of *why* each task landed as it did, and none of it is reproducible from source. Written here from Phase 5A on, and **committed on the first task** — see `.superpowers/sdd/README.md` for why it is no longer under `.superpowers/` |
+| `docs/superpowers/specs/<date>-phase-N-*-design.md` + the matching `plans/` file | One design spec and one implementation plan per phase, each dated. The **current** phase's pair is binding for the work in flight; §4 names them |
 | `docs/superpowers/plans/2026-07-29-phase-1-foundation.md` | Phase 1's executed plan (historical record; two mid-execution corrections were committed to it) |
 | `docs/superpowers/plans/2026-07-30-phase-2-kickoff.md` | **Start here for Phase 2** — scope, model notes, pre-work, and the context this handoff's author held |
 | `docs/2026-07-30-process-steps-model.md` | **The Process Steps model with diagrams** — supersedes spec §5.1's shared process master. Read before touching parts or recipes |
 | `docs/2026-07-29-crossref-findings.md` | Cross-reference of the two Visual Shop reference docs — contradictions, gaps, and which source to trust where |
 | `Visual-Shop-ERP-Reference-Report.md` | Teardown of Visual Shop from the vendor KB (primary design reference, with known errors — see findings doc) |
 | `VisualShopTraining.pdf` | 2018 vendor training manual — **not in git** (44 MB, gitignored). Lives on the original machine; copy manually if needed. Printed page N = PDF page N+2 |
+| `docs/samples/00-…06-*` + `README.md` + `screen-index.csv` | **Visual Shop live screen library** — 125+ captured screens (dashboard, menus, orders/shipping, process/parts, billing/invoicing, A/R, notes/reports), VS 4342.0, captured read-only 2026-08-04. **Not in git** (gitignored, owner ruling 2026-08-07 — holds live company data; local reference only, do not commit/push/redistribute; same precedent as VisualShopTraining.pdf). Incomplete by design. The tracked layout-sample PDFs in `docs/samples/` are separate and stay in git |
+| `docs/visual-shop-capture-wishlist.md` | **Tracked** wishlist of VS screens NOT yet captured that would help the coming phases (5B A/R action flows, 5C close/QBO, then quoting/reports), keyed to VS's real menu labels. Living doc — extend as functions come up |
 | `erp/README.md` | App dev setup + production deployment + backup/restore |
 
 ## 3. Decisions that bind everything (condensed)
@@ -47,458 +54,134 @@ Model facts (owner's own words shaped these):
 
 ## 4. State of the build
 
-**Phase 1 (Foundation) is complete, merged to `main`, and pushed.** Built task-by-task with independent review of every task plus a final whole-branch review (verdict: merge, after a 9-item fix wave — all applied and re-reviewed). Quality gates that must stay green forever: `npm test`, `npx tsc --noEmit`, `npx eslint src tests`, `npm run build`.
-
-**Phase 2A (foundation refactors + reference data) is complete.** The five Task-0 refactors from §6's backlog all landed: `HttpError` extracted to `src/server/errors.ts` (import-free, breaking the `settings → http → sessions → settings` cycle, enforced by a test asserting zero imports), one session resolution per request (`handle()` publishes it via `AsyncLocalStorage`, `requireUser` just reads it), a Prisma error-hygiene helper (`src/server/db-errors.ts` — maps P2002→400, P2025→404, and P2003→400 with the FK's field name recovered from the constraint name, e.g. "That gl account does not exist" instead of a raw Prisma message), settings values now redacted through the same `redact()` audit uses, and dotenv's promo line silenced in test output.
-
-Reference data ships with GL accounts, nine flat pick-lists (materials, inspection codes/scales, container types, carriers, terms, payment types, comment snippets, specifications), and Process Step Codes with configurable field definitions — each with Excel export and spreadsheet paste entry. (The tenth pick-list, `Salesperson`, was removed in Phase 2B — owner confirmed the shop assigns nobody.) The reference service (`src/server/reference.ts`) enforces `.strict()` zod schemas per kind (an unrecognized field 400s instead of being silently dropped). ~~Re-typing a soft-deleted name revives that row (active again) rather than 400ing on a duplicate the caller can no longer see.~~ **Superseded by the Prisma 7 work (§5.18):** each kind's `name` is now unique only among live rows, so re-typing a soft-deleted name creates a genuinely new row with its own id and history, not a revival.
-
-**Phase 2B (customers) is complete.** Customers carry an owner-assigned unique `code` alongside the
-name (Visual Shop's customer-id habit), an optional parent for divisions that bill together, the
-Phase 5 commercial fields (credit limit/hold, COD, taxable, terms, surcharge opt-out, finance-charge
-override), three standing note blocks, typed addresses with one default per kind, and contacts with
-per-document flags. The unused `Salesperson` reference table was removed. The Excel-quote-aware TSV
-parser moved to `src/server/tsv.ts` so customer paste reuses it rather than reimplementing it.
-
-Also fixed in Phase 2A's close-out: zod's specific validation messages (e.g. "Too small: expected string to have >=1 characters") were silently flattening to the generic "Invalid input" under Next's bundler, even though the identical code produced the specific text under vitest — zod's locale registration is a side-effecting `config(en())` call in its own entry point, and zod's `package.json` declares `"sideEffects": false`, so webpack tree-shook that call (and the locale module it pulls in) out of the server bundle. Fixed by re-registering the locale in `src/server/error-message.ts`, the one shared translation both `handle()` and `paste.ts` call — see that file's comment for the full mechanism. Caught only by checking a real built/dev server's HTTP responses, not by vitest, which never reproduced the bug.
-
-What Phase 1 delivers (all in `erp/`):
-- **Auth**: username/password (argon2id), hashed session tokens, sliding expiry driven by a setting, timing-attack-resistant login (DUMMY_HASH equalizer in `src/server/auth.ts`), proxy cookie gate (`src/proxy.ts`; Next 16 renamed the middleware convention).
-- **Permissions**: `src/server/permissions.ts` + `src/lib/permission-constants.ts` — 12 areas × view/create/edit/delete + 10 named special actions; resolution DENY override > GRANT override > role > deny. Roles and per-user overrides are owner-editable in Admin.
-- **Audit**: `src/server/audit.ts` — `auditedCreate/auditedUpdate/auditedSoftDelete` with before/after snapshots (including relations via `SNAPSHOT_INCLUDE`), recursive redaction (password/token/secret/signatureImage), per-record `HistoryPanel`, searchable admin log. **Every mutation goes through these helpers**; `settings.ts`'s direct `prisma.auditLog.create` was a documented exception in Phase 1 but was retired in Phase 2A (Task 4) — `audit.ts` is now the sole writer, enforced by a sweep test (`tests/permissions-sweep.test.ts`) that fails if any other file calls `prisma.auditLog.create` again. Phase 3 added two more sanctioned exceptions: `order-drafts.ts` (pre-entity scratch, spec-authorized and sweep-allowlisted rather than routed through `audited*`) and `allocateNumber`'s counter bump in `settings.ts` (the consuming entity's own create entry is the audit trail).
-- **Settings**: typed zod registry (`src/server/settings.ts`), 12 keys (company, numbering seeds, date defaults, session timeout), validated on read and write, audited, `Object.hasOwn`-guarded.
-- **Admin pages**: Users (no hard delete ever; self-lockout guards: can't deactivate yourself or the last user-manager), Roles (permission grid; ~~revival of a soft-deleted name clears stale permissions~~ — **superseded by the Prisma 7 work (§5.18):** re-using a soft-deleted role's name now creates a genuinely new role, so there is no revived row and no stale permissions to clear), Settings, Audit log.
-- **Shell**: permission-aware left nav (routes for future phases 404 until built), global search placeholder (wired in Phase 3), auth-refetch on navigation.
-- **Packaging**: multi-stage Dockerfile (standalone Next build, auto-`migrate deploy` on start), compose profiles (dev `db` only / prod db+app+backup), `restart: unless-stopped`, Postgres bound to 127.0.0.1, nightly **fail-loud** backups (verifies pg_dump's exit status; never writes an empty archive) with 30-day retention.
-
-Seeded credentials: `admin` / `admin` — **change immediately** on any real install.
-
-### 4a. Phase 4 (Certifications & Shipping) — MERGED to main as `f129aae` (PR #47, 2026-08-06)
-
-**Finish sequence DONE (2026-08-06):** the whole-branch review ran on the strongest model (verdict:
-merge with fixes — full text `.superpowers/sdd/whole-branch-review.md`), its one fix wave was
-applied (five items) and the scoped re-review approved it **PR-ready** with zero new breakage.
-Final gates: **1360 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15. The review's headline catch:
-the T6-era carry was a **latent defect, not a test gap** — the voided-state guards on Cert/Shipper
-rested on SSI accidents, and print-vs-void had no protection at all; both discriminating race tests
-were verified RED pre-fix. The fix locks the cert/shipper row itself after the order claims, and
-`order-locks.ts`'s header now carries the resulting house rule: **the guarded state must live on,
-or be locked with, the claimed row** (Phase 5's reversing-shipment work will need it again).
-
-**PR #47 Codex review, two triage rounds (2026-08-06), all 14 threads resolved.** Round 1 (nine
-findings, all verified real): five fixed on the branch — `travelerPrinted` filtered to TRAVELER
-documents (a one-order shipping ticket also carries `orderId` now), BOL "No. Packages" falls back
-to the container-count sum, `addOrderToShipper` creates the shipment-scope cert it owed,
-removal refuses when the shipment-scope cert has printed (the cert carries `orderNumber-sequence`
-permanently), and `cert=1` print failures ride `x-print-warnings` instead of failing a request
-whose ticket already archived — and four deferred to issues **#48–#51** (shipping-list row links,
-signature byte validation, idempotent-replay warnings, add-order customer-switch race). Round 2
-(five findings, all real): removal keeps the positive-qty invariant against lineless-shell
-survivors, LOAD-scope cert creation requires a load the order currently has, the print bar links
-bundled cert PDFs directly (the shipment Documents list filters on `shipperId` and can never show
-a CERT document), and the two FK findings became the owner-ratified **snapshot + release**
-amendment — spec ruling 23, migration `20260806091506` (20 migrations total now). Standing owner
-rules from these rounds: run the Playwright E2E suite whenever a change touches any UI/flow, and
-update the appropriate docs as part of the work itself. Gates after round 2: **1370 tests**,
-`tsc`/`eslint`/`build` clean, E2E 15/15.
-
-**Round 3 (2026-08-06, seven findings, all verified real, all fixed on-branch — spec rulings
-24–26):** `printCert` refuses when the owning ORDER is voided (voidOrder leaves ORDER/LOAD certs
-live, so the cert's own `deletedAt` couldn't carry §5.6 alone); the cert=1 bundle resolves inside
-`printShippingTickets`' own claimed transaction (the separate unlocked resolution could bundle a
-different shipment state than the tickets printed); **credit hold gates shipment extension** —
-owner ruled add-order + line-replacement, same override/reason shape as creation, reason in the
-audit entry, UI reason field on the shipment page; an order update landing on certRequired+ORDER
-creates the ORDER cert (the hub only exposes LOAD-scope creation); **ruling 23 extended to
-`CertRequirement`** (snapshot linePosition/partNumber/partName, FK SET NULL, migration
-`20260806104833`) so a frozen requirement never blocks `removeLine`; shipment grids render
-released snapshot rows read-only and shipper-side replaces preserve them as frozen history; cert
-export gained Passed/Pending columns. Gates after round 3: **1381 tests**, `tsc`/`eslint`/`build`
-clean, E2E 15/15. 22 migrations total.
-
-**Round 4 (2026-08-06, four findings — all real follow-ons to the snapshot + release work, all
-fixed on-branch):** cert requirement identity now reads the frozen snapshot UNCONDITIONALLY
-(round 3 had shipped it live-join-first, the shipment-grid convention — wrong for a document
-frozen at seed: a part rename would silently rewrite a seeded cert), and the cert page groups
-requirement blocks by frozen `linePosition` (two released riders otherwise merged under one
-heading); the order-hub document list's shipper-relation branch is constrained to `orderId: null`
-so a sibling order's own ticket stays off other orders' lists; and both the audit
-`SNAPSHOT_INCLUDE` and the shipment detail read order serials by `[serial, id]` — released rows
-tie at `orderSerialId: null`, and the arbitrary tie-break made order-sensitive audit diffs report
-unchanged serials as modified. Gates after round 4: **1384 tests**, `tsc`/`eslint`/`build` clean,
-E2E 15/15.
-
-**Round 5 (2026-08-06, two findings, both fixed on-branch):** the cert PDF's parts table now
-appends one frozen-identity row (honest-blank quantities) per released requirement line — the
-cert stays live when an unshipped rider is removed, and its archived paper must still name the
-part its readings belong to; and `replaceReadings` refuses verdict/measurement contradictions
-(an override needs a value, an overridden value needs a boolean verdict — `value: null,
-passed: true` stored a pass measured on nothing, and `value: X, passed: null` hid an
-out-of-bounds reading from the failure count), with the readings editor pre-validating the same
-two rules by row. Gates after round 5: **1387 tests**, `tsc`/`eslint`/`build` clean, E2E 15/15.
-Also this round: one CI run hit the workflow's 15-minute timeout (5m01 → 8m51 → cancelled across
-the triage rounds while the local suite held ~2 min) — diagnosed as GitHub Actions degradation
-(stuck runner queue, API 502s), confirmed when the same head passed in a normal 5m44 once a
-runner picked it up. Not a branch problem; no timeout bump.
-
-**Round 6 (2026-08-06) — and the STOPPING RULE, owner-ratified.** The owner asked why the review
-loop wasn't converging; the answer is the 2C-3 dynamic §4a-prior already records (review of
-review-fixes converges slowly — half of rounds 4–6 there were findings in code written for the
-previous round; here, rounds 4–5 were almost entirely the snapshot + release blast radius), plus
-an LLM reviewer having no natural zero — severity converged (data-integrity P1s → advisory P2s),
-count never will. **Ruling: the 2C-3 stopping rule applies from round 6 — findings are triaged to
-issues unless they are correctness, concurrency, or data-integrity defects; after round 6's
-fixes, further findings become issues only, and the owner squash-merges.** Round 6 itself (seven
-findings): FIXED — cert PDFs print frozen identity throughout (parts table + serial blocks now
-agree with the requirement headings; released rows merge at frozen positions, matching the
-seeded order); every credit-hold check claims the Customer row (the house rule applied — a
-concurrently committed hold was invisible to the unlocked read, at creation AND extension; the
-discriminating holder-race test is in shipper-children.test.ts); order removal refuses once ANY
-shipment-owned paper printed (BOL included — it lists order numbers permanently); `loadNumber`
-bounded to INT4_MAX (500 → field 400). DEFERRED — #52 whole-shipment document coverage vs
-current membership (design: persist coverage / freeze adds / mark stale — the add-after-print
-half of the BOL finding), #53 scope-matched missing-cert warnings, #54 edit-response
-warning recompute (shares a fix with #50). Gates after round 6: **1392 tests**,
-`tsc`/`eslint`/`build` clean, E2E 15/15.
-
-**Status (2026-08-05):** all 21 tasks — the 20 planned plus **14b**, a plan hole found
-mid-execution — are implemented and individually reviewed on the combined branch. Gates at that
-point: **1357 tests** (from 1010 at branch start), `tsc`, `eslint`, `npm run build` all clean, and the Playwright
-harness is now **15 flows** (the ten inherited plus this phase's five, spec §13), run three times
-consecutively to confirm stability. Both databases migrated (19 migrations; the three Phase 4 ones
-hand-written via the TTY-less `migrate diff` recipe). Owner demo walkthrough:
-`docs/2026-08-05-phase-4-demo.md`.
-
-**What remains is the finish sequence the owner ruled on 2026-08-05** (revising the 2026-08-04
-ruling's letter, keeping its intent — nothing reaches the PR unreviewed): the lanes are already
-folded in, so next is **ONE whole-branch review of everything on the strongest model** (merge
-resolutions and the E2E flows included), then one fix wave with scoped re-review, then the PR —
-attribution in the **PR body**, never a commit trailer. The **deferred-minors list lives in
-`.superpowers/sdd/progress.md`, per task**, and is the whole-branch reviewer's triage input; that
-ledger is the authoritative record of what every review found, refuted, or deferred.
-
-**Documents (binding, committed):** spec
-`docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md` — §3's 18 owner rulings, the
-four samples-driven amendments §3.19–§3.22, and the dated amendments added during execution (see
-the rulings list below); plan `docs/superpowers/plans/2026-08-04-phase-4-certs-shipping.md`,
-amended in place as reviews found things the plan itself had caused. **The owner's four production
-samples are in `docs/samples/`** — the layout contract (§7 item 1 closed); they overturned four of
-the design's own decisions before code was written.
-
-**What Phase 4 delivered:**
-
-- **Certs**: the required/scope resolution chain (part → customer → plant setting, frozen at order
-  save, overridable at entry), all three scopes (order / load / shipment), one cert per order per
-  scope-instance with a part block per line, requirements seeded and FROZEN from the part's
-  inspections, many readings each with computed pass/fail plus a flagged, audited override — all
-  screen-only: **the printed cert carries bare reading values, no min/max/scale/verdict (§3.21)**.
-  Certs have **no number of their own** (§3.19; identified by order + scope instance), and
-  `cert_number_next` sits in Settings deliberately unused.
-- **Shipping**: shipments as documents — one global packing-list number, a per-order never-reused
-  shipment sequence (the `-3` in `72036-3`), emergent multi-order shipments with one ship-to, the
-  per-order-line ship ledger (`ship-ledger.ts`: shipped-to-date, remainder prefill, over-ship
-  warns-and-never-blocks), status derivation from the human line-complete flags alone
-  (`PARTIAL_SHIPPED`/`SHIPPED` now reachable), §5.5 invariant-based order-edit tightening, the
-  **credit-hold gate with `override_credit_hold` + required reason-in-audit** (this phase's
-  headline; human-reachable since 14b), idempotent creation (`clientRequestId`), and
-  void-with-reason that locks every control, restores order statuses, keeps stored PDFs
-  reprintable forever, and never frees a number or a sequence.
-- **Documents**: `StoredDocument` widened to the one document table for traveler/ticket/BOL/cert
-  with a hand-written kind→owner DB `CHECK`; shipping ticket (one per order, never an MOS sheet —
-  §3.20), BOL (the multi-order document, its number allocated lazily at first print), and
-  certification layouts built to the samples, every print stored byte-for-byte; the printing
-  user's own signature (upload in Admin → Users) prints on the cert.
-- **Screens**: shipping list, `/shipping/new` (14b — one atomic nested POST), the shipment page
-  (per-order panels over the three shared grids), certifications worklist, cert detail
-  (three-state pass/fail — passed/failed/pending, never inferred by subtraction), order-hub
-  Certifications + Shipments sections, and the §3.22 fields built without a present-day user on
-  the owner's explicit instruction (`Cust Cont Id`, `Customer Job No`).
-
-**How it was built.** Tasks 1–12 sequential (the service chain), then the UI block ran as **two
-parallel lanes** (owner-approved): lane A (the phase branch) took T13/T14/14b, lane B (branch
-`phase-4-lane-b`, its own git worktree and its own `erp_test2` test database — isolation verified,
-not assumed) took T15/T16/T17; T18/T19 (the PDF layouts) ran on the main lane. The lanes were
-**folded in by true merge `89bd01c`** (zero textual conflicts; the three predicted semantic zones
-hand-verified on both sides) plus wiring commit `7b171d5` (cert printing live on the cert page),
-and T20 ran on the combined tree. A mid-phase **machine move** (2026-08-04) is why
-`.superpowers/sdd/` is now tracked in git — the execution record travels; only the `review-*.diff`
-packages stay ignored. The lane-b worktree and `erp_test2` are disposable local infrastructure;
-the rebuild recipe is in `progress.md` under "SECOND LANE BUILT".
-
-**Review record.** Every task went implementer → independent review → fix rounds → re-review.
-**Five first-pass approvals by the ledger's own count** (T13, T16, T14b, T18, T17,
-chronologically — all in the phase's second half, the loop visibly converging); most earlier
-tasks took at least one fix round (T4 took two, T5 three — the ledger has each round's findings). **Task 14
-is the exception worth knowing about**: it landed unreviewed when the machine move was called, its
-implementer report was lost (a labeled controller-written stand-in exists in the ledger), and it
-was reviewed retroactively on the new machine — its out-of-spec route was adjudicated a faithful
-gap-fill (now a dated spec §9 amendment), its one Important (the add-grid prefill offered the full
-ordered quantity instead of `ordered − shipped`) was fixed and re-reviewed, and its lost browser
-verification was recaptured durably by T20's E2E flows. **Task 14b** exists because Task 14's
-implementer found the plan had NO shipment-creation flow anywhere — `createShipper` and
-`POST /api/shippers` existed with no screen calling either, leaving the credit-hold gate
-unreachable by a human — and correctly refused to invent the screen unilaterally (prime directive).
-
-**Owner rulings taken during execution** (each recorded as a dated spec amendment):
-
-- 2026-08-04 — document lists are permission-filtered per kind (the `globalSearch` shape); a BOL
-  belongs to exactly ONE shipment and does not exist until printed; §5.5: removing an order from a
-  shipment is refused once its ticket has printed; §5.6: removing an order from a shipment voids
-  that order's shipment-scoped cert at removal time; stay sequential through T12 and build the
-  second lane for the UI block.
-- 2026-08-05 — the four Task 19 rulings: a cert-requiring order with no live cert **prints its
-  tickets and warns** (`x-print-warnings`), never refuses; BMP dropped from accepted signature
-  image types; `certs.view` required for cert-bearing prints, ratified; LOAD scope prints all live
-  load certs including the printedAt freeze. Plus the revised finish-sequence ruling above (fold
-  in first, one review of the true final tree).
-
-**Owner pings to carry into the PR / finish report** (accumulated in the ledger):
-
-1. The shipping ticket prints no **"Page N of M"** — spec §10.1 lists it, but a pure-JSON template
-   cannot carry page-count functions and a render-level footer would number across the multi-ticket
-   PDF; Phase 7's template designer is the natural home.
-2. **Serial re-shipment has no warning**: no per-serial shipped fact exists, so re-selecting an
-   already-shipped serial on a later shipment gets no §5.7-class notice — worth an owner decision.
-3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
-   (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
-   follow-up).
-4. **No `User.title` column exists**, so the cert signature block prints name + company with no
-   title line (the sample shows one) — a small follow-up migration if the owner wants it.
-
-**Eleven lessons from this phase's reviews, all with real defects behind them.** These are the
-ones worth carrying — the full per-task detail is in `progress.md`.
-
-1. **A concurrency test that passes is not evidence.** Task 5's race test passed with the row lock
-   it guarded **deleted** — both sides ran Serializable, so Postgres's SSI caught the anomaly and
-   the lock never acted. The technique that works: run the **competing** caller at Read Committed,
-   so only the row lock can serialise the two. Verify every such test by deleting the guard and
-   watching it go red.
-2. **Some concurrency properties cannot be tested at all at this layer, and that is now settled.**
-   ABBA deadlock cannot be discriminated: the sorted claim is one `SELECT … ORDER BY id FOR UPDATE`
-   with `LockRows` above `Sort`, so a correct implementation also holds A while blocking on B. Three
-   tests carry that disclaimer **in their titles**. Do not spend rounds rediscovering it.
-3. **Hoisted functions survive a module cycle; a `const` does not.** `shippers.ts` consumed
-   `INT4_MAX` from `orders.ts` at module-evaluation time, and Task 10 was about to add the reverse
-   edge — a crash at import, two tasks later, caused three tasks earlier. Two real cycles were found
-   and broken this phase (`orders↔certs`, `cert-results↔certs`); the leaves are now `errors.ts`,
-   `order-locks.ts` and `src/lib/order-constants.ts`.
-4. **`import type` is erased and creates no runtime edge.** A naive cycle-detecting grep reports
-   false positives; one implementer was misled by exactly that.
-5. **`redact()` round-trips through `JSON.stringify`, which silently drops keys whose value is
-   `undefined`.** Changing a zod field from `.default("")` to `.optional()` made an audit snapshot
-   lose a key entirely. When you change a field's optionality, check every audit payload it reaches.
-6. **The sibling-split rule keeps costing.** It bit three times this phase, worst when a fix for
-   "queries dragging signature bytes" landed on one call site and missed `getSessionUser`, which
-   runs on **every authenticated request**. When a fix lands on one member of a group, enumerate the
-   whole group in the report so the sweep is checkable rather than asserted.
-7. **A refusal must name what is actually blocking it.** One shipped naming a problem that did not
-   exist ("a shipper with that shipper number already exists" for a duplicate line id).
-8. **Half the findings in a fix round are in the code written for the previous round.** Task 4's
-   Minor fix introduced an Important bug. Re-review every fix.
-9. **Test fixtures quietly demonstrate forbidden states.** Task 9's own test built a one-order
-   shipment and removed its only order — exercising a state the spec forbids, green, with no
-   assertion against it.
-10. **A lane's copies of shared documents are stale by design until fold-in.** Task 17's brief was
-    extracted by line numbers from the LANE's plan copy (cut before 14b shifted the plan), yielding
-    garbage; the implementer correctly blocked instead of improvising. Anything extracted by
-    position from a document that exists on both branches must come from the branch where that
-    document is current.
-11. **The `/new`-route URL trap held for a second phase.** `page.waitForURL(/\/shipping\/[^/?]+$/)`
-    also matches the literal `/shipping/new` still on screen at the instant Save is clicked — the
-    Phase 3 `/orders/new` lesson, re-armed. The E2E flows wait for post-navigation-only content
-    (the "Packing List N" badge), never a URL pattern.
-
-**What to do next, in order** (the finish sequence, owner ruling 2026-08-05):
-1. **Run the whole-branch review on the strongest model** over `586a569..HEAD` of
-   `phase-4-certs-shipping` — everything: the merge resolutions from fold-in `89bd01c`, the E2E
-   flows, and this task's docs. Feed it the per-task deferred-minors lists in
-   `.superpowers/sdd/progress.md` for triage.
-2. **One fix wave** from that review, with scoped re-review of the fixes.
-3. **Open the PR** — attribution and the Claude-Session link go in the PR body (a hook blocks
-   commit trailers). Carry the four owner pings above into the PR description so the owner rules
-   on them with the merge in front of them.
-4. **Present the demo** (`docs/2026-08-05-phase-4-demo.md`) before merge — the 2C-2/2C-3/Phase 3
-   precedent.
-5. After the squash-merge: verify the squashed tree is byte-identical to the branch tip, all four
-   gates plus `npm run test:e2e` green on `main`, both databases migrated — then kick off Phase 5
-   with the §9 prompt.
-
----
-
-### 4a-prior. Phase 3 (Orders & Loads) MERGED to main — state as of 2026-08-03
-
-**Phase 2C was split into three branches** (owner ruling, 2026-08-01) because as originally framed it was ~11 new models and ~30 tasks, roughly 3× Phase 2B: **2C-1 shared foundations** (done), **2C-2 Parts core** (next), **2C-3 Process Steps + Templates**.
-
-**Phase 2C-1 is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `47d6d0a` (PR #12, 31 commits); the `phase-2c1-foundations` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, `main` is green on all four gates — **304 tests**, `tsc`, `eslint`, `npm run build` — and both databases report no pending migrations. **It changed no schema**, deliberately: `git diff` on `prisma/` against the pre-branch `main` was empty throughout.
-
-It delivered the five obligations §4a previously listed as inherited by 2C, each as one shared implementation: the FK registry (`src/lib/reference-links.ts`) and its sweep, FK name resolution on read/export/create/paste, the reference-delete guard with blocker listing and Excel export, the session-only `/api/picklists/[kind]` route, the shared permission-gating helper (`src/lib/permission-ui.ts` + `use-permissions.ts`), and `deleteRole`'s required reason. Spec: `docs/superpowers/specs/2026-08-01-phase-2c1-shared-foundations-design.md`.
-
-Codex posted five findings on PR #12; four were fixed on the branch. The fifth (the delete guard's TOCTOU) is **partially fixed and knowingly open** — see §6, which records exactly what the Serializable wrap does and does not close, and why the writer-side half is 2C-2's.
-
-**Phase 2C-2 (Parts core) is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `aeed372` (PR #13, 39 commits); the branch is deleted. Verified after merge: the squashed tree is byte-identical to the branch tip, `main` green on all four gates — **421 tests** — and both databases report no pending migrations. Spec: `docs/superpowers/specs/2026-08-01-phase-2c2-parts-core-design.md` (its §3 records four owner rulings from the design session; §11's count-only customer-delete bullet carries a dated amendment — the refusal now returns a full blocker list, owner ruling during PR review). Plan: `docs/superpowers/plans/2026-08-01-phase-2c2-parts-core.md`.
-
-It delivered: the six part models (partial-unique `(customerId, partNumber)`, no revival anywhere) with services, routes, list/detail/admin pages, Excel export and paste; **both carried debt items closed** — the audited helpers' `tx` is now **required** (compiler-enforced transactional audit) and every registered-FK writer validates its target in-tx under scoped Serializable (`assertRefExists`), completing the reference-TOCTOU fix on both sides; parts' four registry entries with `CODE · partNumber` display via a generic `include`/`blockerId`/dedupe extension to `findBlockers`; customer child routes scoped to their customer; `deleteCustomer` blocked-with-discoverable-blockers while live parts exist; the shared stale-response gate (`use-latest.ts`) on both list pages; field-def delete **and type-change** blocked while non-empty values exist (blocker panel + export, shared `BlockerPanel` component). Codex posted three review rounds (16 findings): 14 fixed on the branch, 1 refuted with a regression test, 1 filed as issue #15 (per the 2B compound-race precedent). Issues #14 (UI papercuts from the browser walkthrough) and #15 are the new backlog entries.
-
-**Phase 2C-3 (Process Steps + Templates) is complete and MERGED to `main`.** Squash-merged 2026-08-02 (PR #22, 49 commits, 67 files); **Phase 2C is now done end to end.** Verified before merge: all four gates green — **585 tests** (58 files), `tsc`, `eslint`, `npm run build` — plus the six-flow E2E harness 6/6, and both databases migrated. Spec: `docs/superpowers/specs/2026-08-01-phase-2c3-process-steps-design.md`. Owner-facing walkthrough with screenshots: `docs/2026-08-02-2c3-demo.md`.
-
-It delivered the five process models, the revision-cut rule (§5), shop-built templates that load structure and never values, step-code deletion protection through the generalized `BlockerTarget` registry, the Process Steps designer on the part page, the Processes nav section, and the step-codes admin page's closed §6 backlog — plus `npm run test:e2e`, the first owner-reviewable Playwright harness in the project.
-
-**Codex posted six review rounds — 37 findings, 36 fixed on the branch, 1 refuted with a reproduction.** Read this before the next phase, because three of the lessons are general:
-
-- **Serializable on one side of a race buys nothing.** `workingRevision` read `lockedAt` and then wrote children, relying on its own Serializable transaction to order against `lockRevision` — but Postgres only guarantees serializability among transactions that are *all* Serializable, and `lockRevision`'s documented caller (Phase 3's order save) holds it inside the order's own default-isolation transaction. A locked revision could therefore be modified after its lock committed, breaking §5's central guarantee. Fixed with `SELECT … FOR UPDATE`, which both sides take at any isolation. **Phase 3 must not "fix" this by making the order save Serializable — the row lock is the guarantee, and it must stay.** A serialization failure from a raw query arrives as P2010 with the SQLSTATE inside the driver adapter's error, not P2034; `translatePrisma` now normalizes it.
-- **A guard is only as good as what it actually discriminates.** The E2E fixture reaper hard-deleted rows in the developer's own database on a `startsWith("E2E")` scan, behind a guard that checked only the database *name* — which `docker-compose.yml`'s prod profile shares. Now exact-key, scoped to the fixture customer (a part's natural key is `(customerId, partNumber)`, not the number alone), and localhost-gated with no override.
-- **Preserving unsaved UI work is a model problem, not a patch problem.** Draft preservation produced findings in three consecutive rounds — first not preserved, then not preserved across a revision cut, then preserving *clean* copies that masked another user's edit and let one click of Save revert it. The editors now keep only what the user actually typed, composed with server state at render time, which makes the staleness unrepresentable. **The same shape is worth reaching for first anywhere a page holds an editable copy of server data.**
-
-**Two follow-ups were filed rather than fixed on the branch** (both pre-existing or UI-only, neither blocking): **#23** — the step-codes field-def blocker panel lacks the cross-row stale guard its code-delete sibling has, so a superseded blockers fetch can name a field from the previously selected code (same family as #5/#15; fix with the `use-latest` ticket idiom rather than a second bespoke guard). **#24** — `role.permissions` and `processStepCode.fields` have no `orderBy` in `SNAPSHOT_INCLUDE`, so two snapshots of identical state can render as a spurious diff in History; `partProcessRevision` was fixed in this branch and carries the reasoning. Worth a sweep test, since every future `SNAPSHOT_INCLUDE` collection has the same trap.
-
-Two process observations worth carrying: roughly half the findings in rounds 4–6 were in code written to satisfy the previous round, so review of review-fixes converges slowly — 2C-3 stopped at round 6 by a stated rule (it had reviewed the last large change; anything later is triaged to backlog unless it is a correctness, concurrency, or data-integrity defect). And a parts/template **sibling split** — the same defect existing on two parallel screens or services, fixed on one and missed on the other — accounted for six separate findings. When a fix lands on one of a pair, check the other in the same commit.
-
-**Owner rulings taken 2026-08-01 during 2C-2** (also in the spec §3 and PR #13): price-break basis follows the part's price-per unit; material optional on a part; unit/break prices store 4 decimals; field-def type changes blocked while values exist; customer-delete refusals carry a blocker list (amends spec §11); and **issue #4 is decided** — see the issues list above.
-
-**The Prisma 7 upgrade and the removal of revival-on-create are complete and MERGED to `main`.** Squash-merged 2026-08-01 as `22e0dd3` (PR #11, 26 commits); the `prisma-7-upgrade` branch is deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` was green on all four gates — 258 tests at that point, `tsc`, `eslint`, `npm run build`.
-
-One Codex finding was posted against the PR and fixed before merge (`f6fd887`): `prisma/seed.ts` passed a possibly-unset `DATABASE_URL` straight to `PrismaPg`, which falls back to `PGHOST`/`PGUSER` rather than failing — so an unset variable would have seeded an admin account with a known password into whatever database happened to be reachable. `src/server/db.ts` already carried that guard; the seed now does too.
-
-**Phase 2B (customers) is complete and MERGED to `main`.** Squash-merged 2026-08-01 as `32f7f9d`; PR #2 closed, the `phase-2b-customers` branch deleted on the remote. Verified after merge: the squashed tree is byte-identical to the branch tip, and `main` was green on all four gates — 255 tests at that point, `tsc`, `eslint`, `npm run build`.
-
-Eight rounds of automated review ran against it. **All 40 threads were answered and resolved.** Thirty-three were fixed on the branch; seven were filed as issues; one was answered as already-recorded. The issues below are the surviving record — all are deliberate deferrals or owner decisions, none an oversight. **#6, #7, #8 and #10 are already decided; their rulings are §5.14–§5.18:**
-
-- **#3** — a correction typed during a failing save can leave the UI stale. Database stays correct; needs a compound race; resolves on reload.
-- **#4** — **DECIDED 2026-08-01 (owner): allow the combination.** Delivery flags mean "this is the invoices/certs person" even when delivery happens by mail or fax; rejecting a blank email would force fake addresses. **Phases 4–5 build obligation:** a flagged contact with no email is skipped **visibly** (named in the send result — "skipped: J. Smith (no email)"), never silently; plus a soft, non-blocking warning on the contact form whenever a delivery flag is on with a blank email. Entry stays unrestricted. Full ruling recorded on the issue, which stays open as the build obligation.
-- **#5** — **CLOSED by 2C-2**: the shared stale-response gate (`src/lib/use-latest.ts`) guards both the customers and parts list loads, success and rejection paths alike.
-- **#6** — **decided 2026-07-31; 2C builds it.** Reference-row deletion: block it, list the blockers, export the list. See §5.14.
-- **#7** — **decided 2026-07-31; 2C builds it.** Controls the user lacks permission for are disabled and say why, never hidden. See §5.16.
-- **#8** — **decided 2026-07-31; 2C builds the one remaining site.** A delete needs a reason when it cascades or frees a unique identifier — customer (built) and role (owed). See §5.17.
-- **#9** — concurrent edits to *different* fields absorb each other into their audit diffs. Row ends up correct; the entries are too wide, not wrong. Proper fix needs `tx` threaded through all 17 `audited*` call sites — the half-closed transaction gap in §6.
-- **#10** — **decided 2026-07-31; DONE 2026-08-01 on `prisma-7-upgrade`.** Reusing a deleted code inherited the predecessor's audit identity. See §5.18.
-
-Round 4's fixes (`047eb51`): `assertTermsExists` closed the last unguarded reference column (a soft-deleted Terms row passed the foreign key and left a customer holding a reference no list resolves); the terms selector now carries inactive rows so an assigned one stops rendering as blank; address `kind` became editable (the service always supported it); and customer delete got a UI at last — the route and its `customers.delete` permission had shipped with nothing able to call them, which also made revival-on-create unreachable from the app.
-
-**The Prisma 7 upgrade is DONE** (owner's ruling, issue #10 — the full record is §5.18). Built on branch `prisma-7-upgrade`: Prisma 6.19.3 → 7.9.1, revival-on-create deleted everywhere it existed (`customer`, `role`, all ten reference kinds, `processStepCode`), all four quality gates green on both databases (258 tests). **Not yet merged to `main`** as of this writing — merge it (or continue on the branch) before starting 2C, since 2C's obligations below assume the removal already happened and no longer carry a "consolidate revival" item.
-
-**The toolchain was brought current on 2026-08-02, after 2C-3 merged.** Five PRs, all verified on all four gates plus the E2E suite before landing: patch bumps with security overrides taking `npm audit` from 5 advisories to 0 (#25), **Node 22 → 26** (#28), **Postgres 16 → 18** (#27), **Next 15 → 16** (#29). The stack is now **Node 26.5.1 · npm 12.0.2 · Next 16.2.12 · React 19.2.8 · Prisma 7.9.1 · PostgreSQL 18.4 · TypeScript 5.9.3 · Vitest 3.2.7**.
-
-Three of those carried a trap that a version bump alone would have walked into, all recorded where they bite: the Postgres 18 image moved its data directory (§6a), npm 12 stopped running install scripts (§8), and Next 16 renamed `middleware` to `proxy` (`src/proxy.ts`, CLAUDE.md). ESLint 10 and TypeScript 7 remain blocked on what `eslint-config-next` vendors — see §6.
-
-Two issues were filed from that run and are open backlog, neither blocking Phase 3 or Phase 4:
-**#30** — CI never builds the Docker image, though production *is* that image, so a broken
-Dockerfile passes today (this is why #16's green check proved nothing about Node 25). **#31** —
-whether this app should keep fetching data in effects; Next 16's `react-hooks/set-state-in-effect`
-is overridden in `eslint.config.mjs` for a defensible reason, but the rule points at the pattern
-behind issues #5/#15 and several PR #22 findings, and Phase 3 added more pages in that same style
-— Phase 4 will add more still, in whichever style is eventually chosen.
-
-**Phase 3 (Orders & Loads) is complete and MERGED to `main`** — squash-merged 2026-08-03 as
-`12a17f9` (PR #39, 56 commits: 17 tasks `5a93325`–`125ea43`, then four Codex fix-round waves and
-docs). The final whole-branch review ran on the strongest model (verdict: with-fixes; wave applied)
-before the PR opened; Codex then posted five rounds — rounds 1–4's 34 findings all fixed on the
-branch with regression tests, round 5's 6 findings triaged to issues #41–#46 by owner ruling
-(2026-08-03: the round was not converging; no further code on the branch). Verified after merge:
-squashed tree byte-identical to the branch tip (`56063b6`); `main` green on **1010 tests**
-(85 files), `tsc` clean, `eslint` clean, `npm run build` clean, **`npm run test:e2e` 10/10** — the
-original six 2C-3 flows unchanged, plus four new order flows (`order-entry-full`,
-`board-search-scan`, `loads-after-print`, `void-order`), run three times consecutively to confirm
-stability. Spec:
-`docs/superpowers/specs/2026-08-02-phase-3-orders-design.md` (§3 records ten owner decisions from
-the design session, with two dated 2026-08-03 amendments closing the traveler samples gate — see
-below; §16 is Phase 4's own inheritance list, quoted in §9's kickoff prompt). Plan:
-`docs/superpowers/plans/2026-08-02-phase-3-orders.md`. Owner-facing walkthrough with screenshots:
-`docs/2026-08-03-phase-3-demo.md`.
-
-It delivered the eleven order tables and the whole order lifecycle on top of them: `createOrder`'s
-one-transaction save (validate → allocate the order number via the new generic `allocateNumber` →
-lock the lead part's current revision via `lockCurrentRevision`, reusing `workingRevision`'s row-
-lock claim → auto-split loads on order totals under the lead's caps → write via the audited
-helpers → clear the caller's draft in the same transaction, spec §5), a loads editor with renumber
-and the two-phase negative-park re-split pattern (`order-loads.ts`), unaudited autosaved drafts and
-saved board views (`order-drafts.ts`/`saved-views.ts`), the full order route surface behind
-`orders.*`/`void_order`, the shared attachments story widened to a second owner (orders, alongside
-parts), permission-filtered global search with a deliberately-open exact-order-number short-circuit
-(`search.ts`), the order board home page (traffic light, saved views, live search-to-scan)
-replacing the Phase 1 welcome stub, order entry with crash-safe autosave, the ten-section order
-hub, delete-guard extensions blocking part/customer deletion while a live order references them
-plus request-day overrides surfaced on both pages, and — closing the traveler samples gate — real
-PDF travelers via `pdfmake` + `bwip-js`, one document per print action, every print stored
-byte-for-byte for exact reprints.
-
-**Every one of the 16 feature tasks went through this project's independent spec-and-quality
-review with fix rounds before being marked done** (each task's own report is in
-`.superpowers/sdd/task-N-report.md`; this task — the E2E/demo/docs close-out — is reviewed as part
-of the final whole-branch pass). Three lessons from those rounds are general enough to carry into
-Phase 4:
-
-- **The 2C-3 "sibling split" pattern recurred.** Four sibling bulk-edit grids
-  (Containers/Charges/Serials/Loads on the order hub) share one hook (`src/lib/bulk-grid.ts`); a
-  fix for three of them (a concurrent-edit orphan warning) was believed not to apply to the fourth
-  (Loads, whose mutator updates rows in place rather than delete-and-recreate) — until review
-  caught the one path (a save that *shrinks* the array) where it does too. When a fix lands on one
-  member of a sibling group, check every other member in the same commit, even ones that look
-  structurally different.
-- **The row-lock lesson from 2C-3 held under its first real caller.** `createOrder` calls
-  `lockCurrentRevision` inside the order save's own transaction exactly as 2C-3's review demanded
-  — the row lock in `workingRevision`/`lockCurrentRevision` is the guarantee regardless of the
-  caller's isolation level, and this phase did not "fix" that by making the order save Serializable
-  (it IS Serializable, but for an unrelated reason — the registered-FK writer pattern on
-  `containers[].typeId`).
-- **A too-loose URL-matching pattern in a new E2E flow raced its own navigation** (Task 17):
-  `page.waitForURL(/\/orders\/[^/?]+$/)` also matches the literal route `/orders/new` (a real page,
-  still on screen right up until the click that navigates away from it), so it resolved instantly
-  against the page still showing rather than the navigation the click was about to trigger. Fixed
-  by waiting for hub-only content (a badge that can only render post-navigation) before reading the
-  URL, not a broader regex. Worth remembering for Phase 4's own `/new`-suffixed entry routes.
-
-**Owner rulings this phase took, all in spec §3 (dated amendments in the same section):**
-lead+rider order lines with no recipe-match validation between them (accepted trade-off); auto-
-split on order totals honoring both `loadQty` and `loadWeight` together; loads stay editable after
-a traveler prints, with a reprint warning, never a freeze; business-day request dates,
-most-specific override wins, silent; the traffic light reads the request date, not target; extra
-charges captured now, priced later; credit hold warns at entry, never blocks (the squeeze moves to
-Phase 4 shipping); an optional `vsOrderNumber` cross-reference field; and `pdfmake` + `bwip-js` for
-the PDF stack. **Amended 2026-08-03, closing the Task 16 samples gate:** the 2025 mockup is the
-traveler's build target with no further samples gating it; `PartInspection.sampleQty` (new
-optional free-text column, prints in the Key Characteristic Quantity column); no
-inspection-location images in Phase 3. **Further amended the same day** (Task 16 review): the
-traveler's `Process:` cell renders blank in Phase 3 (Phase 7's template designer owns that slot) —
-this phase's demo doc records the two cosmetic-but-real deviations alongside it (Process ID prints
-the lead part number, not a masked family number; the load's weight prints as a small grey
-addition with no column of its own on the mockup). Linking (§5d) also carries an amendment:
-linking two orders UNIONS their groups rather than one side silently adopting the other's, so no
-order is ever detached from a group by linking.
-
-**What to do next, in order:**
-1. **Merge Phase 3.** `phase-3-orders` needs the final whole-branch review this project always
-   runs before merging a phase — the per-task reviews already caught and fixed real issues
-   throughout (each task's own report has the detail); the whole-branch pass is what 2C-3's own
-   history shows catches what review-of-review-fixes misses.
-2. **Phase 4 — Certifications & Shipping**, once Phase 3 merges. Follow the roadmap
-   (`docs/superpowers/plans/2026-07-29-roadmap.md`) and brainstorm → spec → plan → subagent
-   execution as before — §9 below has the kickoff prompt, including what Phase 4 inherits from
-   Phase 3 (design spec §16).
-3. **No owner decision is pending.** Issue #4 is ruled (binds Phases 4–5); issues
-   #14/#15/#30/#31 are triaged backlog, not blockers.
-
-**After a reboot the environment comes back on its own** — `docker.service` is enabled and `erp-db-1` is `restart: unless-stopped`, so both databases return migrated. Git identity is set repo-locally. One nice change: a fresh login shell will carry the `docker` group natively, so the `sg docker -c '…'` wrapper used throughout this session is no longer needed — plain `docker compose …` works.
-
-### 4b. Prisma 7 upgrade — what actually happened
-
-**DONE 2026-08-01, branch `prisma-7-upgrade`.** This section originally recorded a pre-work survey against the official guide, to save the executing session from re-surveying. It now records the outcome instead — most of the survey held up; the parts that didn't are called out below rather than silently dropped.
-
-**Already fine, no work — as predicted:** Node 22.23.1, TypeScript 5.9.3, no `tsc` target bump needed. `prisma.config.ts` needed `migrations.seed` added (`prisma.seed` in `package.json` is no longer read) and its `engine: "classic"` line **removed outright, not adapted** — v7 deleted the `engine` property from the config shape rather than giving it a new home. `url` came out of `schema.prisma`'s `datasource` block; `prisma.config.ts`'s `datasource.url` is the only place the connection string lives now.
-
-**Mechanical, as predicted:**
-- Generator is `provider = "prisma-client"` with `output = "./generated/prisma"`. The path is **gitignored** (`/prisma/generated` added to `.gitignore`) — the Docker standalone build regenerates it, and the client is TypeScript source, not JS-plus-`.d.ts`.
-- `@prisma/client` imports moved to the generated path, **by relative import in exactly the 6 predicted files** — `src/server/db.ts`, `audit.ts`, `customers.ts`, `customer-addresses.ts`, `db-errors.ts`, `prisma/seed.ts` — deliberately not an `@/` alias and deliberately outside `src/`, so the sweep tests that walk every `.ts` under `src/` (`tests/permissions-sweep.test.ts`, `tests/partial-unique-sweep.test.ts`) aren't polluted by generated code.
-- PostgreSQL requires a driver adapter, confirmed: `src/server/db.ts` and `prisma/seed.ts` both construct `new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) })`.
-- **Not predicted, found during the work:** `dotenv` and `tsx` had to move from `devDependencies` to `dependencies` — both are runtime dependencies of `prisma.config.ts` in the production image, which runs `npm prune --omit=dev`. The Dockerfile's run stage now copies `prisma.config.ts` too; without it the container crash-looped at start on `migrate deploy` with "The datasource.url property is required in your Prisma config file", because v7 reads the datasource URL from that file rather than the schema.
-- Prisma packages are pinned **exactly** (no `^`) — `partialIndexes` (used by §5.18's partial unique indexes) is a preview feature and must not shift underneath an unrelated `npm install`.
-
-**The ESM flip — predicted risky, actual blast radius was zero files.** `"type": "module"` landed as its own commit as planned, full suite green before and after. `vitest.config.ts`'s `__dirname` was the one thing expected to break, on the theory that `__dirname` doesn't exist in an ES module — it did not break, because Vite bundles its own config file and injects `__dirname` for it regardless of the package's module type. It was rewritten anyway (`fileURLToPath(new URL(...))`) as a robustness improvement, not because anything failed. `next.config.ts`, `postcss.config.mjs`, `eslint.config.mjs`, and `tsconfig` needed no changes at all.
-
-**CLI behaviour changed beyond what the original survey anticipated.** Confirmed as predicted: `migrate dev` no longer generates the client or seeds; `--skip-generate`/`--skip-seed` are gone. Not anticipated at all: `migrate diff --to-schema-datamodel` is now `--to-schema`; `db execute` lost `--schema`/`--url`; and, the one that actually cost time, **`migrate dev` refuses to run in a non-interactive shell** — "the environment is non-interactive, which is not supported" — even with `CI=true` or `--create-only`. It works fine for a human at a terminal; automation (including a Claude Code session driving Bash) must use `migrate diff` to produce the SQL, hand-write the migration directory, and apply with `migrate deploy`. That is how this branch's one migration (`20260801031309_partial_unique_live_rows`) was created — see `CLAUDE.md`'s "Constraints that will bite you" and §5.10.
-
-**Confirmed unused, as the survey hoped:** `prisma.$use` middleware (no hits in `src/` or `prisma/`), the metrics feature.
-
-**Docs were the last task, not an afterthought.** `CLAUDE.md` (the two-database recipe, the first-run block, the deletion-is-soft rule) and this handoff (§4a, §5.10, §5.11, §5.18, §6, §8, §9) were rewritten in the same branch as the code, and verified by following `CLAUDE.md` verbatim against a clean clone (Task 10, this task).
+**The rule that keeps this section readable: when a phase merges, its narrative moves to
+`docs/history/` and §4 keeps one paragraph** — what it delivered, its merge commit/PR, and the file
+its full record now lives in. The *current* phase's state is kept here in full; everything already
+merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
+every fresh session and has to stay readable in one pass.
+
+### The current phase
+
+**Phase 5A (Pricing & Invoicing) is in flight** on branch `phase-5a-pricing-invoicing`, started
+from §9's kickoff prompt. Its three binding documents:
+
+- Spec: `docs/superpowers/specs/2026-08-06-phase-5a-pricing-invoicing-design.md`
+- Plan: `docs/superpowers/plans/2026-08-06-phase-5a-pricing-invoicing.md`
+- Execution ledger (per-task briefs, reports, reviews, deferred minors):
+  `docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md` — moved out of
+  `.superpowers/sdd/` on 2026-08-06 because that directory's `.gitignore` is skill-owned and kept
+  being clobbered back to a bare `*`, hiding every uncommitted file under it. See
+  `.superpowers/sdd/README.md`. Earlier phases' ledgers stay at the old path; they are already
+  committed, and therefore already immune.
+
+Those three are where the branch's actual state lives; this section deliberately does not duplicate
+them, and gets its one merged paragraph when 5A lands. **All 20 tasks are now built and
+individually reviewed** (Task 20 — the E2E flow, the demo doc, and this update — closed
+2026-08-07); §4a below is the pre-merge summary the "Review and merge" process (the plan's own
+closing section) works from next: one whole-branch review, one fix wave, the owner demo
+(`docs/2026-08-07-phase-5a-demo.md`), then the PR and squash-merge.
+
+### 4a. Phase 5A — what it delivered (pre-merge summary, drafted at Task 20)
+
+**This subsection is scaffolding, not a merged-phase entry** — §2's rule (one paragraph per merged
+phase, full narrative in `docs/history/`) applies once 5A actually lands; until then this is the
+fuller account §4's "one paragraph" discipline can't carry. When 5A merges, condense this to one
+paragraph in the "Merged, in build order" list below and move the rest to `docs/history/`, the same
+move every earlier phase made.
+
+**What it delivered.** Part pricing moved off four flat columns on `Part` onto **price rows keyed
+by Process Step Code** (ruling 3 — a part bills more than one operation, e.g. austempering and
+straightening as separate invoice lines), each row carrying setup/unit/minimum charges, a
+price-per unit, and its own price breaks, resolved through a pure engine (`pricing.ts`).
+**Surcharges** (`surcharges.ts`, spec §7.5) are named, percent-or-flat add-ons with an
+include/exclude step-code list, a minimum floor, and a per-customer opt-out/rate override.
+**`BillingConfig`** (a one-row singleton — CLAUDE.md) holds the plant sales-tax rate and the
+freight/other-charge/cert-charge GL defaults. **`Invoice`/`InvoiceLine`** (plus `Surcharge`/
+`PartPrice`/`PartPriceBreak`/`BillingConfig` — six new tables) carry the whole model, gated by one
+new hand-written CHECK (`BillingConfig_singleton_check`) and a re-statement of
+`StoredDocument_kind_owner_check` to add `INVOICE`/`CREDIT`. `/invoicing` is the new worklist
+(Ready-to-invoice + a filterable Invoices list); `/invoicing/[id]` is the invoice page — draft
+edit, Recalculate, Finalize (locks the draft, writes `Order.status = INVOICED`), Print (byte-exact
+archive, the traveler/cert/ticket pattern), Unlock (a reason, returns to Draft and the order to its
+ship-derived status), Raise credit (`kind = CREDIT`, its own `credit_number_next` counter), and
+Discard (a never-printed draft only). The **reversing shipment** (`reverseShipper`, Task 15)
+un-ships goods already shipped, reusing `void_shipper`'s own dangerous-action and
+`claimOrdersInOrder` machinery rather than a second locking path, and writes `Order.status =
+REOPENED` when the order carries a finalized invoice. Twenty tasks in build order: invoice
+constants + settings; the schema; `BillingConfig` + Admin → Billing; part prices + breaks; the part
+page's Pricing section; surcharges + Admin → Surcharges; customer-side tax/surcharge/cert
+overrides; the pricing engine; `invoice-guards.ts` + the new order/shipment invariants; invoice
+candidates/creation; draft edits/recalculate/discard; finalize/unlock/status-ownership; credits;
+the reversing shipment; routes + the 401/403 sweep; `/invoicing`; `/invoicing/[id]` + the order
+hub's Invoices section; the invoice/credit PDF/print/archive; and this task (E2E, demo, docs).
+
+**Owner rulings taken during the phase** (spec §3 has the full text): the restructure REPLACES the
+old flat-column pricing rather than coexisting with it (ruling 4 — the dev DB was empty, so free
+today); one invoice per order, billed once, at SHIPPED — no per-shipper/per-order/per-PO grouping
+(ruling 5, spec §7.6 superseded); sales tax is one plant rate with a per-customer override, freight
+excluded from the tax base (ruling 8); the cert charge resolves part → customer-suppression →
+plant default (ruling 9); corrections are unlock → correct → re-lock, or a credit — never a second
+edit-after-finalize path (ruling 10); a credit is one `Invoice` row with `kind = CREDIT`, not a
+separate table (ruling 11); the setup charge adds ON TOP of the minimum, not inside it (ruling 13).
+Mid-phase: **multi-order freight is a known N× over-bill, owner-DEFERRED 2026-08-07** (§6).
+
+**Notable lessons.** `invoice-guards.ts` is a dependency-free leaf (Phase 4 lesson 3 — pull a
+cross-module question into a leaf *before* the import cycle exists, not after it crashes), which is
+what lets `orders.ts`/`shippers.ts` refuse a mutation against an already-invoiced order without
+importing `invoices.ts`. Task 2's own plan snippet was wrong (missing `liveWhere` for two
+block-target kinds — caught by 21 failures on the first run; the code is right, the plan was not).
+**Task 20 found and closed a gap Task 19 left open:** `GET /api/invoices/[id]/documents` — the
+invoice page's own Documents panel had been calling a route that was never built (Task 19's brief
+never listed it), so every real print left that panel 404ing; closed with `listDocumentsForInvoice`
+and its route, mirroring the shipper/cert precedent, with its own coverage
+(`tests/documents.test.ts`, `tests/invoice-pdf.test.ts`) — the E2E flow was the first thing to
+exercise print-then-view-the-list, which is what surfaced it. Every task's per-task review came
+back Spec ✅ / Approved on the first or second pass; the per-task deferred-minors lists the
+whole-branch review will triage next are recorded in
+`docs/execution/2026-08-06-phase-5a-pricing-invoicing/progress.md`.
+
+### Merged, in build order
+
+The stack is **Node 26 · npm 12 · Next 16 · React 19 · Prisma 7 · PostgreSQL 18 · TypeScript 5.9 ·
+Vitest 3** (brought current 2026-08-02 across five PRs; the two majors still blocked by what
+`eslint-config-next` vendors are in §6).
+
+- **Phase 1 — Foundation.** Merged and pushed. Auth (argon2id, hashed session tokens, sliding
+  expiry, timing-attack-resistant login), the 12-area permission model with role grants and
+  per-user overrides, the audit layer with before/after relation-aware snapshots, Settings as a
+  typed zod registry, the admin pages (users/roles/settings/audit log), the permission-aware shell,
+  and the Docker packaging with fail-loud nightly backups. **Seeded credentials `admin` / `admin` —
+  change immediately on any real install.** Full record:
+  `docs/history/2026-08-01-phases-1-2a-2b-foundation.md`.
+- **Phase 2A — foundation refactors + reference data.** The five Task-0 refactors (`HttpError`
+  extracted, one session resolution per request, the Prisma error-hygiene helper, redacted settings
+  values, quiet dotenv), GL accounts, nine flat pick-lists and Process Step Codes with configurable
+  field definitions, each with Excel export and spreadsheet paste. Full record: same file as Phase 1.
+- **Phase 2B — customers.** Squash-merged `32f7f9d` (PR #2, 2026-08-01). Owner-assigned customer
+  `code`, parent/division billing, the Phase 5 commercial fields, note blocks, typed addresses and
+  per-document contact flags. Full record: same file as Phase 1; the eight review rounds and the
+  issues they left are in `docs/history/2026-08-03-phase-3-orders-and-phase-2c.md`.
+- **The Prisma 7 upgrade** (`22e0dd3`, PR #11, 2026-08-01) — Prisma 6.19.3 → 7.9.1, the ESM flip,
+  and **revival-on-create deleted everywhere it existed** in favour of unique-among-live-rows
+  partial indexes (§5.11, §5.18). Full record: `docs/history/2026-08-01-prisma-7-upgrade.md`.
+- **Phase 2C — parts and the recipe that belongs to the part**, split into three branches by owner
+  ruling: 2C-1 shared foundations (`47d6d0a`, PR #12), 2C-2 parts core (`aeed372`, PR #13), 2C-3
+  process steps + templates (PR #22, 2026-08-02, which also brought `npm run test:e2e`). Full
+  record: `docs/history/2026-08-03-phase-3-orders-and-phase-2c.md`.
+- **Phase 3 — Orders & Loads.** Squash-merged `12a17f9` (PR #39, 2026-08-03). The eleven order
+  tables and the whole order lifecycle: the one-transaction save with number allocation and recipe
+  row-lock, auto-split loads, drafts and saved board views, permission-filtered global search, the
+  order board and the ten-section order hub, and real PDF travelers stored byte-for-byte. Full
+  record: `docs/history/2026-08-03-phase-3-orders-and-phase-2c.md`.
+- **Phase 4 — Certifications & Shipping.** Squash-merged `f129aae` (PR #47, 2026-08-06), with the
+  **backlog burn-down `8647a7d` (PR #57)** on top. Certs with the required/scope resolution chain
+  and frozen requirements, shipments as documents (packing-list number, per-order sequence,
+  multi-order shipments, the ship ledger, the credit-hold gate with reason-in-audit, void-with-
+  reason), `StoredDocument` widened to the one document table behind a hand-written kind→owner
+  `CHECK`, and the shipping-ticket/BOL/certification layouts built to the owner's samples. It also
+  produced the **snapshot + release** rule and the **guarded-state-must-be-locked** house rule that
+  CLAUDE.md now carries. Full record — including the six review rounds, the eleven lessons, and the
+  owner rulings taken during execution: `docs/history/2026-08-06-phase-4-certs-shipping.md`.
 
 ## 5. Conventions Phase 2+ must follow (learned and enforced in Phase 1)
 
@@ -523,7 +206,7 @@ order is ever detached from a group by linking.
 
     **Three things this plan got wrong when it was first written, corrected here in place rather than silently fixed elsewhere, so a future reader doesn't re-derive them:** (1) it said `@@unique` takes no `where` and wrote the syntax as `@@index([code], where: "…", unique: true)` — wrong on both counts; the working form is `@@unique([col], where: raw("…"))`, and a bare string is rejected, only `raw(...)` works. (2) it didn't know `partialIndexes` is a **preview feature** in 7.9.1, not stable — the owner approved using a preview feature for this specific purpose on 2026-08-01, which is also why the Prisma packages are pinned exactly (no `^`) rather than caret-ranged. (3) it predicted the client's generated types would force the `findUnique` → `findFirst` conversion, reasoning "the column is no longer a declared unique field on the client." **That's false, and it's the dangerous kind of false — silent, not a build error.** A partial unique index does not remove the column from Prisma's generated `WhereUniqueInput`: `findUnique({ where: { code } })` still compiles and silently returns the *soft-deleted* row. `upsert` on the same column is state-dependent — with only a dead row it succeeds and silently reuses it; with both a dead and a live row it throws P2039. None of that is caught by `tsc`, `eslint`, or a test that happens not to have a deleted row lying around, which is exactly why `tests/partial-unique-sweep.test.ts` exists: it sweeps every `.ts` file under `src/` and `prisma/seed.ts` for `findUnique`/`upsert` keyed on a live-rows-only column, and separately asserts no soft-deletable model still carries a plain field-level `@unique`. The actual `findUnique` → `findFirst` conversions below were a manual audit against that sweep's findings, not a compiler-forced one.
 
-    The upgrade path was documented before work started — the owner found it: the official guide is <https://www.prisma.io/docs/guides/upgrade-prisma-orm/v7>, and Prisma publishes an **AI-agent migration prompt** at <https://www.prisma.io/docs/ai/prompts/prisma-7> laying out an 11-step process. This repo was measured against the guide on 2026-08-01 — §4b was the survey, and now also records the outcome. All four quality gates were kept green throughout, applied to both databases. The index change was applied to **every** revival site — `customer`, `role`, all ten reference kinds, `processStepCode` — `REVIVAL_DEFAULTS`/`REVIVAL_EXTRA_DEFAULTS` and every revival branch deleted, each `findUnique({ where: { code|name } })` converted to `findFirst({ where: { code|name, deletedAt: null } })`, and the revival tests rewritten to assert a **new id and a fresh history** instead of a reused row. Final suite: 258 tests, 31 files, zero skipped.
+    The upgrade path was documented before work started — the owner found it: the official guide is <https://www.prisma.io/docs/guides/upgrade-prisma-orm/v7>, and Prisma publishes an **AI-agent migration prompt** at <https://www.prisma.io/docs/ai/prompts/prisma-7> laying out an 11-step process. This repo was measured against the guide on 2026-08-01 — §4b was the survey, and now also records the outcome (§4b is now `docs/history/2026-08-01-prisma-7-upgrade.md`). All four quality gates were kept green throughout, applied to both databases. The index change was applied to **every** revival site — `customer`, `role`, all ten reference kinds, `processStepCode` — `REVIVAL_DEFAULTS`/`REVIVAL_EXTRA_DEFAULTS` and every revival branch deleted, each `findUnique({ where: { code|name } })` converted to `findFirst({ where: { code|name, deletedAt: null } })`, and the revival tests rewritten to assert a **new id and a fresh history** instead of a reused row. Final suite: 258 tests, 31 files, zero skipped.
 
 ### 5a. Working conventions for code-review rounds (added end of Phase 2B)
 
@@ -544,6 +227,54 @@ Then write a small `.mjs` that imports `chromium` from that cached `playwright` 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
 ## 6. Known backlog (all triaged, none blocking)
+
+**Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
+per-worker test databases, to lift the suite's serial-execution ceiling.** The suite is at 1425
+tests running strictly one file at a time — `vitest.config.ts` sets `fileParallelism: false`
+because every test file shares the single `erp_test` database and calls `truncateAll()` in
+`beforeEach`, so two files running at once would truncate each other's fixtures. That is correct
+today and must not simply be switched off. The fix is to give each vitest worker its own database
+(`erp_test_1..N`, selected from `VITEST_WORKER_ID`), migrated the same way `erp_test` is, after
+which `fileParallelism` can be re-enabled. Deliberately **not** done inside Phase 5A — it is an
+infrastructure change with no business riding in a pricing PR, and it touches the harness every
+other task depends on. Wall-clock now: ~127s for vitest alone.
+
+**OWNER DECISION OWED (filed 2026-08-07 by the Phase 5A whole-branch review) — should editing an
+already-invoiced order's LINES freeze, the way its charges do?** Spec §5.7's freeze covers extra
+charges, voiding, and shipment edits on an order that has a finalized invoice — but `addLine`/
+`updateLine` (`orders.ts`) are NOT blocked. It is not a bug today: the finalized invoice is frozen
+paper (a snapshot), so a later line edit changes nothing on it, and the correction path
+(unlock → recalculate) re-prices the edited line correctly; `removeLine` is separately blocked for
+shipped lines. The whole-branch reviewer confirmed no money error and no status corruption (the
+INVOICE_OWNED skip holds). So this is a consistency question, not a defect: §5.7 enumerates what
+freezes and does not list order-line edits. If the answer is "lines should freeze too," it is a
+one-guard addition mirroring `replaceCharges` (call `finalizedInvoiceFor` and refuse); if "no," it
+stays as built. Owner's call.
+
+**DEFERRED, owner ruling 2026-08-07 — multi-order freight over-bills, and it is knowingly left.**
+Phase 5A invoices one order at a time (spec ruling 5, no grouping), but freight is a shipment-level
+amount, so N orders on one billable-freight truck each bill the full truck freight — an N× over-bill.
+Task 11's code follows the spec's freight rule faithfully; the contradiction is in the spec. The
+owner's shop **does not bill freight**, so nothing is wrong in this deployment, and the correct split
+(freight-on-one-order / proportional / single-order-only) is a billing-policy question the owner
+wants to research against other shops before it is built. Full context: the dated amendment beside
+the freight rule in the P5A spec (§5). When picked up, the chosen rule must sum back to the truck's
+exact freight exactly once. **Do not invent a split.**
+
+**Four more Phase 5A demo pings, named at Task 20 (2026-08-07), awaiting an owner ruling at the
+merge demo** — full context in `docs/2026-08-07-phase-5a-demo.md`'s "Six things to rule on" section
+(the multi-order-freight item above is the fifth of those six; it already has its own entry):
+1. **A reversing shipment on a NON-invoiced order leaves the order Shipped, not Open** — status is
+   the human line-complete flag (spec §5.2), never quantity, so un-shipping goods does not
+   un-complete the line that made the order Shipped. Changing it is a spec amendment, not a fix.
+2. **A credit's PDF titles itself "Credit", not "Invoice"** — spec §10 does not say which; Task 19's
+   call was that a credit is a distinct financial document. One line in `readInvoicePdfData`
+   (`src/server/invoices.ts`) if the owner wants the literal word "Invoice" instead.
+3. **Negative amounts render `"$-937.44"`** (sign between the `$` and the digits, not in front of
+   it) — Phase 7's template designer makes this editable; confirm the format reads clearly first.
+4. **A credit copies its source invoice's `invoiceDate` verbatim**, not its own raise date —
+   harmless in 5A (nothing ages or date-filters a credit yet) but worth a ruling once 5B adds
+   aging/statements. Already carried into §9's 5B kickoff prompt via spec §16.
 
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
@@ -583,7 +314,7 @@ after the per-task reviews closed:
   "BOL", "CERT") — its `KIND_LABELS` map only ever learned `TRAVELER`; the shipping and cert
   pages' own lists have friendly labels (cosmetic, observed in Task 20's flows).
 - **Serials prefill over-includes on repeat shipments** (no per-serial shipped fact exists —
-  owner ping #2 in §4a), and `OrderDetail.orderLineShippedToDate` rides unused in the edit page's
+  owner ping #2 in §7 item 5), and `OrderDetail.orderLineShippedToDate` rides unused in the edit page's
   catalog payload (dead weight; trim or keep at the whole-branch review).
 - Assorted per-task §5.16 title gaps on state-disabled buttons and a missing 404/401 case on two
   document/print routes — all enumerated in the ledger under their tasks.
@@ -663,6 +394,19 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely).
 3. The office's go-to report list.
 4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
+5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
+   record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
+   session; §9 carries them into the next PR:
+   1. The shipping ticket prints no **"Page N of M"** — spec §10.1 lists it, but a pure-JSON template
+      cannot carry page-count functions and a render-level footer would number across the multi-ticket
+      PDF; Phase 7's template designer is the natural home.
+   2. **Serial re-shipment has no warning**: no per-serial shipped fact exists, so re-selecting an
+      already-shipped serial on a later shipment gets no §5.7-class notice — worth an owner decision.
+   3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
+      (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
+      follow-up).
+   4. **No `User.title` column exists**, so the cert signature block prints name + company with no
+      title line (the sample shows one) — a small follow-up migration if the owner wants it.
 
 ## 8. Fresh machine setup (Fedora)
 
@@ -706,139 +450,96 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Next up — Phase 5 (Invoicing & A/R + the QuickBooks Online summary export). Phase 4 merged to
-`main` as `f129aae` (PR #47) and the backlog burn-down as `8647a7d` (PR #57), both 2026-08-06.
-Paste the block below into a fresh session.**
+**Phase 5B (Accounts Receivable). Drafted at Phase 5A's Task 20 (2026-08-07), AHEAD of 5A's own
+merge** — 5A (branch `phase-5a-pricing-invoicing`) still has its whole-branch review, one fix wave,
+and the owner demo ahead of it (the plan's "Review and merge" section) before the PR and
+squash-merge. **This prompt has NOT been used yet.** Before pasting it into a fresh session: confirm
+5A actually merged, replace this paragraph and the bracketed merge commit below with the real one,
+and update §4 (move 5A's §4a into "Merged, in build order" as its one paragraph, its full narrative
+into `docs/history/`, the §2 rule every earlier phase followed).
 
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
-> backlog. **Phase 4 (Certifications & Shipping) is MERGED** (`f129aae`, plus the `8647a7d`
-> burn-down: 1406 tests, 25 migrations, E2E 15/15, backlog down to #51–#52 and the older triaged
-> issues). Next is **Phase 5 (Invoicing & A/R + QBO)** per the roadmap
-> (`docs/superpowers/plans/2026-07-29-roadmap.md`): invoices from shipments, pricing resolution,
-> surcharges and extra-charge pricing, payments and A/R, finance charges, statements, the reversing
-> shipment, and the **summary GL export to QuickBooks Online** — testable outcome "invoice shipped
-> orders and reconcile a month". Brainstorm it (superpowers:brainstorming) against the roadmap and
-> the original spec's §3 non-goals and §15 decision log, then write the spec and plan and execute
-> with subagent-driven-development on a `phase-5-invoicing-ar` branch.
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4/§4a for where Phase 5A landed and §6 for the
+> carried backlog (including its four demo pings and the multi-order-freight deferral). **Phase 5A
+> (Pricing & Invoicing) is MERGED** (`[fill in the merge commit]`, PR `[fill in]`) — part pricing
+> restructured onto price rows keyed by Process Step Code, surcharges, `BillingConfig`, the full
+> invoice/credit lifecycle (draft → finalize → unlock, or credit), the reversing shipment, and their
+> PDFs. Next is **Phase 5B (Accounts Receivable)** per the roadmap
+> (`docs/superpowers/plans/2026-07-29-roadmap.md`) and ruling 1's three-way split of the original
+> Phase 5 (5A/5B/5C, each Phase-4-sized): payments, payment applications, aging, statements, and
+> finance charges against the invoices 5A now produces — testable outcome "apply a payment, age a
+> balance, print a statement." **Not this phase's job:** month-end close and the QuickBooks Online
+> summary export — those are 5C (spec §15 non-goal, restated below). Brainstorm it
+> (superpowers:brainstorming) against the roadmap and the original spec's §3 non-goals and §15
+> decision log, then write the spec and plan and execute with subagent-driven-development on a
+> `phase-5b-accounts-receivable` branch.
 >
-> **What Phase 5 inherits from Phase 4** (design spec §16,
-> `docs/superpowers/specs/2026-08-04-phase-4-certs-shipping-design.md`) — read this before
-> designing anything, since every one of these is a real hook Phase 4 built on purpose for this
-> phase to use:
+> **What Phase 5B inherits from Phase 5A** (design spec §16,
+> `docs/superpowers/specs/2026-08-06-phase-5a-pricing-invoicing-design.md`, carried here
+> **verbatim** — read it before designing anything, since every one of these is a real hook 5A
+> built on purpose for this phase to use):
 >
-> - **`Order.status` reaches `PARTIAL_SHIPPED` and `SHIPPED`**, derived from ship-line-complete.
->   `INVOICED` and `REOPENED` are still unreachable and are Phase 5's to make reachable —
->   `REOPENED` specifically by the **reversing shipment** deferred in §3.8, which is the
->   negative-quantity counterpart to `voidShipper` and should reuse its sorted-claim and
->   status-recompute machinery.
-> - **`ship-ledger.ts` is the shipped-quantity source of truth** — invoice-from-shipments reads
->   it rather than re-deriving totals. `ShipperOrder` is the natural grouping unit for spec §7.6's
->   per-shipper / per-order / per-PO invoice grouping.
-> - **`allocateNumber` is proven on three counters** (order, shipper, BOL) with issue #34's guard;
->   `invoice_number_next` is the fourth and needs no new pattern. Note `cert_number_next` is
->   deliberately unused (§3.19) — do not "fix" it by wiring it up.
-> - **`StoredDocument` is the one document table** with a kind-to-owner `CHECK`; invoices, credits
->   and statements widen `DocumentKind` and add their own owner column the same way — the
->   permanence, redaction and byte-exact reprint guarantees already exist once, in `documents.ts`.
->   (The `CHECK` is hand-written SQL — CLAUDE.md "Constraints that will bite you".)
-> - **`Shipper.billFreight`/`freightAmount`/`freightTerms`** are captured and unpriced; Phase 5
->   bills them. `OrderCharge.amount = null` still means "needs price" (P3 §3.6).
-> - **Credit hold's override action and its reason-in-audit shape** are the template for Phase 5's
->   invoice unlock and A/R period close.
-> - **The invoice sample is already in `docs/samples/`** and answers several Phase 5 questions
->   early: the invoice number reads `7 − 72026` against `Our Order #: 72026`; it prints `Material`
->   and `Process: Austemper` (the same process-name slot the traveler renders blank, P3 §3.9d — it
->   recurs here, and Phase 7's designer owns it); it shows a per-line pricing block with `Price per
->   Each` and `Minimum Charge` side by side; and it carries a named surcharge line (`EnergySur`).
-> - **Email is owed** (§3.2) with issue #4's visible-skip ruling attached; whichever phase builds
->   it inherits the recipient flags already on `CustomerContact`.
-> - **Post-merge additions Phase 5 must design against (2026-08-06, rulings 23–28):** shipper
->   children and cert requirements are **snapshot + release** — their order-side FKs are nullable
->   `SET NULL`, identity/print fields are frozen copies at save/seed, reads go live-join-first
->   with snapshot fallback, and released rows (null FK) are preserved frozen history. **Invoicing
->   reads shipper lines: qty/weight are the shipment's own columns (safe), but any join through
->   `orderLineId` must handle null** — grouping identities use the never-reused
->   `orderLineIdAtSeed`-style snapshots, never positions or display fields (CLAUDE.md has the
->   full rule). Credit hold now also gates shipment EXTENSION with the customer row claimed
->   (Orders → Shipper → Customer lock order). And the **owner-ratified stopping rule** governs
->   review loops: after the stated round, findings triage to issues unless correctness,
->   concurrency, or data-integrity — plus two standing owner rules: run the Playwright E2E suite
->   whenever a change touches any UI/flow, and update the appropriate docs as part of the work.
-> - Cert charges, "bill for cert" and per-customer cert suppression are Visual Shop behaviours
->   Phase 4 deliberately does not model; Phase 5 decides whether the shop wants any of them.
+> - **`Invoice` is the A/R document.** 5B adds payments, applications and balances *against* it and
+>   must not restate its totals; `Invoice.total` is the amount owed at finalize.
+> - **`Order.status = INVOICED` is invoice-owned and set at finalize**; `recomputeOrderStatus` skips
+>   invoice-owned states. 5B's "close paid invoices" must not touch order status at all.
+> - **`Terms` is a name with no day count.** A due date and any aging bucket needs `Terms.netDays`,
+>   which 5A deliberately does **not** add (no dangling columns). **5B adds it**, together with
+>   `Invoice.dueDate` computed at finalize.
+> - **A credit copies its source invoice's `invoiceDate` verbatim** (Task 14, brief "copy every
+>   header snapshot"). Harmless in 5A — there is no aging or date-filtered credit query, so the date
+>   is display-only and no money figure depends on it — but the printed credit therefore bears the
+>   *source invoice's* issue date, not the date the credit was raised. **When 5B adds issue-date /
+>   aging semantics, decide whether a credit carries its own raise-date** (`createCredit` in
+>   `invoices.ts` is the one-line change; owner ruling needed — also flagged at the 5A demo, HANDOFF
+>   §6).
+> - **`Customer.financeChargeRate` and `Customer.parentId` are already modelled and still unread.**
+>   5B is the phase that consumes both — the parent link so one check can pay several children's
+>   invoices and a statement can roll up, exactly as Phase 2B modelled it for.
+> - **`InvoiceLine.glAccountId` + `glAccountName` are the GL summary.** 5C's export groups finalized
+>   invoice lines by account and never re-walks orders. `ProcessStepCode.needsGlAccount` already
+>   exists and is surfaced; **5C is where the export refuses** rather than posting without an
+>   account — spec §15's amendment, and the assertion `process-step-codes.ts:79` promises.
+> - **`BillingConfig` is where 5C's remaining GL defaults belong** (A/R account, discount,
+>   adjustment, write-off, and the sales/credit accounts of the journal entry) — as FK columns on
+>   the same row, not as `Setting` strings.
+> - **`PaymentType.glAccountId` already exists** and is a pick-list with no consumer; 5B is its
+>   consumer.
+> - **`credit_number_next` is allocated; `invoice_number_next` and `cert_number_next` are not.** Do
+>   not wire either up.
+> - **The owner homework HANDOFF §7 records now gates 5C, not 5A**: the QuickBooks Online
+>   finance-charge treatment (settle with the bookkeeper) and the GL account list for operations,
+>   surcharges and payment types. 5A was built, reviewed and merged before either arrived — but
+>   **the GL account list should be keyed before 5C's demo**, or its export runs through step codes
+>   with no accounts behind them.
+> - **`CustomerContact.getsInvoices` / `getsStatements` are still stored and still unread.** They
+>   wait for email, wherever it lands. 5B is a natural place to ask whether statements need it.
 >
-> Owner homework that now gates this phase (HANDOFF §7): the QuickBooks Online finance-charge
-> treatment (settle with the bookkeeper) and the GL account list for operations, surcharges and
-> payment types — chase both before the QBO export is designed. Also carry §4a's four owner pings
-> (Page-N-of-M, serial re-shipment warning, tear-off threshold, `User.title`) if the owner has not
-> yet ruled on them at the PR.
+> **Also carry forward, not from spec §16 but load-bearing anyway:**
+> - **`invoice-guards.ts` is the leaf 5B's own guards should join, not duplicate** — if A/R needs to
+>   ask "does this invoice have an open balance?" from a module `invoices.ts` would otherwise have
+>   to import (or that would import it), give the question its own leaf the same way, built before
+>   the cycle exists (Phase 4 lesson 3, CLAUDE.md).
+> - **An invoice is frozen paper, read unconditionally from its snapshot** (spec §5.4, CLAUDE.md) —
+>   a payment/application against it must not "helpfully" re-derive or rewrite any invoice-side
+>   snapshot field; it records against the invoice's id and its own `total`/balance, nothing more.
+> - Four owner pings from the 5A demo travel with this phase if not yet ruled on at the 5A PR
+>   (HANDOFF §6): the reversing-shipment-leaves-Shipped-not-Open behavior, the credit PDF's
+>   "Credit" title, the negative-amount `"$-937.44"` format, and the credit's copied `invoiceDate`
+>   (the last one is also spec §16's own item above).
+> - Two standing owner rules apply to every phase: run the Playwright E2E suite whenever a change
+>   touches any UI/flow, and update the appropriate docs as part of the work — never deferred to a
+>   closing summary.
 >
-> Keep the process that has now held for four phases: fresh subagent per task → independent review
+> Keep the process that has now held for five phases: fresh subagent per task → independent review
 > (dispatch the repo's own `task-reviewer` agent) → fix rounds → re-review → whole-branch review on
 > the strongest model → one fix wave → PR, with attribution in the **PR body**, never a commit
-> trailer (a hook blocks them). §4a lists eleven lessons from Phase 4's reviews; the three that
-> will bite a new session fastest: **a concurrency test that passes is not evidence** (verify by
-> deleting the guard and watching it go red — and pin the competing caller to Read Committed);
-> **multi-order writes claim rows only through `claimOrdersInOrder`** (one sorted statement, never
-> a loop); and **when a fix lands on one member of a sibling group, enumerate the whole group in
-> the report**. Remember the prime directive: do not assume — ask the owner.
-
-**Historical — the prompt that started Phase 4. Phase 3 was merged as `12a17f9`, PR #39.**
-
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4a for where things stand and §6 for the carried
-> backlog. **Phase 3 (Orders & Loads) is complete** (§4a — 17 tasks, all four gates green, the
-> E2E harness 10/10; confirm it has actually merged to `main` before branching, and if it hasn't,
-> that is the very first thing to finish). Next is **Phase 4 (Certs & Shipping)** per the roadmap
-> (`docs/superpowers/plans/2026-07-29-roadmap.md`): cert records/results/scopes, shippers + MOS +
-> BOL, ship-line-complete, void/reverse, freight, stored PDFs — testable outcome "cert and ship
-> real orders." Brainstorm it (superpowers:brainstorming) against the roadmap and the spec's §3
-> non-goals and §15 decision log, then write the plan and execute it with
-> subagent-driven-development on a `phase-4-certs-shipping` branch.
->
-> **What Phase 4 inherits from Phase 3** (design spec §16,
-> `docs/superpowers/specs/2026-08-02-phase-3-orders-design.md`) — read this before designing
-> anything, since every one of these is a real hook Phase 3 built on purpose for this phase to use:
->
-> - **Reserved statuses** (`PARTIAL_SHIPPED`, `SHIPPED`, `REOPENED` on `Order.status`, unused by
->   Phase 3) and the §5a edit-rule hook: order edits are gated "only while not voided" today, with
->   an explicit note that Phase 4 adds status-based tightening once these statuses become
->   reachable — decide what stays editable once an order has shipped or partially shipped.
-> - **`allocateNumber`** (`settings.ts`) is a generic claim-a-sequence-number primitive — reuse it
->   for shipper/cert/invoice numbering rather than reimplementing the pattern.
-> - **`StoredDocument`** is the stored-exact-PDF-forever pattern (kind/loadNumber/fileData, no
->   delete path, byte-identical reprints) the traveler already proved out — widen its `kind` enum
->   or add sibling tables for shippers/certs/BOLs; that choice is Phase 4's to make.
-> - **Credit hold moves from a warning to a real gate at shipping.** Phase 3 deliberately only
->   warns at order entry (owner ruling, spec §3) — the actual squeeze is Phase 4's to build.
-> - **Ship-line-complete is a human decision, not arithmetic** — kept from Visual Shop (HANDOFF
->   §3): a checkbox someone ticks, never derived from shipped-quantity math.
-> - **The serialization warning needs a shipping-side sibling** — Phase 3's "serialization
->   required, no serials yet" lives at order entry; shipping likely needs its own version.
-> - **The attachment story is one parameterized service already built for this**
->   (`src/server/attachments.ts` + `AttachmentsSection.tsx`) — add `ShipperAttachment`/
->   `CertAttachment` etc. as thin clones over the shared service, the same way Phase 3 built
->   `PartAttachment` and `OrderAttachment` as two thin owners of one implementation.
-> - **`linkGroupId` is reference-only in Phase 3** — build "ship together" affordances on it if
->   wanted; nothing today forces that.
-> - **The traveler's per-load render is the precedent for the shipper/BOL documents' own
->   per-load/per-shipment render** — same `pdfmake` + stored-bytes shape (spec §16), new layouts;
->   this is a render/layout-approach inheritance, distinct from `StoredDocument` as the storage
->   pattern above.
-> - **Cert-required columns are explicitly deferred to Phase 4** (spec §15 non-goals) — Phase 3
->   carries no cert-readiness flag anywhere; that schema is this phase's to add.
-> - **The §3.9 sampleQty/inspection-image questions are settled, not open.**
->   `PartInspection.sampleQty` is a real, shipped column (optional free text, prints on the
->   traveler); inspection-location images are explicitly NOT built, by owner ruling — don't reopen
->   either without a new one.
->
-> Two habits worth carrying from Phase 3's own review rounds (§4a): when a fix lands on one member
-> of a sibling group (parallel screens, parallel bulk-edit grids, parallel services), check every
-> other member in the same commit; and if Phase 4 needs a per-record lock analogous to
-> `lockCurrentRevision`, the row lock — not the caller's transaction isolation level — is the
-> guarantee. **The toolchain moved on 2026-08-02** — Node 26 · npm 12 · Next 16 · PostgreSQL 18 —
-> so before running anything, note three things §4a and §8 explain: `npm ci` warns that five
-> packages' install scripts were skipped and that is correct, not a problem to fix; the Edge cookie
-> gate is `src/proxy.ts`, not `middleware.ts`, because Next 16 renamed the convention; and Node 26
-> is required (`nvm use 26`). Remember the prime directive: do not assume — ask the owner.
+> trailer (a hook blocks them). The owner-ratified stopping rule (§5, HANDOFF) governs review
+> rounds: from round 6 onward, findings triage to issues unless they are correctness, concurrency,
+> or data-integrity defects. Lessons that will bite a new session fastest, all still true:
+> **a concurrency test that passes is not evidence** (verify by deleting the guard and watching it
+> go red — and pin the competing caller to Read Committed); **multi-order writes claim rows only
+> through `claimOrdersInOrder`** (one sorted statement, never a loop); and **when a fix lands on one
+> member of a sibling group, enumerate the whole group in the report**. Remember the prime
+> directive: do not assume — ask the owner.
 
 Process that worked in Phase 1 and should be kept: brainstorm/clarify → spec → detailed plan → fresh subagent per task → independent spec+quality review per task → fix rounds until approved → final whole-branch review on the strongest model → one fix wave → merge. The per-task reviews caught real bugs the plan itself contained (plaintext password in audit payload, `__proto__` registry crash, blank-page login, resurrection with stale permissions, silent empty backups) — **the review loop is not optional ceremony**.

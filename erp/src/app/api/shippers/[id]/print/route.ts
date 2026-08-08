@@ -58,7 +58,8 @@ export const POST = handle(async (req, { params }) => {
     }
     const printed = await printBol(id);
     const filename = documentFilename(
-      { id: "", createdAt: new Date(0), kind: "BOL", orderId: null, shipperId: id, certId: null, loadNumber: null },
+      { id: "", createdAt: new Date(0), kind: "BOL",
+        orderId: null, shipperId: id, certId: null, invoiceId: null, loadNumber: null },
       undefined, printed.shipperNumber,
     );
     return pdfResponse(printed.pdf, filename, { "x-document-id": printed.documentId });
@@ -93,7 +94,8 @@ export const POST = handle(async (req, { params }) => {
   }
 
   const filename = documentFilename(
-    { id: "", createdAt: new Date(0), kind: "SHIPPER", orderId: order ?? null, shipperId: id, certId: null, loadNumber: null },
+    { id: "", createdAt: new Date(0), kind: "SHIPPER",
+      orderId: order ?? null, shipperId: id, certId: null, invoiceId: null, loadNumber: null },
     printed.orderNumber ?? undefined, printed.shipperNumber,
   );
   return pdfResponse(printed.pdf, filename, {

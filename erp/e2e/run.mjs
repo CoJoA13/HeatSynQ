@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Playwright E2E harness (spec §12 / HANDOFF §5a). Drives the bundled Chromium against a
-// throwaway `next dev` instance on port 3100, running fifteen owner-reviewable flows in sequence.
+// throwaway `next dev` instance on port 3100, running sixteen owner-reviewable flows in sequence.
 // Each flow gets its own browser context (so it gets its own video.webm) and its own numbered
 // screenshot sequence under e2e-artifacts/<flow>/.
 //
@@ -40,6 +40,9 @@ const HEADED = Boolean(process.env.HEADED);
 // matters for the numbering the demo doc narrates. `credit-hold-block-and-override` starts as the
 // fixture "clerk" (shipping permissions but NOT action.override_credit_hold — the blocked half)
 // and re-logs-in as the fixture admin mid-flow for the override half.
+// Task 20 (Phase 5A) adds the 16th and last flow, `invoice-shipped-order`, as admin — it creates
+// its own order/customer and leaves nothing later flows depend on, so it runs last for the same
+// reason void-order and credit-hold-block-and-override do (nothing after it needs its state).
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -56,6 +59,7 @@ const FLOWS = [
   { name: "cert-results-print", as: "admin", module: "./flows/cert-results-print.mjs" },
   { name: "void-shipment", as: "admin", module: "./flows/void-shipment.mjs" },
   { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
+  { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below

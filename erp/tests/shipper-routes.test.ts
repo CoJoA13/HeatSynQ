@@ -9,6 +9,7 @@ import type { Customer, Part } from "../prisma/generated/prisma/client";
 import { GET as listRoute, POST as createRoute } from "@/app/api/shippers/route";
 import { GET as exportRoute } from "@/app/api/shippers/export/route";
 import { GET as getRoute, PATCH as patchRoute, DELETE as voidRoute } from "@/app/api/shippers/[id]/route";
+import { POST as reverseRoute } from "@/app/api/shippers/[id]/reverse/route";
 import { POST as addOrderRoute } from "@/app/api/shippers/[id]/orders/route";
 import { DELETE as removeOrderRoute } from "@/app/api/shippers/[id]/orders/[shipperOrderId]/route";
 import { PUT as replaceLinesRoute } from "@/app/api/shippers/[id]/orders/[shipperOrderId]/lines/route";
@@ -262,6 +263,41 @@ describe("shipper routes", () => {
       where: { entity: "shipper", entityId: shipper.id, action: "delete" },
     });
     expect(entry?.reason).toBe("shipped to wrong customer");
+  });
+
+  it("POST /api/shippers/[id]/reverse: void_shipper is required, a reason is required, and it returns the wrapped shape", async () => {
+    const { order } = await orderFixture({ qty: 100 });
+    const creator = await signInWith(["shipping.create"], "ship-rev-create-1");
+    const created = await createRoute(
+      bodyReq("http://t/api/shippers", "POST", creator, oneOrderInput(order, 100)), noParams);
+    const { shipper } = await created.json();
+
+    expect((await reverseRoute(
+      bodyReq(`http://t/api/shippers/${shipper.id}/reverse`, "POST", undefined, { reason: "x" }),
+      withParams({ id: shipper.id }))).status).toBe(401);
+
+    // Even every shipping.* CRUD grant does not substitute for the special action.
+    const fullCrud = await signInWith(
+      ["shipping.view", "shipping.create", "shipping.edit", "shipping.delete"], "ship-rev-fullcrud-1");
+    expect((await reverseRoute(
+      bodyReq(`http://t/api/shippers/${shipper.id}/reverse`, "POST", fullCrud, { reason: "returned" }),
+      withParams({ id: shipper.id }))).status).toBe(403);
+
+    const voider = await signInWith(["action.void_shipper"], "ship-rev-only-1");
+    const noReason = await reverseRoute(
+      bodyReq(`http://t/api/shippers/${shipper.id}/reverse`, "POST", voider, { reason: "  " }),
+      withParams({ id: shipper.id }));
+    expect(noReason.status).toBe(400);
+    expect((await noReason.json()).error).toMatch(/reason/i);
+
+    const ok = await reverseRoute(
+      bodyReq(`http://t/api/shippers/${shipper.id}/reverse`, "POST", voider, { reason: "wrong parts loaded" }),
+      withParams({ id: shipper.id }));
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body.shipper.reversesShipperId).toBe(shipper.id);
+    expect(body.shipper.orders[0].lines[0].qty).toBe(-100);
+    expect(Array.isArray(body.warnings)).toBe(true);
   });
 
   // ---------------------------------------------------------------------------------------
