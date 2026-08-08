@@ -33,10 +33,19 @@ export type PickListKind = (typeof PICKLIST_KINDS)[number];
  *  Add row and the paste importer both only ever handle raw strings otherwise, and the server's
  *  netDays/discountDays columns are plain `z.number().int()` (not string-accepting like
  *  `decimalField`), so those two entry points coerce a "number" field to an actual JS number
- *  before the value ever reaches the API. `hint` is optional, generic UI-note text shown under an
- *  Add-row input — used here for the early-pay discount's all-or-nothing pairing. */
+ *  before the value ever reaches the API.
+ *  `kind: "decimal"` (Task 4 fix round 1) is a SEPARATE kind from plain `"text"`, even though a
+ *  `decimalField`-bound value is a string on the wire same as text: `"text"` covers genuine free
+ *  text (glAccount.description, commentSnippet/specification.text) where an explicit `""` is a
+ *  legitimate value to store, but a `decimalField` column rejects `""` outright (it isn't
+ *  `.nullable()`-shaped for an empty string, only for an absent key) — so ReferenceTable.tsx's Add
+ *  row needs to know, per field, whether a cleared input means "store empty text" or "no value, drop
+ *  the key" (Terms.discountPercent). Conflating the two by leaving discountPercent `"text"` was
+ *  exactly the bug this kind exists to prevent.
+ *  `hint` is optional, generic UI-note text shown under an Add-row input — used here for the
+ *  early-pay discount's all-or-nothing pairing. */
 export const REFERENCE_EXTRA_FIELDS: Record<
-  ReferenceKind, { key: string; label: string; kind: "text" | "ref" | "number"; hint?: string }[]
+  ReferenceKind, { key: string; label: string; kind: "text" | "ref" | "number" | "decimal"; hint?: string }[]
 > = {
   glAccount:       [{ key: "description",    label: "Description",   kind: "text" }],
   inspectionCode:  [{ key: "defaultScaleId", label: "Default scale", kind: "ref" }],
@@ -46,7 +55,7 @@ export const REFERENCE_EXTRA_FIELDS: Record<
   material: [], inspectionScale: [], containerType: [], carrier: [],
   terms: [
     { key: "netDays", label: "Net days", kind: "number" },
-    { key: "discountPercent", label: "Discount %", kind: "text", hint: "needs Discount days too" },
+    { key: "discountPercent", label: "Discount %", kind: "decimal", hint: "needs Discount days too" },
     { key: "discountDays", label: "Discount days", kind: "number", hint: "needs Discount % too" },
   ],
 };

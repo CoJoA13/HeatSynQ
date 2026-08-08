@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
-import { listReference, createReference, deleteReference } from "@/server/reference";
+import { listReference, createReference, updateReference, deleteReference } from "@/server/reference";
+import { pasteReference } from "@/server/paste";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
 
@@ -170,4 +171,33 @@ describe("terms: netDays + early-pay discount", () => {
     expect(Number(after.discountPercent)).toBe(2);
     expect(after.discountDays).toBe(10);
   });
+
+  // Fix round 1, Important #2: guards the exact behavior EXTRA_SCHEMAS.terms's deliberately
+  // no-`.default(30)` netDays relies on (reference.ts's comment on that entry). A `.default(30)`
+  // fires whenever the key is undefined, including on a partial PATCH that never meant to touch
+  // netDays — so a revert toward `.default(30)` would make THIS test fail: an unrelated update
+  // (here, just flipping `active`) must never reset an existing non-default netDays back to 30.
+  it("an update omitting netDays leaves an existing non-default value untouched", async () => {
+    const { id } = await createReference("terms", { name: "Net 45", netDays: 45 });
+    await updateReference("terms", id, { active: false });
+    // includeInactive: the update just deactivated this row, and the default listReference()
+    // call (like the grid's default view) only returns active rows.
+    const row = (await listReference("terms", { includeInactive: true })).find((r) => r.id === id);
+    expect(row?.active).toBe(false);
+    expect(row?.netDays).toBe(45);
+  });
+
+  // Fix round 1, Minor: paste.ts's numberColumns conversion (netDays/discountDays cells arrive as
+  // plain sheet strings, same as the ReferenceTable Add row) was untested — this exercises it
+  // end-to-end through pasteReference rather than createReference directly. Column order matches
+  // REFERENCE_EXTRA_FIELDS.terms: name, netDays, discountPercent, discountDays.
+  it("paste converts numeric netDays/discountDays cells for a terms row", async () => {
+    const result = await pasteReference("terms", "2/10 Net 45\t45\t2.00\t10");
+    expect(result).toEqual({ created: 1, errors: [] });
+    const row = (await listReference("terms")).find((r) => r.name === "2/10 Net 45");
+    expect(row?.netDays).toBe(45);
+    expect(row?.discountDays).toBe(10);
+    expect(Number(row?.discountPercent)).toBe(2);
+  });
+
 });

@@ -42,7 +42,15 @@ export async function pasteReference(kind: string, text: string): Promise<PasteR
     const input = Object.fromEntries(
       Object.entries(row)
         .filter(([k, v]) => k === "name" || v !== "")
-        .map(([k, v]) => [k, numberColumns.has(k) ? Number(v) : v]),
+        // A non-numeric cell in a "number" column (e.g. "abc") is left as the original string
+        // rather than becoming NaN — matches ReferenceTable.tsx's buildPayload(), so a bad cell
+        // reports the same "Expected number, received string" zod message per-row here that a
+        // bad Add-row entry would get from the same server-side schema.
+        .map(([k, v]) => {
+          if (!numberColumns.has(k)) return [k, v];
+          const n = Number(v);
+          return [k, Number.isFinite(n) ? n : v];
+        }),
     );
     try {
       await createReference(kind, input);

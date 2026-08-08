@@ -52,14 +52,18 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
  * Applied instead to the fully-composed schema, once, right before `.parse()` — for the other
  * nine kinds neither key is ever in that schema's shape, so the check is a structural no-op.
  *
- * Update validates the raw PATCH, not the merged-with-existing-row state — the surcharge
- * PERCENT/FLAT precedent (surcharges.ts's `SAVE.superRefine` plus its "takes the same full SAVE
- * shape as create, not a partial patch" comment) resolves the same class of pairing rule by
- * requiring the whole row on every save rather than re-deriving one from a partial. The generic
- * reference admin UI never edits an existing row's extras at all — only the Add row sets them,
- * and the Active-toggle PUT never touches these two keys — so a PATCH that supplies exactly one
- * of the pair is not a path anything here exercises today; this guard exists for a future direct
- * API caller, not to fix a live gap.
+ * Update validates the raw PATCH, not the merged-with-existing-row state: a PUT supplying exactly
+ * one of `discountPercent`/`discountDays` against a row that already has the other set will 400,
+ * even though the resulting row would still be a valid pair. This is a genuinely weaker guarantee
+ * than `surcharges.ts`'s PERCENT/FLAT rule (`SAVE.superRefine` plus its own "takes the same full
+ * SAVE shape as create, not a partial patch" comment) — `updateSurcharge` sidesteps this whole
+ * class of gap by re-validating the FULL row on every save, never a partial. `updateReference` is
+ * generic across all ten kinds and genuinely partial (`BASE.partial().merge(EXTRA_SCHEMAS[kind]
+ * .partial())`), so adopting surcharges' full-row shape here isn't a drop-in option. Left as-is
+ * rather than special-cased: the generic reference admin UI never edits an existing row's extras
+ * at all — only the Add row sets them, and the Active-toggle PUT never touches these two keys —
+ * so a PATCH that supplies exactly one of the pair is not a path anything here exercises today;
+ * this guard exists for a future direct API caller, not to fix a live gap.
  */
 function requireDiscountPair<S extends z.ZodTypeAny>(schema: S) {
   return schema.superRefine((value, ctx) => {

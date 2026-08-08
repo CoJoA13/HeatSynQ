@@ -73,13 +73,20 @@ structural no-op (`hasPercent === hasDays === false`).
 **Partial-update caveat (documented in code, not a live gap):** `requireDiscountPair` validates
 the raw PATCH, not "patch merged onto the existing row." A hypothetical `PUT` that sends only
 `{ discountPercent: 3 }` against a row that already has `discountDays: 10` set would 400, even
-though the resulting row would still be a valid pair. I did not special-case this — it mirrors the
-`surcharges.ts` precedent (`SAVE.superRefine`'s PERCENT/FLAT rule + its "takes the same full SAVE
-shape as create, not a partial patch" comment), which resolves the same class of problem by
-requiring the whole row rather than re-deriving merged state. It's also not reachable through the
-UI today: `ReferenceTable.tsx`'s generic grid only lets an admin set a kind's extra columns from
-the **Add** row (create); existing rows only ever get a `{ active: boolean }` PUT via the Active
-toggle. Flagged as a concern below for the reviewer.
+though the resulting row would still be a valid pair. I did not special-case this.
+
+**Correction (fix round 1):** the original version of this report claimed this "mirrors the
+`surcharges.ts` precedent." That's wrong and has been corrected — `updateSurcharge` does **not**
+validate a partial patch at all; it re-parses the same full `SAVE` shape as `createSurcharge` on
+every call (`surcharges.ts`'s own comment: "takes the same full SAVE shape as create, not a
+partial patch"), which sidesteps this exact problem rather than accepting it. `updateReference`
+here genuinely does validate a partial `PATCH` (via `BASE.partial().merge(EXTRA_SCHEMAS[kind]
+.partial())`), so `requireDiscountPair` is applied to that partial shape — a materially different,
+and strictly weaker, guarantee than surcharges' full-row re-validation. The behavior itself is
+still intentional and documented, just not the same pattern as surcharges. It's not reachable
+through the UI today: `ReferenceTable.tsx`'s generic grid only lets an admin set a kind's extra
+columns from the **Add** row (create); existing rows only ever get a `{ active: boolean }` PUT via
+the Active toggle. Flagged as a concern below for the reviewer.
 
 ## 2. `src/server/reference.ts` — schema
 
@@ -258,9 +265,10 @@ that live-browser check after review, per this task's instructions.
 1. **Both-or-neither is patch-shaped, not row-shaped, on update** (§1 above) — a `PUT` supplying
    exactly one of `discountPercent`/`discountDays` against a row that already has the other set
    will 400, even though the resulting row would be a valid pair. Not reachable through
-   `ReferenceTable.tsx` today (extras are Add-row-only), and it mirrors the `surcharges.ts`
-   precedent's shape, but it's a real constraint on any future direct API caller or a future
-   inline-edit UI for reference extras.
+   `ReferenceTable.tsx` today (extras are Add-row-only). Note this is **not** the `surcharges.ts`
+   pattern (corrected in §1 — `updateSurcharge` re-validates the full row every time, sidestepping
+   this class of gap entirely); this is a genuinely weaker, partial-patch-shaped guarantee, and a
+   real constraint on any future direct API caller or a future inline-edit UI for reference extras.
 2. **UI-pattern limitation, per the brief's own ask to flag one:** `REFERENCE_EXTRA_FIELDS`/
    `ReferenceTable.tsx` had no numeric-input concept before this task; I extended it minimally
    (`kind: "number"` + client-side `Number()` conversion in both the grid and paste) rather than
@@ -271,3 +279,125 @@ that live-browser check after review, per this task's instructions.
    key). This keeps the server-side integer fields exactly `z.number().int()`, matching the
    codebase-wide integer convention, at the cost of two small client-side conversion sites instead
    of one schema-side one.
+
+---
+
+## Fix round 1 (review: "Needs fixes" — 2 Important, 3 Minor)
+
+### Important #1 — `buildPayload()` only blank-dropped `kind === "number"`
+
+`discountPercent` is `kind: "text"` at the time of the original submission (it's a `decimalField`,
+string-accepting), so `buildPayload()`'s `if (f.kind !== "number") continue;` guard skipped it
+entirely — a user who typed into the discount-percent box and then cleared it sent
+`discountPercent: ""` verbatim, which fails `decimalField`'s digit-pattern regex with "Must be a
+decimal with at most 3 digits before and 2 after…" instead of being treated as "no discount."
+
+**Fix (client-side only — this is a UI bug, not a server-schema bug):**
+
+1. `src/lib/reference-constants.ts` — split `kind: "text"` into two kinds: `"text"` (genuine free
+   text, where an explicit `""` is a legitimate stored value — `glAccount.description`,
+   `commentSnippet`/`specification.text`, untouched) and a new `"decimal"` (a `decimalField`-bound
+   value that is a string on the wire but where `""` means "no value," not "store empty string").
+   `Terms.discountPercent` is now `kind: "decimal"`.
+2. `src/components/ReferenceTable.tsx`'s `buildPayload()` — the blank-drop branch now triggers for
+   `f.kind === "number" || f.kind === "decimal"` (previously `"number"` only); for `"decimal"` it
+   only blank-drops (no `Number()` conversion — `decimalField` already accepts the raw string).
+   The Add-row `<input>`'s `inputMode` also gets a `"decimal"` case (was falling through to
+   `undefined`), matching the billing page's own `inputMode="decimal"` convention on its three
+   decimal inputs.
+3. `"text"` fields are untouched by the blank-drop logic — verified by inspection: the loop's
+   guard (`if (f.kind !== "number" && f.kind !== "decimal") continue;`) explicitly skips `"text"`
+   and `"ref"`, so `glAccount.description = ""` and `commentSnippet.text = ""` still round-trip
+   exactly as before (also covered by the pre-existing, still-green
+   `"'glAccount': a re-created name is a new row with default extras"` and
+   `"comment snippet and specification carry a text body"` tests).
+
+**Why no new automated test for this specific fix:** the bug and the fix are both in React
+component logic (`buildPayload()`), and this repo's test suite (`tests/*.test.ts` via vitest) has
+no React component test harness at all (no `@testing-library`, no `.test.tsx` files anywhere) — it
+tests services and API routes against the real DB, not rendered components. I first attempted a
+service-layer stand-in test (`createReference("terms", { name: ..., discountPercent: "" })`
+expecting success) to prove the fix's *intent* at the server boundary, but that test is wrong: the
+fix is that the browser now never sends `discountPercent: ""` in the first place, not that the
+server now accepts it — `decimalField` still correctly rejects a literal `""` from any caller that
+sends one directly (API testing tools, a future non-UI client), which is intended, unchanged
+behavior. I ran that test, watched it fail with the exact regex error described above (confirming
+it was testing unimplemented/unwanted server behavior, not the actual fix), and removed it rather
+than leave a misleading assertion in the suite. This fix is verified by code inspection instead
+(§ above) plus the unchanged, still-green existing `"text"`-kind tests proving no regression.
+
+### Important #2 — missing regression test for the no-`.default(30)` decision
+
+Added to `tests/reference-tables.test.ts`:
+
+```ts
+it("an update omitting netDays leaves an existing non-default value untouched", async () => {
+  const { id } = await createReference("terms", { name: "Net 45", netDays: 45 });
+  await updateReference("terms", id, { active: false });
+  const row = (await listReference("terms", { includeInactive: true })).find((r) => r.id === id);
+  expect(row?.active).toBe(false);
+  expect(row?.netDays).toBe(45);
+});
+```
+
+First run failed — not because the underlying behavior was wrong, but because the test itself
+called the default `listReference("terms")`, which (like the admin grid's default view) only
+returns *active* rows; the update had just deactivated the row, so `.find(...)` returned
+`undefined` and `row?.active` read `undefined` instead of `false`. Fixed by passing
+`{ includeInactive: true }`. Re-ran green. This genuinely exercises the guard: reverting
+`EXTRA_SCHEMAS.terms.netDays` to `.default(30)` would make `netDays` come back `30` here instead
+of `45`, failing the second assertion.
+
+### Minors
+
+- **Paste/importer numeric-cell test** (`tests/reference-tables.test.ts`): added
+  `"paste converts numeric netDays/discountDays cells for a terms row"`, pasting
+  `"2/10 Net 45\t45\t2.00\t10"` through `pasteReference("terms", …)` and asserting `netDays: 45`,
+  `discountDays: 10`, `discountPercent → 2` on the created row — covers `paste.ts`'s
+  `numberColumns` conversion path, which had no direct test before.
+- **`EMPTY`-fallback test extended** (`tests/billing-config.test.ts`): the
+  `"returns the defaults when the row is genuinely absent"` test now also asserts
+  `cfg.financeChargeRate` is `null`, alongside the existing `salesTaxRate`/`billForCertDefault`
+  checks — catches a typo in the `EMPTY` literal the same way those two already do.
+  <br>Also updated the `EMPTY`-fallback assertion pattern check — no schema/service change needed,
+  `financeChargeRate` was already correctly `null` in `EMPTY` from the original submission; this
+  only closes the test gap.
+- **`paste.ts`'s `Number(v)` made consistent with `buildPayload()`'s**: a non-finite parse (e.g. a
+  pasted `"abc"` in a `netDays` cell) now leaves the original string rather than passing `NaN`
+  through to `createReference`, matching the Add-row grid's behavior and producing the same
+  "Expected number, received string" per-row paste error a bad Add-row entry would get.
+
+### Report accuracy fix
+
+Corrected the "mirrors the `surcharges.ts` precedent" claim (§1 above and the code comment on
+`requireDiscountPair` in `reference.ts`) — `updateSurcharge` does **not** validate a partial patch;
+it re-parses the identical full `SAVE` shape as `createSurcharge` on every call, which sidesteps
+this class of problem entirely rather than accepting the same partial-PATCH caveat
+`updateReference` does. The underlying behavior here (documented, not a live gap) is unchanged;
+only the report's and the code comment's characterization of it relative to surcharges was wrong,
+and both are now corrected to state plainly that this is a *weaker* guarantee than surcharges'
+full-row approach, not the same pattern.
+
+### Commands run (all foreground, none backgrounded or polled)
+
+```
+$ npx vitest run tests/reference-tables.test.ts tests/billing-config.test.ts
+  → (interim, before the includeInactive fix) 1 failed | 33 passed (34)
+$ npx vitest run tests/reference-tables.test.ts tests/billing-config.test.ts
+  → Test Files  2 passed (2)
+    Tests  34 passed (34)
+$ npx tsc --noEmit
+  → (no output — clean)
+$ npx eslint src tests
+  → (no output — clean)
+$ npx vitest run tests/paste.test.ts        # extra sanity check, paste.ts was touched
+  → Test Files  1 passed (1)
+    Tests  22 passed (22)
+```
+
+### Stray unrelated regression, again
+
+`.superpowers/sdd/.gitignore` was found clobbered back to a bare `*` a **second** time at the
+start of this fix round (same file, same hazard documented in CLAUDE.md, restored once already in
+the original submission — see §7 above). Restored again via `git checkout -- .superpowers/sdd/
+.gitignore` before committing; not part of either commit in this task.

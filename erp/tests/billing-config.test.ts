@@ -42,6 +42,9 @@ describe("getBillingConfig / setBillingConfig", () => {
     const cfg = await getBillingConfig();
     expect(cfg.salesTaxRate).toBeNull();
     expect(cfg.billForCertDefault).toBe(false);
+    // Fix round 1, Minor: catches a typo in EMPTY's financeChargeRate literal (Task 4) the same
+    // way the two assertions above already catch one in salesTaxRate/billForCertDefault.
+    expect(cfg.financeChargeRate).toBeNull();
   });
 
   // Task 2 hand-wrote BILLING_CONFIG_BLOCKER to repair a defect in this plan's own registry
