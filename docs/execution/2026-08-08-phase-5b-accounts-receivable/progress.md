@@ -23,11 +23,16 @@ Task 9 asks for a `discardInvoice`-refuses-with-A/R-activity test, but applicati
 defense-in-depth with no natural fixture. Left for the Task 9 implementer/reviewer to surface rather
 than pre-litigated.
 
+## Process decisions
+
+- **E2E sequencing.** Per-task gates are `npm test` + `tsc` + `eslint` (+`build` before review). The full Playwright suite (`npm run test:e2e`, dev server + DEV db) is sequenced at **Task 17** and the **closing gate run before the PR** — the plan's explicit ordering, and the 5A precedent. CLAUDE.md's "run E2E whenever a change touches a flow" is honored at those two points (the phase-completion claims), not per-task, because spinning a dev server 17× in the loop is impractical and E2E covers whole flows the mid-loop server state can't yet exercise. If a task makes a high-risk change to an existing 5A flow, E2E is run for it specifically.
+- **Implementer stall pattern.** General-purpose implementer subagents in this environment tend to background `npm test` and pause on it. Every dispatch from Task 3 on says: run ALL gates in the FOREGROUND, never background/poll — a ~2-min block is expected.
+
 ## Task ledger
 
 - [x] Task 1 — `ar-constants.ts`, `receivables` permission area + `write_off`, `receipt_batch_number_next` counter — **complete** (code `492bffe`, report `ac4680b`; review clean)
 - [x] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps — **complete** (code `2d639e2`; review clean, 2 deviations confirmed correct)
-- [ ] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize
+- [x] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize — **complete** (code `3a0e8e9`; review clean)
 - [ ] Task 4 — Terms & BillingConfig columns + admin UIs
 - [ ] Task 5 — `ar-balances.ts` (pure)
 - [ ] Task 6 — `receipts.ts` + routes
@@ -49,6 +54,11 @@ than pre-litigated.
 - **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
 
 ## Task detail
+
+### Task 3 — complete (BASE `3d3e855`, code `3a0e8e9`; review clean)
+- `createCredit` stamps `todayDateOnly()` in both the create data and the auditData (credit ages from its raise date). `finalizeInvoiceInTx` sets `dueDate = addDays(invoiceDate, terms.netDays)` for INVOICE only, keyed on `terms` presence (netDays is never null — `@default(30)`); read within the existing invoice claim, no new lock. New calendar `addDays` in business-days.ts (distinct from `addBusinessDays`).
+- Brief's "amend the existing source-date assertion" had no such assertion; implementer added a dedicated non-vacuous test (30-days-ago source → credit dated today, `!==` source) + audit-content check. Reviewer verified it's a real regression guard.
+- Gates: `npm test` 1704, tsc/eslint/build clean. Reviewer (sonnet): Spec ✅, quality Approved. Minors (both non-defects): an `orderBy`-less audit lookup fine today; dueDate computed-then-discarded for CREDIT via spread guard (cosmetic).
 
 ### Task 2 — complete (BASE `c0332a1`, code `2d639e2`; review clean)
 - Three new tables (`ReceiptBatch`/`Payment`/`Application`), `ApplicationType` enum, column additions to Terms/Invoice/BillingConfig/StoredDocument, two hand-written CHECKs, audit/documents wiring.
