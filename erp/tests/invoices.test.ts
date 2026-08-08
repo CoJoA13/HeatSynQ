@@ -15,6 +15,7 @@ import {
 } from "@/server/invoices";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
+import { addDays, formatDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -742,6 +743,27 @@ describe("finalizeInvoice", () => {
 
     await expect(finalizeCall).rejects.toThrow(/voided/i);
   });
+
+  // Task 3/§4.3: finalizing an INVOICE stamps `dueDate = invoiceDate + terms.netDays`. `netDays` is
+  // `Int @default(30)` on `Terms` now — never null — so the null case is a customer with NO terms
+  // assigned at all (`Customer.termsId` null), not a null `netDays`.
+  it("sets dueDate = invoiceDate + terms.netDays for a customer on Net 30 terms", async () => {
+    const { order, customer } = await pricedShippedOrder();
+    const terms = await prisma.terms.create({ data: { name: "Net 30", netDays: 30 } });
+    await prisma.customer.update({ where: { id: customer.id }, data: { termsId: terms.id } });
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: order.id, invoiceDate: "2026-08-01" }));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.dueDate).toBe("2026-08-31");
+  });
+
+  it("leaves dueDate null when the customer has no terms assigned", async () => {
+    const { order } = await pricedShippedOrder(); // makeCustomer never sets termsId
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: order.id, invoiceDate: "2026-08-01" }));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.dueDate).toBeNull();
+  });
 });
 
 describe("unlockInvoice", () => {
@@ -823,7 +845,10 @@ describe("createCredit", () => {
     const source = await asSystem(() => getInvoice(invoice.id));
     const credit = await asSystem(() => createCredit(invoice.id));
 
-    // Header snapshots copied verbatim from the source.
+    // Header snapshots copied verbatim from the source. `invoiceDate` is the deliberate EXCEPTION —
+    // a credit takes its own raise date (Task 3/§4.3), never the source's — and is not asserted
+    // equal here for that reason (see the dedicated test below; it isn't asserted `not.toBe` here
+    // either, since this fixture's source invoice is itself dated "today", same as the credit).
     expect(credit.orderId).toBe(source.orderId);
     expect(credit.customerId).toBe(source.customerId);
     expect(credit.poNumber).toBe(source.poNumber);
@@ -846,6 +871,22 @@ describe("createCredit", () => {
       expect(cl.weight).toBe(sl.weight); // unchanged
       expect(cl.amount).toBe(flipped(sl.amount)); // money flipped
     });
+  });
+
+  it("stamps the credit's own creation date, not the source invoice's date (Task 3/§4.3)", async () => {
+    const fixture = await pricedShippedOrder({ qty: 144, unitPrice: "6.5100", minimumCharge: "600.00" });
+    const thirtyDaysAgo = formatDateOnly(addDays(todayDateOnly(), -30));
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: fixture.order.id, invoiceDate: thirtyDaysAgo }));
+    await asSystem(() => finalizeInvoice(invoice.id));
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.invoiceDate).toBe(formatDateOnly(todayDateOnly()));
+    expect(credit.invoiceDate).not.toBe(thirtyDaysAgo);
+
+    // The audit `after` snapshot carries the credit's OWN date too, not the source's.
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "invoice", entityId: credit.id } });
+    expect((entry!.after as Record<string, unknown>).invoiceDate).toBe(formatDateOnly(todayDateOnly()));
   });
 
   it("refuses a credit against a draft", async () => {
@@ -897,8 +938,9 @@ describe("createCredit", () => {
     const reduced = await asSystem(() => replaceInvoiceLines(credit.id,
       credit.lines.map((l) => (l.kind === "OPERATION" ? { ...toLineInput(l), amount: "-100.00" } : toLineInput(l)))));
     expect(reduced.total).toBe(-100);
-    await asSystem(() => finalizeInvoice(credit.id));
+    const finalized = await asSystem(() => finalizeInvoice(credit.id));
     expect((await getInvoice(credit.id)).status).toBe("FINALIZED");
+    expect(finalized.dueDate).toBeNull(); // a CREDIT never gets a due date (Task 3/§4.3)
     expect((await getOrder(order.id)).status).toBe("SHIPPED"); // a credit finalize writes NO order status
   });
 

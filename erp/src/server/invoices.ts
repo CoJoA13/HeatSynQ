@@ -20,7 +20,7 @@ import {
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
   type PricingResult, type ComputedLine,
 } from "./pricing";
-import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "../lib/business-days";
 import {
   INVOICE_LINE_KINDS, PRICE_SOURCES,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -85,7 +85,7 @@ export type InvoiceDetail = {
   orderId: string; orderNumber: number; documentNumber: string;
   sourceInvoiceId: string | null; creditNumber: number | null;
   customerId: string; customerCode: string; customerName: string;
-  invoiceDate: string; poNumber: string; termsName: string;
+  invoiceDate: string; dueDate: string | null; poNumber: string; termsName: string;
   billTo: string; shipTo: string; materialName: string; processNames: string;
   taxRate: number | null;
   subtotal: number; surchargeTotal: number; chargeTotal: number;
@@ -106,7 +106,9 @@ export type InvoiceCreateResult = { invoice: InvoiceDetail; warnings: string[]; 
 // -------------------------------------------------------------------------------------------
 
 const DETAIL_INCLUDE = {
-  customer: { select: { code: true, name: true } },
+  // `terms` is read here (not a second query) so `finalizeInvoiceInTx` can compute `dueDate` off the
+  // SAME row this transaction already claimed via `claimInvoiceRow` — no new lock (Task 3/§4.3).
+  customer: { select: { code: true, name: true, terms: { select: { netDays: true } } } },
   order: { select: { orderNumber: true } },
   lines: { orderBy: { position: "asc" } },
 } satisfies Prisma.InvoiceInclude;
@@ -149,6 +151,7 @@ function toInvoiceDetail(row: DetailRow, prefix: string): InvoiceDetail {
     sourceInvoiceId: row.sourceInvoiceId, creditNumber: row.creditNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate),
+    dueDate: row.dueDate ? formatDateOnly(row.dueDate) : null,
     poNumber: row.poNumber, termsName: row.termsName,
     billTo: row.billTo, shipTo: row.shipTo,
     materialName: row.materialName, processNames: row.processNames,
@@ -1144,10 +1147,21 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
   // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
   const actor = currentActor();
+  // Task 3/§4.3: a finalized INVOICE's `dueDate` = its `invoiceDate` + the customer's
+  // `terms.netDays` — a calendar-day add (`addDays`, no weekend skip: a due date is a calendar
+  // date). `Terms.netDays` is `Int @default(30)` — never null — so the null case here is a
+  // customer with NO terms assigned at all (`Customer.termsId` null -> `invoice.customer.terms`
+  // null), not a null `netDays`. A CREDIT never gets a due date (Task 6 owner ruling: it ages from
+  // its own `invoiceDate` instead), so the write below is INVOICE-only.
+  const netDays = invoice.customer.terms?.netDays ?? null;
+  const dueDate = netDays === null ? null : addDays(invoice.invoiceDate, netDays);
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
-      data: { status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id },
+      data: {
+        status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id,
+        ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
+      },
     }), { tx });
   // Only an INVOICE owns the order's status (§5.2): finalizing one writes INVOICED. A CREDIT is a
   // correction against an already-invoiced order — it owns no order status, so finalizing it must
@@ -1254,6 +1268,14 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
     // A credit's number comes from its own series, allocated INSIDE the claim (never hand-rolled).
     const creditNumber = await allocateNumber("credit_number_next", tx);
 
+    // Task 3/§4.3: a credit takes its OWN raise date — never the source invoice's `invoiceDate` —
+    // so it ages from its own date (Task 6 owner ruling), not the invoice it corrects. `createCredit`
+    // has no `deps` object (unlike `createInvoiceInTx`'s `deps.today`), so `todayDateOnly()` is
+    // called directly at this service boundary — once, and reused below in both the create data and
+    // the audit `after` snapshot, so the two can never disagree even across a UTC-midnight boundary
+    // mid-transaction.
+    const creditDate = todayDateOnly();
+
     // Copy every source line, money sign flipped, everything else (part identity, gl, qty, weight,
     // pricing snapshots) carried as billed. Source lines arrive position-asc (DETAIL_INCLUDE); the
     // copy keeps 1..n so the second-pass parent wiring maps cleanly.
@@ -1287,7 +1309,7 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
       orderId: source.orderId, orderNumber: order.orderNumber,
       sourceInvoiceId: source.id, creditNumber,
       customerId: source.customerId, customerCode: source.customer.code, customerName: source.customer.name,
-      invoiceDate: formatDateOnly(source.invoiceDate),
+      invoiceDate: formatDateOnly(creditDate),
       poNumber: source.poNumber, termsName: source.termsName,
       materialName: source.materialName, processNames: source.processNames,
       taxRate: num(source.taxRate),
@@ -1309,7 +1331,7 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
           sourceInvoiceId: source.id,
           creditNumber,
           status: "DRAFT",
-          invoiceDate: source.invoiceDate,
+          invoiceDate: creditDate,
           poNumber: source.poNumber, termsName: source.termsName,
           billTo: source.billTo, shipTo: source.shipTo,
           materialName: source.materialName, processNames: source.processNames,
