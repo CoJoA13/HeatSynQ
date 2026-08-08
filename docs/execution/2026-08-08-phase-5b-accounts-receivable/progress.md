@@ -33,7 +33,7 @@ than pre-litigated.
 - [x] Task 1 — `ar-constants.ts`, `receivables` permission area + `write_off`, `receipt_batch_number_next` counter — **complete** (code `492bffe`, report `ac4680b`; review clean)
 - [x] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps — **complete** (code `2d639e2`; review clean, 2 deviations confirmed correct)
 - [x] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize — **complete** (code `3a0e8e9`; review clean)
-- [ ] Task 4 — Terms & BillingConfig columns + admin UIs
+- [x] Task 4 — Terms & BillingConfig columns + admin UIs — **complete** (code `6ec3a3c`, fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
 - [ ] Task 5 — `ar-balances.ts` (pure)
 - [ ] Task 6 — `receipts.ts` + routes
 - [ ] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes
@@ -54,6 +54,12 @@ than pre-litigated.
 - **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
 
 ## Task detail
+
+### Task 4 — complete (BASE `8ed9792`, code `6ec3a3c` + fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
+- Terms gains `netDays`/`discountPercent`/`discountDays` via `reference.ts`'s `EXTRA_SCHEMAS.terms`; both-or-neither enforced merge-safely by `requireDiscountPair` on the composed create/update schema (NOT a `.refine` on the ZodObject entry, which would break `.merge`/`.partial` for every kind). `netDays` left zod-optional (DB `@default(30)` fills on create; a partial PATCH never resets it). `BillingConfig.financeChargeRate` added to the FIELDS registry + type + EMPTY + read/write. Admin UIs: reference editor gained a new `"decimal"` field kind (blank-drops cleanly, unlike bare text); billing page gained the finance-charge input.
+- **Review round 1 (Needs fixes → fixed):** (Important) `discountPercent` was `kind:"text"` so a typed-then-cleared value sent `""` → cryptic decimalField 400; fixed with the `"decimal"` kind + widened blank-drop. (Important) added the netDays-unchanged-on-partial-update regression test. Plus 3 Minors (paste numberColumns test, EMPTY-fallback financeChargeRate assertion, paste.ts Number() consistency) and a report/comment accuracy fix (the both-or-neither guard does NOT mirror surcharges.ts). Re-review: Approved, zero outstanding.
+- **Browser-verified (controller):** `/admin/billing` renders "Finance charge (monthly %)"; `/admin/reference` → Terms renders Net days / Discount % / Discount days with the both-or-neither hint; a valid `2/10/30` Term created via the UI (POST 200) and persisted as 30/2/10. Dev-DB test fixture cleaned up. (Pane not composited → screenshots unavailable; verified via read_page/network.)
+- Gates: `npm test` 1711, tsc/eslint/build clean.
 
 ### Task 3 — complete (BASE `3d3e855`, code `3a0e8e9`; review clean)
 - `createCredit` stamps `todayDateOnly()` in both the create data and the auditData (credit ages from its raise date). `finalizeInvoiceInTx` sets `dueDate = addDays(invoiceDate, terms.netDays)` for INVOICE only, keyed on `terms` presence (netDays is never null — `@default(30)`); read within the existing invoice claim, no new lock. New calendar `addDays` in business-days.ts (distinct from `addBusinessDays`).
