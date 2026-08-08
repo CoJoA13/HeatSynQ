@@ -1181,6 +1181,31 @@ Task 18: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 4 Mino
   recompute amount until Recalculate (inherent to amount-is-king; operator controls amount directly).
 Task 18: complete (commits 18042ac..da5773a, review clean after the two-minor fix)
 
+Task 19: dispatched (implementer, OPUS — pdfmake-under-Node, the documents.ts CHECK, and the
+  print-vs-discard concurrency) — BASE 18042ac, brief task-19-brief.md (carries the print-claim note).
+Task 19: implementer DONE — commit e908b34, pdf/invoice.ts (+334) + print service/route +
+  documents.ts + tests. Full suite 1683, gates clean, E2E 15/15. Reported promptly. No schema change
+  (INVOICE/CREDIT already in the enum + CHECK from Task 2 — verified in the commit).
+  E2E CAUGHT A REAL REGRESSION: completing KIND_LABELS changed the hub's document labels from raw
+  enums to friendly text, and multi-order-shipment.mjs had the old strings hardcoded — the
+  implementer updated the flow to the new labels. That is E2E doing its job (a required step changed
+  a label a flow asserted).
+  printInvoice claims the invoice row FOR UPDATE before storeDocument (claimInvoiceForPrint takes
+  order+invoice, the same claim discard uses); concurrency RED proven (remove the claim → print
+  resolves + archives for a concurrently-discarded invoice instead of rejecting /voided/). Reprint
+  compares STORED bytes with Buffer.compare; fresh renders pinned by %PDF-/pageCount/content, never
+  Buffer.compare'd. Discarded/voided refuses a NEW print (VOIDED_PRINT) while a stored print still
+  downloads.
+  Disclosed choice: a credit's PDF titles itself "Credit" not "Invoice" (§10 says "same layout",
+  doesn't enumerate the title; a credit memo reading "Invoice" would be wrong). Sound default —
+  accepting it, flagged for the owner DEMO (the owner reviews printed samples there and can reword,
+  e.g. "Credit Memo"); one-line revert if they disagree. Sent to the reviewer to confirm it doesn't
+  contradict §10.
+Task 19: review dispatched (task-reviewer, opus — the print-claim-before-archive concurrency [RED
+  with claim removed], the stored-vs-fresh byte-comparison direction, discarded-refuses-new-reprints-
+  stored, the documents.ts filename cases, whether the E2E flow edit matches an intended label change
+  vs hides a regression, and the credit title vs §10)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
