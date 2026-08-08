@@ -237,6 +237,18 @@ which `fileParallelism` can be re-enabled. Deliberately **not** done inside Phas
 infrastructure change with no business riding in a pricing PR, and it touches the harness every
 other task depends on. Wall-clock now: ~127s for vitest alone.
 
+**OWNER DECISION OWED (filed 2026-08-07 by the Phase 5A whole-branch review) — should editing an
+already-invoiced order's LINES freeze, the way its charges do?** Spec §5.7's freeze covers extra
+charges, voiding, and shipment edits on an order that has a finalized invoice — but `addLine`/
+`updateLine` (`orders.ts`) are NOT blocked. It is not a bug today: the finalized invoice is frozen
+paper (a snapshot), so a later line edit changes nothing on it, and the correction path
+(unlock → recalculate) re-prices the edited line correctly; `removeLine` is separately blocked for
+shipped lines. The whole-branch reviewer confirmed no money error and no status corruption (the
+INVOICE_OWNED skip holds). So this is a consistency question, not a defect: §5.7 enumerates what
+freezes and does not list order-line edits. If the answer is "lines should freeze too," it is a
+one-guard addition mirroring `replaceCharges` (call `finalizedInvoiceFor` and refuse); if "no," it
+stays as built. Owner's call.
+
 **DEFERRED, owner ruling 2026-08-07 — multi-order freight over-bills, and it is knowingly left.**
 Phase 5A invoices one order at a time (spec ruling 5, no grouping), but freight is a shipment-level
 amount, so N orders on one billable-freight truck each bill the full truck freight — an N× over-bill.

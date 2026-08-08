@@ -1284,7 +1284,25 @@ Fix wave 1 (whole-branch): the Critical + Minor 1. recalculateInvoice refuses ki
   discriminate: the recalc-credit test asserts total −937.44 before, 400 on recalc, and lines
   UNCHANGED after (deep-equal) — RED if the guard is removed (recalc flips to +937.44); the audit
   test asserts the snapshot's breaks contains only the live one. (Fixer stalled on its test run —
-  controller verified the fixes in-tree and ran the gates; see below.)
+  controller verified the fixes in-tree and ran the gates.)
+Controller gate run on the fix (commit f9cbc8d): 1690 tests / 109 files, tsc 0, eslint 0, build
+  clean, E2E 16/16. Committed.
+Fix re-review (task-reviewer, opus, scoped to f9cbc8d) — Spec ✅, quality APPROVED, 0 findings.
+  Independently ran BOTH revert-to-red spot-checks: neutralize the kind guard → the recalc-credit
+  test reds with the credit re-priced to +937.44 (money-inverting bug reproduced); revert the audit
+  filter → the part-prices test reds with breaks length 2. Both restored, tree clean. Confirmed
+  REFUSE is correct per §5.6, and traced EVERY writer to establish NO remaining credit-sign-
+  inversion path (createInvoice INVOICE-only, recalc guarded, replaceInvoiceLines is the line-edit
+  path, createCredit refuses a non-INVOICE source, print reads stored negated lines) and no
+  soft-deleted break reaches a user diff.
+
+=== PHASE 5A: REVIEW-COMPLETE (2026-08-07). 20 tasks + whole-branch review + 1 fix wave + scoped
+    re-review, all clean. Final: 1690 tests / 109 files, tsc/eslint/build clean, E2E 16/16. 103
+    commits on phase-5a-pricing-invoicing (LOCAL, not pushed). Remaining are OWNER actions:
+    (1) the demo walkthrough docs/2026-08-07-phase-5a-demo.md — rule on the named deviations + the
+    filed order-line-freeze question; (2) open/merge the PR (attribution in the body, never a commit
+    trailer — a hook blocks them); (3) post-merge verify + kick off 5B from §9. The controller does
+    NOT open the PR or push — outward-facing, owner's call. ===
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
