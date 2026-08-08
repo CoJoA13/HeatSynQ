@@ -22,7 +22,7 @@ export type ReferenceLinkModel =
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
   | "shipper" | "certRequirement"
   | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
-  | "invoiceLine" | "billingConfig";
+  | "invoiceLine" | "billingConfig" | "payment";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -212,6 +212,18 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Other charge GL account", ...BILLING_CONFIG_BLOCKER },
   { model: "billingConfig", column: "certChargeStepCodeId", targetKind: "processStepCode",
     label: "Certification charge step code", ...BILLING_CONFIG_BLOCKER },
+  // Phase 5B. `Payment.paymentTypeId` is the one new A/R foreign key that targets a reference
+  // table (PaymentType), so it is the one the sweep surfaces and requires here — a payment recorded
+  // under a payment method permanently blocks that method's deletion, the "billed history is
+  // permanent" call the invoiceLine/processStepCode entries above already make. Payment's other
+  // FKs (batchId, customerId) and every Application FK point at NON-reference models (ReceiptBatch,
+  // Customer, Invoice, Payment), so they are outside this registry by design: `targetKind` is a
+  // `BlockerTarget`, and those models are not reference kinds. A Payment carries no name of its
+  // own, so it names itself by its reference (the check number). No detailPath — the A/R screens
+  // arrive in a later task.
+  { model: "payment", column: "paymentTypeId", targetKind: "paymentType",
+    label: "Payment type", entityLabel: "Payment",
+    displayName: (r) => { const ref = r.reference as string; return ref ? `Payment · ${ref}` : "Payment"; } },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

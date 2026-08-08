@@ -231,13 +231,20 @@ model Carrier {
 }
 
 model Terms {
-  id        String     @id @default(cuid())
-  name      String
-  active    Boolean    @default(true)
-  deletedAt DateTime?
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  customers Customer[]
+  id              String     @id @default(cuid())
+  name            String
+  // Phase 5B (§4.3): the payment terms behind a due date and an early-pay discount. `netDays` is
+  // required going forward (the migration backfills existing rows to 30); a null discount pair
+  // (discountPercent + discountDays) = no early-pay discount. `discountPercent` is a monthly-style
+  // percent (2 = 2%, the discountField(5, 2) convention), NOT a 0.02 fraction.
+  netDays         Int        @default(30)
+  discountPercent Decimal?   @db.Decimal(5, 2)
+  discountDays    Int?
+  active          Boolean    @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  customers       Customer[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -251,6 +258,7 @@ model PaymentType {
   deletedAt   DateTime?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
+  payments    Payment[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -329,6 +337,8 @@ model Customer {
   shippers             Shipper[]
   invoices             Invoice[]
   surchargeRules       CustomerSurcharge[]
+  payments             Payment[]
+  documents            StoredDocument[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -786,6 +796,7 @@ enum DocumentKind {
   CERT
   INVOICE
   CREDIT
+  STATEMENT
 }
 
 model StoredDocument {
@@ -798,6 +809,8 @@ model StoredDocument {
   cert       Cert?        @relation(fields: [certId], references: [id])
   invoiceId  String? // INVOICE, CREDIT: owner
   invoice    Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  customerId String? // STATEMENT: owner (Phase 5B §8)
+  customer   Customer?    @relation(fields: [customerId], references: [id])
   kind       DocumentKind
   loadNumber Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
@@ -813,11 +826,14 @@ model StoredDocument {
   // syntax, the same Part.loadQty situation. It lives in
   // migrations/<ts>_certs_and_shipping/migration.sql; keep the two in step. Phase 5A widened the
   // enum with INVOICE and CREDIT and re-stated the CHECK in
-  // migrations/<ts>_pricing_and_invoicing/migration.sql — both own `invoiceId` alone.
+  // migrations/<ts>_pricing_and_invoicing/migration.sql — both own `invoiceId` alone. Phase 5B
+  // widened it again with STATEMENT (owner = `customerId` alone) and re-stated the CHECK in
+  // migrations/<ts>_accounts_receivable/migration.sql — that is now the current definition.
   @@index([orderId])
   @@index([shipperId])
   @@index([certId])
   @@index([invoiceId])
+  @@index([customerId])
 }
 
 enum CertScope {
@@ -1176,48 +1192,58 @@ enum PriceSource {
 /// once. Keep that block on ONE line: tests/partial-unique-sweep.test.ts parses it with regexes
 /// that assume it.
 model Invoice {
-  id              String           @id @default(cuid())
-  kind            InvoiceKind      @default(INVOICE)
-  orderId         String
-  order           Order            @relation(fields: [orderId], references: [id])
-  sourceInvoiceId String? // CREDIT: the invoice it derives from
-  sourceInvoice   Invoice?         @relation("InvoiceCredits", fields: [sourceInvoiceId], references: [id])
-  credits         Invoice[]        @relation("InvoiceCredits")
+  id                  String           @id @default(cuid())
+  kind                InvoiceKind      @default(INVOICE)
+  orderId             String
+  order               Order            @relation(fields: [orderId], references: [id])
+  sourceInvoiceId     String? // CREDIT: the invoice it derives from
+  sourceInvoice       Invoice?         @relation("InvoiceCredits", fields: [sourceInvoiceId], references: [id])
+  credits             Invoice[]        @relation("InvoiceCredits")
   /// CREDIT only. Allocated from `credit_number_next` and never reissued — plain @unique on a
   /// soft-deletable model, deliberately NOT live-rows-only (sweep exemption, §7): a discarded
   /// draft must never free a number a customer already holds on paper.
-  creditNumber    Int?             @unique
-  customerId      String
-  customer        Customer         @relation(fields: [customerId], references: [id])
-  status          InvoiceStatus    @default(DRAFT)
-  invoiceDate     DateTime         @db.Date
+  creditNumber        Int?             @unique
+  customerId          String
+  customer            Customer         @relation(fields: [customerId], references: [id])
+  status              InvoiceStatus    @default(DRAFT)
+  invoiceDate         DateTime         @db.Date
+  // Phase 5B (§4.3): the A/R due date, set at finalize for an INVOICE = invoiceDate +
+  // customer.terms.netDays; a CREDIT gets none. `financeChargeExempt` is the per-invoice
+  // dispute/exempt flag that drops this invoice out of the finance-charge base (§7).
+  dueDate             DateTime?        @db.Date
+  financeChargeExempt Boolean          @default(false)
   // Snapshots of what the paper says — read unconditionally (§5.4)
-  poNumber        String           @default("")
-  termsName       String           @default("")
-  billTo          String           @default("") // rendered multi-line address block
-  shipTo          String           @default("")
-  materialName    String           @default("") // lead part
-  processNames    String           @default("") // lead part's priced operations, comma-joined
-  taxRate         Decimal?         @db.Decimal(9, 6)
+  poNumber            String           @default("")
+  termsName           String           @default("")
+  billTo              String           @default("") // rendered multi-line address block
+  shipTo              String           @default("")
+  materialName        String           @default("") // lead part
+  processNames        String           @default("") // lead part's priced operations, comma-joined
+  taxRate             Decimal?         @db.Decimal(9, 6)
   // Totals, all rounded, all sums of already-rounded lines
-  subtotal        Decimal          @default(0) @db.Decimal(12, 2) // OPERATION lines
-  surchargeTotal  Decimal          @default(0) @db.Decimal(12, 2)
-  chargeTotal     Decimal          @default(0) @db.Decimal(12, 2)
-  certTotal       Decimal          @default(0) @db.Decimal(12, 2)
-  freightTotal    Decimal          @default(0) @db.Decimal(12, 2)
-  taxTotal        Decimal          @default(0) @db.Decimal(12, 2)
-  total           Decimal          @default(0) @db.Decimal(12, 2)
-  finalizedAt     DateTime?
-  finalizedById   String?
-  finalizedBy     User?            @relation(fields: [finalizedById], references: [id])
+  subtotal            Decimal          @default(0) @db.Decimal(12, 2) // OPERATION lines
+  surchargeTotal      Decimal          @default(0) @db.Decimal(12, 2)
+  chargeTotal         Decimal          @default(0) @db.Decimal(12, 2)
+  certTotal           Decimal          @default(0) @db.Decimal(12, 2)
+  freightTotal        Decimal          @default(0) @db.Decimal(12, 2)
+  taxTotal            Decimal          @default(0) @db.Decimal(12, 2)
+  total               Decimal          @default(0) @db.Decimal(12, 2)
+  finalizedAt         DateTime?
+  finalizedById       String?
+  finalizedBy         User?            @relation(fields: [finalizedById], references: [id])
   /// Idempotency nonce — same sweep exemption and the same reasoning as Order.clientRequestId:
   /// handing it back to a retry would recreate the duplicate it exists to stop (P3 §4).
-  clientRequestId String?          @unique
-  deletedAt       DateTime? // discarded DRAFT only (§5.5)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  lines           InvoiceLine[]
-  documents       StoredDocument[]
+  clientRequestId     String?          @unique
+  deletedAt           DateTime? // discarded DRAFT only (§5.5)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  lines               InvoiceLine[]
+  documents           StoredDocument[]
+  // Phase 5B: A/R activity recorded AGAINST this invoice. `applications` are the reductions of
+  // this invoice's own open balance (payment/discount/write-off/credit); `creditApplications`
+  // are the applications that draw DOWN this row when it is a CREDIT memo being applied elsewhere.
+  applications        Application[]    @relation("InvoiceApplications")
+  creditApplications  Application[]    @relation("CreditApplications")
 
   @@unique([orderId], where: raw("\"deletedAt\" IS NULL AND \"kind\" = 'INVOICE'::\"InvoiceKind\""))
   @@index([customerId])
@@ -1296,5 +1322,97 @@ model BillingConfig {
   certChargeStepCode     ProcessStepCode? @relation(fields: [certChargeStepCodeId], references: [id])
   certChargeDefault      Decimal?         @db.Decimal(12, 2)
   billForCertDefault     Boolean          @default(false)
+  // Phase 5B (§4.3, §7): the plant default monthly finance-charge rate — a monthly percent
+  // (1.5 = 1.5%/month), the discountPercent convention. Customer.financeChargeRate overrides it.
+  financeChargeRate      Decimal?         @db.Decimal(6, 4)
   updatedAt              DateTime         @updatedAt
+}
+
+// ─── Phase 5B: accounts receivable (design spec §4.1–§4.3) ──────────────────────────────────
+//
+// The receipts ledger: a ReceiptBatch is a deposit session holding many Payments; each Payment is
+// applied to one or more finalized invoices through Application rows. Balances are NEVER stored on
+// these tables or on Invoice — every balance derives from the live Application rows (§4.2), so a
+// voided (soft-deleted) Application drops out of every sum. Money is Decimal(12, 2); dates the A/R
+// side reasons about are @db.Date.
+
+/// The single write path for cash, discounts, write-offs, and credit application (§4.1, Approach
+/// A): one table, one balance rule, no drift.
+enum ApplicationType {
+  PAYMENT
+  DISCOUNT
+  WRITE_OFF
+  CREDIT
+}
+
+/// A deposit session (§4.1). `batchNumber` is allocated from `receipt_batch_number_next` and never
+/// reissued — plain @unique on a soft-deletable model, deliberately NOT live-rows-only (sweep
+/// exemption in tests/partial-unique-sweep.test.ts, the Invoice.creditNumber precedent): a voided
+/// batch keeps its number forever. `status` is "OPEN" → "POSTED" (POSTED locks the payment list);
+/// the allowed values live in src/lib/ar-constants.ts (RECEIPT_BATCH_STATUSES), not a Prisma enum.
+/// Live balance = controlTotal − Σ payments.
+model ReceiptBatch {
+  id           String    @id @default(cuid())
+  batchNumber  Int       @unique
+  depositDate  DateTime  @db.Date
+  controlTotal Decimal?  @db.Decimal(12, 2) // what the operator says the deposit is, for balancing
+  status       String    @default("OPEN")
+  notes        String    @default("")
+  deletedAt    DateTime? // voided; reason in the audit entry
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  payments     Payment[]
+
+  @@index([depositDate])
+}
+
+/// One check/card/ACH (§4.1). On-account = amount − Σ its PAYMENT-type applications.
+model Payment {
+  id            String        @id @default(cuid())
+  batchId       String
+  batch         ReceiptBatch  @relation(fields: [batchId], references: [id])
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id])
+  paymentTypeId String
+  paymentType   PaymentType   @relation(fields: [paymentTypeId], references: [id])
+  amount        Decimal       @db.Decimal(12, 2)
+  reference     String        @default("") // check #
+  receivedDate  DateTime      @db.Date
+  notes         String        @default("")
+  deletedAt     DateTime? // voided; reason in the audit entry
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  applications  Application[]
+
+  @@index([batchId])
+  @@index([customerId])
+}
+
+/// One reduction of one invoice's open balance (§4.1). `invoiceId` is always a finalized INVOICE;
+/// `creditInvoiceId` (CREDIT type only) is a finalized CREDIT memo. A hand-written DB CHECK
+/// ("Application_source_check", in migrations/<ts>_accounts_receivable/migration.sql — Prisma has
+/// no check syntax) enforces the source per type: PAYMENT/DISCOUNT/WRITE_OFF ⇒ creditInvoiceId IS
+/// NULL; CREDIT ⇒ paymentId IS NULL AND creditInvoiceId IS NOT NULL. A standalone bad-debt
+/// WRITE_OFF may carry a null paymentId, so the CHECK does NOT require paymentId on non-credit
+/// rows. `reason` is required (service-enforced) for WRITE_OFF/DISCOUNT. `appliedDate` is the A/R
+/// effective date, for point-in-time aging (§6).
+model Application {
+  id              String          @id @default(cuid())
+  invoiceId       String
+  invoice         Invoice         @relation("InvoiceApplications", fields: [invoiceId], references: [id])
+  amount          Decimal         @db.Decimal(12, 2)
+  type            ApplicationType
+  reason          String          @default("")
+  paymentId       String?
+  payment         Payment?        @relation(fields: [paymentId], references: [id])
+  creditInvoiceId String?
+  creditInvoice   Invoice?        @relation("CreditApplications", fields: [creditInvoiceId], references: [id])
+  appliedDate     DateTime        @db.Date
+  deletedAt       DateTime? // voided; reason in the audit entry
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([invoiceId])
+  @@index([paymentId])
+  @@index([creditInvoiceId])
 }

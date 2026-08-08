@@ -271,16 +271,17 @@ describe("pricing and invoicing schema", () => {
     }
   });
 
-  // DocumentKind's two new values live in their own migration for the transaction reason spelled
-  // out there; this pins that they landed, and landed after the Phase 4 four.
-  it("DocumentKind carries INVOICE and CREDIT, appended after the Phase 4 values", async () => {
+  // DocumentKind's added values each live in their own migration for the transaction reason
+  // spelled out there; this pins that they landed, and in order — the Phase 4 four, then Phase 5A's
+  // INVOICE/CREDIT, then Phase 5B's STATEMENT.
+  it("DocumentKind carries INVOICE, CREDIT and STATEMENT, appended after the Phase 4 values", async () => {
     const rows = await prisma.$queryRaw<{ enumlabel: string }[]>`
       SELECT e.enumlabel FROM pg_enum e
       JOIN pg_type t ON t.oid = e.enumtypid
       WHERE t.typname = 'DocumentKind'
       ORDER BY e.enumsortorder`;
     expect(rows.map((r) => r.enumlabel)).toEqual([
-      "TRAVELER", "SHIPPER", "BOL", "CERT", "INVOICE", "CREDIT",
+      "TRAVELER", "SHIPPER", "BOL", "CERT", "INVOICE", "CREDIT", "STATEMENT",
     ]);
   });
 });

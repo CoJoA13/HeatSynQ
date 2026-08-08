@@ -14,7 +14,8 @@ export type AuditableModel =
   | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument"
   | "cert" | "shipper"
   | "surcharge" | "surchargeStepCode" | "customerSurcharge"
-  | "invoice" | "invoiceLine" | "billingConfig";
+  | "invoice" | "invoiceLine" | "billingConfig"
+  | "receiptBatch" | "payment" | "application";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -201,6 +202,16 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   },
   invoiceLine: undefined,
   billingConfig: undefined,
+  // Phase 5B A/R. A batch's payments and a payment's applications are audited as their OWN models
+  // (receipts.ts/applications.ts wrap each in its own audited* call), so the parent snapshots pull
+  // in only the live reference name history would otherwise render as a cuid — the partInspection
+  // `{ inspectionCode: true }` precedent. A payment names its method; an application names the
+  // invoice it reduces by that invoice's order number (the 5A invoice FK-with-live-name pattern).
+  receiptBatch: undefined,
+  payment: { paymentType: true },
+  application: {
+    invoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
+  },
 };
 
 /**
@@ -231,11 +242,11 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     id: true, orderId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
   },
-  // Phase 4 widened this table from one owner to three; the list stays "every scalar except
-  // fileData", so shipperId and certId belong here the moment they exist rather than being
-  // something a later phase has to remember.
+  // Phase 4 widened this table from one owner to three; Phase 5A added invoiceId and 5B added
+  // customerId. The list stays "every scalar except fileData", so each new owner column belongs
+  // here the moment it exists rather than being something a later phase has to remember.
   storedDocument: {
-    id: true, orderId: true, shipperId: true, certId: true, invoiceId: true,
+    id: true, orderId: true, shipperId: true, certId: true, invoiceId: true, customerId: true,
     kind: true, loadNumber: true, createdAt: true,
   },
   // Task 12: `User.signatureImage` is a bytes column exactly like the three above, and gets the
