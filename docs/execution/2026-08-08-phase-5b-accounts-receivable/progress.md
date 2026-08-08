@@ -35,7 +35,7 @@ than pre-litigated.
 - [x] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize — **complete** (code `3a0e8e9`; review clean)
 - [x] Task 4 — Terms & BillingConfig columns + admin UIs — **complete** (code `6ec3a3c`, fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
 - [x] Task 5 — `ar-balances.ts` (pure) — **complete** (code `81beb71`; review clean)
-- [ ] Task 6 — `receipts.ts` + routes
+- [x] Task 6 — `receipts.ts` + routes — **complete** (code `1acfc41`; review Approved, 2 correct deviations, 1 owner-ruling item)
 - [ ] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes
 - [ ] Task 8 — credit application
 - [ ] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals
@@ -49,12 +49,26 @@ than pre-litigated.
 - [ ] Task 17 — E2E + demo + docs
 - [ ] Whole-branch review + fix wave
 
+## Owner rulings owed (surface at the Task 17 demo)
+
+- **POSTED batch lifecycle (Task 6).** The brief mandates `voidPayment` refuse on a POSTED batch, but the (also-mandated) refusal message "This batch is posted — reopen or void a payment to change it" promises an escape hatch that does not exist — there is no `reopen`, and `voidBatch` has no POSTED guard. Net asymmetry as built: a POSTED **empty** batch is voidable, but a POSTED **non-empty** batch is fully frozen (can't void its payments, can't void the batch). On-account cash on those payments is still appliable to invoices (spec §5.2). The plan already earmarks the POSTED lifecycle for an owner ruling at the demo (Task 17 Step 3). **Options for the owner:** (a) allow `voidPayment` on POSTED (the message's implied behavior); (b) add a `reopen` (POSTED→OPEN); (c) reword the message; (d) leave frozen-by-design. No code change until the owner rules.
+
 ## Deferred minors (fix-wave / whole-branch-review triage input)
 
 - **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
+- **Task 6 minors** — (a) no per-route 401 (missing-cookie) test in receivables-routes.test.ts (403+200 covered; brief mandated only 403; `handle` enforces 401 uniformly); (b) no test that `getBatch` returns a voided batch (readBatchDetail deliberately omits the deletedAt filter — behavior unasserted); (c) `paymentType` double round-trip (assertRefExists then findFirst for name — redundant read, harmless). Whole-branch triage.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 6 — complete (BASE `f15974e`, code `1acfc41`; review Approved — opus)
+- `receipts.ts` (319 lines): `createBatch`/`getBatch`/`addPayment`/`voidPayment`/`postBatch`/`voidBatch` + live balance, 4 route files. Canonical nesting (withDbErrors → Serializable $transaction → `claimBatch` FOR UPDATE → audited* → writes on tx). `enteredTotal` = Σ live payments; `balance` = `(controlTotal ?? enteredTotal) − enteredTotal`; per-payment `onAccount` via `ar-balances.paymentOnAccount`.
+- **Deviation (correct):** `assertRefExists("customer", …)` doesn't exist (customer isn't a reference kind) — implementer used a direct `tx.customer.findFirst({ deletedAt: null })` INSIDE the Serializable tx (SSI read-set participation), clean 400, matching orders.ts. `paymentType` uses `assertRefExists` (it IS a reference kind). Reviewer confirmed correct.
+- **Decimal discipline (Task 5 carry honored):** single `.toNumber()` boundary, integer-cent balance math, no raw-Decimal JS arithmetic, no Decimal leaks into number fields. Reviewer: "airtight."
+- The batch claim is a real parameterized `$queryRaw … FOR UPDATE` (no injection), taken first in all four post/void/add paths.
+- Gates: `npm test` 1739, tsc/eslint/build clean. Reviewer (opus): Spec ✅, Approved, no Critical/Important.
+- **Owner-ruling item:** POSTED lifecycle asymmetry → see "Owner rulings owed" above.
+- Minors → deferred list (no 401 route test; no getBatch-returns-voided test; paymentType double round-trip).
 
 ### Task 5 — complete (BASE `6cbc7e8`, code `81beb71`; review clean)
 - Pure `ar-balances.ts` (36 lines): `invoiceOpenBalance` (subtracts all live types), `paymentOnAccount` (live PAYMENT only), `creditRemaining` (`|total|` − live). Voided-exclusion centralized in one `isLive`/`sumCents` helper (all three inherit it). Integer-cent math via a used `cents` helper; the `0.3 − 0.1 === 0.2` float-drift case passes. Only import is `type ApplicationTypeValue` from ar-constants (pure).
