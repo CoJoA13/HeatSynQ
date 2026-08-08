@@ -1135,6 +1135,29 @@ Task 17: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Mino
   (Task 20's E2E is the net).
 Task 17: complete (commit e138f04, review clean — approved first pass)
 
+Task 18: dispatched (implementer, sonnet — capstone UI on the ShipmentDetail precedent; the
+  per-action gate table is the crux, front-loaded from Task 16's corrected route gates) — BASE
+  e138f04, brief task-18-brief.md.
+Task 18: implementer DONE — commit 18042ac, InvoiceDetail.tsx (+807) + page shell + InvoicesSection
+  + hub wiring. Full suite 1667, gates clean, E2E 15/15 (new flow is Task 20). Reported promptly.
+  Report untracked (commit is 4 erp/src files only). Exceptionally thorough browser verification:
+  drove the FULL lifecycle end to end (create → edit line [priceSource MANUAL, needsPrice cleared]
+  → recalculate [manual line preserved, derived regenerated] → finalize [order INVOICED, every
+  control probed disabled with the right title] → unlock w/ reason [order SHIPPED, controls
+  re-enabled] → raise credit [own page, sign-flipped] → discard w/ reason), and confirmed the
+  DOUBLE-GATE title picks the actually-missing permission in BOTH directions using two throwaway
+  restricted users (Requires change_prices vs Requires invoicing.edit). Hub section links both ways;
+  Create-invoice disables once a live invoice exists. Fixtures cleaned, 0 live rows after.
+  Per-action gate table as built matches Task 16's corrected routes: header edit / line+recalc
+  double-gate / finalize edit / unlock=gateDo(unlock_invoice) / discard delete / credit=create
+  ALONE / create-invoice create / print=view (404s until Task 19, by design).
+  Disclosed design choice: editing a line's amount stamps priceSource MANUAL + clears needsPrice
+  (not spec-mandated) — consistent with the server behavior Tasks 9/12 established (a manual line is
+  preserved by recalculate); sent to the reviewer to confirm no client/server disagreement.
+Task 18: review dispatched (task-reviewer, opus — every UI gate MATCHING its route gate [a money
+  control enabled that the route refuses = Critical], status-locking on every editing control,
+  the sibling-group hooks key=/useMutationGate/useEditGuard, and the MANUAL-stamp choice)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
