@@ -1,0 +1,240 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { prisma, truncateAll } from "./helpers/db";
+import { runWithContext } from "@/server/context";
+import { createBatch, getBatch, addPayment, voidPayment, postBatch, voidBatch, type BatchDetail } from "@/server/receipts";
+import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
+
+// Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding Payments. `enteredTotal`
+// is the live sum, `balance` is what's left to foot against the operator's controlTotal — both
+// derived, never stored. A POSTED batch locks payment entry; voiding a payment is a soft delete
+// with a reason, and voiding an empty batch is too. Applications (Task 7) don't exist yet, so
+// every payment's `onAccount` here equals its full `amount`.
+
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
+
+beforeEach(truncateAll);
+
+let customerSeq = 0;
+async function makeCustomer(): Promise<Customer> {
+  customerSeq += 1;
+  return prisma.customer.create({ data: { code: `RCC${customerSeq}`, name: `Receipt Customer ${customerSeq}` } });
+}
+
+async function makePaymentType(name = "Check"): Promise<PaymentType> {
+  return prisma.paymentType.create({ data: { name } });
+}
+
+async function openBatch(controlTotal: string | null = null): Promise<BatchDetail> {
+  return asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal }));
+}
+
+function paymentInput(customer: Customer, paymentType: PaymentType, amount: number) {
+  return {
+    customerId: customer.id, paymentTypeId: paymentType.id, amount,
+    reference: "1234", receivedDate: "2026-08-08",
+  };
+}
+
+// -------------------------------------------------------------------------------------------
+// Step 1/2: create + add + live balance.
+// -------------------------------------------------------------------------------------------
+
+describe("createBatch / getBatch", () => {
+  it("creates an OPEN batch with an allocated number and reads it back", async () => {
+    const batch = await openBatch("500.00");
+    expect(batch.status).toBe("OPEN");
+    expect(batch.controlTotal).toBe(500);
+    expect(batch.enteredTotal).toBe(0);
+    expect(batch.balance).toBe(500);
+    expect(batch.payments).toEqual([]);
+    expect(batch.deletedAt).toBeNull();
+    expect(Number.isInteger(batch.batchNumber)).toBe(true);
+
+    const reread = await asSystem(() => getBatch(batch.id));
+    expect(reread).toEqual(batch);
+  });
+
+  it("404s a missing batch", async () => {
+    await expect(asSystem(() => getBatch("nope"))).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("addPayment — live balance", () => {
+  it("recomputes enteredTotal/balance as payments are added", async () => {
+    const batch = await openBatch("500.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+
+    const afterFirst = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    expect(afterFirst.enteredTotal).toBe(300);
+    expect(afterFirst.balance).toBe(200);
+    expect(afterFirst.payments).toHaveLength(1);
+    const row = afterFirst.payments[0];
+    expect(row.customerId).toBe(customer.id);
+    expect(row.customerCode).toBe(customer.code);
+    expect(row.customerName).toBe(customer.name);
+    expect(row.paymentTypeId).toBe(paymentType.id);
+    expect(row.paymentTypeName).toBe("Check");
+    expect(row.amount).toBe(300);
+    expect(row.reference).toBe("1234");
+    expect(row.receivedDate).toBe("2026-08-08");
+    expect(row.onAccount).toBe(300); // no applications yet (Task 7) — on-account is the full amount
+
+    const afterSecond = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 200)));
+    expect(afterSecond.enteredTotal).toBe(500);
+    expect(afterSecond.balance).toBe(0);
+    expect(afterSecond.payments).toHaveLength(2);
+  });
+
+  it("balance is zero when no control total was set", async () => {
+    const batch = await openBatch(null);
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const after = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 75)));
+    expect(after.controlTotal).toBeNull();
+    expect(after.enteredTotal).toBe(75);
+    expect(after.balance).toBe(0);
+  });
+
+  it("refuses an unregistered customer — the FK-writer pattern (assertRefExists)", async () => {
+    const batch = await openBatch();
+    const paymentType = await makePaymentType();
+    await expect(asSystem(() => addPayment(batch.id, {
+      customerId: "nope", paymentTypeId: paymentType.id, amount: 10, receivedDate: "2026-08-08",
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/customer does not exist/i) });
+    expect(await prisma.payment.count()).toBe(0);
+  });
+
+  it("refuses an unregistered payment type", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    await expect(asSystem(() => addPayment(batch.id, {
+      customerId: customer.id, paymentTypeId: "nope", amount: 10, receivedDate: "2026-08-08",
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/payment type does not exist/i) });
+  });
+
+  it("audits the create with real content — the payment's amount and live FK names", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType("Wire");
+    const detail = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 42.5)));
+    const paymentId = detail.payments[0].id;
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "payment", entityId: paymentId, action: "create" } });
+    expect(entry).not.toBeNull();
+    const after = entry!.after as Record<string, unknown>;
+    expect(after.amount).toBe(42.5);
+    expect(after.customerCode).toBe(customer.code);
+    expect(after.paymentTypeName).toBe("Wire");
+    expect(after.batchId).toBe(batch.id);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Step 5/7: post locks payment entry.
+// -------------------------------------------------------------------------------------------
+
+describe("postBatch — locks payment entry", () => {
+  it("posts an OPEN batch, then refuses addPayment and a second post", async () => {
+    const batch = await openBatch("100.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+
+    const posted = await asSystem(() => postBatch(batch.id));
+    expect(posted.status).toBe("POSTED");
+
+    await expect(asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 5))))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "This batch is posted — reopen or void a payment to change it",
+      });
+
+    await expect(asSystem(() => postBatch(batch.id)))
+      .rejects.toMatchObject({ status: 400, message: "already posted" });
+  });
+
+  it("audits the post with the status before/after", async () => {
+    const batch = await openBatch();
+    await asSystem(() => postBatch(batch.id));
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "receiptBatch", entityId: batch.id, action: "update" } });
+    expect((entry!.before as Record<string, unknown>).status).toBe("OPEN");
+    expect((entry!.after as Record<string, unknown>).status).toBe("POSTED");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Step 8/9: void payment, void batch.
+// -------------------------------------------------------------------------------------------
+
+describe("voidPayment", () => {
+  it("requires a non-blank reason", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+    await expect(asSystem(() => voidPayment(batch.id, paymentId, "   "))).rejects.toThrow(/reason/i);
+    expect(await prisma.payment.count({ where: { deletedAt: null } })).toBe(1);
+  });
+
+  it("soft-deletes with a reason and drops the payment from enteredTotal", async () => {
+    const batch = await openBatch("500.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+
+    const afterVoid = await asSystem(() => voidPayment(batch.id, paymentId, "entered against the wrong batch"));
+    expect(afterVoid.payments).toHaveLength(0);
+    expect(afterVoid.enteredTotal).toBe(0);
+    expect(afterVoid.balance).toBe(500);
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "payment", entityId: paymentId, action: "delete" } });
+    expect(entry!.reason).toBe("entered against the wrong batch");
+  });
+
+  it("refuses to void a payment on a POSTED batch", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+    await asSystem(() => postBatch(batch.id));
+    await expect(asSystem(() => voidPayment(batch.id, paymentId, "mistake")))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "This batch is posted — reopen or void a payment to change it",
+      });
+  });
+});
+
+describe("voidBatch", () => {
+  it("requires a non-blank reason", async () => {
+    const batch = await openBatch();
+    await expect(asSystem(() => voidBatch(batch.id, "   "))).rejects.toThrow(/reason/i);
+  });
+
+  it("refuses to void a batch that still has live payments", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 10)));
+    await expect(asSystem(() => voidBatch(batch.id, "mistake")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/void its payments first/i) });
+    expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.deletedAt).toBeNull();
+  });
+
+  it("soft-deletes an empty batch with the reason recorded in the audit entry", async () => {
+    const batch = await openBatch();
+    await asSystem(() => voidBatch(batch.id, "duplicate deposit entry"));
+    const row = await prisma.receiptBatch.findUnique({ where: { id: batch.id } });
+    expect(row!.deletedAt).not.toBeNull();
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "receiptBatch", entityId: batch.id, action: "delete" } });
+    expect(entry!.reason).toBe("duplicate deposit entry");
+  });
+});
