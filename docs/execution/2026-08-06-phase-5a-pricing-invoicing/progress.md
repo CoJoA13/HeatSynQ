@@ -1118,6 +1118,22 @@ Task 17: implementer DONE — commit e138f04, invoicing/page.tsx + InvoicingList
 Task 17: review dispatched (task-reviewer, opus — the four UI defect-classes this phase already paid
   for: empty-list impersonation, stale-response race, §5.16 gating, per-order-independent create;
   plus the export honoring the filter and the client/server boundary)
+Task 17: review — Spec ✅, quality APPROVED, 0 Critical / 0 Important, 3 Minor. The reviewer
+  confirmed all FOUR paid-for defect classes are STRUCTURALLY prevented (the bar I set), reading the
+  code not just the manual session: empty text gated on `loaded && !error` with dedicated per-list
+  error banners (no swallow); both loads useLatest-ticketed checking isCurrent on success AND
+  failure with `query` in the deps; controls disabled+titled never hidden; per-order create is a
+  sequential try/catch-into-a-Map loop so a front-of-loop failure cannot abort it, failed ids stay
+  ticked, §5.13 reload-before-report. Export route is the customers/export precedent line-for-line,
+  gated invoicing.view, sharing the list route's exact filter parse so export and list can't
+  disagree — not a dump-everything leak.
+  3 Minors DEFERRED, all precedent-consistent: the export LINK is ungated (matches every other
+  export in the app — ShippingList, customers/export; the route is gated, so gating just this one
+  would make it the inconsistent one — the implementer correctly chose precedent over the dispatch's
+  literal "gate export"); a customer-picker load failure can be clobbered by the shared error state
+  (pre-existing, identical to ShippingList — not introduced here); and no vitest fence for the page
+  (Task 20's E2E is the net).
+Task 17: complete (commit e138f04, review clean — approved first pass)
 
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
