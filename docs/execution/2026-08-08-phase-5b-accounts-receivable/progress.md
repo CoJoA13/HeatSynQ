@@ -26,7 +26,7 @@ than pre-litigated.
 ## Task ledger
 
 - [x] Task 1 — `ar-constants.ts`, `receivables` permission area + `write_off`, `receipt_batch_number_next` counter — **complete** (code `492bffe`, report `ac4680b`; review clean)
-- [ ] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps
+- [x] Task 2 — schema: 3 tables, column additions, 2 CHECKs, migration, registry/audit/sweeps — **complete** (code `2d639e2`; review clean, 2 deviations confirmed correct)
 - [ ] Task 3 — `createCredit` own-date + `Invoice.dueDate` at finalize
 - [ ] Task 4 — Terms & BillingConfig columns + admin UIs
 - [ ] Task 5 — `ar-balances.ts` (pure)
@@ -46,9 +46,19 @@ than pre-litigated.
 
 ## Deferred minors (fix-wave / whole-branch-review triage input)
 
-_None yet._
+- **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
 
 ## Task detail
+
+### Task 2 — complete (BASE `c0332a1`, code `2d639e2`; review clean)
+- Three new tables (`ReceiptBatch`/`Payment`/`Application`), `ApplicationType` enum, column additions to Terms/Invoice/BillingConfig/StoredDocument, two hand-written CHECKs, audit/documents wiring.
+- **Migration split (controller-corrected vs brief):** `20260808230000_document_kind_statement_value` (ADD VALUE 'STATEMENT' only) + `20260808230100_accounts_receivable` (everything else). The brief's Step 4 wrongly cited the older `20260804122700` file for the CHECK source and didn't call out the enum-split; I supplied the exact extended CHECK SQL (sourced from 5A's `20260806221500`, `customerId IS NULL` added to every prior arm + STATEMENT arm, SHIPPER stays loose on orderId) and mandated the two-dir split per CLAUDE.md. Both migrations applied to both DBs; 28 migrations, status clean, zero drift.
+- **`Application_source_check`** verbatim to spec §4.1 (does not require paymentId on non-credit arms — standalone bad-debt write-off).
+- **CLAUDE.md** updated in step (repoints the current CHECK definition to the new migration, documents STATEMENT + the customerId-null tightening, adds the new dir to the ADD VALUE list) — the mandatory docs-in-step convention.
+- **Deviation A (correct):** only `Payment.paymentTypeId` registered in `reference-links.ts` — the other five FKs target non-reference-kind models (`BlockerTarget` type + the sweep only cover reference kinds); the brief's Step 7 over-listed. Reviewer independently confirmed from `REFERENCE_KINDS`.
+- **Deviation B (correct):** `DocumentMeta` gained required `customerId`, forcing one-token `customerId: null` on three hand-built meta literals (certs/shippers print, traveler) + a `"STATEMENT"` enum-pin in `invoicing-schema.test.ts`. All forced, no scope creep.
+- Tests: schema round-trip + a real negative asserting the DB rejects a CREDIT-with-paymentId (SQLSTATE 23514, count stays 0). Gates: `npm test` 1696, tsc/eslint/build clean.
+- Reviewer (opus): Spec ✅, quality Approved. One Minor (snapshot coverage) → deferred list above.
 
 ### Task 1 — complete (BASE `c0af0a8`, code `492bffe`, report `ac4680b`; review clean)
 - Added `src/lib/ar-constants.ts` (pure/client-safe: `APPLICATION_TYPES`, `RECEIPT_BATCH_STATUSES`, `AGING_BUCKETS` + label maps), `"receivables"` to `AREAS`, `"write_off"` to `SPECIAL_ACTIONS`, and the `receipt_batch_number_next` counter (default 1000) to the settings registry.
