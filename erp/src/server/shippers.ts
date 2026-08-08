@@ -1671,6 +1671,24 @@ async function reverseShipperInTx(
     { tx },
   );
 
+  // 6b. Reopen the shipment being reversed (owner ruling 2026-08-07). A reversal un-marks the
+  //     completion it undoes: clear `lineComplete` on the ORIGINAL shipment's own lines, so the order
+  //     reopens to its ship-derived value. This keeps §5.2's flag-only rule intact — it touches the
+  //     FLAG, never `recomputeOrderStatus`'s derivation and never raw net quantity — and it is what
+  //     makes both status paths below reopen correctly: the derive path recomputes PARTIAL_SHIPPED
+  //     (the reversal doc is still a live shipment, so never OPEN), and the direct-REOPENED path
+  //     leaves a cleared flag behind so a LATER unlock derives PARTIAL_SHIPPED, not SHIPPED. Written
+  //     under the claim already held on the original Shipper row (step 2), through the audited path
+  //     onto the original's own history. Only when a line is actually complete, so a reversal of a
+  //     never-completed partial shipment writes no no-op audit entry (recompute's own discipline).
+  const completeLineIds = original.orders.flatMap((so) =>
+    so.lines.filter((l) => l.lineComplete).map((l) => l.id));
+  if (completeLineIds.length > 0) {
+    await auditedUpdate("shipper", original.id, () => tx.shipperLine.updateMany({
+      where: { id: { in: completeLineIds } }, data: { lineComplete: false },
+    }), { tx, reason: why });
+  }
+
   // 7. Status (spec §5.2). REOPENED is written DIRECTLY for every order that carries a finalized
   //    invoice; the rest are left to `recomputeOrderStatus`'s TWO-arg form. `released` is NEVER
   //    passed from here — see this section's header for why. The finalized-invoice state is read

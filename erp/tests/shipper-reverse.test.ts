@@ -5,7 +5,7 @@ import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper, reverseShipper, type ShipperDetail } from "@/server/shippers";
 import { shippedTotals } from "@/server/ship-ledger";
 import { addPartPrice } from "@/server/part-prices";
-import { createInvoice, finalizeInvoice } from "@/server/invoices";
+import { createInvoice, finalizeInvoice, unlockInvoice } from "@/server/invoices";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 // The binding requirement of this task (Task 13's review): a reversing shipment writes REOPENED
@@ -84,7 +84,7 @@ async function shippedFixture(opts: { qty?: number } = {}):
 
 /** `shippedFixture`, then priced, invoiced and FINALIZED — the order sits at INVOICED. */
 async function invoicedFixture():
-  Promise<{ order: OrderDetail; shipper: ShipperDetail }> {
+  Promise<{ order: OrderDetail; shipper: ShipperDetail; invoiceId: string }> {
   const { order, shipper, part } = await shippedFixture({ qty: 100 });
   const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Sales" } });
   const code = await prisma.processStepCode.create({
@@ -95,7 +95,23 @@ async function invoicedFixture():
   }));
   const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
   await asSystem(() => finalizeInvoice(invoice.id));
-  return { order, shipper };
+  return { order, shipper, invoiceId: invoice.id };
+}
+
+/** One order's shipment carrying a single line at an explicit qty/weight/lineComplete — the
+ *  multi-shipment building block the owner's 1000-pc workflow needs (`oneOrderInput` always ships
+ *  the FULL ordered qty, so it cannot express a partial load). */
+function shipInput(order: OrderDetail, qty: number, weight: string, lineComplete: boolean) {
+  return {
+    customerId: order.customerId,
+    shipDate: "2026-08-04",
+    orders: [{
+      orderId: order.id,
+      lines: [{ orderLineId: order.lines[0].id, qty, weight, lineComplete }],
+      containers: [] as { orderContainerId: string; count: number }[],
+      serials: [] as { orderSerialId: string; printOnShipper?: boolean }[],
+    }],
+  };
 }
 
 beforeEach(async () => {
@@ -145,19 +161,19 @@ describe("reverseShipper", () => {
     expect(entry!.reason).toBe("returned");
   });
 
-  // Spec §5.2 is explicit: OPEN/PARTIAL_SHIPPED/SHIPPED stay ship-derived from the human
-  // line-complete flags — "quantities never enter this decision" (ship-ledger.ts). A reversing
-  // shipment against an order with NO finalized invoice is therefore left to `recomputeOrderStatus`,
-  // two-arg. The original shipment's line is still live AND still line-complete, so the derived
-  // value is SHIPPED — NOT OPEN. (The brief's illustrative test guessed OPEN on a net-quantity
-  // intuition the spec rejects; a reversal always leaves at least one live shipper line, so `anyLive`
-  // is always true and OPEN is unreachable through recompute. What matters is that the status is
-  // DERIVED, never forced to the invoice-owned REOPENED.)
-  it("leaves a non-invoiced order at its ship-derived status (SHIPPED), never REOPENED", async () => {
+  // Owner ruling 2026-08-07: a reversing shipment REOPENS the order it reverses. Status stays
+  // flag-derived (spec §5.2 — "quantities never enter this decision", ship-ledger.ts); the reversal
+  // just un-marks the completion it undoes, clearing `lineComplete` on the ORIGINAL shipment's lines.
+  // A single, fully-shipped-and-complete shipment reversed therefore derives PARTIAL_SHIPPED, not
+  // SHIPPED — the reversal document is still a live shipment (so OPEN is unreachable), but nothing on
+  // the order is line-complete any more. NOT the invoice-owned REOPENED (no finalized invoice here) —
+  // this is a genuine ship-derived recompute. RED before this ruling: the original line stayed
+  // complete, so the order wrongly derived back to SHIPPED.
+  it("reopens a non-invoiced order to its ship-derived PARTIAL_SHIPPED, never REOPENED", async () => {
     const { order, shipper } = await shippedFixture({ qty: 100 });
     await asSystem(() => reverseShipper(shipper.id, { reason: "returned" }));
     const status = (await getOrder(order.id)).status;
-    expect(status).toBe("SHIPPED");
+    expect(status).toBe("PARTIAL_SHIPPED");
     expect(status).not.toBe("REOPENED");
     // Proven derived: the order id WAS passed to `recomputeOrderStatus`, with no `released`.
     const allRecomputed = recomputeMock.mock.calls.flatMap((c) => c[1]);
@@ -248,5 +264,54 @@ describe("reverseShipper", () => {
     await holder;
 
     await expect(reverseCall).rejects.toThrow(/voided/i);
+  });
+
+  // The owner's confirmed acceptance workflow (2026-08-07), walked exactly on a 1000-pc order. The
+  // load breakdown ("loads 1-3 full at 100, load 4 partial at 50") is packaging detail; order status
+  // is flag-derived (spec §5.2), so each step ships the aggregate qty and toggles the human
+  // line-complete flag. RED before the ruling: step 3's reversal left the order at SHIPPED.
+  it("1000-pc workflow: a reversal reopens the order to PARTIAL_SHIPPED (owner ruling 2026-08-07)", async () => {
+    const { order } = await savedOrder({ qty: 1000, weight: "2500.00" });
+    const line = order.lines[0].id;
+
+    // 1. Ship 350 (loads 1-3 full at 100 each, load 4 partial at 50), NOT marked complete.
+    await createShipper(shipInput(order, 350, "350.00", false), { canOverrideCreditHold: false });
+    expect((await getOrder(order.id)).status).toBe("PARTIAL_SHIPPED");
+
+    // 2. Ship the remaining 650, marked complete.
+    const { shipper: shipment2 } =
+      await createShipper(shipInput(order, 650, "650.00", true), { canOverrideCreditHold: false });
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+
+    // 3. Reverse shipment 2 (650 back) -> PARTIAL_SHIPPED again; shipment 1's 350 is still shipped.
+    await asSystem(() => reverseShipper(shipment2.id, { reason: "wrong count on load 4" }));
+    expect((await getOrder(order.id)).status).toBe("PARTIAL_SHIPPED");
+    expect((await shippedTotals(prisma, [line])).get(line)!.qty).toBe(350);
+
+    // 4. Ship the corrected 463 (187 still owed), not complete -> PARTIAL_SHIPPED.
+    await createShipper(shipInput(order, 463, "463.00", false), { canOverrideCreditHold: false });
+    expect((await getOrder(order.id)).status).toBe("PARTIAL_SHIPPED");
+
+    // 5. Ship the remaining 187, marked complete -> SHIPPED.
+    await createShipper(shipInput(order, 187, "187.00", true), { canOverrideCreditHold: false });
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+    expect((await shippedTotals(prisma, [line])).get(line)!.qty).toBe(1000);
+  });
+
+  // The invoiced interaction (spec §5.2, owner ruling 2026-08-07). An invoiced order reversed still
+  // writes REOPENED DIRECTLY — but the reversal ALSO clears the reversed shipment's line-complete
+  // flag, so a LATER unlock (which hands the order back to the ship-derived ledger via
+  // `recomputeOrderStatus(..., released)`) settles it on PARTIAL_SHIPPED, NOT SHIPPED. RED before the
+  // ruling: the original line stayed complete, so unlock derived SHIPPED and silently re-closed a
+  // reversed order.
+  it("invoiced -> reverse (REOPENED) -> unlock derives PARTIAL_SHIPPED, not SHIPPED", async () => {
+    const { order, shipper, invoiceId } = await invoicedFixture();
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+
+    await asSystem(() => reverseShipper(shipper.id, { reason: "returned for rework" }));
+    expect((await getOrder(order.id)).status).toBe("REOPENED");
+
+    await asSystem(() => unlockInvoice(invoiceId, "reopen to correct the count"));
+    expect((await getOrder(order.id)).status).toBe("PARTIAL_SHIPPED");
   });
 });

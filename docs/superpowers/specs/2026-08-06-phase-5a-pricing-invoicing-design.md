@@ -436,6 +436,15 @@ invoice-owned state**, the same shape as its existing skip for voided orders. Wi
 shipment-side recompute would silently drop `INVOICED` back to `SHIPPED`. Finalizing a `CREDIT`
 changes no order status.
 
+**A reversing shipment reopens the order it reverses (owner ruling 2026-08-07).** The reversal
+**clears the `lineComplete` flag on the lines of the shipment it reverses** — it un-marks the
+completion it undoes. Status stays flag-derived: no raw net quantity enters the decision. A
+non-invoiced order therefore drops from `SHIPPED` to its recomputed value (`PARTIAL_SHIPPED` while
+any shipment remains — the reversal document is itself a live shipment, so never `OPEN`), and the
+corrected quantity can be re-shipped and a corrected ship ticket printed. For an invoiced order the
+direct `REOPENED` write still stands, but because the flag is now cleared, a later **unlock** derives
+`PARTIAL_SHIPPED` rather than re-closing the order to `SHIPPED`. See §5.6.
+
 ### 5.3 Creation
 
 Candidates are live, unvoided orders at `status = SHIPPED` with no live invoice. The worklist is
@@ -500,6 +509,15 @@ would drive any line's shipped-to-date below zero, and — when the order has a 
 writes `REOPENED`. `shippedTotals` needs no change: it already sums `qty`, so negatives reduce the
 ledger by construction. The over-ship warning is computed against the net total, so a reversal never
 raises one.
+
+**It reopens the order it reverses (owner ruling 2026-08-07):** under the same claim, it clears the
+`lineComplete` flag on the reversed shipment's own lines, un-marking the completion it undoes, so the
+order returns to its ship-derived value (§5.2). Status remains flag-derived — the reversal changes
+the flag, not `recomputeOrderStatus`'s rule, and no raw net quantity enters the decision. The
+reopened value is `PARTIAL_SHIPPED` (the reversal is itself a live shipment, so never literally
+`OPEN`), which is what lets the corrected quantity be re-shipped and a corrected ship ticket printed.
+For an invoiced order the direct `REOPENED` write stands; the cleared flag is what makes a later
+unlock derive `PARTIAL_SHIPPED` instead of `SHIPPED`.
 
 ### 5.7 New order- and shipment-edit invariants
 
