@@ -656,12 +656,10 @@ export function InvoiceDetail({ id }: { id: string }) {
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
             {printing ? "Printing…" : "Print"}
           </button>
-          {invoice.kind === "INVOICE" && (
-            <button onClick={() => void raiseCredit()} disabled={!creditGate.allowed} title={creditGate.title}
-                    className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
-              Raise credit
-            </button>
-          )}
+          <button onClick={() => void raiseCredit()} disabled={!creditGate.allowed} title={creditGate.title}
+                  className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
+            Raise credit
+          </button>
           <button onClick={() => void unlock()} disabled={!unlockGate.allowed} title={unlockGate.title}
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
             Unlock

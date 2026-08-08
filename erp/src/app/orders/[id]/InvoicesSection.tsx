@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import {
   INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS,
   type InvoiceKindValue, type InvoiceStatusValue,
@@ -37,24 +38,51 @@ export function InvoicesSection({
 }) {
   const router = useRouter();
   const [rows, setRows] = useState<InvoiceRow[]>([]);
+  // A `loaded` flag distinct from "the array is empty" (HANDOFF §5.15 / Task 8's headline
+  // defect, and this section's own Fix 1): a failed fetch must say so, never render as a
+  // genuinely empty, healthy list — and must not leave `hasLiveInvoice` trusting an empty
+  // `rows` it never actually got to fill. Mirrors InvoicingList.tsx's `loadCandidates`.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const allowed = viewGate.allowed;
+  const latest = useLatest();
+  // Ticket-gated on BOTH the success and the rejection path (InvoicingList.tsx precedent): a
+  // stale response must never overwrite a newer one, in either direction. No `.catch(() => {})`
+  // anywhere.
   const load = useCallback(async () => {
     if (!allowed) return;
-    setRows(await api<InvoiceRow[]>(`/api/orders/${orderId}/invoices`));
-  }, [orderId, allowed]);
-  useEffect(() => { load().then(() => setError(null)).catch((e) => setError((e as Error).message)); }, [load]);
+    const t = latest.next();
+    let data: InvoiceRow[];
+    try {
+      data = await api<InvoiceRow[]>(`/api/orders/${orderId}/invoices`);
+    } catch (e) {
+      if (latest.isCurrent(t)) {
+        setError((e as Error).message);
+        setLoaded(true);
+      }
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+    setError(null);
+    setLoaded(true);
+  }, [orderId, allowed, latest]);
+  useEffect(() => { void load(); }, [load]);
 
-  const hasLiveInvoice = rows.some((r) => r.kind === "INVOICE" && r.deletedAt === null);
+  // Trustworthy only once the load actually succeeded — an empty `rows` after a failed or
+  // never-completed load says nothing about whether a live invoice exists.
+  const hasLiveInvoice = loaded && !error && rows.some((r) => r.kind === "INVOICE" && r.deletedAt === null);
   const createTitle = !createGate.allowed
     ? createGate.title
     : orderStatus !== "SHIPPED"
       ? "Only a fully shipped order can be invoiced"
-      : hasLiveInvoice
-        ? "This order already has an invoice — open it below"
-        : creating ? "Creating…" : undefined;
+      : !loaded || error
+        ? "Could not confirm this order's invoice status — reload the page to try again"
+        : hasLiveInvoice
+          ? "This order already has an invoice — open it below"
+          : creating ? "Creating…" : undefined;
 
   async function createInvoice() {
     setCreating(true);
@@ -91,9 +119,9 @@ export function InvoicesSection({
 
       {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
 
-      {rows.length === 0 ? (
+      {loaded && !error && rows.length === 0 ? (
         <p className="text-sm text-slate-500">No invoices raised against this order yet.</p>
-      ) : (
+      ) : rows.length > 0 ? (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-slate-500">
@@ -119,7 +147,7 @@ export function InvoicesSection({
             ))}
           </tbody>
         </table>
-      )}
+      ) : null}
     </section>
   );
 }
