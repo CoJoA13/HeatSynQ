@@ -130,3 +130,19 @@ The Phase 1 process is worth keeping: a fresh subagent per task, an independent 
 ## Environment notes (Fedora)
 
 If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or `./backups` bind mounts, append `:z` to those three mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
+
+## Agent skills
+
+Per-repo config for Matt Pocock's engineering skills (`triage`, `to-tickets`, `to-spec`, `code-review`, `wayfinder`, …) lives in `docs/agents/`.
+
+### Issue tracker
+
+Issues and specs are tracked as GitHub issues on `CoJoA13/HeatSynQ` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each mapped to a like-named label (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) — separate from the `bug`/`enhancement` category labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root, read if present and created lazily (additive to HANDOFF.md and the spec §15 decision log, which remain the binding record). See `docs/agents/domain.md`.
