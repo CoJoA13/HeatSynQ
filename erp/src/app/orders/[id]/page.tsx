@@ -33,6 +33,7 @@ import { LoadsSection } from "./LoadsSection";
 import { DocumentsSection } from "./DocumentsSection";
 import { CertificationsSection } from "./CertificationsSection";
 import { ShipmentsSection } from "./ShipmentsSection";
+import { InvoicesSection } from "./InvoicesSection";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/orders.ts's exported row shapes — not imported from
@@ -605,6 +606,11 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       />
 
       <ShipmentsSection orderId={id} orderNumber={order.orderNumber} viewGate={gate(perms, "shipping.view")} />
+
+      <InvoicesSection
+        orderId={id} orderStatus={order.status}
+        viewGate={gate(perms, "invoicing.view")} createGate={gate(perms, "invoicing.create")}
+      />
 
       <div className="mb-6">
         <HistoryPanel entity="order" entityId={id} />
