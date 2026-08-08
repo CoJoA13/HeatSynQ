@@ -244,6 +244,20 @@ describe("documentFilename", () => {
     expect(documentFilename({ ...base, kind: "CERT", certId: "cert1" }, 72036)).toBe("cert-72036.pdf");
   });
 
+  // Task 2 added the INVOICE/CREDIT arms; these cover them (P5A spec §10). Note `documentFilename`
+  // takes four optional positionals, THREE of them numbers — an INVOICE is named by its ORDER
+  // number (the first number slot), a CREDIT by its CREDIT number (the third), so a caller passing
+  // the wrong number in the wrong slot is exactly what these pin.
+  it("names an INVOICE by its order number, and a CREDIT by its own credit number", async () => {
+    const invoice: DocumentMeta = { ...base, kind: "INVOICE", invoiceId: "inv1" };
+    expect(documentFilename(invoice, 72026)).toBe("invoice-72026.pdf");
+    const credit: DocumentMeta = { ...base, kind: "CREDIT", invoiceId: "cr1" };
+    expect(documentFilename(credit, 72026, undefined, 1000)).toBe("credit-1000.pdf");
+    // Falls back to the raw invoice id when no friendly number is supplied.
+    expect(documentFilename(invoice)).toBe("invoice-inv1.pdf");
+    expect(documentFilename(credit)).toBe("credit-cr1.pdf");
+  });
+
   it("falls back to the raw id when no friendly number is supplied", async () => {
     const meta: DocumentMeta = { ...base, kind: "TRAVELER", orderId: "ord1" };
     expect(documentFilename(meta)).toBe("traveler-ord1.pdf");

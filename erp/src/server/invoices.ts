@@ -25,7 +25,10 @@ import {
   INVOICE_LINE_KINDS, PRICE_SOURCES,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
-import { PRICE_PER, type PricePerValue } from "../lib/part-constants";
+import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
+import { renderPdf } from "./pdf/render";
+import { buildInvoiceDefinition, type InvoicePdfData, type InvoiceAmountRow } from "./pdf/invoice";
+import { storeDocument, assertPrintable } from "./documents";
 
 // -------------------------------------------------------------------------------------------
 // Task 11 (P5A §5.4/§5.7/§10): where pricing becomes a customer-facing invoice. `listInvoice
@@ -1316,4 +1319,155 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
 
     return readInvoiceDetail(tx, credit.id);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// -------------------------------------------------------------------------------------------
+// Task 19 (P5A §10): the invoice/credit PRINT — the four-print bracket every document in this
+// codebase uses (traveler/ticket/BOL/cert), applied to an invoice: settings read OUTSIDE the
+// transaction, then one Serializable transaction bracketing claim → re-read → assertPrintable →
+// read-on-tx → render → archive. Reprints reissue the STORED bytes (getDocument), never re-render.
+//
+// The claim is the load-bearing part (task-19-brief.md's binding requirement, folded in from Task
+// 12's review): `discardInvoice` refuses to discard a PRINTED invoice by reading `storedDocument`
+// under ITS invoice-row claim, and that invariant lives on the StoredDocument rows, not on the
+// Invoice row — so print and discard serialize ONLY if print takes the SAME claim first. Print
+// claims the order row then the invoice row (`claimInvoiceForPrint`) BEFORE it inserts the
+// StoredDocument; without it a discard and a first print interleave into a discarded invoice with
+// an archived PDF that reprints forever (the Phase 4 print-vs-void lesson). Serializable alone is
+// NOT the guarantee — the row lock is (the concurrency test, RED with the claim removed).
+// -------------------------------------------------------------------------------------------
+
+export type InvoicePrintSettings = {
+  company: { name: string; address: string; phone: string };
+  remitTo: { name: string; lines: string[] };
+};
+
+/** The plant-wide company block, read BEFORE the print transaction opens (the cert/ticket
+ *  precedent — a settings read on the top-level client inside a Serializable transaction is the
+ *  pool-starvation shape fix-wave R4 finding 8 exists to prevent). `remitTo` is the plant's own
+ *  remit address (spec §10's Remit To box); the system carries no separate remit-to setting, so it
+ *  is the company itself — the name over the company address split into lines. */
+export async function invoicePrintSettings(): Promise<InvoicePrintSettings> {
+  const [name, address, phone] = await Promise.all([
+    getSetting("company_name"), getSetting("company_address"), getSetting("company_phone"),
+  ]);
+  return {
+    company: { name, address, phone },
+    remitTo: { name, lines: address.split("\n").map((l) => l.trim()).filter((l) => l !== "") },
+  };
+}
+
+const splitAddress = (block: string): string[] => block.split("\n").filter((l) => l !== "");
+
+/** The invoice's whole print payload, off its FROZEN detail (spec §10; invoices.ts's snapshot rule):
+ *  the parts from the PART lines, the PRICE grid from the OPERATION lines, and one named total per
+ *  surcharge/charge/cert/freight/tax line. `billTo`/`shipTo` are the snapshot strings split into
+ *  lines — never a live address re-read, because an invoice is frozen paper. `settings` is optional
+ *  so the concurrency and credit tests can call this without threading the company block through. */
+export async function readInvoicePdfData(
+  db: Db, invoiceId: string, settings?: InvoicePrintSettings,
+): Promise<InvoicePdfData> {
+  const detail = await readInvoiceDetail(db, invoiceId);
+  const s = settings ?? await invoicePrintSettings();
+  const linesOf = (kind: InvoiceLineKindValue) => detail.lines.filter((l) => l.kind === kind);
+  const amountRows = (kind: InvoiceLineKindValue): InvoiceAmountRow[] =>
+    linesOf(kind).map((l) => ({ description: l.description, amount: l.amount }));
+  // At most one CERT/FREIGHT/TAX line exists (the engine pushes one of each), so take the first —
+  // null when absent, so the totals block renders exactly the rows the invoice actually carries.
+  const oneRow = (kind: InvoiceLineKindValue): InvoiceAmountRow | null => {
+    const [row] = linesOf(kind);
+    return row ? { description: row.description, amount: row.amount } : null;
+  };
+
+  return {
+    company: s.company,
+    remitTo: s.remitTo,
+    billTo: splitAddress(detail.billTo),
+    shipTo: splitAddress(detail.shipTo),
+    title: detail.kind === "CREDIT" ? "Credit" : "Invoice",
+    documentNumber: detail.documentNumber,
+    invoiceDate: detail.invoiceDate,
+    termsName: detail.termsName,
+    orderNumber: detail.orderNumber,
+    poNumber: detail.poNumber,
+    materialName: detail.materialName,
+    processNames: detail.processNames,
+    parts: linesOf("PART").map((l) => ({
+      qty: l.qty, partNumber: l.partNumber, partName: l.partName, partDescription: l.partDescription,
+      eachWeight: l.eachWeight, totalWeight: l.weight,
+    })),
+    priceRows: linesOf("OPERATION").map((l) => ({
+      description: l.description,
+      pricePerLabel: l.pricePer ? PRICE_PER_LABELS[l.pricePer] : "",
+      unitPrice: l.unitPrice, minimumCharge: l.minimumCharge, setupCharge: l.setupCharge,
+      amount: l.amount,
+    })),
+    subtotal: detail.subtotal,
+    surchargeRows: amountRows("SURCHARGE"),
+    chargeRows: amountRows("CHARGE"),
+    certRow: oneRow("CERT"),
+    freightRow: oneRow("FREIGHT"),
+    taxRow: oneRow("TAX"),
+    total: detail.total,
+  };
+}
+
+/**
+ * The PRINT claim: `claimInvoiceRow`'s discipline (Order row, then the Invoice row `FOR UPDATE`, one
+ * fixed order — order-locks.ts house rule), but it does NOT 404 a discarded invoice. It returns the
+ * row with its `deletedAt` intact so `printInvoice` can refuse a NEW print with the shared
+ * VOIDED_PRINT 400 (`assertPrintable`) while every STORED print stays reprintable forever (§5.6).
+ * This is the claim print and discard must SHARE for the two to serialize.
+ */
+async function claimInvoiceForPrint(tx: Db, id: string): Promise<{ invoice: DetailRow; order: Order }> {
+  const stub = await tx.invoice.findFirst({ where: { id }, select: { orderId: true } });
+  if (!stub) throw new HttpError(404, "Invoice not found");
+  const order = await claimOrder(tx, stub.orderId);
+  if (!order) throw new HttpError(404, "Invoice not found");
+  await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${id} FOR UPDATE`;
+  const invoice = await tx.invoice.findFirst({ where: { id }, include: DETAIL_INCLUDE });
+  if (!invoice) throw new HttpError(404, "Invoice not found");
+  return { invoice, order };
+}
+
+async function printInvoiceInTx(
+  tx: Db, id: string, settings: InvoicePrintSettings,
+): Promise<{ documentId: string; documentNumber: string; pdf: Buffer }> {
+  const { invoice, order } = await claimInvoiceForPrint(tx, id);
+  // Read under the claim just taken (its whole point): a voided ORDER produces no new paper of any
+  // kind (§5.6), and a discarded invoice refuses a NEW print while its stored prints remain
+  // reprintable. Both refuse with the shared VOIDED_PRINT 400.
+  assertPrintable(order);
+  assertPrintable(invoice);
+
+  const data = await readInvoicePdfData(tx, id, settings);
+  const pdf = await renderPdf(buildInvoiceDefinition(data));
+
+  // The kind follows the invoice ROW's own kind — a credit archives as CREDIT, an invoice as
+  // INVOICE, both owning `invoiceId` alone (the kind→owner CHECK). This insert is the ONE mutation
+  // here, through the sanctioned `storeDocument` path, on `tx`, UNDER the claim above — so the
+  // archive cannot commit against a state (a concurrent discard) that changed out from under it.
+  const doc = await storeDocument(
+    tx, { kind: invoice.kind === "CREDIT" ? "CREDIT" : "INVOICE", invoiceId: id }, pdf);
+  return { documentId: doc.id, documentNumber: data.documentNumber, pdf };
+}
+
+/**
+ * Render, archive and return the invoice/credit PDF (spec §10, §5.6's print/reprint contract). A
+ * voided order or discarded invoice refuses a NEW print; a reprint of a STORED document is the
+ * download route's job (`getDocument`), not this function's, and stays available forever.
+ *
+ * `tx` is optional: the discriminating concurrency test passes a manually-opened transaction so the
+ * row lock — not SSI — is what serializes a competing discard (the `createInvoice`/`finalizeInvoice`
+ * precedent). The public no-`tx` path runs Serializable, pairing the claim with the archive insert.
+ */
+export async function printInvoice(
+  invoiceId: string, tx?: Prisma.TransactionClient,
+): Promise<{ documentId: string; documentNumber: string; pdf: Buffer }> {
+  const settings = await invoicePrintSettings(); // OUTSIDE the transaction (the cert/ticket precedent)
+  if (tx) return printInvoiceInTx(tx, invoiceId, settings);
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(
+    (fresh) => printInvoiceInTx(fresh, invoiceId, settings),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
 }

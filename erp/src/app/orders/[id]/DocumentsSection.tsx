@@ -15,7 +15,17 @@ type StoredDocument = {
   loadNumber: number | null; createdAt: string;
 };
 
-const KIND_LABELS: Record<string, string> = { TRAVELER: "Traveler" };
+// Every DocumentKind, so a non-traveler kind renders a friendly label instead of its raw enum
+// name (the cosmetic gap HANDOFF §6 recorded; P5A spec §10 completes it). Kept as Record<string>
+// with a `?? d.kind` fallback at the call site so a future kind is a plain enum name, never a crash.
+const KIND_LABELS: Record<string, string> = {
+  TRAVELER: "Traveler",
+  SHIPPER: "Shipping ticket",
+  BOL: "Bill of lading",
+  CERT: "Certification",
+  INVOICE: "Invoice",
+  CREDIT: "Credit",
+};
 
 /**
  * Traveler printing and the archive of every print (design spec §10/§11).

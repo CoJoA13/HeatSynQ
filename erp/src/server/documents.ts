@@ -172,6 +172,10 @@ export async function listDocumentsForOrder(orderId: string, viewer?: PermUser):
       OR: [
         { orderId },
         { cert: { orderId } },
+        // An INVOICE/CREDIT carries only its own `invoiceId`, never the order's id directly (the
+        // kind→owner CHECK), so the invoice appears on its order's hub through this join, the same
+        // shape the cert branch above uses (P5A spec §10).
+        { invoice: { orderId } },
         // Whole-shipment paper only (`orderId: null` — the BOL, a whole-set ticket): a SIBLING
         // order's own ticket also matches the bare relation (its shipperId is this shipment's),
         // and it is not this order's paper (round-4 finding).
