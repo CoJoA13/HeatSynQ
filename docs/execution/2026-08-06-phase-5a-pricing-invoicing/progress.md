@@ -1251,6 +1251,41 @@ Task 20: complete (commit 026ff4c) — reviewed as part of the whole-branch pass
     review on the strongest model (fed this ledger's deferred-minors as triage), one fix wave, the
     owner demo, the PR. ===
 
+FINISH SEQUENCE
+Controller final gate run (before the whole-branch review): 1688 tests / 109 files, tsc 0, eslint 0,
+  build clean, E2E 16/16 (incl. the new invoice-shipped-order flow). Branch verified good, not taken
+  on per-task-report trust.
+Whole-branch review: ran as a WORKFLOW (ultracode on) — 4 dimension reviewers on opus/high, each
+  over its own targeted diff of 712def3..HEAD (merge-base), focused on CROSS-TASK seams the per-task reviews
+  structurally could not see. 27 load-bearing seams confirmed SOUND across concurrency (the claim
+  discipline, the released-arg grep, print-vs-discard, the reversing shipment), money (anti-drift
+  create/recalc/credit share one mapper, rounding order, tax base), permissions (the full corrected
+  gate table route↔UI), and schema (both CHECKs, partial-unique, the CASCADE that can't fire).
+  Findings: 1 Critical, 2 Minor.
+  CRITICAL (CONFIRMED, the textbook whole-branch catch — invisible to every per-task review):
+    recalculateInvoice had no kind guard. Task 12 built recalc assuming an INVOICE (re-derive from
+    the order); Task 14 added CREDIT sharing the same page/route/lifecycle but never taught recalc to
+    refuse it. Clicking Recalculate on a DRAFT CREDIT rebuilt its lines at full POSITIVE prices —
+    a credit that should REDUCE the customer's balance instead ADDS to it, and finalizes+prints
+    cleanly. No test, no guard at any layer. Neither task's review could catch it: credit didn't
+    exist when recalc was reviewed; recalc wasn't re-examined when credit was added.
+  MINOR 1 (CONFIRMED, data-integrity of audit history): SNAPSHOT_INCLUDE.partPrice.breaks had no
+    deletedAt filter and ordered only by threshold (unique among LIVE rows only) — a break re-added
+    at a soft-deleted break's threshold put two same-threshold breaks in the snapshot, spurious
+    history diff + a deleted break the live UI never shows. Issue-#24 class.
+  MINOR 2 (PLAUSIBLE, spec-silent — FILED for owner, NOT fixed): addLine/updateLine on an order with
+    a finalized invoice aren't blocked by the §5.7 freeze (only replaceCharges/voidOrder are). §5.7
+    enumerates charges/void/shipment-edit, not order-line edits; the invoice is frozen paper and
+    self-corrects on unlock+recalculate, so no money error. The reviewer itself downgraded it to a
+    note. Owner decides whether order-line edits should freeze too.
+Fix wave 1 (whole-branch): the Critical + Minor 1. recalculateInvoice refuses kind=CREDIT
+  (HttpError 400, named); InvoiceDetail's recalcGate disables Recalculate on a credit with a title;
+  audit breaks include now `where: { deletedAt: null }, orderBy: [{ threshold: "asc" }]`. Both tests
+  discriminate: the recalc-credit test asserts total −937.44 before, 400 on recalc, and lines
+  UNCHANGED after (deep-equal) — RED if the guard is removed (recalc flips to +937.44); the audit
+  test asserts the snapshot's breaks contains only the live one. (Fixer stalled on its test run —
+  controller verified the fixes in-tree and ran the gates; see below.)
+
 Task 4: DEFERRED, carried forward by the controller into Tasks 5 and 9 (NOT a defect in this task,
   reviewer's judgment and mine): `updatePartPrice` will move a row's basis among the non-LOT units
   (EACH → LB → PER_1000) while live breaks exist, and `threshold` is defined as being expressed in
