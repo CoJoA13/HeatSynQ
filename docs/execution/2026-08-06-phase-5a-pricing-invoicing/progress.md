@@ -1332,6 +1332,15 @@ VS SCREEN LIBRARY (owner added 2026-08-07): 125+ Visual Shop screens under docs/
   to VS's real menu labels (read the A/R and Billing menus to name functions precisely). Both
   registered in HANDOFF's document map. Commit for the gitignore+wishlist+map is separate.
 
+=== PR OPENED (2026-08-08): https://github.com/CoJoA13/HeatSynQ/pull/58 — base main, head
+    phase-5a-pricing-invoicing. Pushed after both final gates green (1692 tests, tsc/eslint/build,
+    E2E 16/16) AND the reversal-reopen review came back clean. Attribution in the PR BODY (commit
+    trailers are hook-blocked). Awaiting owner squash-merge. NOTE: GitHub/dependabot flagged 1 HIGH
+    vulnerability on the DEFAULT branch (main) during push — pre-existing on main's dep tree, not
+    introduced by this PR; see https://github.com/CoJoA13/HeatSynQ/security/dependabot/6 — surfaced
+    to the owner, separate from this merge. Post-merge: verify squashed tree byte-identical to the
+    tip, gates green on main, both DBs migrated, then kick off 5B (A/R) from §9. ===
+
 === PHASE 5A: REVIEW-COMPLETE (2026-08-07). 20 tasks + whole-branch review + 1 fix wave + scoped
     re-review, all clean. Final: 1690 tests / 109 files, tsc/eslint/build clean, E2E 16/16. 103
     commits on phase-5a-pricing-invoicing (LOCAL, not pushed). Remaining are OWNER actions:
