@@ -99,7 +99,7 @@ describe("applications routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("GET returns the eligible early-pay discount", async () => {
+  it("GET ?paymentId=&invoiceId= returns the live open balance and the eligible early-pay discount", async () => {
     const cookie = await signInWith(["receivables.view"]);
     const terms = await prisma.terms.create({ data: { name: "R2/10", netDays: 30, discountPercent: "2.00", discountDays: 10 } });
     seq += 1;
@@ -113,7 +113,79 @@ describe("applications routes", () => {
     const paymentId = await makePayment(customer.id, 1000);
     const res = await discountRoute(getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${invoice.id}`, cookie), noParams);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ discount: 20 });
+    expect(await res.json()).toEqual({ open: 1000, discount: 20 });
+  });
+
+  it("GET ?paymentId=&invoiceId= reflects a balance already reduced by a prior application", async () => {
+    const cookie = await signInWith(["receivables.create", "receivables.view"]);
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
+      paymentId, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 600 }],
+    }), noParams);
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${inv.invoiceId}`, cookie), noParams);
+    expect(res.status).toBe(200);
+    expect((await res.json()).open).toBe(400);
+  });
+
+  it("GET ?customerId= lists the payer's open finalized invoices, excluding credits and settled ones", async () => {
+    const cookie = await signInWith(["receivables.view"]);
+    const invA = await finalizedInvoice(1000);
+    const invB = await finalizedInvoice(500);
+    const credit = await finalizedCredit(-200);
+    // A second invoice on the SAME customer as invA, fully settled — must not appear.
+    seq += 1;
+    const order = await prisma.order.create({
+      data: { orderNumber: 640000 + seq, customerId: invA.customerId, status: "SHIPPED", receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01") },
+    });
+    const settled = await prisma.invoice.create({
+      data: { kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: invA.customerId, invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date() },
+    });
+    const payment = await prisma.payment.create({
+      data: { batchId: (await prisma.receiptBatch.create({ data: { batchNumber: 650000 + seq, depositDate: parseDateOnly("2026-08-08") } })).id,
+        customerId: invA.customerId, paymentTypeId: (await prisma.paymentType.create({ data: { name: `PTS-${seq}` } })).id,
+        amount: 300, receivedDate: parseDateOnly("2026-08-08") },
+    });
+    await prisma.application.create({
+      data: { invoiceId: settled.id, amount: 300, type: "PAYMENT", paymentId: payment.id, appliedDate: parseDateOnly("2026-08-08") },
+    });
+
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?customerId=${invA.customerId}`, cookie), noParams);
+    expect(res.status).toBe(200);
+    const rows = await res.json();
+    const ids = rows.map((r: { id: string }) => r.id);
+    expect(ids).toContain(invA.invoiceId);
+    expect(ids).not.toContain(invB.invoiceId); // different customer, no family relation
+    expect(ids).not.toContain(credit.invoiceId); // a CREDIT is never a payment target
+    expect(ids).not.toContain(settled.id); // fully settled — not an open item
+    const rowA = rows.find((r: { id: string }) => r.id === invA.invoiceId);
+    expect(rowA.open).toBe(1000);
+  });
+
+  it("GET ?customerId= rolls up the family from a CHILD payer (parent + every sibling)", async () => {
+    const cookie = await signInWith(["receivables.view"]);
+    seq += 1;
+    const parent = await prisma.customer.create({ data: { code: `ARP${seq}`, name: `Parent ${seq}` } });
+    const childA = await prisma.customer.create({ data: { code: `ARCA${seq}`, name: `Child A ${seq}`, parentId: parent.id } });
+    const childB = await prisma.customer.create({ data: { code: `ARCB${seq}`, name: `Child B ${seq}`, parentId: parent.id } });
+    async function invoiceFor(customerId: string, total: number) {
+      seq += 1;
+      const order = await prisma.order.create({
+        data: { orderNumber: 660000 + seq, customerId, status: "SHIPPED", receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01") },
+      });
+      return prisma.invoice.create({
+        data: { kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId, invoiceDate: parseDateOnly("2026-08-08"), total, finalizedAt: new Date() },
+      });
+    }
+    const parentInv = await invoiceFor(parent.id, 100);
+    const childAInv = await invoiceFor(childA.id, 200);
+    const childBInv = await invoiceFor(childB.id, 300);
+
+    // Querying from childA (a CHILD, not the parent) must still roll up parent + childB.
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?customerId=${childA.id}`, cookie), noParams);
+    expect(res.status).toBe(200);
+    const ids = (await res.json()).map((r: { id: string }) => r.id);
+    expect(ids.sort()).toEqual([parentInv.id, childAInv.id, childBInv.id].sort());
   });
 
   it("DELETE voids an application with a reason", async () => {

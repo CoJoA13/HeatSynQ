@@ -124,6 +124,55 @@ export async function getBatch(id: string): Promise<BatchDetail> {
 }
 
 // -------------------------------------------------------------------------------------------
+// listBatches — Task 13's worklist ("open batches + a filter, each row linking to the batch
+// detail"). Not part of the original Task 6 surface: `createBatch`/`getBatch` cover opening one
+// batch and reading it back by id, but nothing before this listed them — the same gap
+// `listInvoices` (invoices.ts) fills for Invoice, added here after the fact for the same reason.
+// A leaner row than `BatchDetail` — no per-payment detail, just the batch-level totals the
+// worklist table shows — the `InvoiceListRow`/`listInvoices` precedent (thin summary row; the
+// single-batch GET is still the source of full detail). Filters to live batches only (a voided
+// batch drops off the worklist but stays readable at its own url — the `listInvoices`
+// `deletedAt: null` precedent, invoices.ts's own comment: "a discarded draft is never shown in
+// the list but its own page still reads it").
+// -------------------------------------------------------------------------------------------
+
+export type BatchListRow = {
+  id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number;
+};
+
+export type BatchFilter = { status?: ReceiptBatchStatusValue };
+
+const LIST_INCLUDE = {
+  payments: { where: { deletedAt: null }, select: { amount: true } },
+} satisfies Prisma.ReceiptBatchInclude;
+
+type ListRow = Prisma.ReceiptBatchGetPayload<{ include: typeof LIST_INCLUDE }>;
+
+function toBatchListRow(row: ListRow): BatchListRow {
+  const enteredCents = row.payments.reduce((sum, p) => sum + cents(p.amount.toNumber()), 0);
+  const enteredTotal = enteredCents / 100;
+  const controlTotal = row.controlTotal === null ? null : row.controlTotal.toNumber();
+  const controlCents = controlTotal === null ? enteredCents : cents(controlTotal);
+  const balance = (controlCents - enteredCents) / 100;
+  return {
+    id: row.id, batchNumber: row.batchNumber, depositDate: formatDateOnly(row.depositDate),
+    controlTotal, status: row.status as ReceiptBatchStatusValue, enteredTotal, balance,
+  };
+}
+
+/** Newest deposit first — the worklist's natural order (most recent activity at the top, the
+ *  `listInvoices` `orderBy: invoiceDate desc` precedent). */
+export async function listBatches(filter: BatchFilter = {}): Promise<BatchListRow[]> {
+  const rows = await prisma.receiptBatch.findMany({
+    where: { deletedAt: null, ...(filter.status ? { status: filter.status } : {}) },
+    include: LIST_INCLUDE,
+    orderBy: [{ depositDate: "desc" }, { batchNumber: "desc" }],
+  });
+  return rows.map(toBatchListRow);
+}
+
+// -------------------------------------------------------------------------------------------
 // The batch claim — every mutator (`addPayment`, `voidPayment`, `postBatch`, `voidBatch`) takes
 // this FIRST, then reads `status`/live payments off the row it now holds. Raw id-only lock, then
 // the ordinary client reads the full row — exactly `claimOrder`'s shape (order-locks.ts).

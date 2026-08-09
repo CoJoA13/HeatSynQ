@@ -7,6 +7,7 @@ import { auditedCreate, auditedSoftDelete } from "./audit";
 import { decimalField } from "./decimal-field";
 import { claimOrder, claimOrdersInOrder, sortedClaimIds } from "./order-locks";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "./ar-balances";
+import { getSetting } from "./settings";
 import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
 
 // -------------------------------------------------------------------------------------------
@@ -89,6 +90,87 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   if (!invoice) throw new HttpError(404, "Invoice not found");
   const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
   return discountFor(invoice.customer.terms, invoice.invoiceDate, payment.receivedDate, open);
+}
+
+/** One invoice's current open balance, by id — the same read `discountAvailable` already does,
+ *  pulled out standalone (Task 13's batch-apply screen reads this ALONGSIDE `discountAvailable`
+ *  for the same pair, via the GET route below, so the two live side by side rather than folding
+ *  `discountAvailable`'s own return shape into `{ open, discount }` and rippling into its four
+ *  direct callers in tests/applications.test.ts). */
+export async function invoiceOpenBalanceById(invoiceId: string): Promise<number> {
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: invoiceId },
+    select: { total: true, applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } } },
+  });
+  if (!invoice) throw new HttpError(404, "Invoice not found");
+  return invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
+}
+
+// -------------------------------------------------------------------------------------------
+// openInvoicesForPayer — Task 13's batch-apply screen (brief: "listing the payer's — and, when
+// the payer has a parent/children, the family's — open finalized invoices"). Not part of the
+// original Task 7 surface; added here because no other endpoint in this phase's plan ever
+// surfaces a per-invoice open balance to the client — `GET /api/invoices` (5A) returns only
+// `total`, and `aging.ts`/`statements.ts` report CUSTOMER-level buckets, never a pickable list of
+// invoice ids. Read-only, gated `receivables.view` alone by the route below (no `invoicing.view`
+// or `customers.view` coupling): family resolution happens HERE, not by asking the client to
+// fetch the full customer list and infer it.
+//
+// Family = whichever of "the payer is a parent" / "the payer is a child" applies, unified into
+// one rule: resolve the payer's OWN "root" (its parentId if it has one, else itself), then that
+// root plus every live customer whose parentId is that root. A parent payer's root is itself
+// (family = parent + children, the aging.ts/statements.ts rollup); a child payer's root is its
+// parent (family = parent + every sibling, INCLUDING the payer — the aging.ts rollup starting
+// from the parent's own id). A standalone customer's root is itself with no children — family of
+// one. `[...new Set(...)]` because the payer is already included via one of the two branches
+// above; de-duplicating rather than asserting keeps this correct even if that ever changes.
+// -------------------------------------------------------------------------------------------
+
+export type OpenInvoiceRow = {
+  id: string; orderId: string; orderNumber: number; documentNumber: string;
+  customerId: string; customerCode: string; customerName: string;
+  invoiceDate: string; dueDate: string | null; total: number; open: number;
+};
+
+async function familyCustomerIds(customerId: string): Promise<string[]> {
+  const payer = await prisma.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: { id: true, parentId: true },
+  });
+  if (!payer) throw new HttpError(404, "Customer not found");
+  const rootId = payer.parentId ?? payer.id;
+  const children = await prisma.customer.findMany({
+    where: { parentId: rootId, deletedAt: null }, select: { id: true },
+  });
+  return [...new Set([rootId, payer.id, ...children.map((c) => c.id)])];
+}
+
+/** Every live, finalized INVOICE (never a CREDIT — `applyPayment` refuses those) belonging to the
+ *  payer's family, with a positive open balance, oldest first — the "open item" filter
+ *  `statements.ts`'s open-item table already established for this phase (`cents(open) <= 0` is
+ *  fully settled, not an open item). `documentNumber` is the `invoices.ts`/`statements.ts`
+ *  prefix + order-number rule, duplicated (private in both; the established precedent for this
+ *  small a computation rather than a cross-module import). */
+export async function openInvoicesForPayer(customerId: string): Promise<OpenInvoiceRow[]> {
+  const familyIds = await familyCustomerIds(customerId);
+  const prefix = await getSetting("invoice_number_prefix");
+  const rows = await prisma.invoice.findMany({
+    where: { customerId: { in: familyIds }, deletedAt: null, status: "FINALIZED", kind: "INVOICE" },
+    select: {
+      id: true, orderId: true, customerId: true, total: true, invoiceDate: true, dueDate: true,
+      order: { select: { orderNumber: true } }, customer: { select: { code: true, name: true } },
+      applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+    },
+    orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
+  });
+  return rows
+    .map((r) => ({
+      id: r.id, orderId: r.orderId, orderNumber: r.order.orderNumber,
+      documentNumber: prefix === "" ? String(r.order.orderNumber) : `${prefix} - ${r.order.orderNumber}`,
+      customerId: r.customerId, customerCode: r.customer.code, customerName: r.customer.name,
+      invoiceDate: formatDateOnly(r.invoiceDate), dueDate: r.dueDate ? formatDateOnly(r.dueDate) : null,
+      total: r.total.toNumber(), open: invoiceOpenBalance(r.total.toNumber(), r.applications.map(toLite)),
+    }))
+    .filter((r) => cents(r.open) > 0);
 }
 
 // -------------------------------------------------------------------------------------------

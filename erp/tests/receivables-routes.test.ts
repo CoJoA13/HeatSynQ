@@ -4,7 +4,7 @@ import { signInWith } from "./helpers/auth";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 import { GET as getRoute, PATCH as patchRoute, DELETE as deleteRoute } from "@/app/api/receivables/batches/[id]/route";
-import { POST as createRoute } from "@/app/api/receivables/batches/route";
+import { GET as listRoute, POST as createRoute } from "@/app/api/receivables/batches/route";
 import { POST as addPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/route";
 import { DELETE as voidPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/[paymentId]/route";
 import { GET as agingRoute } from "@/app/api/receivables/aging/route";
@@ -69,6 +69,32 @@ describe("POST /api/receivables/batches", () => {
     const body = await res.json();
     expect(body.status).toBe("OPEN");
     expect(body.controlTotal).toBe(500);
+  });
+});
+
+describe("GET /api/receivables/batches", () => {
+  it("403s without receivables.view, then lists with it, filterable by status", async () => {
+    const creator = await signInWith(["receivables.create", "receivables.edit"], "rb-list-creator");
+    const open = await createdBatch(creator);
+    const posted = await createdBatch(creator);
+    const postRes = await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH", creator), withParams({ id: posted.id }));
+    expect(postRes.status).toBe(200);
+
+    const wrong = await signInWith(["receivables.create"], "rb-list-wrong");
+    expect((await listRoute(getReq("http://t/api/receivables/batches", wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "rb-list-viewer");
+    const all = await listRoute(getReq("http://t/api/receivables/batches", viewer), withParams({}));
+    expect(all.status).toBe(200);
+    const allIds = (await all.json()).map((r: { id: string }) => r.id);
+    expect(allIds).toContain(open.id);
+    expect(allIds).toContain(posted.id);
+
+    const openOnly = await listRoute(getReq("http://t/api/receivables/batches?status=OPEN", viewer), withParams({}));
+    expect((await openOnly.json()).map((r: { id: string }) => r.id)).toEqual([open.id]);
+
+    const bad = await listRoute(getReq("http://t/api/receivables/batches?status=NOPE", viewer), withParams({}));
+    expect(bad.status).toBe(400);
   });
 });
 

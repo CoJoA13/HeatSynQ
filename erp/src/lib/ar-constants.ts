@@ -6,6 +6,9 @@ export const APPLICATION_TYPE_LABELS: Record<ApplicationTypeValue, string> = {
 };
 export const RECEIPT_BATCH_STATUSES = ["OPEN", "POSTED"] as const;
 export type ReceiptBatchStatusValue = (typeof RECEIPT_BATCH_STATUSES)[number];
+export const RECEIPT_BATCH_STATUS_LABELS: Record<ReceiptBatchStatusValue, string> = {
+  OPEN: "Open", POSTED: "Posted",
+};
 export const AGING_BUCKETS = ["CURRENT", "D1_30", "D31_60", "D61_90", "D90_PLUS"] as const;
 export type AgingBucketValue = (typeof AGING_BUCKETS)[number];
 export const AGING_BUCKET_LABELS: Record<AgingBucketValue, string> = {

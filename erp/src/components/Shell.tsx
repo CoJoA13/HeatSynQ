@@ -23,7 +23,7 @@ const NAV: { label: string; href: string; area: string }[] = [
   { label: "Certifications", href: "/certs", area: "certs" },
   { label: "Shipping", href: "/shipping", area: "shipping" },
   { label: "Invoicing", href: "/invoicing", area: "invoicing" },
-  { label: "A/R", href: "/ar", area: "ar" },
+  { label: "Receivables", href: "/receivables", area: "receivables" },
   { label: "Customers", href: "/customers", area: "customers" },
   { label: "Parts", href: "/parts", area: "parts" },
   { label: "Processes", href: "/processes", area: "processes" },

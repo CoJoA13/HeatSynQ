@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { createBatch, getBatch, addPayment, voidPayment, postBatch, voidBatch, type BatchDetail } from "@/server/receipts";
+import { createBatch, getBatch, addPayment, voidPayment, postBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding Payments. `enteredTotal`
@@ -236,5 +236,44 @@ describe("voidBatch", () => {
     const entry = await prisma.auditLog.findFirst({
       where: { entity: "receiptBatch", entityId: batch.id, action: "delete" } });
     expect(entry!.reason).toBe("duplicate deposit entry");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// listBatches — Task 13's worklist. Not part of Task 6's original surface; see the file-header
+// comment on `listBatches` in receipts.ts for why it was added here after the fact.
+// -------------------------------------------------------------------------------------------
+
+describe("listBatches", () => {
+  it("lists live batches newest-first with their live totals", async () => {
+    const older = await asSystem(() => createBatch({ depositDate: "2026-08-01", controlTotal: "500.00" }));
+    const newer = await asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal: null }));
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(newer.id, paymentInput(customer, paymentType, 300)));
+
+    const rows = await listBatches();
+    expect(rows.map((r) => r.id)).toEqual([newer.id, older.id]); // depositDate desc
+    const newerRow = rows.find((r) => r.id === newer.id)!;
+    expect(newerRow.enteredTotal).toBe(300);
+    expect(newerRow.balance).toBe(0); // no controlTotal — balance foots against enteredTotal itself
+    const olderRow = rows.find((r) => r.id === older.id)!;
+    expect(olderRow.enteredTotal).toBe(0);
+    expect(olderRow.balance).toBe(500);
+  });
+
+  it("filters by status", async () => {
+    const open = await asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal: null }));
+    const posted = await asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal: null }));
+    await asSystem(() => postBatch(posted.id));
+
+    expect((await listBatches({ status: "OPEN" })).map((r) => r.id)).toEqual([open.id]);
+    expect((await listBatches({ status: "POSTED" })).map((r) => r.id)).toEqual([posted.id]);
+  });
+
+  it("excludes a voided batch", async () => {
+    const batch = await asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal: null }));
+    await asSystem(() => voidBatch(batch.id, "duplicate"));
+    expect(await listBatches()).toEqual([]);
   });
 });

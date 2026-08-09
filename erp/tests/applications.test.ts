@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { applyPayment, voidApplication, discountAvailable, applyCredit } from "@/server/applications";
+import {
+  applyPayment, voidApplication, discountAvailable, applyCredit,
+  invoiceOpenBalanceById, openInvoicesForPayer,
+} from "@/server/applications";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "@/server/ar-balances";
 import { parseDateOnly } from "@/lib/business-days";
 import type { Payment, Terms } from "../prisma/generated/prisma/client";
@@ -277,6 +280,92 @@ describe("discountAvailable — the early-pay window", () => {
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-18"); // invoiceDate + 10 days exactly
     expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 13 reads: invoiceOpenBalanceById + openInvoicesForPayer. Not part of Task 7's original
+// surface — added for the batch-apply screen, which needs a per-invoice open balance and a
+// pickable list of a payer's (and its family's) open invoices, neither of which any existing
+// route surfaces (see the file-header comment above `openInvoicesForPayer`).
+// -------------------------------------------------------------------------------------------
+
+describe("invoiceOpenBalanceById", () => {
+  it("returns the full total for a fresh invoice and the reduced balance after a payment", async () => {
+    const inv = await finalizedInvoice({ total: 1000 });
+    expect(await asSystem(() => invoiceOpenBalanceById(inv.invoiceId))).toBe(1000);
+    const payment = await makePayment(inv.customerId, 600);
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 600 }],
+    }));
+    expect(await asSystem(() => invoiceOpenBalanceById(inv.invoiceId))).toBe(400);
+  });
+
+  it("404s a missing invoice", async () => {
+    await expect(asSystem(() => invoiceOpenBalanceById("nope"))).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("openInvoicesForPayer", () => {
+  it("lists a standalone payer's own open finalized invoices only", async () => {
+    const invA = await finalizedInvoice({ total: 1000 });
+    const invB = await finalizedInvoice({ total: 500 }); // different customer — must not leak in
+    const rows = await asSystem(() => openInvoicesForPayer(invA.customerId));
+    expect(rows.map((r) => r.id)).toEqual([invA.invoiceId]);
+    expect(rows.map((r) => r.id)).not.toContain(invB.invoiceId);
+    expect(rows[0].open).toBe(1000);
+    expect(rows[0].total).toBe(1000);
+  });
+
+  it("excludes a fully-settled invoice and a CREDIT-kind document", async () => {
+    const inv = await finalizedInvoice({ total: 300 });
+    const payment = await makePayment(inv.customerId, 300);
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 300 }],
+    }));
+    seq += 1;
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 501000 + seq, customerId: inv.customerId, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "CREDIT", status: "FINALIZED", orderId: order.id, customerId: inv.customerId,
+        invoiceDate: parseDateOnly("2026-08-08"), total: -100, finalizedAt: new Date(),
+      },
+    });
+    expect(await asSystem(() => openInvoicesForPayer(inv.customerId))).toEqual([]);
+  });
+
+  it("rolls up a PARENT payer's own invoices plus its children's", async () => {
+    seq += 1;
+    const parent = await prisma.customer.create({ data: { code: `APP${seq}`, name: `Parent ${seq}` } });
+    const child = await prisma.customer.create({ data: { code: `APCH${seq}`, name: `Child ${seq}`, parentId: parent.id } });
+    async function invoiceFor(customerId: string, total: number) {
+      seq += 1;
+      const order = await prisma.order.create({
+        data: {
+          orderNumber: 502000 + seq, customerId, status: "SHIPPED",
+          receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+        },
+      });
+      return prisma.invoice.create({
+        data: {
+          kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId,
+          invoiceDate: parseDateOnly("2026-08-08"), total, finalizedAt: new Date(),
+        },
+      });
+    }
+    const parentInv = await invoiceFor(parent.id, 100);
+    const childInv = await invoiceFor(child.id, 200);
+    const rows = await asSystem(() => openInvoicesForPayer(parent.id));
+    expect(rows.map((r) => r.id).sort()).toEqual([parentInv.id, childInv.id].sort());
+  });
+
+  it("404s a missing customer", async () => {
+    await expect(asSystem(() => openInvoicesForPayer("nope"))).rejects.toMatchObject({ status: 404 });
   });
 });
 
