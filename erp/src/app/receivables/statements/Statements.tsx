@@ -78,7 +78,9 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
       .catch((e) => setErr((e as Error).message));
   }, [customerId, allowed, refresh]);
 
-  if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
+  if (!viewGate.allowed) {
+    return <p className="text-sm text-slate-500">{viewGate.title ?? "You do not have permission to view statements."}</p>;
+  }
   if (!customerId) return <p className="text-sm text-slate-500">Pick a customer to see its statement history.</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
   if (docs.length === 0) return <p className="text-sm text-slate-500">Nothing printed yet.</p>;

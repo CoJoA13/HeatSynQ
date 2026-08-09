@@ -279,3 +279,27 @@ export async function agingReport(filter: AgingFilter = {}): Promise<AgingRow[]>
   const snap = await readSnapshot(customerIds, asOfDate);
   return bucketAging(snap, asOf, customers);
 }
+
+/**
+ * Exactly ONE customer's OWN aging row — never rolled up into its family, even when that customer
+ * is a PARENT with live children (Task 15 fix round 1: the customer A/R section's own scope,
+ * `customer-receivables.ts`). `agingReport({ customerId })` above deliberately answers a
+ * different question for a parent (the synthesized family-TOTAL row, still keyed on the parent's
+ * own id — the aging *report* screen's own rollup, owner ruling "parent-family roll-up") and must
+ * keep doing so; this is the single-customer sibling it was missing, not a behavior change to it.
+ *
+ * Reuses the same private `readSnapshot`/pure `bucketAging` core `agingReport` uses — scoped to a
+ * ONE-element customer id list, which is exactly what `agingReport`'s own childless branch above
+ * already does for a plain (non-parent) customer; the only difference here is that a live
+ * children set never widens the query.
+ */
+export async function customerOwnAgingRow(customerId: string, asOf?: string): Promise<AgingRow> {
+  const asOfResolved = asOf ?? formatDateOnly(todayDateOnly());
+  const asOfDate = parseAsOf(asOfResolved);
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: CUSTOMER_REF_SELECT,
+  });
+  if (!customer) throw new HttpError(404, "Customer not found");
+  const snap = await readSnapshot([customer.id], asOfDate);
+  return bucketAging(snap, asOfResolved, [customer])[0];
+}

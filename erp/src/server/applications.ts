@@ -144,17 +144,19 @@ async function familyCustomerIds(customerId: string): Promise<string[]> {
   return [...new Set([rootId, payer.id, ...children.map((c) => c.id)])];
 }
 
-/** Every live, finalized INVOICE (never a CREDIT — `applyPayment` refuses those) belonging to the
- *  payer's family, with a positive open balance, oldest first — the "open item" filter
- *  `statements.ts`'s open-item table already established for this phase (`cents(open) <= 0` is
- *  fully settled, not an open item). `documentNumber` is the `invoices.ts`/`statements.ts`
- *  prefix + order-number rule, duplicated (private in both; the established precedent for this
- *  small a computation rather than a cross-module import). */
-export async function openInvoicesForPayer(customerId: string): Promise<OpenInvoiceRow[]> {
-  const familyIds = await familyCustomerIds(customerId);
+/** Every live, finalized INVOICE (never a CREDIT — `applyPayment` refuses those) belonging to
+ *  exactly the given set of customer ids, with a positive open balance, oldest first — the
+ *  "open item" filter `statements.ts`'s open-item table already established for this phase
+ *  (`cents(open) <= 0` is fully settled, not an open item). `documentNumber` is the
+ *  `invoices.ts`/`statements.ts` prefix + order-number rule, duplicated (private in both; the
+ *  established precedent for this small a computation rather than a cross-module import). Shared
+ *  by `openInvoicesForPayer` (family-resolved ids) and `openInvoicesForCustomer` (one id, no
+ *  family resolution) below, so the query/map/filter logic can never drift between the two scopes
+ *  — only which ids are passed in differs. */
+async function openInvoicesForCustomerIds(customerIds: string[]): Promise<OpenInvoiceRow[]> {
   const prefix = await getSetting("invoice_number_prefix");
   const rows = await prisma.invoice.findMany({
-    where: { customerId: { in: familyIds }, deletedAt: null, status: "FINALIZED", kind: "INVOICE" },
+    where: { customerId: { in: customerIds }, deletedAt: null, status: "FINALIZED", kind: "INVOICE" },
     select: {
       id: true, orderId: true, customerId: true, total: true, invoiceDate: true, dueDate: true,
       order: { select: { orderNumber: true } }, customer: { select: { code: true, name: true } },
@@ -171,6 +173,25 @@ export async function openInvoicesForPayer(customerId: string): Promise<OpenInvo
       total: r.total.toNumber(), open: invoiceOpenBalance(r.total.toNumber(), r.applications.map(toLite)),
     }))
     .filter((r) => cents(r.open) > 0);
+}
+
+/** The payer's — and, when the payer has a parent/children, the family's — open finalized
+ *  invoices (Task 13's batch-apply screen; unchanged by the Task 15 fix round below). */
+export async function openInvoicesForPayer(customerId: string): Promise<OpenInvoiceRow[]> {
+  const familyIds = await familyCustomerIds(customerId);
+  return openInvoicesForCustomerIds(familyIds);
+}
+
+/** Exactly ONE customer's own open finalized invoices — never its family, even when that customer
+ *  is a parent or a division with siblings (Task 15 fix round 1: the customer A/R section's own
+ *  scope, `customer-receivables.ts`). `openInvoicesForPayer` above deliberately answers a
+ *  different question — the PAYER's whole family, because a payment can settle across divisions —
+ *  and must keep doing so for Task 13's apply screen; this is the single-customer sibling it was
+ *  missing, not a behavior change to it. */
+export async function openInvoicesForCustomer(customerId: string): Promise<OpenInvoiceRow[]> {
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, deletedAt: null }, select: { id: true } });
+  if (!customer) throw new HttpError(404, "Customer not found");
+  return openInvoicesForCustomerIds([customer.id]);
 }
 
 // -------------------------------------------------------------------------------------------
