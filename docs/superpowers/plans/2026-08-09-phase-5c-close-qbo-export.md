@@ -779,13 +779,19 @@ In `createCredit`, after `const creditDate = todayDateOnly();` and before the `a
 
 Add `import { assertPeriodOpen } from "./period-locks";` at the top. (`invoice.invoiceDate`/`creditDate` are already in hand under the claim — no extra select.)
 
-- [ ] **Step 6: Wire the guard into `receipts.ts` and `applications.ts`.** In `receipts.ts` `postBatchInTx`, after the "already posted" refusal, add a read of the batch's payments and guard per distinct received date (a POSTED batch's payments are the cash events):
+- [ ] **Step 6: Wire the guard into `receipts.ts` and `applications.ts`.** In `receipts.ts` `postBatchInTx`, after the "already posted" refusal, guard the batch's payment months. A batch can span months, so **dedup to distinct `(year, month)` and take the advisory locks in ascending order** — a per-payment loop would acquire multiple month locks in heap order and reopen the ABBA deadlock window (the `claimOrdersInOrder` rule, applied to advisory mutexes):
 
 ```ts
   const dates = await tx.payment.findMany({
     where: { batchId: id, deletedAt: null }, select: { receivedDate: true },
   });
-  for (const d of dates) await assertPeriodOpen(tx, d.receivedDate);
+  // one advisory lock per distinct month, ascending — a consistent global order closes the
+  // ABBA window an unsorted per-payment loop would open (two batches sharing two months).
+  const months = [...new Map(dates.map((d) => {
+    const key = d.receivedDate.getUTCFullYear() * 100 + (d.receivedDate.getUTCMonth() + 1);
+    return [key, d.receivedDate] as const;
+  })).entries()].sort((a, b) => a[0] - b[0]);
+  for (const [, d] of months) await assertPeriodOpen(tx, d);
 ```
 
 In `voidPaymentInTx`, add `receivedDate: true` to the payment `findFirst` select (currently `{ id: true }`), then after the live-application refusal and before the `auditedSoftDelete`:
