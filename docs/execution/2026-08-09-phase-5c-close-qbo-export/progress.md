@@ -11,7 +11,7 @@
 ## Tasks
 
 - [x] Task 1: Data model, migration, audit + counter registration — **implementation complete** (code `e283b65`, report `63d9ec6`; not yet reviewed)
-- [ ] Task 2: BillingConfig GL defaults — service, delete-blocker registry, admin UI
+- [x] Task 2: BillingConfig GL defaults — service, delete-blocker registry, admin UI
 - [ ] Task 3: gl-mapping.ts — pure journal + readiness engine
 - [ ] Task 4: period-locks.ts leaf + wiring into every A/R posting mutation
 - [ ] Task 5: close-periods.ts — close/reopen lifecycle + preliminary report + routes
@@ -56,3 +56,8 @@ Task 1: complete (code e283b65, plan-amend a4cac3b; review clean — spec ✅, q
   Minors for the final review to triage (not fixed — cosmetic):
   - schema.prisma ~119 comment "Three separate FKs from BillingConfig..." is now stale (six GL FKs). One-word touch-up.
   - partial-unique-sweep ALLOWED entry GlExportBatch.exportNumber is inert (GlExportBatch has no deletedAt) — brief-required, mirrors ReceiptBatch.batchNumber; documents intent.
+
+Task 2: complete (commit 156fafc; review clean — spec ✅, quality Approved). Gates: 1884 tests, tsc/eslint clean, E2E 17/17.
+  Minor (final review): reference-links.ts:117 BILLING_CONFIG_BLOCKER comment says "four FKs", now seven.
+  SIBLING GROUP for the final review's one-pass fix — stale FK-count comments: schema.prisma ~119 ("Three separate FKs...", now six) + reference-links.ts:117 ("four FKs", now seven). Fix together.
+  Note: .superpowers/sdd/.gitignore clobbered to bare `*` again (recurring). Non-issue for us — execution record is in docs/execution/ (committed); .superpowers/sdd/ only holds regenerable review-*.diff.
