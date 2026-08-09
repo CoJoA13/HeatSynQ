@@ -115,6 +115,22 @@ const FIXTURE = {
   invGlAccountAName: "E2E-4701",
   invGlAccountBName: "E2E-4702",
   invSurchargeName: "E2E Invoice Surcharge",
+  // Task 17 (Phase 5B): the A/R flow's own customer/part/terms/payment-type — independent of
+  // every fixture above (including `invCustomerCode`) for the same reason each phase's own set
+  // has been kept separate throughout this file: `arCustomer` needs its OWN Terms row (2/10/30 —
+  // discountPercent + discountDays, the early-pay-discount fixture the invoicing flow's own
+  // customer never carries) and `surchargeOptOut: true` + `taxable: false` so its invoice totals
+  // exactly (one priced operation, no surcharge/tax line) — reusing `invCustomer` would either
+  // fight its own dedicated surcharge/tax setup or drag Task 20's invoicing-flow assertions into
+  // this flow's fixture surface. `arPart` carries a single priced operation (unlike `invPart`'s
+  // two, ruling 3's multi-operation case — not needed here) on its own dedicated step code, no GL
+  // account (optional column; `invoiceWarnings` only warns, never blocks finalize).
+  arCustomerCode: "E2EARCUST",
+  arPartNumber: "E2E-AR-PART",
+  arPriceStepCodeCode: "E2E-AR-OP",
+  arPriceStepCodeName: "E2E AR Op",
+  arTermsName: "E2E 2/10/30 Terms",
+  arPaymentTypeName: "E2E Check",
 } as const;
 
 /**
@@ -229,6 +245,15 @@ export type Fixtures = {
   invGlAccountBName: string;
   invSurchargeId: string;
   invSurchargeName: string;
+  /** Task 17 (Phase 5B): the A/R flow's own fixtures — see FIXTURE's comment. */
+  arCustomerId: string;
+  arCustomerCode: string;
+  arPartId: string;
+  arPartNumber: string;
+  arPriceStepCodeId: string;
+  arTermsId: string;
+  arPaymentTypeId: string;
+  arPaymentTypeName: string;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -422,6 +447,95 @@ async function deleteShippingAndCerts(customerIds: string[]): Promise<void> {
  * `InvoiceLine.invoiceId` is RESTRICT too, so lines go before the invoice row; `deletedAt` is
  * deliberately NOT filtered (a discarded draft is exactly as unwelcome as a live one).
  */
+/**
+ * Task 17 (Phase 5B): every `Application`/`Payment`/`ReceiptBatch` the A/R flow produced, scoped
+ * through the fixture A/R customer's own id — `Payment.customerId` is the natural scope (an
+ * `Application`'s own scope is derived from it below, and a `ReceiptBatch` has no customer column
+ * of its own — it holds many payers' payments in general, but in this harness only ever the one
+ * this flow creates for `arCustomer`, so the batch is reached by walking its payments).
+ *
+ * Must run BEFORE `deleteInvoicesAndLines`: `Application.invoiceId`/`creditInvoiceId` are plain
+ * FKs into `Invoice` (`creditInvoiceId` is `ON DELETE SET NULL`, but `invoiceId` is
+ * `ON DELETE RESTRICT` — migrations/20260808230100_accounts_receivable/migration.sql), so a live
+ * (or voided — `deletedAt` is deliberately NOT filtered here, the `deleteOrdersAndChildren`
+ * precedent) `Application` row still blocks deleting the invoice it targets. Must also run before
+ * `deletePartsAndCustomers`: `Payment.customerId` is `ON DELETE RESTRICT` too. `Application.
+ * paymentId` is `ON DELETE SET NULL`, so payments could in principle be deleted before their
+ * applications without a 23503 — deleted in the RESTRICT-safe order anyway (applications first)
+ * for one uniform rule rather than two.
+ */
+async function deleteReceivables(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const invoices = await prisma.invoice.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const invoiceIds = invoices.map((i) => i.id);
+  const payments = await prisma.payment.findMany({ where: { customerId: { in: customerIds } }, select: { id: true, batchId: true } });
+  const paymentIds = payments.map((p) => p.id);
+  const batchIds = [...new Set(payments.map((p) => p.batchId))];
+
+  const applications = await prisma.application.findMany({
+    where: {
+      OR: [
+        { invoiceId: { in: invoiceIds } },
+        { creditInvoiceId: { in: invoiceIds } },
+        { paymentId: { in: paymentIds } },
+      ],
+    },
+    select: { id: true },
+  });
+  const applicationIds = applications.map((a) => a.id);
+  if (applicationIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "application", entityId: { in: applicationIds } } });
+    await prisma.application.deleteMany({ where: { id: { in: applicationIds } } });
+  }
+
+  if (paymentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "payment", entityId: { in: paymentIds } } });
+    await prisma.payment.deleteMany({ where: { id: { in: paymentIds } } });
+  }
+  if (batchIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "receiptBatch", entityId: { in: batchIds } } });
+    await prisma.receiptBatch.deleteMany({ where: { id: { in: batchIds } } });
+  }
+}
+
+/**
+ * Task 17 (Phase 5B): every archived STATEMENT `StoredDocument` the A/R flow's statement print
+ * produced — owned by `customerId` alone (schema comment: "STATEMENT: owner"), unlike every other
+ * document kind cleaned up elsewhere in this file (order/shipper/cert/invoice-owned). Must run
+ * BEFORE `deletePartsAndCustomers`: `StoredDocument.customerId` is `ON DELETE SET NULL`
+ * (migrations/20260808230100_accounts_receivable/migration.sql), so deleting the customer without
+ * deleting this row first would NULL its `customerId` out from under it — and a null `customerId`
+ * on a STATEMENT row immediately violates `StoredDocument_kind_owner_check` (STATEMENT requires
+ * `customerId` NOT NULL, every other owner column NULL). Caught live: the first run of this flow's
+ * cleanup failed on exactly this 23514.
+ */
+async function deleteStatementDocuments(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const documents = await prisma.storedDocument.findMany({
+    where: { customerId: { in: customerIds }, kind: "STATEMENT" }, select: { id: true },
+  });
+  const documentIds = documents.map((d) => d.id);
+  if (documentIds.length === 0) return;
+  await prisma.auditLog.deleteMany({ where: { entity: "storedDocument", entityId: { in: documentIds } } });
+  await prisma.storedDocument.deleteMany({ where: { id: { in: documentIds } } });
+}
+
+/**
+ * Task 17 (Phase 5B) backstop: hard-deletes ONE specific `ReceiptBatch` by id, if it still exists
+ * — the id-driven counterpart to `deleteReceivables` above for the one case that sweep can't see
+ * (a batch created but never paid into, so no `Payment` row exists to find it through). Called
+ * ONLY with an id this run's own flow created and read back off the URL (`CleanupPayload`'s own
+ * comment) — never a guessed or pattern-matched id, so there is no risk of touching a real user's
+ * batch. A no-op both when `id` is `null` (the flow never got this far) and when the row is
+ * already gone (the normal case — `deleteReceivables` already found and removed it via its
+ * payment).
+ */
+async function deleteKnownEmptyBatch(id: string | null): Promise<void> {
+  if (!id) return;
+  await prisma.auditLog.deleteMany({ where: { entity: "receiptBatch", entityId: id } });
+  await prisma.receiptBatch.deleteMany({ where: { id } });
+}
+
 async function deleteInvoicesAndLines(customerIds: string[]): Promise<void> {
   if (customerIds.length === 0) return;
   const orders = await prisma.order.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
@@ -466,6 +580,17 @@ async function deleteInvoicingReference(glAccountIds: string[], surchargeIds: st
   if (glAccountIds.length > 0) await prisma.glAccount.deleteMany({ where: { id: { in: glAccountIds } } });
 }
 
+/** Task 17 (Phase 5B) reference rows — created directly on `tx`, never through the app, so no
+ *  audit rows of their own (the `deleteInvoicingReference` precedent). `Customer.termsId` is
+ *  `ON DELETE SET NULL` (migrations/20260731013829_customer/migration.sql), so `Terms` carries no
+ *  ordering requirement against `arCustomer`; `PaymentType` IS `ON DELETE RESTRICT` from
+ *  `Payment.paymentTypeId`, so this must run AFTER `deleteReceivables` (which removes every
+ *  `Payment` row this flow created). */
+async function deleteArReference(termsIds: string[], paymentTypeIds: string[]): Promise<void> {
+  if (termsIds.length > 0) await prisma.terms.deleteMany({ where: { id: { in: termsIds } } });
+  if (paymentTypeIds.length > 0) await prisma.paymentType.deleteMany({ where: { id: { in: paymentTypeIds } } });
+}
+
 async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promise<void> {
   // Session, OrderDraft, and SavedView all have `ON DELETE RESTRICT` from User (verified against
   // the generated migration SQL, not assumed from schema.prisma's silence on the point) — every
@@ -503,6 +628,7 @@ async function reapLeftovers(): Promise<void> {
     templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts,
     shipCustomers, holdCustomers, phase4Parts, scales, codes, containerTypes,
     invCustomers, invParts, invGlAccounts, invSurcharges,
+    arCustomers, arParts, arTermsRows, arPaymentTypes,
   ] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
@@ -522,6 +648,7 @@ async function reapLeftovers(): Promise<void> {
           in: [
             FIXTURE.stepCodeA, FIXTURE.stepCodeB, FIXTURE.priceStepCodeCode,
             FIXTURE.invPriceStepCodeACode, FIXTURE.invPriceStepCodeBCode,
+            FIXTURE.arPriceStepCodeCode,
           ],
         },
       },
@@ -587,21 +714,32 @@ async function reapLeftovers(): Promise<void> {
       where: { name: { in: [FIXTURE.invGlAccountAName, FIXTURE.invGlAccountBName] } }, select: { id: true },
     }),
     prisma.surcharge.findMany({ where: { name: FIXTURE.invSurchargeName }, select: { id: true } }),
+    // Task 17 (Phase 5B): the A/R flow's own fixtures, looked up the same exact-key,
+    // customer-scoped way as everything above.
+    prisma.customer.findMany({ where: { code: FIXTURE.arCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: { partNumber: FIXTURE.arPartNumber, customer: { code: FIXTURE.arCustomerCode } },
+      select: { id: true },
+    }),
+    prisma.terms.findMany({ where: { name: FIXTURE.arTermsName }, select: { id: true } }),
+    prisma.paymentType.findMany({ where: { name: FIXTURE.arPaymentTypeName }, select: { id: true } }),
   ]);
   const templateIds = templates.map((t) => t.id);
   const invCustomerIds = invCustomers.map((c) => c.id);
+  const arCustomerIds = arCustomers.map((c) => c.id);
   const partIds = [
     ...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id),
-    ...invParts.map((p) => p.id),
+    ...invParts.map((p) => p.id), ...arParts.map((p) => p.id),
   ];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  // Task 20: `invCustomerIds` rides along in this same set — the invoicing flow ships its own
-  // order (a real `Shipper`/`ShipperOrder` pair), so `deleteShippingAndCerts` must be scoped
-  // through it too, or a leftover order-flow shipment blocks `deleteOrdersAndChildren`'s delete of
-  // the order it covers with `ShipperOrder_orderId_fkey`'s RESTRICT (caught live: the first run of
-  // this flow's cleanup failed on exactly this).
+  // Task 20/Task 17: `invCustomerIds`/`arCustomerIds` ride along in this same set — both the
+  // invoicing flow and the A/R flow ship their own order (a real `Shipper`/`ShipperOrder` pair),
+  // so `deleteShippingAndCerts` must be scoped through both too, or a leftover shipment blocks
+  // `deleteOrdersAndChildren`'s delete of the order it covers with `ShipperOrder_orderId_fkey`'s
+  // RESTRICT (caught live for `invCustomerIds`: the first run of that flow's cleanup failed on
+  // exactly this).
   const shipHoldCustomerIds = [
-    ...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id), ...invCustomerIds,
+    ...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id), ...invCustomerIds, ...arCustomerIds,
   ];
   const customerIds = [
     ...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds,
@@ -614,11 +752,14 @@ async function reapLeftovers(): Promise<void> {
   const containerTypeIds = containerTypes.map((t) => t.id);
   const invGlAccountIds = invGlAccounts.map((g) => g.id);
   const invSurchargeIds = invSurcharges.map((s) => s.id);
+  const arTermsIds = arTermsRows.map((t) => t.id);
+  const arPaymentTypeIds = arPaymentTypes.map((p) => p.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
     + customerIds.length + userIds.length + roleIds.length
     + scaleIds.length + codeIds.length + containerTypeIds.length
-    + invGlAccountIds.length + invSurchargeIds.length;
+    + invGlAccountIds.length + invSurchargeIds.length
+    + arTermsIds.length + arPaymentTypeIds.length;
   if (total === 0) return;
 
   console.error(
@@ -626,15 +767,18 @@ async function reapLeftovers(): Promise<void> {
     `${partIds.length} part(s), ${stepCodeIds.length} step code(s), ${customerIds.length} ` +
     `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s), ` +
     `${scaleIds.length + codeIds.length + containerTypeIds.length} Phase 4 reference row(s), ` +
-    `${invGlAccountIds.length} GL account(s), ${invSurchargeIds.length} surcharge(s).`,
+    `${invGlAccountIds.length} GL account(s), ${invSurchargeIds.length} surcharge(s), ` +
+    `${arTermsIds.length} terms row(s), ${arPaymentTypeIds.length} payment type(s).`,
   );
 
-  // Invoices/shipments/certs first (their children FK into the order tables), then orders. Before
-  // parts: OrderLine.partId is a plain restrict-on-delete FK, so any leftover fixture order
-  // (voided by a prior run's void-order/void-shipment flow, left INVOICED by a crash mid-flow, or
-  // left live by a crash before it) must be gone before deletePartsAndCustomers below can touch
-  // the fixture parts.
-  await deleteInvoicesAndLines(invCustomerIds);
+  // Receipts/invoices/shipments/certs first (their children FK into the order/invoice tables),
+  // then orders. Before parts: OrderLine.partId is a plain restrict-on-delete FK, so any leftover
+  // fixture order (voided by a prior run's void-order/void-shipment flow, left INVOICED by a
+  // crash mid-flow, or left live by a crash before it) must be gone before
+  // deletePartsAndCustomers below can touch the fixture parts. `deleteReceivables` runs first of
+  // all: its `Application` rows block deleting the invoices `deleteInvoicesAndLines` removes next.
+  await deleteReceivables(arCustomerIds);
+  await deleteInvoicesAndLines([...invCustomerIds, ...arCustomerIds]);
   await deleteShippingAndCerts(shipHoldCustomerIds);
   await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
@@ -643,10 +787,16 @@ async function reapLeftovers(): Promise<void> {
   // deletePartsAndCustomers (the fixture part's).
   await deletePartPrices(partIds);
   await deleteStepCodes(stepCodeIds);
+  // Before deletePartsAndCustomers: StoredDocument.customerId is ON DELETE SET NULL, which would
+  // otherwise violate StoredDocument_kind_owner_check on a live STATEMENT document the moment its
+  // customer is deleted (deleteStatementDocuments's own comment).
+  await deleteStatementDocuments(arCustomerIds);
   await deletePartsAndCustomers(partIds, customerIds);
   await deletePhase4Reference(scaleIds, codeIds, containerTypeIds);
   // After deleteStepCodes (the two invoicing step codes' own GL-account FKs).
   await deleteInvoicingReference(invGlAccountIds, invSurchargeIds);
+  // After deleteReceivables (PaymentType is ON DELETE RESTRICT from Payment).
+  await deleteArReference(arTermsIds, arPaymentTypeIds);
   await deleteUsersAndRoles(userIds, roleIds);
 }
 
@@ -898,6 +1048,40 @@ async function create(): Promise<Fixtures> {
       },
     });
 
+    // ----- Task 17 (Phase 5B): the A/R flow's own customer/part/terms/payment-type (see
+    // FIXTURE's comment). `arTerms` is 2/10/30 — netDays 30, a 2% discount inside 10 days,
+    // decimalField(5,2)'s "2 = 2%" convention (`discountPercent: "2.00"`, the
+    // tests/applications.test.ts/reference-tables.test.ts precedent for how this Decimal(5,2)
+    // column is written). `arCustomer` opts out of both surcharge (`invSurcharge` above is
+    // scope ALL/active — it would otherwise apply to EVERY customer's invoice for the rest of
+    // this run, `arCustomer` included) and tax, so its invoice total is exactly its one priced
+    // operation with no other line to account for. -----
+    const arTerms = await tx.terms.create({
+      data: { name: FIXTURE.arTermsName, netDays: 30, discountPercent: "2.00", discountDays: 10 },
+    });
+    const arCustomer = await tx.customer.create({
+      data: {
+        code: FIXTURE.arCustomerCode, name: "E2E AR Customer", termsId: arTerms.id,
+        taxable: false, surchargeOptOut: true,
+      },
+    });
+    const arPriceStepCode = await tx.processStepCode.create({
+      data: { code: FIXTURE.arPriceStepCodeCode, name: FIXTURE.arPriceStepCodeName },
+    });
+    const arPart = await orderablePart({
+      customerId: arCustomer.id, partNumber: FIXTURE.arPartNumber,
+      name: "E2E AR Part", eachWeight: "5.0000", certRequired: false,
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: arPart.id, processStepCodeId: arPriceStepCode.id, position: 0,
+        unitPrice: "100.0000", minimumCharge: "25.00", pricePer: "EACH",
+      },
+    });
+    // A single payment type — reference vocabulary, not owned by any one customer/batch
+    // (the `stepCodeB` precedent above), so one row serves the whole flow's one check payment.
+    const arPaymentType = await tx.paymentType.create({ data: { name: FIXTURE.arPaymentTypeName } });
+
     // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
     // both the parts/processes screens and the admin step-codes screen, so anything narrower would
     // have to be kept in step with them by hand.
@@ -1003,6 +1187,10 @@ async function create(): Promise<Fixtures> {
       invGlAccountAId: invGlAccountA.id, invGlAccountAName: invGlAccountA.name,
       invGlAccountBId: invGlAccountB.id, invGlAccountBName: invGlAccountB.name,
       invSurchargeId: invSurcharge.id, invSurchargeName: invSurcharge.name,
+      arCustomerId: arCustomer.id, arCustomerCode: arCustomer.code,
+      arPartId: arPart.id, arPartNumber: arPart.partNumber,
+      arPriceStepCodeId: arPriceStepCode.id, arTermsId: arTerms.id,
+      arPaymentTypeId: arPaymentType.id, arPaymentTypeName: arPaymentType.name,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -1020,7 +1208,12 @@ async function doLockRevision(payload: { partId: string; revisionNumber: number 
   return { ok: true };
 }
 
-type CleanupPayload = Fixtures & { templateIds: string[] };
+/** `receivablesBatchId` (Task 17, Phase 5B) — see run.mjs's `state.created` comment: a
+ *  `ReceiptBatch` has no customer column, so `deleteReceivables` below can only find one via a
+ *  live `Payment`; this is the id-driven backstop for a batch the flow created but never got as
+ *  far as paying into, the `templateIds` precedent for "a live-built row's id is only known once
+ *  the flow that created it has run." `null` when the flow never got as far as creating a batch. */
+type CleanupPayload = Fixtures & { templateIds: string[]; receivablesBatchId: string | null };
 
 /**
  * Deletes every row `create()` and the flows themselves produced. `templateIds` carries the
@@ -1053,18 +1246,27 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // doesn't filter on `deletedAt`. Before parts, same FK reason as `reapLeftovers`' own comment.
   // Task 20: invoices, then shipments/certs (their children FK into the order tables), same
   // scoping logic — an invoice/shipment/cert is only ever created live through the app, so the
-  // customer is the gate.
-  await deleteInvoicesAndLines([payload.invCustomerId]);
-  // The invoicing flow ships its own order (a real Shipper/ShipperOrder pair) — invCustomerId
-  // MUST ride along here too, or `ShipperOrder_orderId_fkey`'s RESTRICT blocks the order delete
-  // below (caught live: the first run of this flow's cleanup failed on exactly this).
-  await deleteShippingAndCerts([payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId]);
+  // customer is the gate. Task 17 (Phase 5B): `deleteReceivables` runs FIRST of all — its
+  // `Application` rows block deleting the invoice `deleteInvoicesAndLines` removes next
+  // (`Application_invoiceId_fkey` is `ON DELETE RESTRICT` — see `deleteReceivables`'s own
+  // comment) — and `arCustomerId` rides along in every subsequent step the same way
+  // `invCustomerId` already does (this flow ships its own order too).
+  await deleteReceivables([payload.arCustomerId]);
+  await deleteKnownEmptyBatch(payload.receivablesBatchId);
+  await deleteInvoicesAndLines([payload.invCustomerId, payload.arCustomerId]);
+  // The invoicing/A-R flows each ship their own order (a real Shipper/ShipperOrder pair) —
+  // invCustomerId/arCustomerId MUST ride along here too, or `ShipperOrder_orderId_fkey`'s
+  // RESTRICT blocks the order delete below (caught live for invCustomerId: the first run of that
+  // flow's cleanup failed on exactly this).
+  await deleteShippingAndCerts([
+    payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
+  ]);
   await deleteOrdersAndChildren([
-    orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId,
+    orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
   ]);
   await deletePartProcessData([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId,
+    payload.invPartId, payload.arPartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
   // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
@@ -1075,18 +1277,26 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // screens up.
   await deletePartPrices([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId,
+    payload.invPartId, payload.arPartId,
   ]);
   await deleteStepCodes([
     stepCodeA.id, stepCodeB.id, payload.priceStepCodeId,
-    payload.invPriceStepCodeAId, payload.invPriceStepCodeBId,
+    payload.invPriceStepCodeAId, payload.invPriceStepCodeBId, payload.arPriceStepCodeId,
   ]);
+  // Before deletePartsAndCustomers: StoredDocument.customerId is ON DELETE SET NULL, which would
+  // otherwise violate StoredDocument_kind_owner_check on a live STATEMENT document the moment its
+  // customer is deleted (deleteStatementDocuments's own comment).
+  await deleteStatementDocuments([payload.arCustomerId]);
   await deletePartsAndCustomers(
     [
       partId, orderLeadPartId, orderRiderPartId,
       payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId, payload.invPartId,
+      payload.arPartId,
     ],
-    [customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId],
+    [
+      customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId,
+      payload.arCustomerId,
+    ],
   );
   await deletePhase4Reference(
     [payload.inspectionScaleId],
@@ -1097,6 +1307,8 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   await deleteInvoicingReference(
     [payload.invGlAccountAId, payload.invGlAccountBId], [payload.invSurchargeId],
   );
+  // After deleteReceivables (PaymentType is ON DELETE RESTRICT from Payment).
+  await deleteArReference([payload.arTermsId], [payload.arPaymentTypeId]);
   // All four users, not just the restricted one: deleteUsersAndRoles clears each user's Session
   // (and, as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears
   // the per-user rows the flows' own logins and the order-entry autosaves created.

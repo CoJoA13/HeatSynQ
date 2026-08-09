@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Playwright E2E harness (spec §12 / HANDOFF §5a). Drives the bundled Chromium against a
-// throwaway `next dev` instance on port 3100, running sixteen owner-reviewable flows in sequence.
+// throwaway `next dev` instance on port 3100, running seventeen owner-reviewable flows in sequence.
 // Each flow gets its own browser context (so it gets its own video.webm) and its own numbered
 // screenshot sequence under e2e-artifacts/<flow>/.
 //
@@ -40,9 +40,15 @@ const HEADED = Boolean(process.env.HEADED);
 // matters for the numbering the demo doc narrates. `credit-hold-block-and-override` starts as the
 // fixture "clerk" (shipping permissions but NOT action.override_credit_hold — the blocked half)
 // and re-logs-in as the fixture admin mid-flow for the override half.
-// Task 20 (Phase 5A) adds the 16th and last flow, `invoice-shipped-order`, as admin — it creates
-// its own order/customer and leaves nothing later flows depend on, so it runs last for the same
+// Task 20 (Phase 5A) adds the 16th flow, `invoice-shipped-order`, as admin — it creates its own
+// order/customer and leaves nothing later flows depend on, so it ran last (of 16) for the same
 // reason void-order and credit-hold-block-and-override do (nothing after it needs its state).
+// Task 17 (Phase 5B) adds the 17th and now-last flow, `receivables-apply-age-statement`, as
+// admin (needs `write_off`, which the admin fixture role holds via ALL_PERMISSIONS) — it seeds
+// its own shipped-and-invoiced order against its own fixture customer (the `invoice-shipped-
+// order.mjs` precedent) and then drives the new `/receivables` screens (batch, apply, aging,
+// statement print+archive) end to end. Runs last for the same "nothing after it needs its state"
+// reason as every other flow at the tail of this list.
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -60,14 +66,27 @@ const FLOWS = [
   { name: "void-shipment", as: "admin", module: "./flows/void-shipment.mjs" },
   { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
   { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
+  { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
 // need to reach whatever's currently been acquired, and a signal can land at any point during
 // main()'s execution — there is no single function-local scope both paths share.
+//
+// `created.receivablesBatchId` (Task 17, Phase 5B): a `ReceiptBatch` has no customer column of
+// its own (unlike an Order/Invoice/Shipper/Cert), so `deleteReceivables` (db-fixtures.ts) can only
+// FIND one via a live `Payment` referencing it — a batch this flow created but never got as far as
+// adding a payment to (a crash, or a selector bug — exactly what happened once during this task's
+// own development) is otherwise invisible to both `cleanup()` and `reapLeftovers()`'s customer-
+// scoped sweeps, forever. The `receivables-apply-age-statement.mjs` flow records its own batch's
+// id here the moment it reads it back off the URL — the `templateIds` precedent (a live-built
+// row's id is only known once the flow that created it has run) — so `cleanup()` below has an
+// id-driven backstop alongside the payment-scoped sweep. Still not airtight: a crash hard enough
+// to skip this module's own `finally { await teardown(); }` (never SIGTERM, no live process) loses
+// this in-memory value the same way it loses everything else not yet written to the dev DB.
 const state = {
   devServer: null, browser: null, fixtures: null,
-  created: { templateIds: [], orderId: null, orderNumber: null },
+  created: { templateIds: [], orderId: null, orderNumber: null, receivablesBatchId: null },
   cleanupFailed: null,
 };
 let teardownPromise = null;
@@ -185,7 +204,11 @@ function teardown() {
       if (state.fixtures) {
         console.log("\nCleaning up dev-DB fixtures (erp)...");
         try {
-          runDbScript("cleanup", { ...state.fixtures, templateIds: state.created.templateIds });
+          runDbScript("cleanup", {
+            ...state.fixtures,
+            templateIds: state.created.templateIds,
+            receivablesBatchId: state.created.receivablesBatchId,
+          });
           console.log("  cleanup ok");
         } catch (err) {
           // Recorded, not just logged (Codex, PR #22): this used to swallow the failure, so a

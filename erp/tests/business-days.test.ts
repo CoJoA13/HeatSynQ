@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
+import { addBusinessDays, addDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 // Pure module, no DB: date-only parsing/formatting and Mon–Fri business-day math over
 // UTC-midnight Dates (matches @db.Date column semantics). The anchor dates below are real,
@@ -96,5 +96,33 @@ describe("addBusinessDays", () => {
 
   it("allows exactly 3650 — the boundary, not just a big blowout", () => {
     expect(() => addBusinessDays(parseDateOnly("2026-08-03"), 3650)).not.toThrow();
+  });
+});
+
+// Phase 5B Task 3: a due date is a calendar date — no weekend skip, unlike addBusinessDays above.
+describe("addDays", () => {
+  it("crosses a month boundary (2026-08-01 + 30 = 2026-08-31)", () => {
+    const start = parseDateOnly("2026-08-01");
+    expect(formatDateOnly(addDays(start, 30))).toBe("2026-08-31");
+  });
+
+  it("does not skip weekends — a Saturday landing stays a Saturday", () => {
+    // 2026-08-06 is a Thursday; +2 lands on Saturday 2026-08-08, unlike addBusinessDays.
+    const start = parseDateOnly("2026-08-06");
+    expect(formatDateOnly(addDays(start, 2))).toBe("2026-08-08");
+  });
+
+  it("n = 0 returns the same date, unchanged", () => {
+    const start = parseDateOnly("2026-08-03");
+    expect(formatDateOnly(addDays(start, 0))).toBe("2026-08-03");
+  });
+
+  it("accepts a negative n (a back-dated offset)", () => {
+    const start = parseDateOnly("2026-08-31");
+    expect(formatDateOnly(addDays(start, -30))).toBe("2026-08-01");
+  });
+
+  it("rejects a non-integer n", () => {
+    expect(() => addDays(parseDateOnly("2026-08-03"), 1.5)).toThrow();
   });
 });

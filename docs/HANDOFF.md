@@ -62,18 +62,28 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**No phase is in flight.** Phase 5A (Pricing & Invoicing) merged 2026-08-08 (`359c707`, PR #58) — its one-paragraph entry is in the "Merged, in build order" list below, its full narrative in
-`docs/history/2026-08-08-phase-5a-pricing-invoicing.md`, and its execution ledger (per-task briefs,
-implementer reports, reviewer verdicts, deferred minors) in
-`docs/execution/2026-08-06-phase-5a-pricing-invoicing/` — see `.superpowers/sdd/README.md` for why
-that ledger sits there rather than under `.superpowers/`.
+**Phase 5B (Accounts Receivable) in flight** on branch `phase-5b-accounts-receivable`. The three
+binding documents:
 
-**The next work is Phase 5B (Accounts Receivable) — its kickoff prompt is live in §9;** paste it
-into a fresh session to begin. 5B has no spec or plan yet: brainstorm → spec → plan is its first
-step (§9 names what it inherits from 5A, carried verbatim from design-spec §16). The seven Codex
-findings deferred from the 5A PR (#59–#65, §6) and the per-worker-test-DB infra task (§6,
-"scheduled for immediately after Phase 5A merges" — now due) are open work that can be picked up
-alongside or before 5B.
+- **Spec:** `docs/superpowers/specs/2026-08-08-phase-5b-accounts-receivable-design.md`
+- **Plan:** `docs/superpowers/plans/2026-08-08-phase-5b-accounts-receivable.md` (17 tasks)
+- **Execution ledger:** `docs/execution/2026-08-08-phase-5b-accounts-receivable/` — per-task
+  briefs, implementer reports, reviewer verdicts, and `progress.md`'s running record of every
+  owner ruling and deferred minor (see `.superpowers/sdd/README.md` for why this ledger sits under
+  `docs/execution/` rather than `.superpowers/`).
+
+Scope, per the plan: the receipts ledger (deposit batches, checks/cards/ACH), payment application
+across one or more invoices — including across a parent's divisions — with early-pay discounts and
+write-offs, point-in-time A/R aging, and open-item customer statements with opt-in finance
+charges. Building on Phase 5A's `Invoice`/`Terms`/`Customer.financeChargeRate`/`Customer.parentId`
+hooks (design spec §16, carried into the §9 kickoff prompt below). **Not this phase's job:**
+month-end close and the QuickBooks Online summary export — those are Phase 5C.
+
+All 17 tasks are implemented (through Task 16's 401/403 sweep); Task 17 (this one — the north-star
+E2E flow, the demo doc, and this note) is in progress. The whole-branch review, fix wave, owner
+demo, and PR are still ahead — see the plan's closing sequence (`progress.md`'s "Review and merge"
+section) for the exact order. The seven Codex findings deferred from the 5A PR (#59–#65, §6) and
+the per-worker-test-DB infra task (§6) remain open work, picked up alongside or after 5B closes.
 
 ### Merged, in build order
 
@@ -169,7 +179,7 @@ npx playwright install chromium     # once; no sudo needed
 #   node -p "require('<cache>/playwright-core/package.json').version"
 #   ls ~/.cache/ms-playwright        # chromium-<rev> must match browsers.json
 ```
-Then write a small `.mjs` that imports `chromium` from that cached `playwright` and drives `npm run dev`. Two traps worth knowing: React controlled inputs do **not** expose `value` as an HTML attribute, so `input[value="X"]` selectors fail — locate by index or label instead; and the app shell has its own global search box, so `input[placeholder*="Search"]` matches two elements. Dump the page's inputs first rather than guessing selectors.
+Then write a small `.mjs` that imports `chromium` from that cached `playwright` and drives `npm run dev`. Three traps worth knowing: React controlled inputs do **not** expose `value` as an HTML attribute, so `input[value="X"]` selectors fail — locate by index or label instead; the app shell has its own global search box, so `input[placeholder*="Search"]` matches two elements. Dump the page's inputs first rather than guessing selectors. And **`getByLabel(..., { exact: true })` on a `<select>` nested inside its own `<label>` (rather than an `aria-label`/`for`) can match ZERO elements even though the label text looks right** — Playwright's label-text computation for that case is the label's FULL `textContent`, which for a `<select>` child recursively includes every `<option>`'s own rendered text (`getByRole("combobox")`'s accessible-name computation does NOT have this problem — confirmed live, Task 17/Phase 5B). A plain `<input>` has no text content of its own to pollute the label with, so this is `<select>`-specific; fix with a scoped `page.locator("label", { hasText: "…" }).locator("select")` instead of chasing `exact`.
 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 

@@ -75,3 +75,19 @@ export function addBusinessDays(start: Date, n: number): Date {
   }
   return new Date(result);
 }
+
+/**
+ * Advances `start` by `n` plain calendar days — no weekend/business-day skipping (unlike
+ * `addBusinessDays` above). A due date is a calendar date (Phase 5B §4.3: `dueDate = invoiceDate +
+ * terms.netDays`), so this is deliberately the simpler arithmetic: every `DAY_MS` multiple of a
+ * UTC-midnight `Date` is itself UTC-midnight, so the result stays on the `parseDateOnly`/
+ * `formatDateOnly` convention with no re-normalization needed. `n` may be negative (a back-dated
+ * offset) — only integrality is enforced, matching a plain calendar-day add rather than
+ * `addBusinessDays`' non-negative, capped request-day-offset contract.
+ */
+export function addDays(start: Date, n: number): Date {
+  if (!Number.isInteger(n)) {
+    throw new Error(`addDays: n must be an integer, got ${n}`);
+  }
+  return new Date(start.getTime() + n * DAY_MS);
+}

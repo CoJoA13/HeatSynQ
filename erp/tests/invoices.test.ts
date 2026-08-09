@@ -13,8 +13,10 @@ import {
   finalizeInvoice, unlockInvoice, createCredit,
   type InvoiceDetail, type InvoiceLineDetail,
 } from "@/server/invoices";
+import { applyPayment, voidApplication } from "@/server/applications";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 import type { CertScopeValue } from "@/lib/cert-constants";
+import { addDays, formatDateOnly, parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -484,6 +486,27 @@ async function finalizedFixture() {
   return { ...fixture, invoice: await asSystem(() => getInvoice(fixture.invoice.id)) };
 }
 
+/** Applies a real PAYMENT against a finalized invoice and returns the created application's id, so a
+ *  test can then void it. Receipt-batch / payment-type / payment scaffolding is the
+ *  applications.test.ts shape. */
+let paySeq = 0;
+async function applyAPayment(customerId: string, invoiceId: string, amount: number): Promise<string> {
+  paySeq += 1;
+  const batch = await prisma.receiptBatch.create({
+    data: { batchNumber: 710000 + paySeq, depositDate: parseDateOnly("2026-08-08") },
+  });
+  const paymentType = await prisma.paymentType.create({ data: { name: `PT-inv-${paySeq}` } });
+  const payment = await prisma.payment.create({
+    data: {
+      batchId: batch.id, customerId, paymentTypeId: paymentType.id,
+      amount, receivedDate: parseDateOnly("2026-08-08"),
+    },
+  });
+  await asSystem(() => applyPayment({ paymentId: payment.id, lines: [{ invoiceId, type: "PAYMENT", amount }] }));
+  const app = await prisma.application.findFirstOrThrow({ where: { invoiceId, deletedAt: null } });
+  return app.id;
+}
+
 /** Ships `addQty` more of the order's single line — additive over the ledger (spec: over-ship
  *  warns, never blocks), so the recalculated invoice sees a higher shipped total. */
 async function shipMore(order: OrderDetail, addQty: number): Promise<void> {
@@ -639,6 +662,33 @@ describe("discardInvoice", () => {
     await expect(asSystem(() => discardInvoice(invoice.id, "mistake")))
       .rejects.toThrow(/has already printed/i);
   });
+
+  // Task 9 (§5.3): the discard A/R guard is DEFENSE-IN-DEPTH and UNREACHABLE by construction. A
+  // draft can never carry real A/R activity through the services — `applyPayment`/`applyCredit`
+  // require FINALIZED invoices/credits, so no application row that references a DRAFT can be created
+  // through the service layer. To prove the guard is WIRED we raw-insert an `Application` naming a
+  // DRAFT credit's id: the FK only needs an `Invoice` row and `Application_source_check` does not
+  // check finalized status, so the DB accepts it — and `discardInvoice` must then refuse.
+  it("refuses to discard a draft that has an application against it (defense-in-depth — unreachable via the services)", async () => {
+    const fx = await finalizedFixture(); // a live FINALIZED invoice for the application's non-null invoiceId FK
+    const draftCredit = await prisma.invoice.create({
+      data: {
+        orderId: fx.order.id, customerId: fx.order.customerId, kind: "CREDIT", status: "DRAFT",
+        creditNumber: 9200, invoiceDate: parseDateOnly("2026-08-08"),
+      },
+    });
+    await prisma.application.create({
+      data: {
+        invoiceId: fx.invoice.id, creditInvoiceId: draftCredit.id, amount: "25.00", type: "CREDIT",
+        appliedDate: parseDateOnly("2026-08-08"),
+      },
+    });
+
+    await expect(asSystem(() => discardInvoice(draftCredit.id, "raised in error")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/payments or credits applied/i) });
+    // Refused, not discarded.
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: draftCredit.id } })).deletedAt).toBeNull();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -742,6 +792,27 @@ describe("finalizeInvoice", () => {
 
     await expect(finalizeCall).rejects.toThrow(/voided/i);
   });
+
+  // Task 3/§4.3: finalizing an INVOICE stamps `dueDate = invoiceDate + terms.netDays`. `netDays` is
+  // `Int @default(30)` on `Terms` now — never null — so the null case is a customer with NO terms
+  // assigned at all (`Customer.termsId` null), not a null `netDays`.
+  it("sets dueDate = invoiceDate + terms.netDays for a customer on Net 30 terms", async () => {
+    const { order, customer } = await pricedShippedOrder();
+    const terms = await prisma.terms.create({ data: { name: "Net 30", netDays: 30 } });
+    await prisma.customer.update({ where: { id: customer.id }, data: { termsId: terms.id } });
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: order.id, invoiceDate: "2026-08-01" }));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.dueDate).toBe("2026-08-31");
+  });
+
+  it("leaves dueDate null when the customer has no terms assigned", async () => {
+    const { order } = await pricedShippedOrder(); // makeCustomer never sets termsId
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: order.id, invoiceDate: "2026-08-01" }));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.dueDate).toBeNull();
+  });
 });
 
 describe("unlockInvoice", () => {
@@ -768,6 +839,31 @@ describe("unlockInvoice", () => {
   it("refuses to unlock an invoice that is not finalized", async () => {
     const { invoice } = await draftFixture();
     await expect(asSystem(() => unlockInvoice(invoice.id, "nothing to do"))).rejects.toThrow(/not finalized/i);
+  });
+
+  // Task 9 (§5.3): a FINALIZED invoice with a live payment applied cannot be unlocked — unlocking
+  // would leave editable paper that money has already been applied to. Void the application first.
+  it("refuses to unlock once a payment has been applied, then re-permits once the application is voided", async () => {
+    const fx = await finalizedFixture();
+    const applicationId = await applyAPayment(fx.order.customerId, fx.invoice.id, 100);
+
+    await expect(asSystem(() => unlockInvoice(fx.invoice.id, "correct a line")))
+      .rejects.toMatchObject({
+        status: 400,
+        message: `Invoice #${fx.order.orderNumber} has payments applied — void them before unlocking`,
+      });
+    // Refused, not half-applied: still FINALIZED.
+    expect((await getInvoice(fx.invoice.id)).status).toBe("FINALIZED");
+
+    // Voiding the application drops the A/R activity; the unlock is now permitted and audited.
+    await asSystem(() => voidApplication(applicationId, "keyed to the wrong invoice"));
+    const unlocked = await asSystem(() => unlockInvoice(fx.invoice.id, "customer disputed a line"));
+    expect(unlocked.status).toBe("DRAFT");
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "invoice", entityId: fx.invoice.id, action: "update" }, orderBy: { at: "desc" } });
+    expect(entry!.reason).toBe("customer disputed a line");
+    expect((entry!.before as Record<string, unknown>).status).toBe("FINALIZED");
+    expect((entry!.after as Record<string, unknown>).status).toBe("DRAFT");
   });
 
   // Note #2 (folded in from Task 12): unlock MUST return the invoice to DRAFT, or every Task 12
@@ -823,7 +919,10 @@ describe("createCredit", () => {
     const source = await asSystem(() => getInvoice(invoice.id));
     const credit = await asSystem(() => createCredit(invoice.id));
 
-    // Header snapshots copied verbatim from the source.
+    // Header snapshots copied verbatim from the source. `invoiceDate` is the deliberate EXCEPTION —
+    // a credit takes its own raise date (Task 3/§4.3), never the source's — and is not asserted
+    // equal here for that reason (see the dedicated test below; it isn't asserted `not.toBe` here
+    // either, since this fixture's source invoice is itself dated "today", same as the credit).
     expect(credit.orderId).toBe(source.orderId);
     expect(credit.customerId).toBe(source.customerId);
     expect(credit.poNumber).toBe(source.poNumber);
@@ -846,6 +945,22 @@ describe("createCredit", () => {
       expect(cl.weight).toBe(sl.weight); // unchanged
       expect(cl.amount).toBe(flipped(sl.amount)); // money flipped
     });
+  });
+
+  it("stamps the credit's own creation date, not the source invoice's date (Task 3/§4.3)", async () => {
+    const fixture = await pricedShippedOrder({ qty: 144, unitPrice: "6.5100", minimumCharge: "600.00" });
+    const thirtyDaysAgo = formatDateOnly(addDays(todayDateOnly(), -30));
+    const { invoice } = await asSystem(() =>
+      createInvoice({ orderId: fixture.order.id, invoiceDate: thirtyDaysAgo }));
+    await asSystem(() => finalizeInvoice(invoice.id));
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.invoiceDate).toBe(formatDateOnly(todayDateOnly()));
+    expect(credit.invoiceDate).not.toBe(thirtyDaysAgo);
+
+    // The audit `after` snapshot carries the credit's OWN date too, not the source's.
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "invoice", entityId: credit.id } });
+    expect((entry!.after as Record<string, unknown>).invoiceDate).toBe(formatDateOnly(todayDateOnly()));
   });
 
   it("refuses a credit against a draft", async () => {
@@ -897,8 +1012,9 @@ describe("createCredit", () => {
     const reduced = await asSystem(() => replaceInvoiceLines(credit.id,
       credit.lines.map((l) => (l.kind === "OPERATION" ? { ...toLineInput(l), amount: "-100.00" } : toLineInput(l)))));
     expect(reduced.total).toBe(-100);
-    await asSystem(() => finalizeInvoice(credit.id));
+    const finalized = await asSystem(() => finalizeInvoice(credit.id));
     expect((await getInvoice(credit.id)).status).toBe("FINALIZED");
+    expect(finalized.dueDate).toBeNull(); // a CREDIT never gets a due date (Task 3/§4.3)
     expect((await getOrder(order.id)).status).toBe("SHIPPED"); // a credit finalize writes NO order status
   });
 

@@ -74,6 +74,13 @@ describe("allocateNumber", () => {
     expect(second).toBe(1001);
   });
 
+  it("allocates receipt-batch numbers from the new counter", async () => {
+    const first = await prisma.$transaction((tx) => allocateNumber("receipt_batch_number_next", tx));
+    const second = await prisma.$transaction((tx) => allocateNumber("receipt_batch_number_next", tx));
+    expect(first).toBe(1000);
+    expect(second).toBe(1001);
+  });
+
   // Fix-wave finding 8: Order.orderNumber is a Postgres INTEGER (int4) column, so a value past
   // 2147483647 can never be written there — allocating one anyway would only fail later, deep
   // inside the order-create transaction, as an opaque database error rather than this clean 400.

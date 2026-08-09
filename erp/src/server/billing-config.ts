@@ -16,12 +16,13 @@ export type BillingConfigRow = {
   certChargeStepCodeId: string | null;
   certChargeDefault: number | null;
   billForCertDefault: boolean;
+  financeChargeRate: number | null;
 };
 
 const EMPTY: BillingConfigRow = {
   salesTaxRate: null, salesTaxGlAccountId: null, freightGlAccountId: null,
   otherChargeGlAccountId: null, certChargeStepCodeId: null,
-  certChargeDefault: null, billForCertDefault: false,
+  certChargeDefault: null, billForCertDefault: false, financeChargeRate: null,
 };
 
 // Kept in sync with prisma/schema.prisma's @db.Decimal declarations on BillingConfig.
@@ -33,6 +34,10 @@ const SAVE = z.object({
   certChargeStepCodeId: z.string().nullable().optional(),
   certChargeDefault: decimalField(12, 2, { min: "nonnegative" }),
   billForCertDefault: z.boolean().optional(),
+  // Task 4 (P5B spec §4.3, §7): the plant default monthly finance-charge rate. Customer.
+  // financeChargeRate (customers.ts) overrides this per customer — that override chain is Task
+  // 11/12's concern; this field only carries the plant-wide fallback.
+  financeChargeRate: decimalField(6, 4, { min: "nonnegative" }),
 }).partial().strict();
 
 export async function getBillingConfig(db: Prisma.TransactionClient | typeof prisma = prisma): Promise<BillingConfigRow> {
@@ -48,6 +53,7 @@ export async function getBillingConfig(db: Prisma.TransactionClient | typeof pri
     certChargeStepCodeId: row.certChargeStepCodeId,
     certChargeDefault: row.certChargeDefault?.toNumber() ?? null,
     billForCertDefault: row.billForCertDefault,
+    financeChargeRate: row.financeChargeRate?.toNumber() ?? null,
   };
 }
 

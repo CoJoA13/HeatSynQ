@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { can, canDo, ALL_PERMISSIONS, type PermUser } from "@/server/permissions";
+import { can, canDo, ALL_PERMISSIONS, AREAS, SPECIAL_ACTIONS, type PermUser } from "@/server/permissions";
 
 function user(rolePerms: string[], overrides: { permission: string; mode: "GRANT" | "DENY" }[] = []): PermUser {
   return { role: { permissions: rolePerms.map((permission) => ({ permission })) }, overrides };
@@ -41,6 +41,13 @@ describe("permission resolution", () => {
   it("ALL_PERMISSIONS covers areas × actions plus specials", () => {
     expect(ALL_PERMISSIONS).toContain("orders.view");
     expect(ALL_PERMISSIONS).toContain("action.close_ar_period");
-    expect(ALL_PERMISSIONS.length).toBe(12 * 4 + 11);
+    // 13 areas (Phase 5B adds "receivables") × 4 CRUD actions + 12 specials (Phase 5B adds
+    // "write_off").
+    expect(ALL_PERMISSIONS.length).toBe(13 * 4 + 12);
+  });
+
+  it("has a receivables area and a write_off special action", () => {
+    expect(AREAS).toContain("receivables");
+    expect(SPECIAL_ACTIONS).toContain("write_off");
   });
 });

@@ -1,0 +1,22 @@
+-- Phase 5B Task 2, part 1 of 2. DocumentKind widens with STATEMENT: a customer statement is stored
+-- paper exactly like a traveler, a ticket, a BOL, a cert, an invoice or a credit (design spec §8),
+-- owned by StoredDocument."customerId".
+--
+-- This value is split into its own migration directory ON PURPOSE, and folding it back into the
+-- accounts_receivable migration is not a tidy-up — it breaks the deploy. Postgres refuses to USE a
+-- newly added enum value in the same transaction that added it:
+--
+--   ERROR:  unsafe use of new value "STATEMENT" of enum type "DocumentKind"
+--   HINT:   New enum values must be committed before they can be used.
+--
+-- The very next migration, 20260808230100_accounts_receivable, re-states the kind/owner CHECK
+-- constraint whose expression names 'STATEMENT', so it must run in a LATER transaction than this
+-- one. `prisma migrate deploy` runs each migration directory in its own transaction, which is
+-- exactly what makes two directories the fix. This is the same split, for the same reason, that
+-- 20260806221400_document_kind_invoice_values already performs for Phase 5A's INVOICE/CREDIT and
+-- 20260804122600_document_kind_values for Phase 4's three values.
+--
+-- Additive only: every existing row keeps its value untouched.
+
+-- AlterEnum
+ALTER TYPE "DocumentKind" ADD VALUE 'STATEMENT';

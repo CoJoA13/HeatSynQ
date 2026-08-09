@@ -7,6 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
+import { hasReceivableActivity } from "./invoice-guards";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -20,7 +21,7 @@ import {
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
   type PricingResult, type ComputedLine,
 } from "./pricing";
-import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "../lib/business-days";
 import {
   INVOICE_LINE_KINDS, PRICE_SOURCES,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -85,7 +86,7 @@ export type InvoiceDetail = {
   orderId: string; orderNumber: number; documentNumber: string;
   sourceInvoiceId: string | null; creditNumber: number | null;
   customerId: string; customerCode: string; customerName: string;
-  invoiceDate: string; poNumber: string; termsName: string;
+  invoiceDate: string; dueDate: string | null; poNumber: string; termsName: string;
   billTo: string; shipTo: string; materialName: string; processNames: string;
   taxRate: number | null;
   subtotal: number; surchargeTotal: number; chargeTotal: number;
@@ -106,7 +107,9 @@ export type InvoiceCreateResult = { invoice: InvoiceDetail; warnings: string[]; 
 // -------------------------------------------------------------------------------------------
 
 const DETAIL_INCLUDE = {
-  customer: { select: { code: true, name: true } },
+  // `terms` is read here (not a second query) so `finalizeInvoiceInTx` can compute `dueDate` off the
+  // SAME row this transaction already claimed via `claimInvoiceRow` — no new lock (Task 3/§4.3).
+  customer: { select: { code: true, name: true, terms: { select: { netDays: true } } } },
   order: { select: { orderNumber: true } },
   lines: { orderBy: { position: "asc" } },
 } satisfies Prisma.InvoiceInclude;
@@ -149,6 +152,7 @@ function toInvoiceDetail(row: DetailRow, prefix: string): InvoiceDetail {
     sourceInvoiceId: row.sourceInvoiceId, creditNumber: row.creditNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate),
+    dueDate: row.dueDate ? formatDateOnly(row.dueDate) : null,
     poNumber: row.poNumber, termsName: row.termsName,
     billTo: row.billTo, shipTo: row.shipTo,
     materialName: row.materialName, processNames: row.processNames,
@@ -1105,6 +1109,14 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
 
   await withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
     await claimLiveInvoice(tx, id);
+    // Task 9 (§5.3): DEFENSE-IN-DEPTH. A draft can never carry real A/R activity through the
+    // services — `applyPayment`/`applyCredit` require FINALIZED invoices/credits — so this guard is
+    // unreachable by construction, but the spec mandates it belt-and-suspenders: paper with money
+    // applied to it is never silently discarded. Read under the claim `claimLiveInvoice` holds.
+    if (await hasReceivableActivity(tx, id)) {
+      throw new HttpError(400,
+        "This invoice has payments or credits applied and cannot be discarded — void them first");
+    }
     // A printed invoice is paper the customer may hold — it can never be discarded, only credited
     // (§5.5). Any StoredDocument naming this invoice is proof it printed. Read under the claim.
     const printed = await tx.storedDocument.findFirst({ where: { invoiceId: id }, select: { id: true } });
@@ -1144,10 +1156,21 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
   // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
   const actor = currentActor();
+  // Task 3/§4.3: a finalized INVOICE's `dueDate` = its `invoiceDate` + the customer's
+  // `terms.netDays` — a calendar-day add (`addDays`, no weekend skip: a due date is a calendar
+  // date). `Terms.netDays` is `Int @default(30)` — never null — so the null case here is a
+  // customer with NO terms assigned at all (`Customer.termsId` null -> `invoice.customer.terms`
+  // null), not a null `netDays`. A CREDIT never gets a due date (Task 6 owner ruling: it ages from
+  // its own `invoiceDate` instead), so the write below is INVOICE-only.
+  const netDays = invoice.customer.terms?.netDays ?? null;
+  const dueDate = netDays === null ? null : addDays(invoice.invoiceDate, netDays);
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
-      data: { status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id },
+      data: {
+        status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id,
+        ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
+      },
     }), { tx });
   // Only an INVOICE owns the order's status (§5.2): finalizing one writes INVOICED. A CREDIT is a
   // correction against an already-invoiced order — it owns no order status, so finalizing it must
@@ -1185,23 +1208,39 @@ export async function finalizeInvoice(id: string, tx?: Prisma.TransactionClient)
  * leaves INVOICED alone) and lets recompute settle it on its ship-derived value. Recomputing before
  * clearing would leave the order INVOICED forever.
  */
-export async function unlockInvoice(id: string, reason: string): Promise<InvoiceDetail> {
+async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<InvoiceDetail> {
+  const { invoice, order } = await claimInvoiceRow(tx, id);
+  if (invoice.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — there is nothing to unlock");
+  }
+  // Task 9 (§5.3): a finalized invoice with live A/R activity — a payment/discount/write-off applied
+  // to it, or a credit applied against it — cannot be unlocked. Unlocking would re-open editable
+  // paper that money has already been applied to; the correction is to void the application first.
+  // Read under the claim `claimInvoiceRow` holds: `applyPayment`/`applyCredit` write these rows under
+  // the SAME order claim, so this read and the status write it guards see one consistent state.
+  if (await hasReceivableActivity(tx, id)) {
+    throw new HttpError(400,
+      `Invoice #${order.orderNumber} has payments applied — void them before unlocking`);
+  }
+  await auditedUpdate("invoice", id,
+    () => tx.invoice.update({
+      where: { id },
+      data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
+    }), { tx, reason: why });
+  await recomputeOrderStatus(tx, [order.id], [order.id]);
+  return readInvoiceDetail(tx, id);
+}
+
+export async function unlockInvoice(id: string, reason: string, tx?: Prisma.TransactionClient): Promise<InvoiceDetail> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to unlock an invoice");
-
-  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
-    const { invoice, order } = await claimInvoiceRow(tx, id);
-    if (invoice.status !== "FINALIZED") {
-      throw new HttpError(400, "That invoice is not finalized — there is nothing to unlock");
-    }
-    await auditedUpdate("invoice", id,
-      () => tx.invoice.update({
-        where: { id },
-        data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
-      }), { tx, reason: why });
-    await recomputeOrderStatus(tx, [order.id], [order.id]);
-    return readInvoiceDetail(tx, id);
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  // `tx` optional — the discriminating concurrency test passes a manually-opened (Read Committed)
+  // transaction so the order+invoice-row claim, not SSI, is what serializes a competing application
+  // (the `finalizeInvoice` shape). The public no-`tx` path runs Serializable, pairing with the claim.
+  if (tx) return unlockInvoiceInTx(tx, id, why);
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(
+    (fresh) => unlockInvoiceInTx(fresh, id, why),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1254,6 +1293,14 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
     // A credit's number comes from its own series, allocated INSIDE the claim (never hand-rolled).
     const creditNumber = await allocateNumber("credit_number_next", tx);
 
+    // Task 3/§4.3: a credit takes its OWN raise date — never the source invoice's `invoiceDate` —
+    // so it ages from its own date (Task 6 owner ruling), not the invoice it corrects. `createCredit`
+    // has no `deps` object (unlike `createInvoiceInTx`'s `deps.today`), so `todayDateOnly()` is
+    // called directly at this service boundary — once, and reused below in both the create data and
+    // the audit `after` snapshot, so the two can never disagree even across a UTC-midnight boundary
+    // mid-transaction.
+    const creditDate = todayDateOnly();
+
     // Copy every source line, money sign flipped, everything else (part identity, gl, qty, weight,
     // pricing snapshots) carried as billed. Source lines arrive position-asc (DETAIL_INCLUDE); the
     // copy keeps 1..n so the second-pass parent wiring maps cleanly.
@@ -1287,7 +1334,7 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
       orderId: source.orderId, orderNumber: order.orderNumber,
       sourceInvoiceId: source.id, creditNumber,
       customerId: source.customerId, customerCode: source.customer.code, customerName: source.customer.name,
-      invoiceDate: formatDateOnly(source.invoiceDate),
+      invoiceDate: formatDateOnly(creditDate),
       poNumber: source.poNumber, termsName: source.termsName,
       materialName: source.materialName, processNames: source.processNames,
       taxRate: num(source.taxRate),
@@ -1309,7 +1356,7 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
           sourceInvoiceId: source.id,
           creditNumber,
           status: "DRAFT",
-          invoiceDate: source.invoiceDate,
+          invoiceDate: creditDate,
           poNumber: source.poNumber, termsName: source.termsName,
           billTo: source.billTo, shipTo: source.shipTo,
           materialName: source.materialName, processNames: source.processNames,

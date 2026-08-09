@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { truncateAll } from "./helpers/db";
-import { listReference, createReference, deleteReference } from "@/server/reference";
+import { prisma, truncateAll } from "./helpers/db";
+import { listReference, createReference, updateReference, deleteReference } from "@/server/reference";
+import { pasteReference } from "@/server/paste";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
 
@@ -126,4 +127,131 @@ describe("flat reference tables", () => {
       expect(message.toLowerCase()).toContain("does not exist");
     }
   });
+});
+
+// Task 4: Terms carries netDays (required going forward, default 30) and an optional
+// discountPercent/discountDays early-pay-discount pair that is all-or-nothing.
+describe("terms: netDays + early-pay discount", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("defaults netDays to 30 when the create omits it", async () => {
+    const { id } = await createReference("terms", { name: "Net 30 (default)" });
+    const row = (await listReference("terms")).find((r) => r.id === id);
+    expect(row?.netDays).toBe(30);
+  });
+
+  it("rejects a negative netDays", async () => {
+    await expect(createReference("terms", { name: "Bad days", netDays: -1 })).rejects.toThrow();
+  });
+
+  it("rejects a non-integer netDays", async () => {
+    await expect(createReference("terms", { name: "Fractional days", netDays: 30.5 })).rejects.toThrow();
+  });
+
+  it("requires discountPercent and discountDays together, not one alone", async () => {
+    await expect(createReference("terms", { name: "Percent only", discountPercent: "2.00" }))
+      .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+    await expect(createReference("terms", { name: "Days only", discountDays: 10 }))
+      .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+  });
+
+  it("round-trips 2/10 net 30 and persists through the audited path", async () => {
+    const { id } = await createReference("terms", {
+      name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10,
+    });
+    const row = (await listReference("terms")).find((r) => r.id === id);
+    expect(row?.netDays).toBe(30);
+    expect(Number(row?.discountPercent)).toBe(2);
+    expect(row?.discountDays).toBe(10);
+
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "terms", entityId: id } });
+    expect(entry).not.toBeNull();
+    const after = entry!.after as { netDays: number; discountPercent: string; discountDays: number };
+    expect(after.netDays).toBe(30);
+    expect(Number(after.discountPercent)).toBe(2);
+    expect(after.discountDays).toBe(10);
+  });
+
+  // Fix round 1, Important #2: guards the exact behavior EXTRA_SCHEMAS.terms's deliberately
+  // no-`.default(30)` netDays relies on (reference.ts's comment on that entry). A `.default(30)`
+  // fires whenever the key is undefined, including on a partial PATCH that never meant to touch
+  // netDays — so a revert toward `.default(30)` would make THIS test fail: an unrelated update
+  // (here, just flipping `active`) must never reset an existing non-default netDays back to 30.
+  it("an update omitting netDays leaves an existing non-default value untouched", async () => {
+    const { id } = await createReference("terms", { name: "Net 45", netDays: 45 });
+    await updateReference("terms", id, { active: false });
+    // includeInactive: the update just deactivated this row, and the default listReference()
+    // call (like the grid's default view) only returns active rows.
+    const row = (await listReference("terms", { includeInactive: true })).find((r) => r.id === id);
+    expect(row?.active).toBe(false);
+    expect(row?.netDays).toBe(45);
+  });
+
+  // Fix round 1, Minor: paste.ts's numberColumns conversion (netDays/discountDays cells arrive as
+  // plain sheet strings, same as the ReferenceTable Add row) was untested — this exercises it
+  // end-to-end through pasteReference rather than createReference directly. Column order matches
+  // REFERENCE_EXTRA_FIELDS.terms: name, netDays, discountPercent, discountDays.
+  it("paste converts numeric netDays/discountDays cells for a terms row", async () => {
+    const result = await pasteReference("terms", "2/10 Net 45\t45\t2.00\t10");
+    expect(result).toEqual({ created: 1, errors: [] });
+    const row = (await listReference("terms")).find((r) => r.name === "2/10 Net 45");
+    expect(row?.netDays).toBe(45);
+    expect(row?.discountDays).toBe(10);
+    expect(Number(row?.discountPercent)).toBe(2);
+  });
+
+  // Codex review Fix #17 (P2): requireDiscountPair validates only the fields PRESENT in a PATCH,
+  // not the row that results from applying it. A PATCH clearing exactly one half of an existing
+  // pair used to pass (the omitted key looks the same as "never had a pair" from inside the
+  // refine) and persist a broken row — discountDays with no discountPercent, or vice versa.
+  // updateReference now validates the MERGED row (stored values overlaid by the patch) whenever
+  // the patch touches either discount key. Every case here is non-vacuous: each would have passed
+  // (and corrupted the stored row) before assertDiscountPairAfterUpdate existed.
+  describe("update: discount pair validated against the merged row, not just the patch", () => {
+    async function seed210() {
+      const { id } = await createReference("terms", {
+        name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10,
+      });
+      return id;
+    }
+
+    it("rejects clearing only discountPercent, leaving discountDays stored", async () => {
+      const id = await seed210();
+      await expect(updateReference("terms", id, { discountPercent: null }))
+        .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+      // The rejected write must not have partially landed.
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+
+    it("rejects clearing only discountDays, leaving discountPercent stored", async () => {
+      const id = await seed210();
+      await expect(updateReference("terms", id, { discountDays: null }))
+        .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+
+    it("allows clearing both halves of the pair together", async () => {
+      const id = await seed210();
+      await updateReference("terms", id, { discountPercent: null, discountDays: null });
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(row?.discountPercent).toBeNull();
+      expect(row?.discountDays).toBeNull();
+    });
+
+    it("an unrelated field update (netDays or active) on a paired row is unaffected", async () => {
+      const id = await seed210();
+      await updateReference("terms", id, { netDays: 45 });
+      await updateReference("terms", id, { active: false });
+      const row = (await listReference("terms", { includeInactive: true })).find((r) => r.id === id);
+      expect(row?.netDays).toBe(45);
+      expect(row?.active).toBe(false);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+  });
+
 });

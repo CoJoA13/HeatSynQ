@@ -5,6 +5,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
+import { decimalField } from "./decimal-field";
 import { REFERENCE_KINDS, REFERENCE_LABELS, type ReferenceKind } from "../lib/reference-constants";
 import { linksFrom, nameKey } from "../lib/reference-links";
 import { findBlockers } from "./reference-blockers";
@@ -23,8 +24,60 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   commentSnippet:  z.object({ text: z.string().max(4000).optional() }),
   specification:   z.object({ text: z.string().max(4000).optional() }),
   material: z.object({}), inspectionScale: z.object({}), containerType: z.object({}),
-  carrier: z.object({}), terms: z.object({}),
+  carrier: z.object({}),
+  // Task 4 (P5B spec §4.3): `netDays` mirrors the column's own `Int @default(30)` — optional
+  // here too, so a create that omits it lets Postgres apply the default rather than this schema
+  // re-asserting one. A zod-level `.default(30)` was tried and dropped: `EXTRA_SCHEMAS[kind]` is
+  // reused verbatim (via `.partial()`) for UPDATE, and `.default()` fires whenever the key is
+  // undefined — including on a partial PATCH that never meant to touch netDays — which would
+  // silently reset an existing row's netDays to 30 on every unrelated update (e.g. the Active
+  // toggle). Leaving it optional with no default keeps "omitted" meaning "don't touch" on update
+  // and "use the column default" on create, which is what each op actually needs.
+  // `discountPercent`/`discountDays` are both optional AND nullable — nullable so an update can
+  // explicitly clear either one (the column itself is `Int?`/`Decimal?`), optional so a PATCH
+  // that never mentions a key leaves it untouched (see resolveLinkNames/updateReference). Their
+  // all-or-nothing pairing is enforced on the composed create/update schema by requireDiscountPair
+  // below, not here — see its comment for why it can't live on this entry — and, on update, by
+  // assertDiscountPairAfterUpdate against the merged row (see that function's comment).
+  terms: z.object({
+    netDays: z.number().int().min(0).optional(),
+    discountPercent: decimalField(5, 2, { min: "nonnegative" }),
+    discountDays: z.number().int().min(1).nullable().optional(),
+  }),
 };
+
+/**
+ * Terms' early-pay discount is all-or-nothing (Task 4): `discountPercent` and `discountDays`
+ * arrive as a pair or not at all. This can't live inside `EXTRA_SCHEMAS.terms` itself —
+ * `EXTRA_SCHEMAS` is typed `Record<ReferenceKind, z.ZodObject>` and every kind's create/update
+ * composes it via `.merge()`/`.partial()` below; a `.refine()`/`.superRefine()` there would
+ * return a `ZodEffects`, which has neither method, and would break every other kind's compose.
+ * Applied instead to the fully-composed schema, once, right before `.parse()` — for the other
+ * nine kinds neither key is ever in that schema's shape, so the check is a structural no-op.
+ *
+ * Update validates only the raw PATCH here — it cannot see the stored row, so it can't tell
+ * "the other half of the pair is already set on the row" from "the other half was never set at
+ * all"; both look like "key absent from this patch" from inside the refine. That gap (a PATCH
+ * supplying exactly one of the pair against a row that already has the other set) is closed by
+ * `assertDiscountPairAfterUpdate` below, which `updateReference` runs against the MERGED row
+ * (stored values overlaid by the patch) before writing. This refine still runs on update too —
+ * it catches the cheaper case where the patch itself sets both keys to a mismatched pair
+ * (percent present-and-non-null, days explicitly null, or vice versa) without a DB round trip.
+ */
+function requireDiscountPair<S extends z.ZodTypeAny>(schema: S) {
+  return schema.superRefine((value, ctx) => {
+    const row = value as { discountPercent?: number | null; discountDays?: number | null };
+    const hasPercent = row.discountPercent != null;
+    const hasDays = row.discountDays != null;
+    if (hasPercent !== hasDays) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasPercent ? "discountDays" : "discountPercent"],
+        message: "an early-pay discount needs both a percent and a day count",
+      });
+    }
+  });
+}
 
 // `.trim()` mirrors customers.ts's CREATE.name — without it a name is stored exactly as typed
 // (e.g. "  Rockwell C  ") but resolveLinkNames() below trims before its lookup, so the grid could
@@ -132,7 +185,7 @@ export async function createReference(kind: string, input: Record<string, unknow
   // EXTRA_SCHEMAS[kind] widens to the Record's general value type once indexed by a non-literal
   // key, which in turn widens `name` on the merged shape's inferred type — cast back to what we
   // know BASE guarantees so `data.name` below type-checks as `string`, not `unknown`.
-  const data = BASE.merge(EXTRA_SCHEMAS[kind]).strict()
+  const data = requireDiscountPair(BASE.merge(EXTRA_SCHEMAS[kind]).strict())
     .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
 
   // A soft-deleted row still occupies its unique `name`, but is invisible to every list — so a
@@ -169,9 +222,40 @@ export async function createReference(kind: string, input: Record<string, unknow
   return { id: row.id };
 }
 
+/**
+ * Closes the gap `requireDiscountPair` leaves on update (see its doc comment): a PATCH touching
+ * only one of `discountPercent`/`discountDays` is valid on its own, but can still leave the
+ * STORED row broken if the other half was already set. Runs only for kind "terms" (the one kind
+ * with this pairing) and only when the patch actually touches one of the two keys — every other
+ * PATCH (renaming, toggling `active`, changing `netDays`) is a no-op here.
+ *
+ * Reads the current row inside the caller's own transaction, then merges: a key ABSENT from the
+ * patch (`"discountPercent" in patch` false) keeps the stored value; a key PRESENT in the patch —
+ * including an explicit `null` — overrides it. That distinction is exactly what a plain
+ * `patch.discountPercent ?? current.discountPercent` would erase (`??` can't tell "omitted" from
+ * "explicitly null"), so this checks `in` on the parsed patch object instead. zod's `.partial()`
+ * omits untouched optional keys from its parsed output entirely (verified against this repo's
+ * zod: `{ a: null }` parsed through `z.object({a,b}).partial()` yields `{a: null}`, not
+ * `{a: null, b: undefined}`), so `in` reliably means "the caller's PATCH mentioned this key".
+ */
+async function assertDiscountPairAfterUpdate(
+  tx: Prisma.TransactionClient, id: string, patch: Record<string, unknown>,
+): Promise<void> {
+  if (!("discountPercent" in patch) && !("discountDays" in patch)) return;
+  const current = await tx.terms.findFirst({
+    where: { id }, select: { discountPercent: true, discountDays: true },
+  });
+  if (!current) return; // No such row — the update() below raises the real (404-shaped) error.
+  const percent = "discountPercent" in patch ? patch.discountPercent : current.discountPercent;
+  const days = "discountDays" in patch ? patch.discountDays : current.discountDays;
+  if ((percent != null) !== (days != null)) {
+    throw new HttpError(400, "an early-pay discount needs both a percent and a day count");
+  }
+}
+
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
-  const data = BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict()
+  const data = requireDiscountPair(BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict())
     .parse(await resolveLinkNames(kind, input)) as z.infer<typeof BASE> & Record<string, unknown>;
   // Same Serializable scoping as createReference above — see that comment. Clearing an FK to
   // null needs neither a target check nor Serializable: nothing points at anything after the
@@ -184,6 +268,7 @@ export async function updateReference(kind: string, id: string, input: Record<st
         const value = data[link.column];
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
       }
+      if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);
       await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }

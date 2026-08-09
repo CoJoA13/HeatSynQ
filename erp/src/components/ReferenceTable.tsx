@@ -67,9 +67,41 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
 
   async function add() {
     try {
-      await api(`/api/admin/reference/${kind}`, { method: "POST", body: JSON.stringify(draft) });
+      await api(`/api/admin/reference/${kind}`, { method: "POST", body: JSON.stringify(buildPayload()) });
       setDraft({}); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
+  }
+
+  // `draft` is a plain string map (every input writes a string). Two extra-field kinds need
+  // massaging before that map is a valid request body:
+  //   - "number" (Terms' netDays/discountDays, Task 4): a real `z.number().int()` server-side,
+  //     not string-accepting like decimalField — so it needs converting to an actual JS number,
+  //     the requestDaysOverride precedent (customers/[id]/page.tsx).
+  //   - "decimal" (Terms' discountPercent, Task 4 fix round 1): IS string-accepting
+  //     (`decimalField`), so no numeric conversion — but it also isn't `""`-accepting: an empty
+  //     string fails decimalField's digit-pattern regex with a cryptic 400 instead of being
+  //     treated as "no value." A user who types a discount percent and then clears the box must
+  //     get "no discount," not that regex error.
+  // Both kinds drop a blank input entirely rather than send `""`, so the field's own `.optional()`
+  // applies (and, for netDays, so the column's `@default(30)` applies) instead of a 400. Plain
+  // "text" fields (glAccount.description, commentSnippet/specification.text) are deliberately left
+  // untouched here — `""` is a legitimate stored value for genuine free text, not "no value."
+  // A "number" value that fails to parse as finite is left as the original string so the server's
+  // own "Expected number, received string" explains it, rather than silently becoming `null` (an
+  // "abc" input's `Number()` is `NaN`, which `JSON.stringify` turns into `null` if sent as-is).
+  function buildPayload(): Record<string, unknown> {
+    const payload: Record<string, unknown> = { ...draft };
+    for (const f of extras) {
+      if (f.kind !== "number" && f.kind !== "decimal") continue;
+      const raw = draft[f.key];
+      if (raw === undefined || raw.trim() === "") { delete payload[f.key]; continue; }
+      if (f.kind === "number") {
+        const n = Number(raw);
+        payload[f.key] = Number.isFinite(n) ? n : raw;
+      }
+      // "decimal": decimalField accepts the raw string as-is once it isn't blank.
+    }
+    return payload;
   }
 
   async function toggleActive(row: Row) {
@@ -177,8 +209,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
                     {(refOptions[f.key] ?? []).map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}
                   </select>
                 ) : (
-                  <input value={draft[f.key] ?? ""} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
-                         placeholder={f.label} className="w-full rounded border px-2 py-1" />
+                  <>
+                    <input value={draft[f.key] ?? ""}
+                           inputMode={f.kind === "number" ? "numeric" : f.kind === "decimal" ? "decimal" : undefined}
+                           onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                           placeholder={f.label} className="w-full rounded border px-2 py-1" />
+                    {f.hint && <span className="mt-0.5 block text-xs text-slate-400">{f.hint}</span>}
+                  </>
                 )}
               </td>
             ))}

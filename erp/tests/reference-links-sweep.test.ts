@@ -140,6 +140,10 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "partPrice.processStepCodeId -> processStepCode",
       "partProcessStep.codeId -> processStepCode",
       "partSpecification.specificationId -> specification",
+      // Phase 5B: the one new A/R FK that targets a reference table. Payment's other FKs and every
+      // Application FK point at non-reference models (ReceiptBatch/Customer/Invoice/Payment), so the
+      // sweep never surfaces them — they are outside the delete-guard registry by design.
+      "payment.paymentTypeId -> paymentType",
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
       "processTemplateStep.codeId -> processStepCode",

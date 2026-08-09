@@ -5,9 +5,11 @@ import { GET as list, POST as create } from "@/app/api/customers/route";
 import { GET as detail, PUT as update, DELETE as remove } from "@/app/api/customers/[id]/route";
 import { GET as blockersRoute } from "@/app/api/customers/[id]/blockers/route";
 import { GET as blockersExportRoute } from "@/app/api/customers/[id]/blockers/export/route";
+import { GET as receivablesRoute } from "@/app/api/customers/[id]/receivables/route";
 import { createCustomer } from "@/server/customers";
 import { createPart } from "@/server/parts";
 import { createOrder } from "@/server/orders";
+import { parseDateOnly } from "@/lib/business-days";
 
 const noParams = { params: Promise.resolve({}) };
 const withId = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -136,5 +138,145 @@ describe("customer routes", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(exportRes.headers.get("content-disposition")).toContain("attachment");
     expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
+  });
+
+  // Task 15: the customer page's A/R section — `GET /api/customers/[id]/receivables`
+  // (`customerReceivablesSummary`, src/server/customer-receivables.ts), gated receivables.view
+  // (not customers.view — this is A/R data, the aging/applications GET routes' own gate).
+  it("GET .../receivables: 401, 403, and 200 with the aging summary + open items with receivables.view", async () => {
+    const { id } = await createCustomer({ code: "ARCUST", name: "AR Customer" });
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 950001, customerId: id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: id,
+        invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"),
+        total: 400, finalizedAt: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    expect((await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`), withId(id))).status)
+      .toBe(401);
+
+    const wrong = await signInWith(["customers.view"], "cust-recv-wrong-1");
+    expect((await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`, wrong), withId(id))).status)
+      .toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "cust-recv-viewer-1");
+    const res = await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`, viewer), withId(id));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      aging: { customerId: string; net: number };
+      openItems: { id: string; customerId: string; open: number }[];
+    };
+    expect(body.aging.customerId).toBe(id);
+    expect(body.aging.net).toBe(400);
+    expect(body.openItems).toHaveLength(1);
+    expect(body.openItems[0].customerId).toBe(id);
+    expect(body.openItems[0].open).toBe(400);
+  });
+
+  it("GET .../receivables: 404s an unknown customer", async () => {
+    const viewer = await signInWith(["receivables.view"], "cust-recv-404");
+    const res = await receivablesRoute(getReq("http://t/api/customers/nope/receivables", viewer), withId("nope"));
+    expect(res.status).toBe(404);
+  });
+
+  // Task 15 fix round 1 (review finding, Important): `agingReport({customerId})` and
+  // `openInvoicesForPayer(customerId)` diverge in scope for a DIVISION — the former returns only
+  // that customer's own row, the latter resolves the whole family (parent + every sibling). The
+  // earlier version of `customerReceivablesSummary` composed the two as if they agreed, so a
+  // division's page showed a net scoped to itself above an open-items table actually listing its
+  // parent's and siblings' invoices. This regression proves BOTH figures are now scoped to the ONE
+  // customer whose page it is — parent and child alike — never a family roll-up. Each of parent
+  // and child carries its own finalized open invoice AND its own on-account payment, so a
+  // family-leak would show up as either an extra open item OR a `net`/`unapplied` that includes
+  // the other customer's payment.
+  it("GET .../receivables scopes to the ONE customer's own A/R, never its family (division regression)", async () => {
+    const { id: parentId } = await createCustomer({ code: "ARFAM-P", name: "AR Family Parent" });
+    const { id: childId } = await createCustomer({ code: "ARFAM-C", name: "AR Family Child", parentId });
+
+    const parentOrder = await prisma.order.create({
+      data: {
+        orderNumber: 951001, customerId: parentId, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    const parentInvoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: parentOrder.id, customerId: parentId,
+        invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"),
+        total: 300, finalizedAt: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    const childOrder = await prisma.order.create({
+      data: {
+        orderNumber: 951002, customerId: childId, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    const childInvoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: childOrder.id, customerId: childId,
+        invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"),
+        total: 500, finalizedAt: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    // An on-account payment (no application) for EACH — non-trivial `unapplied`/`net`, and proof
+    // a family roll-up isn't sneaking one customer's cash into the other's figures.
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 951000, depositDate: parseDateOnly("2026-06-01") },
+    });
+    const paymentType = await prisma.paymentType.create({ data: { name: "ARFAM-Check" } });
+    await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: parentId, paymentTypeId: paymentType.id,
+        amount: 50, receivedDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: childId, paymentTypeId: paymentType.id,
+        amount: 100, receivedDate: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    const viewer = await signInWith(["receivables.view"], "cust-recv-family-viewer");
+
+    type Summary = {
+      aging: { customerId: string; unapplied: number; net: number };
+      openItems: { id: string; customerId: string; open: number }[];
+    };
+
+    // The CHILD's page: only the child's own invoice, only the child's own on-account cash.
+    const childRes = await receivablesRoute(getReq(`http://t/api/customers/${childId}/receivables`, viewer), withId(childId));
+    expect(childRes.status).toBe(200);
+    const childBody = await childRes.json() as Summary;
+    expect(childBody.aging.customerId).toBe(childId);
+    expect(childBody.aging.unapplied).toBe(100);
+    expect(childBody.aging.net).toBe(400); // 500 open − 100 on account
+    expect(childBody.openItems).toHaveLength(1);
+    expect(childBody.openItems[0].id).toBe(childInvoice.id);
+    expect(childBody.openItems[0].customerId).toBe(childId);
+    expect(childBody.openItems[0].open).toBe(500);
+
+    // The PARENT's page: only the parent's own invoice, only the parent's own on-account cash —
+    // NOT the child's, even though the parent is a family head.
+    const parentRes = await receivablesRoute(getReq(`http://t/api/customers/${parentId}/receivables`, viewer), withId(parentId));
+    expect(parentRes.status).toBe(200);
+    const parentBody = await parentRes.json() as Summary;
+    expect(parentBody.aging.customerId).toBe(parentId);
+    expect(parentBody.aging.unapplied).toBe(50);
+    expect(parentBody.aging.net).toBe(250); // 300 open − 50 on account
+    expect(parentBody.openItems).toHaveLength(1);
+    expect(parentBody.openItems[0].id).toBe(parentInvoice.id);
+    expect(parentBody.openItems[0].customerId).toBe(parentId);
+    expect(parentBody.openItems[0].open).toBe(300);
   });
 });

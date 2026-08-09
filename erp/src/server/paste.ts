@@ -18,7 +18,13 @@ export type PasteResult = { created: number; errors: { row: number; message: str
  */
 export async function pasteReference(kind: string, text: string): Promise<PasteResult> {
   assertKind(kind);
-  const columns = ["name", ...REFERENCE_EXTRA_FIELDS[kind].map((f) => (f.kind === "ref" ? nameKey(f.key) : f.key))];
+  const extraFields = REFERENCE_EXTRA_FIELDS[kind];
+  const columns = ["name", ...extraFields.map((f) => (f.kind === "ref" ? nameKey(f.key) : f.key))];
+  // "number"-kind columns (Terms' netDays/discountDays, Task 4) are real `z.number().int()`
+  // fields server-side, not string-accepting like `decimalField` — every cell off the sheet is a
+  // string, so these need converting before createReference ever sees them, the same reason
+  // ReferenceTable.tsx's Add row converts them.
+  const numberColumns = new Set(extraFields.filter((f) => f.kind === "number").map((f) => f.key));
   const { records, error } = parseRecords(text);
 
   const errors: PasteResult["errors"] = [];
@@ -33,7 +39,19 @@ export async function pasteReference(kind: string, text: string): Promise<PasteR
     }
     const row = Object.fromEntries(columns.map((c, idx) => [c, record.fields[idx] ?? ""]));
     // Drop empty optional cells so zod's .optional() applies instead of receiving "".
-    const input = Object.fromEntries(Object.entries(row).filter(([k, v]) => k === "name" || v !== ""));
+    const input = Object.fromEntries(
+      Object.entries(row)
+        .filter(([k, v]) => k === "name" || v !== "")
+        // A non-numeric cell in a "number" column (e.g. "abc") is left as the original string
+        // rather than becoming NaN — matches ReferenceTable.tsx's buildPayload(), so a bad cell
+        // reports the same "Expected number, received string" zod message per-row here that a
+        // bad Add-row entry would get from the same server-side schema.
+        .map(([k, v]) => {
+          if (!numberColumns.has(k)) return [k, v];
+          const n = Number(v);
+          return [k, Number.isFinite(n) ? n : v];
+        }),
+    );
     try {
       await createReference(kind, input);
       created++;

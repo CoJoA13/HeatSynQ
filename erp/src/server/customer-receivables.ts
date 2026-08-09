@@ -1,0 +1,39 @@
+/**
+ * The customer page's A/R section (Task 15, P5B §11): the customer's own net balance/aging
+ * buckets plus its own open items — composed from Task 10's `aging.ts` and Task 13's
+ * `applications.ts`, no balance math of its own (CLAUDE.md: reuse `ar-balances`/`aging`/
+ * `applications`, never re-derive). A dependency-light leaf, the `invoice-guards.ts` precedent:
+ * `aging.ts` and `applications.ts` do not import each other, and this file composes both without
+ * either module needing to know about the other.
+ *
+ * Fix round 1 (Task 15 review, Important): the FIRST version of this function paired
+ * `agingReport({ customerId })` with `openInvoicesForPayer(customerId)` and assumed the two agreed
+ * on scope. They do not, for a DIVISION (a customer with a `parentId`): `agingReport` returns only
+ * that one customer's own row unless it is itself a PARENT (never a child), while
+ * `openInvoicesForPayer` resolves `rootId = parentId ?? id` and returns the whole FAMILY's open
+ * invoices — parent plus every sibling — because a payment can legitimately settle across
+ * divisions (that function's own header comment). Composed together, a division's page showed a
+ * net balance scoped to that division alone above an open-items table that actually listed
+ * unrelated siblings' invoices, unlabeled and not reconciling with the net.
+ *
+ * This section is framed around ONE customer, so both figures now read that ONE customer's OWN
+ * A/R — never a family roll-up, whether the customer is a parent, a child, or standalone:
+ * `customerOwnAgingRow` (aging.ts) and `openInvoicesForCustomer` (applications.ts), the
+ * single-customer siblings added alongside `agingReport`/`openInvoicesForPayer` specifically so
+ * those two functions' existing family-resolving behavior — which Tasks 10/13's callers rely on —
+ * stays untouched.
+ */
+import { customerOwnAgingRow, type AgingRow } from "./aging";
+import { openInvoicesForCustomer, type OpenInvoiceRow } from "./applications";
+
+export type CustomerReceivablesSummary = { aging: AgingRow; openItems: OpenInvoiceRow[] };
+
+/** Both reads are scoped to the SAME single customer id — never a family — so the open-items table
+ *  and the net/aging strip always describe the same invoice set and reconcile with each other. */
+export async function customerReceivablesSummary(customerId: string): Promise<CustomerReceivablesSummary> {
+  const [aging, openItems] = await Promise.all([
+    customerOwnAgingRow(customerId),
+    openInvoicesForCustomer(customerId),
+  ]);
+  return { aging, openItems };
+}
