@@ -40,7 +40,7 @@ than pre-litigated.
 - [x] Task 8 — credit application — **complete** (code `2928082`; review Approved — opus; audit enhancement landed)
 - [x] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals — **complete** (code `1b7210b`, fix `2483bd0`; review Approved after 1 fix round — opus caught a real voidOrder gap)
 - [x] Task 10 — `aging.ts` (pure) + route — **complete** (code `2caaeec`; review Approved — opus, point-in-time verified)
-- [ ] Task 11 — `finance-charges.ts` (pure)
+- [x] Task 11 — `finance-charges.ts` (pure) — **complete** (code `36bccd8`; review clean)
 - [ ] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route
 - [ ] Task 13 — `/receivables` batch entry + apply UI
 - [ ] Task 14 — aging report UI
@@ -66,6 +66,10 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 11 — complete (BASE `a77077b`, code `36bccd8`; review clean)
+- Pure `finance-charges.ts` (33 lines): `financeCharge({ pastDueBalances, rate })` = `round(Σ non-exempt open × rate/100)`, 0 when rate null/0 or nothing past-due; `financeChargeRateFor(customerRate, plantRate)` = override-else-plant via `??` (an explicit customer `0` is a valid opt-out → 0, consistent with financeCharge's zero-rate short-circuit). Integer-cent, same `cents` helper as ar-balances/aging (reviewer spot-checked 56 combos — no drift).
+- Gates: `npm test` 1812, tsc/eslint/build clean. Reviewer: Spec ✅, Approved. Minor: `FinanceChargeInput.rate` typed `number` but a test passes `null` via cast → widen to `number | null` **at Task 12** (helps the call site pass a resolved-but-possibly-null rate). Inherited from the brief's interface.
 
 ### Task 10 — complete (BASE `dcd2d0e`, code `2caaeec`; review Approved — opus)
 - Pure `bucketAging(snap, asOf, customers)` + service `agingReport(filter)` + JSON/Excel-export routes. Point-in-time: only invoices `finalizedAt ≤ asOf`, reduced by only live apps `appliedDate ≤ asOf`. Buckets by dueDate (≥asOf→current, 1-30/31-60/61-90/>90); Unapplied = credit remaining + on-account (separate column); net = buckets − unapplied. Integer-cent, UTC-midnight-drift-free. Family roll-up = per-child rows + parent-keyed family total.
