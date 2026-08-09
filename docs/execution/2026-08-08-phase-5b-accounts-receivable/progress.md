@@ -38,7 +38,7 @@ than pre-litigated.
 - [x] Task 6 — `receipts.ts` + routes — **complete** (code `1acfc41`; review Approved, 2 correct deviations, 1 owner-ruling item)
 - [x] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes — **complete** (code `34fe94a`; review Approved — opus, concurrency verified RED)
 - [x] Task 8 — credit application — **complete** (code `2928082`; review Approved — opus; audit enhancement landed)
-- [ ] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals
+- [x] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals — **complete** (code `1b7210b`, fix `2483bd0`; review Approved after 1 fix round — opus caught a real voidOrder gap)
 - [ ] Task 10 — `aging.ts` (pure) + route
 - [ ] Task 11 — `finance-charges.ts` (pure)
 - [ ] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route
@@ -65,6 +65,13 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 9 — complete (BASE `cfc1827`, code `1b7210b` + fix `2483bd0`; review Approved after 1 fix round — opus)
+- `hasReceivableActivity(tx, invoiceId)` added to the `invoice-guards.ts` LEAF (imports only `type Prisma`; a live Application where `invoiceId = this` OR `creditInvoiceId = this`). `unlockInvoice`/`discardInvoice` (invoices.ts) + `voidOrder` (orders.ts) refuse under their existing claim, no new lock. `unlockInvoice` gained an optional `tx` param (finalizeInvoice precedent) for the concurrency test.
+- **discardInvoice guard is defense-in-depth** (a DRAFT can't carry real A/R activity — applications require finalized); proved wired via a raw-inserted Application against a DRAFT credit, documented.
+- **Concurrency test (mandated, RED-verified):** apply racing unlock; competitor pinned to Read Committed; guard removed → both commit an unlocked invoice with a live application (RED); restored → refuses (GREEN). Implementer also ran full E2E 16/16 (touches void-order/unlock flows).
+- **Review round 1 (opus caught a real Important gap):** `voidOrder` checked A/R activity only on the finalized INVOICE, missing a reachable applied-CREDIT-on-order case (inv_O finalized → credit_C → applyCredit cross-order → unlock inv_O → voidOrder(O) orphaned the credit). **Fixed** (`2483bd0`): added leaf-safe `hasReceivableActivityForOrder(tx, orderId)` (any live Application where `invoice.orderId` OR `creditInvoice.orderId` = O); voidOrder uses it (strictly stronger than the per-invoice check). Regression test builds the exact sequence via real services, RED-verified. Re-review: Approved, zero outstanding (the prior Minor also resolved).
+- Gates: `npm test` 1785, tsc/eslint/build clean, E2E 16/16.
 
 ### Task 8 — complete (BASE `1598876`, code `2928082`; review Approved — opus)
 - `applyCredit` added to `applications.ts` (129 lines) + route + the Task 2 audit enhancement. Reuses Task 7's claim: unlocked stubs (target = live FINALIZED INVOICE; source = live FINALIZED CREDIT) → `claimOrdersInOrder([both orders])` → ONE sorted `FOR UPDATE` over BOTH invoice rows (target + credit). The **credit's own row is locked** in that statement, so two concurrent `applyCredit(sameCredit → diff invoices)` serialize on the credit row and the second sees the first's app — race closed by the LOCK, not SSI (reviewer-confirmed). Global order Order<Invoice, a prefix of applyPayment's — no ABBA.
