@@ -37,7 +37,7 @@ than pre-litigated.
 - [x] Task 5 — `ar-balances.ts` (pure) — **complete** (code `81beb71`; review clean)
 - [x] Task 6 — `receipts.ts` + routes — **complete** (code `1acfc41`; review Approved, 2 correct deviations, 1 owner-ruling item)
 - [x] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes — **complete** (code `34fe94a`; review Approved — opus, concurrency verified RED)
-- [ ] Task 8 — credit application
+- [x] Task 8 — credit application — **complete** (code `2928082`; review Approved — opus; audit enhancement landed)
 - [ ] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals
 - [ ] Task 10 — `aging.ts` (pure) + route
 - [ ] Task 11 — `finance-charges.ts` (pure)
@@ -59,11 +59,18 @@ than pre-litigated.
 
 - **Task 7 minors (opus review, all doc/hardening — behavior correct):** (a) the post-claim invoice re-read omits `deletedAt`/`status`/`kind` — safe (a concurrent void → 40001 → retry → 404) but rests on SSI+retry rather than a post-claim recheck like `claimCertsOrder`; either re-select+re-assert or tighten the comment; (b) the added Payment-row claim's cross-invoice (same-payment/two-invoice) guarantee is actually SSI, not the lock, and has no discriminating test — correct because the public path is always Serializable, but the report's "serialize here" framing overstates it; (c) `applications-concurrency.test.ts:692-693` comment mis-predicts the RED failure mode (says timeout fails first; actually the competitor blocks at INSERT and the final `rejects` fails) — test still discriminates, comment wrong. **Cheap doc fixes; candidates for the whole-branch fix wave.**
 
-- **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
+- ~~**Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` pulls only the target invoice, not the source credit.~~ **CLOSED in Task 8** — `SNAPSHOT_INCLUDE.application` now includes `creditInvoice` (covered by a void-snapshot content test). (`Payment.customer` still not in Payment's snapshot — trivial, whole-branch triage if wanted.)
+- **Task 8 minor** — `APPLICATIONS_LITE_SELECT` (applications.ts) duplicates the inline `{ amount, type, deletedAt }` select `applyPayment` still inlines; share one const. Trivial DRY. Whole-branch triage.
 - **Task 6 minors** — (a) no per-route 401 (missing-cookie) test in receivables-routes.test.ts (403+200 covered; brief mandated only 403; `handle` enforces 401 uniformly); (b) no test that `getBatch` returns a voided batch (readBatchDetail deliberately omits the deletedAt filter — behavior unasserted); (c) `paymentType` double round-trip (assertRefExists then findFirst for name — redundant read, harmless). Whole-branch triage.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 8 — complete (BASE `1598876`, code `2928082`; review Approved — opus)
+- `applyCredit` added to `applications.ts` (129 lines) + route + the Task 2 audit enhancement. Reuses Task 7's claim: unlocked stubs (target = live FINALIZED INVOICE; source = live FINALIZED CREDIT) → `claimOrdersInOrder([both orders])` → ONE sorted `FOR UPDATE` over BOTH invoice rows (target + credit). The **credit's own row is locked** in that statement, so two concurrent `applyCredit(sameCredit → diff invoices)` serialize on the credit row and the second sees the first's app — race closed by the LOCK, not SSI (reviewer-confirmed). Global order Order<Invoice, a prefix of applyPayment's — no ABBA.
+- Both over-application checks read after the claims (credit remaining via `creditRemaining(|total|)`; invoice open reuses applyPayment's message/invariant). Application `{ type: CREDIT, paymentId: null, creditInvoiceId, appliedDate: today }` satisfies `Application_source_check`.
+- **Audit enhancement landed (Task 2 carry closed):** `SNAPSHOT_INCLUDE.application` gains `creditInvoice`; a void-snapshot test asserts real content (before.creditInvoice.kind + order.orderNumber) — also the live exercise of the include.
+- Gates: `npm test` 1778, tsc/eslint/build clean. Reviewer (opus): Spec ✅, Approved. Minors: no credit-path concurrency test (brief scoped out; lock proven identical to Task 7); `APPLICATIONS_LITE_SELECT` vs applyPayment's inline select DRY drift → deferred.
 
 ### Task 7 — complete (BASE `cc824e8`, code `34fe94a`; review Approved — opus)
 - `applications.ts` (297 lines) + 2 routes + 3 test files (610 lines). `applyPayment` applies PAYMENT/DISCOUNT/WRITE_OFF across ≥1 invoices under ONE claim; `voidApplication`; `discountAvailable`. On-account is the unapplied remainder by construction (no write).
