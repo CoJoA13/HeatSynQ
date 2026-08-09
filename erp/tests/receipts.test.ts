@@ -322,3 +322,105 @@ describe("listBatches", () => {
     expect(await listBatches()).toEqual([]);
   });
 });
+
+// -------------------------------------------------------------------------------------------
+// Whole-branch FIX (residual window): voidPayment vs a racing applyPayment on the SAME payment.
+// voidPayment claims the BATCH row; applyPayment claims the PAYMENT row — different rows, so the
+// two only serialize once voidPayment ALSO claims the payment row (the fix). Without that claim
+// voidPayment's live-applications check can read zero apps while applyPayment is mid-write, then
+// void the payment and STRAND the application (payment voided AND application live).
+//
+// The discipline (the applications-concurrency.test.ts precedent): a passing concurrency test
+// proves nothing on its own — two Serializable txns are SSI-ordered regardless. So SSI is off the
+// table: the COMPETING caller (voidPayment) runs at DEFAULT (Read Committed), where the ONLY thing
+// that can serialize it against the holder is a genuine row lock. The holder is HAND-SCRIPTED to
+// hold PRECISELY the payment-row `FOR UPDATE` claim (the lock under test — NOT the batch lock, which
+// voidPayment takes first and which would otherwise do the serializing) and to write a PAYMENT
+// application against it while uncommitted, so the competitor's serialization comes from nothing but
+// its OWN payment claim.
+//
+// Verified RED by hand by commenting out the payment-row `FOR UPDATE` claim in `voidPaymentInTx`:
+// the competitor then never blocks — its Read-Committed applications read sees zero committed apps,
+// it voids the payment and settles immediately (the TIMED_OUT assertion fails first), leaving the
+// payment voided AND the holder's application live. Restored → GREEN (transcript in the whole-branch
+// fix report).
+describe("voidPayment concurrency — the payment-row claim serializes a void against a racing application", () => {
+  it("blocks the competing Read-Committed void on the payment lock; the fresh read then refuses (never a voided payment with a live application)", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+
+    // A finalized invoice for the same customer — the holder applies the payment to it.
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 950000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+      },
+    });
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // The holder simulates `applyPayment`'s effect: it takes ONLY the payment-row `FOR UPDATE` claim
+    // (deliberately not the batch lock — see the block header), writes a 300 PAYMENT application
+    // against the payment, then holds it uncommitted. Read Committed: the application is invisible to
+    // the competitor's applications read until this commits, so the competitor can only see it after
+    // it acquires the payment lock — which is exactly the serialization under test.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+      await tx.application.create({
+        data: {
+          invoiceId: invoice.id, amount: 300, type: "PAYMENT", paymentId,
+          appliedDate: parseDateOnly("2026-08-08"),
+        },
+      });
+      hasClaimed();
+      await release;
+    }, { timeout: 20000 });
+
+    await claimed;
+
+    // The competitor: `voidPayment` on a manually-opened DEFAULT (Read Committed) transaction — NOT
+    // the public Serializable path, so SSI is out of the picture and the payment-row claim is the
+    // only thing that can serialize it.
+    const competitor = asSystem(() => prisma.$transaction((tx) =>
+      voidPayment(batch.id, paymentId, "wrong batch", tx)));
+
+    // Not the discriminator — just proof the competitor's own payment claim is genuinely blocked on
+    // the holder. In the regression (claim removed) it never blocks: it reads zero committed apps and
+    // settles almost immediately, so THIS assertion fails first.
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      competitor.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: with the payment row locked, the competitor could decide nothing until the
+    // holder's application committed. Its fresh Read-Committed read then sees that live application
+    // and REFUSES the void — deterministically this exact 400, never a voided payment with a live
+    // application against it.
+    await expect(competitor).rejects.toMatchObject({
+      status: 400,
+      message: "This payment has applications — void them first",
+    });
+
+    // Exactly one outcome: the payment stays live (the void refused) and the holder's application
+    // stays live — never both a voided payment AND a live application.
+    expect(await prisma.payment.count({ where: { id: paymentId, deletedAt: null } })).toBe(1);
+    expect(await prisma.application.count({ where: { paymentId, deletedAt: null } })).toBe(1);
+  });
+});

@@ -99,8 +99,59 @@ Gates:
 
 ## Concerns
 
-- FIX 2 closes the sequential stranding hole (the confirmed defect). A residual concurrency window
-  exists — `applyPayment` claims the payment row while `voidPayment` claims only the batch row, so a
-  perfectly-interleaved apply/void could still race — but closing it means gating `applyPayment` on
-  batch/payment lifecycle, which the brief explicitly reserves for a separate owner ruling and
-  forbids here. Left as-is per instruction; flagged for the record.
+- FIX 2 closes the sequential stranding hole (the confirmed defect). It originally left a residual
+  concurrency window — now closed by FIX 4 below. My original framing of that window (as needing an
+  `applyPayment` batch-status gate / owner ruling) was wrong: it was a plain row-lock gap, closed by
+  `voidPayment` claiming the payment row.
+
+## FIX 4 (follow-up) — `voidPayment` claims the PAYMENT row (closes FIX 2's residual window)
+
+`src/server/receipts.ts`, `voidPaymentInTx` (~L316). The gap: `voidPaymentInTx` claimed only the
+BATCH row (`claimLiveBatch`) and read the payment's live applications under that batch lock, while
+`applyPaymentInTx` claims the PAYMENT row (`SELECT … FROM "Payment" … FOR UPDATE`), never the batch.
+Different rows → the two never serialized on a shared row, so a racing `applyPayment(P→I)` could be
+mid-write while `voidPayment(P)`'s live-applications check read zero apps, then void P and strand the
+application. Serializable/SSI masked it, but the house rule forbids leaning on SSI.
+
+- **Payment-row claim** (`voidPaymentInTx`, after the payment-exists check, BEFORE the
+  live-applications check): added
+  `await tx.$queryRaw\`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE\``. The
+  applications check now runs under the same payment-row lock `applyPayment` takes last, so the two
+  serialize. Lock order stays acyclic — voidPayment: Batch→Payment; applyPayment: Order→Invoice→
+  Payment — sharing only Payment, acquired last in both.
+- **`voidPayment` signature** (~L330): added an optional `tx?: Prisma.TransactionClient`, mirroring
+  `applyPayment`/`unlockInvoice`, so the concurrency test can pin the competitor to Read Committed.
+  The public no-`tx` path is unchanged (opens its own Serializable transaction). No change to
+  `applyPayment` and no batch-status gate — the POSTED-lifecycle question stays a separate owner
+  ruling.
+
+### FIX 4 RED evidence
+
+New test `tests/receipts.test.ts` — "voidPayment concurrency — the payment-row claim serializes a
+void against a racing application". Holder is hand-scripted to hold ONLY the payment-row `FOR UPDATE`
+claim and write a PAYMENT application uncommitted; competitor is `voidPayment` on a manually opened
+DEFAULT (Read Committed) transaction.
+
+RED run (payment-row claim commented out):
+
+```
+× voidPayment concurrency ... never a voided payment with a live application
+  → promise resolved "{ …(10) }" instead of rejecting
+  Received: { status: "OPEN", payments: [], deletedAt: null, ... }
+```
+
+The competitor RESOLVED with `payments: []` — it voided the payment — while the holder's application
+committed live: exactly "both commit, payment voided AND application live". (Mechanism: without the
+explicit claim the competitor's applications read runs BEFORE its `auditedSoftDelete` UPDATE and sees
+zero uncommitted apps; the UPDATE's implicit row lock serializes too late, after the stale guard
+read.) Claim restored → GREEN: the competitor blocks on the payment lock, its fresh read sees the
+live application, and it refuses `400 "This payment has applications — void them first"`; payment and
+application both end live (exactly one winner).
+
+### FIX 4 covering-test results (FOREGROUND)
+
+`npx vitest run tests/receipts.test.ts tests/applications-concurrency.test.ts tests/applications.test.ts`
+→ **3 files, 57 tests, all passed** (receipts now 20). Also re-ran
+`tests/receivables-routes.test.ts tests/unlock-concurrency.test.ts` → 19 passed (the `voidPayment`
+signature change is backward-compatible). `npx tsc --noEmit` → exit 0; `npx eslint src tests` → exit
+0.

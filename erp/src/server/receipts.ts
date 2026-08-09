@@ -313,12 +313,23 @@ async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reaso
     where: { id: paymentId, batchId, deletedAt: null }, select: { id: true } });
   if (!payment) throw new HttpError(404, "Payment not found");
 
+  // Claim the PAYMENT row — the SAME row `applyPaymentInTx` claims last (order → invoice → payment).
+  // Without this, voidPayment holds only the BATCH lock while applyPayment holds only the PAYMENT
+  // lock, so the two never serialize on a shared row: the live-applications check below could read
+  // zero apps while a concurrent `applyPayment(P→I)` is mid-write, then void P and strand the
+  // application. SSI catches it today, but the house rule forbids leaning on it ("SSI only saves you
+  // by accident; the guarded state must be locked with the claimed row"). Payment is acquired LAST
+  // in both paths (voidPayment: Batch→Payment; applyPayment: Order→Invoice→Payment), so the two
+  // share only Payment and no lock cycle can form.
+  await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+
   // The symmetric guard to `voidBatch`'s "void its payments first" and the invoice side's A/R-
   // activity refusal (`unlockInvoice`/`discardInvoice`/`voidOrder`): a payment with live
   // applications must not be voided out from under them. Voiding it here would strand every live
   // `Application` sourced from it — the invoice still reads settled over its live applications —
   // while the payment's cash vanishes from on-account. The correction is to void the applications
-  // first, then the payment.
+  // first, then the payment. Read UNDER the payment-row claim above, so it and a racing
+  // `applyPayment` see one consistent state.
   const liveApplication = await tx.application.findFirst({
     where: { paymentId, deletedAt: null }, select: { id: true } });
   if (liveApplication) throw new HttpError(400, "This payment has applications — void them first");
@@ -327,11 +338,18 @@ async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reaso
   return readBatchDetail(tx, batchId);
 }
 
-export async function voidPayment(batchId: string, paymentId: string, reason: string): Promise<BatchDetail> {
+export async function voidPayment(
+  batchId: string, paymentId: string, reason: string, tx?: Prisma.TransactionClient,
+): Promise<BatchDetail> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to void a payment");
+  // `tx` optional — the discriminating concurrency test passes a manually-opened (Read Committed)
+  // transaction so the payment-row claim, not SSI, is what serializes voidPayment against a racing
+  // `applyPayment` (the `applyPayment`/`unlockInvoice` precedent). The public no-`tx` path runs
+  // Serializable, pairing with the claim.
+  if (tx) return voidPaymentInTx(tx, batchId, paymentId, why);
   return withDbErrors({ entity: "Payment" }, () => prisma.$transaction(
-    (tx) => voidPaymentInTx(tx, batchId, paymentId, why),
+    (fresh) => voidPaymentInTx(fresh, batchId, paymentId, why),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   ));
 }
