@@ -54,7 +54,12 @@ async function createdBatch(cookie: string, controlTotal: number | null = null):
 }
 
 describe("POST /api/receivables/batches", () => {
-  it("403s without receivables.create, then creates as OPEN with receivables.create", async () => {
+  it("401s without a session, 403s without receivables.create, then creates as OPEN with receivables.create", async () => {
+    expect((await createRoute(
+      bodyReq("http://t/api/receivables/batches", "POST", undefined, { depositDate: "2026-08-08", controlTotal: 500 }),
+      withParams({}),
+    )).status).toBe(401);
+
     const wrong = await signInWith(["receivables.view"], "rb-create-wrong");
     expect((await createRoute(
       bodyReq("http://t/api/receivables/batches", "POST", wrong, { depositDate: "2026-08-08", controlTotal: 500 }),
@@ -74,7 +79,9 @@ describe("POST /api/receivables/batches", () => {
 });
 
 describe("GET /api/receivables/batches", () => {
-  it("403s without receivables.view, then lists with it, filterable by status", async () => {
+  it("401s without a session, 403s without receivables.view, then lists with it, filterable by status", async () => {
+    expect((await listRoute(getReq("http://t/api/receivables/batches"), withParams({}))).status).toBe(401);
+
     const creator = await signInWith(["receivables.create", "receivables.edit"], "rb-list-creator");
     const open = await createdBatch(creator);
     const posted = await createdBatch(creator);
@@ -100,9 +107,11 @@ describe("GET /api/receivables/batches", () => {
 });
 
 describe("GET /api/receivables/batches/[id]", () => {
-  it("403s without receivables.view, then reads with it", async () => {
+  it("401s without a session, 403s without receivables.view, then reads with it", async () => {
     const creator = await signInWith(["receivables.create"], "rb-get-creator");
     const batch = await createdBatch(creator);
+
+    expect((await getRoute(getReq("http://t/api/receivables/batches/x"), withParams({ id: batch.id }))).status).toBe(401);
 
     const wrong = await signInWith(["receivables.create"], "rb-get-wrong");
     expect((await getRoute(getReq("http://t/api/receivables/batches/x", wrong), withParams({ id: batch.id })))
@@ -116,9 +125,11 @@ describe("GET /api/receivables/batches/[id]", () => {
 });
 
 describe("PATCH /api/receivables/batches/[id] — post", () => {
-  it("403s without receivables.edit, then posts with it", async () => {
+  it("401s without a session, 403s without receivables.edit, then posts with it", async () => {
     const creator = await signInWith(["receivables.create"], "rb-post-creator");
     const batch = await createdBatch(creator);
+
+    expect((await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH"), withParams({ id: batch.id }))).status).toBe(401);
 
     const wrong = await signInWith(["receivables.view"], "rb-post-wrong");
     expect((await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH", wrong), withParams({ id: batch.id })))
@@ -132,9 +143,14 @@ describe("PATCH /api/receivables/batches/[id] — post", () => {
 });
 
 describe("DELETE /api/receivables/batches/[id] — void", () => {
-  it("403s without receivables.delete, then voids an empty batch with a reason", async () => {
+  it("401s without a session, 403s without receivables.delete, then voids an empty batch with a reason", async () => {
     const creator = await signInWith(["receivables.create"], "rb-void-creator");
     const batch = await createdBatch(creator);
+
+    expect((await deleteRoute(
+      bodyReq("http://t/api/receivables/batches/x", "DELETE", undefined, { reason: "mistake" }),
+      withParams({ id: batch.id }),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["receivables.edit"], "rb-void-wrong");
     expect((await deleteRoute(
@@ -157,7 +173,7 @@ describe("DELETE /api/receivables/batches/[id] — void", () => {
 });
 
 describe("POST /api/receivables/batches/[id]/payments", () => {
-  it("403s without receivables.create, then adds a payment with it", async () => {
+  it("401s without a session, 403s without receivables.create, then adds a payment with it", async () => {
     const creator = await signInWith(["receivables.create"], "rb-pay-creator");
     const batch = await createdBatch(creator, 500);
     const customer = await makeCustomer();
@@ -166,6 +182,11 @@ describe("POST /api/receivables/batches/[id]/payments", () => {
       customerId: customer.id, paymentTypeId: paymentType.id, amount: 300,
       reference: "1234", receivedDate: "2026-08-08",
     };
+
+    expect((await addPaymentRoute(
+      bodyReq("http://t/api/receivables/batches/x/payments", "POST", undefined, payload),
+      withParams({ id: batch.id }),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["receivables.view"], "rb-pay-wrong");
     expect((await addPaymentRoute(
@@ -186,7 +207,7 @@ describe("POST /api/receivables/batches/[id]/payments", () => {
 });
 
 describe("DELETE /api/receivables/batches/[id]/payments/[paymentId]", () => {
-  it("403s without receivables.delete, then voids the payment with a reason", async () => {
+  it("401s without a session, 403s without receivables.delete, then voids the payment with a reason", async () => {
     const creator = await signInWith(["receivables.create"], "rb-voidpay-creator");
     const batch = await createdBatch(creator, 500);
     const customer = await makeCustomer();
@@ -199,6 +220,11 @@ describe("DELETE /api/receivables/batches/[id]/payments/[paymentId]", () => {
       withParams({ id: batch.id }),
     );
     const paymentId = (await addRes.json()).payments[0].id;
+
+    expect((await voidPaymentRoute(
+      bodyReq("http://t/api/receivables/batches/x/payments/y", "DELETE", undefined, { reason: "mistake" }),
+      withParams({ id: batch.id, paymentId }),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["receivables.edit"], "rb-voidpay-wrong");
     expect((await voidPaymentRoute(
@@ -228,7 +254,9 @@ describe("DELETE /api/receivables/batches/[id]/payments/[paymentId]", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("GET /api/receivables/aging", () => {
-  it("403s without receivables.view, then returns the aging rows with it", async () => {
+  it("401s without a session, 403s without receivables.view, then returns the aging rows with it", async () => {
+    expect((await agingRoute(getReq("http://t/api/receivables/aging"), withParams({}))).status).toBe(401);
+
     const wrong = await signInWith(["receivables.create"], "aging-wrong");
     expect((await agingRoute(getReq("http://t/api/receivables/aging", wrong), withParams({}))).status).toBe(403);
 
@@ -246,7 +274,9 @@ describe("GET /api/receivables/aging", () => {
 });
 
 describe("GET /api/receivables/aging/export", () => {
-  it("403s without receivables.view, then returns an .xlsx with it", async () => {
+  it("401s without a session, 403s without receivables.view, then returns an .xlsx with it", async () => {
+    expect((await agingExportRoute(getReq("http://t/api/receivables/aging/export"), withParams({}))).status).toBe(401);
+
     const wrong = await signInWith(["receivables.create"], "aging-export-wrong");
     expect((await agingExportRoute(getReq("http://t/api/receivables/aging/export", wrong), withParams({}))).status).toBe(403);
 
@@ -284,9 +314,14 @@ async function invoicedCustomer(): Promise<{ id: string; code: string }> {
 }
 
 describe("GET /api/receivables/statements", () => {
-  it("403s without receivables.view, then builds the statement with it", async () => {
+  it("401s without a session, 403s without receivables.view, then builds the statement with it", async () => {
     const customer = await invoicedCustomer();
     const asOf = "2026-08-08";
+
+    expect((await statementsRoute(
+      getReq(`http://t/api/receivables/statements?customerId=${customer.id}&asOf=${asOf}`),
+      withParams({}),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["receivables.create"], "stmt-get-wrong");
     expect((await statementsRoute(
@@ -313,9 +348,13 @@ describe("GET /api/receivables/statements", () => {
 });
 
 describe("POST /api/receivables/statements", () => {
-  it("403s without receivables.view, then renders and archives the statement with it", async () => {
+  it("401s without a session, 403s without receivables.view, then renders and archives the statement with it", async () => {
     const customer = await invoicedCustomer();
     const payload = { customerId: customer.id, asOf: "2026-08-08" };
+
+    expect((await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", undefined, payload), withParams({}),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["shipping.view"], "stmt-post-wrong");
     expect((await printStatementRoute(
@@ -338,9 +377,13 @@ describe("POST /api/receivables/statements", () => {
 });
 
 describe("POST /api/receivables/statements/run", () => {
-  it("403s without receivables.create, then prints every customer with a balance with it", async () => {
+  it("401s without a session, 403s without receivables.create, then prints every customer with a balance with it", async () => {
     await invoicedCustomer();
     const payload = { asOf: "2026-08-08" };
+
+    expect((await runStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/run", "POST", undefined, payload), withParams({}),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["receivables.view"], "stmt-run-wrong");
     expect((await runStatementsRoute(
@@ -372,9 +415,13 @@ describe("GET /api/receivables/statements/documents", () => {
     expect(res.status).toBe(400);
   });
 
-  it("403s without receivables.view, then lists the customer's archived statements with it", async () => {
+  it("401s without a session, 403s without receivables.view, then lists the customer's archived statements with it", async () => {
     const customer = await invoicedCustomer();
     const payload = { customerId: customer.id, asOf: "2026-08-08" };
+
+    expect((await statementDocumentsRoute(
+      getReq(`http://t/api/receivables/statements/documents?customerId=${customer.id}`), withParams({}),
+    )).status).toBe(401);
 
     const wrong = await signInWith(["shipping.view"], "stmt-docs-wrong");
     expect((await statementDocumentsRoute(

@@ -99,6 +99,51 @@ describe("applications routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("POST refuses a WRITE_OFF line without action.write_off, even holding receivables.create (403)", async () => {
+    const cookie = await signInWith(["receivables.create"], "wo-no-special");
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
+      paymentId, lines: [{ invoiceId: inv.invoiceId, type: "WRITE_OFF", amount: 100, reason: "uncollectable" }],
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  it("POST applies a WRITE_OFF line for a session holding receivables.create AND action.write_off", async () => {
+    const cookie = await signInWith(["receivables.create", "action.write_off"], "wo-with-special");
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
+      paymentId, lines: [{ invoiceId: inv.invoiceId, type: "WRITE_OFF", amount: 100, reason: "uncollectable" }],
+    }), noParams);
+    expect(res.status).toBe(200);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "WRITE_OFF" } })).toBe(1);
+  });
+
+  it("POST applies a mixed PAYMENT+WRITE_OFF submission only when the caller holds action.write_off", async () => {
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const mixedLines = [
+      { invoiceId: inv.invoiceId, type: "PAYMENT", amount: 500 },
+      { invoiceId: inv.invoiceId, type: "WRITE_OFF", amount: 100, reason: "small remainder" },
+    ];
+
+    const withoutSpecial = await signInWith(["receivables.create"], "wo-mixed-wrong");
+    const denied = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", withoutSpecial, {
+      paymentId, lines: mixedLines,
+    }), noParams);
+    expect(denied.status).toBe(403);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+
+    const withSpecial = await signInWith(["receivables.create", "action.write_off"], "wo-mixed-ok");
+    const allowed = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", withSpecial, {
+      paymentId, lines: mixedLines,
+    }), noParams);
+    expect(allowed.status).toBe(200);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(2);
+  });
+
   it("GET ?customerId= refuses an unauthenticated caller (401)", async () => {
     const inv = await finalizedInvoice(1000);
     const res = await discountRoute(getReq(`http://t/api/receivables/applications?customerId=${inv.customerId}`), noParams);
@@ -216,6 +261,26 @@ describe("applications routes", () => {
     expect(res.status).toBe(200);
     const ids = (await res.json()).map((r: { id: string }) => r.id);
     expect(ids.sort()).toEqual([parentInv.id, childAInv.id, childBInv.id].sort());
+  });
+
+  it("DELETE refuses an unauthenticated caller (401)", async () => {
+    const res = await voidRoute(bodyReq("http://t/api/receivables/applications/nope", "DELETE", undefined, { reason: "misapplied" }), withParams({ id: "nope" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("DELETE refuses a caller without receivables.delete (403)", async () => {
+    const createCookie = await signInWith(["receivables.create"], "del-403-creator");
+    const wrong = await signInWith(["receivables.edit"], "del-403-wrong");
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", createCookie, {
+      paymentId, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 600 }],
+    }), noParams);
+    const app = await prisma.application.findFirstOrThrow({ where: { invoiceId: inv.invoiceId } });
+
+    const res = await voidRoute(bodyReq(`http://t/api/receivables/applications/${app.id}`, "DELETE", wrong, { reason: "misapplied" }), withParams({ id: app.id }));
+    expect(res.status).toBe(403);
+    expect((await prisma.application.findUniqueOrThrow({ where: { id: app.id } })).deletedAt).toBeNull();
   });
 
   it("DELETE voids an application with a reason", async () => {
