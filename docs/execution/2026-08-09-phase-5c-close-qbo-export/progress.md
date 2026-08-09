@@ -12,7 +12,7 @@
 
 - [x] Task 1: Data model, migration, audit + counter registration — **implementation complete** (code `e283b65`, report `63d9ec6`; not yet reviewed)
 - [x] Task 2: BillingConfig GL defaults — service, delete-blocker registry, admin UI
-- [ ] Task 3: gl-mapping.ts — pure journal + readiness engine
+- [x] Task 3: gl-mapping.ts — pure journal + readiness engine
 - [ ] Task 4: period-locks.ts leaf + wiring into every A/R posting mutation
 - [ ] Task 5: close-periods.ts — close/reopen lifecycle + preliminary report + routes
 - [ ] Task 6: gl-export.ts — per-event delta, CSV, batch write + export/readiness routes
@@ -61,3 +61,8 @@ Task 2: complete (commit 156fafc; review clean — spec ✅, quality Approved). 
   Minor (final review): reference-links.ts:117 BILLING_CONFIG_BLOCKER comment says "four FKs", now seven.
   SIBLING GROUP for the final review's one-pass fix — stale FK-count comments: schema.prisma ~119 ("Three separate FKs...", now six) + reference-links.ts:117 ("four FKs", now seven). Fix together.
   Note: .superpowers/sdd/.gitignore clobbered to bare `*` again (recurring). Non-issue for us — execution record is in docs/execution/ (committed); .superpowers/sdd/ only holds regenerable review-*.diff.
+
+Task 3: complete (impl 52af93a + fix 6b6d13c; docs a9a4443; re-review Approved — spec ✅). gl-mapping 6/6, eslint pristine, tsc clean.
+  IMPORTANT finding FIXED (data-integrity): readinessGaps didn't flag a missing sales-tax GL account, yet a taxable invoice's total includes tax while salesJournal drops the tax credit when taxGlAccountId is null → an UNBALANCED journal could pass readiness. Fixed: ReadinessInput gains salesTaxGlAccountId+hasTax; readinessGaps emits the gap. Plan+spec §7 amended. Aligned with owner-ratified §15 (refuse-without-account), not a deviation.
+  ⚠️ FOR TASK 6 (resolve before its review): resolveReadiness must derive `hasTax` from the SAME export-scope delta (glDate<=periodEnd invoices with taxTotal!=0) and the plant-default salesTaxGlAccountId it checks must be the account every in-scope taxable event's taxGlAccountId resolves to. Fold into Task 6 dispatch + reviewer notes.
+  Minor (noted, low-risk): fixer ran scoped eslint (not `eslint src tests`) and didn't re-run full `npm test` — unconsumed leaf; Task 4 runs the full suite next.
