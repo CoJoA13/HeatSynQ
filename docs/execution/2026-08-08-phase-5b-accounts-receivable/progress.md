@@ -36,7 +36,7 @@ than pre-litigated.
 - [x] Task 4 — Terms & BillingConfig columns + admin UIs — **complete** (code `6ec3a3c`, fix `fbfe9f5`; review Approved after 1 fix round; browser-verified)
 - [x] Task 5 — `ar-balances.ts` (pure) — **complete** (code `81beb71`; review clean)
 - [x] Task 6 — `receipts.ts` + routes — **complete** (code `1acfc41`; review Approved, 2 correct deviations, 1 owner-ruling item)
-- [ ] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes
+- [x] Task 7 — `applications.ts` payment/discount/write-off/on-account + routes — **complete** (code `34fe94a`; review Approved — opus, concurrency verified RED)
 - [ ] Task 8 — credit application
 - [ ] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals
 - [ ] Task 10 — `aging.ts` (pure) + route
@@ -53,13 +53,24 @@ than pre-litigated.
 
 - **POSTED batch lifecycle (Task 6).** The brief mandates `voidPayment` refuse on a POSTED batch, but the (also-mandated) refusal message "This batch is posted — reopen or void a payment to change it" promises an escape hatch that does not exist — there is no `reopen`, and `voidBatch` has no POSTED guard. Net asymmetry as built: a POSTED **empty** batch is voidable, but a POSTED **non-empty** batch is fully frozen (can't void its payments, can't void the batch). On-account cash on those payments is still appliable to invoices (spec §5.2). The plan already earmarks the POSTED lifecycle for an owner ruling at the demo (Task 17 Step 3). **Options for the owner:** (a) allow `voidPayment` on POSTED (the message's implied behavior); (b) add a `reopen` (POSTED→OPEN); (c) reword the message; (d) leave frozen-by-design. No code change until the owner rules.
 
+- **Discount basis (Task 7) — owner ruling at demo.** `discountAvailable` computes the early-pay discount on the invoice's OPEN BALANCE (self-consistent between `discountAvailable` and the DISCOUNT-line guard). The correct basis (open balance vs the amount actually paid vs the original invoice total) is a billing-policy choice the plan already earmarks for the Task 17 demo (Task 17 Step 3: "discount-on-partial-payment basis"). No code change until the owner rules.
+
 ## Deferred minors (fix-wave / whole-branch-review triage input)
+
+- **Task 7 minors (opus review, all doc/hardening — behavior correct):** (a) the post-claim invoice re-read omits `deletedAt`/`status`/`kind` — safe (a concurrent void → 40001 → retry → 404) but rests on SSI+retry rather than a post-claim recheck like `claimCertsOrder`; either re-select+re-assert or tighten the comment; (b) the added Payment-row claim's cross-invoice (same-payment/two-invoice) guarantee is actually SSI, not the lock, and has no discriminating test — correct because the public path is always Serializable, but the report's "serialize here" framing overstates it; (c) `applications-concurrency.test.ts:692-693` comment mis-predicts the RED failure mode (says timeout fails first; actually the competitor blocks at INSERT and the final `rejects` fails) — test still discriminates, comment wrong. **Cheap doc fixes; candidates for the whole-branch fix wave.**
 
 - **Task 2 (audit snapshot coverage)** — `Application`'s `SNAPSHOT_INCLUDE` (audit.ts) pulls only the target `invoice`, not the source credit (`creditInvoiceId`) or `Payment.customer`; a voided CREDIT application renders its source as a bare cuid in history. Not a defect (child rows are audited as their own models; the brief mandated only these relations). **Carry as an input to Task 8 (credit application)** — cheap to enrich the snapshot there; else whole-branch triage.
 - **Task 6 minors** — (a) no per-route 401 (missing-cookie) test in receivables-routes.test.ts (403+200 covered; brief mandated only 403; `handle` enforces 401 uniformly); (b) no test that `getBatch` returns a voided batch (readBatchDetail deliberately omits the deletedAt filter — behavior unasserted); (c) `paymentType` double round-trip (assertRefExists then findFirst for name — redundant read, harmless). Whole-branch triage.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 7 — complete (BASE `cc824e8`, code `34fe94a`; review Approved — opus)
+- `applications.ts` (297 lines) + 2 routes + 3 test files (610 lines). `applyPayment` applies PAYMENT/DISCOUNT/WRITE_OFF across ≥1 invoices under ONE claim; `voidApplication`; `discountAvailable`. On-account is the unapplied remainder by construction (no write).
+- **Lock shape (correct, reviewer-verified acyclic):** unlocked stub read → `claimOrdersInOrder(tx, orderIds)` (sorted) → sorted invoice-row `FOR UPDATE` (`ANY(...) ORDER BY id`) → **added** Payment-row `FOR UPDATE` last (closes same-payment/two-invoice over-application). Global order Order<Invoice<Payment, consistent with `voidApplication` (Order<Invoice; no payment lock needed — on-account is derived). Reviewer cross-checked `receipts.ts voidPayment` locks ReceiptBatch only → no counterparty inverts the order.
+- **Concurrency test (mandated, RED-verified):** two apps race on a 1000 invoice, 700 each; competitor pinned to Read Committed; claim removed → double-commit to 1400 (RED); restored → second refuses "exceeds the invoice's open balance of 300" (GREEN). Reviewer confirmed it genuinely discriminates.
+- Over-application both sides (invoice Σ≤total; payment Σ PAYMENT≤amount); Decimal→number everywhere; discount window (`2/10/30`, receivedDate ≤ invoiceDate+discountDays); WRITE_OFF reason required+audited; appliedDate = payment.receivedDate. No CREDIT logic (Task 8).
+- Gates: `npm test` 1766, tsc/eslint/build clean. Reviewer (opus): Spec ✅, Approved, no Critical/Important. 4 Minors (doc/hardening) → deferred list; discount-basis → owner rulings.
 
 ### Task 6 — complete (BASE `f15974e`, code `1acfc41`; review Approved — opus)
 - `receipts.ts` (319 lines): `createBatch`/`getBatch`/`addPayment`/`voidPayment`/`postBatch`/`voidBatch` + live balance, 4 route files. Canonical nesting (withDbErrors → Serializable $transaction → `claimBatch` FOR UPDATE → audited* → writes on tx). `enteredTotal` = Σ live payments; `balance` = `(controlTotal ?? enteredTotal) − enteredTotal`; per-payment `onAccount` via `ar-balances.paymentOnAccount`.
