@@ -51,3 +51,8 @@
   (sorted after customerSurcharge.*, before invoiceLine.*), and a runtime blocker test. This adds no
   new restriction (the account is already blocked by the invoice line / payment that generated the
   posting) — it only satisfies the sweep. Not a Task 1 defect (registration is Task 2's scope).
+
+Task 1: complete (code e283b65, plan-amend a4cac3b; review clean — spec ✅, quality Approved).
+  Minors for the final review to triage (not fixed — cosmetic):
+  - schema.prisma ~119 comment "Three separate FKs from BillingConfig..." is now stale (six GL FKs). One-word touch-up.
+  - partial-unique-sweep ALLOWED entry GlExportBatch.exportNumber is inert (GlExportBatch has no deletedAt) — brief-required, mirrors ReceiptBatch.batchNumber; documents intent.
