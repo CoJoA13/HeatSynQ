@@ -33,13 +33,16 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
   // silently reset an existing row's netDays to 30 on every unrelated update (e.g. the Active
   // toggle). Leaving it optional with no default keeps "omitted" meaning "don't touch" on update
   // and "use the column default" on create, which is what each op actually needs.
-  // `discountPercent`/`discountDays` are both optional; their all-or-nothing pairing is enforced
-  // on the composed create/update schema by requireDiscountPair below, not here — see its comment
-  // for why it can't live on this entry.
+  // `discountPercent`/`discountDays` are both optional AND nullable — nullable so an update can
+  // explicitly clear either one (the column itself is `Int?`/`Decimal?`), optional so a PATCH
+  // that never mentions a key leaves it untouched (see resolveLinkNames/updateReference). Their
+  // all-or-nothing pairing is enforced on the composed create/update schema by requireDiscountPair
+  // below, not here — see its comment for why it can't live on this entry — and, on update, by
+  // assertDiscountPairAfterUpdate against the merged row (see that function's comment).
   terms: z.object({
     netDays: z.number().int().min(0).optional(),
     discountPercent: decimalField(5, 2, { min: "nonnegative" }),
-    discountDays: z.number().int().min(1).optional(),
+    discountDays: z.number().int().min(1).nullable().optional(),
   }),
 };
 
@@ -52,18 +55,14 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
  * Applied instead to the fully-composed schema, once, right before `.parse()` — for the other
  * nine kinds neither key is ever in that schema's shape, so the check is a structural no-op.
  *
- * Update validates the raw PATCH, not the merged-with-existing-row state: a PUT supplying exactly
- * one of `discountPercent`/`discountDays` against a row that already has the other set will 400,
- * even though the resulting row would still be a valid pair. This is a genuinely weaker guarantee
- * than `surcharges.ts`'s PERCENT/FLAT rule (`SAVE.superRefine` plus its own "takes the same full
- * SAVE shape as create, not a partial patch" comment) — `updateSurcharge` sidesteps this whole
- * class of gap by re-validating the FULL row on every save, never a partial. `updateReference` is
- * generic across all ten kinds and genuinely partial (`BASE.partial().merge(EXTRA_SCHEMAS[kind]
- * .partial())`), so adopting surcharges' full-row shape here isn't a drop-in option. Left as-is
- * rather than special-cased: the generic reference admin UI never edits an existing row's extras
- * at all — only the Add row sets them, and the Active-toggle PUT never touches these two keys —
- * so a PATCH that supplies exactly one of the pair is not a path anything here exercises today;
- * this guard exists for a future direct API caller, not to fix a live gap.
+ * Update validates only the raw PATCH here — it cannot see the stored row, so it can't tell
+ * "the other half of the pair is already set on the row" from "the other half was never set at
+ * all"; both look like "key absent from this patch" from inside the refine. That gap (a PATCH
+ * supplying exactly one of the pair against a row that already has the other set) is closed by
+ * `assertDiscountPairAfterUpdate` below, which `updateReference` runs against the MERGED row
+ * (stored values overlaid by the patch) before writing. This refine still runs on update too —
+ * it catches the cheaper case where the patch itself sets both keys to a mismatched pair
+ * (percent present-and-non-null, days explicitly null, or vice versa) without a DB round trip.
  */
 function requireDiscountPair<S extends z.ZodTypeAny>(schema: S) {
   return schema.superRefine((value, ctx) => {
@@ -223,6 +222,37 @@ export async function createReference(kind: string, input: Record<string, unknow
   return { id: row.id };
 }
 
+/**
+ * Closes the gap `requireDiscountPair` leaves on update (see its doc comment): a PATCH touching
+ * only one of `discountPercent`/`discountDays` is valid on its own, but can still leave the
+ * STORED row broken if the other half was already set. Runs only for kind "terms" (the one kind
+ * with this pairing) and only when the patch actually touches one of the two keys — every other
+ * PATCH (renaming, toggling `active`, changing `netDays`) is a no-op here.
+ *
+ * Reads the current row inside the caller's own transaction, then merges: a key ABSENT from the
+ * patch (`"discountPercent" in patch` false) keeps the stored value; a key PRESENT in the patch —
+ * including an explicit `null` — overrides it. That distinction is exactly what a plain
+ * `patch.discountPercent ?? current.discountPercent` would erase (`??` can't tell "omitted" from
+ * "explicitly null"), so this checks `in` on the parsed patch object instead. zod's `.partial()`
+ * omits untouched optional keys from its parsed output entirely (verified against this repo's
+ * zod: `{ a: null }` parsed through `z.object({a,b}).partial()` yields `{a: null}`, not
+ * `{a: null, b: undefined}`), so `in` reliably means "the caller's PATCH mentioned this key".
+ */
+async function assertDiscountPairAfterUpdate(
+  tx: Prisma.TransactionClient, id: string, patch: Record<string, unknown>,
+): Promise<void> {
+  if (!("discountPercent" in patch) && !("discountDays" in patch)) return;
+  const current = await tx.terms.findFirst({
+    where: { id }, select: { discountPercent: true, discountDays: true },
+  });
+  if (!current) return; // No such row — the update() below raises the real (404-shaped) error.
+  const percent = "discountPercent" in patch ? patch.discountPercent : current.discountPercent;
+  const days = "discountDays" in patch ? patch.discountDays : current.discountDays;
+  if ((percent != null) !== (days != null)) {
+    throw new HttpError(400, "an early-pay discount needs both a percent and a day count");
+  }
+}
+
 export async function updateReference(kind: string, id: string, input: Record<string, unknown>): Promise<void> {
   assertKind(kind);
   const data = requireDiscountPair(BASE.partial().merge(EXTRA_SCHEMAS[kind].partial()).strict())
@@ -238,6 +268,7 @@ export async function updateReference(kind: string, id: string, input: Record<st
         const value = data[link.column];
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
       }
+      if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);
       await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }

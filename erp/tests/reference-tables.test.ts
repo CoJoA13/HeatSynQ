@@ -200,4 +200,58 @@ describe("terms: netDays + early-pay discount", () => {
     expect(Number(row?.discountPercent)).toBe(2);
   });
 
+  // Codex review Fix #17 (P2): requireDiscountPair validates only the fields PRESENT in a PATCH,
+  // not the row that results from applying it. A PATCH clearing exactly one half of an existing
+  // pair used to pass (the omitted key looks the same as "never had a pair" from inside the
+  // refine) and persist a broken row — discountDays with no discountPercent, or vice versa.
+  // updateReference now validates the MERGED row (stored values overlaid by the patch) whenever
+  // the patch touches either discount key. Every case here is non-vacuous: each would have passed
+  // (and corrupted the stored row) before assertDiscountPairAfterUpdate existed.
+  describe("update: discount pair validated against the merged row, not just the patch", () => {
+    async function seed210() {
+      const { id } = await createReference("terms", {
+        name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10,
+      });
+      return id;
+    }
+
+    it("rejects clearing only discountPercent, leaving discountDays stored", async () => {
+      const id = await seed210();
+      await expect(updateReference("terms", id, { discountPercent: null }))
+        .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+      // The rejected write must not have partially landed.
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+
+    it("rejects clearing only discountDays, leaving discountPercent stored", async () => {
+      const id = await seed210();
+      await expect(updateReference("terms", id, { discountDays: null }))
+        .rejects.toThrow(/an early-pay discount needs both a percent and a day count/);
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+
+    it("allows clearing both halves of the pair together", async () => {
+      const id = await seed210();
+      await updateReference("terms", id, { discountPercent: null, discountDays: null });
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(row?.discountPercent).toBeNull();
+      expect(row?.discountDays).toBeNull();
+    });
+
+    it("an unrelated field update (netDays or active) on a paired row is unaffected", async () => {
+      const id = await seed210();
+      await updateReference("terms", id, { netDays: 45 });
+      await updateReference("terms", id, { active: false });
+      const row = (await listReference("terms", { includeInactive: true })).find((r) => r.id === id);
+      expect(row?.netDays).toBe(45);
+      expect(row?.active).toBe(false);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+    });
+  });
+
 });
