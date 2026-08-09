@@ -49,8 +49,8 @@ than pre-litigated.
 - [x] Task 14 — aging report UI — **complete** (code `15513f3`; review Approved; 2 Task-10 minors closed)
 - [x] Task 15 — statements UI + customer A/R section — **complete** (code `d916dc4`, fix `5253423`; review Approved after 1 fix round — sonnet caught a real division-scope leak)
 - [x] Task 16 — routes 401/403 sweep — **complete** (code `14ff4fa`; review Approved; write_off gating added)
-- [ ] Task 17 — E2E + demo + docs
-- [ ] Whole-branch review + fix wave
+- [x] Task 17 — E2E + demo + docs — **complete** (code `292cb33`; review Approved; E2E 17/17)
+- [ ] Whole-branch review + fix wave — **in progress**
 
 ## Owner rulings owed (surface at the Task 17 demo)
 
@@ -74,6 +74,12 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 17 — complete (BASE `caa506e`, code `292cb33`; review Approved — sonnet; E2E 17/17)
+- North-star E2E flow `receivables-apply-age-statement.mjs` (218 lines): shipped→invoiced order + finalize → batch + check → apply PAYMENT 500 + DISCOUNT + WRITE_OFF 30, on-account remainder → aging (Current/1-30/Unapplied/Net at verified cell indices) → combined-family FC-assessed statement, archived + reappears in Documents. Real load-bearing assertions at every step (450/200/250 figures would fail if the discount didn't apply). A/R fixtures (2/10/30 Terms, tax/surcharge-exempt customer) + teardown.
+- **Fixed 4 real bugs found live during E2E dev:** 2 Playwright locator traps (getByLabel on a `<select>`-in-`<label>`; nested-table `.filter({has})` ambiguity — both root-caused + propagated to HANDOFF §5a) and 2 harness cleanup bugs (empty-batch orphan; a `StoredDocument_kind_owner_check` 23514 on HARD customer-delete — reviewer confirmed hard-delete-only, no product implication since customers are soft-deleted; fix = delete STATEMENT docs / receivables before the customer, FK order verified against the migration).
+- Demo doc `docs/2026-08-08-phase-5b-demo.md` (282 lines) lists all 5 owner-ruling deviations. HANDOFF §4 = "Phase 5B in flight" with the 3 binding docs.
+- Gates: E2E 17/17, `npm test` 1860, tsc/eslint clean. Reviewer (sonnet): Spec ✅, Approved. Minors: positional `td.nth` (house convention); HANDOFF top-banner line still narrates through 5A only (fix at PR).
 
 ### Task 16 — complete (BASE `e5ea19e`, code `14ff4fa`; review Approved — sonnet)
 - **`write_off` route gating added (Task 7 deferred):** `POST /applications` now does `mustCan(create)` → parse → `if hasWriteOffLine(body) mustDo(user, "write_off")` → `applyPayment` (single `requireUser()`, reused). `hasWriteOffLine` is a defensive type-guard (false on malformed, never over-matches — a bad body still 400s via applyPayment's zod). A `create`-but-no-`write_off` session submitting a WRITE_OFF (even mixed with PAYMENT) → 403, whole body rejected before the claim; PAYMENT/DISCOUNT-only bypasses. `credit-applications` correctly ungated (hard-codes type CREDIT, no smuggle path).
