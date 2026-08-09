@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-08 — **Phase 5A (Pricing & Invoicing) is MERGED to `main` as `359c707` (PR #58, 2026-08-08).** Its full narrative is in `docs/history/2026-08-08-phase-5a-pricing-invoicing.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 5B (Accounts Receivable) kickoff — the next work.** Final 5A gates: **1692 tests**, `tsc`/`eslint`/`build` clean, E2E **16/16**. Codex's review of the PR raised **7 findings — all verified real against the branch, none already fixed** — deferred to issues **#59–#65** for the post-5A burn-down (the #48–#56 pattern). Earlier: Phase 4 merged as `f129aae` (PR #47) with the **backlog burn-down `8647a7d` (PR #57)** closing #48–#50 and #53–#56; Phase 3 as `12a17f9` (PR #39). **26 migrations on `main`**; open backlog there: #51–#52 and #59–#65 plus the older triaged issues (§6).
+**Updated:** 2026-08-09 — **Phase 5B (Accounts Receivable) is MERGED to `main` as `b55da3b` (PR #74, 2026-08-09).** Its full narrative is in `docs/history/2026-08-08-phase-5b-accounts-receivable.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 5C (month-end close + QuickBooks Online summary export) kickoff — the next work.** Final 5B gates: **1879 tests**, `tsc`/`eslint`/`build` clean, E2E **17/17**. Two Codex PR reviews (17 + 7 findings) — **11 fixed on-branch, the rest deferred to issues #68–#87** (#81 aggregate-discount-cap and #84 delete-customer-with-live-payment are the P1s worth doing early). Earlier: Phase 5A merged `359c707` (PR #58, findings → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **29 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#87 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -62,28 +62,19 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**Phase 5B (Accounts Receivable) in flight** on branch `phase-5b-accounts-receivable`. The three
-binding documents:
+**No phase is in flight.** Phase 5B (Accounts Receivable) merged 2026-08-09 (`b55da3b`, PR #74) — its
+one-paragraph entry is in the "Merged, in build order" list below, its full narrative in
+`docs/history/2026-08-08-phase-5b-accounts-receivable.md`, and its execution ledger (per-task briefs,
+implementer reports, reviewer verdicts, the whole-branch review, both Codex rounds, every owner
+ruling and deferred minor) in `docs/execution/2026-08-08-phase-5b-accounts-receivable/` — see
+`.superpowers/sdd/README.md` for why that ledger sits under `docs/execution/`.
 
-- **Spec:** `docs/superpowers/specs/2026-08-08-phase-5b-accounts-receivable-design.md`
-- **Plan:** `docs/superpowers/plans/2026-08-08-phase-5b-accounts-receivable.md` (17 tasks)
-- **Execution ledger:** `docs/execution/2026-08-08-phase-5b-accounts-receivable/` — per-task
-  briefs, implementer reports, reviewer verdicts, and `progress.md`'s running record of every
-  owner ruling and deferred minor (see `.superpowers/sdd/README.md` for why this ledger sits under
-  `docs/execution/` rather than `.superpowers/`).
-
-Scope, per the plan: the receipts ledger (deposit batches, checks/cards/ACH), payment application
-across one or more invoices — including across a parent's divisions — with early-pay discounts and
-write-offs, point-in-time A/R aging, and open-item customer statements with opt-in finance
-charges. Building on Phase 5A's `Invoice`/`Terms`/`Customer.financeChargeRate`/`Customer.parentId`
-hooks (design spec §16, carried into the §9 kickoff prompt below). **Not this phase's job:**
-month-end close and the QuickBooks Online summary export — those are Phase 5C.
-
-All 17 tasks are implemented (through Task 16's 401/403 sweep); Task 17 (this one — the north-star
-E2E flow, the demo doc, and this note) is in progress. The whole-branch review, fix wave, owner
-demo, and PR are still ahead — see the plan's closing sequence (`progress.md`'s "Review and merge"
-section) for the exact order. The seven Codex findings deferred from the 5A PR (#59–#65, §6) and
-the per-worker-test-DB infra task (§6) remain open work, picked up alongside or after 5B closes.
+**The next work is Phase 5C (month-end close + the QuickBooks Online summary export) — its kickoff
+prompt is live in §9;** paste it into a fresh session to begin. 5C has no spec or plan yet:
+brainstorm → spec → plan is its first step (§9 names what it inherits from 5B, spec §17). Open A/R
+follow-up work: issues **#68–#87** (§6) — **#81** (aggregate discount cap) and **#84**
+(delete-customer-with-live-payment) are the P1s worth doing early. The older backlog (#51–#52,
+#59–#65, the per-worker-test-DB infra task, §6) remains open too.
 
 ### Merged, in build order
 
@@ -139,6 +130,22 @@ Vitest 3** (brought current 2026-08-02 across five PRs; the two majors still blo
   **7 real findings**, all deferred to issues **#59–#65** (§6). Full record — the twenty tasks, the
   owner rulings, the demo, and the review triage:
   `docs/history/2026-08-08-phase-5a-pricing-invoicing.md`.
+- **Phase 5B — Accounts Receivable.** Squash-merged `b55da3b` (PR #74, 2026-08-09). The receipts
+  ledger (`ReceiptBatch → Payment → Application`, one unified typed `Application` table behind
+  `Application_source_check`), cash application across one or more invoices and a parent's divisions
+  (partials, terms discounts, write-offs gated on a new `write_off` action, on-account, credit
+  memos), **all balances derived live from `Application` rows — never cached on `Invoice`** (pure
+  `ar-balances.ts`); point-in-time aging (`aging.ts`), informational opt-in finance charges
+  (`finance-charges.ts`), and archived open-item statements (`statements.ts`); the `/receivables`
+  UI + a `receivables` permission area; and the cross-phase `hasReceivableActivity` guard that
+  refuses unlock/discard/void-order on paper with live A/R activity. Two 5A changes: a credit takes
+  its own date; a finalized invoice gets a `dueDate`. Final gates: **1879 tests**, `tsc`/`eslint`/
+  `build` clean, E2E **17/17**. The subagent-driven review process caught 5 real
+  correctness/concurrency bugs on-branch; two Codex PR reviews were addressed (11 fixed on-branch,
+  the rest **deferred to issues #68–#87** — #81 aggregate-discount-cap and #84 delete-customer-with-
+  live-payment are the P1s). Full record — the 17 tasks, the whole-branch review, the Codex rounds,
+  the owner rulings, and the lessons (incl. the review blind spot on spec-deliverable reachability):
+  `docs/history/2026-08-08-phase-5b-accounts-receivable.md`.
 
 ## 5. Conventions Phase 2+ must follow (learned and enforced in Phase 1)
 
@@ -184,6 +191,17 @@ Then write a small `.mjs` that imports `chromium` from that cached `playwright` 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
 ## 6. Known backlog (all triaged, none blocking)
+
+**Phase 5B (A/R) follow-ups — GitHub issues #68–#87 (2026-08-09), all deferred by owner ruling,
+none blocking the 5B merge.** #68–#73 are the design-session owner rulings surfaced at the demo
+(POSTED-batch lifecycle, discount basis, credit-balance statements, customer-section family roll-up,
+the vestigial `"ar"` area, post-dated payments). #75–#80 and #81–#87 came from the two Codex PR
+reviews (11 findings were fixed on-branch; the rest filed): missing UI paths (credit-apply,
+finance-charge-exempt setter, standalone bad-debt write-off), the point-in-time reproducibility gap
+(#78 — 5C's close depends on it), the issued-terms discount snapshot, the postBatch balance check,
+and **the two P1s: #81 (the discount cap is per-line, not aggregate — repeated lines can waive a
+whole invoice) and #84 (`deleteCustomer` doesn't block a customer with live payments — strands the
+cash)**. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-receivable/progress.md`.
 
 **Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
 per-worker test databases, to lift the suite's serial-execution ceiling.** The suite is at 1425
@@ -420,81 +438,53 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 5B (Accounts Receivable). This is the live kickoff — paste the prompt below into a fresh
-session to begin.** Phase 5A merged 2026-08-08 (`359c707`, PR #58); §4 carries its one-paragraph
-state and `docs/history/2026-08-08-phase-5a-pricing-invoicing.md` its full narrative. The prompt was
-drafted at 5A's Task 20; its bracketed merge references are now filled in, and the 5A demo pings it
-mentions have since been ruled (§6 — only the credit raise-date carries forward).
+**Phase 5C (month-end close + the QuickBooks Online summary export). This is the live kickoff — paste
+the prompt below into a fresh session to begin.** Phase 5B merged 2026-08-09 (`b55da3b`, PR #74); §4
+carries its one-paragraph state and `docs/history/2026-08-08-phase-5b-accounts-receivable.md` its
+full narrative. 5C has no spec or plan yet — brainstorm → spec → plan is its first step.
 
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5A landed and §6 for the
-> carried backlog (the 5A demo pings are now ruled — only the credit raise-date carries — plus the
-> multi-order-freight deferral and the #59–#65 Codex-triage issues). **Phase 5A
-> (Pricing & Invoicing) is MERGED** (`359c707`, PR #58) — part pricing
-> restructured onto price rows keyed by Process Step Code, surcharges, `BillingConfig`, the full
-> invoice/credit lifecycle (draft → finalize → unlock, or credit), the reversing shipment, and their
-> PDFs. Next is **Phase 5B (Accounts Receivable)** per the roadmap
-> (`docs/superpowers/plans/2026-07-29-roadmap.md`) and ruling 1's three-way split of the original
-> Phase 5 (5A/5B/5C, each Phase-4-sized): payments, payment applications, aging, statements, and
-> finance charges against the invoices 5A now produces — testable outcome "apply a payment, age a
-> balance, print a statement." **Not this phase's job:** month-end close and the QuickBooks Online
-> summary export — those are 5C (spec §15 non-goal, restated below). Brainstorm it
-> (superpowers:brainstorming) against the roadmap and the original spec's §3 non-goals and §15
-> decision log, then write the spec and plan and execute with subagent-driven-development on a
-> `phase-5b-accounts-receivable` branch.
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5B landed and §6 for the carried
+> backlog (the A/R follow-up issues **#68–#87**, of which **#81** (aggregate discount cap) and
+> **#84** (delete-customer-with-live-payment) are the P1s; plus #51–#52, #59–#65, and the
+> per-worker-test-DB infra task). **Phase 5B (Accounts Receivable) is MERGED** (`b55da3b`, PR #74) —
+> the receipts/application/aging/statement ledger with every balance derived live from `Application`
+> rows (never cached on `Invoice`), the `/receivables` UI, the `receivables` permission area, and the
+> `hasReceivableActivity` cross-phase guard. Next is **Phase 5C (month-end close + the QuickBooks
+> Online summary export)** per the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`) and
+> ruling 1's three-way split of the original Phase 5 (5A/5B/5C). Brainstorm it
+> (superpowers:brainstorming) against the roadmap, the original spec's §3 non-goals + §15 decision
+> log, and **the 5B spec §17 (what 5C inherits)**, then write the spec and plan and execute with
+> subagent-driven-development on a `phase-5c-…` branch.
 >
-> **What Phase 5B inherits from Phase 5A** (design spec §16,
-> `docs/superpowers/specs/2026-08-06-phase-5a-pricing-invoicing-design.md`, carried here
-> **verbatim** — read it before designing anything, since every one of these is a real hook 5A
-> built on purpose for this phase to use):
->
-> - **`Invoice` is the A/R document.** 5B adds payments, applications and balances *against* it and
->   must not restate its totals; `Invoice.total` is the amount owed at finalize.
-> - **`Order.status = INVOICED` is invoice-owned and set at finalize**; `recomputeOrderStatus` skips
->   invoice-owned states. 5B's "close paid invoices" must not touch order status at all.
-> - **`Terms` is a name with no day count.** A due date and any aging bucket needs `Terms.netDays`,
->   which 5A deliberately does **not** add (no dangling columns). **5B adds it**, together with
->   `Invoice.dueDate` computed at finalize.
-> - **A credit copies its source invoice's `invoiceDate` verbatim** (Task 14, brief "copy every
->   header snapshot"). Harmless in 5A — there is no aging or date-filtered credit query, so the date
->   is display-only and no money figure depends on it — but the printed credit therefore bears the
->   *source invoice's* issue date, not the date the credit was raised. **When 5B adds issue-date /
->   aging semantics, decide whether a credit carries its own raise-date** (`createCredit` in
->   `invoices.ts` is the one-line change; owner ruling needed — also flagged at the 5A demo, HANDOFF
->   §6).
-> - **`Customer.financeChargeRate` and `Customer.parentId` are already modelled and still unread.**
->   5B is the phase that consumes both — the parent link so one check can pay several children's
->   invoices and a statement can roll up, exactly as Phase 2B modelled it for.
-> - **`InvoiceLine.glAccountId` + `glAccountName` are the GL summary.** 5C's export groups finalized
->   invoice lines by account and never re-walks orders. `ProcessStepCode.needsGlAccount` already
->   exists and is surfaced; **5C is where the export refuses** rather than posting without an
->   account — spec §15's amendment, and the assertion `process-step-codes.ts:79` promises.
+> **What Phase 5C inherits from Phase 5B** (5B design spec §17,
+> `docs/superpowers/specs/2026-08-08-phase-5b-accounts-receivable-design.md` — read it; each is a
+> real hook 5B built for 5C):
+> - **`Application` + `Payment.paymentTypeId → PaymentType.glAccountId` are the cash-side GL.** 5C's
+>   journal maps applications (cash/discount/write-off) to accounts; 5B records the account-bearing
+>   rows but posts nothing.
 > - **`BillingConfig` is where 5C's remaining GL defaults belong** (A/R account, discount,
->   adjustment, write-off, and the sales/credit accounts of the journal entry) — as FK columns on
->   the same row, not as `Setting` strings.
-> - **`PaymentType.glAccountId` already exists** and is a pick-list with no consumer; 5B is its
->   consumer.
-> - **`credit_number_next` is allocated; `invoice_number_next` and `cert_number_next` are not.** Do
->   not wire either up.
-> - **The owner homework HANDOFF §7 records now gates 5C, not 5A**: the QuickBooks Online
->   finance-charge treatment (settle with the bookkeeper) and the GL account list for operations,
->   surcharges and payment types. 5A was built, reviewed and merged before either arrived — but
->   **the GL account list should be keyed before 5C's demo**, or its export runs through step codes
->   with no accounts behind them.
-> - **`CustomerContact.getsInvoices` / `getsStatements` are still stored and still unread.** They
->   wait for email, wherever it lands. 5B is a natural place to ask whether statements need it.
+>   adjustment, write-off, and the sales/credit accounts) — FK columns on the singleton, not
+>   `Setting` strings.
+> - **The month-end close reads 5B's point-in-time aging** (`aging.ts`) — invoiced/paid/ending-A/R
+>   as-of the close date, the close record saved. **But issue #78:** the aging is NOT fully
+>   reproducible after a later void/unlock (it keys on current `finalizedAt`/`deletedAt`); if 5C's
+>   close needs true historical reproducibility, resolve that design gap first.
+> - **`InvoiceLine.glAccountId` + `glAccountName` are the GL summary** (5A) — the export groups
+>   finalized invoice lines by account and never re-walks orders. `ProcessStepCode.needsGlAccount` is
+>   surfaced; **5C is where the export refuses** rather than posting without an account (spec §15).
+> - **Finance charges are excluded from the GL/QBO export** — 5B kept them informational-only, so 5C
+>   inherits nothing to post (Visual Shop excludes FC; spec §14 open item 2).
+> - **Write-off flavor (small vs bad-debt)** is a GL distinction 5C resolves via the account it maps a
+>   `WRITE_OFF` to; 5B carries the reason, not the account choice.
+> - **Owner homework that now gates 5C** (§7): the QBO finance-charge treatment (settle with the
+>   bookkeeper), and **the GL account list for operations, surcharges and payment types must be keyed
+>   before 5C's demo**, or the export runs through step codes/payment types with no accounts behind
+>   them. `credit_number_next`/`invoice_number_next`/`cert_number_next`/`receipt_batch_number_next`
+>   allocation is settled; do not re-wire.
 >
-> **Also carry forward, not from spec §16 but load-bearing anyway:**
-> - **`invoice-guards.ts` is the leaf 5B's own guards should join, not duplicate** — if A/R needs to
->   ask "does this invoice have an open balance?" from a module `invoices.ts` would otherwise have
->   to import (or that would import it), give the question its own leaf the same way, built before
->   the cycle exists (Phase 4 lesson 3, CLAUDE.md).
-> - **An invoice is frozen paper, read unconditionally from its snapshot** (spec §5.4, CLAUDE.md) —
->   a payment/application against it must not "helpfully" re-derive or rewrite any invoice-side
->   snapshot field; it records against the invoice's id and its own `total`/balance, nothing more.
-> - The 5A demo (2026-08-07) ruled on all four of its open pings: the reversing shipment now
->   reopens the order it reverses (built, `aea35a3`), and the credit PDF's "Credit" title and the
->   `"$-937.44"` negative format were approved as-is. Only the credit's copied `invoiceDate`
->   carries forward — and that is spec §16's own item above.
+> _(The detailed "what 5B inherited from 5A" hook list that lived here has served its purpose — 5B
+> consumed those hooks; see the 5A history file if you need it.)_
+>
 > - Two standing owner rules apply to every phase: run the Playwright E2E suite whenever a change
 >   touches any UI/flow, and update the appropriate docs as part of the work — never deferred to a
 >   closing summary.
