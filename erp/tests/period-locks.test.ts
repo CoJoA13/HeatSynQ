@@ -4,6 +4,7 @@ import { prisma } from "@/server/db";
 import { truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { finalizeInvoice } from "@/server/invoices";
+import { createBatch, addPayment, postBatch } from "@/server/receipts";
 import { parseDateOnly } from "@/lib/business-days";
 import { assertPeriodOpen, closedPeriodFor, lockMonth } from "@/server/period-locks";
 
@@ -139,5 +140,49 @@ describe("lockMonth advisory lock", () => {
 
     expect(bLockedWhileAHeld).toBe(false); // B was blocked the whole time A held month 7
     expect(bDone).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Fix round 1 (review finding, ABBA deadlock): `postBatch` must guard EVERY distinct month a
+// multi-month batch's payments fall in, not just the first one found — the fix sorts/dedups to
+// one advisory-lock call per distinct (year, month), ascending, closing the deadlock window an
+// unsorted per-payment loop would open between two batches sharing two months. The ordering
+// itself is a concurrency invariant, not something a single-process test can observe; what IS
+// testable here is coverage — a closed month anywhere in the batch refuses the whole post, and
+// with none closed the post goes through covering every month.
+// ---------------------------------------------------------------------------------------------
+
+describe("postBatch — guards every distinct month of a multi-month batch", () => {
+  let seq = 0;
+  async function batchSpanningTwoMonths(): Promise<string> {
+    seq += 1;
+    const customer = await prisma.customer.create({
+      data: { code: `PLB${seq}`, name: `Period Batch Customer ${seq}` } });
+    const paymentType = await prisma.paymentType.create({ data: { name: `Check ${seq}` } });
+    const batch = await asSystem(() => createBatch({ depositDate: "2026-07-15", controlTotal: null }));
+    await asSystem(() => addPayment(batch.id, {
+      customerId: customer.id, paymentTypeId: paymentType.id, amount: 100,
+      reference: "a", receivedDate: "2026-06-15",
+    }));
+    await asSystem(() => addPayment(batch.id, {
+      customerId: customer.id, paymentTypeId: paymentType.id, amount: 200,
+      reference: "b", receivedDate: "2026-07-15",
+    }));
+    return batch.id;
+  }
+
+  it("refuses postBatch when only the SECOND month of the batch is closed", async () => {
+    const batchId = await batchSpanningTwoMonths();
+    await closeMonth(2026, 7); // June (the first payment's month) stays open
+    await expect(asSystem(() => postBatch(batchId))).rejects.toMatchObject({
+      status: 409, message: expect.stringMatching(/2026-07 is closed/),
+    });
+  });
+
+  it("posts cleanly when neither month is closed", async () => {
+    const batchId = await batchSpanningTwoMonths();
+    const posted = await asSystem(() => postBatch(batchId));
+    expect(posted.status).toBe("POSTED");
   });
 });

@@ -401,12 +401,20 @@ async function postBatchInTx(tx: Db, id: string): Promise<BatchDetail> {
 
   // §4.1: posting a batch makes its payments live CASH-journal paper effective at each payment's
   // `receivedDate`, so posting is refused if ANY of them falls in a CLOSED period. Read under the
-  // batch claim above, before the status write; one guard call per payment (the advisory lock inside
-  // dedups the work per month and serializes each against a concurrent close — period-locks.ts).
+  // batch claim above, before the status write. A batch can span months, so this guards one
+  // distinct (year, month) per batch, taken in ASCENDING order — the `claimOrdersInOrder` rule for
+  // advisory mutexes: an unsorted per-payment loop would let two concurrent `postBatch` calls over
+  // batches sharing two months acquire the two months' advisory locks in opposite order (ABBA
+  // deadlock, Postgres 40P01). The sort/dedup below is what actually dedups the ClosePeriod reads
+  // per month; `assertPeriodOpen`'s own advisory lock only closes the phantom-row race, not this.
   const dates = await tx.payment.findMany({
     where: { batchId: id, deletedAt: null }, select: { receivedDate: true },
   });
-  for (const d of dates) await assertPeriodOpen(tx, d.receivedDate);
+  const months = [...new Map(dates.map((d) => {
+    const key = d.receivedDate.getUTCFullYear() * 100 + (d.receivedDate.getUTCMonth() + 1);
+    return [key, d.receivedDate] as const;
+  })).entries()].sort((a, b) => a[0] - b[0]);
+  for (const [, d] of months) await assertPeriodOpen(tx, d);
 
   await auditedUpdate("receiptBatch", id,
     () => tx.receiptBatch.update({ where: { id }, data: { status: "POSTED" } }), { tx });
