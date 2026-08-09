@@ -194,3 +194,112 @@ same reason.
   match nothing displayed, though the preview/documents fetch still uses the raw `customerId`
   state correctly regardless. Same class of edge case as the two items above; not fixed here for
   the same reason.
+
+## Fix round 1 (review finding, Important)
+
+### The bug
+
+The review found that `customerReceivablesSummary` (`src/server/customer-receivables.ts`) composed
+`agingReport({ customerId })` and `openInvoicesForPayer(customerId)` as if the two agreed on scope.
+They do not, for a **division** (a customer with a `parentId`):
+
+- `agingReport(childId)` returns only that child's own row — `aging.ts` only rolls up into a
+  family-total row when the *given* id is itself a parent, never when it's a child.
+- `openInvoicesForPayer(childId)` resolves `rootId = parentId ?? id` — for a child, that's its
+  **parent** — and returns the whole family's open invoices (parent + every sibling), because a
+  payment can legitimately settle across divisions.
+
+So a division's customer page showed a net balance scoped to that division alone, sitting above an
+open-items table that actually listed the parent's and every sibling's invoices — unlabeled (no
+customer column on that section) and not reconciling with the net above it. A parent's own page had
+the mirror-image problem in the other direction: a rolled-up family net next to a family-wide open
+list, framed as if it were that one customer's page.
+
+### The fix
+
+Both figures now read the **one customer whose page it is** — never a family, whether that
+customer is a parent, a child, or standalone:
+
+- **`customerOwnAgingRow(customerId, asOf?)`**, added to `src/server/aging.ts` right after
+  `agingReport`. Reuses the same private `readSnapshot`/pure `bucketAging` core `agingReport`
+  already uses, scoped to a one-element customer id list — exactly what `agingReport`'s own
+  childless branch already does for a plain customer; the only change is that a live children set
+  no longer widens the query. `agingReport` itself is untouched — its parent-family-rollup
+  behavior (owner ruling "parent-family roll-up") still serves the aging *report* screen (Task 10)
+  and `statements.ts`'s own `combineFamily` option exactly as before.
+- **`openInvoicesForCustomer(customerId)`**, added to `src/server/applications.ts`. The query/map/
+  filter body that used to live directly inside `openInvoicesForPayer` was pulled out into a
+  private `openInvoicesForCustomerIds(customerIds: string[])`; `openInvoicesForPayer` now calls it
+  with the family-resolved ids (unchanged behavior — same `familyCustomerIds` call, same result for
+  every existing caller), and the new `openInvoicesForCustomer` calls it with `[customerId]` alone
+  after its own existence check. The two can never drift in their query/mapping logic since they
+  now share one implementation, only differing in which ids they pass.
+- **`customer-receivables.ts`** now imports and calls only these two single-customer functions,
+  dropping its old `rows.find((r) => r.customerId === customerId)` + defensive-404 dance entirely
+  — both new functions already throw their own 404, so `customerReceivablesSummary` no longer
+  needs one of its own.
+
+`agingReport` and `openInvoicesForPayer` are **unchanged** — same signatures, same behavior, same
+tests passing — so Task 10's aging report screen and Task 13's batch-apply screen are unaffected.
+
+### Minor fix
+
+`StatementDocumentsList`'s permission-denied branch in `Statements.tsx` rendered `viewGate.title`
+directly; the screen's other permission-denied branches (the top-level `StatementsScreen` return)
+already fall back to a message when `title` is `undefined`. Now consistent:
+`viewGate.title ?? "You do not have permission to view statements."`.
+
+### Regression test
+
+`tests/customer-routes.test.ts` — a new test, `"GET .../receivables scopes to the ONE customer's
+own A/R, never its family (division regression)"`: a PARENT and CHILD customer, each with its own
+finalized open invoice (300 / 500) **and** its own on-account payment (50 / 100, no application —
+so `unapplied`/`net` are non-trivial and a family leak would show up as either an extra open item
+or the wrong customer's cash bleeding into the total). Asserts:
+
+- `GET /api/customers/<childId>/receivables` → `openItems` has exactly one row, the child's own
+  invoice (`open: 500`); `aging.unapplied === 100`, `aging.net === 400` (500 − 100) — the parent's
+  invoice and payment appear nowhere.
+- `GET /api/customers/<parentId>/receivables` → `openItems` has exactly one row, the parent's own
+  invoice (`open: 300`); `aging.unapplied === 50`, `aging.net === 250` (300 − 50) — the child's
+  invoice and payment appear nowhere, even though the parent is a family head.
+
+This is exactly the scenario the two pre-existing tests (a standalone customer) never exercised.
+
+### Commands run (all foreground)
+
+```
+npx vitest run tests/customer-routes.test.ts tests/receivables-routes.test.ts \
+  tests/aging.test.ts tests/applications.test.ts tests/applications-routes.test.ts \
+  tests/statements.test.ts tests/applications-concurrency.test.ts
+```
+→ **7 test files passed, 103 tests passed** (12.93s). Extended beyond the two files the
+coordinator named to also cover `aging.ts`'s and `applications.ts`'s own direct test files, since
+both modules were refactored (a new exported function each, plus the private
+`openInvoicesForCustomerIds` extraction in `applications.ts`) and `applications-concurrency.test.ts`
+exercises the invoice-row claim `openInvoicesForCustomerIds` sits downstream of.
+
+```
+npx tsc --noEmit
+```
+→ clean.
+
+```
+npx eslint src tests
+```
+→ clean.
+
+### Self-review
+
+- `agingReport`/`openInvoicesForPayer`'s existing tests (`tests/aging.test.ts`,
+  `tests/applications.test.ts`, `tests/applications-routes.test.ts`) all still pass unmodified —
+  confirms the refactor changed neither function's external behavior.
+- The new `customerOwnAgingRow` and `openInvoicesForCustomer` each independently 404 on an unknown
+  customer id (verified by the existing `"GET .../receivables: 404s an unknown customer"` test,
+  which still passes against the new code path).
+- Grepped both new functions' call sites — `customer-receivables.ts` is the only caller of either,
+  so no other Task 15 code path was left reading the family-scoped versions by mistake.
+- The regression test asserts BOTH directions (child's page and parent's page), not just one, per
+  the review's explicit ask ("child AND parent alike").
+
+**Commit:** `5253423` — `fix(5b): scope the customer A/R section to one customer, never its family`
