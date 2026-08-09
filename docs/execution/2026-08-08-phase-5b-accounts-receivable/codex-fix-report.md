@@ -276,3 +276,86 @@ failure before `assertDiscountPairAfterUpdate` and the `discountDays.nullable()`
 - `npx eslint src tests` → clean (exit 0).
 
 Full suite intentionally not run here (host resource-constrained; owner runs it at merge).
+
+---
+
+# Round 4 — correction-path UI
+
+Two confirmed findings on the operator's correction path on the batch apply screen
+(`src/app/receivables/batches/[id]/BatchDetail.tsx`), both about a payment that has already been
+(mis-)applied. The whole-branch fix made `voidPayment` refuse a payment with live applications, so
+correcting a mis-application needs both a way to SEE what a payment settled and a way to VOID it — and
+separately, on-account cash must stay appliable after its batch posts.
+
+## FIX #11 (P1-workflow) — add a UI path to void (correct) an application
+
+A `DELETE /api/receivables/applications/[id]` route (`voidApplication`, gated `receivables.delete`)
+already existed, but no screen listed or voided applications — the only way to unwind a mis-applied
+payment before this fix was a direct API call.
+
+**Server read extension — `src/server/receipts.ts`**
+- New exported type `PaymentApplicationRow = { id, type, amount, invoiceId, invoiceDocumentNumber }`;
+  `PaymentRow` gained `applications: PaymentApplicationRow[]`.
+- `DETAIL_INCLUDE`'s `payments.applications` select widened from `{ amount, type, deletedAt }` to also
+  pull `id`, `invoiceId`, and `invoice.order.orderNumber` (needed for the document number) — still
+  UNFILTERED (no `where: { deletedAt: null }`), because `paymentOnAccount` still needs every
+  application, live or voided, to filter internally.
+- `toPaymentRow(p, prefix)` now takes the `invoice_number_prefix` setting and builds the LIVE-only
+  `applications` list by filtering the same fetched array to `deletedAt === null` and mapping in the
+  `invoices.ts`/`applications.ts` document-number rule (`prefix === "" ? String(orderNumber) :
+  "${prefix} - ${orderNumber}"`, duplicated here per that established precedent) — a DISCOUNT/WRITE_OFF
+  targets an invoice the same way a PAYMENT does, so all three read it identically (never a CREDIT —
+  `applyPayment`/`applyCredit` both require the target to be `kind: "INVOICE"`).
+- `readBatchDetail` reads the prefix alongside the batch row (`Promise.all`, the `statements.ts`/
+  `customers.ts`/`parts.ts` parallel-tx-read precedent) and threads it into `toBatchDetail`/
+  `toPaymentRow`.
+
+**UI — `src/app/receivables/batches/[id]/BatchDetail.tsx`**
+- `ApplyPanel` renders a small table under the "Payment … Applied … On account …" summary line, listing
+  each live application (invoice document number, `APPLICATION_TYPE_LABELS[type]`, amount) with a
+  per-row "Void" button.
+- `voidApplicationAction` prompts for a reason (the `voidPaymentAction` shape), calls
+  `DELETE /api/receivables/applications/<id>` with `{ reason }`, then calls the parent's `onApplied()`
+  (batch refresh — the invoice's open balance and the payment's on-account are both derived, so both
+  update from that one call) and its own `load()` (this payment's own apply-panel candidates).
+- New prop `voidApplicationGate: Gate = gate(perms, "receivables.delete")`, computed in `BatchDetail`
+  and passed down — disabled-with-tooltip (§5.16), not hidden. Deliberately NOT run through
+  `statusLocked`: `voidApplication` performs no batch-status check, and correcting a misapplication is
+  not editing the payment list (see FIX #7 below).
+
+**Tests** (`tests/receipts.test.ts`, new `readBatchDetail — a payment's live applications` block): adds
+a payment, finalizes an invoice, applies 100 of it as a PAYMENT, then asserts `getBatch` returns exactly
+one application with the right `type`/`amount`/`invoiceId`/`invoiceDocumentNumber` (bare order number —
+default blank prefix); voids it via `voidApplication` and asserts the list empties and `onAccount`
+returns to 300.
+
+## FIX #7 (P1) — allow applying on-account cash on a POSTED batch
+
+`statusLocked` wrapped the apply controls (`moneyGate`, `writeOffGate`) with the POSTED lock, but spec
+§5.2 says on-account cash "is appliable to a later invoice from the same payment at any time (even
+after its batch is POSTED)" — and `applyPayment` itself performs no batch-status check, so only the UI
+was blocking it.
+
+**`src/app/receivables/batches/[id]/BatchDetail.tsx`**
+- `moneyGate`/`writeOffGate` no longer wrapped in `statusLocked(..., posted)` — they are now exactly
+  `applyGateRaw`/`writeOffGateCombined` (`receivables.create`, plus `write_off` for a write-off line),
+  so apply/discount/write-off stay available on a POSTED batch subject only to their normal permission
+  gates.
+- `createPaymentGate` and `deletePaymentGate` (add-payment, void-payment) KEEP the `statusLocked` wrap —
+  matching `receipts.ts`'s `refusePosted`, which does refuse those two.
+- `statusLocked`'s doc comment rewritten: it locks EDITING THE PAYMENT LIST (add/void-payment) only —
+  no more citing task-13-brief.md's unqualified "read-only"; now cites spec §5.2 and explains why apply
+  and void-application are both deliberately excluded.
+
+No new automated test for this one (a UI gating change with no service-layer behavior change — the
+service already permitted it, per the brief's own framing); verified by reading the gate wiring and by
+`npm run build` succeeding with no type errors across the removed `statusLocked` calls.
+
+## Results
+
+- `npx vitest run tests/receipts.test.ts tests/receivables-routes.test.ts` → **38 passed** (2 files).
+- `npx tsc --noEmit` → clean (exit 0).
+- `npx eslint src tests` → clean (exit 0).
+- `npm run build` → clean (exit 0; UI touched).
+
+Full suite intentionally not run here (host resource-constrained; owner runs it at merge).

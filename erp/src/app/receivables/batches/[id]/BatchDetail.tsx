@@ -20,7 +20,10 @@ import { useMutationGate, useLatest } from "@/lib/use-latest";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { HistoryPanel } from "@/components/HistoryPanel";
-import { RECEIPT_BATCH_STATUS_LABELS, type ReceiptBatchStatusValue } from "@/lib/ar-constants";
+import {
+  RECEIPT_BATCH_STATUS_LABELS, APPLICATION_TYPE_LABELS,
+  type ReceiptBatchStatusValue, type ApplicationTypeValue,
+} from "@/lib/ar-constants";
 
 // ---------------------------------------------------------------------------------------------
 // Types. Local mirrors of src/server/receipts.ts's `BatchDetail`/`PaymentRow` and
@@ -31,10 +34,18 @@ import { RECEIPT_BATCH_STATUS_LABELS, type ReceiptBatchStatusValue } from "@/lib
 // `InvoiceDetail.tsx` / `InvoiceDetailData` precedent).
 // ---------------------------------------------------------------------------------------------
 
+/** `src/server/receipts.ts`'s `PaymentApplicationRow` — Fix #11 (Round 4 correction-path): the
+ *  live applications a payment carries, so this screen can list AND void them (the whole-branch
+ *  fix made `voidPayment` refuse a payment with live applications, so this is the only way to
+ *  correct a mis-applied payment). */
+type PaymentApplicationRow = {
+  id: string; type: ApplicationTypeValue; amount: number; invoiceId: string; invoiceDocumentNumber: string;
+};
+
 type PaymentRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
   paymentTypeId: string; paymentTypeName: string; amount: number; reference: string; receivedDate: string;
-  onAccount: number;
+  onAccount: number; applications: PaymentApplicationRow[];
 };
 
 type BatchDetailData = {
@@ -55,15 +66,19 @@ type CustomerOption = { id: string; code: string; name: string };
  *  session-only gated, the `customers/[id]/page.tsx` Terms-picker precedent). */
 type PickListRow = { id: string; name: string; active: boolean };
 
-/** A POSTED batch locks money-moving controls — the 5A `statusLocked` shape (InvoiceDetail.tsx),
+/** A POSTED batch locks EDITING THE PAYMENT LIST — the 5A `statusLocked` shape (InvoiceDetail.tsx),
  *  applied to `ReceiptBatch.status` rather than an invoice's finalized/discarded pair. Applied to
- *  add-payment/void-payment/apply (every one of them refuses, or is deliberately treated as
- *  refusing, once POSTED — `receipts.ts`'s `refusePosted` covers the first two directly;
- *  `applyPayment`, applications.ts, does not itself check the batch's status, but this screen
- *  locks it too, matching task-13-brief.md's unqualified "a POSTED batch renders read-only").
- *  Deliberately NOT applied to voiding the BATCH itself — `voidBatch` (receipts.ts) is allowed
+ *  add-payment/void-payment only — `receipts.ts`'s `refusePosted` covers both directly, so this
+ *  screen locks the SAME two controls, never more. Fix #7 (Round 4 correction-path, spec §5.2):
+ *  on-account cash "is appliable to a later invoice from the same payment at any time (even after
+ *  its batch is POSTED)" — `applyPayment` (applications.ts) itself performs no batch-status check,
+ *  and this screen must not add one either, so apply/discount/write-off are deliberately NOT run
+ *  through this helper (they stay gated by `receivables.create`/`write_off` alone). Also
+ *  deliberately NOT applied to voiding the BATCH itself — `voidBatch` (receipts.ts) is allowed
  *  against a POSTED batch as long as it holds no live payments, so that gate is computed on its
- *  own below rather than run through this helper. */
+ *  own below rather than run through this helper — nor to voiding one APPLICATION (Fix #11):
+ *  correcting a misapplication is not editing the payment list, and `voidApplication` itself
+ *  performs no batch-status check either. */
 function statusLocked(g: Gate, posted: boolean): Gate {
   if (posted) return { allowed: false, disabled: true, title: "Batch is posted" };
   return g;
@@ -96,11 +111,14 @@ function toApplyFields(row: OpenInvoiceRow & { discountAvailable: number }): App
 }
 
 function ApplyPanel({
-  payment, moneyGate, writeOffGate, onApplied, onError,
+  payment, moneyGate, writeOffGate, voidApplicationGate, onApplied, onError,
 }: {
   payment: PaymentRow;
   moneyGate: Gate;
   writeOffGate: Gate;
+  /** Fix #11 — gates the per-application "Void" action. Deliberately not `statusLocked`: correcting
+   *  a misapplication is not editing the payment list (see `statusLocked`'s own comment). */
+  voidApplicationGate: Gate;
   /** Tells the parent to refresh the whole batch (every payment's `onAccount` is derived, so any
    *  successful apply anywhere can move it). */
   onApplied: () => void;
@@ -110,6 +128,7 @@ function ApplyPanel({
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
+  const [voidingApplicationId, setVoidingApplicationId] = useState<string | null>(null);
   const latest = useLatest();
   const grid = useBulkGrid<ApplyLineFields>();
 
@@ -189,6 +208,30 @@ function ApplyPanel({
     }
   }
 
+  // Fix #11 — void one live application (correcting a mis-applied payment). `voidApplication`
+  // (applications.ts) trims and requires the reason itself; this mirrors `voidPaymentAction`'s own
+  // prompt/confirm shape below. On success, `onApplied()` refreshes the whole batch — the invoice's
+  // open balance and this payment's on-account are both derived, so both update from that one call.
+  async function voidApplicationAction(app: PaymentApplicationRow) {
+    const reason = prompt(
+      `Void the ${APPLICATION_TYPE_LABELS[app.type]} application of ${app.amount.toFixed(2)} against ` +
+      `invoice ${app.invoiceDocumentNumber}?\n\nReason for voiding (recorded in the audit history):`,
+    );
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) { onError("A reason is required to void an application."); return; }
+    setVoidingApplicationId(app.id);
+    try {
+      await api(`/api/receivables/applications/${app.id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+      onError(null);
+      onApplied();
+      await load(); // this payment's own candidates: the voided amount reopens the invoice's balance
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setVoidingApplicationId(null);
+    }
+  }
+
   // "the unapplied remainder shown as on-account" (task-13-brief.md) — `onAccount` is already
   // derived server-side (`ar-balances.paymentOnAccount`) and refreshes on every batch reload.
   const applied = payment.amount - payment.onAccount;
@@ -199,6 +242,37 @@ function ApplyPanel({
       <p className="mb-2 text-sm text-slate-600">
         Payment {payment.amount.toFixed(2)} · Applied {applied.toFixed(2)} · On account {payment.onAccount.toFixed(2)}
       </p>
+      {payment.applications.length > 0 && (
+        <div className="mb-3 overflow-x-auto rounded border bg-white">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-slate-500">
+                <th className="py-1 pl-2 pr-2 font-medium">Invoice</th>
+                <th className="pr-2 font-medium">Type</th>
+                <th className="pr-2 font-medium">Amount</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {payment.applications.map((a) => (
+                <tr key={a.id} className="border-t">
+                  <td className="py-1 pl-2 pr-2 font-mono">{a.invoiceDocumentNumber}</td>
+                  <td className="pr-2">{APPLICATION_TYPE_LABELS[a.type]}</td>
+                  <td className="pr-2 text-right">{a.amount.toFixed(2)}</td>
+                  <td className="pr-2 text-right">
+                    <button onClick={() => void voidApplicationAction(a)}
+                            disabled={!voidApplicationGate.allowed || voidingApplicationId === a.id}
+                            title={voidApplicationGate.title}
+                            className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
+                      {voidingApplicationId === a.id ? "Voiding…" : "Void"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       {loadError && <p className="mb-2 text-sm text-red-700">Could not load open invoices: {loadError}</p>}
       {grid.orphanWarning && <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{grid.orphanWarning}</p>}
       {rows.length === 0 && loaded && !loadError && (
@@ -309,10 +383,13 @@ export function BatchDetail({ id }: { id: string }) {
 
   // §5.5/task-13-brief.md Step 2: money-bearing controls take BOTH receivables.create and, for a
   // write-off, `write_off` on top — computed once with the "whichever is actually the blocker"
-  // title (the `InvoiceDetail.tsx` moneyGate/priceGate precedent), THEN status-locked. Apply is an
-  // entity-creation (POST /api/receivables/applications gates `create` — owner ruling, review
-  // round 1: the apply gate must match the route it calls, not `edit`), consistent with
-  // add-payment and create-batch, which already gate on create.
+  // title (the `InvoiceDetail.tsx` moneyGate/priceGate precedent). Apply is an entity-creation
+  // (POST /api/receivables/applications gates `create` — owner ruling, review round 1: the apply
+  // gate must match the route it calls, not `edit`), consistent with add-payment and create-batch,
+  // which already gate on create. Fix #7 (Round 4 correction-path, spec §5.2): NOT run through
+  // `statusLocked` — on-account cash stays appliable to a later invoice from the same payment even
+  // after the batch is POSTED, and `applyPayment` itself performs no batch-status check (see
+  // `statusLocked`'s own comment).
   const applyGateRaw = gate(perms, "receivables.create");
   const writeOffGateRaw = gateDo(perms, "write_off");
   const writeOffDisabled = applyGateRaw.disabled || writeOffGateRaw.disabled;
@@ -320,10 +397,15 @@ export function BatchDetail({ id }: { id: string }) {
     allowed: !writeOffDisabled, disabled: writeOffDisabled,
     title: applyGateRaw.disabled ? applyGateRaw.title : writeOffGateRaw.title,
   };
-  const moneyGate = statusLocked(applyGateRaw, posted);
-  const writeOffGate = statusLocked(writeOffGateCombined, posted);
+  const moneyGate = applyGateRaw;
+  const writeOffGate = writeOffGateCombined;
   const createPaymentGate = statusLocked(gate(perms, "receivables.create"), posted);
   const deletePaymentGate = statusLocked(gate(perms, "receivables.delete"), posted);
+  // Fix #11 — void one application (correct a mis-applied payment). Not status-locked: correcting
+  // an application is not editing the payment list, and `voidApplication` (applications.ts) itself
+  // performs no batch-status check either — matching FIX #7's apply controls, this stays available
+  // on a POSTED batch.
+  const voidApplicationGate = gate(perms, "receivables.delete");
 
   const postGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Batch is voided" }
@@ -601,6 +683,7 @@ export function BatchDetail({ id }: { id: string }) {
                     <tr>
                       <td colSpan={8}>
                         <ApplyPanel payment={p} moneyGate={moneyGate} writeOffGate={writeOffGate}
+                                    voidApplicationGate={voidApplicationGate}
                                     onApplied={() => { void load(); }} onError={setError} />
                       </td>
                     </tr>

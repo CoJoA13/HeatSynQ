@@ -6,10 +6,10 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
-import { allocateNumber } from "./settings";
+import { allocateNumber, getSetting } from "./settings";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
 import { paymentOnAccount, type ApplicationLite } from "./ar-balances";
-import type { ReceiptBatchStatusValue } from "../lib/ar-constants";
+import type { ReceiptBatchStatusValue, ApplicationTypeValue } from "../lib/ar-constants";
 
 // -------------------------------------------------------------------------------------------
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding many Payments. Neither
@@ -39,10 +39,20 @@ function parseDate(value: string, field: string): Date {
   }
 }
 
+/** One live application against a payment — Fix #11 (Round 4 correction-path): the batch-apply
+ *  screen has no way to show, let alone void, what a payment has already settled without this.
+ *  `invoiceDocumentNumber` is the `invoices.ts`/`applications.ts` prefix + order-number rule,
+ *  duplicated here (private in both already; the established precedent for this small a
+ *  computation rather than a cross-module import) — a DISCOUNT/WRITE_OFF targets an invoice the
+ *  same way a PAYMENT does, so all three read it identically. */
+export type PaymentApplicationRow = {
+  id: string; type: ApplicationTypeValue; amount: number; invoiceId: string; invoiceDocumentNumber: string;
+};
+
 export type PaymentRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
   paymentTypeId: string; paymentTypeName: string; amount: number; reference: string; receivedDate: string;
-  onAccount: number;
+  onAccount: number; applications: PaymentApplicationRow[];
 };
 
 export type BatchDetail = {
@@ -65,9 +75,17 @@ const DETAIL_INCLUDE = {
     include: {
       customer: { select: { code: true, name: true } },
       paymentType: { select: { name: true } },
-      // Task 7 will populate these; for now every payment's applications array is empty, so
-      // `paymentOnAccount` returns the full amount (its own documented empty-array behavior).
-      applications: { select: { amount: true, type: true, deletedAt: true } },
+      // Unfiltered (no `where: { deletedAt: null }`) — `paymentOnAccount` needs every application,
+      // live or voided, to filter internally (its own documented behavior); the LIVE-only list the
+      // UI shows (`PaymentRow.applications`, Fix #11) is filtered from this same fetch in
+      // `toPaymentRow` rather than run as a second query. `invoice.order.orderNumber` is what
+      // `invoiceDocumentNumber` is built from below.
+      applications: {
+        select: {
+          id: true, amount: true, type: true, deletedAt: true, invoiceId: true,
+          invoice: { select: { order: { select: { orderNumber: true } } } },
+        },
+      },
     },
   },
 } satisfies Prisma.ReceiptBatchInclude;
@@ -78,25 +96,34 @@ type PaymentRowShape = DetailRow["payments"][number];
 const cents = (n: number): number => Math.round(n * 100);
 
 /** CRITICAL (Task 5 carry): `Payment.amount`/`Application.amount` are Prisma `Decimal` — every
- *  value crossing into `ar-balances` or a `number`-typed row must be `.toNumber()`'d first. */
-function toPaymentRow(p: PaymentRowShape): PaymentRow {
+ *  value crossing into `ar-balances` or a `number`-typed row must be `.toNumber()`'d first.
+ *  `prefix` is the `invoice_number_prefix` setting, read once per batch (`readBatchDetail`) and
+ *  threaded through — a blank prefix prints the bare order number, the `invoices.ts`/
+ *  `applications.ts` rule. */
+function toPaymentRow(p: PaymentRowShape, prefix: string): PaymentRow {
   const apps: ApplicationLite[] = p.applications.map((a) => ({
     amount: a.amount.toNumber(), type: a.type, deletedAt: a.deletedAt,
   }));
   const amount = p.amount.toNumber();
+  const applications: PaymentApplicationRow[] = p.applications
+    .filter((a) => a.deletedAt === null)
+    .map((a) => ({
+      id: a.id, type: a.type, amount: a.amount.toNumber(), invoiceId: a.invoiceId,
+      invoiceDocumentNumber: prefix === "" ? String(a.invoice.order.orderNumber) : `${prefix} - ${a.invoice.order.orderNumber}`,
+    }));
   return {
     id: p.id, customerId: p.customerId, customerCode: p.customer.code, customerName: p.customer.name,
     paymentTypeId: p.paymentTypeId, paymentTypeName: p.paymentType.name,
     amount, reference: p.reference, receivedDate: formatDateOnly(p.receivedDate),
-    onAccount: paymentOnAccount(amount, apps),
+    onAccount: paymentOnAccount(amount, apps), applications,
   };
 }
 
 /** `enteredTotal` = Σ live payment amounts (integer-cents, the `ar-balances` rounding rule);
  *  `balance` = `(controlTotal ?? enteredTotal) − enteredTotal`, zero when it foots or no control
  *  total was ever set. */
-function toBatchDetail(row: DetailRow): BatchDetail {
-  const payments = row.payments.map(toPaymentRow);
+function toBatchDetail(row: DetailRow, prefix: string): BatchDetail {
+  const payments = row.payments.map((p) => toPaymentRow(p, prefix));
   const enteredCents = payments.reduce((sum, p) => sum + cents(p.amount), 0);
   const enteredTotal = enteredCents / 100;
   const controlTotal = row.controlTotal === null ? null : row.controlTotal.toNumber();
@@ -114,9 +141,12 @@ function toBatchDetail(row: DetailRow): BatchDetail {
  *  precedent (invoices.ts). Never filters `deletedAt` at the batch level: a voided batch stays
  *  readable (the `discardInvoice`/`readInvoiceDetail` "frozen paper stays visible" rule). */
 async function readBatchDetail(db: Db, id: string): Promise<BatchDetail> {
-  const row = await db.receiptBatch.findFirst({ where: { id }, include: DETAIL_INCLUDE });
+  const [row, prefix] = await Promise.all([
+    db.receiptBatch.findFirst({ where: { id }, include: DETAIL_INCLUDE }),
+    getSetting("invoice_number_prefix", db),
+  ]);
   if (!row) throw new HttpError(404, "Receipt batch not found");
-  return toBatchDetail(row);
+  return toBatchDetail(row, prefix);
 }
 
 export async function getBatch(id: string): Promise<BatchDetail> {

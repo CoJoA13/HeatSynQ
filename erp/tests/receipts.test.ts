@@ -134,6 +134,52 @@ describe("addPayment — live balance", () => {
 });
 
 // -------------------------------------------------------------------------------------------
+// Fix #11 (Round 4 correction-path): the batch detail must carry each payment's LIVE applications
+// so the UI can list them — and offer a void — without a second endpoint. `invoiceDocumentNumber`
+// is the prefix + order-number rule; a voided application drops out without disturbing the payment.
+// -------------------------------------------------------------------------------------------
+
+describe("readBatchDetail — a payment's live applications", () => {
+  it("lists a live PAYMENT application with its invoice's document number, and drops a voided one", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 970000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+      },
+    });
+    await asSystem(() => applyPayment({ paymentId, lines: [{ invoiceId: invoice.id, type: "PAYMENT", amount: 100 }] }));
+
+    const detail = await asSystem(() => getBatch(batch.id));
+    const paymentRow = detail.payments[0];
+    expect(paymentRow.applications).toHaveLength(1);
+    const app = paymentRow.applications[0];
+    expect(app.type).toBe("PAYMENT");
+    expect(app.amount).toBe(100);
+    expect(app.invoiceId).toBe(invoice.id);
+    expect(app.invoiceDocumentNumber).toBe(String(order.orderNumber)); // blank prefix by default
+
+    // Voiding the application drops it from the list — the payment itself stays live and untouched.
+    await asSystem(() => voidApplication(app.id, "test correction"));
+    const afterVoid = await asSystem(() => getBatch(batch.id));
+    expect(afterVoid.payments).toHaveLength(1);
+    expect(afterVoid.payments[0].applications).toHaveLength(0);
+    expect(afterVoid.payments[0].onAccount).toBe(300); // restored — the same ar-balances derivation
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // Step 5/7: post locks payment entry.
 // -------------------------------------------------------------------------------------------
 
