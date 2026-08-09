@@ -209,3 +209,70 @@ transiently mis-stating net.
 - `npm run build` → clean (exit 0; UI touched).
 
 Full suite intentionally not run here (host resource-constrained; owner runs it at merge).
+
+---
+
+# Round 3 — Terms validation
+
+## FIX #17 (P2) — validate the RESULTING Terms row when clearing a discount
+
+`requireDiscountPair` (`src/server/reference.ts`) validates only the fields PRESENT in a PATCH, not
+the row that results from applying it. On an existing `2/10 Net 30` Terms row,
+`updateReference("terms", id, { discountPercent: null })` set `hasPercent = false` (explicit null)
+and `hasDays = false` (key omitted, so invisible to a refine that only sees the patch) — both looked
+identical to "no discount" from inside the refine, so the PATCH passed and persisted
+`discountPercent = null` while the stored `discountDays = 10` was left untouched: a row violating the
+advertised both-or-neither invariant.
+
+**`src/server/reference.ts`**
+- `EXTRA_SCHEMAS.terms` (`~L39-46`): `discountDays` gained `.nullable()` — before this fix an explicit
+  `{ discountDays: null }` failed generic zod type validation ("expected number, received null")
+  before ever reaching a discount-pair check, so clearing `discountDays` (alone or paired with
+  `discountPercent: null`) had no valid input shape at all. `discountPercent` (via `decimalField`)
+  was already nullable; this makes the pair symmetric.
+- New `assertDiscountPairAfterUpdate(tx, id, patch)` (`~L225-251`): runs only when the parsed patch
+  contains `"discountPercent"` or `"discountDays"` as an own key. Reads the current row's
+  `discountPercent`/`discountDays` on the caller's own `tx`, then merges: a key ABSENT from `patch`
+  (`in` false) keeps the stored value; a key PRESENT — including an explicit `null` — overrides it.
+  `in`, not `?? current`, because `??` cannot distinguish "omitted" from "explicitly null" and zod's
+  `.partial()` omits untouched optional keys from its parsed output entirely (verified against the
+  repo's zod 4.4.3: `z.object({a,b}).partial().parse({a:null})` → `{a: null}`, no `b` key at all).
+  Throws the same `"an early-pay discount needs both a percent and a day count"` 400 as
+  `requireDiscountPair` when the merged `percent`/`days` presence disagrees.
+- `updateReference` (`~L268`): `if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);`
+  — placed inside the existing transaction, after the FK-link checks and before `auditedUpdate`, so a
+  rejected merge never reaches the write.
+- `requireDiscountPair`'s doc comment updated to describe the now-closed gap instead of documenting it
+  as accepted; the create path and its call to `requireDiscountPair` are unchanged (it already
+  validates the full row there, since create has no "existing row" to merge against). No other
+  reference kind is touched — the new check is gated on `kind === "terms"` and the schema change
+  (`discountDays.nullable()`) only affects a field that exists solely on the `terms` entry.
+
+**Before/after** (on a stored `2/10 Net 30` row):
+- Before: `updateReference("terms", id, { discountPercent: null })` → succeeded, row became
+  `discountPercent: null, discountDays: 10` (broken pair).
+- After: same call → `HttpError(400, "an early-pay discount needs both a percent and a day count")`;
+  row unchanged (`discountPercent: 2, discountDays: 10`).
+- `{ discountPercent: null, discountDays: null }` → still succeeds (both cleared together, no
+  discount).
+- A patch touching only `netDays` or `active` → unaffected (the new check no-ops when the patch
+  contains neither discount key).
+
+**Tests** (`tests/reference-tables.test.ts`, new `describe` block under the existing "terms: netDays +
+early-pay discount" suite): on a seeded `2/10 Net 30` row — clearing only `discountPercent` → 400 and
+row unchanged; clearing only `discountDays` → 400 and row unchanged; clearing both → succeeds, row
+becomes no-discount; an update touching only `netDays`/`active` → unaffected, discount pair intact.
+All four are non-vacuous — each reproduced a real "passes and corrupts the row" or wrong-schema-error
+failure before `assertDiscountPairAfterUpdate` and the `discountDays.nullable()` change existed.
+
+## Results
+
+- `npx vitest run tests/reference-tables.test.ts` → **26 passed**.
+- `npx vitest run tests/reference-blockers.test.ts tests/reference-gl.test.ts
+  tests/reference-guards.test.ts tests/reference-links-sweep.test.ts tests/reference-names.test.ts`
+  (collateral check on the shared module and the `EXTRA_SCHEMAS` schema change) → **64 passed**
+  (5 files).
+- `npx tsc --noEmit` → clean (exit 0).
+- `npx eslint src tests` → clean (exit 0).
+
+Full suite intentionally not run here (host resource-constrained; owner runs it at merge).
