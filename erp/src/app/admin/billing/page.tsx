@@ -18,6 +18,10 @@ type Cfg = {
   // Task 4 (P5B §4.3, §7): plant default monthly finance-charge rate. Same string-mid-edit
   // convention as the two decimal fields above.
   financeChargeRate: number | string | null;
+  // Phase 5C: the A/R close's three GL defaults.
+  arGlAccountId: string | null;
+  discountGlAccountId: string | null;
+  writeOffGlAccountId: string | null;
 };
 type GlAccount = { id: string; name: string; description?: string | null };
 type StepCodeOption = { id: string; name: string; active: boolean };
@@ -127,6 +131,48 @@ export default function BillingPage() {
             disabled={canEdit.disabled}
             title={canEdit.title}
             onChange={(e) => void save({ otherChargeGlAccountId: e.target.value || null })}
+            className="w-56 rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100"
+          >
+            <option value="">(none)</option>
+            {glAccounts.map((g) => <option key={g.id} value={g.id}>{g.name} {g.description}</option>)}
+          </select>
+        </label>
+
+        <label className="flex items-center justify-between border-b p-2 text-sm">
+          <span>A/R GL account{savedMark("arGlAccountId")}</span>
+          <select
+            value={cfg.arGlAccountId ?? ""}
+            disabled={canEdit.disabled}
+            title={canEdit.title}
+            onChange={(e) => void save({ arGlAccountId: e.target.value || null })}
+            className="w-56 rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100"
+          >
+            <option value="">(none)</option>
+            {glAccounts.map((g) => <option key={g.id} value={g.id}>{g.name} {g.description}</option>)}
+          </select>
+        </label>
+
+        <label className="flex items-center justify-between border-b p-2 text-sm">
+          <span>Discount GL account{savedMark("discountGlAccountId")}</span>
+          <select
+            value={cfg.discountGlAccountId ?? ""}
+            disabled={canEdit.disabled}
+            title={canEdit.title}
+            onChange={(e) => void save({ discountGlAccountId: e.target.value || null })}
+            className="w-56 rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100"
+          >
+            <option value="">(none)</option>
+            {glAccounts.map((g) => <option key={g.id} value={g.id}>{g.name} {g.description}</option>)}
+          </select>
+        </label>
+
+        <label className="flex items-center justify-between border-b p-2 text-sm">
+          <span>Write-off GL account{savedMark("writeOffGlAccountId")}</span>
+          <select
+            value={cfg.writeOffGlAccountId ?? ""}
+            disabled={canEdit.disabled}
+            title={canEdit.title}
+            onChange={(e) => void save({ writeOffGlAccountId: e.target.value || null })}
             className="w-56 rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100"
           >
             <option value="">(none)</option>

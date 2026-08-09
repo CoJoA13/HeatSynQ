@@ -17,12 +17,16 @@ export type BillingConfigRow = {
   certChargeDefault: number | null;
   billForCertDefault: boolean;
   financeChargeRate: number | null;
+  arGlAccountId: string | null;
+  discountGlAccountId: string | null;
+  writeOffGlAccountId: string | null;
 };
 
 const EMPTY: BillingConfigRow = {
   salesTaxRate: null, salesTaxGlAccountId: null, freightGlAccountId: null,
   otherChargeGlAccountId: null, certChargeStepCodeId: null,
   certChargeDefault: null, billForCertDefault: false, financeChargeRate: null,
+  arGlAccountId: null, discountGlAccountId: null, writeOffGlAccountId: null,
 };
 
 // Kept in sync with prisma/schema.prisma's @db.Decimal declarations on BillingConfig.
@@ -38,6 +42,9 @@ const SAVE = z.object({
   // financeChargeRate (customers.ts) overrides this per customer — that override chain is Task
   // 11/12's concern; this field only carries the plant-wide fallback.
   financeChargeRate: decimalField(6, 4, { min: "nonnegative" }),
+  arGlAccountId: z.string().nullable().optional(),
+  discountGlAccountId: z.string().nullable().optional(),
+  writeOffGlAccountId: z.string().nullable().optional(),
 }).partial().strict();
 
 export async function getBillingConfig(db: Prisma.TransactionClient | typeof prisma = prisma): Promise<BillingConfigRow> {
@@ -54,6 +61,9 @@ export async function getBillingConfig(db: Prisma.TransactionClient | typeof pri
     certChargeDefault: row.certChargeDefault?.toNumber() ?? null,
     billForCertDefault: row.billForCertDefault,
     financeChargeRate: row.financeChargeRate?.toNumber() ?? null,
+    arGlAccountId: row.arGlAccountId,
+    discountGlAccountId: row.discountGlAccountId,
+    writeOffGlAccountId: row.writeOffGlAccountId,
   };
 }
 
@@ -63,13 +73,17 @@ export async function setBillingConfig(input: unknown): Promise<BillingConfigRow
   // precedent (process-step-codes.ts:97-108). Clearing one to null needs neither.
   const assigns =
     data.salesTaxGlAccountId != null || data.freightGlAccountId != null ||
-    data.otherChargeGlAccountId != null || data.certChargeStepCodeId != null;
+    data.otherChargeGlAccountId != null || data.certChargeStepCodeId != null ||
+    data.arGlAccountId != null || data.discountGlAccountId != null || data.writeOffGlAccountId != null;
   await withDbErrors({ entity: "Billing settings" }, () =>
     prisma.$transaction(async (tx) => {
       if (data.salesTaxGlAccountId) await assertRefExists("glAccount", data.salesTaxGlAccountId, tx);
       if (data.freightGlAccountId) await assertRefExists("glAccount", data.freightGlAccountId, tx);
       if (data.otherChargeGlAccountId) await assertRefExists("glAccount", data.otherChargeGlAccountId, tx);
       if (data.certChargeStepCodeId) await assertRefExists("processStepCode", data.certChargeStepCodeId, tx);
+      if (data.arGlAccountId) await assertRefExists("glAccount", data.arGlAccountId, tx);
+      if (data.discountGlAccountId) await assertRefExists("glAccount", data.discountGlAccountId, tx);
+      if (data.writeOffGlAccountId) await assertRefExists("glAccount", data.writeOffGlAccountId, tx);
       // upsert, not a plain update: the `create` arm only exists as self-healing for a genuinely
       // rowless database (a partial restore, a hand-run DELETE) — it is unreachable against any
       // migrated database, since the migration seeds this row and truncateAll (tests/helpers/db)

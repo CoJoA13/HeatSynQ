@@ -22,7 +22,7 @@ export type ReferenceLinkModel =
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
   | "shipper" | "certRequirement"
   | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
-  | "invoiceLine" | "billingConfig" | "payment";
+  | "invoiceLine" | "billingConfig" | "payment" | "glPosting";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -124,6 +124,17 @@ const BILLING_CONFIG_BLOCKER = {
   displayName: () => "Plant billing settings",
 } as const;
 
+// GlPosting has no `deletedAt` (append-only), so `liveWhere: {}` is required (the BillingConfig
+// precedent); the row a person can act on is its export batch (the INVOICE_VIA_LINE shape).
+const GL_POSTING_BLOCKER = {
+  entityLabel: "GL export",
+  detailPath: () => "/receivables/close",
+  liveWhere: {},
+  include: { batch: { select: { id: true, exportNumber: true } } },
+  blockerId: (r: Record<string, unknown>) => String((r.batch as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => `GL export #${(r.batch as { exportNumber: number }).exportNumber}`,
+} as const;
+
 /** The single source of truth for "which column points at which reference kind".
  *  Two consumers read it in opposite directions: name resolution forward (given a column,
  *  show the target's name), the delete guard inverted (given a kind, who points at me).
@@ -212,6 +223,21 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Other charge GL account", ...BILLING_CONFIG_BLOCKER },
   { model: "billingConfig", column: "certChargeStepCodeId", targetKind: "processStepCode",
     label: "Certification charge step code", ...BILLING_CONFIG_BLOCKER },
+  // Phase 5C: the A/R close's three GL defaults (design spec's close/GL-export section). Same
+  // singleton blocker shape as the three Phase 5A entries above.
+  { model: "billingConfig", column: "arGlAccountId", targetKind: "glAccount",
+    label: "A/R GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "discountGlAccountId", targetKind: "glAccount",
+    label: "Discount GL account", ...BILLING_CONFIG_BLOCKER },
+  { model: "billingConfig", column: "writeOffGlAccountId", targetKind: "glAccount",
+    label: "Write-off GL account", ...BILLING_CONFIG_BLOCKER },
+  // Phase 5C: a GL account that appears on a sent export is permanent history, the same
+  // "posted history is permanent" call the invoiceLine/processStepCode entries above make. In
+  // practice the account is already blocked by the invoice line or payment type that generated
+  // the posting — this adds no new restriction, only satisfies the sweep (schema FK is onDelete:
+  // SetNull, not Cascade, so it is not exempt).
+  { model: "glPosting", column: "glAccountId", targetKind: "glAccount",
+    label: "GL account", ...GL_POSTING_BLOCKER },
   // Phase 5B. `Payment.paymentTypeId` is the one new A/R foreign key that targets a reference
   // table (PaymentType), so it is the one the sweep surfaces and requires here — a payment recorded
   // under a payment method permanently blocks that method's deletion, the "billed history is
