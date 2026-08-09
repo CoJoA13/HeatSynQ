@@ -7,6 +7,8 @@ import { GET as getRoute, PATCH as patchRoute, DELETE as deleteRoute } from "@/a
 import { POST as createRoute } from "@/app/api/receivables/batches/route";
 import { POST as addPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/route";
 import { DELETE as voidPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/[paymentId]/route";
+import { GET as agingRoute } from "@/app/api/receivables/aging/route";
+import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/route";
 
 // Task 6 (Step 10): thin `handle` wrappers gating on `receivables.create`/`edit`/`delete`/`view` —
 // happy-path + 403 for every one of the six service functions' routes.
@@ -187,5 +189,43 @@ describe("DELETE /api/receivables/batches/[id]/payments/[paymentId]", () => {
     const entry = await prisma.auditLog.findFirst({
       where: { entity: "payment", entityId: paymentId, action: "delete" } });
     expect(entry!.reason).toBe("wrong customer");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 10: aging routes — JSON + Excel export, both gated on `receivables.view` (a read, so no
+// `create`/`edit`/`delete` gate exists for either).
+// -------------------------------------------------------------------------------------------
+
+describe("GET /api/receivables/aging", () => {
+  it("403s without receivables.view, then returns the aging rows with it", async () => {
+    const wrong = await signInWith(["receivables.create"], "aging-wrong");
+    expect((await agingRoute(getReq("http://t/api/receivables/aging", wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "aging-viewer");
+    const res = await agingRoute(getReq("http://t/api/receivables/aging", viewer), withParams({}));
+    expect(res.status).toBe(200);
+    expect(Array.isArray(await res.json())).toBe(true);
+  });
+
+  it("404s a customerId naming no live customer", async () => {
+    const viewer = await signInWith(["receivables.view"], "aging-404");
+    const res = await agingRoute(getReq("http://t/api/receivables/aging?customerId=nope", viewer), withParams({}));
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/receivables/aging/export", () => {
+  it("403s without receivables.view, then returns an .xlsx with it", async () => {
+    const wrong = await signInWith(["receivables.create"], "aging-export-wrong");
+    expect((await agingExportRoute(getReq("http://t/api/receivables/aging/export", wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "aging-export-viewer");
+    const res = await agingExportRoute(getReq("http://t/api/receivables/aging/export", viewer), withParams({}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(res.headers.get("content-disposition")).toContain("Aging.xlsx");
   });
 });
