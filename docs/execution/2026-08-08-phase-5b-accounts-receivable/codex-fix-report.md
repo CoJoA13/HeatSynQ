@@ -359,3 +359,17 @@ service already permitted it, per the brief's own framing); verified by reading 
 - `npm run build` → clean (exit 0; UI touched).
 
 Full suite intentionally not run here (host resource-constrained; owner runs it at merge).
+
+### Round 2 follow-up — aging export also excludes the family-total row (re-review of #12/#13)
+
+The export analog of the #13 screen double-count: `aging/export/route.ts` still emitted the synthesized
+`isFamilyTotal` roll-up row as a flat data row beside the child rows, so summing a family-filtered
+export's column double-counted the children.
+
+- `src/app/api/receivables/aging/export/route.ts:16` — filter now drops the family-total row too:
+  `.filter((r) => !r.isFamilyTotal && !isAgingRowAllZero(r))`. Export is leaf rows only, matching the
+  screen's body (leaf rows + a distinct footer total). `agingReport`'s output is unchanged.
+- Test: `tests/receivables-routes.test.ts` — new family-filtered export case parses the .xlsx and
+  asserts the child (leaf) row is present, the parent-keyed family-total row is absent, and the sheet
+  holds leaf rows only. `npx vitest run tests/receivables-routes.test.ts` → **18 passed**; `tsc` /
+  `eslint src tests` clean.

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import ExcelJS from "exceljs";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
@@ -287,6 +288,51 @@ describe("GET /api/receivables/aging/export", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     expect(res.headers.get("content-disposition")).toContain("Aging.xlsx");
+  });
+
+  it("excludes the synthesized family-total row from a family-filtered export (leaf rows only)", async () => {
+    // agingReport({customerId: parent}) returns the child's row PLUS a synthesized family-total row
+    // keyed on the parent. The export must emit only the leaf (child) rows — matching the SCREEN's
+    // body — so summing the exported column doesn't double-count the children (which the family-total
+    // row already sums). This is the export analog of the on-screen footer double-count fix.
+    const parent = await makeCustomer();
+    const child = await prisma.customer.create({
+      data: { code: `${parent.code}-DIV`, name: "Division", parentId: parent.id },
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 910000 + customerSeq, customerId: child.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: child.id,
+        invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"), // past due -> nonzero
+        total: 200, finalizedAt: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    const viewer = await signInWith(["receivables.view"], "aging-export-family");
+    const res = await agingExportRoute(
+      getReq(`http://t/api/receivables/aging/export?customerId=${parent.id}`, viewer),
+      withParams({}),
+    );
+    expect(res.status).toBe(200);
+
+    const wb = new ExcelJS.Workbook();
+    // exceljs's `load` param and Node's `Buffer.from(...)` result resolve to two different `Buffer`
+    // instantiations under the current @types/node — cast to the exact expected param type.
+    await wb.xlsx.load(Buffer.from(await res.arrayBuffer()) as unknown as Parameters<typeof wb.xlsx.load>[0]);
+    const codes: string[] = [];
+    wb.worksheets[0].eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // header
+      codes.push(String(row.getCell(1).value)); // "Customer Code" is the first column
+    });
+
+    expect(codes).toContain(child.code);        // the leaf (child) row is exported
+    expect(codes).not.toContain(parent.code);   // the synthesized family-total row is NOT
+    expect(codes).toHaveLength(1);              // leaf rows only — no double-counting total row
   });
 });
 
