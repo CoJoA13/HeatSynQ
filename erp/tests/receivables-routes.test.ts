@@ -9,6 +9,9 @@ import { POST as addPaymentRoute } from "@/app/api/receivables/batches/[id]/paym
 import { DELETE as voidPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/[paymentId]/route";
 import { GET as agingRoute } from "@/app/api/receivables/aging/route";
 import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/route";
+import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/receivables/statements/route";
+import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
+import { parseDateOnly } from "@/lib/business-days";
 
 // Task 6 (Step 10): thin `handle` wrappers gating on `receivables.create`/`edit`/`delete`/`view` —
 // happy-path + 403 for every one of the six service functions' routes.
@@ -227,5 +230,102 @@ describe("GET /api/receivables/aging/export", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     expect(res.headers.get("content-disposition")).toContain("Aging.xlsx");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 12: statements — build/print gated receivables.view, the run gated receivables.create.
+// -------------------------------------------------------------------------------------------
+
+async function invoicedCustomer(): Promise<{ id: string; code: string }> {
+  const customer = await makeCustomer();
+  const orderNumber = 900000 + customerSeq;
+  const order = await prisma.order.create({
+    data: {
+      orderNumber, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+    },
+  });
+  await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"),
+      total: 500, finalizedAt: parseDateOnly("2026-06-01"),
+    },
+  });
+  return { id: customer.id, code: customer.code };
+}
+
+describe("GET /api/receivables/statements", () => {
+  it("403s without receivables.view, then builds the statement with it", async () => {
+    const customer = await invoicedCustomer();
+    const asOf = "2026-08-08";
+
+    const wrong = await signInWith(["receivables.create"], "stmt-get-wrong");
+    expect((await statementsRoute(
+      getReq(`http://t/api/receivables/statements?customerId=${customer.id}&asOf=${asOf}`, wrong),
+      withParams({}),
+    )).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "stmt-get-viewer");
+    const res = await statementsRoute(
+      getReq(`http://t/api/receivables/statements?customerId=${customer.id}&asOf=${asOf}`, viewer),
+      withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.customer.code).toBe(customer.code);
+    expect(body.totalDue).toBe(500);
+  });
+
+  it("400s a missing customerId", async () => {
+    const viewer = await signInWith(["receivables.view"], "stmt-get-missing");
+    const res = await statementsRoute(getReq("http://t/api/receivables/statements", viewer), withParams({}));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/receivables/statements", () => {
+  it("403s without receivables.view, then renders and archives the statement with it", async () => {
+    const customer = await invoicedCustomer();
+    const payload = { customerId: customer.id, asOf: "2026-08-08" };
+
+    const wrong = await signInWith(["shipping.view"], "stmt-post-wrong");
+    expect((await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", wrong, payload), withParams({}),
+    )).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "stmt-post-viewer");
+    const res = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, payload), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    const documentId = res.headers.get("x-document-id")!;
+    expect(res.headers.get("content-disposition")).toBe(`inline; filename="statement-${customer.code}.pdf"`);
+
+    const stored = await prisma.storedDocument.findUniqueOrThrow({ where: { id: documentId } });
+    expect(stored.kind).toBe("STATEMENT");
+    expect(stored.customerId).toBe(customer.id);
+  });
+});
+
+describe("POST /api/receivables/statements/run", () => {
+  it("403s without receivables.create, then prints every customer with a balance with it", async () => {
+    await invoicedCustomer();
+    const payload = { asOf: "2026-08-08" };
+
+    const wrong = await signInWith(["receivables.view"], "stmt-run-wrong");
+    expect((await runStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/run", "POST", wrong, payload), withParams({}),
+    )).status).toBe(403);
+
+    const creator = await signInWith(["receivables.create"], "stmt-run-creator");
+    const res = await runStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/run", "POST", creator, payload), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { customerId: string; documentId: string }[];
+    expect(body.length).toBeGreaterThan(0);
   });
 });

@@ -5,7 +5,12 @@ const cents = (n: number): number => Math.round(n * 100);
 
 export type FinanceChargeInput = {
   pastDueBalances: { open: number; exempt: boolean }[];
-  rate: number;
+  // `null` is a real, expected input — `financeChargeRateFor` (below) resolves to `null` when
+  // NEITHER the customer override nor the plant default is set, and Task 12's caller
+  // (statements.ts) hands that resolution straight through rather than null-coalescing at the call
+  // site. `!input.rate` already treats null and 0 identically, so only the annotation was ever
+  // wrong — not the guard.
+  rate: number | null;
 };
 
 /**
