@@ -48,7 +48,7 @@ than pre-litigated.
 - [x] Task 13 — `/receivables` batch entry + apply UI — **complete** (code `ffd6139`, fix `1ce9a82`; review Approved after 1 fix round; recovered from a host crash, gate-verified; browser check deferred to Task 17 E2E)
 - [x] Task 14 — aging report UI — **complete** (code `15513f3`; review Approved; 2 Task-10 minors closed)
 - [x] Task 15 — statements UI + customer A/R section — **complete** (code `d916dc4`, fix `5253423`; review Approved after 1 fix round — sonnet caught a real division-scope leak)
-- [ ] Task 16 — routes 401/403 sweep
+- [x] Task 16 — routes 401/403 sweep — **complete** (code `14ff4fa`; review Approved; write_off gating added)
 - [ ] Task 17 — E2E + demo + docs
 - [ ] Whole-branch review + fix wave
 
@@ -74,6 +74,11 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 16 — complete (BASE `e5ea19e`, code `14ff4fa`; review Approved — sonnet)
+- **`write_off` route gating added (Task 7 deferred):** `POST /applications` now does `mustCan(create)` → parse → `if hasWriteOffLine(body) mustDo(user, "write_off")` → `applyPayment` (single `requireUser()`, reused). `hasWriteOffLine` is a defensive type-guard (false on malformed, never over-matches — a bad body still 400s via applyPayment's zod). A `create`-but-no-`write_off` session submitting a WRITE_OFF (even mixed with PAYMENT) → 403, whole body rejected before the claim; PAYMENT/DISCOUNT-only bypasses. `credit-applications` correctly ungated (hard-codes type CREDIT, no smuggle path).
+- **401/403 sweep complete:** all 13 route files / 19 route+verb combos have non-vacuous 401 (no session) + 403 (a session holding a DIFFERENT permission that excludes the gated one). `permissions-sweep.test.ts` provably untouched/unweakened; the new `const user = requireUser()` shape still matches its regex.
+- Gates: `npm test` 1860, tsc/eslint/build clean. Reviewer (sonnet): Spec ✅, Approved. Minor: test-style mix (cosmetic).
 
 ### Task 15 — complete (BASE `b56b202`, code `d916dc4` + fix `5253423`; review Approved after 1 fix round — sonnet)
 - `Statements.tsx` (customer/family + as-of + combined/per-division + assess-FC toggle OFF by default; Print [view] + Run [create]; archived-STATEMENT documents list → /api/documents/<id>). `ReceivablesSection.tsx` on the customer page (net + open items + aging strip + Statement/Apply links, InvoicesSection precedent), mounted in customers/[id]/page.tsx. `ReceivablesNav.tsx` sub-nav (worklist/aging/statements) on all three /receivables screens — closes Task 14's nav-link gap. Two new read endpoints: `GET /api/customers/[id]/receivables` (via `customer-receivables.ts`) and `GET /api/receivables/statements/documents` (via `listDocumentsForCustomer`), both `receivables.view`, tested.
