@@ -47,7 +47,7 @@ than pre-litigated.
 - [x] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route — **complete** (code `a2c6bde`; review Approved — opus, byte-exact reprint verified)
 - [x] Task 13 — `/receivables` batch entry + apply UI — **complete** (code `ffd6139`, fix `1ce9a82`; review Approved after 1 fix round; recovered from a host crash, gate-verified; browser check deferred to Task 17 E2E)
 - [x] Task 14 — aging report UI — **complete** (code `15513f3`; review Approved; 2 Task-10 minors closed)
-- [ ] Task 15 — statements UI + customer A/R section
+- [x] Task 15 — statements UI + customer A/R section — **complete** (code `d916dc4`, fix `5253423`; review Approved after 1 fix round — sonnet caught a real division-scope leak)
 - [ ] Task 16 — routes 401/403 sweep
 - [ ] Task 17 — E2E + demo + docs
 - [ ] Whole-branch review + fix wave
@@ -74,6 +74,12 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 15 — complete (BASE `b56b202`, code `d916dc4` + fix `5253423`; review Approved after 1 fix round — sonnet)
+- `Statements.tsx` (customer/family + as-of + combined/per-division + assess-FC toggle OFF by default; Print [view] + Run [create]; archived-STATEMENT documents list → /api/documents/<id>). `ReceivablesSection.tsx` on the customer page (net + open items + aging strip + Statement/Apply links, InvoicesSection precedent), mounted in customers/[id]/page.tsx. `ReceivablesNav.tsx` sub-nav (worklist/aging/statements) on all three /receivables screens — closes Task 14's nav-link gap. Two new read endpoints: `GET /api/customers/[id]/receivables` (via `customer-receivables.ts`) and `GET /api/receivables/statements/documents` (via `listDocumentsForCustomer`), both `receivables.view`, tested.
+- **Review round 1 (Needs fixes → fixed `5253423`):** (Important) `customerReceivablesSummary` composed `agingReport` (child = own row) with `openInvoicesForPayer` (child = whole family) → a division's page showed its own net above the parent+siblings' open items, unlabeled + non-reconciling. **Fixed:** added `customerOwnAgingRow` (aging.ts, non-rollup) + `openInvoicesForCustomer` (applications.ts, via shared private `openInvoicesForCustomerIds`; `openInvoicesForPayer`/`agingReport` provably unchanged for Task 10/13 callers); customer section now single-customer own A/R for parent/child/standalone alike. Non-vacuous parent+child regression test (both directions). Re-review: Approved, zero outstanding.
+- Gates: tsc/eslint/build clean; `npm test` 1854 + fix covering tests 103 passed. Browser check deferred to Task 17 E2E.
+- **Owner note (potential enhancement):** the customer A/R section is scoped to that customer's OWN A/R. If the owner wants a family roll-up on a parent's page, that's a follow-up (needs a Customer column to label rows) — surface at demo.
 
 ### Task 14 — complete (BASE `b3b4c38`, code `15513f3`; review Approved — sonnet)
 - `AgingReport.tsx` (client, `receivables.view`): as-of date picker (default today), customer/family filter (§5.16 disabled-with-tooltip on `customers.view`), AgingRow table driven by `AGING_BUCKETS.map` (headers + data can't drift), totals `<tfoot>`, Excel export `<a>` sharing the exact same `query` string as the JSON fetch. Uses `AGING_BUCKET_LABELS` (en-dash), no src/server import, `page.tsx` thin wrapper.
