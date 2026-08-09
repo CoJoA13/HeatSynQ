@@ -57,6 +57,9 @@ export const SETTINGS = {
   receipt_batch_number_next: {
     schema: numberSeed, default: 1000, label: "Next receipt-batch number", group: "Numbering",
   },
+  gl_export_batch_number_next: {
+    schema: numberSeed, default: 1000, label: "Next GL-export batch number", group: "Numbering",
+  },
   cert_required_default: {
     schema: z.boolean(), default: false, label: "Certification required by default", group: "Certifications",
   },

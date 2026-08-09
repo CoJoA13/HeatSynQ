@@ -15,7 +15,8 @@ export type AuditableModel =
   | "cert" | "shipper"
   | "surcharge" | "surchargeStepCode" | "customerSurcharge"
   | "invoice" | "invoiceLine" | "billingConfig"
-  | "receiptBatch" | "payment" | "application";
+  | "receiptBatch" | "payment" | "application"
+  | "closePeriod" | "glExportBatch";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -216,6 +217,8 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
     invoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
     creditInvoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
   },
+  closePeriod: undefined,
+  glExportBatch: { postings: true }, // the export's audit trail is its batch + the postings it emitted
 };
 
 /**
