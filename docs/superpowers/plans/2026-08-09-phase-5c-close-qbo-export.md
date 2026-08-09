@@ -432,7 +432,7 @@ export const GL_EXPORT_COLUMNS = ["Date", "Account", "Debit", "Credit", "Memo"] 
 
 ```ts
 import { expect, it } from "vitest";
-import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent, type CashEvent } from "@/server/gl-mapping";
+import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent } from "@/server/gl-mapping";
 
 function sum(lines: { debit: number; credit: number }[]) {
   const d = lines.reduce((a, l) => a + l.debit, 0);
@@ -489,14 +489,24 @@ it("reverseLines swaps debit/credit and flags isReversal", () => {
 
 it("readinessGaps lists a step code, surcharge, payment type, and missing A/R default", () => {
   const gaps = readinessGaps({
-    arGlAccountId: null, discountGlAccountId: "d", writeOffGlAccountId: "w",
-    hasDiscount: false, hasWriteOff: false,
+    arGlAccountId: null, discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: "t",
+    hasDiscount: false, hasWriteOff: false, hasTax: false,
     stepCodesMissingGl: [{ id: "s1", code: "HT" }],
     surchargesMissingGl: [{ id: "u1", name: "Energy" }],
     paymentTypesMissingGl: [{ id: "p1", name: "ACH" }],
   });
   const kinds = gaps.map((g) => g.kind).sort();
   expect(kinds).toEqual(["payment-type", "plant-default", "step-code", "surcharge"]);
+});
+
+it("flags a missing sales-tax account when a taxable event is in the delta", () => {
+  const gaps = readinessGaps({
+    arGlAccountId: "ar", discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: null,
+    hasDiscount: false, hasWriteOff: false, hasTax: true,
+    stepCodesMissingGl: [], surchargesMissingGl: [], paymentTypesMissingGl: [],
+  });
+  expect(gaps).toHaveLength(1);
+  expect(gaps[0].label).toMatch(/sales tax/i);
 });
 ```
 
@@ -598,8 +608,10 @@ export type ReadinessInput = {
   arGlAccountId: string | null;
   discountGlAccountId: string | null;
   writeOffGlAccountId: string | null;
+  salesTaxGlAccountId: string | null;
   hasDiscount: boolean;
   hasWriteOff: boolean;
+  hasTax: boolean; // any in-scope invoice with taxTotal != 0 (its A/R debit already includes the tax)
   stepCodesMissingGl: { id: string; code: string }[];
   surchargesMissingGl: { id: string; name: string }[];
   paymentTypesMissingGl: { id: string; name: string }[];
@@ -611,6 +623,9 @@ export function readinessGaps(input: ReadinessInput): ReadinessGap[] {
   if (!input.arGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "A/R control account is not set", href: "/admin/billing" });
   if (input.hasDiscount && !input.discountGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Discount account is not set", href: "/admin/billing" });
   if (input.hasWriteOff && !input.writeOffGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Write-off account is not set", href: "/admin/billing" });
+  // A taxable invoice's total (the A/R debit) already includes tax; without a tax account the tax
+  // credit line is dropped and the journal would be unbalanced — refuse (§15), do not silently drop.
+  if (input.hasTax && !input.salesTaxGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Sales tax account is not set", href: "/admin/billing" });
   for (const s of input.stepCodesMissingGl) gaps.push({ kind: "step-code", id: s.id, label: `Process step code ${s.code} has no GL account`, href: `/admin/step-codes` });
   for (const u of input.surchargesMissingGl) gaps.push({ kind: "surcharge", id: u.id, label: `Surcharge ${u.name} has no GL account`, href: `/admin/surcharges` });
   for (const p of input.paymentTypesMissingGl) gaps.push({ kind: "payment-type", id: p.id, label: `Payment type ${p.name} has no GL account`, href: `/admin/reference` });
@@ -1220,7 +1235,7 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 Implement the private helpers below the export (`reverseLines` is imported from `gl-mapping`, not re-implemented):
 - `buildCurrentJournal(tx, periodEnd)`: read finalized invoices/credits (`invoiceDate ≤ periodEnd`) with their lines grouped by `glAccountId` into `SalesEvent.revenue`; posted non-void payments (`receivedDate ≤ periodEnd`) → one `CashEvent{ kind:"PAYMENT" }` each; live `DISCOUNT`/`WRITE_OFF` applications (`appliedDate ≤ periodEnd`) → one `CashEvent` each. Map each via `salesJournal`/`cashJournal`. Return `Map<`${sourceType}:${sourceId}`, JournalLine[]>` — **the 2-part key**.
 - `buildPriorNet(tx, periodEnd)`: read `GlPosting` with `glDate ≤ periodEnd`; group by the **same 2-part `${sourceType}:${sourceId}`**; within a group net debit/credit per `(glAccountId, side, memo)`, reconstructing `JournalLine[]` (carry `memo` and `glAccountName` from the row). **Drop any group whose every line nets to zero** (an already-reversed event) so `.has(key)` means "has a live prior posting".
-- `resolveReadiness(tx, periodEnd)`: assemble `ReadinessInput` from `getBillingConfig()` + the account-less step codes/surcharges/payment types that appear on in-scope events (`glDate ≤ periodEnd`), set `hasDiscount`/`hasWriteOff` from whether any such application is in scope, call `readinessGaps`.
+- `resolveReadiness(tx, periodEnd)`: assemble `ReadinessInput` from `getBillingConfig()` (its `arGlAccountId`/`discountGlAccountId`/`writeOffGlAccountId`/`salesTaxGlAccountId`) + the account-less step codes/surcharges/payment types that appear on in-scope events (`glDate ≤ periodEnd`); set `hasDiscount`/`hasWriteOff` from whether any such application is in scope, and `hasTax` from whether any in-scope finalized invoice has `taxTotal != 0`; call `readinessGaps`.
 - `renderCsv(lines, dateStr)`: join `GL_EXPORT_COLUMNS`; one row per line — date, `glAccountName`, debit, credit, memo.
 - `export async function getExportBatchFile(batchId): Promise<{ bytes: Buffer; fileName: string; contentType: string }>` and `getExportBatchRegister(batchId): Promise<{ bytes: Buffer; contentType: string }>`: read the stored `file`/`register` bytes (`prisma.glExportBatch.findFirst`, 404 if missing) for the file/register routes.
 - `export async function readinessForExport(periodEnd: Date): Promise<ReadinessGap[]>`: wrap `resolveReadiness` in its own transaction — the **same** period-end the export refusal uses, so the UI's readiness panel and disabled-count match `exportClose`'s refusal exactly (§7).
