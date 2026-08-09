@@ -41,7 +41,7 @@ than pre-litigated.
 - [x] Task 9 — `invoice-guards` A/R-activity + unlock/discard/void refusals — **complete** (code `1b7210b`, fix `2483bd0`; review Approved after 1 fix round — opus caught a real voidOrder gap)
 - [x] Task 10 — `aging.ts` (pure) + route — **complete** (code `2caaeec`; review Approved — opus, point-in-time verified)
 - [x] Task 11 — `finance-charges.ts` (pure) — **complete** (code `36bccd8`; review clean)
-- [ ] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route
+- [x] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route — **complete** (code `a2c6bde`; review Approved — opus, byte-exact reprint verified)
 - [ ] Task 13 — `/receivables` batch entry + apply UI
 - [ ] Task 14 — aging report UI
 - [ ] Task 15 — statements UI + customer A/R section
@@ -55,7 +55,11 @@ than pre-litigated.
 
 - **Discount basis (Task 7) — owner ruling at demo.** `discountAvailable` computes the early-pay discount on the invoice's OPEN BALANCE (self-consistent between `discountAvailable` and the DISCOUNT-line guard). The correct basis (open balance vs the amount actually paid vs the original invoice total) is a billing-policy choice the plan already earmarks for the Task 17 demo (Task 17 Step 3: "discount-on-partial-payment basis"). No code change until the owner rules.
 
+- **runStatements → credit-balance customers (Task 12) — owner ruling.** `runStatements` skips only zero-net customers, so a customer with a NEGATIVE net (a pure credit balance — we owe them) still gets a statement. Spec §8 ("everyone with an open balance") is ambiguous on whether a credit balance qualifies. Arguably correct (they should see their credit). Surface at the demo; positive-net-only is a one-line change if the owner prefers it.
+
 ## Deferred minors (fix-wave / whole-branch-review triage input)
+
+- **Task 12 minors (opus review):** (a) **snapshot-reader drift risk** — `statements.ts`'s `readFamilySnapshot`/`appsAsOf`/`sumAgingRows`/`parseAsOf` are line-for-line copies of `aging.ts`'s private helpers (only the shared pure `bucketAging` is actually reused). Filters match today, but a future change to `aging.ts`'s inclusion filters would silently desync the statement figures from the report — breaking the §6 reproducibility invariant 5C depends on. **Cheap guard: a test asserting statement aging == `agingReport` for a shared fixture, or export the snapshot reader. Good whole-branch fix-wave candidate.** (b) the store audit-content test pins exclusion+existence, not the `after` kind/customerId (verified elsewhere) — coverage polish.
 
 - **Task 7 minors (opus review, all doc/hardening — behavior correct):** (a) the post-claim invoice re-read omits `deletedAt`/`status`/`kind` — safe (a concurrent void → 40001 → retry → 404) but rests on SSI+retry rather than a post-claim recheck like `claimCertsOrder`; either re-select+re-assert or tighten the comment; (b) the added Payment-row claim's cross-invoice (same-payment/two-invoice) guarantee is actually SSI, not the lock, and has no discriminating test — correct because the public path is always Serializable, but the report's "serialize here" framing overstates it; (c) `applications-concurrency.test.ts:692-693` comment mis-predicts the RED failure mode (says timeout fails first; actually the competitor blocks at INSERT and the final `rejects` fails) — test still discriminates, comment wrong. **Cheap doc fixes; candidates for the whole-branch fix wave.**
 
@@ -66,6 +70,13 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 12 — complete (BASE `7d79440`, code `a2c6bde`; review Approved — opus)
+- `statements.ts` (366) + `pdf/statement.ts` (204) + 2 routes + 3 test files. `buildStatement` (open items: invoices +, credits/on-account −; aging via shared `bucketAging`; totalDue = net; FC gated on assess AND non-exempt past-due, base on gross past-due; remit-to via `invoicePrintSettings`), `printStatement` (the 5A print bracket: settings outside tx → render → audited `storeDocument({STATEMENT, customerId})` on tx), `runStatements` (nonzero-net customers).
+- **Byte-exact reprint (the trap) handled correctly:** reprint compares STORED bytes (`Buffer.compare` on two `getDocument`s) — never two fresh renders; content pinned on the pdfmake DEFINITION via `allText`; structure via `%PDF-`. Fixture reproduced exactly (open 400 / credit −200 / d31_60 400 / unapplied 200 / net 200 / totalDue 200 / FC null→6.00 assessed).
+- **No row claim — correct by first principles:** a statement allocates no sequence, flips no status, has no one-live-per-scope rule; storeDocument mutates no A/R state, so no cross-tx invariant to guard (reviewer agreed; contrast printInvoice's `claimOrder`). Retained Serializable pairs with the audited insert.
+- Widened `FinanceChargeInput.rate` to `number | null` (the Task 11 review note; semantics unchanged, null→0). Decimal→number throughout; `pdf/statement.ts` pure.
+- Gates: `npm test` 1832, tsc/eslint/build clean, E2E 16/16. Reviewer (opus): Spec ✅, Approved. 2 Minors → deferred (snapshot-drift guard worth doing); 1 owner note (credit-balance statements).
 
 ### Task 11 — complete (BASE `a77077b`, code `36bccd8`; review clean)
 - Pure `finance-charges.ts` (33 lines): `financeCharge({ pastDueBalances, rate })` = `round(Σ non-exempt open × rate/100)`, 0 when rate null/0 or nothing past-due; `financeChargeRateFor(customerRate, plantRate)` = override-else-plant via `??` (an explicit customer `0` is a valid opt-out → 0, consistent with financeCharge's zero-rate short-circuit). Integer-cent, same `cents` helper as ar-balances/aging (reviewer spot-checked 56 combos — no drift).
