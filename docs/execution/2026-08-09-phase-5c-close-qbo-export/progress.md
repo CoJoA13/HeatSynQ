@@ -39,3 +39,15 @@
   required; `GlPosting` has no `deletedAt`), not fixed in Task 1 since it needs a
   UI-adjacent design call (`Payment.paymentTypeId` is the "register now, no detailPath" precedent).
 - Not yet reviewed.
+
+### Controller note (after Task 1, before Task 1 review cleared): plan gap resolved
+- Task 1 surfaced a 4th unplanned reference-targeting FK: `GlPosting.glAccountId -> glAccount`
+  (a frozen `onDelete: SetNull` snapshot). The reference-links sweep exempts ONLY `onDelete: Cascade`,
+  so — like the `InvoiceLine.glAccountId` precedent (reference-links.ts:203, "posted history is
+  permanent") — it MUST be registered, or the sweep stays red even after Task 2's BillingConfig FKs.
+- **Plan amended (Task 2):** register `GlPosting.glAccountId` via a new `GL_POSTING_BLOCKER`
+  (`liveWhere:{}` since no `deletedAt`; names itself by its export batch), add `"glPosting"` to the
+  `ReferenceLinkModel` union, add `glPosting.glAccountId -> glAccount` to the sweep's expected list
+  (sorted after customerSurcharge.*, before invoiceLine.*), and a runtime blocker test. This adds no
+  new restriction (the account is already blocked by the invoice line / payment that generated the
+  posting) — it only satisfies the sweep. Not a Task 1 defect (registration is Task 2's scope).

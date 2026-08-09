@@ -308,6 +308,22 @@ it("refuses a discount/write-off GL account that does not exist", async () => {
   await expect(asSystem(() => setBillingConfig({ discountGlAccountId: "nope" })))
     .rejects.toThrow("That gl account does not exist");
 });
+
+// Proves GL_POSTING_BLOCKER at runtime (its include/displayName/liveWhere:{} can't be checked by
+// the static sweep). Build the rows directly — no export service exists yet in this task.
+it("a GL account on a sent GlPosting blocks its deletion, named by the export batch", async () => {
+  const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Revenue" } });
+  const period = await prisma.closePeriod.create({ data: { year: 2026, month: 7, beginningAr: 0,
+    invoicedTotal: 0, creditTotal: 0, paymentTotal: 0, discountTotal: 0, writeOffTotal: 0, endingAr: 0, agingEndingAr: 0 } });
+  const batch = await prisma.glExportBatch.create({ data: { exportNumber: 1000, closePeriodId: period.id,
+    periodEnd: new Date("2026-07-31"), fileName: "x.csv", file: new Uint8Array([1]), register: new Uint8Array([2]) } });
+  await prisma.glPosting.create({ data: { batchId: batch.id, sourceType: "INVOICE", sourceId: "i1",
+    glDate: new Date("2026-07-15"), glAccountId: gl.id, glAccountName: "4010", debit: 100, credit: 0, side: "SALES" } });
+  const blockers = await findBlockers("glAccount", gl.id);
+  expect(blockers).toHaveLength(1);
+  expect(blockers[0].entityLabel).toBe("GL export");
+  expect(blockers[0].name).toBe("GL export #1000");
+});
 ```
 
 - [ ] **Step 2: Run it red.**
@@ -326,7 +342,20 @@ if (data.discountGlAccountId) await assertRefExists("glAccount", data.discountGl
 if (data.writeOffGlAccountId) await assertRefExists("glAccount", data.writeOffGlAccountId, tx);
 ```
 
-- [ ] **Step 4: Register the three FKs in `reference-links.ts`.** Add beside the existing billing entries:
+- [ ] **Step 4: Register the FKs in `reference-links.ts`.** The schema Task 1 added carries **four** new reference-targeting `@relation` FKs at `glAccount`: the three `BillingConfig` defaults **and** `GlPosting.glAccountId` (a frozen `onDelete: SetNull` snapshot, the `InvoiceLine.glAccountId` precedent). The sweep exempts only `onDelete: Cascade`, so all four must be registered or the build stays red. Add `"glPosting"` to the `ReferenceLinkModel` union, then a `GL_POSTING_BLOCKER` const + the four entries:
+
+```ts
+// GlPosting has no `deletedAt` (append-only), so `liveWhere: {}` is required (the BillingConfig
+// precedent); the row a person can act on is its export batch (the INVOICE_VIA_LINE shape).
+const GL_POSTING_BLOCKER = {
+  entityLabel: "GL export",
+  detailPath: () => "/receivables/close",
+  liveWhere: {},
+  include: { batch: { select: { id: true, exportNumber: true } } },
+  blockerId: (r: Record<string, unknown>) => String((r.batch as { id: string }).id),
+  displayName: (r: Record<string, unknown>) => `GL export #${(r.batch as { exportNumber: number }).exportNumber}`,
+} as const;
+```
 
 ```ts
 { model: "billingConfig", column: "arGlAccountId", targetKind: "glAccount",
@@ -335,14 +364,19 @@ if (data.writeOffGlAccountId) await assertRefExists("glAccount", data.writeOffGl
   label: "Discount GL account", ...BILLING_CONFIG_BLOCKER },
 { model: "billingConfig", column: "writeOffGlAccountId", targetKind: "glAccount",
   label: "Write-off GL account", ...BILLING_CONFIG_BLOCKER },
+{ model: "glPosting", column: "glAccountId", targetKind: "glAccount",
+  label: "GL account", ...GL_POSTING_BLOCKER },
 ```
 
-- [ ] **Step 5: Update the sweep's expected-offenders list.** In `erp/tests/reference-links-sweep.test.ts`, the `finds every known reference FK when nothing is registered` case asserts a `.sort()`-ed exact array — add three entries in sorted position:
+Registering `GlPosting.glAccountId` here blocks deleting a GL account that appears on a sent export — the same "posted history is permanent" call the `invoiceLine`/`processStepCode` entries make; in practice the account is already blocked by the invoice line or payment type that generated the posting, so this adds no new restriction, only satisfies the sweep. `db.glPosting` exists as a Prisma delegate, so `findBlockers` needs no change.
+
+- [ ] **Step 5: Update the sweep's expected-offenders list.** In `erp/tests/reference-links-sweep.test.ts`, the `finds every known reference FK when nothing is registered` case asserts a `.sort()`-ed exact array — add **four** entries in sorted position (the test `.sort()`s, so exact placement follows string order — `glPosting` sorts after `customerSurcharge` and before `invoiceLine`):
 
 ```ts
       "billingConfig.arGlAccountId -> glAccount",        // sorts before certChargeStepCodeId
       "billingConfig.discountGlAccountId -> glAccount",  // between certChargeStepCodeId and freightGlAccountId
       "billingConfig.writeOffGlAccountId -> glAccount",  // after salesTaxGlAccountId
+      "glPosting.glAccountId -> glAccount",              // after customerSurcharge.*, before invoiceLine.*
 ```
 
 - [ ] **Step 6: Run the service + sweep tests green.**
