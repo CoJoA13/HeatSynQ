@@ -212,7 +212,7 @@ type ApplyInput = z.infer<typeof APPLY>;
 type ApplyLine = ApplyInput["lines"][number];
 
 const INVOICE_CLAIM_SELECT = {
-  id: true, total: true, invoiceDate: true,
+  id: true, total: true, invoiceDate: true, kind: true, status: true, deletedAt: true,
   customer: { select: { terms: { select: { discountPercent: true, discountDays: true } } } },
   order: { select: { orderNumber: true } },
   applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
@@ -224,8 +224,8 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   // (1) UNLOCKED stub reads — learn each target invoice's order, validate its liveness/kind/status.
   // `orderId`/`kind`/`status` cannot be trusted from here for the WRITE, but `orderId` never
   // changes (nothing updates it) so it is safe to CLAIM on; the guarded state (total + live
-  // applications) is re-read under the locks below. A discarded/draft/credit target is refused now
-  // so no lock is taken for a target that can never be paid.
+  // applications, AND kind/status/deletedAt) is RE-VALIDATED under the locks below. A discarded/
+  // draft/credit target is refused now so no lock is taken for a target that can never be paid.
   const invoiceIds = [...new Set(data.lines.map((l) => l.invoiceId))];
   const stubs = await tx.invoice.findMany({
     where: { id: { in: invoiceIds } },
@@ -261,12 +261,32 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${data.paymentId} FOR UPDATE`;
 
   // Now read the state the locks guard: the payment's amount + received date, and each invoice's
-  // total, invoiceDate, terms, order number, and LIVE applications.
+  // total, invoiceDate, terms, order number, kind/status/deletedAt, and LIVE applications.
   const payment = await tx.payment.findFirstOrThrow({
-    where: { id: data.paymentId }, select: { amount: true, receivedDate: true },
+    where: { id: data.paymentId }, select: { amount: true, receivedDate: true, deletedAt: true },
   });
+  // Re-check the payment UNDER its claim — a concurrent `voidPayment` committing between the stub
+  // read and this claim would leave us writing PAYMENT applications against a voided receipt.
+  if (payment.deletedAt !== null) throw new HttpError(404, "Payment not found");
+
   const invoices = await tx.invoice.findMany({ where: { id: { in: invoiceIds } }, select: INVOICE_CLAIM_SELECT });
   const invoiceById = new Map(invoices.map((i) => [i.id, i]));
+
+  // Re-validate every target invoice UNDER the invoice-row claim, with the SAME checks the unlocked
+  // stub pass ran — a concurrent `unlockInvoice` (back to DRAFT) or `discardInvoice` committing
+  // between the stub read and this claim would otherwise let a PAYMENT/DISCOUNT/WRITE_OFF settle
+  // against now-editable or discarded paper. The stub's liveness/kind/status verdict "cannot be
+  // trusted from here for the WRITE" (its own comment); this is where it becomes trustworthy.
+  for (const id of invoiceIds) {
+    const inv = invoiceById.get(id);
+    if (!inv || inv.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+    if (inv.kind !== "INVOICE") {
+      throw new HttpError(400, "That document is a credit, not an invoice — a payment applies to an invoice");
+    }
+    if (inv.status !== "FINALIZED") {
+      throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can take a payment");
+    }
+  }
 
   // (5) Validate every line BEFORE any write — a refusal rolls the whole call back, and the
   // over-application message must name the open balance available to the offending line. Running
@@ -476,15 +496,41 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
 
   // Now read the state the locks guard: the target's total + live applications, and the credit's
   // total + live applications SOURCED FROM IT (`creditApplications`, the `CreditApplications`
-  // relation — distinct from `applications`, which is what's applied TO a row).
+  // relation — distinct from `applications`, which is what's applied TO a row). Kind/status/
+  // deletedAt come too, so the stub verdict can be RE-VALIDATED under the claim (below).
   const invoice = await tx.invoice.findFirstOrThrow({
     where: { id: data.invoiceId },
-    select: { total: true, applications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT } },
+    select: {
+      kind: true, status: true, deletedAt: true, total: true,
+      applications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT },
+    },
   });
   const credit = await tx.invoice.findFirstOrThrow({
     where: { id: data.creditInvoiceId },
-    select: { total: true, creditApplications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT } },
+    select: {
+      kind: true, status: true, deletedAt: true, total: true,
+      creditApplications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT },
+    },
   });
+
+  // Re-validate BOTH rows UNDER the invoice-row claim, with the SAME checks the unlocked stub pass
+  // ran — a concurrent `unlockInvoice`/`discardInvoice` on the target, or an unlock/discard of the
+  // credit, committing between the stubs and this claim would otherwise let a CREDIT settle against
+  // now-editable/discarded paper or draw on a no-longer-finalized credit.
+  if (invoice.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (invoice.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a credit applies to an invoice");
+  }
+  if (invoice.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can take a credit");
+  }
+  if (credit.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (credit.kind !== "CREDIT") {
+    throw new HttpError(400, "That document is an invoice, not a credit — only a credit can be applied");
+  }
+  if (credit.status !== "FINALIZED") {
+    throw new HttpError(400, "only a finalized credit can be applied");
+  }
 
   // Refuse over-application on EITHER side before any write.
   const remainingCents = cents(creditRemaining(credit.total.toNumber(), credit.creditApplications.map(toLite)));

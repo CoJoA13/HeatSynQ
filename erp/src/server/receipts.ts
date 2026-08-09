@@ -301,7 +301,8 @@ export async function addPayment(batchId: string, input: unknown): Promise<Batch
 
 // -------------------------------------------------------------------------------------------
 // voidPayment — soft-delete with a reason, trimmed IN THE SERVICE (the `discardInvoice`
-// precedent), under the same batch claim and the same POSTED refusal as `addPayment`.
+// precedent), under the same batch claim and the same POSTED refusal as `addPayment`. Also
+// refuses a payment that still has live `Application` rows (the symmetric guard — see below).
 // -------------------------------------------------------------------------------------------
 
 async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reason: string): Promise<BatchDetail> {
@@ -311,6 +312,16 @@ async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reaso
   const payment = await tx.payment.findFirst({
     where: { id: paymentId, batchId, deletedAt: null }, select: { id: true } });
   if (!payment) throw new HttpError(404, "Payment not found");
+
+  // The symmetric guard to `voidBatch`'s "void its payments first" and the invoice side's A/R-
+  // activity refusal (`unlockInvoice`/`discardInvoice`/`voidOrder`): a payment with live
+  // applications must not be voided out from under them. Voiding it here would strand every live
+  // `Application` sourced from it — the invoice still reads settled over its live applications —
+  // while the payment's cash vanishes from on-account. The correction is to void the applications
+  // first, then the payment.
+  const liveApplication = await tx.application.findFirst({
+    where: { paymentId, deletedAt: null }, select: { id: true } });
+  if (liveApplication) throw new HttpError(400, "This payment has applications — void them first");
 
   await auditedSoftDelete("payment", paymentId, reason, tx);
   return readBatchDetail(tx, batchId);

@@ -3,8 +3,10 @@
 // `InvoicesSection.tsx` precedent: fetch-into-state on mount, a `loaded` flag distinct from "the
 // array is empty" (HANDOFF §5.15), ticket-gated on both the success and the rejection path
 // (`useLatest`). Its data source is `GET /api/customers/[id]/receivables` (this task's own new
-// route), which composes Task 10's `agingReport` and Task 13's `openInvoicesForPayer` — no balance
-// math lives here either.
+// route), which composes the SINGLE-customer `customerOwnAgingRow` (aging.ts) and
+// `openInvoicesForCustomer` (applications.ts) via `customer-receivables.ts` — never the
+// family-scoped `agingReport`/`openInvoicesForPayer`, whose payer-family rollup would leak a
+// division's siblings into this one customer's section (Task 15 fix). No balance math lives here.
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";

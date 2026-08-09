@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createBatch, getBatch, addPayment, voidPayment, postBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
+import { applyPayment, voidApplication } from "@/server/applications";
+import { parseDateOnly } from "@/lib/business-days";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding Payments. `enteredTotal`
@@ -209,6 +211,49 @@ describe("voidPayment", () => {
         status: 400,
         message: "This batch is posted — reopen or void a payment to change it",
       });
+  });
+
+  // Whole-branch FIX 2: the symmetric guard. A payment with live applications must not be voided
+  // out from under them — that would strand the live `Application` (the invoice still reads settled)
+  // while the payment's cash vanishes from on-account. Void the application first, then the payment.
+  it("refuses a payment that still has a live application, then voids cleanly once it is gone", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+
+    // A finalized invoice for the same customer, and the payment applied to it in full.
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 940000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+      },
+    });
+    await asSystem(() => applyPayment({ paymentId, lines: [{ invoiceId: invoice.id, type: "PAYMENT", amount: 300 }] }));
+
+    // voidPayment refuses — the live application would be stranded (non-vacuous: without the guard
+    // this call would succeed).
+    await expect(asSystem(() => voidPayment(batch.id, paymentId, "wrong batch")))
+      .rejects.toMatchObject({ status: 400, message: "This payment has applications — void them first" });
+    expect(await prisma.payment.count({ where: { id: paymentId, deletedAt: null } })).toBe(1); // still live
+
+    // Void the application, then the payment voids cleanly with the reason recorded in the audit entry.
+    const app = await prisma.application.findFirstOrThrow({ where: { paymentId } });
+    await asSystem(() => voidApplication(app.id, "misapplied to the wrong invoice"));
+    const afterVoid = await asSystem(() => voidPayment(batch.id, paymentId, "entered against the wrong batch"));
+    expect(afterVoid.payments).toHaveLength(0);
+    expect(await prisma.payment.count({ where: { id: paymentId, deletedAt: null } })).toBe(0);
+
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "payment", entityId: paymentId, action: "delete" } });
+    expect(entry!.reason).toBe("entered against the wrong batch");
   });
 });
 
