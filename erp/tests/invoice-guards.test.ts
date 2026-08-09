@@ -8,7 +8,9 @@ import {
   createShipper, voidShipper, replaceShipperLines, addOrderToShipper, removeOrderFromShipper,
   updateShipper, type ShipperDetail,
 } from "@/server/shippers";
-import { finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage } from "@/server/invoice-guards";
+import {
+  finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage, hasReceivableActivity,
+} from "@/server/invoice-guards";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -175,6 +177,59 @@ describe("finalizedInvoicesFor", () => {
       { id: invA.id, orderId: a.id, orderNumber: a.orderNumber },
       { id: invC.id, orderId: c.id, orderNumber: c.orderNumber },
     ]);
+  });
+});
+
+describe("hasReceivableActivity", () => {
+  const receivable = (invoiceId: string) =>
+    prisma.$transaction((tx) => hasReceivableActivity(tx, invoiceId));
+
+  it("is false with no applications, true once one names the invoice, false again once it is voided", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    expect(await receivable(inv.id)).toBe(false);
+
+    // A WRITE_OFF carries a null paymentId and null creditInvoiceId by the source-check — the
+    // cheapest live row that satisfies the `invoiceId` arm without a Payment fixture.
+    const app = await prisma.application.create({
+      data: { invoiceId: inv.id, amount: "50.00", type: "WRITE_OFF", appliedDate: new Date("2026-08-08") },
+    });
+    expect(await receivable(inv.id)).toBe(true);
+
+    await prisma.application.update({ where: { id: app.id }, data: { deletedAt: new Date() } });
+    expect(await receivable(inv.id)).toBe(false); // a voided application drops out of both arms
+  });
+
+  it("is true for an applied credit — both the target invoice and the credit itself are active paper", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    const credit = await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "CREDIT", status: "FINALIZED",
+        creditNumber: 9100, invoiceDate: new Date("2026-08-06"), finalizedAt: new Date(),
+      },
+    });
+    // Applied TO `inv`, SOURCED FROM `credit` — one row touches both from opposite sides.
+    await prisma.application.create({
+      data: {
+        invoiceId: inv.id, creditInvoiceId: credit.id, amount: "25.00", type: "CREDIT",
+        appliedDate: new Date("2026-08-08"),
+      },
+    });
+    expect(await receivable(inv.id)).toBe(true);    // invoiceId arm
+    expect(await receivable(credit.id)).toBe(true); // creditInvoiceId arm — the credit is active paper
+  });
+
+  it("scopes to the invoice asked about — another invoice's application is not this one's", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    const other = await orderFor(customer);
+    const otherInv = await finalizedInvoice(other.id, customer.id);
+    await prisma.application.create({
+      data: { invoiceId: otherInv.id, amount: "10.00", type: "WRITE_OFF", appliedDate: new Date("2026-08-08") },
+    });
+    expect(await receivable(inv.id)).toBe(false);
+    expect(await receivable(otherInv.id)).toBe(true);
   });
 });
 

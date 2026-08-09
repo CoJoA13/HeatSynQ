@@ -11,6 +11,8 @@ import {
   voidOrder, linkOrder, unlinkOrder, getLockedRevision,
 } from "@/server/orders";
 import { updateStep, getRevision, getRevisions } from "@/server/part-process-steps";
+import { applyPayment, voidApplication } from "@/server/applications";
+import { unlockInvoice } from "@/server/invoices";
 import { setSetting } from "@/server/settings";
 import { readAudit } from "@/server/audit";
 import { deleteReference } from "@/server/reference";
@@ -1892,6 +1894,57 @@ describe("voidOrder", () => {
   it("404s an unknown order", async () => {
     await expect(asSystem(() => voidOrder("nope", "reason")))
       .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+
+  // Task 9 (§5.3/§5.7): an order whose invoice has live A/R activity cannot be voided — the payment
+  // is real cash applied to real paper, and voiding the order would strand it. The A/R refusal is
+  // named BEFORE the pre-existing finalized-invoice refusal because the fix it points at (void the
+  // applications) is the one that actually works: you cannot unlock or credit the invoice while a
+  // payment sits on it (Task 9's unlock guard refuses that too). Clearing the A/R hands control back
+  // to the finalized-invoice guard; unlocking the invoice then re-permits the void.
+  it("refuses to void an order whose invoice has a payment applied, then re-permits once cleared", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    // A finalized invoice on the order, raw-built (the orders service must not depend on invoices.ts
+    // to construct its own fixtures — the part-process-steps precedent).
+    const invoice = await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "INVOICE", status: "FINALIZED",
+        invoiceDate: parseDateOnly("2026-08-08"), total: 500, finalizedAt: new Date(),
+      },
+    });
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 720001, depositDate: parseDateOnly("2026-08-08") },
+    });
+    const paymentType = await prisma.paymentType.create({ data: { name: "PT-void" } });
+    const payment = await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: customer.id, paymentTypeId: paymentType.id,
+        amount: 100, receivedDate: parseDateOnly("2026-08-08"),
+      },
+    });
+    await asSystem(() => applyPayment({ paymentId: payment.id, lines: [{ invoiceId: invoice.id, type: "PAYMENT", amount: 100 }] }));
+    const application = await prisma.application.findFirstOrThrow({ where: { invoiceId: invoice.id, deletedAt: null } });
+
+    // A/R activity is named first.
+    await expect(asSystem(() => voidOrder(order.id, "keyed twice")))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/an invoice on this order has A\/R activity/),
+      });
+    expect((await getOrder(order.id)).voided).toBe(false);
+
+    // Void the application → the pre-existing finalized-invoice guard now takes over.
+    await asSystem(() => voidApplication(application.id, "misapplied"));
+    await expect(asSystem(() => voidOrder(order.id, "keyed twice")))
+      .rejects.toThrow(new RegExp(`Invoice ${order.orderNumber}`));
+
+    // Unlock the invoice back to DRAFT (now permitted — no A/R) and the void goes through.
+    await asSystem(() => unlockInvoice(invoice.id, "reopen to correct"));
+    await asSystem(() => voidOrder(order.id, "keyed twice"));
+    expect((await getOrder(order.id)).voided).toBe(true);
   });
 });
 

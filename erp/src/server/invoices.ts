@@ -7,6 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
+import { hasReceivableActivity } from "./invoice-guards";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -1108,6 +1109,14 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
 
   await withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
     await claimLiveInvoice(tx, id);
+    // Task 9 (§5.3): DEFENSE-IN-DEPTH. A draft can never carry real A/R activity through the
+    // services — `applyPayment`/`applyCredit` require FINALIZED invoices/credits — so this guard is
+    // unreachable by construction, but the spec mandates it belt-and-suspenders: paper with money
+    // applied to it is never silently discarded. Read under the claim `claimLiveInvoice` holds.
+    if (await hasReceivableActivity(tx, id)) {
+      throw new HttpError(400,
+        "This invoice has payments or credits applied and cannot be discarded — void them first");
+    }
     // A printed invoice is paper the customer may hold — it can never be discarded, only credited
     // (§5.5). Any StoredDocument naming this invoice is proof it printed. Read under the claim.
     const printed = await tx.storedDocument.findFirst({ where: { invoiceId: id }, select: { id: true } });
@@ -1199,23 +1208,39 @@ export async function finalizeInvoice(id: string, tx?: Prisma.TransactionClient)
  * leaves INVOICED alone) and lets recompute settle it on its ship-derived value. Recomputing before
  * clearing would leave the order INVOICED forever.
  */
-export async function unlockInvoice(id: string, reason: string): Promise<InvoiceDetail> {
+async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<InvoiceDetail> {
+  const { invoice, order } = await claimInvoiceRow(tx, id);
+  if (invoice.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — there is nothing to unlock");
+  }
+  // Task 9 (§5.3): a finalized invoice with live A/R activity — a payment/discount/write-off applied
+  // to it, or a credit applied against it — cannot be unlocked. Unlocking would re-open editable
+  // paper that money has already been applied to; the correction is to void the application first.
+  // Read under the claim `claimInvoiceRow` holds: `applyPayment`/`applyCredit` write these rows under
+  // the SAME order claim, so this read and the status write it guards see one consistent state.
+  if (await hasReceivableActivity(tx, id)) {
+    throw new HttpError(400,
+      `Invoice #${order.orderNumber} has payments applied — void them before unlocking`);
+  }
+  await auditedUpdate("invoice", id,
+    () => tx.invoice.update({
+      where: { id },
+      data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
+    }), { tx, reason: why });
+  await recomputeOrderStatus(tx, [order.id], [order.id]);
+  return readInvoiceDetail(tx, id);
+}
+
+export async function unlockInvoice(id: string, reason: string, tx?: Prisma.TransactionClient): Promise<InvoiceDetail> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to unlock an invoice");
-
-  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
-    const { invoice, order } = await claimInvoiceRow(tx, id);
-    if (invoice.status !== "FINALIZED") {
-      throw new HttpError(400, "That invoice is not finalized — there is nothing to unlock");
-    }
-    await auditedUpdate("invoice", id,
-      () => tx.invoice.update({
-        where: { id },
-        data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
-      }), { tx, reason: why });
-    await recomputeOrderStatus(tx, [order.id], [order.id]);
-    return readInvoiceDetail(tx, id);
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  // `tx` optional — the discriminating concurrency test passes a manually-opened (Read Committed)
+  // transaction so the order+invoice-row claim, not SSI, is what serializes a competing application
+  // (the `finalizeInvoice` shape). The public no-`tx` path runs Serializable, pairing with the claim.
+  if (tx) return unlockInvoiceInTx(tx, id, why);
+  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(
+    (fresh) => unlockInvoiceInTx(fresh, id, why),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 // -------------------------------------------------------------------------------------------

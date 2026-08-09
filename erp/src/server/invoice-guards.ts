@@ -86,3 +86,36 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
   return `${action} — Invoice ${inv.orderNumber} is finalized; unlock it or raise a credit ` +
     `(see /invoicing/${inv.id})`;
 }
+
+/**
+ * Does this invoice carry LIVE accounts-receivable activity — a payment, early-pay discount, or
+ * write-off applied TO it, or a credit that has been applied AGAINST it? `unlockInvoice`,
+ * `discardInvoice` and `voidOrder` refuse while it does (P5B §5.3): editing, discarding, or voiding
+ * paper that money has already been applied to would silently strand that `Application`. The
+ * correction the refusals name is to VOID the application first.
+ *
+ * Two arms, because an `Application` touches an invoice from both sides:
+ *   - `invoiceId = this` — a PAYMENT / DISCOUNT / WRITE_OFF (or an applied credit's target line)
+ *     reducing THIS invoice's open balance;
+ *   - `creditInvoiceId = this` — THIS row is a CREDIT that has been applied against some invoice, so
+ *     it is active paper of its own (§4.2 reads the credit's remaining off exactly these rows).
+ * A voided (soft-deleted) `Application` drops out of both arms, exactly as it drops out of every
+ * `ar-balances` sum — so voiding the application genuinely re-permits the mutation.
+ *
+ * Read on the CALLER'S OWN `tx`, under the order (and invoice-row) claim it already holds — the same
+ * discipline `finalizedInvoiceFor` documents above. `applyPayment`/`applyCredit` write these rows
+ * under the SAME order claim, so this read and the mutation it guards serialize through that lock and
+ * no application can commit inside the window between them. No new lock is taken here.
+ *
+ * A single existence query — the guard cares only WHETHER any live row exists, never how much or
+ * what type (that is `ar-balances`' job), so `select: { id }` and a boolean is the whole contract.
+ */
+export async function hasReceivableActivity(
+  tx: Prisma.TransactionClient, invoiceId: string,
+): Promise<boolean> {
+  const row = await tx.application.findFirst({
+    where: { deletedAt: null, OR: [{ invoiceId }, { creditInvoiceId: invoiceId }] },
+    select: { id: true },
+  });
+  return !!row;
+}

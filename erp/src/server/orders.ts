@@ -13,7 +13,7 @@ import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail }
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
-import { finalizedInvoiceFor, invoiceBlockMessage } from "./invoice-guards";
+import { finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivity } from "./invoice-guards";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
@@ -1367,6 +1367,17 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
     // case and send the user to void the shipment — which `voidShipper`'s own guard then refuses
     // for this same reason. Only naming the invoice first points at a fix that actually works.
     const inv = await finalizedInvoiceFor(tx, id);
+    // Task 9 (§5.3/§5.7): if that invoice has live A/R activity — a payment/discount/write-off
+    // applied to it, or a credit applied against it — name THAT first. It is a stronger refusal than
+    // the bare finalized-invoice one below: you cannot unlock or credit the invoice while a payment
+    // sits on it (unlock's own Task 9 guard refuses that too), so the only fix that works is to void
+    // the application. Read under the order claim `claimOrder` already holds — the same claim
+    // `applyPayment`/`applyCredit` take — so the check and the void it guards serialize through it.
+    if (inv && await hasReceivableActivity(tx, inv.id)) {
+      throw new HttpError(400,
+        "This order cannot be voided — an invoice on this order has A/R activity; " +
+        "void the payments or credits applied to it first");
+    }
     if (inv) throw new HttpError(400, invoiceBlockMessage(inv, "This order cannot be voided"));
 
     // Spec §5.5: void the shipments first, otherwise the shipment is left pointing at an order
