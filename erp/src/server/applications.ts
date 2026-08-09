@@ -7,6 +7,7 @@ import { auditedCreate, auditedSoftDelete } from "./audit";
 import { decimalField } from "./decimal-field";
 import { claimOrder, claimOrdersInOrder, sortedClaimIds } from "./order-locks";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "./ar-balances";
+import { assertPeriodOpen } from "./period-locks";
 import { getSetting } from "./settings";
 import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
 
@@ -347,6 +348,11 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   // would use `todayDateOnly()`; `applyPayment` always carries a payment, so it is the received
   // date here.)
   const appliedDate = payment.receivedDate;
+  // §4.1: an application is CASH-journal paper effective at `appliedDate` (the payment's received
+  // date), so it is refused into a CLOSED period. Under the order/invoice/payment claims this tx
+  // already holds, before any write — the advisory lock serializes it against a concurrent close of
+  // that month (period-locks.ts).
+  await assertPeriodOpen(tx, appliedDate);
   for (const { line, invoice, reason } of resolved) {
     const auditData = {
       invoiceId: line.invoiceId, invoiceOrderNumber: invoice.order.orderNumber,
@@ -423,8 +429,12 @@ async function voidApplicationInTx(tx: Db, id: string, reason: string): Promise<
 
   // Re-read under the claim: the ordinary "already voided" 404 (auditedSoftDelete's own atomic
   // `updateMany` is the real guard, but the pre-check gives the well-labelled 404).
-  const live = await tx.application.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+  const live = await tx.application.findFirst({ where: { id, deletedAt: null }, select: { id: true, appliedDate: true } });
   if (!live) throw new HttpError(404, "Application not found");
+
+  // §4.1: voiding an application reverses paper effective at its `appliedDate`, so it is refused into
+  // a CLOSED period. Under the order/invoice claims above, before the soft-delete (period-locks.ts).
+  await assertPeriodOpen(tx, live.appliedDate);
 
   await auditedSoftDelete("application", id, reason, tx);
 }
@@ -574,6 +584,10 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
   // (no-payment) `todayDateOnly()` rule `applyPaymentInTx`'s own header comment documents but never
   // reaches (every PAYMENT/DISCOUNT/WRITE_OFF line there carries a payment's received date).
   const appliedDate = todayDateOnly();
+  // §4.1: a credit application is paper effective at `appliedDate` (today), so it is refused into a
+  // CLOSED period. Under the order/invoice claims this tx already holds, before the audited create
+  // (period-locks.ts).
+  await assertPeriodOpen(tx, appliedDate);
   const auditData = {
     type: "CREDIT", invoiceId: data.invoiceId, creditInvoiceId: data.creditInvoiceId,
     paymentId: null, amount: data.amount, appliedDate: formatDateOnly(appliedDate),

@@ -8,6 +8,7 @@ import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
 import { hasReceivableActivity } from "./invoice-guards";
+import { assertPeriodOpen } from "./period-locks";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -1152,6 +1153,11 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
       : `${offending.partNumber} — ${offending.description}`;
     throw new HttpError(400, `Line ${offending.position} · ${label} needs a price — price every line before finalizing`);
   }
+  // §4.1: finalizing writes SALES-journal paper effective at `invoiceDate`, so it is refused into a
+  // CLOSED accounting period. Read UNDER the invoice-row claim `claimInvoiceRow` holds and BEFORE
+  // the status write, so the period read and that write commit against one consistent state; the
+  // advisory lock inside serializes this against a concurrent close of the same month (period-locks.ts).
+  await assertPeriodOpen(tx, invoice.invoiceDate);
 
   // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
   // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
@@ -1222,6 +1228,10 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
     throw new HttpError(400,
       `Invoice #${order.orderNumber} has payments applied — void them before unlocking`);
   }
+  // §4.1: unlocking reverses the SALES-journal paper that finalize posted at `invoiceDate`, so it is
+  // refused into a CLOSED period for the same reason finalize is (period-locks.ts). Under the claim,
+  // before the status write.
+  await assertPeriodOpen(tx, invoice.invoiceDate);
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
@@ -1300,6 +1310,10 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
     // the audit `after` snapshot, so the two can never disagree even across a UTC-midnight boundary
     // mid-transaction.
     const creditDate = todayDateOnly();
+    // §4.1: a credit is SALES-journal paper effective at its own raise date, so it is refused into a
+    // CLOSED period. Under the order claim `claimInvoiceRow` holds, before the audited create; the
+    // advisory lock serializes it against a concurrent close of `creditDate`'s month (period-locks.ts).
+    await assertPeriodOpen(tx, creditDate);
 
     // Copy every source line, money sign flipped, everything else (part identity, gl, qty, weight,
     // pricing snapshots) carried as billed. Source lines arrive position-asc (DETAIL_INCLUDE); the

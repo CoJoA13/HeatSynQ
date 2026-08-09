@@ -9,6 +9,7 @@ import { decimalField } from "./decimal-field";
 import { allocateNumber, getSetting } from "./settings";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
 import { paymentOnAccount, type ApplicationLite } from "./ar-balances";
+import { assertPeriodOpen } from "./period-locks";
 import type { ReceiptBatchStatusValue, ApplicationTypeValue } from "../lib/ar-constants";
 
 // -------------------------------------------------------------------------------------------
@@ -340,7 +341,7 @@ async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reaso
   refusePosted(batch.status);
 
   const payment = await tx.payment.findFirst({
-    where: { id: paymentId, batchId, deletedAt: null }, select: { id: true } });
+    where: { id: paymentId, batchId, deletedAt: null }, select: { id: true, receivedDate: true } });
   if (!payment) throw new HttpError(404, "Payment not found");
 
   // Claim the PAYMENT row — the SAME row `applyPaymentInTx` claims last (order → invoice → payment).
@@ -363,6 +364,11 @@ async function voidPaymentInTx(tx: Db, batchId: string, paymentId: string, reaso
   const liveApplication = await tx.application.findFirst({
     where: { paymentId, deletedAt: null }, select: { id: true } });
   if (liveApplication) throw new HttpError(400, "This payment has applications — void them first");
+
+  // §4.1: a payment is CASH-journal paper effective at its `receivedDate`; voiding it reverses that
+  // cash event, so it is refused into a CLOSED period. Under the payment-row claim above, before the
+  // soft-delete — the advisory lock serializes it against a concurrent close (period-locks.ts).
+  await assertPeriodOpen(tx, payment.receivedDate);
 
   await auditedSoftDelete("payment", paymentId, reason, tx);
   return readBatchDetail(tx, batchId);
@@ -392,6 +398,15 @@ export async function voidPayment(
 async function postBatchInTx(tx: Db, id: string): Promise<BatchDetail> {
   const batch = await claimLiveBatch(tx, id);
   if (batch.status === "POSTED") throw new HttpError(400, "already posted");
+
+  // §4.1: posting a batch makes its payments live CASH-journal paper effective at each payment's
+  // `receivedDate`, so posting is refused if ANY of them falls in a CLOSED period. Read under the
+  // batch claim above, before the status write; one guard call per payment (the advisory lock inside
+  // dedups the work per month and serializes each against a concurrent close — period-locks.ts).
+  const dates = await tx.payment.findMany({
+    where: { batchId: id, deletedAt: null }, select: { receivedDate: true },
+  });
+  for (const d of dates) await assertPeriodOpen(tx, d.receivedDate);
 
   await auditedUpdate("receiptBatch", id,
     () => tx.receiptBatch.update({ where: { id }, data: { status: "POSTED" } }), { tx });
