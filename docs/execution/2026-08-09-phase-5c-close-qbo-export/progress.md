@@ -13,7 +13,7 @@
 - [x] Task 1: Data model, migration, audit + counter registration — **implementation complete** (code `e283b65`, report `63d9ec6`; not yet reviewed)
 - [x] Task 2: BillingConfig GL defaults — service, delete-blocker registry, admin UI
 - [x] Task 3: gl-mapping.ts — pure journal + readiness engine
-- [ ] Task 4: period-locks.ts leaf + wiring into every A/R posting mutation
+- [x] Task 4: period-locks.ts leaf + wiring into every A/R posting mutation
 - [ ] Task 5: close-periods.ts — close/reopen lifecycle + preliminary report + routes
 - [ ] Task 6: gl-export.ts — per-event delta, CSV, batch write + export/readiness routes
 - [ ] Task 7: posting-register PDF
@@ -66,3 +66,8 @@ Task 3: complete (impl 52af93a + fix 6b6d13c; docs a9a4443; re-review Approved �
   IMPORTANT finding FIXED (data-integrity): readinessGaps didn't flag a missing sales-tax GL account, yet a taxable invoice's total includes tax while salesJournal drops the tax credit when taxGlAccountId is null → an UNBALANCED journal could pass readiness. Fixed: ReadinessInput gains salesTaxGlAccountId+hasTax; readinessGaps emits the gap. Plan+spec §7 amended. Aligned with owner-ratified §15 (refuse-without-account), not a deviation.
   ⚠️ FOR TASK 6 (resolve before its review): resolveReadiness must derive `hasTax` from the SAME export-scope delta (glDate<=periodEnd invoices with taxTotal!=0) and the plant-default salesTaxGlAccountId it checks must be the account every in-scope taxable event's taxGlAccountId resolves to. Fold into Task 6 dispatch + reviewer notes.
   Minor (noted, low-risk): fixer ran scoped eslint (not `eslint src tests`) and didn't re-run full `npm test` — unconsumed leaf; Task 4 runs the full suite next.
+
+Task 4: complete (impl c49e1dc + fix d8a7631; docs bf7e688; opus review + re-review Approved). Gates: full suite 1898, tsc/eslint clean, E2E 17/17 foreground. Both concurrency tests RED-verified.
+  IMPORTANT fixed (concurrency): postBatch guarded a multi-month batch with an UNSORTED per-payment advisory-lock loop → ABBA deadlock (P2010/500). Fixed: dedup to distinct (year,month), sort ascending, one lock per month (claimOrdersInOrder rule). +2 multi-month coverage tests.
+  ⚠️ FORWARD to Task 5: closePeriod must take its month lock as a SINGLE lockMonth(year,month); if it ever locks multiple months, reuse ascending year*100+month order (the single-ascending-order invariant is what keeps postBatch-vs-close deadlock-free).
+  Minors (final review): period-locks import-shape pin blocks a named service list + require/import, not a strict "only type Prisma + ./errors" (mirrors invoice-guards precedent, no live exposure). Observation: db-errors.ts translates 40001 but not 40P01/P2010 (deadlock) — latent; unreachable now that all lock acquisition is ordered.
