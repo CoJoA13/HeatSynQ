@@ -52,6 +52,27 @@ than pre-litigated.
 - [x] Task 17 — E2E + demo + docs — **complete** (code `292cb33`; review Approved; E2E 17/17)
 - [x] Whole-branch review + fix wave — **complete** (5-dim opus review; fix wave `11e3244`+`14c2b3c`, re-review Approved). **Final gates green:** `npm test` 1863, tsc/eslint/build clean, **E2E 17/17**.
 - [x] Closing — 6 owner-ruling items filed as issues #68–#73; branch pushed; **PR [#74](https://github.com/CoJoA13/HeatSynQ/pull/74) open** (squash-merge pending owner review). Post-merge: condense HANDOFF §4 → Merged, move narrative to `docs/history/`, activate §9 as the 5C kickoff.
+- [x] Codex PR review addressed — 17 findings verified; **11 fixed on-branch** (`bb40d66`,`353e4bc`,`02d8a3f`,`37655ca`,`724dfaa`; re-review Approved — opus), **6 filed** (owner chose "correctness + correction path; file the rest"). Gates after fixes: `npm test` 1879, tsc/eslint/build, E2E 17/17. Every thread replied with its disposition.
+
+## Codex review of PR #74 (2026-08-09) — triage + response
+
+Codex posted 17 inline findings. All verified against the code; several were real gaps my task-scoped reviews structurally missed (they checked each task vs its brief; Codex checked the whole product vs the spec). Owner ruled: fix the correctness/data-integrity bugs + the correction path; file the feature/design gaps.
+
+**Fixed on-branch (11):**
+- #1 (P1) `applyPayment`/`applyCredit` didn't scope target invoices to the payer's family — A's cash could settle B's invoice → `familyCustomerIds` check (`bb40d66`).
+- #2 (P1) DISCOUNT line uncapped — whole receivable waivable as a discount → capped at the eligible amount (`bb40d66`).
+- #8 (P2) `Application_source_check` allowed a source-less PAYMENT/DISCOUNT → tightened (new migration `20260809120000`); the statements test fixture that exploited the slack was rewritten (`bb40d66`).
+- #6 (P2) statements omitted on-account as open items (Total Due didn't reconcile, spec §8) → negative on-account lines on the aging-net basis (`353e4bc`).
+- #13 (P1) aging family footer double-counted → `isFamilyTotal` flag; footer uses it, body renders leaves (`353e4bc`) + export excludes it (`724dfaa`).
+- #12 (P2) aging export didn't match the screen's filters → shared `isAgingRowAllZero` + family-total exclusion (`353e4bc`+`724dfaa`).
+- #14 (P2) aging snapshot read across separate commits → one read-only RepeatableRead tx (`353e4bc`).
+- #17 (P2) Terms discount clear violated both-or-neither → validate the merged (stored+patch) row (`02d8a3f`).
+- #11 (P1) no UI to void/correct an application (the whole-branch voidPayment guard made this a stuck workflow) → payment's applications listed + a delete-gated Void action; server exposes them (`37655ca`).
+- #7 (P1) apply locked on a POSTED batch, contra spec §5.2 → apply/discount/write-off unlocked on POSTED; add/void-payment stay locked (`37655ca`).
+
+**Filed as follow-ups (6):** #75 credit-apply UI (#10) · #76 finance-charge-exempt setter (#9) · #77 standalone bad-debt write-off (#5) · #78 point-in-time reproducibility after later voids/unlocks (#3/#4, design) · #79 issued-terms discount snapshot (#16) · #80 postBatch balance check (#15).
+
+**Process lesson:** per-task reviews verified each task against its brief, and the whole-branch review covered cross-cutting concerns — but neither systematically asked "is every spec deliverable *reachable through the product*?" Codex caught 4 API-only spec deliverables (credit apply, void/correct, exempt, standalone write-off) and a spec-vs-brief conflict (POSTED apply). A future phase's review should add an end-to-end spec-deliverable-reachability pass (the demo flow only exercised the happy path).
 
 ## Owner rulings owed (surface at the Task 17 demo)
 
