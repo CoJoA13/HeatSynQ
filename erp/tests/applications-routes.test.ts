@@ -99,6 +99,36 @@ describe("applications routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("GET ?customerId= refuses an unauthenticated caller (401)", async () => {
+    const inv = await finalizedInvoice(1000);
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?customerId=${inv.customerId}`), noParams);
+    expect(res.status).toBe(401);
+  });
+
+  it("GET ?customerId= refuses a caller without receivables.view (403)", async () => {
+    const cookie = await signInWith(["receivables.create"]);
+    const inv = await finalizedInvoice(1000);
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?customerId=${inv.customerId}`, cookie), noParams);
+    expect(res.status).toBe(403);
+  });
+
+  it("GET ?paymentId=&invoiceId= refuses an unauthenticated caller (401)", async () => {
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const res = await discountRoute(
+      getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${inv.invoiceId}`), noParams);
+    expect(res.status).toBe(401);
+  });
+
+  it("GET ?paymentId=&invoiceId= refuses a caller without receivables.view (403)", async () => {
+    const cookie = await signInWith(["receivables.create"]);
+    const inv = await finalizedInvoice(1000);
+    const paymentId = await makePayment(inv.customerId, 600);
+    const res = await discountRoute(
+      getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${inv.invoiceId}`, cookie), noParams);
+    expect(res.status).toBe(403);
+  });
+
   it("GET ?paymentId=&invoiceId= returns the live open balance and the eligible early-pay discount", async () => {
     const cookie = await signInWith(["receivables.view"]);
     const terms = await prisma.terms.create({ data: { name: "R2/10", netDays: 30, discountPercent: "2.00", discountDays: 10 } });

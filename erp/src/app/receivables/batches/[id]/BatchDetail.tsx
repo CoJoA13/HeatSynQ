@@ -307,17 +307,20 @@ export function BatchDetail({ id }: { id: string }) {
   const posted = batch?.status === "POSTED";
   const voided = (batch?.deletedAt ?? null) !== null;
 
-  // §5.5/task-13-brief.md Step 2: money-bearing controls take BOTH receivables.edit and, for a
+  // §5.5/task-13-brief.md Step 2: money-bearing controls take BOTH receivables.create and, for a
   // write-off, `write_off` on top — computed once with the "whichever is actually the blocker"
-  // title (the `InvoiceDetail.tsx` moneyGate/priceGate precedent), THEN status-locked.
-  const editGateRaw = gate(perms, "receivables.edit");
+  // title (the `InvoiceDetail.tsx` moneyGate/priceGate precedent), THEN status-locked. Apply is an
+  // entity-creation (POST /api/receivables/applications gates `create` — owner ruling, review
+  // round 1: the apply gate must match the route it calls, not `edit`), consistent with
+  // add-payment and create-batch, which already gate on create.
+  const applyGateRaw = gate(perms, "receivables.create");
   const writeOffGateRaw = gateDo(perms, "write_off");
-  const writeOffDisabled = editGateRaw.disabled || writeOffGateRaw.disabled;
+  const writeOffDisabled = applyGateRaw.disabled || writeOffGateRaw.disabled;
   const writeOffGateCombined: Gate = {
     allowed: !writeOffDisabled, disabled: writeOffDisabled,
-    title: editGateRaw.disabled ? editGateRaw.title : writeOffGateRaw.title,
+    title: applyGateRaw.disabled ? applyGateRaw.title : writeOffGateRaw.title,
   };
-  const moneyGate = statusLocked(gate(perms, "receivables.edit"), posted);
+  const moneyGate = statusLocked(applyGateRaw, posted);
   const writeOffGate = statusLocked(writeOffGateCombined, posted);
   const createPaymentGate = statusLocked(gate(perms, "receivables.create"), posted);
   const deletePaymentGate = statusLocked(gate(perms, "receivables.delete"), posted);
