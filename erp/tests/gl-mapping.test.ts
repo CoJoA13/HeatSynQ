@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent, type CashEvent } from "@/server/gl-mapping";
+import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent } from "@/server/gl-mapping";
 
 function sum(lines: { debit: number; credit: number }[]) {
   const d = lines.reduce((a, l) => a + l.debit, 0);
@@ -56,12 +56,22 @@ it("reverseLines swaps debit/credit and flags isReversal", () => {
 
 it("readinessGaps lists a step code, surcharge, payment type, and missing A/R default", () => {
   const gaps = readinessGaps({
-    arGlAccountId: null, discountGlAccountId: "d", writeOffGlAccountId: "w",
-    hasDiscount: false, hasWriteOff: false,
+    arGlAccountId: null, discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: "t",
+    hasDiscount: false, hasWriteOff: false, hasTax: false,
     stepCodesMissingGl: [{ id: "s1", code: "HT" }],
     surchargesMissingGl: [{ id: "u1", name: "Energy" }],
     paymentTypesMissingGl: [{ id: "p1", name: "ACH" }],
   });
   const kinds = gaps.map((g) => g.kind).sort();
   expect(kinds).toEqual(["payment-type", "plant-default", "step-code", "surcharge"]);
+});
+
+it("flags a missing sales-tax account when a taxable event is in the delta", () => {
+  const gaps = readinessGaps({
+    arGlAccountId: "ar", discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: null,
+    hasDiscount: false, hasWriteOff: false, hasTax: true,
+    stepCodesMissingGl: [], surchargesMissingGl: [], paymentTypesMissingGl: [],
+  });
+  expect(gaps).toHaveLength(1);
+  expect(gaps[0].label).toMatch(/sales tax/i);
 });

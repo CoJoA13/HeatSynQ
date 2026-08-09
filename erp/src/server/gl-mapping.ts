@@ -85,8 +85,10 @@ export type ReadinessInput = {
   arGlAccountId: string | null;
   discountGlAccountId: string | null;
   writeOffGlAccountId: string | null;
+  salesTaxGlAccountId: string | null;
   hasDiscount: boolean;
   hasWriteOff: boolean;
+  hasTax: boolean; // any in-scope invoice with taxTotal != 0 — its A/R debit already includes the tax
   stepCodesMissingGl: { id: string; code: string }[];
   surchargesMissingGl: { id: string; name: string }[];
   paymentTypesMissingGl: { id: string; name: string }[];
@@ -98,8 +100,11 @@ export function readinessGaps(input: ReadinessInput): ReadinessGap[] {
   if (!input.arGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "A/R control account is not set", href: "/admin/billing" });
   if (input.hasDiscount && !input.discountGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Discount account is not set", href: "/admin/billing" });
   if (input.hasWriteOff && !input.writeOffGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Write-off account is not set", href: "/admin/billing" });
-  for (const s of input.stepCodesMissingGl) gaps.push({ kind: "step-code", id: s.id, label: `Process step code ${s.code} has no GL account`, href: `/admin/step-codes` });
-  for (const u of input.surchargesMissingGl) gaps.push({ kind: "surcharge", id: u.id, label: `Surcharge ${u.name} has no GL account`, href: `/admin/surcharges` });
-  for (const p of input.paymentTypesMissingGl) gaps.push({ kind: "payment-type", id: p.id, label: `Payment type ${p.name} has no GL account`, href: `/admin/reference` });
+  // A taxable invoice's total (the A/R debit) already includes tax; without a tax account the tax
+  // credit line is dropped and the journal would be unbalanced — refuse (§15), do not silently drop.
+  if (input.hasTax && !input.salesTaxGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Sales tax account is not set", href: "/admin/billing" });
+  for (const s of input.stepCodesMissingGl) gaps.push({ kind: "step-code", id: s.id, label: `Process step code ${s.code} has no GL account`, href: "/admin/step-codes" });
+  for (const u of input.surchargesMissingGl) gaps.push({ kind: "surcharge", id: u.id, label: `Surcharge ${u.name} has no GL account`, href: "/admin/surcharges" });
+  for (const p of input.paymentTypesMissingGl) gaps.push({ kind: "payment-type", id: p.id, label: `Payment type ${p.name} has no GL account`, href: "/admin/reference" });
   return gaps;
 }
