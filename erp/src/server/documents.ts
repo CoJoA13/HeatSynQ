@@ -231,6 +231,23 @@ export async function listDocumentsForInvoice(invoiceId: string): Promise<Docume
   });
 }
 
+/** Every `STATEMENT` document filed against this customer (Task 15, P5B §11's customer A/R
+ *  section and the `/receivables/statements` screen's own document history) — `customerId` is a
+ *  column only `STATEMENT` ever populates (`ownerColumns` above), so this needs no kind filter the
+ *  way `listDocumentsForShipper`'s BOL/SHIPPER pair does not either. */
+export async function listDocumentsForCustomer(customerId: string): Promise<DocumentMeta[]> {
+  // No `deletedAt: null` filter — the `listDocumentsForOrder`/`listDocumentsForShipper`/
+  // `listDocumentsForCert` precedent: a deleted customer's past statements stay listable forever,
+  // the same "voided owner, still-reprintable paper" rule spec §5.6 states for every other kind.
+  const customer = await prisma.customer.findFirst({ where: { id: customerId }, select: { id: true } });
+  if (!customer) throw new HttpError(404, "Customer not found");
+  return prisma.storedDocument.findMany({
+    where: { customerId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: DOCUMENT_SELECT,
+  });
+}
+
 /** The stored bytes, untouched — a reprint is a byte-for-byte reissue of what was printed, never
  *  a re-render (the source data behind any of the four kinds can keep changing after a print).
  *  Never filters on `deletedAt` either, for the same reason `listDocumentsFor*` above does not. */

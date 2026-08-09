@@ -5,9 +5,11 @@ import { GET as list, POST as create } from "@/app/api/customers/route";
 import { GET as detail, PUT as update, DELETE as remove } from "@/app/api/customers/[id]/route";
 import { GET as blockersRoute } from "@/app/api/customers/[id]/blockers/route";
 import { GET as blockersExportRoute } from "@/app/api/customers/[id]/blockers/export/route";
+import { GET as receivablesRoute } from "@/app/api/customers/[id]/receivables/route";
 import { createCustomer } from "@/server/customers";
 import { createPart } from "@/server/parts";
 import { createOrder } from "@/server/orders";
+import { parseDateOnly } from "@/lib/business-days";
 
 const noParams = { params: Promise.resolve({}) };
 const withId = (id: string) => ({ params: Promise.resolve({ id }) });
@@ -136,5 +138,51 @@ describe("customer routes", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(exportRes.headers.get("content-disposition")).toContain("attachment");
     expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
+  });
+
+  // Task 15: the customer page's A/R section — `GET /api/customers/[id]/receivables`
+  // (`customerReceivablesSummary`, src/server/customer-receivables.ts), gated receivables.view
+  // (not customers.view — this is A/R data, the aging/applications GET routes' own gate).
+  it("GET .../receivables: 401, 403, and 200 with the aging summary + open items with receivables.view", async () => {
+    const { id } = await createCustomer({ code: "ARCUST", name: "AR Customer" });
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 950001, customerId: id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-06-01"), requestDate: parseDateOnly("2026-06-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: id,
+        invoiceDate: parseDateOnly("2026-06-01"), dueDate: parseDateOnly("2026-07-01"),
+        total: 400, finalizedAt: parseDateOnly("2026-06-01"),
+      },
+    });
+
+    expect((await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`), withId(id))).status)
+      .toBe(401);
+
+    const wrong = await signInWith(["customers.view"], "cust-recv-wrong-1");
+    expect((await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`, wrong), withId(id))).status)
+      .toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "cust-recv-viewer-1");
+    const res = await receivablesRoute(getReq(`http://t/api/customers/${id}/receivables`, viewer), withId(id));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      aging: { customerId: string; net: number };
+      openItems: { id: string; customerId: string; open: number }[];
+    };
+    expect(body.aging.customerId).toBe(id);
+    expect(body.aging.net).toBe(400);
+    expect(body.openItems).toHaveLength(1);
+    expect(body.openItems[0].customerId).toBe(id);
+    expect(body.openItems[0].open).toBe(400);
+  });
+
+  it("GET .../receivables: 404s an unknown customer", async () => {
+    const viewer = await signInWith(["receivables.view"], "cust-recv-404");
+    const res = await receivablesRoute(getReq("http://t/api/customers/nope/receivables", viewer), withId("nope"));
+    expect(res.status).toBe(404);
   });
 });

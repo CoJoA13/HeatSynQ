@@ -10,6 +10,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { SurchargeOverridesSection } from "./SurchargeOverridesSection";
+import { ReceivablesSection } from "./ReceivablesSection";
 
 type Customer = {
   id: string; code: string; name: string; parentId: string | null; parentCode: string | null;
@@ -142,6 +143,7 @@ function CustomerDetail({ id }: { id: string }) {
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
   const canDelete = gate(perms, "customers.delete");
   const canEdit = gate(perms, "customers.edit");
+  const receivablesViewGate = gate(perms, "receivables.view");
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
   // customers.edit but not admin.view must still see Terms options, and a failure here is
@@ -878,6 +880,8 @@ function CustomerDetail({ id }: { id: string }) {
           </button>
         </div>
       </section>
+
+      <ReceivablesSection customerId={id} viewGate={receivablesViewGate} />
 
       <HistoryPanel entity="customer" entityId={c.id} />
     </div>

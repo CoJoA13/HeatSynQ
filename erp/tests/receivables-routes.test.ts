@@ -11,6 +11,7 @@ import { GET as agingRoute } from "@/app/api/receivables/aging/route";
 import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/route";
 import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/receivables/statements/route";
 import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
+import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements/documents/route";
 import { parseDateOnly } from "@/lib/business-days";
 
 // Task 6 (Step 10): thin `handle` wrappers gating on `receivables.create`/`edit`/`delete`/`view` —
@@ -353,5 +354,64 @@ describe("POST /api/receivables/statements/run", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { customerId: string; documentId: string }[];
     expect(body.length).toBeGreaterThan(0);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 15: statement documents — the customer-scoped STATEMENT history the statements screen
+// lists (`listDocumentsForCustomer`, src/server/documents.ts). Gated receivables.view, the
+// build/print route's own gate.
+// -------------------------------------------------------------------------------------------
+
+describe("GET /api/receivables/statements/documents", () => {
+  it("400s a missing customerId", async () => {
+    const viewer = await signInWith(["receivables.view"], "stmt-docs-missing");
+    const res = await statementDocumentsRoute(
+      getReq("http://t/api/receivables/statements/documents", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("403s without receivables.view, then lists the customer's archived statements with it", async () => {
+    const customer = await invoicedCustomer();
+    const payload = { customerId: customer.id, asOf: "2026-08-08" };
+
+    const wrong = await signInWith(["shipping.view"], "stmt-docs-wrong");
+    expect((await statementDocumentsRoute(
+      getReq(`http://t/api/receivables/statements/documents?customerId=${customer.id}`, wrong), withParams({}),
+    )).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "stmt-docs-viewer");
+
+    // Nothing archived yet.
+    const empty = await statementDocumentsRoute(
+      getReq(`http://t/api/receivables/statements/documents?customerId=${customer.id}`, viewer), withParams({}),
+    );
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual([]);
+
+    // Archive one, then it appears.
+    const printed = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, payload), withParams({}),
+    );
+    expect(printed.status).toBe(200);
+    const documentId = printed.headers.get("x-document-id");
+
+    const res = await statementDocumentsRoute(
+      getReq(`http://t/api/receivables/statements/documents?customerId=${customer.id}`, viewer), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { id: string; kind: string }[];
+    expect(body).toHaveLength(1);
+    expect(body[0].id).toBe(documentId);
+    expect(body[0].kind).toBe("STATEMENT");
+  });
+
+  it("404s an unknown customerId", async () => {
+    const viewer = await signInWith(["receivables.view"], "stmt-docs-404");
+    const res = await statementDocumentsRoute(
+      getReq("http://t/api/receivables/statements/documents?customerId=nope", viewer), withParams({}),
+    );
+    expect(res.status).toBe(404);
   });
 });

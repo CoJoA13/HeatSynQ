@@ -13,6 +13,7 @@ import { useLatest } from "@/lib/use-latest";
 import {
   RECEIPT_BATCH_STATUSES, RECEIPT_BATCH_STATUS_LABELS, type ReceiptBatchStatusValue,
 } from "@/lib/ar-constants";
+import { ReceivablesNav } from "./ReceivablesNav";
 
 // Local mirror of src/server/receipts.ts's `BatchListRow` — not imported from src/server/**
 // (CLAUDE.md "Constraints that will bite you": a client component pulling from there drags
@@ -89,6 +90,7 @@ export function ReceivablesList() {
 
   return (
     <div className="p-6">
+      <ReceivablesNav />
       <h1 className="mb-4 text-2xl font-semibold">Receivables</h1>
 
       {(error ?? permsError) && (

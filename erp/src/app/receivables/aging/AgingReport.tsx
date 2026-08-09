@@ -12,6 +12,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { AGING_BUCKETS, AGING_BUCKET_LABELS, type AgingBucketValue } from "@/lib/ar-constants";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
+import { ReceivablesNav } from "../ReceivablesNav";
 
 // Local mirror of src/server/aging.ts's `AgingRow` — not imported from src/server/** (CLAUDE.md
 // "Constraints that will bite you": a client component pulling from there drags node:async_hooks
@@ -99,6 +100,7 @@ export function AgingReport() {
   if (!viewGate.allowed) {
     return (
       <div className="p-6">
+        <ReceivablesNav />
         <h1 className="mb-4 text-2xl font-semibold">A/R Aging</h1>
         <p className="text-sm text-slate-500">{viewGate.title ?? "You do not have permission to view A/R aging."}</p>
       </div>
@@ -114,6 +116,7 @@ export function AgingReport() {
 
   return (
     <div className="p-6">
+      <ReceivablesNav />
       <h1 className="mb-4 text-2xl font-semibold">A/R Aging</h1>
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
