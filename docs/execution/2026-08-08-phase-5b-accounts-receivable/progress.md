@@ -50,7 +50,7 @@ than pre-litigated.
 - [x] Task 15 — statements UI + customer A/R section — **complete** (code `d916dc4`, fix `5253423`; review Approved after 1 fix round — sonnet caught a real division-scope leak)
 - [x] Task 16 — routes 401/403 sweep — **complete** (code `14ff4fa`; review Approved; write_off gating added)
 - [x] Task 17 — E2E + demo + docs — **complete** (code `292cb33`; review Approved; E2E 17/17)
-- [ ] Whole-branch review + fix wave — **in progress**
+- [x] Whole-branch review + fix wave — **complete** (5-dim opus review; fix wave `11e3244`+`14c2b3c`, re-review Approved). **Final gates green:** `npm test` 1863, tsc/eslint/build clean, **E2E 17/17**. Merge-ready pending the owner demo + PR decision.
 
 ## Owner rulings owed (surface at the Task 17 demo)
 
