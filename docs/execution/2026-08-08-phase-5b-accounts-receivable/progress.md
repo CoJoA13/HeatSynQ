@@ -46,7 +46,7 @@ than pre-litigated.
 - [x] Task 11 — `finance-charges.ts` (pure) — **complete** (code `36bccd8`; review clean)
 - [x] Task 12 — `statements.ts` + `pdf/statement.ts` + STATEMENT document + route — **complete** (code `a2c6bde`; review Approved — opus, byte-exact reprint verified)
 - [x] Task 13 — `/receivables` batch entry + apply UI — **complete** (code `ffd6139`, fix `1ce9a82`; review Approved after 1 fix round; recovered from a host crash, gate-verified; browser check deferred to Task 17 E2E)
-- [ ] Task 14 — aging report UI
+- [x] Task 14 — aging report UI — **complete** (code `15513f3`; review Approved; 2 Task-10 minors closed)
 - [ ] Task 15 — statements UI + customer A/R section
 - [ ] Task 16 — routes 401/403 sweep
 - [ ] Task 17 — E2E + demo + docs
@@ -74,6 +74,12 @@ than pre-litigated.
 - **Task 5 (Decimal→number at call sites) — CARRY to consuming tasks 6/7/10/12.** `ar-balances.ts`'s `ApplicationLite`/`total`/`amount` are typed `number` (per the brief) but live `Application.amount`/`Invoice.total` are Prisma `Decimal`. Whoever wires this module to real rows MUST convert via `.toNumber()` at every call site (and map `deletedAt`/`type`). Not a defect in Task 5; a call-site obligation for the services. (Also Task 5 Minor #1 `Math.abs(cents(total))` vs `cents(Math.abs(total))` — unreachable given Decimal(12,2); no action.)
 
 ## Task detail
+
+### Task 14 — complete (BASE `b3b4c38`, code `15513f3`; review Approved — sonnet)
+- `AgingReport.tsx` (client, `receivables.view`): as-of date picker (default today), customer/family filter (§5.16 disabled-with-tooltip on `customers.view`), AgingRow table driven by `AGING_BUCKETS.map` (headers + data can't drift), totals `<tfoot>`, Excel export `<a>` sharing the exact same `query` string as the JSON fetch. Uses `AGING_BUCKET_LABELS` (en-dash), no src/server import, `page.tsx` thin wrapper.
+- **Closed both Task-10 minors:** (1) the export route (`aging/export/route.ts`) headers now use `AGING_BUCKET_LABELS` (match the UI); (2) all-zero rows filtered client-side (`isAllZero` over all 7 money fields, before body + totals), `aging.ts` untouched.
+- **Nav-link gap flagged (→ Task 15):** nothing links to `/receivables/aging` yet — folding a `/receivables` sub-nav (worklist / aging / statements) into Task 15.
+- Gates: tsc/eslint/build clean; `npm test` 1849 (export-header test still green). Reviewer (sonnet): Spec ✅, Approved. Minors → deferred (object-spread-in-reduce; picker omits inactive customers).
 
 ### Task 13 — complete (BASE `f2f693c`, code `ffd6139` + fix `1ce9a82`; review Approved after 1 fix round; crash-recovered)
 - `/receivables` worklist (`ReceivablesList.tsx`) + batch-entry/apply screen (`BatchDetail.tsx`, 31 KB) following 5A `InvoiceDetail` binding-state (`key={id}`, useMutationGate/useEditGuard/useBulkGrid, gate/gateDo). Nav: dead "A/R"→/ar repurposed to "Receivables"→/receivables (one entry, `receivables.view`). Backend read endpoints the UI needed (Tasks 6–8 built only mutations): `listBatches`, `openInvoicesForPayer` (family = `parentId ?? self` + children), `invoiceOpenBalanceById`, 2 GET routes (`receivables.view`), `RECEIPT_BATCH_STATUS_LABELS` — read-only, reuse ar-balances, Decimal→number, `deletedAt:null`, tested.
