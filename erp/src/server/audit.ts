@@ -207,10 +207,14 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // in only the live reference name history would otherwise render as a cuid — the partInspection
   // `{ inspectionCode: true }` precedent. A payment names its method; an application names the
   // invoice it reduces by that invoice's order number (the 5A invoice FK-with-live-name pattern).
+  // Task 8 carry (progress.md deferred-minors, Task 2): a CREDIT-type application also names its
+  // SOURCE credit the same way, so a voided credit application's audit entry reads the credit's
+  // order number and credit number in history, not a bare `creditInvoiceId` cuid.
   receiptBatch: undefined,
   payment: { paymentType: true },
   application: {
     invoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
+    creditInvoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
   },
 };
 

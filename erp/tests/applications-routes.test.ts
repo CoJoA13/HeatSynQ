@@ -5,6 +5,7 @@ import { parseDateOnly } from "@/lib/business-days";
 
 import { GET as discountRoute, POST as applyRoute } from "@/app/api/receivables/applications/route";
 import { DELETE as voidRoute } from "@/app/api/receivables/applications/[id]/route";
+import { POST as applyCreditRoute } from "@/app/api/receivables/credit-applications/route";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -39,6 +40,23 @@ async function finalizedInvoice(total: number): Promise<{ invoiceId: string; cus
     },
   });
   return { invoiceId: invoice.id, customerId: customer.id };
+}
+async function finalizedCredit(total: number): Promise<{ invoiceId: string; customerId: string }> {
+  seq += 1;
+  const customer = await prisma.customer.create({ data: { code: `ARCR${seq}`, name: `AR Credit Route Customer ${seq}` } });
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 630000 + seq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+    },
+  });
+  const credit = await prisma.invoice.create({
+    data: {
+      kind: "CREDIT", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly("2026-08-08"), total, finalizedAt: new Date(),
+    },
+  });
+  return { invoiceId: credit.id, customerId: customer.id };
 }
 async function makePayment(customerId: string, amount: number): Promise<string> {
   seq += 1;
@@ -111,5 +129,38 @@ describe("applications routes", () => {
     const res = await voidRoute(bodyReq(`http://t/api/receivables/applications/${app.id}`, "DELETE", deleteCookie, { reason: "misapplied" }), withParams({ id: app.id }));
     expect(res.status).toBe(200);
     expect((await prisma.application.findUniqueOrThrow({ where: { id: app.id } })).deletedAt).not.toBeNull();
+  });
+});
+
+describe("credit-applications route", () => {
+  it("POST applies a credit for a create-authorized user", async () => {
+    const cookie = await signInWith(["receivables.create"]);
+    const credit = await finalizedCredit(-500);
+    const inv = await finalizedInvoice(1000);
+    const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
+      creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
+    }), noParams);
+    expect(res.status).toBe(200);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "CREDIT" } })).toBe(1);
+  });
+
+  it("POST refuses a caller without receivables.create (403)", async () => {
+    const cookie = await signInWith(["receivables.view"]);
+    const credit = await finalizedCredit(-500);
+    const inv = await finalizedInvoice(1000);
+    const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
+      creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  it("POST refuses an unauthenticated caller (401)", async () => {
+    const credit = await finalizedCredit(-500);
+    const inv = await finalizedInvoice(1000);
+    const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", undefined, {
+      creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
+    }), noParams);
+    expect(res.status).toBe(401);
   });
 });

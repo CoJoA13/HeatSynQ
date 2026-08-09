@@ -6,8 +6,8 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedSoftDelete } from "./audit";
 import { decimalField } from "./decimal-field";
 import { claimOrder, claimOrdersInOrder, sortedClaimIds } from "./order-locks";
-import { invoiceOpenBalance, paymentOnAccount, type ApplicationLite } from "./ar-balances";
-import { addDays, formatDateOnly } from "../lib/business-days";
+import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "./ar-balances";
+import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
 
 // -------------------------------------------------------------------------------------------
 // Task 7 (P5B §4.1/§4.2): the single cash write path. Every reduction of an invoice's open
@@ -292,6 +292,131 @@ export async function voidApplication(id: string, reason: string): Promise<void>
   if (!why) throw new HttpError(400, "A reason is required to void an application");
   await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
     (tx) => voidApplicationInTx(tx, id, why),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
+}
+
+// -------------------------------------------------------------------------------------------
+// applyCredit — apply a finalized CREDIT memo to a finalized INVOICE (Task 8, P5B §5: "a
+// finalized credit memo applies to an invoice … or sits open on account"). Unlike `applyPayment`,
+// the SOURCE here is a second guarded balance, not a fire-and-forget receipt: a credit's own
+// `creditRemaining` (ar-balances.ts, `|total| − Σ live applications sourced from it`) must never
+// be over-applied any more than the target invoice's open balance may. So THE CLAIM widens by one
+// row rather than by a payment row:
+//   1. UNLOCKED stub reads of both the target invoice and the credit — learn each row's `orderId`
+//      (never changes once a row exists, so safe to CLAIM on) and validate liveness/kind/status;
+//      the guarded state (total + live applications) is re-read under the locks below.
+//   2. `claimOrdersInOrder(tx, [invoiceOrderId, creditOrderId])` — ONE sorted statement, dedup +
+//      ascending (a credit shares its source invoice's `orderId` by construction — createCredit,
+//      invoices.ts — but nothing stops it being applied to an invoice under a DIFFERENT order, so
+//      the dedup is load-bearing, not dead code).
+//   3. BOTH invoice rows — the target AND the credit — claimed FOR UPDATE in ONE sorted statement,
+//      the identical shape `applyPaymentInTx` uses for its (single-kind) invoice set, taken AFTER
+//      the order claims (fixed order: Order rows, then Invoice rows — unchanged; there is no
+//      Payment row in this call, so no new ABBA counterpart to reorder against). The credit IS the
+//      second guarded balance (house rule, order-locks.ts: "the guarded state must live on, or be
+//      locked with, the claimed row") — there is no separate "payment row" claim step here.
+// Only after both locks are held are the balances re-read and the over-application checks run,
+// refusing on EITHER side before any write. Serializable, pairing with the FK-writer convention
+// every 5A/5B mutator uses — the row claims, not the isolation level, are the guard.
+// -------------------------------------------------------------------------------------------
+
+const APPLY_CREDIT = z.object({
+  creditInvoiceId: z.string().min(1),
+  invoiceId: z.string().min(1),
+  amount: decimalField(12, 2, { required: true, min: "positive" }),
+}).strict();
+
+type ApplyCreditInput = z.infer<typeof APPLY_CREDIT>;
+
+const APPLICATIONS_LITE_SELECT = {
+  amount: true, type: true, deletedAt: true,
+} satisfies Prisma.ApplicationSelect;
+
+async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
+  // (1) UNLOCKED stub reads — the target invoice must be a live FINALIZED INVOICE; the source must
+  // be a live FINALIZED CREDIT. Both live in the same `Invoice` table (kind discriminates), so
+  // "Invoice not found" is the established 404 for either (documents.ts/invoices.ts precedent) —
+  // a distinct "Credit not found" would just be the same row, differently worded.
+  const invoiceStub = await tx.invoice.findFirst({
+    where: { id: data.invoiceId },
+    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+  });
+  if (!invoiceStub || invoiceStub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (invoiceStub.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a credit applies to an invoice");
+  }
+  if (invoiceStub.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can take a credit");
+  }
+
+  const creditStub = await tx.invoice.findFirst({
+    where: { id: data.creditInvoiceId },
+    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+  });
+  if (!creditStub || creditStub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (creditStub.kind !== "CREDIT") {
+    throw new HttpError(400, "That document is an invoice, not a credit — only a credit can be applied");
+  }
+  if (creditStub.status !== "FINALIZED") {
+    throw new HttpError(400, "only a finalized credit can be applied");
+  }
+
+  // (2) Claim the orders behind both rows — one sorted statement, dedup + ascending.
+  await claimOrdersInOrder(tx, [invoiceStub.orderId, creditStub.orderId]);
+
+  // (3) Claim BOTH invoice rows — one sorted `FOR UPDATE` statement, the same shape
+  // `applyPaymentInTx` uses for its invoice set, taken AFTER the order claims. This is what
+  // serializes two applications drawing on the SAME credit (or targeting the SAME invoice).
+  const sortedIds = sortedClaimIds([data.invoiceId, data.creditInvoiceId]);
+  await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ANY(${sortedIds}) ORDER BY "id" FOR UPDATE`;
+
+  // Now read the state the locks guard: the target's total + live applications, and the credit's
+  // total + live applications SOURCED FROM IT (`creditApplications`, the `CreditApplications`
+  // relation — distinct from `applications`, which is what's applied TO a row).
+  const invoice = await tx.invoice.findFirstOrThrow({
+    where: { id: data.invoiceId },
+    select: { total: true, applications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT } },
+  });
+  const credit = await tx.invoice.findFirstOrThrow({
+    where: { id: data.creditInvoiceId },
+    select: { total: true, creditApplications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT } },
+  });
+
+  // Refuse over-application on EITHER side before any write.
+  const remainingCents = cents(creditRemaining(credit.total.toNumber(), credit.creditApplications.map(toLite)));
+  const amountCents = cents(data.amount);
+  if (amountCents > remainingCents) {
+    throw new HttpError(400, `That exceeds the credit's remaining of ${remainingCents / 100}`);
+  }
+  const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite)));
+  if (amountCents > openCents) {
+    throw new HttpError(400, `That exceeds the invoice's open balance of ${openCents / 100}`);
+  }
+
+  // A credit application carries no source payment — it ages from today, the standalone
+  // (no-payment) `todayDateOnly()` rule `applyPaymentInTx`'s own header comment documents but never
+  // reaches (every PAYMENT/DISCOUNT/WRITE_OFF line there carries a payment's received date).
+  const appliedDate = todayDateOnly();
+  const auditData = {
+    type: "CREDIT", invoiceId: data.invoiceId, creditInvoiceId: data.creditInvoiceId,
+    paymentId: null, amount: data.amount, appliedDate: formatDateOnly(appliedDate),
+  };
+  await auditedCreate("application", auditData, () => tx.application.create({
+    data: {
+      invoiceId: data.invoiceId, creditInvoiceId: data.creditInvoiceId, paymentId: null,
+      amount: data.amount, type: "CREDIT", appliedDate,
+    },
+    select: { id: true },
+  }), { tx });
+}
+
+/** `applyCredit` (§5). One call, one credit, one target invoice — unlike `applyPayment` there is
+ *  no multi-line batch shape here (a credit is a single source applied to a single target). */
+export async function applyCredit(input: { creditInvoiceId: string; invoiceId: string; amount: number }): Promise<void> {
+  const data = APPLY_CREDIT.parse(input);
+  await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
+    (tx) => applyCreditInTx(tx, data),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   ));
 }
