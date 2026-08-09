@@ -3,7 +3,7 @@ import { handle, requireUser } from "@/server/http";
 import { mustCan } from "@/server/permissions";
 import { agingReport } from "@/server/aging";
 import { toXlsx } from "@/server/excel";
-import { AGING_BUCKET_LABELS } from "@/lib/ar-constants";
+import { AGING_BUCKET_LABELS, isAgingRowAllZero } from "@/lib/ar-constants";
 import { parseAgingFilter } from "../query";
 
 // GET /api/receivables/aging/export — the `parts/export`/`invoices/export` precedent: `mustCan`,
@@ -13,7 +13,9 @@ import { parseAgingFilter } from "../query";
 // output matches what the aging screen renders on screen, rather than a second, hand-typed copy.
 export const GET = handle(async (req) => {
   mustCan(requireUser(), "receivables", "view");
-  const rows = await agingReport(parseAgingFilter(new URL(req.url)));
+  // Drop all-zero rows with the SAME predicate the screen uses (AgingReport.tsx), so the workbook
+  // matches what's on screen — a past as-of can otherwise surface onscreen-hidden $0 rows here.
+  const rows = (await agingReport(parseAgingFilter(new URL(req.url)))).filter((r) => !isAgingRowAllZero(r));
   const columns = [
     { key: "customerCode", header: "Customer Code" },
     { key: "customerName", header: "Customer Name" },

@@ -22,6 +22,12 @@ export type AgingRow = {
   customerId: string; customerCode: string; customerName: string;
   current: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number;
   unapplied: number; net: number; // net = Σ buckets − unapplied
+  // Set ONLY on the synthesized family-TOTAL row of a parent-family roll-up (`agingReport` below),
+  // which already sums parent + every child. Every other row — a standalone customer, a childless
+  // customer, a per-child row, or an unfiltered-report row — leaves it undefined. Consumers must
+  // NOT add a `isFamilyTotal` row into a totals footer alongside the child rows it already sums, or
+  // the family total double-counts.
+  isFamilyTotal?: boolean;
 };
 
 /** The minimal customer identity `bucketAging` labels each output row with — never a full
@@ -166,19 +172,29 @@ const CUSTOMER_REF_SELECT = { id: true, code: true, name: true } satisfies Prism
  *  this is the one point-in-time cut that has to happen at the query rather than in the pure core. */
 async function readSnapshot(customerIds: string[], asOfDate: Date): Promise<Snapshot> {
   if (customerIds.length === 0) return { invoices: [], applications: [], payments: [] };
+  // ONE consistent DB view for all three component reads. Issued as separate autocommit reads, a
+  // commit landing between them could mix states — e.g. see a payment's cash off-account but miss
+  // the matching invoice reduction — transiently mis-stating net. RepeatableRead pins a single
+  // snapshot across the callback. Read-only: no writes, no claim.
+  return prisma.$transaction(
+    (tx) => readSnapshotIn(tx, customerIds, asOfDate),
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+  );
+}
 
-  const invoiceRows = await prisma.invoice.findMany({
+async function readSnapshotIn(tx: Prisma.TransactionClient, customerIds: string[], asOfDate: Date): Promise<Snapshot> {
+  const invoiceRows = await tx.invoice.findMany({
     where: { customerId: { in: customerIds }, deletedAt: null, status: "FINALIZED" },
     select: { id: true, customerId: true, kind: true, total: true, dueDate: true, finalizedAt: true },
   });
   const invoiceIds = invoiceRows.map((i) => i.id);
 
-  const applicationRows = invoiceIds.length === 0 ? [] : await prisma.application.findMany({
+  const applicationRows = invoiceIds.length === 0 ? [] : await tx.application.findMany({
     where: { deletedAt: null, OR: [{ invoiceId: { in: invoiceIds } }, { creditInvoiceId: { in: invoiceIds } }] },
     select: { invoiceId: true, creditInvoiceId: true, type: true, amount: true, appliedDate: true },
   });
 
-  const paymentRows = await prisma.payment.findMany({
+  const paymentRows = await tx.payment.findMany({
     where: { customerId: { in: customerIds }, deletedAt: null, receivedDate: { lte: asOfDate } },
     select: {
       customerId: true, amount: true,
@@ -209,7 +225,7 @@ async function readSnapshot(customerIds: string[], asOfDate: Date): Promise<Snap
 /** Sums a set of `AgingRow`s into one, in integer cents (the shared rounding rule) — used only to
  *  build the synthesized family-total row; every field but the three identity fields is additive. */
 function sumRows(rows: AgingRow[], as: CustomerRef): AgingRow {
-  const sum = (key: Exclude<keyof AgingRow, "customerId" | "customerCode" | "customerName">): number =>
+  const sum = (key: Exclude<keyof AgingRow, "customerId" | "customerCode" | "customerName" | "isFamilyTotal">): number =>
     rows.reduce((total, r) => total + cents(r[key]), 0) / 100;
   return {
     customerId: as.id, customerCode: as.code, customerName: as.name,
@@ -250,7 +266,9 @@ export async function agingReport(filter: AgingFilter = {}): Promise<AgingRow[]>
     const snap = await readSnapshot(familyIds, asOfDate);
     const childRows = bucketAging(snap, asOf, children);
     const parentOwnRow = bucketAging(snap, asOf, [customer])[0];
-    const totalRow = sumRows([parentOwnRow, ...childRows], customer);
+    // `isFamilyTotal` marks this as the pre-summed family total (parent + every child) so a totals
+    // footer can use it instead of re-summing the child rows it already contains (double-count fix).
+    const totalRow: AgingRow = { ...sumRows([parentOwnRow, ...childRows], customer), isFamilyTotal: true };
     return [...childRows, totalRow];
   }
 

@@ -254,12 +254,17 @@ describe("agingReport — parent-family roll-up", () => {
     const rowB = rows.find((r) => r.customerId === childB.id)!;
     expect(rowA.d31_60).toBe(500);
     expect(rowB.d31_60).toBe(500);
+    // Only the synthesized total carries `isFamilyTotal` — the child rows must NOT, so a footer can
+    // use the total row alone and never double-count the children it already sums (Fix #13).
+    expect(rowA.isFamilyTotal).toBeUndefined();
+    expect(rowB.isFamilyTotal).toBeUndefined();
 
     const totalRow = rows.find((r) => r.customerId === parent.id)!;
     expect(totalRow.d31_60).toBe(1000); // family total across both children
     expect(totalRow.net).toBe(1000);
     expect(totalRow.customerCode).toBe(parent.code);
     expect(totalRow.customerName).toBe(parent.name);
+    expect(totalRow.isFamilyTotal).toBe(true);
   });
 
   it("a plain customer with no children returns just its own single row (no family total)", async () => {
@@ -270,5 +275,6 @@ describe("agingReport — parent-family roll-up", () => {
     const rows = await agingReport({ customerId: cust.id });
     expect(rows).toHaveLength(1);
     expect(rows[0].customerId).toBe(cust.id);
+    expect(rows[0].isFamilyTotal).toBeUndefined(); // a standalone row is never a family total
   });
 });

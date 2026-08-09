@@ -29,7 +29,7 @@ import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { invoiceOpenBalance, creditRemaining, type ApplicationLite } from "./ar-balances";
+import { invoiceOpenBalance, creditRemaining, paymentOnAccount, type ApplicationLite } from "./ar-balances";
 import { bucketAging, type AgingRow, type CustomerRef } from "./aging";
 import { financeCharge, financeChargeRateFor } from "./finance-charges";
 import { getBillingConfig } from "./billing-config";
@@ -82,7 +82,16 @@ type SnapshotApplication = {
   invoiceId: string; creditInvoiceId: string | null; type: ApplicationTypeValue;
   amount: number; appliedDate: string;
 };
-type SnapshotPayment = { customerId: string; amount: number; appliedPaymentTotal: number };
+// Widened past `bucketAging`'s `{ customerId; amount; appliedPaymentTotal }` (still structurally
+// compatible — the extra fields are on a passed VARIABLE, not an inline literal) with the
+// per-document identity the open-item PAYMENT line needs: the check reference for its label, and
+// `receivedDate` for its date. `appliedPaymentTotal` is the point-in-time PAYMENT total (the query
+// filters `appliedDate ≤ asOf`), so the on-account line reconciles to the SAME `aging.unapplied`
+// on-account bucketAging folds it into.
+type SnapshotPayment = {
+  customerId: string; amount: number; appliedPaymentTotal: number;
+  reference: string; receivedDate: string;
+};
 type Snapshot = { invoices: SnapshotInvoice[]; applications: SnapshotApplication[]; payments: SnapshotPayment[] };
 
 async function readFamilySnapshot(db: Db, customerIds: string[], asOfDate: Date): Promise<Snapshot> {
@@ -107,7 +116,7 @@ async function readFamilySnapshot(db: Db, customerIds: string[], asOfDate: Date)
   const paymentRows = await db.payment.findMany({
     where: { customerId: { in: customerIds }, deletedAt: null, receivedDate: { lte: asOfDate } },
     select: {
-      customerId: true, amount: true,
+      customerId: true, amount: true, reference: true, receivedDate: true,
       applications: { where: { deletedAt: null, type: "PAYMENT", appliedDate: { lte: asOfDate } }, select: { amount: true } },
     },
   });
@@ -128,6 +137,7 @@ async function readFamilySnapshot(db: Db, customerIds: string[], asOfDate: Date)
     payments: paymentRows.map((p) => ({
       customerId: p.customerId, amount: p.amount.toNumber(),
       appliedPaymentTotal: p.applications.reduce((sum, a) => sum + a.amount.toNumber(), 0),
+      reference: p.reference, receivedDate: formatDateOnly(p.receivedDate),
     })),
   };
 }
@@ -153,7 +163,7 @@ function documentNumber(kind: "INVOICE" | "CREDIT", creditNumber: number | null,
 /** Sums a set of `AgingRow`s into one combined family-total row, in integer cents — the
  *  `aging.ts` `sumRows` precedent (duplicated; private there). */
 function sumAgingRows(rows: AgingRow[], as: CustomerRef): AgingRow {
-  const sum = (key: Exclude<keyof AgingRow, "customerId" | "customerCode" | "customerName">): number =>
+  const sum = (key: Exclude<keyof AgingRow, "customerId" | "customerCode" | "customerName" | "isFamilyTotal">): number =>
     rows.reduce((total, r) => total + cents(r[key]), 0) / 100;
   return {
     customerId: as.id, customerCode: as.code, customerName: as.name,
@@ -247,10 +257,8 @@ async function buildStatementInTx(
       }
     } else {
       // CREDIT — its remaining shows as its OWN open item, negative (§8: "open credits … as
-      // negatives"); it carries no due date (aging.ts's own "a CREDIT gets none"). An on-account
-      // PAYMENT never gets its own row here: `openItems[].kind` is strictly `"INVOICE"|"CREDIT"`
-      // (the brief's own type) — its unapplied cash is captured in `aging.unapplied` instead
-      // (bucketAging's own rule), alongside this same credit's remaining.
+      // negatives"); it carries no due date (aging.ts's own "a CREDIT gets none"). On-account
+      // PAYMENTs get their own negative lines below (§8: "on-account as negatives").
       const apps = appsAsOf(snap.applications, asOfMs, (a) => a.creditInvoiceId === inv.id);
       const remaining = creditRemaining(inv.total, apps);
       if (cents(remaining) <= 0) continue;
@@ -260,6 +268,23 @@ async function buildStatementInTx(
         date: inv.invoiceDate, dueDate: null, kind: "CREDIT", original: inv.total, open: -remaining,
       });
     }
+  }
+
+  // On-account payments as NEGATIVE open items (§8: "on-account as negatives"). Each payment's
+  // unapplied cash gets its own line so the open-item lines SUM to Total Due — before this, an
+  // invoice + an on-account payment printed one positive line and a lower Total Due, and the
+  // document didn't reconcile. `paymentOnAccount` over `appliedPaymentTotal` (the PAYMENT total
+  // already point-in-time-cut to `appliedDate ≤ asOf` at the query — `receivedDate ≤ asOf` is
+  // likewise guaranteed by `readFamilySnapshot`'s own filter) is the SAME on-account basis
+  // `bucketAging` folds into `aging.unapplied`, so these lines and the aging strip reconcile.
+  for (const pay of snap.payments) {
+    const onAccount = paymentOnAccount(pay.amount, [{ amount: pay.appliedPaymentTotal, type: "PAYMENT", deletedAt: null }]);
+    if (cents(onAccount) <= 0) continue; // fully applied as of this asOf — no on-account line
+
+    openItems.push({
+      documentNumber: pay.reference !== "" ? pay.reference : "Payment on account",
+      date: pay.receivedDate, dueDate: null, kind: "PAYMENT", original: pay.amount, open: -onAccount,
+    });
   }
 
   // Finance charges — informational-only, opt-in per run (spec §7/§8). `null` unless the caller
@@ -285,10 +310,17 @@ async function buildStatementInTx(
 
 /** Builds a statement's data WITHOUT archiving it (a preview — Task 12's UI reads this before the
  *  customer commits to a print). `settings` is read OUTSIDE any transaction, the invoice/cert
- *  precedent: a plain read has no reason to hold a Serializable connection open. */
+ *  precedent: a plain read has no reason to hold a Serializable connection open. The BUILD reads,
+ *  though, run inside ONE RepeatableRead transaction so every component read (the family snapshot's
+ *  invoices/applications/payments, the billing config, the addresses) sees a single stable DB view
+ *  — a commit landing mid-build could otherwise mix states and transiently mis-state the net.
+ *  Read-only: no writes, no claim (the print path's Serializable bracket is strictly stronger). */
 export async function buildStatement(customerId: string, opts: StatementOpts): Promise<StatementData> {
   const settings = await invoicePrintSettings();
-  return buildStatementInTx(prisma, customerId, opts, settings);
+  return prisma.$transaction(
+    (tx) => buildStatementInTx(tx, customerId, opts, settings),
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+  );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -333,23 +365,30 @@ export async function runStatements(
 
   // Every customer with ANY A/R history — the `aging.ts` unfiltered-report discovery query
   // (duplicated so the two "who has A/R" answers can never silently drift apart from a shared,
-  // unexported helper neither file actually needs elsewhere).
-  const [invoicedCustomers, paidCustomers] = await Promise.all([
-    prisma.invoice.findMany({
-      where: { deletedAt: null, status: "FINALIZED" }, select: { customerId: true }, distinct: ["customerId"],
-    }),
-    prisma.payment.findMany({ where: { deletedAt: null }, select: { customerId: true }, distinct: ["customerId"] }),
-  ]);
-  const customerIds = [...new Set([
-    ...invoicedCustomers.map((r) => r.customerId), ...paidCustomers.map((r) => r.customerId),
-  ])];
-  if (customerIds.length === 0) return [];
+  // unexported helper neither file actually needs elsewhere). The whole discovery — who has
+  // history, plus the family snapshot that decides each one's net — runs inside ONE RepeatableRead
+  // transaction so a commit landing mid-read can't mis-decide who gets a statement (read-only: no
+  // writes, no claim; the per-customer PRINTS below each open their own Serializable bracket).
+  const discovery = await prisma.$transaction(async (tx) => {
+    const [invoicedCustomers, paidCustomers] = await Promise.all([
+      tx.invoice.findMany({
+        where: { deletedAt: null, status: "FINALIZED" }, select: { customerId: true }, distinct: ["customerId"],
+      }),
+      tx.payment.findMany({ where: { deletedAt: null }, select: { customerId: true }, distinct: ["customerId"] }),
+    ]);
+    const customerIds = [...new Set([
+      ...invoicedCustomers.map((r) => r.customerId), ...paidCustomers.map((r) => r.customerId),
+    ])];
+    if (customerIds.length === 0) return null;
 
-  const customers = await prisma.customer.findMany({
-    where: { id: { in: customerIds } }, select: CUSTOMER_REF_SELECT, orderBy: { code: "asc" },
-  });
-  const snap = await readFamilySnapshot(prisma, customerIds, asOfDate);
-  const rows = bucketAging(snap, asOf, customers);
+    const customers = await tx.customer.findMany({
+      where: { id: { in: customerIds } }, select: CUSTOMER_REF_SELECT, orderBy: { code: "asc" },
+    });
+    const snap = await readFamilySnapshot(tx, customerIds, asOfDate);
+    return { customers, snap };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  if (!discovery) return [];
+  const rows = bucketAging(discovery.snap, asOf, discovery.customers);
 
   const settings = await invoicePrintSettings(); // OUTSIDE every per-customer print transaction below
   const results: { customerId: string; documentId: string }[] = [];

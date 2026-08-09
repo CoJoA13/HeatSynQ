@@ -88,6 +88,17 @@ describe("buildStatementDefinition", () => {
     expect(withoutFc).not.toContain("Finance Charge");
   });
 
+  it("renders an on-account payment as a negative open-item line (Fix #6)", () => {
+    const text = allText(buildStatementDefinition(sampleData({
+      openItems: [
+        { documentNumber: "7 - 72026", date: "2026-06-29", dueDate: "2026-06-29", kind: "INVOICE", original: 1000, open: 400 },
+        { documentNumber: "CHK-4711", date: "2026-07-19", dueDate: null, kind: "PAYMENT", original: 300, open: -300 },
+      ],
+    }))).join(" ");
+    expect(text).toContain("CHK-4711"); // the check reference labels the on-account line
+    expect(text).toContain("$-300.00"); // its negative Open amount
+  });
+
   it("prints a blank Due Date cell for a credit, never a fabricated date", () => {
     const text = allText(buildStatementDefinition(sampleData())).join(" ");
     // The credit's own document number appears once for the item row; nothing pairs it with a

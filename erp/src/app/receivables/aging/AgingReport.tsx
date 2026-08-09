@@ -10,7 +10,7 @@ import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
-import { AGING_BUCKETS, AGING_BUCKET_LABELS, type AgingBucketValue } from "@/lib/ar-constants";
+import { AGING_BUCKETS, AGING_BUCKET_LABELS, AGING_MONEY_FIELDS, isAgingRowAllZero, type AgingBucketValue } from "@/lib/ar-constants";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { ReceivablesNav } from "../ReceivablesNav";
 
@@ -21,6 +21,10 @@ type AgingRow = {
   customerId: string; customerCode: string; customerName: string;
   current: number; d1_30: number; d31_60: number; d61_90: number; d90_plus: number;
   unapplied: number; net: number;
+  // Set only on a parent-family roll-up's synthesized family-TOTAL row (src/server/aging.ts) — it
+  // already sums parent + every child, so it is used AS the footer rather than summed alongside the
+  // child rows it contains.
+  isFamilyTotal?: boolean;
 };
 
 // Slice of CustomerRow needed to populate the customer/family filter — the parts.tsx/
@@ -32,19 +36,11 @@ type MoneyBucketKey = "current" | "d1_30" | "d31_60" | "d61_90" | "d90_plus";
 const BUCKET_FIELD: Record<AgingBucketValue, MoneyBucketKey> = {
   CURRENT: "current", D1_30: "d1_30", D31_60: "d31_60", D61_90: "d61_90", D90_PLUS: "d90_plus",
 };
-const MONEY_FIELDS: readonly (MoneyBucketKey | "unapplied" | "net")[] = [
-  "current", "d1_30", "d31_60", "d61_90", "d90_plus", "unapplied", "net",
-];
 
-/** True when every money column on a row is zero. `agingReport` can return an all-zero row for a
- *  customer whose only A/R history postdates a past `asOf` (its customer-set query isn't itself
- *  date-filtered — src/server/aging.ts's own comment on the no-filter branch) — filtered out here,
- *  DISPLAY-SIDE ONLY (task-14-brief.md "Two Task-10 minors", #2); `agingReport` itself is
- *  untouched. */
-function isAllZero(row: AgingRow): boolean {
-  return MONEY_FIELDS.every((k) => row[k] === 0);
-}
-
+// The all-zero-row filter (`isAgingRowAllZero`) and the money-field list (`AGING_MONEY_FIELDS`)
+// are shared from ar-constants.ts so this screen and the Excel export apply the SAME rule (the
+// export route filters with the same predicate — they can't drift). DISPLAY-SIDE ONLY;
+// `agingReport` itself is untouched.
 const ZERO_TOTALS: Record<MoneyBucketKey | "unapplied" | "net", number> = {
   current: 0, d1_30: 0, d31_60: 0, d61_90: 0, d90_plus: 0, unapplied: 0, net: 0,
 };
@@ -107,10 +103,16 @@ export function AgingReport() {
     );
   }
 
-  const visibleRows = rows.filter((r) => !isAllZero(r));
-  const totals = visibleRows.reduce((sum, r) => {
+  const visibleRows = rows.filter((r) => !isAgingRowAllZero(r));
+  // A parent-family roll-up returns per-child rows PLUS a synthesized family-total row that already
+  // sums parent + every child (src/server/aging.ts). Summing every visible row would double-count,
+  // so the family-total row is pulled out and used AS the footer; the child rows render on their
+  // own, and any other view (standalone/unfiltered) has no family-total row and sums its leaf rows.
+  const familyTotalRow = visibleRows.find((r) => r.isFamilyTotal) ?? null;
+  const leafRows = visibleRows.filter((r) => !r.isFamilyTotal);
+  const totals: Record<MoneyBucketKey | "unapplied" | "net", number> = familyTotalRow ?? leafRows.reduce((sum, r) => {
     const next = { ...sum };
-    for (const k of MONEY_FIELDS) next[k] = sum[k] + r[k];
+    for (const k of AGING_MONEY_FIELDS) next[k] = sum[k] + r[k];
     return next;
   }, { ...ZERO_TOTALS });
 
@@ -157,7 +159,7 @@ export function AgingReport() {
             </tr>
           </thead>
           <tbody>
-            {visibleRows.map((r) => (
+            {leafRows.map((r) => (
               <tr key={r.customerId} className="border-t">
                 <td className="p-2">{r.customerCode} · {r.customerName}</td>
                 {AGING_BUCKETS.map((b) => (
@@ -177,8 +179,10 @@ export function AgingReport() {
           </tbody>
           {visibleRows.length > 0 && (
             <tfoot>
+              {/* When a family-total row is present it IS the footer (already sums parent + every
+                  child), labeled distinctly; otherwise the footer is the sum of the leaf rows. */}
               <tr className="border-t bg-slate-50 font-medium">
-                <td className="p-2">Total</td>
+                <td className="p-2">{familyTotalRow ? "Family total" : "Total"}</td>
                 {AGING_BUCKETS.map((b) => (
                   <td key={b} className="p-2 text-right">{totals[BUCKET_FIELD[b]].toFixed(2)}</td>
                 ))}

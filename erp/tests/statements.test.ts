@@ -92,6 +92,20 @@ async function payInvoice(invoiceId: string, amount: number): Promise<void> {
   });
 }
 
+/** A payment carrying UNAPPLIED (on-account) cash: the amount lands, but nothing is applied to an
+ *  invoice, so its full amount sits on account. `reference` is the check #. */
+async function onAccountPayment(customerId: string, opts: { amount: number; reference?: string }): Promise<void> {
+  seq += 1;
+  const batch = await prisma.receiptBatch.create({ data: { batchNumber: 980000 + seq, depositDate: parseDateOnly(back(10)) } });
+  const paymentType = await prisma.paymentType.create({ data: { name: `STOA-${seq}` } });
+  await prisma.payment.create({
+    data: {
+      batchId: batch.id, customerId, paymentTypeId: paymentType.id,
+      amount: opts.amount, reference: opts.reference ?? "", receivedDate: parseDateOnly(back(10)),
+    },
+  });
+}
+
 /** The brief's own fixture: a 1000 invoice partly paid down to 400 open, 40 days past due
  *  (d31_60), plus an open 200 credit. */
 async function fixture() {
@@ -131,6 +145,35 @@ describe("buildStatement — open-item assembly", () => {
     expect(data.aging.net).toBe(200);
     expect(data.totalDue).toBe(200);
     expect(data.financeCharge).toBeNull();
+  });
+
+  it("shows an on-account payment as a NEGATIVE open item, and the open-item lines reconcile with totalDue", async () => {
+    // A $1000 invoice partly paid down to $400 open, plus a $300 payment that sits fully on account
+    // (spec §8: "on-account as negatives"). Before Fix #6 the statement printed only the $400 line
+    // yet reported Total Due $100 — the document did not reconcile.
+    const customer = await makeCustomer();
+    const invoice = await finalizedInvoice(customer.id, { total: 1000, dueDate: back(40) });
+    await payInvoice(invoice.id, 600); // 400 open
+    await onAccountPayment(customer.id, { amount: 300, reference: "CHK-4711" });
+
+    const data = await buildStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false });
+
+    const invoiceItem = data.openItems.find((i) => i.kind === "INVOICE")!;
+    expect(invoiceItem.open).toBe(400);
+
+    const onAccountItem = data.openItems.find((i) => i.kind === "PAYMENT")!;
+    expect(onAccountItem.open).toBe(-300);
+    expect(onAccountItem.original).toBe(300);
+    expect(onAccountItem.documentNumber).toBe("CHK-4711"); // the check reference
+    expect(onAccountItem.date).toBe(back(10)); // receivedDate
+    expect(onAccountItem.dueDate).toBeNull();
+
+    // The whole point of Fix #6: the open-item lines now SUM to Total Due, off the same on-account
+    // basis bucketAging folds into aging.unapplied.
+    const sumOpen = data.openItems.reduce((s, i) => s + i.open, 0);
+    expect(sumOpen).toBe(data.totalDue);
+    expect(data.totalDue).toBe(100); // 400 open − 300 on account
+    expect(data.aging.unapplied).toBe(300);
   });
 
   it("404s a customer that does not exist", async () => {

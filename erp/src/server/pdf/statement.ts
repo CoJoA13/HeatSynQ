@@ -33,7 +33,7 @@ import type { InvoiceCompany, InvoiceRemitTo } from "./invoice";
 // ---------------------------------------------------------------------------------------------
 
 export type StatementOpenItem = {
-  documentNumber: string; date: string; dueDate: string | null; kind: "INVOICE" | "CREDIT";
+  documentNumber: string; date: string; dueDate: string | null; kind: "INVOICE" | "CREDIT" | "PAYMENT";
   original: number; open: number;
 };
 
@@ -120,8 +120,9 @@ function identityBlock(d: StatementData): Content {
 const head = (text: string, alignment: "left" | "right" = "left"): TableCell =>
   ({ text, bold: true, fontSize: 9, alignment });
 
-/** Document #/Date/Due Date/Original/Open — one row per open item (spec §8). A CREDIT's "Due
- *  Date" cell prints blank (it carries none — `dueDate: null`), never a fabricated date. */
+/** Document #/Date/Due Date/Original/Open — one row per open item (spec §8). A CREDIT or an
+ *  on-account PAYMENT line's "Due Date" cell prints blank (neither carries one — `dueDate: null`),
+ *  never a fabricated date. */
 function openItemsTable(d: StatementData): Content {
   const body: TableCell[][] = [[
     head("Document #"), head("Date"), head("Due Date"), head("Original", "right"), head("Open", "right"),
