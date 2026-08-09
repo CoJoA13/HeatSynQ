@@ -1390,12 +1390,13 @@ model Payment {
 
 /// One reduction of one invoice's open balance (§4.1). `invoiceId` is always a finalized INVOICE;
 /// `creditInvoiceId` (CREDIT type only) is a finalized CREDIT memo. A hand-written DB CHECK
-/// ("Application_source_check", in migrations/<ts>_accounts_receivable/migration.sql — Prisma has
-/// no check syntax) enforces the source per type: PAYMENT/DISCOUNT/WRITE_OFF ⇒ creditInvoiceId IS
-/// NULL; CREDIT ⇒ paymentId IS NULL AND creditInvoiceId IS NOT NULL. A standalone bad-debt
-/// WRITE_OFF may carry a null paymentId, so the CHECK does NOT require paymentId on non-credit
-/// rows. `reason` is required (service-enforced) for WRITE_OFF/DISCOUNT. `appliedDate` is the A/R
-/// effective date, for point-in-time aging (§6).
+/// ("Application_source_check", current definition in
+/// migrations/<ts>_application_source_requires_payment/migration.sql — Prisma has no check syntax)
+/// enforces the source per type: PAYMENT/DISCOUNT ⇒ paymentId IS NOT NULL AND creditInvoiceId IS
+/// NULL; WRITE_OFF ⇒ creditInvoiceId IS NULL (a standalone bad-debt WRITE_OFF may carry a null
+/// paymentId); CREDIT ⇒ paymentId IS NULL AND creditInvoiceId IS NOT NULL. `reason` is required
+/// (service-enforced) for WRITE_OFF/DISCOUNT. `appliedDate` is the A/R effective date, for
+/// point-in-time aging (§6).
 model Application {
   id              String          @id @default(cuid())
   invoiceId       String

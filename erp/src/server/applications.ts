@@ -229,7 +229,7 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   const invoiceIds = [...new Set(data.lines.map((l) => l.invoiceId))];
   const stubs = await tx.invoice.findMany({
     where: { id: { in: invoiceIds } },
-    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+    select: { id: true, orderId: true, customerId: true, kind: true, status: true, deletedAt: true },
   });
   const stubById = new Map(stubs.map((s) => [s.id, s]));
   for (const id of invoiceIds) {
@@ -244,9 +244,21 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   }
 
   const paymentStub = await tx.payment.findFirst({
-    where: { id: data.paymentId }, select: { id: true, deletedAt: true },
+    where: { id: data.paymentId }, select: { id: true, customerId: true, deletedAt: true },
   });
   if (!paymentStub || paymentStub.deletedAt !== null) throw new HttpError(404, "Payment not found");
+
+  // A payment settles only its own customer's family (§4.1 — one payment across a parent's
+  // divisions, never an unrelated customer). Each target invoice's `customerId` must fall inside
+  // the payer's family, else this call would settle customer B's balance with customer A's cash.
+  // The invoice's `customerId` is frozen paper (nothing updates it), so validating it here in the
+  // unlocked stub pass is sufficient — there is nothing to re-read under the claim.
+  const payerFamily = new Set(await familyCustomerIds(paymentStub.customerId));
+  for (const id of invoiceIds) {
+    if (!payerFamily.has(stubById.get(id)!.customerId)) {
+      throw new HttpError(400, "That invoice belongs to a customer outside this payment's family");
+    }
+  }
 
   // (2) Claim the orders behind the invoices — one sorted statement, dedup + ascending.
   await claimOrdersInOrder(tx, stubs.map((s) => s.orderId));
@@ -362,8 +374,15 @@ function resolveReason(line: ApplyLine, invoice: ClaimedInvoice, receivedDate: D
   }
   if (line.type === "DISCOUNT") {
     const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
-    if (discountFor(invoice.customer.terms, invoice.invoiceDate, receivedDate, open) <= 0) {
+    const elig = discountFor(invoice.customer.terms, invoice.invoiceDate, receivedDate, open);
+    if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
+    }
+    // Cap the line at the terms-derived eligible amount — the early-pay window opening does NOT
+    // license waiving the whole receivable as a "discount". The operator may take part of it
+    // (line ≤ elig), never more. Integer cents to dodge float drift.
+    if (cents(line.amount) > cents(elig)) {
+      throw new HttpError(400, `discount exceeds the eligible early-pay amount of ${elig}`);
     }
     return "early-pay terms";
   }
@@ -463,7 +482,7 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
   // a distinct "Credit not found" would just be the same row, differently worded.
   const invoiceStub = await tx.invoice.findFirst({
     where: { id: data.invoiceId },
-    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+    select: { id: true, orderId: true, customerId: true, kind: true, status: true, deletedAt: true },
   });
   if (!invoiceStub || invoiceStub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
   if (invoiceStub.kind !== "INVOICE") {
@@ -475,7 +494,7 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
 
   const creditStub = await tx.invoice.findFirst({
     where: { id: data.creditInvoiceId },
-    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+    select: { id: true, orderId: true, customerId: true, kind: true, status: true, deletedAt: true },
   });
   if (!creditStub || creditStub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
   if (creditStub.kind !== "CREDIT") {
@@ -483,6 +502,14 @@ async function applyCreditInTx(tx: Db, data: ApplyCreditInput): Promise<void> {
   }
   if (creditStub.status !== "FINALIZED") {
     throw new HttpError(400, "only a finalized credit can be applied");
+  }
+
+  // A credit applies only within its OWN customer's family (§4.1/§5) — never to an unrelated
+  // customer. Both `customerId`s are frozen paper (nothing updates them), so validating here in the
+  // unlocked stub pass is sufficient — there is nothing to re-read under the claim.
+  const creditFamily = new Set(await familyCustomerIds(creditStub.customerId));
+  if (!creditFamily.has(invoiceStub.customerId)) {
+    throw new HttpError(400, "That invoice belongs to a customer outside this credit's family");
   }
 
   // (2) Claim the orders behind both rows — one sorted statement, dedup + ascending.

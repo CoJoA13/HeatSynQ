@@ -112,4 +112,26 @@ describe("A/R receipts ledger", () => {
     });
     expect(await prisma.application.count()).toBe(0);
   });
+
+  // Application_source_check (tightened 20260809120000_application_source_requires_payment): a
+  // PAYMENT (or DISCOUNT) must name a payment source — a source-less PAYMENT reduces an invoice's
+  // open balance while identifying no receipt, so it can never be reconciled. Only a standalone
+  // bad-debt WRITE_OFF may be source-less. Raw insert so nothing in the app can "fix" the payload.
+  it("Application_source_check rejects a PAYMENT application with a null paymentId", async () => {
+    const { invoice } = await ledgerFixture();
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO "Application" ("id", "invoiceId", "amount", "type", "appliedDate", "updatedAt")
+        VALUES ('app-nopay', ${invoice.id}, 10.00, CAST('PAYMENT' AS "ApplicationType"),
+                DATE '2026-08-08', now())`,
+    ).rejects.toMatchObject({
+      code: "P2010",
+      meta: expect.objectContaining({
+        driverAdapterError: expect.objectContaining({
+          cause: expect.objectContaining({ originalCode: "23514" }),
+        }),
+      }),
+    });
+    expect(await prisma.application.count()).toBe(0);
+  });
 });

@@ -24,39 +24,39 @@ function getReq(url: string, cookie?: string): Request {
 beforeEach(truncateAll);
 
 let seq = 0;
-async function finalizedInvoice(total: number): Promise<{ invoiceId: string; customerId: string }> {
+async function finalizedInvoice(total: number, customerId?: string): Promise<{ invoiceId: string; customerId: string }> {
   seq += 1;
-  const customer = await prisma.customer.create({ data: { code: `ARC${seq}`, name: `AR Route Customer ${seq}` } });
+  const cid = customerId ?? (await prisma.customer.create({ data: { code: `ARC${seq}`, name: `AR Route Customer ${seq}` } })).id;
   const order = await prisma.order.create({
     data: {
-      orderNumber: 600000 + seq, customerId: customer.id, status: "SHIPPED",
+      orderNumber: 600000 + seq, customerId: cid, status: "SHIPPED",
       receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
     },
   });
   const invoice = await prisma.invoice.create({
     data: {
-      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: cid,
       invoiceDate: parseDateOnly("2026-08-08"), total, finalizedAt: new Date(),
     },
   });
-  return { invoiceId: invoice.id, customerId: customer.id };
+  return { invoiceId: invoice.id, customerId: cid };
 }
-async function finalizedCredit(total: number): Promise<{ invoiceId: string; customerId: string }> {
+async function finalizedCredit(total: number, customerId?: string): Promise<{ invoiceId: string; customerId: string }> {
   seq += 1;
-  const customer = await prisma.customer.create({ data: { code: `ARCR${seq}`, name: `AR Credit Route Customer ${seq}` } });
+  const cid = customerId ?? (await prisma.customer.create({ data: { code: `ARCR${seq}`, name: `AR Credit Route Customer ${seq}` } })).id;
   const order = await prisma.order.create({
     data: {
-      orderNumber: 630000 + seq, customerId: customer.id, status: "SHIPPED",
+      orderNumber: 630000 + seq, customerId: cid, status: "SHIPPED",
       receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
     },
   });
   const credit = await prisma.invoice.create({
     data: {
-      kind: "CREDIT", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      kind: "CREDIT", status: "FINALIZED", orderId: order.id, customerId: cid,
       invoiceDate: parseDateOnly("2026-08-08"), total, finalizedAt: new Date(),
     },
   });
-  return { invoiceId: credit.id, customerId: customer.id };
+  return { invoiceId: credit.id, customerId: cid };
 }
 async function makePayment(customerId: string, amount: number): Promise<string> {
   seq += 1;
@@ -87,6 +87,18 @@ describe("applications routes", () => {
       paymentId, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 600 }],
     }), noParams);
     expect(res.status).toBe(401);
+  });
+
+  it("POST refuses a payment line targeting an unrelated customer's invoice (400)", async () => {
+    const cookie = await signInWith(["receivables.create"]);
+    const payerInv = await finalizedInvoice(1000);
+    const strangerInv = await finalizedInvoice(1000); // a different, unrelated customer
+    const paymentId = await makePayment(payerInv.customerId, 600);
+    const res = await applyRoute(bodyReq("http://t/api/receivables/applications", "POST", cookie, {
+      paymentId, lines: [{ invoiceId: strangerInv.invoiceId, type: "PAYMENT", amount: 100 }],
+    }), noParams);
+    expect(res.status).toBe(400);
+    expect(await prisma.application.count({ where: { invoiceId: strangerInv.invoiceId } })).toBe(0);
   });
 
   it("POST refuses a caller without receivables.create (403)", async () => {
@@ -302,13 +314,24 @@ describe("applications routes", () => {
 describe("credit-applications route", () => {
   it("POST applies a credit for a create-authorized user", async () => {
     const cookie = await signInWith(["receivables.create"]);
-    const credit = await finalizedCredit(-500);
     const inv = await finalizedInvoice(1000);
+    const credit = await finalizedCredit(-500, inv.customerId); // same customer/family
     const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     }), noParams);
     expect(res.status).toBe(200);
     expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "CREDIT" } })).toBe(1);
+  });
+
+  it("POST refuses a credit applied to an unrelated customer's invoice (400)", async () => {
+    const cookie = await signInWith(["receivables.create"]);
+    const credit = await finalizedCredit(-500);
+    const strangerInv = await finalizedInvoice(1000); // a different, unrelated customer
+    const res = await applyCreditRoute(bodyReq("http://t/api/receivables/credit-applications", "POST", cookie, {
+      creditInvoiceId: credit.invoiceId, invoiceId: strangerInv.invoiceId, amount: 100,
+    }), noParams);
+    expect(res.status).toBe(400);
+    expect(await prisma.application.count()).toBe(0);
   });
 
   it("POST refuses a caller without receivables.create (403)", async () => {

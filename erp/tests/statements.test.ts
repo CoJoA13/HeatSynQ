@@ -75,8 +75,20 @@ async function finalizedCredit(customerId: string, opts: { total: number }): Pro
 }
 
 async function payInvoice(invoiceId: string, amount: number): Promise<void> {
+  seq += 1;
+  // A PAYMENT application must name a payment source (Application_source_check, tightened
+  // 20260809120000), so attach a real receipt for the invoice's own customer.
+  const invoice = await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId }, select: { customerId: true } });
+  const batch = await prisma.receiptBatch.create({ data: { batchNumber: 970000 + seq, depositDate: parseDateOnly(back(10)) } });
+  const paymentType = await prisma.paymentType.create({ data: { name: `STPT-${seq}` } });
+  const payment = await prisma.payment.create({
+    data: {
+      batchId: batch.id, customerId: invoice.customerId, paymentTypeId: paymentType.id,
+      amount, receivedDate: parseDateOnly(back(10)),
+    },
+  });
   await prisma.application.create({
-    data: { invoiceId, amount, type: "PAYMENT", appliedDate: parseDateOnly(back(10)) },
+    data: { invoiceId, amount, type: "PAYMENT", paymentId: payment.id, appliedDate: parseDateOnly(back(10)) },
   });
 }
 

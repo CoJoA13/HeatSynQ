@@ -34,28 +34,28 @@ async function makeTerms(discountPercent: string | null, discountDays: number | 
 type Fixture = { invoiceId: string; orderId: string; orderNumber: number; customerId: string };
 
 async function finalizedInvoice(opts: {
-  total: number; invoiceDate?: string; termsId?: string | null;
+  total: number; invoiceDate?: string; termsId?: string | null; customerId?: string;
 }): Promise<Fixture> {
   seq += 1;
-  const customer = await prisma.customer.create({
+  const customerId = opts.customerId ?? (await prisma.customer.create({
     data: { code: `APC${seq}`, name: `AP Customer ${seq}`, termsId: opts.termsId ?? undefined },
-  });
+  })).id;
   const orderNumber = 500000 + seq;
   const order = await prisma.order.create({
     data: {
-      orderNumber, customerId: customer.id, status: "SHIPPED",
+      orderNumber, customerId, status: "SHIPPED",
       receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
     },
   });
   const invoice = await prisma.invoice.create({
     data: {
       kind: "INVOICE", status: "FINALIZED",
-      orderId: order.id, customerId: customer.id,
+      orderId: order.id, customerId,
       invoiceDate: parseDateOnly(opts.invoiceDate ?? "2026-08-08"),
       total: opts.total, finalizedAt: new Date(),
     },
   });
-  return { invoiceId: invoice.id, orderId: order.id, orderNumber, customerId: customer.id };
+  return { invoiceId: invoice.id, orderId: order.id, orderNumber, customerId };
 }
 
 async function makePayment(customerId: string, amount: number, receivedDate = "2026-08-08"): Promise<Payment> {
@@ -93,15 +93,15 @@ async function onAccount(paymentId: string): Promise<number> {
 // on its OWN order — nothing ties it to the target invoice's order, so a test that puts them on
 // different orders is the realistic shape ("apply this job's credit to that job's invoice") and
 // exercises the two-order claim for real (same-order would collapse to one claim via dedup).
-async function finalizedCredit(opts: { total: number; status?: "DRAFT" | "FINALIZED" }): Promise<Fixture> {
+async function finalizedCredit(opts: { total: number; status?: "DRAFT" | "FINALIZED"; customerId?: string }): Promise<Fixture> {
   seq += 1;
-  const customer = await prisma.customer.create({
+  const customerId = opts.customerId ?? (await prisma.customer.create({
     data: { code: `APCR${seq}`, name: `AP Credit Customer ${seq}` },
-  });
+  })).id;
   const orderNumber = 550000 + seq;
   const order = await prisma.order.create({
     data: {
-      orderNumber, customerId: customer.id, status: "SHIPPED",
+      orderNumber, customerId, status: "SHIPPED",
       receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
     },
   });
@@ -109,12 +109,12 @@ async function finalizedCredit(opts: { total: number; status?: "DRAFT" | "FINALI
   const credit = await prisma.invoice.create({
     data: {
       kind: "CREDIT", status,
-      orderId: order.id, customerId: customer.id,
+      orderId: order.id, customerId,
       invoiceDate: parseDateOnly("2026-08-08"),
       total: opts.total, finalizedAt: status === "FINALIZED" ? new Date() : null,
     },
   });
-  return { invoiceId: credit.id, orderId: order.id, orderNumber, customerId: customer.id };
+  return { invoiceId: credit.id, orderId: order.id, orderNumber, customerId };
 }
 
 async function creditOpenRemaining(creditId: string): Promise<number> {
@@ -183,7 +183,7 @@ describe("applyPayment — partial payment and open balance", () => {
 
   it("settles two invoices from one payment in a single call", async () => {
     const a = await finalizedInvoice({ total: 400 });
-    const b = await finalizedInvoice({ total: 700 });
+    const b = await finalizedInvoice({ total: 700, customerId: a.customerId }); // same payer, two invoices
     const payment = await makePayment(a.customerId, 1000);
     await asSystem(() => applyPayment({
       paymentId: payment.id, lines: [
@@ -246,6 +246,41 @@ describe("applyPayment — target validation", () => {
     await expect(asSystem(() => applyPayment({
       paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 100 }],
     }))).rejects.toMatchObject({ status: 400, message: expect.stringMatching(/credit/i) });
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// FIX (Codex): a payment settles only its own customer's family (§4.1) — an unrelated customer's
+// invoice must be refused; a sibling division's invoice in the SAME family is allowed (the
+// spec-permitted cross-division case).
+// -------------------------------------------------------------------------------------------
+
+describe("applyPayment — family scoping", () => {
+  it("refuses a payment line targeting an unrelated customer's invoice", async () => {
+    const payerInv = await finalizedInvoice({ total: 1000 });
+    const strangerInv = await finalizedInvoice({ total: 1000 }); // a different, unrelated customer
+    const payment = await makePayment(payerInv.customerId, 1000);
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: strangerInv.invoiceId, type: "PAYMENT", amount: 100 }],
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/outside this payment's family/),
+    });
+    expect(await prisma.application.count({ where: { invoiceId: strangerInv.invoiceId } })).toBe(0);
+  });
+
+  it("allows a payment to settle a sibling division's invoice in the same family", async () => {
+    seq += 1;
+    const parent = await prisma.customer.create({ data: { code: `FAMP${seq}`, name: `Fam Parent ${seq}` } });
+    const childA = await prisma.customer.create({ data: { code: `FAMA${seq}`, name: `Fam Child A ${seq}`, parentId: parent.id } });
+    const childB = await prisma.customer.create({ data: { code: `FAMB${seq}`, name: `Fam Child B ${seq}`, parentId: parent.id } });
+    // The invoice belongs to childB; the payment is childA's — same family (shared parent).
+    const sibInv = await finalizedInvoice({ total: 500, customerId: childB.id });
+    const payment = await makePayment(childA.id, 500);
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: sibInv.invoiceId, type: "PAYMENT", amount: 300 }],
+    }));
+    expect(await openBalance(sibInv.invoiceId)).toBe(200);
   });
 });
 
@@ -397,6 +432,32 @@ describe("applyPayment — DISCOUNT line", () => {
     });
     expect((entry!.after as Record<string, unknown>).reason).toBe("early-pay terms");
   });
+
+  // FIX (Codex): the early-pay window opening does NOT license waiving the whole receivable as a
+  // "discount" — a DISCOUNT line is capped at discountPercent × the open balance.
+  it("refuses a DISCOUNT line greater than the eligible early-pay amount, naming it", async () => {
+    const terms = await makeTerms("2.00", 10); // 2/10 → eligible 20 on a 1000 invoice
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 1000 }],
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/discount exceeds the eligible early-pay amount of 20/),
+    });
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  it("allows a DISCOUNT line equal to the eligible early-pay amount", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
+    }));
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "DISCOUNT" } })).toBe(1);
+    expect(await openBalance(inv.invoiceId)).toBe(980);
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -489,8 +550,8 @@ describe("voidApplication — restores balances", () => {
 
 describe("applyCredit — both balances guarded", () => {
   it("applies a credit; invoice open drops and credit remaining drops together", async () => {
-    const credit = await finalizedCredit({ total: -500 }); // remaining 500
     const inv = await finalizedInvoice({ total: 1000 });
+    const credit = await finalizedCredit({ total: -500, customerId: inv.customerId }); // remaining 500
     expect(await creditOpenRemaining(credit.invoiceId)).toBe(500);
 
     await asSystem(() => applyCredit({
@@ -505,8 +566,8 @@ describe("applyCredit — both balances guarded", () => {
   });
 
   it("refuses an application that would exceed the credit's remaining", async () => {
-    const credit = await finalizedCredit({ total: -500 }); // remaining 500
     const inv = await finalizedInvoice({ total: 1000 });
+    const credit = await finalizedCredit({ total: -500, customerId: inv.customerId }); // remaining 500
     await asSystem(() => applyCredit({
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     })); // remaining now 200
@@ -523,8 +584,8 @@ describe("applyCredit — both balances guarded", () => {
   });
 
   it("refuses an application that would exceed the invoice's open balance, even with plenty of credit left", async () => {
-    const credit = await finalizedCredit({ total: -1000 }); // remaining 1000, plenty
     const inv = await finalizedInvoice({ total: 100 }); // open only 100
+    const credit = await finalizedCredit({ total: -1000, customerId: inv.customerId }); // remaining 1000, plenty
 
     await expect(asSystem(() => applyCredit({
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 200,
@@ -577,8 +638,8 @@ describe("applyCredit — both balances guarded", () => {
   });
 
   it("audits a CREDIT application with real content — type, amount, both FKs, and today's applied date", async () => {
-    const credit = await finalizedCredit({ total: -500 });
     const inv = await finalizedInvoice({ total: 1000 });
+    const credit = await finalizedCredit({ total: -500, customerId: inv.customerId });
     await asSystem(() => applyCredit({
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     }));
@@ -597,8 +658,8 @@ describe("applyCredit — both balances guarded", () => {
   });
 
   it("voiding a CREDIT application snapshots its source credit's order number, not a bare cuid (audit.ts SNAPSHOT_INCLUDE carry)", async () => {
-    const credit = await finalizedCredit({ total: -500 });
     const inv = await finalizedInvoice({ total: 1000 });
+    const credit = await finalizedCredit({ total: -500, customerId: inv.customerId });
     await asSystem(() => applyCredit({
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     }));
@@ -615,5 +676,34 @@ describe("applyCredit — both balances guarded", () => {
     expect(snapshotCredit).not.toBeNull();
     expect(snapshotCredit!.kind).toBe("CREDIT");
     expect((snapshotCredit!.order as Record<string, unknown>).orderNumber).toBe(credit.orderNumber);
+  });
+
+  // FIX (Codex): a credit applies only within its OWN customer's family — an unrelated customer's
+  // invoice is refused; a sibling division's invoice in the SAME family is allowed.
+  it("refuses a credit applied to an unrelated customer's invoice", async () => {
+    const credit = await finalizedCredit({ total: -500 });
+    const strangerInv = await finalizedInvoice({ total: 1000 }); // a different, unrelated customer
+    await expect(asSystem(() => applyCredit({
+      creditInvoiceId: credit.invoiceId, invoiceId: strangerInv.invoiceId, amount: 100,
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/outside this credit's family/),
+    });
+    expect(await prisma.application.count()).toBe(0);
+  });
+
+  it("allows a credit applied to a sibling division's invoice in the same family", async () => {
+    seq += 1;
+    const parent = await prisma.customer.create({ data: { code: `CFAMP${seq}`, name: `Credit Fam Parent ${seq}` } });
+    const childA = await prisma.customer.create({ data: { code: `CFAMA${seq}`, name: `Credit Fam Child A ${seq}`, parentId: parent.id } });
+    const childB = await prisma.customer.create({ data: { code: `CFAMB${seq}`, name: `Credit Fam Child B ${seq}`, parentId: parent.id } });
+    // The credit belongs to childA; the target invoice to childB — same family (shared parent).
+    const credit = await finalizedCredit({ total: -500, customerId: childA.id });
+    const sibInv = await finalizedInvoice({ total: 1000, customerId: childB.id });
+    await asSystem(() => applyCredit({
+      creditInvoiceId: credit.invoiceId, invoiceId: sibInv.invoiceId, amount: 300,
+    }));
+    expect(await openBalance(sibInv.invoiceId)).toBe(700);
+    expect(await creditOpenRemaining(credit.invoiceId)).toBe(200);
   });
 });
