@@ -54,6 +54,9 @@ than pre-litigated.
 
 ## Owner rulings owed (surface at the Task 17 demo)
 
+**Filed as GitHub issues on `CoJoA13/HeatSynQ` (2026-08-09), the 5A #59–#65 pattern:** #68 POSTED batch lifecycle · #69 discount basis · #70 runStatements credit-balance customers · #71 customer A/R family roll-up (enhancement) · #72 vestigial `"ar"` area · #73 post-dated payments / customer-page point-in-time. None blocks the merge.
+
+
 - **POSTED batch lifecycle (Task 6).** The brief mandates `voidPayment` refuse on a POSTED batch, but the (also-mandated) refusal message "This batch is posted — reopen or void a payment to change it" promises an escape hatch that does not exist — there is no `reopen`, and `voidBatch` has no POSTED guard. Net asymmetry as built: a POSTED **empty** batch is voidable, but a POSTED **non-empty** batch is fully frozen (can't void its payments, can't void the batch). On-account cash on those payments is still appliable to invoices (spec §5.2). The plan already earmarks the POSTED lifecycle for an owner ruling at the demo (Task 17 Step 3). **Options for the owner:** (a) allow `voidPayment` on POSTED (the message's implied behavior); (b) add a `reopen` (POSTED→OPEN); (c) reword the message; (d) leave frozen-by-design. No code change until the owner rules.
 
 - **Discount basis (Task 7) — owner ruling at demo.** `discountAvailable` computes the early-pay discount on the invoice's OPEN BALANCE (self-consistent between `discountAvailable` and the DISCOUNT-line guard). The correct basis (open balance vs the amount actually paid vs the original invoice total) is a billing-policy choice the plan already earmarks for the Task 17 demo (Task 17 Step 3: "discount-on-partial-payment basis"). No code change until the owner rules.
