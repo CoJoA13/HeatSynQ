@@ -1,6 +1,6 @@
 # Task 15 — implementation report
 
-**Commit:** (to be filled in after commit — see bottom)
+**Commit:** `d916dc4` — `feat(5b): statements screen (single + run, family, FC toggle) and customer A/R section`
 
 ## What was built
 
