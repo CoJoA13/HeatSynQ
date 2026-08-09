@@ -13,7 +13,7 @@ import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail }
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
-import { finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivity } from "./invoice-guards";
+import { finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder } from "./invoice-guards";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
@@ -1361,23 +1361,29 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
     const order = await claimOrder(tx, id);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
-    // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.
-    // Checked BEFORE `shipmentBlockers`, deliberately: an invoiced order has necessarily shipped
-    // (you bill what shipped), so the shipment check would fire first for essentially every real
-    // case and send the user to void the shipment — which `voidShipper`'s own guard then refuses
-    // for this same reason. Only naming the invoice first points at a fix that actually works.
-    const inv = await finalizedInvoiceFor(tx, id);
-    // Task 9 (§5.3/§5.7): if that invoice has live A/R activity — a payment/discount/write-off
-    // applied to it, or a credit applied against it — name THAT first. It is a stronger refusal than
-    // the bare finalized-invoice one below: you cannot unlock or credit the invoice while a payment
-    // sits on it (unlock's own Task 9 guard refuses that too), so the only fix that works is to void
-    // the application. Read under the order claim `claimOrder` already holds — the same claim
-    // `applyPayment`/`applyCredit` take — so the check and the void it guards serialize through it.
-    if (inv && await hasReceivableActivity(tx, inv.id)) {
+    // Task 9 (§5.3/§5.7): refuse first if ANY invoice-family document on this order — an INVOICE or a
+    // CREDIT — carries live A/R activity. This is the ORDER-level check, not `hasReceivableActivity`
+    // on the order's finalized INVOICE: a finalized CREDIT lives on the same order and can hold a
+    // live (possibly cross-order) application even after that INVOICE is unlocked back to DRAFT, at
+    // which point `finalizedInvoiceFor` returns null and a per-invoice guard would never run —
+    // orphaning the credit's application on a voided order. It is a stronger refusal than the bare
+    // finalized-invoice one below: you cannot unlock or credit paper while money sits on it (unlock's
+    // own guard refuses that too), so the only fix that works is to void the application. Read under
+    // the order claim `claimOrder` already holds — the same claim `applyPayment`/`applyCredit` take —
+    // so the check and the void it guards serialize through it.
+    if (await hasReceivableActivityForOrder(tx, id)) {
       throw new HttpError(400,
-        "This order cannot be voided — an invoice on this order has A/R activity; " +
+        "This order cannot be voided — an invoice or credit on this order has A/R activity; " +
         "void the payments or credits applied to it first");
     }
+
+    // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.
+    // Both guards above and this one are checked BEFORE `shipmentBlockers`, deliberately: an invoiced
+    // order has necessarily shipped (you bill what shipped), so the shipment check would fire first
+    // for essentially every real case and send the user to void the shipment — which `voidShipper`'s
+    // own guard then refuses for this same reason. Only naming the invoice/credit first points at a
+    // fix that actually works.
+    const inv = await finalizedInvoiceFor(tx, id);
     if (inv) throw new HttpError(400, invoiceBlockMessage(inv, "This order cannot be voided"));
 
     // Spec §5.5: void the shipments first, otherwise the shipment is left pointing at an order

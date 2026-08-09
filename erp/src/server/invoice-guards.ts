@@ -119,3 +119,30 @@ export async function hasReceivableActivity(
   });
   return !!row;
 }
+
+/**
+ * The ORDER-level companion: does ANY invoice-family document on this order — an INVOICE **or** a
+ * CREDIT — carry live A/R activity? `voidOrder` asks this, not `hasReceivableActivity` on the order's
+ * finalized INVOICE, because a finalized CREDIT lives on the same order (`createCredit` copies
+ * `orderId: source.orderId`) and can hold a live application even after that INVOICE is unlocked back
+ * to DRAFT — at which point `finalizedInvoiceFor` returns null and the per-invoice guard would never
+ * run, orphaning the credit's live application on a voided order (§5.3).
+ *
+ * Both arms walk the Application → invoice / Application → creditInvoice relations to `orderId`:
+ *   - `invoice.orderId = this` — a payment/discount/write-off/applied-credit reducing an INVOICE on
+ *     this order;
+ *   - `creditInvoice.orderId = this` — a CREDIT raised on this order that has been applied against
+ *     some invoice (possibly on ANOTHER order — cross-order application is supported).
+ * A voided (soft-deleted) `Application` drops out of both arms. Read on the caller's own `tx` under
+ * the order claim it already holds; a relation filter keeps this a single existence query and the
+ * module a leaf (only `type Prisma` imported).
+ */
+export async function hasReceivableActivityForOrder(
+  tx: Prisma.TransactionClient, orderId: string,
+): Promise<boolean> {
+  const row = await tx.application.findFirst({
+    where: { deletedAt: null, OR: [{ invoice: { orderId } }, { creditInvoice: { orderId } }] },
+    select: { id: true },
+  });
+  return !!row;
+}

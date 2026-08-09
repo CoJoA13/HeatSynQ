@@ -154,3 +154,65 @@ E2E whenever a change touches any function or flow).
   A finalized credit applied to an invoice on a DIFFERENT order is not reachable while that target
   invoice is unlocked (unlock's own guard refuses it), so the same-order finalized invoice is the
   correct and sufficient anchor for this order's void.
+  **→ This concern was WRONG and was the review's Important finding. See Fix round 1.**
+
+---
+
+## Fix round 1 — `voidOrder` order-level A/R guard (review Important)
+
+**The gap (reviewer-verified, reachable).** `voidOrder`'s original A/R check ran
+`hasReceivableActivity` only on the order's finalized INVOICE (`finalizedInvoiceFor`, kind INVOICE
+only). A finalized CREDIT on the same order (`createCredit` copies `orderId: source.orderId`) with a
+live cross-order application was missed:
+
+1. `inv_O` finalized on order O; `createCredit(inv_O)` → `credit_C` on O; finalize `credit_C`.
+2. `applyCredit(credit_C → inv_X)` where `inv_X` is on a DIFFERENT order → live Application
+   `{ invoiceId: inv_X, creditInvoiceId: credit_C }`.
+3. `unlockInvoice(inv_O)` succeeds (no application references `inv_O`) → `inv_O` → DRAFT.
+4. `voidOrder(O)`: `finalizedInvoiceFor(O)` is now null → both A/R and bare finalized-invoice guards
+   skipped → the void **succeeded**, orphaning live finalized `credit_C` (with live application) on a
+   voided order. Violates §5.3.
+
+**The fix.**
+- Added `hasReceivableActivityForOrder(tx, orderId)` to the leaf `invoice-guards.ts` (still imports
+  only `type Prisma`): a single existence query returning true iff a live `Application` exists whose
+  `invoice.orderId === orderId` **or** whose `creditInvoice.orderId === orderId` (relation filters —
+  no service import, leaf preserved; the leaf-import test still passes):
+  ```ts
+  const row = await tx.application.findFirst({
+    where: { deletedAt: null, OR: [{ invoice: { orderId } }, { creditInvoice: { orderId } }] },
+    select: { id: true },
+  });
+  return !!row;
+  ```
+- `voidOrder` now calls `hasReceivableActivityForOrder(tx, id)` (under the order claim it already
+  holds) BEFORE the bare `finalizedInvoiceFor` refusal, message:
+  `"This order cannot be voided — an invoice or credit on this order has A/R activity; void the
+  payments or credits applied to it first"`. This closes the gap **and** the review's Minor (the
+  cross-order-applied-credit-while-inv_O-still-finalized case, which previously fell through to the
+  weaker bare-guard message). `unlockInvoice`/`discardInvoice` are unchanged.
+
+**Regression test (orders.test.ts).** Builds the exact reachable sequence above through the real
+services (`createCredit` → `finalizeInvoice` → `applyCredit(credit_C → inv_X on another order)` →
+`unlockInvoice(inv_O)`), asserts `voidOrder(O)` REFUSES with the A/R message, then voids the
+application and asserts `voidOrder(O)` SUCCEEDS with the trimmed reason on the delete audit entry.
+Also added two `hasReceivableActivityForOrder` unit tests to invoice-guards.test.ts (INVOICE arm +
+voided-drops-out; cross-order CREDIT arm).
+
+**RED verification.** Disabling the order-level guard (`if (false && …)`) and running only the new
+regression test: `voidOrder(O)` resolved instead of rejecting — `1 failed | 128 skipped` (the
+reachable sequence orphaned the credit). Restored → GREEN.
+
+**Covering-test results (foreground).**
+```
+npx vitest run tests/orders.test.ts tests/invoice-guards.test.ts
+  tests/orders.test.ts (129 tests)         ✓
+  tests/invoice-guards.test.ts (26 tests)  ✓
+  Test Files  2 passed (2)   Tests  155 passed (155)
+npx tsc --noEmit        → exit 0
+npx eslint src tests    → exit 0
+```
+
+**Confirmation:** the reachable sequence (finalized cross-order credit on a voided-would-be order,
+inv_O unlocked) now REFUSES `voidOrder` with the A/R message, and voiding the application re-permits
+the void.

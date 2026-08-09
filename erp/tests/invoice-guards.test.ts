@@ -9,7 +9,8 @@ import {
   updateShipper, type ShipperDetail,
 } from "@/server/shippers";
 import {
-  finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage, hasReceivableActivity,
+  finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage,
+  hasReceivableActivity, hasReceivableActivityForOrder,
 } from "@/server/invoice-guards";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -230,6 +231,46 @@ describe("hasReceivableActivity", () => {
     });
     expect(await receivable(inv.id)).toBe(false);
     expect(await receivable(otherInv.id)).toBe(true);
+  });
+});
+
+describe("hasReceivableActivityForOrder", () => {
+  const receivableForOrder = (orderId: string) =>
+    prisma.$transaction((tx) => hasReceivableActivityForOrder(tx, orderId));
+
+  it("is true when an application names an INVOICE on the order", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    expect(await receivableForOrder(order.id)).toBe(false);
+    const app = await prisma.application.create({
+      data: { invoiceId: inv.id, amount: "50.00", type: "WRITE_OFF", appliedDate: new Date("2026-08-08") },
+    });
+    expect(await receivableForOrder(order.id)).toBe(true);
+    await prisma.application.update({ where: { id: app.id }, data: { deletedAt: new Date() } });
+    expect(await receivableForOrder(order.id)).toBe(false); // voided drops out
+  });
+
+  it("is true for a CREDIT raised on this order applied to an invoice on ANOTHER order — the credit arm", async () => {
+    const { order, customer } = await savedOrder();
+    // A finalized CREDIT lives on THIS order; the target invoice it is applied against is on another.
+    const credit = await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "CREDIT", status: "FINALIZED",
+        creditNumber: 9300, invoiceDate: new Date("2026-08-06"), finalizedAt: new Date(),
+      },
+    });
+    const otherOrder = await orderFor(customer);
+    const otherInv = await finalizedInvoice(otherOrder.id, customer.id);
+    await prisma.application.create({
+      data: {
+        invoiceId: otherInv.id, creditInvoiceId: credit.id, amount: "25.00", type: "CREDIT",
+        appliedDate: new Date("2026-08-08"),
+      },
+    });
+    // The credit's order is blocked (creditInvoice.orderId arm) even though no invoice on it is named.
+    expect(await receivableForOrder(order.id)).toBe(true);
+    // The target invoice's order is blocked too (invoice.orderId arm).
+    expect(await receivableForOrder(otherOrder.id)).toBe(true);
   });
 });
 

@@ -11,8 +11,8 @@ import {
   voidOrder, linkOrder, unlinkOrder, getLockedRevision,
 } from "@/server/orders";
 import { updateStep, getRevision, getRevisions } from "@/server/part-process-steps";
-import { applyPayment, voidApplication } from "@/server/applications";
-import { unlockInvoice } from "@/server/invoices";
+import { applyPayment, applyCredit, voidApplication } from "@/server/applications";
+import { unlockInvoice, createCredit, finalizeInvoice } from "@/server/invoices";
 import { setSetting } from "@/server/settings";
 import { readAudit } from "@/server/audit";
 import { deleteReference } from "@/server/reference";
@@ -1932,7 +1932,7 @@ describe("voidOrder", () => {
     await expect(asSystem(() => voidOrder(order.id, "keyed twice")))
       .rejects.toMatchObject({
         status: 400,
-        message: expect.stringMatching(/an invoice on this order has A\/R activity/),
+        message: expect.stringMatching(/an invoice or credit on this order has A\/R activity/),
       });
     expect((await getOrder(order.id)).voided).toBe(false);
 
@@ -1945,6 +1945,65 @@ describe("voidOrder", () => {
     await asSystem(() => unlockInvoice(invoice.id, "reopen to correct"));
     await asSystem(() => voidOrder(order.id, "keyed twice"));
     expect((await getOrder(order.id)).voided).toBe(true);
+  });
+
+  // Task 9 fix round 1 (review Important): the A/R guard must be ORDER-level, not just the order's
+  // finalized INVOICE. A finalized CREDIT on the order can hold a live application even after that
+  // INVOICE is unlocked to DRAFT — at which point `finalizedInvoiceFor` returns null and the old
+  // per-invoice guard was skipped, letting the void orphan live finalized paper (§5.3). This builds
+  // the exact reachable sequence and asserts the void now refuses.
+  it("refuses to void an order whose finalized CREDIT has a live cross-order application, even after its invoice is unlocked", async () => {
+    const { customer, lead } = await fixture();
+    const { order: orderO } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    // inv_O: a finalized INVOICE on order O with one OPERATION line, so `createCredit` copies a
+    // non-zero amount (only OPERATION/SURCHARGE/CHARGE/CERT/FREIGHT/TAX lines feed the total).
+    const invO = await prisma.invoice.create({
+      data: {
+        orderId: orderO.id, customerId: customer.id, kind: "INVOICE", status: "FINALIZED",
+        invoiceDate: parseDateOnly("2026-08-08"), total: 500, finalizedAt: new Date(),
+        lines: { create: [{ position: 1, kind: "OPERATION", description: "Heat treat", amount: 500 }] },
+      },
+    });
+    // credit_C on O via the REAL service (it copies `orderId: source.orderId`), then finalized.
+    const credit = await asSystem(() => createCredit(invO.id));
+    expect(credit.orderId).toBe(orderO.id);
+    await asSystem(() => finalizeInvoice(credit.id));
+
+    // inv_X on a DIFFERENT order — the cross-order target the credit is applied to.
+    const { order: orderX } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const invX = await prisma.invoice.create({
+      data: {
+        orderId: orderX.id, customerId: customer.id, kind: "INVOICE", status: "FINALIZED",
+        invoiceDate: parseDateOnly("2026-08-08"), total: 500, finalizedAt: new Date(),
+      },
+    });
+    await asSystem(() => applyCredit({ creditInvoiceId: credit.id, invoiceId: invX.id, amount: 100 }));
+
+    // Unlocking inv_O is correct on its own terms — no application references inv_O.
+    await asSystem(() => unlockInvoice(invO.id, "correct inv_O"));
+
+    // The gap: `finalizedInvoiceFor(O)` is now null (inv_O DRAFT, credit_C is a CREDIT), but the
+    // credit's live cross-order application must still block the void.
+    await expect(asSystem(() => voidOrder(orderO.id, "cannot orphan the credit")))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/an invoice or credit on this order has A\/R activity/),
+      });
+    expect((await getOrder(orderO.id)).voided).toBe(false);
+
+    // Voiding the application clears the A/R and the void goes through; assert the audit content.
+    const application = await prisma.application.findFirstOrThrow({
+      where: { creditInvoiceId: credit.id, deletedAt: null } });
+    await asSystem(() => voidApplication(application.id, "misapplied credit"));
+    await asSystem(() => voidOrder(orderO.id, "  raised in error  "));
+    expect((await getOrder(orderO.id)).voided).toBe(true);
+    const [entry] = await readAudit("order", orderO.id);
+    expect(entry.action).toBe("delete");
+    expect(entry.reason).toBe("raised in error");
   });
 });
 
