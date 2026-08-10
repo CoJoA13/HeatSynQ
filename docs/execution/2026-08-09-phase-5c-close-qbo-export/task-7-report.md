@@ -79,3 +79,113 @@
 - None blocking. `docs/execution/.../progress.md` and the Task 8 kickoff are left for the
   controller pass, per this phase's established commit pattern (feat commit here; a separate
   `docs(5c): Task 7 complete …` commit records the ledger and next brief, as with Tasks 1–6).
+
+---
+
+## TDD RED evidence (added post-review — report-contract Important)
+
+The original report omitted the RED transcripts every prior Phase 5C task documents. Captured here
+by temporarily reverting each piece and re-running the exact test that exercises it, then restoring
+and re-confirming GREEN. Both reverts were later verified to leave a clean `git diff` (only the
+intended fix-round-1 changes below remained once restored).
+
+### 1. `exportClose` stores the real register (`tests/gl-export.test.ts -t "register"`)
+
+Reverted `gl-export.ts`'s `register = new Uint8Array(await renderPdf(buildPostingRegister(registerData)))`
+back to the Task 6 placeholder `register = new Uint8Array()`, then ran:
+
+```
+npx vitest run tests/gl-export.test.ts -t "register"
+```
+
+**RED:**
+
+```
+ FAIL  tests/gl-export.test.ts > gl-export delta > stores a non-empty posting-register PDF with a stable page marker (Task 7)
+AssertionError: expected 0 to be greater than 1000
+ ❯ tests/gl-export.test.ts:180:37
+    178|     const { batchId } = await asSystem(() => exportClose(period.id));
+    179|     const row = await prisma.glExportBatch.findUniqueOrThrow({ where: …
+    180|     expect(row.register.byteLength).toBeGreaterThan(1000); // a real P…
+       |                                     ^
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 11 skipped (12)
+```
+
+Restored the render call, re-ran the same command:
+
+**GREEN:**
+
+```
+ ✓ tests/gl-export.test.ts (12 tests | 11 skipped) 294ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 11 skipped (12)
+```
+
+### 2. The builder module itself (`tests/posting-register-pdf.test.ts`)
+
+Temporarily moved `src/server/pdf/posting-register.ts` out of the tree (simulating "builder
+absent"), then ran:
+
+```
+npx vitest run tests/posting-register-pdf.test.ts
+```
+
+**RED:**
+
+```
+ FAIL  tests/posting-register-pdf.test.ts [ tests/posting-register-pdf.test.ts ]
+Error: Cannot find module '@/server/pdf/posting-register' imported from
+'/home/cjones/Desktop/HeatSynQ/erp/tests/posting-register-pdf.test.ts'.
+ ❯ tests/posting-register-pdf.test.ts:2:1
+      1| import { describe, it, expect } from "vitest";
+      2| import { buildPostingRegister, type PostingRegisterData } from "@/serv…
+       | ^
+
+ Test Files  1 failed (1)
+      Tests  no tests
+```
+
+Restored the file, re-ran the same command:
+
+**GREEN:**
+
+```
+ ✓ tests/posting-register-pdf.test.ts (3 tests) 52ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+```
+
+---
+
+## Fix round 1 — review findings (2026-08-09)
+
+**Commit:** `fix(5c): register download filename; TDD RED evidence`.
+
+Task 7 review: **Approved**, with one Important (this report omitted RED evidence — closed above)
+and one Minor (register filename) to close before merge-readiness.
+
+### MINOR — register route had no filename on its `inline` disposition
+Every other inline-PDF route (`certs/[id]/print`, `invoices/[id]/print`,
+`receivables/statements`, `orders/[id]/traveler`, `documents/[docId]`) sets
+`inline; filename="..."`; the register route set bare `inline`. Fixed:
+- `getExportBatchRegister` (`gl-export.ts`) now also selects `periodEnd` and returns a derived
+  `fileName: gl-register-<YYYY>-<MM>.pdf` (the same year/month the CSV's own `fileName` uses, read
+  off the batch's own frozen `periodEnd` — never recomputed from live data).
+- The register route now sets `content-disposition: inline; filename="${fileName}"`.
+- `tests/receivables-routes.test.ts`'s register-route test gained one assertion:
+  `expect(res.headers.get("content-disposition")).toBe('inline; filename="gl-register-2026-07.pdf"')`.
+
+The reviewer's `money()` blank-zero/no-`$` style note was explicitly NOT changed per the
+coordinator's instruction — it reads correctly for a GL posting register (unlike the customer-facing
+invoice/statement templates, which prefix `$`).
+
+### Gate results (fix round 1)
+- `npx vitest run tests/gl-export.test.ts tests/posting-register-pdf.test.ts tests/receivables-routes.test.ts`
+  → **46 passed** (12 + 3 + 31).
+- **Full `npm test`** → 125 files, **1937 passed**.
+- `npx tsc --noEmit` → clean (exit 0). `npx eslint src tests` → clean (exit 0).
+- **`npm run test:e2e` (foreground)** → **all 17 flows PASS** (exit 0).

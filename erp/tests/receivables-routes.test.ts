@@ -765,6 +765,7 @@ describe("GET /api/receivables/close/export/[batchId]/register", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
+    expect(res.headers.get("content-disposition")).toBe('inline; filename="gl-register-2026-07.pdf"');
     const bytes = Buffer.from(await res.arrayBuffer());
     expect(bytes.byteLength).toBeGreaterThan(1000);
     expect(bytes.toString("latin1")).toContain("/Count 1"); // uncompressed page marker, bol.test.ts's rule

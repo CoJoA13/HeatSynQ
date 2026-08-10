@@ -8,16 +8,18 @@ import { getExportBatchRegister } from "@/server/gl-export";
 // (`.../file/route.ts`) — the bytes and content type are the batch's own frozen
 // `register`/`registerContentType` (application/pdf), never re-rendered from live data. `inline`,
 // not `attachment` (the file route's disposition): the register is meant to open in the browser's
-// own PDF viewer alongside the export, not force a download.
+// own PDF viewer alongside the export, not force a download — but it still carries its own
+// `filename` (fix round 1, Task 7 review), matching every other inline-PDF route (certs, invoices,
+// statements, traveler all pass `inline; filename="..."`).
 export const GET = handle(async (req, { params }) => {
   mustCan(requireUser(), "receivables", "view");
   const { batchId } = await params;
-  const { bytes, contentType } = await getExportBatchRegister(batchId);
+  const { bytes, fileName, contentType } = await getExportBatchRegister(batchId);
   return new NextResponse(new Uint8Array(bytes), {
     status: 200,
     headers: {
       "content-type": contentType,
-      "content-disposition": "inline",
+      "content-disposition": `inline; filename="${fileName}"`,
     },
   });
 });

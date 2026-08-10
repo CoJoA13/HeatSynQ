@@ -514,11 +514,16 @@ export async function getExportBatchFile(batchId: string): Promise<{ bytes: Buff
   return { bytes: Buffer.from(batch.file), fileName: batch.fileName, contentType: batch.fileContentType };
 }
 
-/** The stored register bytes for the register route (Task 7 fills the register in). 404 if gone. */
-export async function getExportBatchRegister(batchId: string): Promise<{ bytes: Buffer; contentType: string }> {
+/** The stored register bytes for the register route, plus a derived download filename
+ *  (`gl-register-<YYYY>-<MM>.pdf`, from the batch's OWN `periodEnd` — the same year/month the CSV's
+ *  `fileName` uses) so its `inline` disposition names itself, matching every other inline-PDF route
+ *  (certs/invoices/statements/traveler all pass `inline; filename="..."`) — fix round 1, Task 7
+ *  review. 404 if the batch is gone. */
+export async function getExportBatchRegister(batchId: string): Promise<{ bytes: Buffer; fileName: string; contentType: string }> {
   const batch = await prisma.glExportBatch.findFirst({
-    where: { id: batchId }, select: { register: true, registerContentType: true },
+    where: { id: batchId }, select: { register: true, registerContentType: true, periodEnd: true },
   });
   if (!batch) throw new HttpError(404, "Export batch not found");
-  return { bytes: Buffer.from(batch.register), contentType: batch.registerContentType };
+  const fileName = `gl-register-${batch.periodEnd.getUTCFullYear()}-${String(batch.periodEnd.getUTCMonth() + 1).padStart(2, "0")}.pdf`;
+  return { bytes: Buffer.from(batch.register), fileName, contentType: batch.registerContentType };
 }
