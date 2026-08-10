@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent } from "@/server/gl-mapping";
+import { cashJournal, salesJournal, reverseLines, readinessGaps, type SalesEvent, type ReadinessInput } from "@/server/gl-mapping";
 
 function sum(lines: { debit: number; credit: number }[]) {
   const d = lines.reduce((a, l) => a + l.debit, 0);
@@ -54,10 +54,18 @@ it("reverseLines swaps debit/credit and flags isReversal", () => {
   expect(rev.isReversal).toBe(true);
 });
 
+/** The account-bearing config every readinessGaps test starts from — all set, no gaps. Each test
+ *  clears exactly the field(s) it exercises so the assertion pins the gap it means to. */
+const clean: ReadinessInput = {
+  arGlAccountId: "ar", discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: "t",
+  freightGlAccountId: "f", otherChargeGlAccountId: "oc", certChargeStepCodeId: "cs",
+  hasDiscount: false, hasWriteOff: false, hasTax: false, hasFreight: false, hasCharge: false, hasCert: false,
+  stepCodesMissingGl: [], surchargesMissingGl: [], paymentTypesMissingGl: [], hasUnattributedLine: false,
+};
+
 it("readinessGaps lists a step code, surcharge, payment type, and missing A/R default", () => {
   const gaps = readinessGaps({
-    arGlAccountId: null, discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: "t",
-    hasDiscount: false, hasWriteOff: false, hasTax: false,
+    ...clean, arGlAccountId: null,
     stepCodesMissingGl: [{ id: "s1", code: "HT" }],
     surchargesMissingGl: [{ id: "u1", name: "Energy" }],
     paymentTypesMissingGl: [{ id: "p1", name: "ACH" }],
@@ -67,11 +75,37 @@ it("readinessGaps lists a step code, surcharge, payment type, and missing A/R de
 });
 
 it("flags a missing sales-tax account when a taxable event is in the delta", () => {
-  const gaps = readinessGaps({
-    arGlAccountId: "ar", discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: null,
-    hasDiscount: false, hasWriteOff: false, hasTax: true,
-    stepCodesMissingGl: [], surchargesMissingGl: [], paymentTypesMissingGl: [],
-  });
+  const gaps = readinessGaps({ ...clean, salesTaxGlAccountId: null, hasTax: true });
   expect(gaps).toHaveLength(1);
   expect(gaps[0].label).toMatch(/sales tax/i);
+});
+
+it("flags missing freight / other-charge accounts when such lines are in the delta", () => {
+  const gaps = readinessGaps({
+    ...clean,
+    freightGlAccountId: null, hasFreight: true,
+    otherChargeGlAccountId: null, hasCharge: true,
+  });
+  expect(gaps).toHaveLength(2);
+  expect(gaps.some((g) => /freight/i.test(g.label))).toBe(true);
+  expect(gaps.some((g) => /charge/i.test(g.label))).toBe(true);
+  // A freight/charge line with the account set is NOT a gap.
+  expect(readinessGaps({ ...clean, hasFreight: true, hasCharge: true })).toEqual([]);
+});
+
+it("flags a missing cert step code only when it is unset (a set one attributes via the step-code list)", () => {
+  const unset = readinessGaps({ ...clean, certChargeStepCodeId: null, hasCert: true });
+  expect(unset).toHaveLength(1);
+  expect(unset[0].label).toMatch(/cert/i);
+  // Cert step code SET but GL-less: resolveReadiness routes it through stepCodesMissingGl, so the
+  // cert plant-default branch stays quiet and the step-code gap carries it.
+  const viaStep = readinessGaps({ ...clean, hasCert: true, stepCodesMissingGl: [{ id: "cs", code: "CERT" }] });
+  expect(viaStep).toHaveLength(1);
+  expect(viaStep[0].kind).toBe("step-code");
+});
+
+it("emits a generic gap for an unattributable account-less line (the safety net)", () => {
+  const gaps = readinessGaps({ ...clean, hasUnattributedLine: true });
+  expect(gaps).toHaveLength(1);
+  expect(gaps[0].label).toMatch(/no GL account/i);
 });

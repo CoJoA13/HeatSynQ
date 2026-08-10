@@ -86,12 +86,27 @@ export type ReadinessInput = {
   discountGlAccountId: string | null;
   writeOffGlAccountId: string | null;
   salesTaxGlAccountId: string | null;
+  // Plant defaults the FREIGHT / CHARGE / CERT credit lines draw from (§4.5). A null-GL line of the
+  // matching kind is dropped from the credit side just like a step-code/surcharge line, so each needs
+  // its own gap or the batch unbalances. `certChargeStepCodeId` is the cert charge's source: when it
+  // is set, a null-GL CERT line is attributed to that step code (via `stepCodesMissingGl`); when it is
+  // unset, the gap is the missing config itself.
+  freightGlAccountId: string | null;
+  otherChargeGlAccountId: string | null;
+  certChargeStepCodeId: string | null;
   hasDiscount: boolean;
   hasWriteOff: boolean;
   hasTax: boolean; // any in-scope invoice with taxTotal != 0 — its A/R debit already includes the tax
+  hasFreight: boolean; // any in-scope FREIGHT line with a null GL and a nonzero amount
+  hasCharge: boolean; // any in-scope CHARGE line with a null GL and a nonzero amount
+  hasCert: boolean; // any in-scope CERT line with a null GL and a nonzero amount
   stepCodesMissingGl: { id: string; code: string }[];
   surchargesMissingGl: { id: string; name: string }[];
   paymentTypesMissingGl: { id: string; name: string }[];
+  // Safety net: a dropped nonzero credit line that could not be attributed to any source above
+  // (only reachable if an OPERATION line were orphaned from its step code). It still MUST surface a
+  // gap so readiness — not the balance backstop alone — refuses the export.
+  hasUnattributedLine: boolean;
 };
 
 /** §7 refuse-to-export: name every account gap. Empty => the export may proceed. */
@@ -103,8 +118,14 @@ export function readinessGaps(input: ReadinessInput): ReadinessGap[] {
   // A taxable invoice's total (the A/R debit) already includes tax; without a tax account the tax
   // credit line is dropped and the journal would be unbalanced — refuse (§15), do not silently drop.
   if (input.hasTax && !input.salesTaxGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Sales tax account is not set", href: "/admin/billing" });
+  // FREIGHT / CHARGE / CERT credit lines draw their GL from these plant defaults; a null-GL line of
+  // the kind is a dropped credit exactly like the tax case above (§4.3 / §7).
+  if (input.hasFreight && !input.freightGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Freight account is not set", href: "/admin/billing" });
+  if (input.hasCharge && !input.otherChargeGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Other charge account is not set", href: "/admin/billing" });
+  if (input.hasCert && !input.certChargeStepCodeId) gaps.push({ kind: "plant-default", id: null, label: "Certification step code is not set", href: "/admin/billing" });
   for (const s of input.stepCodesMissingGl) gaps.push({ kind: "step-code", id: s.id, label: `Process step code ${s.code} has no GL account`, href: "/admin/step-codes" });
   for (const u of input.surchargesMissingGl) gaps.push({ kind: "surcharge", id: u.id, label: `Surcharge ${u.name} has no GL account`, href: "/admin/surcharges" });
   for (const p of input.paymentTypesMissingGl) gaps.push({ kind: "payment-type", id: p.id, label: `Payment type ${p.name} has no GL account`, href: "/admin/reference" });
+  if (input.hasUnattributedLine) gaps.push({ kind: "plant-default", id: null, label: "An invoice line has no GL account", href: "/admin/billing" });
   return gaps;
 }

@@ -768,6 +768,14 @@ describe("GET /api/receivables/close/readiness", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("400s a missing year (Number(null)=0 must NOT slip through as 1900)", async () => {
+    const viewer = await signInWith(["receivables.view"], "readiness-missing-year");
+    const res = await readinessRoute(
+      getReq("http://t/api/receivables/close/readiness?month=7", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("GET /api/receivables/close/readiness/export", () => {

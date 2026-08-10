@@ -18,9 +18,12 @@ import { GL_EXPORT_COLUMNS, type PostingSourceType } from "../lib/gl-constants";
 // end `E` and what has already been posted (`GlPosting`, glDate <= E). Each event maps to a
 // self-balancing set of journal lines keyed on the 2-part `${sourceType}:${sourceId}` (an
 // invoice/credit id, a payment id, an application id — never a position or display field, so a
-// correction reverses ONE event without disturbing another). Both the live side and the prior
-// side are bounded by glDate <= E, so re-exporting an earlier month after a later one has closed
-// never disturbs the later month's postings.
+// correction reverses ONE event without disturbing another). Both the live side (event dates) and
+// the prior side (glDate) are bounded STRICTLY to the period's OWN month `[monthStart, monthEnd]` —
+// NOT cumulatively `<= E`. The period lock guarantees a closed month's events can't change, so a
+// month-bounded delta is exact; and it is the ONLY bound that survives exporting months out of
+// order — a cumulative `<= E` would let a later month's export vacuum an earlier month's events
+// under the later glDate, after which the earlier month's export re-posts them (double-booked).
 //
 //   NEW      = a live in-scope event with no live prior posting   -> post   (isReversal:false)
 //   REVERSED = a net-posted event no longer live-in-scope         -> reverse (isReversal:true)
@@ -53,6 +56,22 @@ export type ExportedBatch = {
 
 type Tx = Prisma.TransactionClient;
 
+/** The delta window: the period's OWN month, `[monthStart, monthEnd]` inclusive. Both the live event
+ *  dates and the prior glDate are bounded to this — never cumulatively `<= E` — so an out-of-order
+ *  export can neither vacuum an earlier month's events nor double-post them (see the header). */
+type MonthBounds = { monthStart: Date; monthEnd: Date };
+
+/** month is 1-based: `Date.UTC(year, month-1, 1)` is the 1st, `Date.UTC(year, month, 0)` the last day. */
+function monthBoundsOf(year: number, month: number): MonthBounds {
+  return { monthStart: new Date(Date.UTC(year, month - 1, 1)), monthEnd: new Date(Date.UTC(year, month, 0)) };
+}
+
+/** `periodEnd` is the last day of its month at UTC midnight (a @db.Date round-trip); the readiness
+ *  routes hand it in directly, so recover the 1st of the SAME month for the delta window. */
+function monthBoundsFromEnd(periodEnd: Date): MonthBounds {
+  return { monthStart: new Date(Date.UTC(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth(), 1)), monthEnd: periodEnd };
+}
+
 /**
  * Emit the delta batch for a CLOSED period (§4.3). Refuses a reopened period (it must be re-closed
  * first) and refuses on any readiness gap (§7). Allocates the export number under the tx, writes the
@@ -66,10 +85,12 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
       throw new HttpError(409, "Reopened periods must be re-closed before export");
     }
     // period.month is 1-based; Date.UTC(year, month, 0) is day 0 of the NEXT month = this month's
-    // last day (the same reading close-periods.ts monthBounds and every A/R @db.Date round-trip use).
-    const periodEnd = new Date(Date.UTC(period.year, period.month, 0));
+    // last day, and Date.UTC(year, month-1, 1) is the 1st — the same reading close-periods.ts
+    // monthBounds and every A/R @db.Date round-trip use. The delta scopes to this window, not `<= E`.
+    const bounds = monthBoundsOf(period.year, period.month);
+    const periodEnd = bounds.monthEnd;
 
-    const gaps = await resolveReadiness(tx, periodEnd);
+    const gaps = await resolveReadiness(tx, bounds);
     if (gaps.length > 0) {
       throw new HttpError(409,
         `Cannot export — ${gaps.length} GL account gap(s) must be resolved first (see the readiness list)`);
@@ -77,8 +98,8 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 
     // Both maps keyed on the IDENTICAL 2-part `${sourceType}:${sourceId}`. `buildPriorNet` drops
     // net-zero groups (already-reversed events), so `.has(key)` == "has a live prior posting".
-    const currentByKey = await buildCurrentJournal(tx, periodEnd);
-    const priorByKey = await buildPriorNet(tx, periodEnd);
+    const currentByKey = await buildCurrentJournal(tx, bounds);
+    const priorByKey = await buildPriorNet(tx, bounds);
 
     const lines: JournalLine[] = [];
     for (const [key, cur] of currentByKey) {
@@ -86,6 +107,16 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
     }
     for (const [key, prior] of priorByKey) {
       if (!currentByKey.has(key)) lines.push(...reverseLines(prior)); // net-posted, no longer live -> reverse
+    }
+
+    // Balance backstop (§7): a batch that does not net to zero must NEVER persist, even if a readiness
+    // case is ever missed. Sum debit and credit over the emitted lines in integer cents and refuse on
+    // any difference — every event's line set is self-balancing, so the whole batch must be too.
+    const debitCents = lines.reduce((s, l) => s + cents(l.debit), 0);
+    const creditCents = lines.reduce((s, l) => s + cents(l.credit), 0);
+    if (debitCents !== creditCents) {
+      throw new HttpError(500,
+        `GL export batch is unbalanced (debit ${debitCents} != credit ${creditCents} cents) — refusing to persist`);
     }
 
     const exportNumber = await allocateNumber("gl_export_batch_number_next", tx);
@@ -157,7 +188,8 @@ function nonZero(lines: JournalLine[]): JournalLine[] {
  * come from the plant config / payment type. Amounts are magnitudes — the INVOICE/CREDIT `kind` and
  * the mapper's `reverse` flag decide the debit/credit direction, never the stored money sign.
  */
-async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string, JournalLine[]>> {
+async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<string, JournalLine[]>> {
+  const { monthStart, monthEnd } = bounds;
   const config = await getBillingConfig(tx);
   const out = new Map<string, JournalLine[]>();
 
@@ -172,7 +204,7 @@ async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string,
 
   // Sales side — invoices and credits.
   const invoices = await tx.invoice.findMany({
-    where: { status: "FINALIZED", deletedAt: null, invoiceDate: { lte: periodEnd } },
+    where: { status: "FINALIZED", deletedAt: null, invoiceDate: { gte: monthStart, lte: monthEnd } },
     select: {
       id: true, kind: true, total: true, taxTotal: true,
       lines: { select: { kind: true, glAccountId: true, glAccountName: true, amount: true } },
@@ -182,7 +214,16 @@ async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string,
     // Group the non-TAX lines by their snapshot glAccountId; sum magnitudes.
     const byAccount = new Map<string, { glAccountName: string; amount: number }>();
     for (const l of inv.lines) {
-      if (l.kind === "TAX" || l.glAccountId === null) continue;
+      if (l.kind === "TAX") continue; // the tax credit comes from config below, not the TAX line
+      if (l.glAccountId === null) {
+        // A $0 header line (PART) posts nothing; ANY other null-GL line is a dropped credit that
+        // `resolveReadiness` was supposed to refuse the whole export on. Never silently `continue`
+        // past it (that credits nothing yet still debits A/R the full total = an unbalanced batch) —
+        // fail LOUDLY so a future readiness escape surfaces here, not in the ledger.
+        if (cents(l.amount.toNumber()) === 0) continue;
+        throw new HttpError(500,
+          "GL export: an in-scope invoice line has no GL account — readiness should have refused this export");
+      }
       const prev = byAccount.get(l.glAccountId);
       const amt = Math.abs(l.amount.toNumber());
       if (prev) prev.amount += amt;
@@ -208,7 +249,7 @@ async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string,
   // Cash side — one PAYMENT event per posted, non-void payment.
   const payments = await tx.payment.findMany({
     where: {
-      deletedAt: null, receivedDate: { lte: periodEnd },
+      deletedAt: null, receivedDate: { gte: monthStart, lte: monthEnd },
       batch: { status: "POSTED", deletedAt: null },
     },
     select: {
@@ -232,7 +273,7 @@ async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string,
 
   // Cash side — one event per live DISCOUNT / WRITE_OFF application.
   const apps = await tx.application.findMany({
-    where: { deletedAt: null, appliedDate: { lte: periodEnd }, type: { in: ["DISCOUNT", "WRITE_OFF"] } },
+    where: { deletedAt: null, appliedDate: { gte: monthStart, lte: monthEnd }, type: { in: ["DISCOUNT", "WRITE_OFF"] } },
     select: { id: true, amount: true, type: true },
   });
   for (const a of apps) {
@@ -255,16 +296,16 @@ async function buildCurrentJournal(tx: Tx, periodEnd: Date): Promise<Map<string,
 }
 
 /**
- * The NET prior postings (§4.3): every `GlPosting` with glDate <= E, grouped by the SAME 2-part
+ * The NET prior postings (§4.3): every `GlPosting` with glDate in THIS period's month, grouped by the SAME 2-part
  * `${sourceType}:${sourceId}`, then netted within a group by `(glAccountId, side, memo)` so an
  * original post and its later reversal cancel. A group whose lines ALL net to zero is dropped (it was
  * fully reversed), so a key's PRESENCE means "has a live prior posting" — the exact complement the
  * delta needs. The reconstructed `JournalLine[]` carries the row's `memo` and `glAccountName` so a
  * reversal reproduces the original line verbatim.
  */
-async function buildPriorNet(tx: Tx, periodEnd: Date): Promise<Map<string, JournalLine[]>> {
+async function buildPriorNet(tx: Tx, bounds: MonthBounds): Promise<Map<string, JournalLine[]>> {
   const rows = await tx.glPosting.findMany({
-    where: { glDate: { lte: periodEnd } },
+    where: { glDate: { gte: bounds.monthStart, lte: bounds.monthEnd } },
     select: {
       sourceType: true, sourceId: true, glAccountId: true, glAccountName: true,
       debit: true, credit: true, side: true, memo: true,
@@ -315,57 +356,76 @@ function splitKey(k: string): [string, string] {
 }
 
 /**
- * Assemble the `ReadinessInput` and name every account gap (§7). `arGlAccountId`/discount/write-off/
- * sales-tax come from the plant config. `hasTax` is true iff any in-scope finalized invoice has
- * `taxTotal != 0` (its A/R debit already includes the tax, so a missing tax account would unbalance
- * the journal). `hasDiscount`/`hasWriteOff` reflect whether any such application is in scope. The
- * step-code / surcharge / payment-type lists are the account-less ones each in-scope event actually
- * resolves to — read off the SAME snapshots the export posts from (an in-scope invoice line whose
- * snapshot `glAccountId` is null, a payment whose type has no GL account).
+ * Assemble the `ReadinessInput` and name every account gap (§7), scoped to the SAME month window the
+ * delta posts (`bounds`), so the panel can never read a different period than the close does.
+ * `arGlAccountId`/discount/write-off/sales-tax/freight/other-charge come from the plant config;
+ * `hasTax` is true iff any in-scope finalized invoice has `taxTotal != 0` (its A/R debit includes the
+ * tax, so a missing tax account would unbalance the journal); `hasDiscount`/`hasWriteOff` reflect
+ * whether any such application is in scope.
+ *
+ * The rest is the crux (the two-lens review found the original scan too narrow): the export DROPS from
+ * the credit side EVERY non-TAX invoice line whose snapshot `glAccountId` is null, while still debiting
+ * A/R the full total — so EVERY such nonzero line (any kind, not just step-code/surcharge) MUST become
+ * a gap or the batch is short a credit. Each is attributed to its source: OPERATION -> its step code,
+ * SURCHARGE -> its surcharge, CERT -> the config cert step code (its GL rides in from there, never on a
+ * line FK), FREIGHT -> the freight plant default, CHARGE -> the other-charge plant default. A $0 header
+ * line (PART) posts nothing, so it is not a gap.
  */
-async function resolveReadiness(tx: Tx, periodEnd: Date): Promise<ReadinessGap[]> {
+async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessGap[]> {
+  const { monthStart, monthEnd } = bounds;
   const config = await getBillingConfig(tx);
+  const inScopeInvoice = { status: "FINALIZED" as const, deletedAt: null, invoiceDate: { gte: monthStart, lte: monthEnd } };
 
-  const invoices = await tx.invoice.findMany({
-    where: { status: "FINALIZED", deletedAt: null, invoiceDate: { lte: periodEnd } },
-    select: { taxTotal: true },
-  });
+  const invoices = await tx.invoice.findMany({ where: inScopeInvoice, select: { taxTotal: true } });
   const hasTax = invoices.some((i) => cents(i.taxTotal.toNumber()) !== 0);
 
   const [discountCount, writeOffCount] = await Promise.all([
-    tx.application.count({ where: { deletedAt: null, type: "DISCOUNT", appliedDate: { lte: periodEnd } } }),
-    tx.application.count({ where: { deletedAt: null, type: "WRITE_OFF", appliedDate: { lte: periodEnd } } }),
+    tx.application.count({ where: { deletedAt: null, type: "DISCOUNT", appliedDate: { gte: monthStart, lte: monthEnd } } }),
+    tx.application.count({ where: { deletedAt: null, type: "WRITE_OFF", appliedDate: { gte: monthStart, lte: monthEnd } } }),
   ]);
 
-  // Account-less revenue lines on in-scope invoices, attributed to their step code / surcharge for
-  // the fix link. A zero-amount line posts nothing (salesJournal skips it), so it is not a real gap.
+  // The cert charge's GL rides in from the config cert step code — it never lands on a line's
+  // `processStepCodeId` (invoices.ts) — so resolve it once to attribute a null-GL CERT line.
+  let certStep: { id: string; code: string } | null = null;
+  if (config.certChargeStepCodeId) {
+    const sc = await tx.processStepCode.findFirst({ where: { id: config.certChargeStepCodeId }, select: { id: true, code: true } });
+    if (sc) certStep = sc;
+  }
+
+  // EVERY account-less non-TAX line the export would post a credit for (not just step-code/surcharge).
   const badLines = await tx.invoiceLine.findMany({
-    where: {
-      glAccountId: null,
-      invoice: { status: "FINALIZED", deletedAt: null, invoiceDate: { lte: periodEnd } },
-      OR: [{ processStepCodeId: { not: null } }, { surchargeId: { not: null } }],
-    },
+    where: { glAccountId: null, kind: { not: "TAX" }, invoice: inScopeInvoice },
     select: {
-      amount: true,
+      kind: true, amount: true,
       processStepCodeId: true, processStepCode: { select: { code: true } },
       surchargeId: true, surcharge: { select: { name: true } },
     },
   });
   const stepCodesMissingGl = new Map<string, { id: string; code: string }>();
   const surchargesMissingGl = new Map<string, { id: string; name: string }>();
+  let hasFreight = false, hasCharge = false, hasCert = false, hasUnattributedLine = false;
   for (const l of badLines) {
-    if (cents(l.amount.toNumber()) === 0) continue;
+    if (cents(l.amount.toNumber()) === 0) continue; // $0 header (PART) — posts nothing
     if (l.processStepCodeId) {
       stepCodesMissingGl.set(l.processStepCodeId, { id: l.processStepCodeId, code: l.processStepCode?.code ?? "" });
     } else if (l.surchargeId) {
       surchargesMissingGl.set(l.surchargeId, { id: l.surchargeId, name: l.surcharge?.name ?? "" });
+    } else if (l.kind === "CERT") {
+      hasCert = true; // when the cert step code is unset, `readinessGaps` names the missing config
+      if (certStep) stepCodesMissingGl.set(certStep.id, certStep); // else attribute to that step code
+    } else if (l.kind === "FREIGHT") {
+      hasFreight = true;
+    } else if (l.kind === "CHARGE") {
+      hasCharge = true;
+    } else {
+      hasUnattributedLine = true; // orphaned OPERATION (step code SetNull) — still MUST surface a gap
     }
   }
 
   // Payment types with no GL account among in-scope posted, non-void payments.
   const payments = await tx.payment.findMany({
     where: {
-      deletedAt: null, receivedDate: { lte: periodEnd },
+      deletedAt: null, receivedDate: { gte: monthStart, lte: monthEnd },
       batch: { status: "POSTED", deletedAt: null },
     },
     select: { paymentType: { select: { id: true, name: true, glAccountId: true } } },
@@ -382,21 +442,29 @@ async function resolveReadiness(tx: Tx, periodEnd: Date): Promise<ReadinessGap[]
     discountGlAccountId: config.discountGlAccountId,
     writeOffGlAccountId: config.writeOffGlAccountId,
     salesTaxGlAccountId: config.salesTaxGlAccountId,
+    freightGlAccountId: config.freightGlAccountId,
+    otherChargeGlAccountId: config.otherChargeGlAccountId,
+    certChargeStepCodeId: config.certChargeStepCodeId,
     hasDiscount: discountCount > 0,
     hasWriteOff: writeOffCount > 0,
     hasTax,
+    hasFreight,
+    hasCharge,
+    hasCert,
     stepCodesMissingGl: [...stepCodesMissingGl.values()],
     surchargesMissingGl: [...surchargesMissingGl.values()],
     paymentTypesMissingGl: [...paymentTypesMissingGl.values()],
+    hasUnattributedLine,
   };
   return readinessGaps(input);
 }
 
-/** The readiness gap list the UI's export panel and disabled-count read — the SAME period end
+/** The readiness gap list the UI's export panel and disabled-count read — the SAME month window
  *  `exportClose` refuses on, so the panel and the refusal can never disagree (§7). */
 export async function readinessForExport(periodEnd: Date): Promise<ReadinessGap[]> {
+  const bounds = monthBoundsFromEnd(periodEnd);
   return withDbErrors({ entity: "GL export readiness" }, () => prisma.$transaction(
-    (tx) => resolveReadiness(tx, periodEnd),
+    (tx) => resolveReadiness(tx, bounds),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   ));
 }

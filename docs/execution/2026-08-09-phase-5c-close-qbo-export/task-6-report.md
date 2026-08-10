@@ -74,3 +74,72 @@ maps genuinely needs no change — which is what makes a re-run an empty no-op.
 - Concurrency: two concurrent exports of one period cannot double-post — the `allocateNumber` row lock
   plus Serializable SSI (the prior-posting range read vs the new-posting inserts) abort the loser (409),
   matching the 5A/5B print-bracket shape; no extra advisory lock or retry was added (none in the brief).
+
+---
+
+## Fix round 1 — two-lens review defects (2026-08-09)
+
+**Commit:** `<pending>` — `fix(5c): gl-export readiness covers all account-bearing lines + balance backstop; strictly-per-period delta`
+
+Three defects the two-lens review found (the original tests missed them because the factory only built
+OPERATION lines). All three fixed; nothing in the idempotency/reversal design changed.
+
+### CRITICAL — unbalanced batch from account-less FREIGHT/CHARGE/CERT lines
+`resolveReadiness`'s bad-line scan only flagged null-GL lines carrying a `processStepCodeId`/`surchargeId`,
+so a null-GL **FREIGHT** (`freightGlAccountId`), **CHARGE** (`otherChargeGlAccountId`), or **CERT** (cert
+step code GL) line produced no gap; `buildCurrentJournal` then silently `continue`d past it (dropping its
+credit) while `salesJournal` still debited A/R the full `inv.total` → an **unbalanced** `GlExportBatch`
+was persisted. Fixed in three layers:
+1. **Readiness broadened** (`gl-export.ts` `resolveReadiness` + `gl-mapping.ts` `ReadinessInput`/
+   `readinessGaps`): the scan now flags **every** non-`TAX` in-scope line with `glAccountId = null` and a
+   nonzero amount, attributed OPERATION→step code, SURCHARGE→surcharge, CERT→config cert step code
+   (or a "cert step code not set" plant default), FREIGHT→`freightGlAccountId`, CHARGE→
+   `otherChargeGlAccountId`, plus a generic `hasUnattributedLine` safety net for an orphaned line.
+2. **Loud-fail:** `buildCurrentJournal` no longer silently drops a null-GL non-`TAX` **nonzero** line — it
+   throws (a `$0` PART header still `continue`s).
+3. **Balance backstop:** immediately before writing, `exportClose` sums Σdebit/Σcredit in integer cents
+   and **throws** on any difference, so an unbalanced batch can never persist.
+
+### IMPORTANT — out-of-order cross-period double-post
+Postings are stamped `glDate = periodEnd`, but the delta was scoped cumulatively (`≤ E`). Exporting a
+later month first vacuumed an earlier month's events under the later `glDate`; the earlier month's export
+then saw them absent from its prior and re-posted them → double-booked. **Fixed:** both `buildCurrentJournal`
+(event dates) and `buildPriorNet` (glDate) — and `resolveReadiness` — are now bounded **strictly** to the
+period's own month `[monthStart, monthEnd]` (`monthStart = Date.UTC(y, m-1, 1)`, `monthEnd = periodEnd`),
+sound because the period lock freezes a closed month's events. New postings stay stamped `glDate = periodEnd`.
+
+### MINOR — missing-year validation
+`readiness/period.ts` range-checked month but not year presence: `Number(null)`/`Number('')` = `0` passed
+`Number.isInteger`, yielding `Date.UTC(0, m, 0)` = year 1900. Added `year >= 2000`; an absent/blank year
+now 400s.
+
+### How each new test fails without its fix (verified by temporary reverts)
+- **`gl-export.test.ts` "refuses export when an in-scope CHARGE line has no GL account"** — with the
+  readiness broadening reverted (the old `OR: [processStepCodeId, surchargeId]` restriction restored), the
+  `/charge/i` gap assertion fails (`expected false to be true`): the CHARGE line is no longer flagged.
+  A companion demo (readiness **and** the `buildCurrentJournal` loud-fail **and** the backstop all disabled)
+  confirmed `exportClose` then *resolves* and persists an **unbalanced** batch (debit 5000¢, credit 0¢) —
+  the concrete Critical repro; any one of the three layers stops it.
+- **`gl-export.test.ts` "exporting a later month FIRST does not vacuum or double-post…"** — with the
+  cumulative `≤ E` scope restored, August's batch vacuums July's invoice (`expect(...some(july)).toBe(false)`
+  fails, `expected true to be false`).
+- **`receivables-routes.test.ts` "400s a missing year"** — with the `year >= 2000` guard removed, the route
+  returns **200** instead of 400 (`Number(null)=0` → 1900 slips through).
+
+### Gate results (fix round 1)
+- `npx vitest run tests/gl-export.test.ts tests/gl-mapping.test.ts tests/receivables-routes.test.ts` →
+  **49 passed** (incl. the new account-less-CHARGE/FREIGHT, configured-balances, per-period-ordering,
+  freight/charge/cert readiness-mapping, and missing-year tests).
+- **Full `npm test`** → 124 files, **1931 passed**.
+- `npx tsc --noEmit` → clean (exit 0). `npx eslint src tests` → clean (0/0, exit 0).
+- **`npm run test:e2e` (foreground)** → **all 17 flows PASS**.
+
+### Files touched
+- `src/server/gl-export.ts` — month-bounds helpers; strictly-per-period scope on
+  `buildCurrentJournal`/`buildPriorNet`/`resolveReadiness`; broadened bad-line scan + cert-step resolution;
+  `buildCurrentJournal` loud-fail; `exportClose` balance backstop; header/doc comments updated.
+- `src/server/gl-mapping.ts` — `ReadinessInput` + `readinessGaps` extended with freight/charge/cert plant
+  defaults and the generic safety-net gap.
+- `src/app/api/receivables/close/readiness/period.ts` — `year >= 2000` guard.
+- `tests/gl-export.test.ts`, `tests/gl-mapping.test.ts`, `tests/receivables-routes.test.ts` — new tests +
+  the "earlier-month-untouched" comment updated to the per-period window.
