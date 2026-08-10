@@ -16,7 +16,7 @@
 - [x] Task 4: period-locks.ts leaf + wiring into every A/R posting mutation
 - [x] Task 5: close-periods.ts — close/reopen lifecycle + preliminary report + routes
 - [x] Task 6: gl-export.ts — per-event delta, CSV, batch write + export/readiness routes
-- [ ] Task 7: posting-register PDF
+- [x] Task 7: posting-register PDF
 - [ ] Task 8: /receivables/close UI
 - [ ] Task 9: E2E flow, demo doc, documentation
 
@@ -122,3 +122,7 @@ Task 6: IMPLEMENTED (impl 6158c20; docs 78f80d3) but two-lens opus review = NEED
 Task 6: COMPLETE (impl 6158c20 + fix f0bc3e0/7cdf922; docs 0c84212; two-lens opus review + opus re-review Approved). Gates: full suite 1931, tsc/eslint 0/0, E2E 17/17 foreground. 49 targeted tests; both defects fail-without-fix verified (5000¢-vs-0¢ unbalanced batch persisted with all layers off; Aug-vacuums-Jul without per-period rebound).
   Both CRITICAL/IMPORTANT closed with a triple defense (readiness flags every account-less non-TAX line → buildCurrentJournal throws → exportClose asserts Σdebit=Σcredit before persist) + strictly-per-period [monthStart,monthEnd] bounds.
   Minors (FINAL REVIEW to triage; none data-integrity — all self-protecting): (a) a FREIGHT/CHARGE line finalized BEFORE its plant default was set has a frozen null-GL snapshot; resolveReadiness gates freight/charge on the CURRENT config so it reads "clean," but buildCurrentJournal throws (500) on the frozen null line — self-protecting (no bad batch), but the panel won't name the real blocker (the invoice needs unlock+re-finalize). Cleaner fix: attribute a frozen null-GL freight/charge line to its INVOICE, not the current plant default. (b) empty no-op export still burns a number + writes a zero-posting batch (implementer+both reviewers flagged; optional short-circuit). (c) year>=2000 is an arbitrary floor vs a presence check (harmless).
+
+Task 7: COMPLETE (impl 8994229 + fix 03bbc69; docs e663fda; sonnet review Approved). Gates: full suite 1937, tsc/eslint/build clean, E2E 17/17 foreground.
+  Closed on review: Important (report omitted TDD RED evidence — now captured in the report: register-placeholder revert fails the byteLength/marker test, builder-absent fails posting-register tests); Minor (register content-disposition now carries a derived `gl-register-YYYY-MM.pdf` filename, matching every other inline-PDF route).
+  Minor (final review): posting-register money() renders blank-for-zero and no `$` symbol — deliberately register-appropriate (GL registers commonly omit both) but a stylistic outlier vs statement/invoice money(); left as-is. Also incidental good cleanup: implementer restored the recurring `.superpowers/sdd/.gitignore` `*`-clobber to the tracked version.
