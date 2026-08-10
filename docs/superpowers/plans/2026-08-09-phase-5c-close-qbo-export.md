@@ -1009,15 +1009,31 @@ export async function preliminaryReport(year: number, month: number): Promise<Pr
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
+// The close AND the posting mutations (finalize/apply/void) BOTH run Serializable, so SSI's
+// predicate locks catch a posting-vs-close phantom (a finalize that read "month open" then a close
+// that inserts the CLOSED row → rw-cycle → one aborts). Read Committed on the close would strip
+// that backstop (SSI only tracks all-Serializable transactions) and let a finalize whose snapshot
+// predates the close leak into the closed month — the exact bug the guard exists to stop. The
+// price of Serializable is that two concurrent closes of one month conflict on the (year,month)
+// unique/serialization — so wrap in a retry: on conflict, re-run with a fresh snapshot that sees
+// the committed row and UPDATEs it. lockMonth still orders the closes to reduce thrash.
+async function retryOnSerializationConflict<T>(run: () => Promise<T>, tries = 5): Promise<T> {
+  for (let i = 0; ; i++) {
+    try { return await run(); }
+    catch (e) { if (i < tries && isSerializationOrUniqueConflict(e)) continue; throw e; }
+  }
+}
+
 export async function closePeriod(year: number, month: number): Promise<ClosePeriodDetail> {
-  return withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
+  return retryOnSerializationConflict(() => withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
     await lockMonth(tx, year, month); // serialize against concurrent postings + a concurrent close
     const schedule = await computeSchedule(tx, year, month);
     if (cents(schedule.variance) !== 0) {
-      throw new HttpError(409, `The close does not reconcile — ending A/R ${schedule.endingAr} vs aging ${schedule.agingEndingAr}`);
+      throw new HttpError(409, `The close does not reconcile — ending A/R ${schedule.endingAr} vs aging ${schedule.agingEndingAr} (off by ${schedule.variance})`);
     }
     const existing = await tx.closePeriod.findFirst({ where: { year, month } });
-    const data = { year, month, status: "CLOSED", closedById: currentActor().id, reopenedAt: null,
+    // reopenReason cleared on (re-)close so a re-closed month never carries a stale reopen note.
+    const data = { year, month, status: "CLOSED", closedById: currentActor().id, reopenedAt: null, reopenReason: "",
       beginningAr: schedule.beginningAr, invoicedTotal: schedule.invoicedTotal, creditTotal: schedule.creditTotal,
       paymentTotal: schedule.paymentTotal, discountTotal: schedule.discountTotal, writeOffTotal: schedule.writeOffTotal,
       endingAr: schedule.endingAr, agingEndingAr: schedule.agingEndingAr };
@@ -1025,13 +1041,13 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
       ? await auditedUpdate("closePeriod", existing.id, () => tx.closePeriod.update({ where: { id: existing.id }, data }), { tx })
       : await auditedCreate("closePeriod", data, () => tx.closePeriod.create({ data }), { tx });
     return { id: row.id, year, month, status: "CLOSED", ...schedule };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 export async function reopenPeriod(id: string, reason: string): Promise<ClosePeriodDetail> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to reopen a period");
-  return withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
+  return retryOnSerializationConflict(() => withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
     const existing = await tx.closePeriod.findFirst({ where: { id } });
     if (!existing) throw new HttpError(404, "Close period not found");
     await lockMonth(tx, existing.year, existing.month);
@@ -1041,7 +1057,7 @@ export async function reopenPeriod(id: string, reason: string): Promise<ClosePer
       beginningAr: row.beginningAr.toNumber(), invoicedTotal: row.invoicedTotal.toNumber(), creditTotal: row.creditTotal.toNumber(),
       paymentTotal: row.paymentTotal.toNumber(), discountTotal: row.discountTotal.toNumber(), writeOffTotal: row.writeOffTotal.toNumber(),
       endingAr: row.endingAr.toNumber(), agingEndingAr: row.agingEndingAr.toNumber(), variance: 0 };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 ```
 
@@ -1055,9 +1071,9 @@ npx vitest run tests/close-periods.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Add the two concurrency RED tests** (spec §12), following the 5B two-interleaved-transactions-on-separate-clients shape, each **RED-verified by removing `lockMonth`**:
-  1. **A posting racing a close.** A `finalizeInvoice` for a July-dated invoice interleaved with `closePeriod(2026, 7)`, the competitor pinned to Read Committed — assert the two serialize (the finalize either lands before the close and is counted, or is refused as period-closed), never both-commit-into-a-closed-month. (The apply/void variants §12 names share the same guard; a comment noting they're covered by the same `assertPeriodOpen` lock is sufficient once finalize is proven.)
-  2. **Two closes of one month.** Two concurrent `closePeriod(2026, 7)` calls — assert exactly one `CLOSED` row exists afterward and neither call errors on a duplicate write. Without `lockMonth` both `findFirst`→null→`create` and one hits the `@@unique([year,month])` violation; with it they serialize (the second sees the first's row and updates it). Verify RED by removing `lockMonth` and watching the duplicate/violation.
+- [ ] **Step 5: Add the two concurrency RED tests** (spec §12), following the 5B two-interleaved-transactions-on-separate-clients shape:
+  1. **A posting racing a close — the DANGEROUS direction (the one that matters).** Drive the **real** `finalizeInvoice` (which runs Serializable) against a real `closePeriod(2026, 7)`, with the **close winning the advisory lock first** so the finalize blocks behind it and then runs its `assertPeriodOpen` read *after* the close commits. Assert the finalize is **refused (the period-closed 409) or aborts (serialization retry)** — it must NEVER commit a FINALIZED July invoice into a just-closed July (query the invoice status + the frozen close schedule to prove no leak). **RED-verify by reverting `closePeriod` to Read Committed** (the bug): the finalize's fixed snapshot misses the CLOSED row, SSI does not abort a RC writer, and the FINALIZED invoice leaks → the test fails. Restore Serializable → green. A hand-scripted RC "holder that takes the lock first" does NOT exercise this — it must be the real Serializable `finalizeInvoice`. (apply/void share the same `claim → assertPeriodOpen` shape; a comment noting they're covered once finalize is proven is sufficient.)
+  2. **Two closes of one month.** Two concurrent `closePeriod(2026, 7)` calls — assert exactly one `CLOSED` row exists afterward and **neither call errors** (the loser's serialization/unique conflict is absorbed by `retryOnSerializationConflict`, which re-runs and UPDATEs the now-existing row). **RED-verify by removing the retry wrapper** (or stubbing it to run once): the loser surfaces the `@@unique([year,month])`/serialization conflict → the test fails. This is why the close is Serializable-with-retry, not Read Committed.
 
 - [ ] **Step 6: Add the routes.** Both `close_ar_period` and `run_qbo_export` **already exist** in `src/lib/permission-constants.ts`'s `SPECIAL_ACTIONS` and are granted to admin via `ALL_PERMISSIONS` (`tests/permissions.test.ts:43`) — no declaration or seed step is needed; a `grep close_ar_period src/lib/permission-constants.ts` confirms it before wiring. `close/preliminary/route.ts` (GET, `receivables.view`, `?year=&month=`), `close/route.ts` (POST, `close_ar_period`, body `{year,month}`), `close/[id]/reopen/route.ts` (POST, `close_ar_period`, body `{reason}`):
 

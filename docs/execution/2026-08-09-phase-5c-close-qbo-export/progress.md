@@ -76,3 +76,24 @@ Task 5: implementation complete (not yet reviewed). `close-periods.ts` (prelimin
   TWO DESIGN DECISIONS FOR THE WHOLE-BRANCH REVIEW (both flagged in the report):
   1. **Isolation: closePeriod/reopenPeriod run at READ COMMITTED, not Serializable (the brief's sample showed Serializable).** Empirically forced: a Serializable txn fixes its snapshot at its FIRST statement, and when that is the BLOCKING `lockMonth` SELECT the snapshot predates the lock grant → post-lock reads are stale. Probe-verified: under Serializable the 2nd of two concurrent closes reads 0 rows post-block, re-inserts, and takes P2034 (→409) — it ERRORS, breaking the brief's own "neither errors / the second sees the first's row and updates it" acceptance; under Read Committed both succeed with one CLOSED row. The advisory lock (not SSI) is the documented serializer (period-locks.ts / the brief's own reconciliation note), so RC is correct AND is the only isolation that meets the acceptance. preliminaryReport keeps Serializable (takes no lock → never blocks → never stale).
   2. **Prior-month rule = spec §4.1 line 107 "prior month closed OR first close" (genesis / chain-from-zero, ruling 5), NOT the brief's sample.** The brief's `priorEndingAr` returned $0 for any missing prior (couldn't refuse); its "refuses" test (close August on an empty DB) is itself a valid genesis close and can't refuse. Implemented: missing prior is allowed only when nothing STRICTLY earlier is closed (genesis); an earlier close with the immediately-prior month unclosed = a SKIPPED month → refuse. Tests rewritten to the spec: a first close begins $0 (genesis) + a skipped-month refusal + a variance refusal (June residual vs a July genesis close).
+
+Task 5: IMPLEMENTED (impl e1fda3d; docs b8c30f7) but review = NEEDS FIXES (Critical). NOT yet complete.
+  CRITICAL (data-integrity), confirmed by opus review + controller's independent Postgres analysis:
+    The implementer ran closePeriod/reopenPeriod at Read Committed (to make two-concurrent-closes pass).
+    That STRIPS the SSI backstop from the Serializable posting side: a Serializable finalize fixes its
+    snapshot at claimInvoiceRow (before assertPeriodOpen's advisory lock); if a close commits after that
+    snapshot, the CLOSED row is invisible (plain findFirst, no FOR UPDATE), SSI can't abort a RC writer
+    → a FINALIZED invoice LEAKS into a just-closed month (the exact invariant the guard exists to protect).
+    The concurrency test only exercised the SAFE direction (a hand-scripted RC holder taking the lock
+    first), masking it.
+  FIX (plan+spec amended, commit pending): keep close/reopen SERIALIZABLE (both sides Serializable →
+    SSI predicate-locks catch the phantom), absorb the two-close conflict with retryOnSerializationConflict
+    (canonical Serializable retry: re-run → fresh snapshot sees the row → UPDATE). Keep lockMonth (orders
+    closes). NO Task 4 change (assertPeriodOpen's plain findFirst is correct once both sides are
+    Serializable). Minors: clear reopenReason on re-close; variance message includes the delta value.
+    NEW dangerous-direction test: real Serializable finalizeInvoice vs a close that wins the lock first,
+    assert refuse-or-abort (never leak), RED-verified by reverting close to RC. Test 2 (two-closes) RED
+    by removing the retry.
+  Also accepted from the review: prior-month/genesis logic grounded in spec §4.1+ruling 5 (implementer's
+    spec-correct departure from the brief's self-contradictory sample); agingReport cross-connection read
+    justification holds; single-lockMonth invariant honored.
