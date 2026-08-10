@@ -1017,6 +1017,9 @@ export async function preliminaryReport(year: number, month: number): Promise<Pr
 // price of Serializable is that two concurrent closes of one month conflict on the (year,month)
 // unique/serialization — so wrap in a retry: on conflict, re-run with a fresh snapshot that sees
 // the committed row and UPDATEs it. lockMonth still orders the closes to reduce thrash.
+// NESTING MATTERS: the retry goes INSIDE withDbErrors, wrapping the raw `prisma.$transaction`, so it
+// catches the RAW Prisma P2034/P2002 BEFORE withDbErrors translates it to an HttpError. Retry on the
+// OUTSIDE would only ever see the translated HttpError and never fire — silently breaking two-closes.
 async function retryOnSerializationConflict<T>(run: () => Promise<T>, tries = 5): Promise<T> {
   for (let i = 0; ; i++) {
     try { return await run(); }
@@ -1025,7 +1028,7 @@ async function retryOnSerializationConflict<T>(run: () => Promise<T>, tries = 5)
 }
 
 export async function closePeriod(year: number, month: number): Promise<ClosePeriodDetail> {
-  return retryOnSerializationConflict(() => withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
+  return withDbErrors({ entity: "Close period" }, () => retryOnSerializationConflict(() => prisma.$transaction(async (tx) => {
     await lockMonth(tx, year, month); // serialize against concurrent postings + a concurrent close
     const schedule = await computeSchedule(tx, year, month);
     if (cents(schedule.variance) !== 0) {
@@ -1047,7 +1050,7 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
 export async function reopenPeriod(id: string, reason: string): Promise<ClosePeriodDetail> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to reopen a period");
-  return retryOnSerializationConflict(() => withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
+  return withDbErrors({ entity: "Close period" }, () => retryOnSerializationConflict(() => prisma.$transaction(async (tx) => {
     const existing = await tx.closePeriod.findFirst({ where: { id } });
     if (!existing) throw new HttpError(404, "Close period not found");
     await lockMonth(tx, existing.year, existing.month);
