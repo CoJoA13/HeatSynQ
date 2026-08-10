@@ -16,6 +16,10 @@ import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements
 import { GET as preliminaryRoute } from "@/app/api/receivables/close/preliminary/route";
 import { POST as closeRoute } from "@/app/api/receivables/close/route";
 import { POST as reopenRoute } from "@/app/api/receivables/close/[id]/reopen/route";
+import { POST as exportRoute } from "@/app/api/receivables/close/[id]/export/route";
+import { GET as exportFileRoute } from "@/app/api/receivables/close/export/[batchId]/file/route";
+import { GET as readinessRoute } from "@/app/api/receivables/close/readiness/route";
+import { GET as readinessExportRoute } from "@/app/api/receivables/close/readiness/export/route";
 import { parseDateOnly } from "@/lib/business-days";
 
 // Task 6 (Step 10): thin `handle` wrappers gating on `receivables.create`/`edit`/`delete`/`view` —
@@ -624,5 +628,163 @@ describe("POST /api/receivables/close/[id]/reopen", () => {
     );
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe("REOPENED");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 6 (P5C §4.3/§7): the GL-export + readiness routes. Export is the dangerous `run_qbo_export`
+// special on top of `receivables.edit`; the file/readiness/readiness-export reads are all
+// `receivables.view`. The ladders assert the file route's text/csv and the readiness export's xlsx
+// MIME, plus the period-scoping (`?year=&month=`) that keeps the panel aligned with the refusal.
+// -------------------------------------------------------------------------------------------
+
+/** A GL-ready CLOSED July: BillingConfig A/R set (the only account any event resolves to), a
+ *  finalized July invoice with one revenue line — so `exportClose` finds no readiness gap. Returns
+ *  the closed period id. */
+async function glReadyClosedJuly(closer: string): Promise<string> {
+  customerSeq += 1;
+  const ar = await prisma.glAccount.create({ data: { name: `AR-${customerSeq}` } });
+  const rev = await prisma.glAccount.create({ data: { name: `REV-${customerSeq}` } });
+  const step = await prisma.processStepCode.create({
+    data: { code: `HT${customerSeq}`, name: "Heat Treat", glAccountId: rev.id },
+  });
+  await prisma.billingConfig.update({
+    where: { id: "singleton" },
+    data: { arGlAccountId: ar.id, salesTaxGlAccountId: null, discountGlAccountId: null, writeOffGlAccountId: null },
+  });
+  const customer = await makeCustomer();
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 780000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly("2026-07-05"), requestDate: parseDateOnly("2026-07-05"),
+    },
+  });
+  await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly("2026-07-05"), dueDate: parseDateOnly("2026-07-05"),
+      total: 100, subtotal: 100, finalizedAt: parseDateOnly("2026-07-05"),
+      lines: {
+        create: [{
+          position: 1, kind: "OPERATION", processStepCodeId: step.id,
+          glAccountId: rev.id, glAccountName: `REV-${customerSeq}`, description: "Heat Treat", amount: 100,
+        }],
+      },
+    },
+  });
+  const closed = await (await closeRoute(
+    bodyReq("http://t/api/receivables/close", "POST", closer, { year: 2026, month: 7 }), withParams({}),
+  )).json();
+  return closed.id;
+}
+
+describe("POST /api/receivables/close/[id]/export", () => {
+  it("401s without a session, 403s without run_qbo_export, then emits a balanced batch with it", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period"], "export-closer");
+    const periodId = await glReadyClosedJuly(closer);
+
+    expect((await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST"), withParams({ id: periodId }),
+    )).status).toBe(401);
+
+    // Has receivables.edit but NOT the run_qbo_export special — the dangerous action is refused.
+    const wrong = await signInWith(["receivables.edit"], "export-wrong");
+    expect((await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST", wrong), withParams({ id: periodId }),
+    )).status).toBe(403);
+
+    const exporter = await signInWith(["receivables.edit", "action.run_qbo_export"], "export-ok");
+    const res = await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST", exporter), withParams({ id: periodId }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { batchId: string; postings: { debit: number; credit: number }[] };
+    expect(body.batchId).toBeTruthy();
+    const debit = body.postings.reduce((s, p) => s + p.debit, 0);
+    const credit = body.postings.reduce((s, p) => s + p.credit, 0);
+    expect(Math.round(debit * 100)).toBe(Math.round(credit * 100));
+  });
+});
+
+describe("GET /api/receivables/close/export/[batchId]/file", () => {
+  it("401s without a session, 403s without receivables.view, then streams the CSV as text/csv with it", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period", "action.run_qbo_export"], "file-closer");
+    const periodId = await glReadyClosedJuly(closer);
+    const batch = await (await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST", closer), withParams({ id: periodId }),
+    )).json() as { batchId: string };
+
+    expect((await exportFileRoute(
+      getReq("http://t/api/receivables/close/export/x/file"), withParams({ batchId: batch.batchId }),
+    )).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "file-wrong");
+    expect((await exportFileRoute(
+      getReq("http://t/api/receivables/close/export/x/file", wrong), withParams({ batchId: batch.batchId }),
+    )).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "file-viewer");
+    const res = await exportFileRoute(
+      getReq("http://t/api/receivables/close/export/x/file", viewer), withParams({ batchId: batch.batchId }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/csv");
+    expect(res.headers.get("content-disposition")).toContain("gl-2026-07.csv");
+  });
+
+  it("404s an unknown batch id (viewer)", async () => {
+    const viewer = await signInWith(["receivables.view"], "file-404");
+    const res = await exportFileRoute(
+      getReq("http://t/api/receivables/close/export/x/file", viewer), withParams({ batchId: "nope" }),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/receivables/close/readiness", () => {
+  it("401s without a session, 403s without receivables.view, then returns the gap list for the period", async () => {
+    const url = "http://t/api/receivables/close/readiness?year=2026&month=7";
+
+    expect((await readinessRoute(getReq(url), withParams({}))).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "readiness-wrong");
+    expect((await readinessRoute(getReq(url, wrong), withParams({}))).status).toBe(403);
+
+    // A finalized July invoice but NO A/R account configured -> the A/R control gap is named.
+    await finalizedInvoiceDated("2026-07-05", 100);
+    await prisma.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId: null } });
+
+    const viewer = await signInWith(["receivables.view"], "readiness-viewer");
+    const res = await readinessRoute(getReq(url, viewer), withParams({}));
+    expect(res.status).toBe(200);
+    const gaps = await res.json() as { label: string }[];
+    expect(gaps.some((g) => /A\/R/i.test(g.label))).toBe(true);
+  });
+
+  it("400s a missing month", async () => {
+    const viewer = await signInWith(["receivables.view"], "readiness-missing");
+    const res = await readinessRoute(
+      getReq("http://t/api/receivables/close/readiness?year=2026", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/receivables/close/readiness/export", () => {
+  it("401s without a session, 403s without receivables.view, then returns an .xlsx with it", async () => {
+    const url = "http://t/api/receivables/close/readiness/export?year=2026&month=7";
+
+    expect((await readinessExportRoute(getReq(url), withParams({}))).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "readiness-export-wrong");
+    expect((await readinessExportRoute(getReq(url, wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "readiness-export-viewer");
+    const res = await readinessExportRoute(getReq(url, viewer), withParams({}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(res.headers.get("content-disposition")).toContain("Readiness.xlsx");
   });
 });
