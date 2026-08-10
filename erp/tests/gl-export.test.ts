@@ -303,6 +303,60 @@ describe("gl-export delta", () => {
   });
 });
 
+describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
+  /** A quote-aware-free splitter — the fixture account names/memos never carry a comma or quote (the
+   *  e2e harness's own `parseCsvLine` verifies the same against `renderCsv`'s `esc()`). */
+  function parseCsv(text: string): string[][] {
+    const lines = text.split("\n").filter((l) => l.length > 0);
+    return lines.slice(1).map((l) => l.split(","));
+  }
+
+  it("aggregates the exported CSV to one line per account per side — two invoices → one A/R line", async () => {
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await makeFinalizedInvoiceDated(gl, "2026-07-20", 50);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const out = await asSystem(() => exportClose(period.id));
+
+    // The FILE (what the bookkeeper imports) is SUMMARIZED: exactly one A/R row and one revenue row,
+    // NOT one row per invoice. Columns: Date,Account,Debit,Credit,Memo.
+    const rows = parseCsv(out.file.toString("utf8"));
+    const arRows = rows.filter((r) => r[1] === "1200-AR");
+    const revRows = rows.filter((r) => r[1] === "4010-REV");
+    expect(arRows.length).toBe(1); // both invoices' A/R collapsed into one line
+    expect(revRows.length).toBe(1); // both invoices' revenue collapsed into one line
+    expect(arRows[0][2]).toBe("150.00"); // summed debit
+    expect(revRows[0][3]).toBe("150.00"); // summed credit
+    // The summarized file still balances.
+    const debit = rows.reduce((s, r) => s + (r[2] ? Math.round(Number(r[2]) * 100) : 0), 0);
+    const credit = rows.reduce((s, r) => s + (r[3] ? Math.round(Number(r[3]) * 100) : 0), 0);
+    expect(debit).toBe(credit);
+
+    // The per-event GlPosting DETAIL stays UN-aggregated: 2 A/R + 2 revenue = 4 postings.
+    expect(await prisma.glPosting.count({ where: { batchId: out.batchId } })).toBe(4);
+  });
+
+  it("stamps GlExportBatch.emittedById with the acting user (change D)", async () => {
+    seq += 1;
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const user = await prisma.user.create({
+      data: { username: `gl-emit-${seq}`, passwordHash: "x", displayName: "Emitter" },
+    });
+    const out = await runWithContext(
+      { actor: { id: user.id, name: "Emitter" }, user: null },
+      () => exportClose(period.id),
+    );
+    const batch = await prisma.glExportBatch.findUniqueOrThrow({ where: { id: out.batchId } });
+    expect(batch.emittedById).toBe(user.id);
+  });
+});
+
 describe("gl-export readiness", () => {
   it("refuses export when a taxable invoice is in scope but no sales-tax account is set", async () => {
     const gl = await seedGlDefaults();

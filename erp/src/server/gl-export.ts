@@ -4,6 +4,7 @@ import { withDbErrors } from "./db-errors";
 import { HttpError } from "./errors";
 import { auditedCreate } from "./audit";
 import { allocateNumber } from "./settings";
+import { currentActor } from "./context";
 import { getBillingConfig } from "./billing-config";
 import {
   salesJournal, cashJournal, reverseLines, readinessGaps,
@@ -70,20 +71,33 @@ export type ExportedBatch = {
 
 type Tx = Prisma.TransactionClient;
 
-/** The delta window: the period's OWN month, `[monthStart, monthEnd]` inclusive. Both the live event
- *  dates and the prior glDate are bounded to this — never cumulatively `<= E` — so an out-of-order
- *  export can neither vacuum an earlier month's events nor double-post them (see the header). */
-type MonthBounds = { monthStart: Date; monthEnd: Date };
+/** The delta window: the period's OWN month, `[monthStart, monthEnd]` inclusive for the @db.Date
+ *  payment/application/glDate scopes; `nextStart` is the EXCLUSIVE upper bound `[monthStart, nextStart)`
+ *  the finalized-invoice scope needs (owner ruling 8 — invoices count by `finalizedAt`, a `DateTime`
+ *  with a time-of-day, so a same-day timestamp is only in-month under a half-open interval). Both the
+ *  live event dates and the prior glDate are bounded to this month — never cumulatively `<= E` — so an
+ *  out-of-order export can neither vacuum an earlier month's events nor double-post them (see header). */
+type MonthBounds = { monthStart: Date; monthEnd: Date; nextStart: Date };
 
-/** month is 1-based: `Date.UTC(year, month-1, 1)` is the 1st, `Date.UTC(year, month, 0)` the last day. */
+/** month is 1-based: `Date.UTC(year, month-1, 1)` is the 1st, `Date.UTC(year, month, 0)` the last day,
+ *  `Date.UTC(year, month, 1)` the 1st of the NEXT month. */
 function monthBoundsOf(year: number, month: number): MonthBounds {
-  return { monthStart: new Date(Date.UTC(year, month - 1, 1)), monthEnd: new Date(Date.UTC(year, month, 0)) };
+  return {
+    monthStart: new Date(Date.UTC(year, month - 1, 1)),
+    monthEnd: new Date(Date.UTC(year, month, 0)),
+    nextStart: new Date(Date.UTC(year, month, 1)),
+  };
 }
 
 /** `periodEnd` is the last day of its month at UTC midnight (a @db.Date round-trip); the readiness
- *  routes hand it in directly, so recover the 1st of the SAME month for the delta window. */
+ *  routes hand it in directly, so recover the 1st of the SAME month (and the 1st of the next) for the
+ *  delta window. */
 function monthBoundsFromEnd(periodEnd: Date): MonthBounds {
-  return { monthStart: new Date(Date.UTC(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth(), 1)), monthEnd: periodEnd };
+  return {
+    monthStart: new Date(Date.UTC(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth(), 1)),
+    monthEnd: periodEnd,
+    nextStart: new Date(Date.UTC(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth() + 1, 1)),
+  };
 }
 
 /**
@@ -136,16 +150,21 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
     const exportNumber = await allocateNumber("gl_export_batch_number_next", tx);
     const fileName = `gl-${period.year}-${String(period.month).padStart(2, "0")}.csv`;
     const periodEndStr = formatDateOnly(periodEnd);
-    const file = renderCsv(lines, periodEndStr);
-    // The posting register renders from the SAME emitted `lines` the CSV and postings come from
-    // (§4.3/§4.4) — two sub-registers, SALES then CASH, in the source order they're already in.
+    // SUMMARY journal (ruling 9): the exported FILE and the register are one line per (account, side),
+    // the per-event `lines` collapsed and summed. The per-event `GlPosting` rows below stay UN-summarized
+    // (the ERP-side detail + delta driver). Aggregation preserves Σdebit=Σcredit, so the backstop above
+    // still guarantees the summary balances.
+    const summaryLines = aggregateLines(lines);
+    const file = renderCsv(summaryLines, periodEndStr);
+    // The posting register renders from the SAME aggregated summary the CSV does (§4.3/§4.4) — two
+    // sub-registers, SALES then CASH, in the first-occurrence order aggregation preserves.
     // `renderPdf` is async and does no DB I/O, so building the buffer before `glExportBatch.create`
     // stays safely inside the Serializable tx (task brief, `pdf/render.ts`'s own contract).
     const registerData: PostingRegisterData = {
       periodLabel: periodLabelOf(period.year, period.month),
       periodEnd: periodEndStr,
       exportNumber,
-      lines: lines.map((l) => ({ side: l.side, glAccountName: l.glAccountName, debit: l.debit, credit: l.credit, memo: l.memo })),
+      lines: summaryLines.map((l) => ({ side: l.side, glAccountName: l.glAccountName, debit: l.debit, credit: l.credit, memo: l.memo })),
     };
     const register = new Uint8Array(await renderPdf(buildPostingRegister(registerData)));
 
@@ -155,6 +174,7 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
       () => tx.glExportBatch.create({
         data: {
           exportNumber, closePeriodId, periodEnd, fileName,
+          emittedById: currentActor().id, // mirror closePeriod's closedById (append-only provenance)
           file: new Uint8Array(file), register,
           postings: {
             create: lines.map((l) => ({
@@ -205,16 +225,47 @@ function nonZero(lines: JournalLine[]): JournalLine[] {
 }
 
 /**
- * The CURRENT in-scope journal, keyed by event (§4.3): finalized invoices/credits (invoiceDate <= E)
- * → `salesJournal`; posted non-void payments (receivedDate <= E) → one PAYMENT `cashJournal`; live
- * DISCOUNT/WRITE_OFF applications (appliedDate <= E) → one `cashJournal` each. Revenue comes from the
+ * SUMMARY aggregation (owner ruling 9): collapse the per-event journal `lines` into ONE line per
+ * `(account, side)`, summing debit and credit in integer cents, for the EXPORTED FILE and the
+ * posting register — so 30 invoices become one A/R line + one revenue line per account, not 60 rows.
+ * The per-event `GlPosting` rows stay UN-aggregated (the ERP-side detail + the delta driver, §4.3);
+ * only what the bookkeeper imports is summarized. Balance is preserved: this only re-groups the same
+ * debits/credits, so Σdebit and Σcredit are unchanged. First-occurrence order is kept (Map insertion
+ * order), so the SALES lines still precede the CASH lines the register's side filter relies on. The
+ * account key is the live `glAccountId` when present, else the frozen `glAccountName` (a SetNull
+ * reversal of a hard-deleted account). The representative `memo` (and the unused
+ * `sourceType`/`sourceId`/`isReversal`) are the group's first line's — the file and register render
+ * none of the latter three, and within one `(account, side)` the memo is uniform in practice
+ * ("A/R" / "Revenue" / "Cash receipt" / …).
+ */
+function aggregateLines(lines: JournalLine[]): JournalLine[] {
+  const byKey = new Map<string, JournalLine>();
+  for (const l of lines) {
+    const acct = l.glAccountId !== "" ? l.glAccountId : l.glAccountName;
+    const key = `${l.side}|${acct}`;
+    const prev = byKey.get(key);
+    if (prev) {
+      prev.debit = (cents(prev.debit) + cents(l.debit)) / 100;
+      prev.credit = (cents(prev.credit) + cents(l.credit)) / 100;
+    } else {
+      byKey.set(key, { ...l });
+    }
+  }
+  return [...byKey.values()];
+}
+
+/**
+ * The CURRENT in-scope journal, keyed by event (§4.3): finalized invoices/credits (by `finalizedAt`
+ * in-month, ruling 8) → `salesJournal`; posted non-void payments (receivedDate in-month) → one PAYMENT
+ * `cashJournal`; live DISCOUNT/WRITE_OFF applications (appliedDate in-month) → one `cashJournal` each.
+ * Revenue comes from the
  * invoice's own line snapshots grouped by `glAccountId` (TAX lines excluded — the tax line's account
  * is the plant default, matching the readiness gate); A/R, tax, discount, write-off and cash accounts
  * come from the plant config / payment type. Amounts are magnitudes — the INVOICE/CREDIT `kind` and
  * the mapper's `reverse` flag decide the debit/credit direction, never the stored money sign.
  */
 async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<string, JournalLine[]>> {
-  const { monthStart, monthEnd } = bounds;
+  const { monthStart, monthEnd, nextStart } = bounds;
   const config = await getBillingConfig(tx);
   const out = new Map<string, JournalLine[]>();
 
@@ -227,9 +278,9 @@ async function buildCurrentJournal(tx: Tx, bounds: MonthBounds): Promise<Map<str
   const nameById = new Map(accts.map((a) => [a.id, a.name]));
   const arName = config.arGlAccountId ? (nameById.get(config.arGlAccountId) ?? "") : "";
 
-  // Sales side — invoices and credits.
+  // Sales side — invoices and credits, scoped by `finalizedAt` (ruling 8), half-open `[start, next)`.
   const invoices = await tx.invoice.findMany({
-    where: { status: "FINALIZED", deletedAt: null, invoiceDate: { gte: monthStart, lte: monthEnd } },
+    where: { status: "FINALIZED", deletedAt: null, finalizedAt: { gte: monthStart, lt: nextStart } },
     select: {
       id: true, kind: true, total: true, taxTotal: true,
       lines: { select: { kind: true, glAccountId: true, glAccountName: true, amount: true } },
@@ -397,9 +448,10 @@ function splitKey(k: string): [string, string] {
  * line (PART) posts nothing, so it is not a gap.
  */
 async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessGap[]> {
-  const { monthStart, monthEnd } = bounds;
+  const { monthStart, monthEnd, nextStart } = bounds;
   const config = await getBillingConfig(tx);
-  const inScopeInvoice = { status: "FINALIZED" as const, deletedAt: null, invoiceDate: { gte: monthStart, lte: monthEnd } };
+  // In scope by `finalizedAt` (ruling 8), half-open `[start, next)` — the SAME scope buildCurrentJournal posts.
+  const inScopeInvoice = { status: "FINALIZED" as const, deletedAt: null, finalizedAt: { gte: monthStart, lt: nextStart } };
 
   const invoices = await tx.invoice.findMany({ where: inScopeInvoice, select: { taxTotal: true } });
   const hasTax = invoices.some((i) => cents(i.taxTotal.toNumber()) !== 0);
@@ -494,7 +546,8 @@ export async function readinessForExport(periodEnd: Date): Promise<ReadinessGap[
   ));
 }
 
-/** One CSV row per emitted line: date, account, debit, credit, memo. */
+/** One CSV row per line handed in: date, account, debit, credit, memo. `exportClose` hands it the
+ *  aggregated SUMMARY lines (one per account per side, ruling 9), not the per-event lines. */
 function renderCsv(lines: JournalLine[], dateStr: string): Buffer {
   const esc = (v: string): string => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   const money = (n: number): string => (cents(n) === 0 ? "" : n.toFixed(2));

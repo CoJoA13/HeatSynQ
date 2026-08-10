@@ -45,14 +45,29 @@ import { currentActor } from "./context";
 // is worth that. `preliminaryReport` keeps its Serializable snapshot below and needs no retry: it
 // takes NO lock and writes nothing, so it never blocks and never collides.
 //
-// NOTE (accepted, flag at the whole-branch review): `agingReport()` runs its own RepeatableRead
-// transaction on a SEPARATE pooled connection — it takes no `tx`, so `endingAr` (this tx) vs
-// `agingEndingAr` (aging's read) is compared across two snapshots. This reconciles on clean data
-// because every month dated <= periodEnd is either an already-CLOSED (locked) prior month or THIS
-// month, which is held under the advisory lock during `closePeriod` — so no posting dated
-// <= periodEnd can commit between the two reads. Do NOT "simplify" by dropping the aging side or by
-// threading `tx` into `agingReport`; the two independent derivations are the whole point of the
-// reconciliation.
+// AGING IS READ OUTSIDE THE CLOSE/PREVIEW TRANSACTION (P2024 pool-starvation fix, whole-branch
+// review). `agingReport()` opens its OWN RepeatableRead transaction on a SEPARATE pooled connection
+// (it takes no `tx`). Reading it while the outer Serializable close/preview transaction still holds
+// ITS connection is the connection-held-while-acquiring-a-second antipattern — under concurrent
+// close-screen load every close held one connection while waiting for a second, starving the pool.
+// So `preliminaryReport`/`closePeriod` read the aging FIRST (its connection is fully released), THEN
+// open the roll-forward transaction: `computeRollForward` (the tx) and the aging (its own read) are
+// two INDEPENDENT derivations of the same net A/R that the variance reconciles. Correctness holds
+// because a posting can only ever make the two DISAGREE (the roll-forward would include an event the
+// pre-read aging missed) -> a SAFE variance 409 the operator re-runs, never a false reconcile; and
+// once the close's CLOSED row lands, `assertPeriodOpen` blocks every further posting dated in the
+// month, so the frozen figures cannot drift afterward. Do NOT "simplify" by dropping the aging side,
+// by threading `tx` into `agingReport` (that re-nests the second connection), or by moving the aging
+// read back inside the transaction.
+//
+// RECOGNITION BASIS = `finalizedAt` (owner ruling 8, 2026-08-10). An invoice/credit counts in the
+// month it is FINALIZED, not its document `invoiceDate` — 5B's aging already includes an invoice by
+// `finalizedAt`, so the roll-forward MUST scope finalized invoices/credits by `finalizedAt` too or a
+// July-dated / August-finalized invoice (the ordinary month-end pattern) makes BOTH months fail to
+// reconcile. `finalizedAt` is a plain `DateTime` (time-of-day, unlike the @db.Date document dates),
+// and the aging compares it by its DATE part, so the scope is the HALF-OPEN interval
+// `[monthStart, nextMonthStart)` — a timestamp anywhere on the last day is still in-month. Payments
+// stay `receivedDate`, applications stay `appliedDate` (both @db.Date, `[start, end]` inclusive).
 // -------------------------------------------------------------------------------------------
 
 const cents = (n: number): number => Math.round(n * 100);
@@ -73,11 +88,14 @@ export type ClosePeriodListItem = ContinuitySchedule & {
 
 /** The first and last calendar day of a month, at UTC midnight — matching the `@db.Date` reading
  *  every A/R date round-trips through. `Date.UTC(year, month, 0)` is day 0 of the NEXT month = the
- *  last day of this one. */
-function monthBounds(year: number, month: number): { start: Date; end: Date; endStr: string } {
+ *  last day of this one; `Date.UTC(year, month, 1)` is the 1st of the next month — the EXCLUSIVE
+ *  upper bound for a `finalizedAt` scope (a plain `DateTime`, so a same-day timestamp with a
+ *  time-of-day is still in-month only under a half-open `[start, next)` interval). */
+function monthBounds(year: number, month: number): { start: Date; end: Date; next: Date; endStr: string } {
   const start = new Date(Date.UTC(year, month - 1, 1));
   const end = new Date(Date.UTC(year, month, 0));
-  return { start, end, endStr: formatDateOnly(end) };
+  const next = new Date(Date.UTC(year, month, 1));
+  return { start, end, next, endStr: formatDateOnly(end) };
 }
 
 /**
@@ -111,19 +129,28 @@ async function priorEndingAr(tx: Prisma.TransactionClient, year: number, month: 
   return 0;
 }
 
+/** The roll-forward figures ONLY (no aging, no variance) — read on the CALLER'S `tx`, under its month
+ *  lock. `endingCents` is carried alongside `endingAr` so the caller reconciles in integer cents. */
+type RollForward = {
+  beginningAr: number; invoicedTotal: number; creditTotal: number; paymentTotal: number;
+  discountTotal: number; writeOffTotal: number; endingAr: number; endingCents: number;
+};
+
 /**
- * The frozen continuity schedule for the month, derived from LIVE rows, plus the independent aging
- * cross-check. Flows are scoped by their A/R effective date: invoices/credits by `invoiceDate`,
- * payments by `receivedDate` (POSTED batches only), discount/write-off applications by
- * `appliedDate`. `endingAr` is the roll-forward; `agingEndingAr` is the aging net at period end
- * (spec §6); `variance` is their difference (integer cents), which `closePeriod` requires to be 0.
+ * The month's A/R roll-forward from LIVE rows, on the caller's `tx`. Flows are scoped by their A/R
+ * effective date: finalized invoices/credits by **`finalizedAt`** (owner ruling 8 — the finalize
+ * month, matching 5B's aging; the HALF-OPEN `[start, next)` interval because `finalizedAt` is a
+ * `DateTime` with a time-of-day, unlike the @db.Date document dates), payments by `receivedDate`
+ * (POSTED batches only), discount/write-off applications by `appliedDate` (both @db.Date,
+ * `[start, end]` inclusive). Does NOT read the aging — the caller reconciles against
+ * `agingEndingArAt`, read on its own connection OUTSIDE the transaction (see the file header).
  */
-async function computeSchedule(tx: Prisma.TransactionClient, year: number, month: number): Promise<ContinuitySchedule> {
-  const { start, end, endStr } = monthBounds(year, month);
+async function computeRollForward(tx: Prisma.TransactionClient, year: number, month: number): Promise<RollForward> {
+  const { start, end, next } = monthBounds(year, month);
   const beginningAr = await priorEndingAr(tx, year, month);
 
   const invoices = await tx.invoice.findMany({
-    where: { status: "FINALIZED", deletedAt: null, invoiceDate: { gte: start, lte: end } },
+    where: { status: "FINALIZED", deletedAt: null, finalizedAt: { gte: start, lt: next } },
     select: { kind: true, total: true },
   });
   let invoicedTotal = 0, creditTotal = 0;
@@ -154,36 +181,58 @@ async function computeSchedule(tx: Prisma.TransactionClient, year: number, month
   // Integer-cents arithmetic throughout (the shared rounding rule) — the roll-forward identity.
   const endingCents = cents(beginningAr) + cents(invoicedTotal) - cents(creditTotal)
     - cents(paymentTotal) - cents(discountTotal) - cents(writeOffTotal);
-  const endingAr = endingCents / 100;
+  return {
+    beginningAr, invoicedTotal, creditTotal, paymentTotal, discountTotal, writeOffTotal,
+    endingAr: endingCents / 100, endingCents,
+  };
+}
 
-  // Independent derivation on its own connection (see the file header). Summed in cents.
+/** The aging net at the period end (spec §6), on aging's OWN pooled connection. Called OUTSIDE the
+ *  close/preview transaction so no connection is held while this second one is acquired (the P2024
+ *  pool-starvation fix — see the file header). Summed in cents. */
+async function agingEndingArAt(endStr: string): Promise<number> {
   const rows = await agingReport({ asOf: endStr });
-  const agingEndingAr = rows.reduce((s, r) => s + cents(r.net), 0) / 100;
+  return rows.reduce((s, r) => s + cents(r.net), 0) / 100;
+}
 
-  const variance = (endingCents - cents(agingEndingAr)) / 100;
-  return { beginningAr, invoicedTotal, creditTotal, paymentTotal, discountTotal, writeOffTotal, endingAr, agingEndingAr, variance };
+/** Assemble the frozen continuity schedule + the reconciliation variance (integer cents) from the
+ *  roll-forward (the transaction) and the aging net (its own read). `closePeriod` requires
+ *  `variance === 0`. */
+function scheduleFrom(rf: RollForward, agingEndingAr: number): ContinuitySchedule {
+  const variance = (rf.endingCents - cents(agingEndingAr)) / 100;
+  return {
+    beginningAr: rf.beginningAr, invoicedTotal: rf.invoicedTotal, creditTotal: rf.creditTotal,
+    paymentTotal: rf.paymentTotal, discountTotal: rf.discountTotal, writeOffTotal: rf.writeOffTotal,
+    endingAr: rf.endingAr, agingEndingAr, variance,
+  };
 }
 
 /**
  * The read-only preview (spec §4.1): the schedule + variance a user sees before committing the
  * close, the count of OPEN batches with a payment dated in the month (unposted cash that WOULD move
  * the numbers once posted), and whether the month is already CLOSED. Takes no advisory lock — it is
- * a preview, mutates nothing — so it runs Serializable purely for a consistent snapshot of its own
- * several reads; with no lock it never blocks and so never reads stale.
+ * a preview, mutates nothing — so its transaction runs Serializable purely for a consistent snapshot
+ * of its own several reads; with no lock it never blocks and so never reads stale. The aging is read
+ * BEFORE the transaction opens (its own connection, released first) — the pool-starvation fix.
  */
 export async function preliminaryReport(year: number, month: number): Promise<PreliminaryReport> {
-  return withDbErrors({ entity: "Close period" }, () => prisma.$transaction(async (tx) => {
-    const schedule = await computeSchedule(tx, year, month);
-    const { start, end } = monthBounds(year, month);
-    const unpostedBatchCount = await tx.receiptBatch.count({
-      where: {
-        status: "OPEN", deletedAt: null,
-        payments: { some: { deletedAt: null, receivedDate: { gte: start, lte: end } } },
-      },
-    });
-    const existing = await tx.closePeriod.findFirst({ where: { year, month } });
-    return { year, month, schedule, unpostedBatchCount, alreadyClosed: existing?.status === "CLOSED" };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  return withDbErrors({ entity: "Close period" }, async () => {
+    // Aging FIRST, on its own connection — fully released before the preview transaction opens (the
+    // P2024 pool-starvation fix). A preview read: nothing is written, no lock is taken.
+    const { start, end, endStr } = monthBounds(year, month);
+    const agingEndingAr = await agingEndingArAt(endStr);
+    return prisma.$transaction(async (tx) => {
+      const schedule = scheduleFrom(await computeRollForward(tx, year, month), agingEndingAr);
+      const unpostedBatchCount = await tx.receiptBatch.count({
+        where: {
+          status: "OPEN", deletedAt: null,
+          payments: { some: { deletedAt: null, receivedDate: { gte: start, lte: end } } },
+        },
+      });
+      const existing = await tx.closePeriod.findFirst({ where: { year, month } });
+      return { year, month, schedule, unpostedBatchCount, alreadyClosed: existing?.status === "CLOSED" };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  });
 }
 
 /**
@@ -195,27 +244,33 @@ export async function preliminaryReport(year: number, month: number): Promise<Pr
  * the two-close conflict (see the file header).
  */
 export async function closePeriod(year: number, month: number): Promise<ClosePeriodDetail> {
-  return withDbErrors({ entity: "Close period" }, () => retryOnSerializationConflict(() => prisma.$transaction(async (tx) => {
-    await lockMonth(tx, year, month); // serialize against concurrent postings AND a concurrent close
-    const schedule = await computeSchedule(tx, year, month);
-    if (cents(schedule.variance) !== 0) {
-      throw new HttpError(409,
-        `The close does not reconcile — ending A/R ${schedule.endingAr} vs aging ${schedule.agingEndingAr} (off by ${schedule.variance})`);
-    }
-    const existing = await tx.closePeriod.findFirst({ where: { year, month } });
-    const data = {
-      year, month, status: "CLOSED", closedById: currentActor().id, reopenedAt: null, reopenReason: "",
-      beginningAr: schedule.beginningAr, invoicedTotal: schedule.invoicedTotal, creditTotal: schedule.creditTotal,
-      paymentTotal: schedule.paymentTotal, discountTotal: schedule.discountTotal, writeOffTotal: schedule.writeOffTotal,
-      endingAr: schedule.endingAr, agingEndingAr: schedule.agingEndingAr,
-    };
-    const row = existing
-      ? await auditedUpdate("closePeriod", existing.id,
-          () => tx.closePeriod.update({ where: { id: existing.id }, data }), { tx })
-      : await auditedCreate("closePeriod", data,
-          () => tx.closePeriod.create({ data }), { tx });
-    return { id: row.id, year, month, status: "CLOSED", ...schedule };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
+  const { endStr } = monthBounds(year, month);
+  return withDbErrors({ entity: "Close period" }, () => retryOnSerializationConflict(async () => {
+    // Aging FIRST, on its own connection — released before the close transaction opens (the P2024
+    // pool-starvation fix, file header). Inside the retry so a serialization re-run re-reads it fresh.
+    const agingEndingAr = await agingEndingArAt(endStr);
+    return prisma.$transaction(async (tx) => {
+      await lockMonth(tx, year, month); // serialize against concurrent postings AND a concurrent close
+      const schedule = scheduleFrom(await computeRollForward(tx, year, month), agingEndingAr);
+      if (cents(schedule.variance) !== 0) {
+        throw new HttpError(409,
+          `The close does not reconcile — ending A/R ${schedule.endingAr} vs aging ${schedule.agingEndingAr} (off by ${schedule.variance})`);
+      }
+      const existing = await tx.closePeriod.findFirst({ where: { year, month } });
+      const data = {
+        year, month, status: "CLOSED", closedById: currentActor().id, reopenedAt: null, reopenReason: "",
+        beginningAr: schedule.beginningAr, invoicedTotal: schedule.invoicedTotal, creditTotal: schedule.creditTotal,
+        paymentTotal: schedule.paymentTotal, discountTotal: schedule.discountTotal, writeOffTotal: schedule.writeOffTotal,
+        endingAr: schedule.endingAr, agingEndingAr: schedule.agingEndingAr,
+      };
+      const row = existing
+        ? await auditedUpdate("closePeriod", existing.id,
+            () => tx.closePeriod.update({ where: { id: existing.id }, data }), { tx })
+        : await auditedCreate("closePeriod", data,
+            () => tx.closePeriod.create({ data }), { tx });
+      return { id: row.id, year, month, status: "CLOSED", ...schedule };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }));
 }
 
 /**

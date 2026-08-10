@@ -63,9 +63,9 @@ every fresh session and has to stay readable in one pass.
 ### The current phase
 
 **Phase 5C (month-end close + the QuickBooks Online summary export) is IN FLIGHT on branch
-`phase-5c-close-qbo-export` — all nine tasks implemented and task-reviewed; pending the whole-branch
-review and a PR.** Spec: `docs/superpowers/specs/2026-08-09-phase-5c-close-qbo-export-design.md`
-(7 owner rulings, §3). Plan: `docs/superpowers/plans/2026-08-09-phase-5c-close-qbo-export.md`.
+`phase-5c-close-qbo-export` — all nine tasks implemented and task-reviewed, the whole-branch review
+done, and its fix wave landed; pending a PR.** Spec: `docs/superpowers/specs/2026-08-09-phase-5c-close-qbo-export-design.md`
+(9 owner rulings, §3 — rulings 8 & 9 added by the whole-branch review). Plan: `docs/superpowers/plans/2026-08-09-phase-5c-close-qbo-export.md`.
 Execution ledger (every task's brief, implementer report, and reviewer verdict, plus the `progress.md`
 that records what each review found or refuted): `docs/execution/2026-08-09-phase-5c-close-qbo-export/`.
 
@@ -97,6 +97,26 @@ events (fixed: readiness covers every account-bearing non-TAX line kind, `export
 Σdebit = Σcredit before persisting as a backstop, and the delta bounds to `[monthStart, monthEnd]`).
 CLAUDE.md's "The period lock" and "The GL-export delta" house rules record the standing invariants
 these fixes established.
+
+**The whole-branch review (two opus lenses) then landed two owner rulings + four fixes** (report:
+`docs/execution/2026-08-09-phase-5c-close-qbo-export/whole-branch-fix-report.md`). Two IMPORTANT
+cross-task findings the per-task reviews structurally couldn't see: (A) the close roll-forward scoped
+invoices by `invoiceDate` but the reconciling aging includes them by `finalizedAt`, so a July-dated /
+August-finalized invoice (the ordinary month-end pattern) made BOTH months fail to reconcile —
+**owner ruling 8: an invoice is recognized in its FINALIZE month (`finalizedAt`), consistently across
+the close roll-forward, the GL-export scoping, and the period lock** (finalize guards ≈today,
+unlock/void guard the invoice's own `finalizedAt`); the scope is the half-open `[monthStart,
+nextMonthStart)` because `finalizedAt` is a timestamp. (B) the export file/register emitted one row
+per event-line, not the spec's summary journal — **owner ruling 9: the file and register aggregate to
+one line per `(account, side)`** (`aggregateLines`), while the per-event `GlPosting` rows stay the
+un-aggregated detail. Plus two clear fixes: `computeSchedule` read the aging inside the outer
+Serializable transaction (a second pooled connection held while acquiring another → P2024 pool
+starvation under concurrent close-screen load) — **the aging is now read OUTSIDE the transaction**;
+and `exportClose` now stamps `GlExportBatch.emittedById` (mirroring `closePeriod`'s `closedById`).
+**Deferred to issues** (self-protecting / cosmetic, none data-integrity): the non-latest-reopen
+continuity-chain stale figures, the freight/charge frozen-null readiness-vs-500 edge, and ~10 cosmetic
+Minors. Gates after the fix wave: **1941 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18** foreground;
+both concurrency directions RED-re-verified under the new basis.
 
 Open A/R follow-up work (Phase 5B, carried unchanged): issues **#68–#87** (§6) — **#81** (aggregate
 discount cap) and **#84** (delete-customer-with-live-payment) are the P1s worth doing early. The

@@ -5,7 +5,7 @@ import { truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { finalizeInvoice } from "@/server/invoices";
 import { createBatch, addPayment, postBatch } from "@/server/receipts";
-import { parseDateOnly } from "@/lib/business-days";
+import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
 import { assertPeriodOpen, closedPeriodFor, lockMonth } from "@/server/period-locks";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -53,12 +53,16 @@ it("stays a dependency-free leaf", () => {
 
 // ---------------------------------------------------------------------------------------------
 // Step 7a: the guard is WIRED into the real finalize path. RED-verified by deleting the
-// `assertPeriodOpen(tx, invoice.invoiceDate)` call in `finalizeInvoiceInTx` — the invoice then
+// `assertPeriodOpen(tx, todayDateOnly())` call in `finalizeInvoiceInTx` — the invoice then
 // finalizes clean and this test fails to throw (transcript in task-4-report.md). The invoice is
 // built raw (the applications-concurrency.test.ts pattern): a zero-line DRAFT reaches the guard
 // through finalize's only pre-guard block (`needsPrice`), and with no lines and no customer terms it
 // also finalizes cleanly once the guard is removed, so the RED run resolves rather than throwing
 // some unrelated error.
+//
+// Ruling 8: finalize recognizes an invoice in its FINALIZE month, so the guard is on TODAY, not the
+// document `invoiceDate`. The refusal test therefore closes TODAY's month; the no-op test closes a
+// DIFFERENT month and finalizes into today (open).
 // ---------------------------------------------------------------------------------------------
 
 let seq = 0;
@@ -80,17 +84,20 @@ async function draftInvoiceDated(dateStr: string): Promise<string> {
   return invoice.id;
 }
 
-it("refuses finalizing an invoice dated in a closed month", async () => {
+it("refuses finalizing when the finalize month (today) is closed — ruling 8", async () => {
+  // The document date is irrelevant to the guard now — a July-dated draft finalized today is refused
+  // iff TODAY's month is closed. Close today's month and prove the finalize is refused.
   const invoiceId = await draftInvoiceDated("2026-07-10");
-  await closeMonth(2026, 7);
+  const today = todayDateOnly();
+  await closeMonth(today.getUTCFullYear(), today.getUTCMonth() + 1);
   await expect(asSystem(() => finalizeInvoice(invoiceId))).rejects.toThrow(/closed/i);
   // Refused, not half-applied: the invoice is still a DRAFT.
   expect((await prisma.invoice.findUniqueOrThrow({ where: { id: invoiceId } })).status).toBe("DRAFT");
 });
 
-it("finalizes normally when the invoice's month is open (the guard is a no-op)", async () => {
-  const invoiceId = await draftInvoiceDated("2026-08-10"); // August, never closed here
-  await closeMonth(2026, 7);                                // a DIFFERENT month is closed
+it("finalizes normally when the finalize month (today) is open, even though a DIFFERENT month is closed", async () => {
+  const invoiceId = await draftInvoiceDated("2026-08-10");
+  await closeMonth(2020, 1); // a clearly different (past) month is closed — today's month stays open
   const done = await asSystem(() => finalizeInvoice(invoiceId));
   expect(done.status).toBe("FINALIZED");
 });

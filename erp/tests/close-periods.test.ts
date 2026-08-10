@@ -5,7 +5,7 @@ import { runWithContext } from "@/server/context";
 import { closePeriod, preliminaryReport, reopenPeriod } from "@/server/close-periods";
 import { finalizeInvoice } from "@/server/invoices";
 import { HttpError } from "@/server/errors";
-import { parseDateOnly } from "@/lib/business-days";
+import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -43,7 +43,7 @@ it("can create a ClosePeriod, GlExportBatch, and GlPosting", async () => {
 let seq = 0;
 type InvoiceRef = { invoiceId: string; customerId: string };
 
-async function makeFinalizedInvoiceDated(dateStr: string, total: number): Promise<InvoiceRef> {
+async function makeFinalizedInvoiceDated(dateStr: string, total: number, finalizedAtStr?: string): Promise<InvoiceRef> {
   seq += 1;
   const customer = await prisma.customer.create({ data: { code: `CLP${seq}`, name: `Close Customer ${seq}` } });
   const order = await prisma.order.create({
@@ -52,11 +52,14 @@ async function makeFinalizedInvoiceDated(dateStr: string, total: number): Promis
       receivedDate: parseDateOnly(dateStr), requestDate: parseDateOnly(dateStr),
     },
   });
+  // `finalizedAtStr` defaults to `dateStr`, so most callers keep finalizedAt == invoiceDate. The
+  // month-end straddle regression passes a DIFFERENT finalizedAt (ruling 8: recognition is by the
+  // finalize month, not the document date). `dueDate` stays on `dateStr` (the invoice's own aging).
   const invoice = await prisma.invoice.create({
     data: {
       kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
       invoiceDate: parseDateOnly(dateStr), dueDate: parseDateOnly(dateStr),
-      total, finalizedAt: parseDateOnly(dateStr),
+      total, finalizedAt: parseDateOnly(finalizedAtStr ?? dateStr),
     },
   });
   return { invoiceId: invoice.id, customerId: customer.id };
@@ -162,6 +165,28 @@ describe("close/reopen lifecycle", () => {
     await expect(asSystem(() => closePeriod(2026, 7))).rejects.toThrow(/reconcile|variance|aging/i);
   });
 
+  it("recognizes an invoice by finalizedAt, not invoiceDate (ruling 8 month-end straddle reconciles both months)", async () => {
+    // The empirically-confirmed whole-branch defect: an invoice DATED the last day of July but
+    // FINALIZED in early August — the ordinary month-end pattern. The aging includes it by finalizedAt
+    // (August); the OLD invoiceDate-scoped roll-forward counted it in July, so July's roll-forward
+    // ($100) diverged from July's aging ($0) AND August's from August's aging → BOTH months refused
+    // (unclosable). Under the finalizedAt basis it is purely August activity: July reconciles to $0 and
+    // August counts + reconciles it. This test FAILS on the old invoiceDate-scoped roll-forward
+    // (July's variance would be 100, so `closePeriod(2026, 7)` would reject on /reconcile/).
+    await makeFinalizedInvoiceDated("2026-07-31", 100, "2026-08-02");
+
+    const july = await asSystem(() => closePeriod(2026, 7));
+    expect(july.invoicedTotal).toBe(0);   // August activity — not counted in July
+    expect(july.endingAr).toBe(0);
+    expect(july.variance).toBe(0);         // reconciles: the invoice is absent from both derivations
+
+    const aug = await asSystem(() => closePeriod(2026, 8));
+    expect(aug.beginningAr).toBe(0);       // July ended at $0 (chain)
+    expect(aug.invoicedTotal).toBe(100);   // recognized in its finalize month
+    expect(aug.endingAr).toBe(100);
+    expect(aug.variance).toBe(0);          // aging at 2026-08-31 includes it too → reconciles
+  });
+
   it("reopen requires a reason, flips status, and records the reason in the audit entry", async () => {
     await makeFinalizedInvoiceDated("2026-07-05", 100);
     const c = await asSystem(() => closePeriod(2026, 7));
@@ -197,24 +222,33 @@ describe("close/reopen lifecycle", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("concurrency — Serializable + the month advisory lock protect a posting and a close (spec §12)", () => {
-  it("DANGEROUS direction: a real Serializable finalize whose snapshot predates a committed close is refused/aborted — no FINALIZED invoice leaks into closed July", async () => {
+  it("DANGEROUS direction: a real Serializable finalize whose snapshot predates a committed close is refused/aborted — no FINALIZED invoice leaks into the closed month", async () => {
     // The finding this test proves: `finalizeInvoice` runs Serializable and FIXES its snapshot at
     // `claimInvoiceRow` — BEFORE `assertPeriodOpen`'s `lockMonth`/period read. If a close commits its
     // CLOSED row after that snapshot, the finalize's period `findFirst` misses it (no `FOR UPDATE`)
     // and would post FINALIZED into a just-closed month. Only SSI catches it, and only if the close is
     // ALSO Serializable.
     //
+    // Ruling 8: finalize recognizes the invoice in its FINALIZE month, so it guards TODAY's month —
+    // the SSI edge (finalize's `assertPeriodOpen` predicate read ↔ close's CLOSED-row insert) forms
+    // only when the close closes TODAY's month. So this test closes the CURRENT month; the draft's
+    // own document date is irrelevant to the guard.
+    //
     // Determinism: a GATE (Read Committed) holds the ORDER row `FOR UPDATE`, so the REAL finalize fixes
     // its snapshot at its first read and then BLOCKS at `claimOrder`'s `SELECT ... FOR UPDATE` —
     // pausing it AFTER its snapshot is fixed and BEFORE its period read. We then run the REAL
-    // `closePeriod(2026, 7)` to completion (it commits a CLOSED July, endingAr 0 — the invoice is still
-    // DRAFT), release the gate, and let the finalize proceed on its now-stale snapshot. Both sides
-    // Serializable → SSI aborts the finalize (40001 → 409) or it is refused period-closed (409).
+    // `closePeriod(currentYear, currentMonth)` to completion (it commits a CLOSED current month,
+    // endingAr 0 — the invoice is still DRAFT), release the gate, and let the finalize proceed on its
+    // now-stale snapshot. Both sides Serializable → SSI aborts the finalize (40001 → 409) or it is
+    // refused period-closed (409).
     //
     // RED-verified by reverting `closePeriod` to Read Committed (drop its `isolationLevel`): the close
     // is invisible to SSI, the finalize's stale read misses the CLOSED row, nothing aborts it, and it
-    // commits FINALIZED into closed July — `outcome` becomes "resolved" and the invoice is FINALIZED.
-    const { invoiceId, orderId } = await makeDraftInvoiceDated("2026-07-15", 100);
+    // commits FINALIZED into the closed month — `outcome` becomes "resolved" and the invoice FINALIZED.
+    const today = todayDateOnly();
+    const cy = today.getUTCFullYear();
+    const cm = today.getUTCMonth() + 1;
+    const { invoiceId, orderId } = await makeDraftInvoiceDated("2026-07-15", 100); // document date irrelevant
 
     let gateReady!: () => void;
     const gated = new Promise<void>((r) => { gateReady = r; });
@@ -238,8 +272,9 @@ describe("concurrency — Serializable + the month advisory lock protect a posti
     );
     await new Promise((r) => setTimeout(r, 200)); // let the finalize fix its snapshot + block on the order
 
-    // Close July NOW — commits a CLOSED July row while the finalize is paused with an older snapshot.
-    const closed = await asSystem(() => closePeriod(2026, 7));
+    // Close the CURRENT month NOW — commits its CLOSED row while the finalize is paused with an older
+    // snapshot. It is a genesis close (nothing earlier closed) and the invoice is still DRAFT → $0.
+    const closed = await asSystem(() => closePeriod(cy, cm));
     expect(closed.status).toBe("CLOSED");
     expect(closed.endingAr).toBe(0); // the invoice is still DRAFT, so the frozen schedule is $0
 
@@ -251,10 +286,10 @@ describe("concurrency — Serializable + the month advisory lock protect a posti
     expect(outcome).toBeInstanceOf(HttpError);
     expect((outcome as HttpError).status).toBe(409); // period-closed OR serialization-abort — both 409
 
-    // PROOF: no FINALIZED July invoice leaked, and the frozen close schedule still reads $0.
+    // PROOF: no FINALIZED invoice leaked, and the frozen close schedule still reads $0.
     const inv = await prisma.invoice.findFirst({ where: { id: invoiceId } });
     expect(inv?.status).toBe("DRAFT");
-    const row = await prisma.closePeriod.findFirst({ where: { year: 2026, month: 7 } });
+    const row = await prisma.closePeriod.findFirst({ where: { year: cy, month: cm } });
     expect(row?.status).toBe("CLOSED");
     expect(row?.endingAr.toNumber()).toBe(0);
   });
