@@ -62,19 +62,45 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**No phase is in flight.** Phase 5B (Accounts Receivable) merged 2026-08-09 (`b55da3b`, PR #74) — its
-one-paragraph entry is in the "Merged, in build order" list below, its full narrative in
-`docs/history/2026-08-08-phase-5b-accounts-receivable.md`, and its execution ledger (per-task briefs,
-implementer reports, reviewer verdicts, the whole-branch review, both Codex rounds, every owner
-ruling and deferred minor) in `docs/execution/2026-08-08-phase-5b-accounts-receivable/` — see
-`.superpowers/sdd/README.md` for why that ledger sits under `docs/execution/`.
+**Phase 5C (month-end close + the QuickBooks Online summary export) is IN FLIGHT on branch
+`phase-5c-close-qbo-export` — all nine tasks implemented and task-reviewed; pending the whole-branch
+review and a PR.** Spec: `docs/superpowers/specs/2026-08-09-phase-5c-close-qbo-export-design.md`
+(7 owner rulings, §3). Plan: `docs/superpowers/plans/2026-08-09-phase-5c-close-qbo-export.md`.
+Execution ledger (every task's brief, implementer report, and reviewer verdict, plus the `progress.md`
+that records what each review found or refuted): `docs/execution/2026-08-09-phase-5c-close-qbo-export/`.
 
-**The next work is Phase 5C (month-end close + the QuickBooks Online summary export) — its kickoff
-prompt is live in §9;** paste it into a fresh session to begin. 5C has no spec or plan yet:
-brainstorm → spec → plan is its first step (§9 names what it inherits from 5B, spec §17). Open A/R
-follow-up work: issues **#68–#87** (§6) — **#81** (aggregate discount cap) and **#84**
-(delete-customer-with-live-payment) are the P1s worth doing early. The older backlog (#51–#52,
-#59–#65, the per-worker-test-DB infra task, §6) remains open too.
+**The nine tasks, in build order:** the schema (`ClosePeriod`/`GlExportBatch`/`GlPosting`, the six
+`BillingConfig → GlAccount` GL-default FKs, the `gl_export_batch_number_next` counter, audit/sweep
+registration — one migration, `20260809130000_phase_5c_close_and_gl_export`); the `BillingConfig` GL
+defaults' service, delete-blocker registration, and Admin → Billing UI; `gl-mapping.ts` (the pure
+journal-line + readiness engine); `period-locks.ts` (the leaf `assertPeriodOpen`/`lockMonth`) wired
+into every 5A/5B posting mutation; `close-periods.ts` (the close/reopen lifecycle, the continuity
+schedule, the roll-forward-vs-aging reconciliation) + its routes; `gl-export.ts` (the per-event
+delta engine, the CSV, the batch write) + the export/readiness routes; the posting-register PDF;
+the `/receivables/close` UI; and this task — the E2E flow, the demo doc, and the doc updates.
+
+**Four data-integrity/concurrency defects the task reviews caught and fixed, all closed before this
+state was recorded:** (1) `gl-mapping.ts`'s `readinessGaps` didn't flag a missing sales-tax GL
+account, so a taxable invoice could export an unbalanced journal (fixed: `ReadinessInput` gained
+`salesTaxGlAccountId`/`hasTax`); (2) `postBatch` (receipts.ts) guarded a multi-month batch with an
+UNSORTED per-payment advisory-lock loop — an ABBA deadlock (fixed: dedup to distinct months, sorted
+ascending, one lock per month, the `claimOrdersInOrder` rule for advisory mutexes); (3) `closePeriod`/
+`reopenPeriod` were implemented at Read Committed to pass a "two concurrent closes" sample test —
+that strips the SSI backstop from the Serializable posting side, so a Serializable `finalizeInvoice`
+racing a Read-Committed close could leak a FINALIZED invoice into a just-closed month (fixed: both
+kept Serializable, the two-close conflict absorbed by a new `retryOnSerializationConflict`); (4)
+`gl-export.ts`'s `resolveReadiness` only flagged null-GL lines carrying a step code or surcharge —
+FREIGHT/CHARGE/CERT lines could drop from the credit side while A/R still debited the full total, an
+unbalanced batch — and the delta's scope was cumulative (`≤ periodEnd`) rather than strictly
+per-period, so exporting a later month first could vacuum and later double-post an earlier month's
+events (fixed: readiness covers every account-bearing non-TAX line kind, `exportClose` asserts
+Σdebit = Σcredit before persisting as a backstop, and the delta bounds to `[monthStart, monthEnd]`).
+CLAUDE.md's "The period lock" and "The GL-export delta" house rules record the standing invariants
+these fixes established.
+
+Open A/R follow-up work (Phase 5B, carried unchanged): issues **#68–#87** (§6) — **#81** (aggregate
+discount cap) and **#84** (delete-customer-with-live-payment) are the P1s worth doing early. The
+older backlog (#51–#52, #59–#65, the per-worker-test-DB infra task, §6) remains open too.
 
 ### Merged, in build order
 
