@@ -18,7 +18,7 @@
 - [x] Task 6: gl-export.ts — per-event delta, CSV, batch write + export/readiness routes
 - [x] Task 7: posting-register PDF
 - [x] Task 8: /receivables/close UI
-- [ ] Task 9: E2E flow, demo doc, documentation
+- [x] Task 9: E2E flow, demo doc, documentation
 
 ## Log
 
@@ -131,3 +131,5 @@ Task 8: COMPLETE (commit c209b91; sonnet review Approved — spec ✅, REACHABIL
   PLAN GAP (folded in, not a defect): the Tasks 5-7 routes lacked a list-closed-periods endpoint the UI needs — added in Task 8.
   Minors (final review): (a) Export button's live readiness-gap count is fresh only for the picker's selected month; historical rows rely on the server exportClose 409 (safe by construction; a per-row readiness fetch is the follow-up). (b) Close.tsx ReadinessGap.kind typed `string` vs the server union (harmless widening).
   Note: task-8-report.md was written under erp/docs/ by mistake (implementer cwd=erp/, relative path) — controller moved it to repo-root docs/execution/.
+
+Task 9: COMPLETE (commit 28b80ee; not independently reviewed — final task, whole-branch review covers it). The 18th E2E flow (`close-month-end.mjs`): sets the four Admin -> Billing GL defaults, closes/exports/reopens/corrects/re-exports the current month end to end, asserts variance 0, readiness 0 gaps, CSV balance, and an exact 30.00/30.00 reversing delta after voiding a write-off application. Backfills two Phase 5B fixtures (`arPriceStepCode`/`arPaymentType`) with GL accounts — the close's readiness/delta scan is GLOBAL per month, not per-customer, and `receivables-apply-age-statement.mjs`'s own invoice stays FINALIZED for the rest of a run. Two real harness bugs found and fixed: a `page.on("dialog", …)` listener-accumulation crash (this flow is the first to need more than one dialog sequence per page) and a shared "Type" column-header ambiguity between two nested tables (fixed by locating the panel's own root div instead of the header). Demo doc `docs/2026-08-09-phase-5c-demo.md`; CLAUDE.md gained the two house rules (period lock, GL-export delta); HANDOFF.md §4 records the phase's in-flight state, the nine tasks, and the four defects the reviews caught. Gates: full suite 1938, tsc/eslint/build clean, E2E 18/18 foreground (one transient collision in the pre-existing, unmodified `invoice-shipped-order.mjs` flow did not reproduce on re-run). Deviated from the brief's literal `tests/e2e/close.spec.ts` path — this repo's actual convention is the `e2e/run.mjs` harness + `e2e/flows/*.mjs`, confirmed via package.json and the absence of any `playwright.config.ts`; used `e2e/flows/close-month-end.mjs` instead, registered as the 18th flow.
