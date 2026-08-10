@@ -1203,24 +1203,26 @@ export type ExportedBatch = {
   file: Buffer;
 };
 
-// 1. build the CURRENT in-scope journal lines (live events with glDate <= periodEnd), keyed by event
-// 2. read prior GlPosting (glDate <= periodEnd), net by (sourceType, sourceId)
+// 1. build the CURRENT in-scope journal lines (live events dated in [monthStart, monthEnd]), keyed by event
+// 2. read prior GlPosting (glDate in [monthStart, monthEnd]), net by (sourceType, sourceId)
 // 3. new events -> post; net-posted-but-not-live -> reverse
-// 4. write GlExportBatch + GlPosting, render CSV
+// 4. assert the batch balances, write GlExportBatch + GlPosting, render CSV
 export async function exportClose(closePeriodId: string): Promise<ExportedBatch> {
   return withDbErrors({ entity: "GL export" }, () => prisma.$transaction(async (tx) => {
     const period = await tx.closePeriod.findFirst({ where: { id: closePeriodId } });
     if (!period) throw new HttpError(404, "Close period not found");
     if (period.status !== "CLOSED") throw new HttpError(409, "Reopened periods must be re-closed before export");
-    const periodEnd = new Date(Date.UTC(period.year, period.month, 0));
+    const monthStart = new Date(Date.UTC(period.year, period.month - 1, 1));
+    const periodEnd = new Date(Date.UTC(period.year, period.month, 0)); // month end = this period's bound
 
-    const gaps = await resolveReadiness(tx, periodEnd);
+    const gaps = await resolveReadiness(tx, monthStart, periodEnd);
     if (gaps.length > 0) throw new HttpError(409, `Cannot export — ${gaps.length} GL account gap(s); see the readiness list`);
 
-    // Both maps keyed on the IDENTICAL 2-part `${sourceType}:${sourceId}` (§4.3). buildPriorNet
-    // drops net-zero groups (an already-reversed event), so presence (.has) == "has a live posting".
-    const currentByKey = await buildCurrentJournal(tx, periodEnd); // Map<key, JournalLine[]> (new-posting lines, isReversal:false)
-    const priorByKey = await buildPriorNet(tx, periodEnd);         // Map<key, JournalLine[]> (net non-zero prior lines)
+    // Strictly per-period (§4.3): both maps read only this month's events/postings, keyed on the
+    // IDENTICAL 2-part `${sourceType}:${sourceId}`. buildPriorNet drops net-zero groups, so
+    // presence (.has) == "has a live posting". Per-period bounds remove the out-of-order double-post.
+    const currentByKey = await buildCurrentJournal(tx, monthStart, periodEnd); // new-posting lines, isReversal:false
+    const priorByKey = await buildPriorNet(tx, monthStart, periodEnd);         // net non-zero prior lines
 
     const lines: JournalLine[] = [];
     for (const [key, cur] of currentByKey) {
@@ -1229,6 +1231,11 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
     for (const [key, prior] of priorByKey) {
       if (!currentByKey.has(key)) lines.push(...reverseLines(prior)); // net-posted but no longer live → reverse
     }
+
+    // Belt-and-suspenders: an unbalanced batch must never persist even if a readiness gap was missed.
+    const dr = lines.reduce((s, l) => s + Math.round(l.debit * 100), 0);
+    const cr = lines.reduce((s, l) => s + Math.round(l.credit * 100), 0);
+    if (dr !== cr) throw new HttpError(500, `Refusing to export an unbalanced batch (debit ${dr / 100} ≠ credit ${cr / 100})`);
 
     const exportNumber = await allocateNumber("gl_export_batch_number_next", tx);
     const fileName = `gl-${period.year}-${String(period.month).padStart(2, "0")}.csv`;
@@ -1258,9 +1265,11 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 ```
 
 Implement the private helpers below the export (`reverseLines` is imported from `gl-mapping`, not re-implemented):
-- `buildCurrentJournal(tx, periodEnd)`: read finalized invoices/credits (`invoiceDate ≤ periodEnd`) with their lines grouped by `glAccountId` into `SalesEvent.revenue`; posted non-void payments (`receivedDate ≤ periodEnd`) → one `CashEvent{ kind:"PAYMENT" }` each; live `DISCOUNT`/`WRITE_OFF` applications (`appliedDate ≤ periodEnd`) → one `CashEvent` each. Map each via `salesJournal`/`cashJournal`. Return `Map<`${sourceType}:${sourceId}`, JournalLine[]>` — **the 2-part key**.
-- `buildPriorNet(tx, periodEnd)`: read `GlPosting` with `glDate ≤ periodEnd`; group by the **same 2-part `${sourceType}:${sourceId}`**; within a group net debit/credit per `(glAccountId, side, memo)`, reconstructing `JournalLine[]` (carry `memo` and `glAccountName` from the row). **Drop any group whose every line nets to zero** (an already-reversed event) so `.has(key)` means "has a live prior posting".
-- `resolveReadiness(tx, periodEnd)`: assemble `ReadinessInput` from `getBillingConfig()` (its `arGlAccountId`/`discountGlAccountId`/`writeOffGlAccountId`/`salesTaxGlAccountId`) + the account-less step codes/surcharges/payment types that appear on in-scope events (`glDate ≤ periodEnd`); set `hasDiscount`/`hasWriteOff` from whether any such application is in scope, and `hasTax` from whether any in-scope finalized invoice has `taxTotal != 0`; call `readinessGaps`.
+**The delta is STRICTLY PER-PERIOD** — both the live scope and the prior read are bounded to the period's own `[monthStart, monthEnd]` (`monthStart = Date.UTC(year, month-1, 1)`, `monthEnd = periodEnd = Date.UTC(year, month, 0)`), NOT cumulative `≤ E`. Sound because the period lock (Task 4) guarantees a closed month's postable events can't change, so each month's export is self-contained; a cumulative bound would let a later month's export (run first) vacuum an earlier month's events under the later `glDate` and then double-post them when the earlier month exports.
+- `buildCurrentJournal(tx, monthStart, monthEnd)`: finalized invoices/credits with `invoiceDate ∈ [monthStart, monthEnd]`, lines grouped by `glAccountId` into `SalesEvent.revenue`; posted non-void payments with `receivedDate ∈ [monthStart, monthEnd]` → one `CashEvent{ kind:"PAYMENT" }` each; live `DISCOUNT`/`WRITE_OFF` applications with `appliedDate ∈ [monthStart, monthEnd]` → one `CashEvent` each. Map via `salesJournal`/`cashJournal`. Return a `Map` on **the 2-part key** `${sourceType}:${sourceId}`.
+- `buildPriorNet(tx, monthStart, monthEnd)`: `GlPosting` with `glDate ∈ [monthStart, monthEnd]` (this period's own postings — all stamped `periodEnd`); group by the **same 2-part key**; net debit/credit per `(glAccountId, side, memo)`, reconstructing `JournalLine[]` (carry `memo`/`glAccountName`). **Drop any group whose lines net to zero** so `.has(key)` means "has a live prior posting".
+- `resolveReadiness(tx, monthStart, monthEnd)`: assemble `ReadinessInput` from `getBillingConfig()` (`arGlAccountId`/`discountGlAccountId`/`writeOffGlAccountId`/`salesTaxGlAccountId`) + **EVERY in-scope finalized invoice line (any kind except `TAX`) with `glAccountId = null` and a nonzero amount** — not only step-code/surcharge lines: `FREIGHT` draws `freightGlAccountId`, `CHARGE` draws `otherChargeGlAccountId`, `CERT` draws its cert step code's GL, all nullable, and a dropped account-less line unbalances the batch (the A/R debit is the full `invoice.total`). Extend `ReadinessInput`/`readinessGaps` with freight/charge plant-default checks and route a `CERT`/`OPERATION`/`SURCHARGE` line's missing GL to its step-code/surcharge gap. Set `hasDiscount`/`hasWriteOff`/`hasTax` from in-scope applications/taxable invoices; call `readinessGaps`.
+- **Balance backstop (belt-and-suspenders):** immediately before writing the batch, `exportClose` asserts `Σ debit == Σ credit` over the emitted `lines` (integer cents) and throws if not — so an unbalanced `GlExportBatch` can NEVER persist even if a readiness gap is missed. Readiness names the account gap for the operator; the assertion is the hard guarantee.
 - `renderCsv(lines, dateStr)`: join `GL_EXPORT_COLUMNS`; one row per line — date, `glAccountName`, debit, credit, memo.
 - `export async function getExportBatchFile(batchId): Promise<{ bytes: Buffer; fileName: string; contentType: string }>` and `getExportBatchRegister(batchId): Promise<{ bytes: Buffer; contentType: string }>`: read the stored `file`/`register` bytes (`prisma.glExportBatch.findFirst`, 404 if missing) for the file/register routes.
 - `export async function readinessForExport(periodEnd: Date): Promise<ReadinessGap[]>`: wrap `resolveReadiness` in its own transaction — the **same** period-end the export refusal uses, so the UI's readiness panel and disabled-count match `exportClose`'s refusal exactly (§7).
