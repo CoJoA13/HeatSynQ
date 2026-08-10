@@ -203,15 +203,20 @@ async function setBillingGlAccount(page, ctx, labelText, glAccountId) {
 export async function run(page, shot, ctx) {
   const { fixtures } = ctx;
 
-  // --- Target period: THIS month (see the file header for why). Recorded on `ctx.created`
-  // immediately — before anything is mutated — so cleanup's id-driven backstop
-  // (`deleteClosePeriodFixture`) can find and remove whatever this run creates even if a later
-  // step throws. A no-op for cleanup if nothing ever gets closed. ---
+  // --- Target period: THIS month (see the file header for why). Deliberately NOT recorded on
+  // `ctx.created` here — `run.mjs`'s `finally { teardown() }` cleans up `ctx.created` on EVERY
+  // exit path, pass or fail, including a guard failure below. If a REAL ClosePeriod already covers
+  // this month (a developer/owner closed it through the live UI — the demo doc's own "watching it
+  // live" section invites exactly this), the guard correctly refuses to POST, but recording the
+  // year/month here regardless would still hand cleanup's id-driven `deleteClosePeriodFixture` a
+  // target it did not create, and `ClosePeriod` is `@@unique([year,month])` — cleanup would
+  // hard-delete a real period + its GlExportBatch/GlPosting/audit rows. `ctx.created.
+  // closePeriodYear`/`Month` are set ONLY after THIS flow's own `closePeriod` POST below actually
+  // succeeds (see that block), so a guard failure — or anything that throws before this flow closes
+  // the month itself — leaves them `null` and cleanup never touches a period it didn't create. ---
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1; // 1-based
-  ctx.created.closePeriodYear = year;
-  ctx.created.closePeriodMonth = month;
 
   // --- Pre-flight guard: refuse to run at all if a ClosePeriod already covers this month — this
   // flow only ever touches a period it creates itself (see the file header / db-fixtures.ts). ---
@@ -381,6 +386,13 @@ export async function run(page, shot, ctx) {
     new URL(res.url()).pathname === "/api/receivables/close" && res.request().method() === "POST" && res.ok());
   await page.getByRole("button", { name: "Close period", exact: true }).click();
   await closed;
+  // Recorded ONLY now that THIS flow's own close has actually committed — see the file-header
+  // comment on why this can't be set any earlier (a guard failure must leave cleanup with nothing
+  // to delete). `deleteClosePeriodFixture`'s own belt-and-suspenders `closedById` check (db-
+  // fixtures.ts) means even this is redundant against ever touching a period this flow didn't
+  // close, not just a lucky ordering.
+  ctx.created.closePeriodYear = year;
+  ctx.created.closePeriodMonth = month;
 
   const label = `${["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"][month - 1]} ${year}`;

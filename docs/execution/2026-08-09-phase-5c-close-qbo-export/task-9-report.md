@@ -99,10 +99,17 @@ chain). Migrations: 30 total on this branch (29 on `main` + Task 1's
 
 - **`ClosePeriod`/`GlExportBatch`/`GlPosting` cleanup has no name-based self-heal** — only this run's
   own `(year, month)`, passed back via `ctx.created`. A crash hard enough to skip this flow's own
-  cleanup leaves that one row behind for a human to clear by hand (documented in
-  `deleteClosePeriodFixture`'s own comment and in the demo doc). The flow's own pre-flight guard
-  refuses to run at all if a `ClosePeriod` already covers the target month, so this can never
-  silently overwrite a real one.
+  cleanup AFTER a successful close leaves that one row behind for a human to clear by hand
+  (documented in `deleteClosePeriodFixture`'s own comment and in the demo doc). Two things together
+  keep cleanup from ever deleting a REAL close it merely observed: the pre-flight guard refuses to
+  POST into an already-closed month, and — the part that actually protects *cleanup*, not just the
+  POST — `ctx.created.closePeriodYear`/`Month` are recorded only AFTER this flow's own `closePeriod`
+  call has committed, never up front, so a guard failure (or anything earlier) leaves cleanup with
+  nothing to target even though `run.mjs`'s `finally { teardown() }` always runs `ctx.created`
+  through cleanup regardless of pass/fail. `deleteClosePeriodFixture` also gates on `closedById`
+  matching this run's own fixture admin, a second, independent check. (This exact gap — the guard
+  alone was insufficient, since the original code recorded the year/month BEFORE the guard ran — was
+  caught in this task's own review round and fixed before merge; see the fix commit below.)
 - **The close/export scope is global-per-month by design**, which is why this flow had to backfill
   two Phase 5B fixtures rather than staying fully self-contained — documented in three places (the
   flow's own file header, `db-fixtures.ts`'s `arOpGlAccountName` comment, and the demo doc) so a

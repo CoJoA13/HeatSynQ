@@ -603,18 +603,32 @@ async function deleteKnownEmptyBatch(id: string | null): Promise<void> {
 
 /**
  * Task 9 (Phase 5C): hard-deletes the ONE `ClosePeriod` (+ its `GlExportBatch`/`GlPosting` rows)
- * the close-month-end flow closed, scoped by the EXACT `(year, month)` it tested — passed back from
- * `ctx.created` the moment the flow computes it, BEFORE it mutates anything (the `receivablesBatchId`
- * id-driven-backstop precedent). A no-op when `year`/`month` is null (the flow never got far enough
- * to close anything). Deliberately NOT a name-based `reapLeftovers` sweep: a `ClosePeriod` carries no
- * fixture-recognizable name of its own (just a year/month), so a broader "any E2E-looking period"
- * scan would risk touching a real close a developer or the owner made by hand after this feature
- * ships — this only ever touches the exact period THIS run itself closed. `GlExportBatch`/
+ * the close-month-end flow ITSELF closed, scoped by the EXACT `(year, month)` it tested — passed
+ * back from `ctx.created`, but (fix round 1, review) recorded by the flow ONLY AFTER its own
+ * `closePeriod` POST has actually succeeded, never up front — see `close-month-end.mjs`'s own file-
+ * header comment on why. A no-op when `year`/`month` is null: that happens whenever this flow never
+ * reached (or never completed) its own close, INCLUDING when the pre-flight guard refused because a
+ * REAL `ClosePeriod` already covered the month — the guard alone stops this script from POSTing into
+ * that period, but it is the assign-after-close ordering in the flow that stops CLEANUP from later
+ * hard-deleting it (a guard failure throws before the flow ever assigns `ctx.created.
+ * closePeriodYear`/`Month`, so `run.mjs`'s `finally { teardown() }` calls this with `null, null` —
+ * a no-op — even though `ctx.created` itself is torn down on every exit path, pass or fail).
+ *
+ * `closedById` is the belt-and-suspenders second check: only a `ClosePeriod` row whose `closedById`
+ * matches THIS run's own fixture admin (`fixtures.adminUserId`) is ever deleted — a genuine second
+ * signal, not just the same fact checked twice, since it also protects against theoretically finding
+ * a stray same-`(year,month)` row that isn't this run's if the id-driven ordering above were ever
+ * weakened by a future edit. Deliberately NOT a name-based `reapLeftovers` sweep either: a
+ * `ClosePeriod` carries no fixture-recognizable name of its own, so a broader "any E2E-looking
+ * period" scan would risk touching a real close a developer or the owner made by hand after this
+ * feature ships — this only ever touches the exact period THIS run itself closed. `GlExportBatch`/
  * `GlPosting` have no `onDelete` override on their parent FKs (plain RESTRICT), so children go first.
  */
-async function deleteClosePeriodFixture(year: number | null, month: number | null): Promise<void> {
+async function deleteClosePeriodFixture(
+  year: number | null, month: number | null, closedById: string | null,
+): Promise<void> {
   if (year === null || month === null) return;
-  const period = await prisma.closePeriod.findFirst({ where: { year, month }, select: { id: true } });
+  const period = await prisma.closePeriod.findFirst({ where: { year, month, closedById }, select: { id: true } });
   if (!period) return;
   const batches = await prisma.glExportBatch.findMany({ where: { closePeriodId: period.id }, select: { id: true } });
   const batchIds = batches.map((b) => b.id);
@@ -1455,10 +1469,17 @@ async function doLockRevision(payload: { partId: string; revisionNumber: number 
  *  separate field, not a reuse of `receivablesBatchId`, so the two flows' backstops never clobber
  *  each other if both happen to be live in the same run (run.mjs's `state.created` comment).
  *  `closePeriodYear`/`closePeriodMonth` (Task 9) are the close flow's own id-driven backstop for
- *  `deleteClosePeriodFixture` — a `ClosePeriod` carries no id known up front (created live), but
- *  its `(year, month)` IS known up front (the flow computes it before mutating anything), so this
- *  mirrors `orderCustomerId`'s "scope through what's known, not through a threaded id" shape rather
- *  than `templateIds`'s "thread the id back" shape. Both null when the flow never got that far. */
+ *  `deleteClosePeriodFixture` — a `ClosePeriod` carries no id known up front (created live). Unlike
+ *  every OTHER field here, the flow deliberately does NOT record these the moment the target
+ *  `(year, month)` is computed: `ctx.created` is torn down by `run.mjs`'s `finally { teardown() }`
+ *  on every exit path, pass or fail, so recording them before the pre-flight existence guard would
+ *  hand cleanup a target it might not have created — if a REAL ClosePeriod already covers that month,
+ *  the guard correctly refuses to POST, but cleanup would still hard-delete that real row (`@@unique(
+ *  [year,month])`) if these fields were set. The flow assigns them ONLY after its OWN `closePeriod`
+ *  POST has actually succeeded (fix round 1, review finding), so a guard failure — or anything that
+ *  throws before this flow closes the month itself — leaves both `null` and this function a no-op.
+ *  `deleteClosePeriodFixture`'s own `closedById` check is the second, independent belt against the
+ *  same failure mode. */
 type CleanupPayload = Fixtures & {
   templateIds: string[]; receivablesBatchId: string | null;
   closeBatchId: string | null; closePeriodYear: number | null; closePeriodMonth: number | null;
@@ -1507,7 +1528,7 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   await deleteReceivables([payload.arCustomerId, payload.closeCustomerId]);
   await deleteKnownEmptyBatch(payload.receivablesBatchId);
   await deleteKnownEmptyBatch(payload.closeBatchId);
-  await deleteClosePeriodFixture(payload.closePeriodYear, payload.closePeriodMonth);
+  await deleteClosePeriodFixture(payload.closePeriodYear, payload.closePeriodMonth, payload.adminUserId);
   await restoreBillingConfig(payload.priorBillingConfig);
   await deleteInvoicesAndLines([payload.invCustomerId, payload.arCustomerId, payload.closeCustomerId]);
   // The invoicing/A-R/close flows each ship their own order (a real Shipper/ShipperOrder pair) —

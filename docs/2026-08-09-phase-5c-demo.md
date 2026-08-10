@@ -161,10 +161,17 @@ escape hatch the way `salesTaxRate` does for the 5A/5B fixtures).
 unlike every other fixture in this harness, cleanup for `ClosePeriod`/`GlExportBatch`/`GlPosting` is
 id-driven from THIS run's own `(year, month)`, not name-based self-healing — a `ClosePeriod` carries
 no fixture-recognizable name of its own, so a broader sweep would risk touching a real close a
-developer makes by hand after this feature ships. A pre-flight guard refuses to run at all if a
-`ClosePeriod` already covers the target month, so this never silently overwrites one; a crash hard
-enough to skip this flow's own cleanup would leave that one row behind for a human to clear by hand
-(`GET /api/receivables/close`), same as this harness's other documented not-fully-airtight gaps.
+developer makes by hand after this feature ships. Two things together keep cleanup from ever
+hard-deleting a REAL close it merely observed: the pre-flight guard refuses to POST into a month that
+already has a `ClosePeriod` (correctly — a real one, say the owner closing the current month through
+the live UI this same doc's "watching it live" section invites, must never be POSTed into again), and
+— the part that actually protects *cleanup*, fixed in this task's review round — the flow only ever
+records that `(year, month)` for cleanup AFTER its own `closePeriod` POST has committed, so a guard
+failure (or anything earlier) leaves cleanup nothing to delete; `deleteClosePeriodFixture` also checks
+`closedById` against this run's own fixture admin as a second, independent belt. A crash hard enough
+to skip this flow's own cleanup AFTER a successful close would still leave that one row behind for a
+human to clear by hand (`GET /api/receivables/close`), same as this harness's other documented
+not-fully-airtight gaps — but it is always a row this run itself created, never a pre-existing one.
 
 ## Watching it live
 
