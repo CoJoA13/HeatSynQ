@@ -66,6 +66,10 @@ export type PreliminaryReport = {
   year: number; month: number; schedule: ContinuitySchedule;
   unpostedBatchCount: number; alreadyClosed: boolean;
 };
+export type ClosePeriodListItem = ContinuitySchedule & {
+  id: string; year: number; month: number; status: string; closedAt: string;
+  exportBatches: { id: string; exportNumber: number; emittedAt: string; fileName: string }[];
+};
 
 /** The first and last calendar day of a month, at UTC midnight — matching the `@db.Date` reading
  *  every A/R date round-trips through. `Date.UTC(year, month, 0)` is day 0 of the NEXT month = the
@@ -212,6 +216,42 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
           () => tx.closePeriod.create({ data }), { tx });
     return { id: row.id, year, month, status: "CLOSED", ...schedule };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
+}
+
+/**
+ * Task 8's own gap: nothing listed the closed periods + their GL-export batches before this — the
+ * `/receivables/close` screen's closed-periods panel needs it, and there was no route for it.
+ * Every ClosePeriod row (CLOSED and REOPENED, newest first), with its frozen schedule figures and
+ * every `GlExportBatch` emitted against it (newest export first). A plain read: no lock, no
+ * isolation requirement, nothing to translate — matches `listBatches` (receipts.ts), not the
+ * Serializable+lock shape below. `variance` is recomputed for display only (`endingAr -
+ * agingEndingAr`, always 0 for a genuinely CLOSED row since `closePeriod` refuses a nonzero one) —
+ * it is not a stored column.
+ */
+export async function listClosePeriods(): Promise<ClosePeriodListItem[]> {
+  const rows = await prisma.closePeriod.findMany({
+    orderBy: [{ year: "desc" }, { month: "desc" }],
+    include: {
+      exportBatches: {
+        orderBy: { exportNumber: "desc" },
+        select: { id: true, exportNumber: true, emittedAt: true, fileName: true },
+      },
+    },
+  });
+  return rows.map((r) => {
+    const endingAr = r.endingAr.toNumber();
+    const agingEndingAr = r.agingEndingAr.toNumber();
+    return {
+      id: r.id, year: r.year, month: r.month, status: r.status, closedAt: r.closedAt.toISOString(),
+      beginningAr: r.beginningAr.toNumber(), invoicedTotal: r.invoicedTotal.toNumber(),
+      creditTotal: r.creditTotal.toNumber(), paymentTotal: r.paymentTotal.toNumber(),
+      discountTotal: r.discountTotal.toNumber(), writeOffTotal: r.writeOffTotal.toNumber(),
+      endingAr, agingEndingAr, variance: endingAr - agingEndingAr,
+      exportBatches: r.exportBatches.map((b) => ({
+        id: b.id, exportNumber: b.exportNumber, emittedAt: b.emittedAt.toISOString(), fileName: b.fileName,
+      })),
+    };
+  });
 }
 
 /**

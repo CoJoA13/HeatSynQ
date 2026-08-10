@@ -14,7 +14,7 @@ import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/r
 import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
 import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements/documents/route";
 import { GET as preliminaryRoute } from "@/app/api/receivables/close/preliminary/route";
-import { POST as closeRoute } from "@/app/api/receivables/close/route";
+import { GET as listCloseRoute, POST as closeRoute } from "@/app/api/receivables/close/route";
 import { POST as reopenRoute } from "@/app/api/receivables/close/[id]/reopen/route";
 import { POST as exportRoute } from "@/app/api/receivables/close/[id]/export/route";
 import { GET as exportFileRoute } from "@/app/api/receivables/close/export/[batchId]/file/route";
@@ -592,6 +592,37 @@ describe("POST /api/receivables/close", () => {
     const body = await res.json();
     expect(body.status).toBe("CLOSED");
     expect(body.endingAr).toBe(100);
+  });
+});
+
+describe("GET /api/receivables/close", () => {
+  it("401s without a session, 403s without receivables.view, then lists closed periods with their frozen figures and export batches", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period", "action.run_qbo_export"], "close-list-closer");
+    const periodId = await glReadyClosedJuly(closer);
+    const batch = await (await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST", closer), withParams({ id: periodId }),
+    )).json() as { batchId: string };
+
+    expect((await listCloseRoute(getReq("http://t/api/receivables/close"), withParams({}))).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "close-list-wrong");
+    expect((await listCloseRoute(getReq("http://t/api/receivables/close", wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "close-list-viewer");
+    const res = await listCloseRoute(getReq("http://t/api/receivables/close", viewer), withParams({}));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      id: string; year: number; month: number; status: string; endingAr: number;
+      exportBatches: { id: string; exportNumber: number; fileName: string }[];
+    }[];
+    const row = body.find((r) => r.id === periodId);
+    expect(row).toBeTruthy();
+    expect(row!.year).toBe(2026);
+    expect(row!.month).toBe(7);
+    expect(row!.status).toBe("CLOSED");
+    expect(row!.endingAr).toBe(100);
+    expect(row!.exportBatches.map((b) => b.id)).toContain(batch.batchId);
+    expect(row!.exportBatches[0].fileName).toBe("gl-2026-07.csv");
   });
 });
 
