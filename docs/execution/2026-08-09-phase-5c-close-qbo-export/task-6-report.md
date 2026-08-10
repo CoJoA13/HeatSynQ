@@ -79,7 +79,7 @@ maps genuinely needs no change — which is what makes a re-run an empty no-op.
 
 ## Fix round 1 — two-lens review defects (2026-08-09)
 
-**Commit:** `<pending>` — `fix(5c): gl-export readiness covers all account-bearing lines + balance backstop; strictly-per-period delta`
+**Commit:** `f0bc3e0` — `fix(5c): gl-export readiness covers all account-bearing lines + balance backstop; strictly-per-period delta`
 
 Three defects the two-lens review found (the original tests missed them because the factory only built
 OPERATION lines). All three fixed; nothing in the idempotency/reversal design changed.
