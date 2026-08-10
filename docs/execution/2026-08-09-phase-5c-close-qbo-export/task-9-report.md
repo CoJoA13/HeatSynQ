@@ -1,7 +1,12 @@
 # Task 9 report — E2E flow, demo doc, and documentation
 
-**Status: complete.** Commit `28b80ee` on `phase-5c-close-qbo-export` (docs(5c): E2E close flow,
-demo, and handoff/house-rule updates).
+**Status: complete.** Commits on `phase-5c-close-qbo-export`: `28b80ee` (docs(5c): E2E close flow,
+demo, and handoff/house-rule updates), `a3f180d` (execution record), and `945df25` (fix(5c): e2e
+close flow only cleans up the ClosePeriod it created — an Important data-integrity defect the review
+found: `ctx.created.closePeriodYear`/`Month` were recorded before the pre-flight guard, so a crashed
+guard-refusal on a month a REAL `ClosePeriod` already covered would still let cleanup hard-delete that
+real row; fixed by recording those fields only after this flow's own close commits, plus a
+`closedById` second check — see the "Concerns" section below and the commit itself).
 
 ## Deliberate deviation from the brief's literal file path
 
