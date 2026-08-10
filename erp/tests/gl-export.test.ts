@@ -147,6 +147,66 @@ async function makeFinalizedKindLine(
   return { invoiceId: invoice.id, customerId: customer.id };
 }
 
+/** Like `makeFinalizedInvoiceDated`, but lets `invoiceDate` and `finalizedAt` diverge across a month
+ *  boundary — the shape ruling 8 exists for: paper dated in one month, locked in the next. Recognition
+ *  scoping is by `finalizedAt` everywhere (gl-export.ts, close-periods.ts), never `invoiceDate`. */
+async function makeFinalizedInvoiceWithDates(
+  gl: Gl, invoiceDateStr: string, finalizedAtStr: string, total: number,
+): Promise<InvoiceRef> {
+  seq += 1;
+  const customer = await prisma.customer.create({ data: { code: `GLW${seq}`, name: `GL Divergent ${seq}` } });
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 780000 + seq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly(invoiceDateStr), requestDate: parseDateOnly(invoiceDateStr),
+    },
+  });
+  const invoice = await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly(invoiceDateStr), dueDate: parseDateOnly(invoiceDateStr),
+      total, subtotal: total, finalizedAt: parseDateOnly(finalizedAtStr),
+      lines: {
+        create: [{
+          position: 1, kind: "OPERATION", processStepCodeId: gl.stepCodeId,
+          glAccountId: gl.revId, glAccountName: "4010-REV", description: "Heat Treat", amount: total,
+        }],
+      },
+    },
+  });
+  return { invoiceId: invoice.id, customerId: customer.id };
+}
+
+/** A finalized CREDIT memo with one revenue line — mirrors `makeFinalizedInvoiceDated`'s shape but
+ *  `kind: "CREDIT"`, its own `creditNumber` (`Invoice.creditNumber` is plain @unique, sweep-exempt —
+ *  CLAUDE.md), and its money sign flipped (`createCredit`'s own convention: a CREDIT's `total`/line
+ *  `amount` are stored negative). `gl-export.ts` and `close-periods.ts` both `Math.abs()` the total
+ *  before use, so the sign itself is cosmetic here — it is kept negative only to match production. */
+async function makeFinalizedCreditDated(gl: Gl, dateStr: string, total: number): Promise<InvoiceRef> {
+  seq += 1;
+  const customer = await prisma.customer.create({ data: { code: `GLR${seq}`, name: `GL Credit ${seq}` } });
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 790000 + seq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly(dateStr), requestDate: parseDateOnly(dateStr),
+    },
+  });
+  const credit = await prisma.invoice.create({
+    data: {
+      kind: "CREDIT", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      creditNumber: 900000 + seq,
+      invoiceDate: parseDateOnly(dateStr), total: -total, subtotal: -total, finalizedAt: parseDateOnly(dateStr),
+      lines: {
+        create: [{
+          position: 1, kind: "OPERATION", processStepCodeId: gl.stepCodeId,
+          glAccountId: gl.revId, glAccountName: "4010-REV", description: "Heat Treat", amount: -total,
+        }],
+      },
+    },
+  });
+  return { invoiceId: credit.id, customerId: customer.id };
+}
+
 async function periodFor(year: number, month: number): Promise<{ id: string }> {
   return prisma.closePeriod.findFirstOrThrow({ where: { year, month }, select: { id: true } });
 }
@@ -301,6 +361,26 @@ describe("gl-export delta", () => {
     expect(augRowsNow.map((r) => r.sourceId).sort()).toEqual(augSourceIds);
     expect(augRowsNow.every((r) => !r.isReversal)).toBe(true);
   });
+
+  it("scopes a finalized invoice by finalizedAt, not invoiceDate, across a month boundary (ruling 8)", async () => {
+    // Fix round 2 coverage gap: every OTHER factory in this file sets finalizedAt == invoiceDate, so
+    // the export's finalizedAt-scoping was never independently proven — a regression back to
+    // invoiceDate scoping would slip through untested. This invoice is DATED the last day of July but
+    // not FINALIZED until August 1st; it must post in August's export and be absent from July's. This
+    // assertion pair FAILS if buildCurrentJournal/resolveReadiness scoped by invoiceDate instead.
+    const gl = await seedGlDefaults();
+    const inv = await makeFinalizedInvoiceWithDates(gl, "2026-07-31", "2026-08-01", 100);
+    await asSystem(() => closePeriod(2026, 7));
+    await asSystem(() => closePeriod(2026, 8));
+    const july = await periodFor(2026, 7);
+    const august = await periodFor(2026, 8);
+
+    const julyOut = await asSystem(() => exportClose(july.id));
+    expect(julyOut.postings.some((p) => p.sourceId === inv.invoiceId)).toBe(false);
+
+    const augOut = await asSystem(() => exportClose(august.id));
+    expect(augOut.postings.some((p) => p.sourceId === inv.invoiceId)).toBe(true);
+  });
 });
 
 describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
@@ -336,6 +416,34 @@ describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
 
     // The per-event GlPosting DETAIL stays UN-aggregated: 2 A/R + 2 revenue = 4 postings.
     expect(await prisma.glPosting.count({ where: { batchId: out.batchId } })).toBe(4);
+  });
+
+  it("aggregates an invoice and a same-month credit onto ONE A/R summary line carrying BOTH a debit and a credit column (current sum-without-netting behavior — pinned, not endorsed; netting is an open owner/bookkeeper decision)", async () => {
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await makeFinalizedCreditDated(gl, "2026-07-20", 40);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const out = await asSystem(() => exportClose(period.id));
+    const rows = parseCsv(out.file.toString("utf8"));
+    const arRows = rows.filter((r) => r[1] === "1200-AR");
+    const revRows = rows.filter((r) => r[1] === "4010-REV");
+
+    // Still ONE line per account per side (the invoice's A/R debit and the credit's A/R credit
+    // collapse onto the SAME "1200-AR" row) — but that one row now carries a NONZERO figure in BOTH
+    // the debit and credit columns, the gross amounts, not a single net column.
+    expect(arRows.length).toBe(1);
+    expect(arRows[0][2]).toBe("100.00"); // gross debit, from the INVOICE
+    expect(arRows[0][3]).toBe("40.00");  // gross credit, from the CREDIT memo
+    expect(revRows.length).toBe(1);
+    expect(revRows[0][2]).toBe("40.00");  // the credit memo debits revenue (reversed sales entry)
+    expect(revRows[0][3]).toBe("100.00"); // the invoice credits revenue
+
+    // The batch still balances overall even though neither summary line nets to a single column.
+    const debit = rows.reduce((s, r) => s + (r[2] ? Math.round(Number(r[2]) * 100) : 0), 0);
+    const credit = rows.reduce((s, r) => s + (r[3] ? Math.round(Number(r[3]) * 100) : 0), 0);
+    expect(debit).toBe(credit);
   });
 
   it("stamps GlExportBatch.emittedById with the acting user (change D)", async () => {

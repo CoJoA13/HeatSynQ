@@ -22,7 +22,7 @@ import {
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
   type PricingResult, type ComputedLine,
 } from "./pricing";
-import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "../lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly, dateOnly, addDays } from "../lib/business-days";
 import {
   INVOICE_LINE_KINDS, PRICE_SOURCES,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -1156,12 +1156,16 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // §4.1 / ruling 8: an invoice is RECOGNIZED in the month it is FINALIZED (`finalizedAt` ≈ now),
   // not its document `invoiceDate`. So the period lock guards the FINALIZE date (today) — a
   // July-dated invoice finalized today in August lands in August and must be allowed even if July is
-  // closed; conversely it is refused when TODAY's month is closed. `finalizedAt: new Date()` written
-  // below lands in this same month. Read UNDER the invoice-row claim `claimInvoiceRow` holds and
-  // BEFORE the status write, so the period read and that write commit against one consistent state;
-  // the advisory lock inside serializes this against a concurrent close of the finalize month
-  // (period-locks.ts).
-  await assertPeriodOpen(tx, todayDateOnly());
+  // closed; conversely it is refused when TODAY's month is closed. The clock is sampled EXACTLY ONCE
+  // (`now`, below) and reused for both the guard's date-only month (`dateOnly(now)`) and the
+  // `finalizedAt: now` stamp on the write — two independent `new Date()` reads could straddle a UTC
+  // month boundary (the guard seeing month M open while the stamp lands in M+1), which would
+  // reintroduce the closed-month leak this guard exists to close. Read UNDER the invoice-row claim
+  // `claimInvoiceRow` holds and BEFORE the status write, so the period read and that write commit
+  // against one consistent state; the advisory lock inside serializes this against a concurrent
+  // close of the finalize month (period-locks.ts).
+  const now = new Date();
+  await assertPeriodOpen(tx, dateOnly(now));
 
   // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
   // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
@@ -1178,7 +1182,7 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
     () => tx.invoice.update({
       where: { id },
       data: {
-        status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id,
+        status: "FINALIZED", finalizedAt: now, finalizedById: actor.id,
         ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
       },
     }), { tx });

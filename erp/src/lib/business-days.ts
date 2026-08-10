@@ -40,10 +40,18 @@ export function formatDateOnly(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Floors an arbitrary `Date` to UTC midnight of its own calendar day — the same "no time-of-day"
+ *  reading a `@db.Date` column round-trips. Exported (not just `todayDateOnly`'s private helper) so
+ *  a caller that already sampled the clock once (`const now = new Date()`) can derive the date-only
+ *  guard from that SAME instant instead of reading the clock a second time — the fix for the
+ *  finalize-guard/`finalizedAt` clock-straddle (invoices.ts `finalizeInvoiceInTx`). */
+export function dateOnly(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
 /** Today at UTC midnight — the same "no time-of-day" reading a `@db.Date` column round-trips. */
 export function todayDateOnly(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  return dateOnly(new Date());
 }
 
 // ~10 calendar years — far beyond any legitimate request-date lead time (spec §7.1's chain tops
