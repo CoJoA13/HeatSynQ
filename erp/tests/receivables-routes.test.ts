@@ -13,6 +13,9 @@ import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/rout
 import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/receivables/statements/route";
 import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
 import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements/documents/route";
+import { GET as preliminaryRoute } from "@/app/api/receivables/close/preliminary/route";
+import { POST as closeRoute } from "@/app/api/receivables/close/route";
+import { POST as reopenRoute } from "@/app/api/receivables/close/[id]/reopen/route";
 import { parseDateOnly } from "@/lib/business-days";
 
 // Task 6 (Step 10): thin `handle` wrappers gating on `receivables.create`/`edit`/`delete`/`view` —
@@ -506,5 +509,120 @@ describe("GET /api/receivables/statements/documents", () => {
       getReq("http://t/api/receivables/statements/documents?customerId=nope", viewer), withParams({}),
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// Task 5 (P5C §4.1): the close lifecycle routes — preliminary (receivables.view), close and reopen
+// (receivables.edit + the `close_ar_period` special). The 401/403/200 ladder, plus a
+// `close_ar_period`-missing 403 (the caller has receivables.edit but not the dangerous special).
+// -------------------------------------------------------------------------------------------
+
+async function finalizedInvoiceDated(dateStr: string, total: number): Promise<void> {
+  const customer = await makeCustomer();
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 770000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly(dateStr), requestDate: parseDateOnly(dateStr),
+    },
+  });
+  await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly(dateStr), dueDate: parseDateOnly(dateStr),
+      total, finalizedAt: parseDateOnly(dateStr),
+    },
+  });
+}
+
+describe("GET /api/receivables/close/preliminary", () => {
+  it("401s without a session, 403s without receivables.view, then returns the schedule with it", async () => {
+    await finalizedInvoiceDated("2026-07-05", 100);
+    const url = "http://t/api/receivables/close/preliminary?year=2026&month=7";
+
+    expect((await preliminaryRoute(getReq(url), withParams({}))).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "close-prelim-wrong");
+    expect((await preliminaryRoute(getReq(url, wrong), withParams({}))).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "close-prelim-viewer");
+    const res = await preliminaryRoute(getReq(url, viewer), withParams({}));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.year).toBe(2026);
+    expect(body.month).toBe(7);
+    expect(body.schedule.endingAr).toBe(100);
+    expect(body.alreadyClosed).toBe(false);
+  });
+
+  it("400s a missing month", async () => {
+    const viewer = await signInWith(["receivables.view"], "close-prelim-missing");
+    const res = await preliminaryRoute(
+      getReq("http://t/api/receivables/close/preliminary?year=2026", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/receivables/close", () => {
+  it("401s without a session, 403s without close_ar_period, then closes with receivables.edit + close_ar_period", async () => {
+    await finalizedInvoiceDated("2026-07-05", 100);
+    const payload = { year: 2026, month: 7 };
+
+    expect((await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", undefined, payload), withParams({}),
+    )).status).toBe(401);
+
+    // Has receivables.edit but NOT the close_ar_period special — the dangerous action is refused.
+    const wrong = await signInWith(["receivables.edit"], "close-post-wrong");
+    expect((await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", wrong, payload), withParams({}),
+    )).status).toBe(403);
+
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period"], "close-post-ok");
+    const res = await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", closer, payload), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("CLOSED");
+    expect(body.endingAr).toBe(100);
+  });
+});
+
+describe("POST /api/receivables/close/[id]/reopen", () => {
+  it("401s without a session, 403s without close_ar_period, then reopens with it (reason required)", async () => {
+    await finalizedInvoiceDated("2026-07-05", 100);
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period"], "reopen-closer");
+    const closed = await (await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", closer, { year: 2026, month: 7 }), withParams({}),
+    )).json();
+
+    const payload = { reason: "correcting a mis-keyed invoice" };
+
+    expect((await reopenRoute(
+      bodyReq("http://t/api/receivables/close/x/reopen", "POST", undefined, payload),
+      withParams({ id: closed.id }),
+    )).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.edit"], "reopen-wrong");
+    expect((await reopenRoute(
+      bodyReq("http://t/api/receivables/close/x/reopen", "POST", wrong, payload),
+      withParams({ id: closed.id }),
+    )).status).toBe(403);
+
+    // Reason required (service rule) surfaces as a 400 through the route.
+    const empty = await reopenRoute(
+      bodyReq("http://t/api/receivables/close/x/reopen", "POST", closer, { reason: "  " }),
+      withParams({ id: closed.id }),
+    );
+    expect(empty.status).toBe(400);
+
+    const res = await reopenRoute(
+      bodyReq("http://t/api/receivables/close/x/reopen", "POST", closer, payload),
+      withParams({ id: closed.id }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("REOPENED");
   });
 });
