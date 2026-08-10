@@ -11,6 +11,8 @@ import {
 } from "./gl-mapping";
 import { formatDateOnly } from "../lib/business-days";
 import { GL_EXPORT_COLUMNS, type PostingSourceType } from "../lib/gl-constants";
+import { renderPdf } from "./pdf/render";
+import { buildPostingRegister, type PostingRegisterData } from "./pdf/posting-register";
 
 // -------------------------------------------------------------------------------------------
 // Task 6 (P5C §4.3): the per-event GL-export DELTA engine. A close's export is not a full dump
@@ -35,11 +37,23 @@ import { GL_EXPORT_COLUMNS, type PostingSourceType } from "../lib/gl-constants";
 //
 // The batch and its postings are written under a Serializable `$transaction`, wrapped in
 // `withDbErrors`, through `auditedCreate` (the 5A/5B print-bracket shape). Money is integer cents.
-// The register PDF is a placeholder here (`new Uint8Array()`) — Task 7 renders the real
-// posting-register and replaces it; this task only stores the CSV file.
+// The posting-register PDF (Task 7, `pdf/posting-register.ts`) is rendered from the SAME emitted
+// `lines` the CSV and the postings come from, and stored alongside the CSV on the same batch row —
+// `renderPdf` is async and does no DB I/O, so building it before `tx.glExportBatch.create` stays
+// safely inside the Serializable transaction.
 // -------------------------------------------------------------------------------------------
 
 const cents = (n: number): number => Math.round(n * 100);
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/** "July 2026" — the posting register's own header label; `period.month` is 1-based. */
+function periodLabelOf(year: number, month: number): string {
+  return `${MONTH_NAMES[month - 1]} ${year}`;
+}
 
 export type ExportedPosting = {
   sourceType: string; sourceId: string; glAccountId: string | null;
@@ -121,8 +135,19 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 
     const exportNumber = await allocateNumber("gl_export_batch_number_next", tx);
     const fileName = `gl-${period.year}-${String(period.month).padStart(2, "0")}.csv`;
-    const file = renderCsv(lines, formatDateOnly(periodEnd));
-    const register = new Uint8Array(); // Task 7 replaces this with the rendered posting-register PDF
+    const periodEndStr = formatDateOnly(periodEnd);
+    const file = renderCsv(lines, periodEndStr);
+    // The posting register renders from the SAME emitted `lines` the CSV and postings come from
+    // (§4.3/§4.4) — two sub-registers, SALES then CASH, in the source order they're already in.
+    // `renderPdf` is async and does no DB I/O, so building the buffer before `glExportBatch.create`
+    // stays safely inside the Serializable tx (task brief, `pdf/render.ts`'s own contract).
+    const registerData: PostingRegisterData = {
+      periodLabel: periodLabelOf(period.year, period.month),
+      periodEnd: periodEndStr,
+      exportNumber,
+      lines: lines.map((l) => ({ side: l.side, glAccountName: l.glAccountName, debit: l.debit, credit: l.credit, memo: l.memo })),
+    };
+    const register = new Uint8Array(await renderPdf(buildPostingRegister(registerData)));
 
     const batch = await auditedCreate(
       "glExportBatch",
@@ -158,7 +183,7 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
     return {
       batchId: batch.id,
       exportNumber,
-      periodEnd: formatDateOnly(periodEnd),
+      periodEnd: periodEndStr,
       postings: batch.postings.map((p) => ({
         sourceType: p.sourceType, sourceId: p.sourceId, glAccountId: p.glAccountId,
         debit: p.debit.toNumber(), credit: p.credit.toNumber(), side: p.side, isReversal: p.isReversal,

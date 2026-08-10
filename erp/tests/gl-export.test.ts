@@ -169,6 +169,21 @@ describe("gl-export delta", () => {
     expect(second.postings.length).toBe(0); // idempotent no-op
   });
 
+  it("stores a non-empty posting-register PDF with a stable page marker (Task 7)", async () => {
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const { batchId } = await asSystem(() => exportClose(period.id));
+    const row = await prisma.glExportBatch.findUniqueOrThrow({ where: { id: batchId } });
+    expect(row.register.byteLength).toBeGreaterThan(1000); // a real PDF, not the placeholder
+    expect(row.registerContentType).toBe("application/pdf");
+    // pdfmake output is not byte-deterministic across renders (CLAUDE.md) — pin an uncompressed
+    // page-count marker in the raw bytes instead of comparing two fresh renders (bol.test.ts's rule).
+    expect(Buffer.from(row.register).toString("latin1")).toContain("/Count 1");
+  });
+
   it("posts the payment cash event balanced alongside the sale", async () => {
     const gl = await seedGlDefaults();
     const inv = await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);

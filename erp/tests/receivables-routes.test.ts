@@ -18,6 +18,7 @@ import { POST as closeRoute } from "@/app/api/receivables/close/route";
 import { POST as reopenRoute } from "@/app/api/receivables/close/[id]/reopen/route";
 import { POST as exportRoute } from "@/app/api/receivables/close/[id]/export/route";
 import { GET as exportFileRoute } from "@/app/api/receivables/close/export/[batchId]/file/route";
+import { GET as exportRegisterRoute } from "@/app/api/receivables/close/export/[batchId]/register/route";
 import { GET as readinessRoute } from "@/app/api/receivables/close/readiness/route";
 import { GET as readinessExportRoute } from "@/app/api/receivables/close/readiness/export/route";
 import { parseDateOnly } from "@/lib/business-days";
@@ -736,6 +737,43 @@ describe("GET /api/receivables/close/export/[batchId]/file", () => {
     const viewer = await signInWith(["receivables.view"], "file-404");
     const res = await exportFileRoute(
       getReq("http://t/api/receivables/close/export/x/file", viewer), withParams({ batchId: "nope" }),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/receivables/close/export/[batchId]/register", () => {
+  it("401s without a session, 403s without receivables.view, then streams the posting register as application/pdf with it", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period", "action.run_qbo_export"], "register-closer");
+    const periodId = await glReadyClosedJuly(closer);
+    const batch = await (await exportRoute(
+      noBodyReq("http://t/api/receivables/close/x/export", "POST", closer), withParams({ id: periodId }),
+    )).json() as { batchId: string };
+
+    expect((await exportRegisterRoute(
+      getReq("http://t/api/receivables/close/export/x/register"), withParams({ batchId: batch.batchId }),
+    )).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.create"], "register-wrong");
+    expect((await exportRegisterRoute(
+      getReq("http://t/api/receivables/close/export/x/register", wrong), withParams({ batchId: batch.batchId }),
+    )).status).toBe(403);
+
+    const viewer = await signInWith(["receivables.view"], "register-viewer");
+    const res = await exportRegisterRoute(
+      getReq("http://t/api/receivables/close/export/x/register", viewer), withParams({ batchId: batch.batchId }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/pdf");
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.byteLength).toBeGreaterThan(1000);
+    expect(bytes.toString("latin1")).toContain("/Count 1"); // uncompressed page marker, bol.test.ts's rule
+  });
+
+  it("404s an unknown batch id (viewer)", async () => {
+    const viewer = await signInWith(["receivables.view"], "register-404");
+    const res = await exportRegisterRoute(
+      getReq("http://t/api/receivables/close/export/x/register", viewer), withParams({ batchId: "nope" }),
     );
     expect(res.status).toBe(404);
   });
