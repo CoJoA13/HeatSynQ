@@ -3,6 +3,8 @@ import { prisma } from "@/server/db";
 import { truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { closePeriod, preliminaryReport, reopenPeriod } from "@/server/close-periods";
+import { finalizeInvoice } from "@/server/invoices";
+import { HttpError } from "@/server/errors";
 import { parseDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
@@ -80,6 +82,26 @@ async function payInvoiceDated(inv: InvoiceRef, dateStr: string, amount: number)
       appliedDate: parseDateOnly(dateStr),
     },
   });
+}
+
+/** A finalizable DRAFT invoice (no unpriced lines) on its own order — the input the dangerous-
+ *  direction concurrency test drives the REAL `finalizeInvoice` against. */
+async function makeDraftInvoiceDated(dateStr: string, total: number): Promise<{ invoiceId: string; orderId: string }> {
+  seq += 1;
+  const customer = await prisma.customer.create({ data: { code: `CLPD${seq}`, name: `Draft Customer ${seq}` } });
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 770000 + seq, customerId: customer.id, status: "SHIPPED",
+      receivedDate: parseDateOnly(dateStr), requestDate: parseDateOnly(dateStr),
+    },
+  });
+  const invoice = await prisma.invoice.create({
+    data: {
+      kind: "INVOICE", status: "DRAFT", orderId: order.id, customerId: customer.id,
+      invoiceDate: parseDateOnly(dateStr), total,
+    },
+  });
+  return { invoiceId: invoice.id, orderId: order.id };
 }
 
 describe("close/reopen lifecycle", () => {
@@ -164,84 +186,91 @@ describe("close/reopen lifecycle", () => {
 });
 
 // -------------------------------------------------------------------------------------------
-// Concurrency (spec §12). The load-bearing serializer is the month advisory lock (period-locks.ts,
-// Task 4), NOT the isolation level — closePeriod runs at Read Committed on purpose (see the service
-// header). Both tests follow the 5B two-interleaved-transactions technique: the competing side runs
-// at Read Committed so SSI is OFF THE TABLE and the ONLY thing that can serialize the two is the
-// advisory lock. Each is RED-verified by removing `lockMonth` from `closePeriod` (transcripts in
-// task-5-report.md).
+// Concurrency (spec §12). Two serializers are load-bearing: the month advisory lock (period-locks.ts,
+// Task 4) ORDERS a posting and a close, and Serializable isolation on BOTH sides lets SSI backstop
+// the posting-vs-close phantom. Test 1 is the DANGEROUS direction — the real Serializable
+// `finalizeInvoice` whose snapshot predates a committed close — proving the SSI backstop (RED-verified
+// by reverting `closePeriod` to Read Committed: the finalize leaks in FINALIZED). Test 2 is two
+// concurrent closes, proving `retryOnSerializationConflict` absorbs the loser's conflict (RED-verified
+// by disabling the retry: the loser surfaces the unique/serialization conflict). Transcripts in
+// task-5-report.md.
 // -------------------------------------------------------------------------------------------
 
-describe("concurrency — the month advisory lock serializes a posting and a close (spec §12)", () => {
-  it("a finalize racing a close serializes: the close counts the invoice, never a closed month with an uncounted one", async () => {
-    // HOLDER (Read Committed / DEFAULT): hand-scripts the finalize's critical section — the SAME
-    // month advisory lock `finalizeInvoice` takes via `assertPeriodOpen` — then writes the finalized
-    // July invoice and holds it uncommitted. COMPETITOR: the real `closePeriod(2026, 7)`. The
-    // apply/void postings §12 also names share the identical assertPeriodOpen→lockMonth guard, so
-    // this one finalize proof covers them.
+describe("concurrency — Serializable + the month advisory lock protect a posting and a close (spec §12)", () => {
+  it("DANGEROUS direction: a real Serializable finalize whose snapshot predates a committed close is refused/aborted — no FINALIZED invoice leaks into closed July", async () => {
+    // The finding this test proves: `finalizeInvoice` runs Serializable and FIXES its snapshot at
+    // `claimInvoiceRow` — BEFORE `assertPeriodOpen`'s `lockMonth`/period read. If a close commits its
+    // CLOSED row after that snapshot, the finalize's period `findFirst` misses it (no `FOR UPDATE`)
+    // and would post FINALIZED into a just-closed month. Only SSI catches it, and only if the close is
+    // ALSO Serializable.
     //
-    // RED-verified by removing `lockMonth` from `closePeriod`: the close then does NOT block on the
-    // held month — it reads past the uncommitted invoice (endingAr 0), commits a CLOSED July, and the
-    // invoice lands in that closed month uncounted; the `raceResult === TIMED_OUT` assertion flips to
-    // "settled".
-    seq += 1;
-    const customer = await prisma.customer.create({ data: { code: `CXN${seq}`, name: `CXN ${seq}` } });
-    const order = await prisma.order.create({
-      data: {
-        orderNumber: 760000 + seq, customerId: customer.id, status: "SHIPPED",
-        receivedDate: parseDateOnly("2026-07-01"), requestDate: parseDateOnly("2026-07-01"),
-      },
-    });
+    // Determinism: a GATE (Read Committed) holds the ORDER row `FOR UPDATE`, so the REAL finalize fixes
+    // its snapshot at its first read and then BLOCKS at `claimOrder`'s `SELECT ... FOR UPDATE` —
+    // pausing it AFTER its snapshot is fixed and BEFORE its period read. We then run the REAL
+    // `closePeriod(2026, 7)` to completion (it commits a CLOSED July, endingAr 0 — the invoice is still
+    // DRAFT), release the gate, and let the finalize proceed on its now-stale snapshot. Both sides
+    // Serializable → SSI aborts the finalize (40001 → 409) or it is refused period-closed (409).
+    //
+    // RED-verified by reverting `closePeriod` to Read Committed (drop its `isolationLevel`): the close
+    // is invisible to SSI, the finalize's stale read misses the CLOSED row, nothing aborts it, and it
+    // commits FINALIZED into closed July — `outcome` becomes "resolved" and the invoice is FINALIZED.
+    const { invoiceId, orderId } = await makeDraftInvoiceDated("2026-07-15", 100);
 
-    let hasClaimed!: () => void;
-    const claimed = new Promise<void>((r) => { hasClaimed = r; });
-    let mayRelease!: () => void;
-    const release = new Promise<void>((r) => { mayRelease = r; });
+    let gateReady!: () => void;
+    const gated = new Promise<void>((r) => { gateReady = r; });
+    let releaseGate!: () => void;
+    const gateRelease = new Promise<void>((r) => { releaseGate = r; });
 
-    const holder = prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(4200, 202607)`;
-      await tx.invoice.create({
-        data: {
-          kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
-          invoiceDate: parseDateOnly("2026-07-15"), dueDate: parseDateOnly("2026-07-15"),
-          total: 100, finalizedAt: parseDateOnly("2026-07-15"),
-        },
-      });
-      hasClaimed();
-      await release;
+    // GATE: Read Committed on purpose — it must hold the order row WITHOUT forming an SSI edge with
+    // the finalize, so the ONLY dangerous structure is finalize(read month open) ↔ close(insert CLOSED).
+    const gate = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
+      gateReady();
+      await gateRelease;
     }, { timeout: 20000 });
+    await gated;
 
-    await claimed;
+    // Start the REAL finalize; it fixes its Serializable snapshot at its first read, then blocks on
+    // the gated order row (well before its period read).
+    const finalizeProm = asSystem(() => finalizeInvoice(invoiceId)).then(
+      () => "resolved" as const,
+      (e: unknown) => e,
+    );
+    await new Promise((r) => setTimeout(r, 200)); // let the finalize fix its snapshot + block on the order
 
-    const closeProm = asSystem(() => closePeriod(2026, 7));
-    const TIMED_OUT = Symbol("timed out");
-    const raceResult = await Promise.race([
-      closeProm.then(() => "settled" as const, () => "settled" as const),
-      new Promise((r) => setTimeout(() => r(TIMED_OUT), 250)),
-    ]);
-
-    mayRelease();
-    await holder;
-
-    expect(raceResult).toBe(TIMED_OUT); // the close was blocked on the month the finalize held
-
-    const closed = await closeProm; // unblocks, reads the now-committed invoice on a fresh snapshot
+    // Close July NOW — commits a CLOSED July row while the finalize is paused with an older snapshot.
+    const closed = await asSystem(() => closePeriod(2026, 7));
     expect(closed.status).toBe("CLOSED");
-    expect(closed.endingAr).toBe(100); // the finalize landed first and IS counted
-    expect(await prisma.closePeriod.count({ where: { year: 2026, month: 7, status: "CLOSED" } })).toBe(1);
+    expect(closed.endingAr).toBe(0); // the invoice is still DRAFT, so the frozen schedule is $0
+
+    releaseGate();
+    await gate;
+
+    const outcome = await finalizeProm;
+    expect(outcome).not.toBe("resolved"); // it must NOT have finalized into the closed month
+    expect(outcome).toBeInstanceOf(HttpError);
+    expect((outcome as HttpError).status).toBe(409); // period-closed OR serialization-abort — both 409
+
+    // PROOF: no FINALIZED July invoice leaked, and the frozen close schedule still reads $0.
+    const inv = await prisma.invoice.findFirst({ where: { id: invoiceId } });
+    expect(inv?.status).toBe("DRAFT");
+    const row = await prisma.closePeriod.findFirst({ where: { year: 2026, month: 7 } });
+    expect(row?.status).toBe("CLOSED");
+    expect(row?.endingAr.toNumber()).toBe(0);
   });
 
-  it("a second close of one month serializes behind the first: exactly one CLOSED row, neither errors", async () => {
-    // HOLDER (Read Committed): hand-scripts the first close's critical section — the SAME month
+  it("two concurrent closes of one month: exactly one CLOSED row, NEITHER errors (the retry absorbs the loser)", async () => {
+    // HOLDER (Read Committed): hand-scripts the WINNING close's critical section — the SAME month
     // advisory lock `closePeriod` takes — inserts the CLOSED July row, and holds it uncommitted.
-    // COMPETITOR: the real `closePeriod(2026, 7)`. With `lockMonth`, the competitor BLOCKS on the
-    // held month, then on a FRESH post-lock read sees the (now-committed) row and UPDATES it —
-    // exactly one CLOSED row, no error. This forces the collision window a bare `Promise.all` leaves
-    // to timing.
+    // COMPETITOR: the real `closePeriod(2026, 7)` (Serializable + retry). It BLOCKS on the held month;
+    // when the holder commits, it unblocks with a snapshot fixed BEFORE that commit (the blocking
+    // `lockMonth` SELECT took the snapshot before the lock was granted), so its `findFirst` misses the
+    // row and its INSERT collides on @@unique([year, month]) — and `retryOnSerializationConflict`
+    // re-runs it: the fresh snapshot sees the row and UPDATES it. One CLOSED row, no error.
     //
-    // RED-verified by removing `lockMonth` from `closePeriod`: the competitor does NOT block on the
-    // month, its `findFirst` misses the holder's uncommitted row, and its INSERT collides on the
-    // @@unique([year, month]) index — `await competitor` then REJECTS instead of resolving CLOSED.
+    // RED-verified by disabling the retry (call `prisma.$transaction` directly, no wrapper — or
+    // tries=1): the collision escapes as P2002 → HttpError(400) and `await competitor` REJECTS, so
+    // `result.status` throws.
     let hasClaimed!: () => void;
     const claimed = new Promise<void>((r) => { hasClaimed = r; });
     let mayRelease!: () => void;
@@ -262,11 +291,11 @@ describe("concurrency — the month advisory lock serializes a posting and a clo
     await claimed;
 
     const competitor = asSystem(() => closePeriod(2026, 7));
-    await new Promise((r) => setTimeout(r, 150)); // let it reach lockMonth (GREEN) / its insert (RED)
+    await new Promise((r) => setTimeout(r, 150)); // let it block on the held month
     mayRelease();
     await holder;
 
-    const result = await competitor; // GREEN: updates the holder's row. RED: rejects on the unique index
+    const result = await competitor; // GREEN: retry updates the holder's row. RED: rejects on the unique index
     expect(result.status).toBe("CLOSED");
     expect(await prisma.closePeriod.count({ where: { year: 2026, month: 7 } })).toBe(1);
   });

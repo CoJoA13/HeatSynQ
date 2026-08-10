@@ -97,3 +97,13 @@ Task 5: IMPLEMENTED (impl e1fda3d; docs b8c30f7) but review = NEEDS FIXES (Criti
   Also accepted from the review: prior-month/genesis logic grounded in spec §4.1+ruling 5 (implementer's
     spec-correct departure from the brief's self-contradictory sample); agingReport cross-connection read
     justification holds; single-lockMonth invariant honored.
+
+Task 5: Fix round 1 LANDED — the Critical fix is now applied in code (the earlier f022f85 was docs-only;
+  close-periods.ts still ran Read Committed). Changes: retryOnSerializationConflict added to db-errors.ts;
+  closePeriod/reopenPeriod restored to Serializable + wrapped in the retry (lockMonth kept); file-header
+  ISOLATION section rewritten; minors (reopenReason:"" on re-close, variance message names the delta).
+  Tests: safe-direction Test 1 REPLACED with the dangerous direction (real Serializable finalize vs a real
+  close that commits first, via an order-row gate); Test 2 asserts one CLOSED row + neither errors. BOTH
+  RED-verified (transcripts in task-5-report.md "Fix round 1"): dangerous test leaks FINALIZED under a
+  Read-Committed close; Test 2 loser surfaces P2002 with the retry disabled. Gates: full suite 1910, tsc/
+  eslint clean, E2E 17/17 foreground. Superseded design decision #1 (Read Committed) — it was the defect.

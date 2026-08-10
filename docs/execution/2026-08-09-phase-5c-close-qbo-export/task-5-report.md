@@ -73,3 +73,49 @@ The binding spec §4.1 resolves it: the close "*requires the prior month closed 
 - `closePeriod`'s Read Committed vs the posting side's Serializable is intentional and independent: the posting side (`finalizeInvoice` etc., Task 3/4) stays Serializable — its guard read sits *after* an earlier snapshot-fixing claim, so SSI is what backstops the stale-read window there; the close's own correctness needs only the advisory lock + fresh reads.
 - Re-closing a REOPENED month updates the row in place (`reopenedAt: null`), leaving the historical `reopenReason` text — harmless, matches the brief's data shape; flag if the reviewer wants it cleared.
 - Housekeeping: this docs commit also persists three earlier untracked execution records (`task-1-brief.md`, `task-2-report.md`, `task-3-report.md`) that the recurring `.superpowers/sdd/.gitignore`-clobber had left exposed — committing them closes that loss window per the house rule. The `.gitignore` clobber itself (a bare `*`) was left untouched.
+
+---
+
+## Fix round 1 — Critical (data-integrity): a posting could leak into a just-closed month
+
+**Verdict addressed:** review found the Read-Committed close (design decision #1 above) STRIPS the SSI backstop from the Serializable posting side. A Serializable `finalizeInvoice` fixes its snapshot at `claimInvoiceRow` (BEFORE `assertPeriodOpen`'s advisory lock); if a close commits after that snapshot, the new CLOSED row is invisible to the finalize's fixed snapshot (plain `findFirst`, no `FOR UPDATE`), and SSI cannot abort a Read-Committed writer — so a FINALIZED invoice lands in a just-closed month. The original concurrency Test 1 only exercised the SAFE direction (a hand-scripted RC holder taking the lock first) and so missed it. **This supersedes design decision #1: the Read-Committed choice was wrong.**
+
+### What changed (`e1fda3d` is the base; this is the fix commit on top)
+
+- **`src/server/db-errors.ts`** — added `retryOnSerializationConflict(run, tries = 5)` (+ `isRetryableConflict`): re-runs `run` on a raw `P2034` / raw-40001 / `P2002`, then lets the last failure escape to `withDbErrors` for translation. It wraps the RAW `prisma.$transaction` (inside `withDbErrors`) so it sees the Prisma error before translation.
+- **`src/server/close-periods.ts`** — restored `{ isolationLevel: Serializable }` on BOTH `closePeriod` and `reopenPeriod`, each now wrapped in `retryOnSerializationConflict`. `lockMonth` kept (it orders the closes). The file-header ISOLATION section was rewritten: two serializers are load-bearing now — the advisory lock ORDERS closes, and Serializable-on-both-sides lets SSI backstop the posting-vs-close phantom; the retry absorbs the loser of two concurrent closes. Minors: `reopenReason: ""` added to the close `data` (a re-closed month no longer carries a stale reopen note), and the variance refusal message now names the delta — `… (off by ${schedule.variance})`.
+- **`tests/close-periods.test.ts`** — the safe-direction Test 1 was REPLACED with the DANGEROUS direction (under Serializable it could not have passed anyway: a close that blocks behind a finalize reads a stale roll-forward and refuses on a spurious variance — that behavior was deliberately given up to close the leak). Test 2 (two concurrent closes) now asserts exactly one CLOSED row and that NEITHER call errors (the retry absorbs the loser). New helper `makeDraftInvoiceDated`.
+
+### Dangerous-direction Test 1 (the deliverable) and its RED evidence
+
+The test drives the REAL Serializable `finalizeInvoice` against a REAL `closePeriod(2026, 7)`. Determinism: a Read-Committed GATE holds the invoice's ORDER row `FOR UPDATE`, so the finalize fixes its snapshot at its first read and then BLOCKS at `claimOrder` — paused AFTER its snapshot is fixed, BEFORE its period read. The close then runs to completion (CLOSED July, `endingAr` 0 — the invoice is still DRAFT), the gate releases, and the finalize proceeds on its now-stale snapshot. GREEN: the finalize is refused/aborted (409) and the invoice stays DRAFT; `closePeriod`'s frozen schedule stays $0.
+
+RED-verified by reverting `closePeriod` to Read Committed (dropping its `isolationLevel`): the close is invisible to SSI, the finalize's stale read misses the CLOSED row, nothing aborts it, and it commits FINALIZED into closed July:
+
+```
+× DANGEROUS direction: a real Serializable finalize whose snapshot predates a committed close ...
+  → expected 'resolved' not to be 'resolved' // Object.is equality
+   tests/close-periods.test.ts:250  expect(outcome).not.toBe("resolved");
+```
+
+(`outcome === "resolved"` ⇒ the finalize committed FINALIZED — the leak.) Restored Serializable → GREEN.
+
+### Test 2 (two concurrent closes) and its RED evidence
+
+HOLDER (Read Committed) hand-scripts the winning close's critical section (advisory lock + insert the CLOSED July row, held uncommitted); COMPETITOR is the real `closePeriod` (Serializable + retry). The competitor blocks on the month, unblocks with a snapshot fixed before the holder committed, its `findFirst` misses the row, its INSERT collides — and the retry re-runs it onto a fresh snapshot that UPDATES the row. One CLOSED row, no error.
+
+RED-verified by disabling the retry (`tries = 1`): the collision escapes as `P2002` → `HttpError(400)` and `await competitor` REJECTS:
+
+```
+× two concurrent closes of one month: exactly one CLOSED row, NEITHER errors ...
+  → A close period with that value already exists
+   translatePrisma src/server/db-errors.ts:43  (P2002 on @@unique([year, month]))
+```
+
+Restored `tries = 5` → GREEN.
+
+### Gates (all green)
+
+- `npx vitest run tests/close-periods.test.ts tests/receivables-routes.test.ts` — **31 passed** (GREEN re-run 3× with no flakiness in either concurrency test).
+- Full `npm test` — **1910 passed / 123 files, 0 failures.** `npx tsc --noEmit` clean. `npx eslint src tests` — 0/0.
+- **E2E foreground (`npm run test:e2e`, DEV db `erp`)** — **all 17 flows PASS.**
