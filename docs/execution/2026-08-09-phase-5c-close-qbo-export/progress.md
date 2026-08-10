@@ -17,7 +17,7 @@
 - [x] Task 5: close-periods.ts — close/reopen lifecycle + preliminary report + routes
 - [x] Task 6: gl-export.ts — per-event delta, CSV, batch write + export/readiness routes
 - [x] Task 7: posting-register PDF
-- [ ] Task 8: /receivables/close UI
+- [x] Task 8: /receivables/close UI
 - [ ] Task 9: E2E flow, demo doc, documentation
 
 ## Log
@@ -126,3 +126,8 @@ Task 6: COMPLETE (impl 6158c20 + fix f0bc3e0/7cdf922; docs 0c84212; two-lens opu
 Task 7: COMPLETE (impl 8994229 + fix 03bbc69; docs e663fda; sonnet review Approved). Gates: full suite 1937, tsc/eslint/build clean, E2E 17/17 foreground.
   Closed on review: Important (report omitted TDD RED evidence — now captured in the report: register-placeholder revert fails the byteLength/marker test, builder-absent fails posting-register tests); Minor (register content-disposition now carries a derived `gl-register-YYYY-MM.pdf` filename, matching every other inline-PDF route).
   Minor (final review): posting-register money() renders blank-for-zero and no `$` symbol — deliberately register-appropriate (GL registers commonly omit both) but a stylistic outlier vs statement/invoice money(); left as-is. Also incidental good cleanup: implementer restored the recurring `.superpowers/sdd/.gitignore` `*`-clobber to the tracked version.
+
+Task 8: COMPLETE (commit c209b91; sonnet review Approved — spec ✅, REACHABILITY confirmed: all 7 capabilities operable through /receivables/close — the 5B API-only blind spot is closed). Gates: full suite 1938, tsc/eslint/build clean, E2E 17/17 foreground; browser-verified end-to-end (no screenshot — Browser pane couldn't composite in the sandbox; DOM/fetch assertions + passing E2E used instead). Added the gap-fill GET /api/receivables/close + listClosePeriods (thin gated read, tested).
+  PLAN GAP (folded in, not a defect): the Tasks 5-7 routes lacked a list-closed-periods endpoint the UI needs — added in Task 8.
+  Minors (final review): (a) Export button's live readiness-gap count is fresh only for the picker's selected month; historical rows rely on the server exportClose 409 (safe by construction; a per-row readiness fetch is the follow-up). (b) Close.tsx ReadinessGap.kind typed `string` vs the server union (harmless widening).
+  Note: task-8-report.md was written under erp/docs/ by mistake (implementer cwd=erp/, relative path) — controller moved it to repo-root docs/execution/.
