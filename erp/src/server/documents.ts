@@ -253,6 +253,21 @@ export async function listDocumentsForCustomer(customerId: string): Promise<Docu
   });
 }
 
+/** Every `QUOTE` document filed against this quote (Phase 6 spec §6 — the quote page's print
+ *  history) — `quoteId` is a column only `QUOTE` ever populates (`ownerColumns` above), so no
+ *  kind filter or union is needed, the `listDocumentsForInvoice`/`listDocumentsForCert` shape
+ *  exactly. No `deletedAt` filter on the quote: a deleted quote's past prints stay listable and
+ *  reprintable forever (spec §5.6's voided-owner rule, same as every kind above). */
+export async function listDocumentsForQuote(quoteId: string): Promise<DocumentMeta[]> {
+  const quote = await prisma.quote.findFirst({ where: { id: quoteId }, select: { id: true } });
+  if (!quote) throw new HttpError(404, "Quote not found");
+  return prisma.storedDocument.findMany({
+    where: { quoteId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: DOCUMENT_SELECT,
+  });
+}
+
 /** The stored bytes, untouched — a reprint is a byte-for-byte reissue of what was printed, never
  *  a re-render (the source data behind any of the four kinds can keep changing after a print).
  *  Never filters on `deletedAt` either, for the same reason `listDocumentsFor*` above does not. */

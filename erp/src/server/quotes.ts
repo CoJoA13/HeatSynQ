@@ -13,7 +13,12 @@ import { currentActor } from "./context";
 import { getSetting, allocateNumber } from "./settings";
 import { addDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
 import { toXlsx } from "./excel";
-import { PRICE_PER, type PricePerValue } from "../lib/part-constants";
+import { listAddresses, type AddressRow } from "./customer-addresses";
+import { priceOrder, type PriceRowInput } from "./pricing";
+import { assertPrintable, storeDocument } from "./documents";
+import { renderPdf } from "./pdf/render";
+import { buildQuoteDefinition, type QuotePdfData, type QuotePdfLine } from "./pdf/quote";
+import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
 import { INT4_MAX } from "../lib/order-constants";
 import {
   QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL, type QuoteStatusValue,
@@ -1439,5 +1444,197 @@ export async function deleteQuote(id: string, reason: string): Promise<void> {
       await tx.quoteLine.updateMany({
         where: { quoteId: id, deletedAt: null }, data: { deletedAt: new Date() },
       });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The quote PDF (Task 10, spec §6): the collector feeding pdf/quote.ts's pure builder, and the
+// print/archive path — the printInvoice/printCert precedent: settings read OUTSIDE the
+// transaction, read-under-claim → render → `storeDocument` (kind QUOTE) in ONE Serializable
+// transaction, reprints reissuing the STORED bytes via the download route (never a re-render).
+// ---------------------------------------------------------------------------------------------
+
+export type QuotePrintSettings = {
+  company: { name: string; address: string; phone: string };
+  introText: string;
+  liabilityText: string;
+};
+
+/** The plant-wide print blocks, read BEFORE the print transaction opens (the cert/ticket/invoice
+ *  precedent — a settings read on the top-level client inside a Serializable transaction is the
+ *  pool-starvation shape fix-wave R4 finding 8 exists to prevent). */
+export async function quotePrintSettings(): Promise<QuotePrintSettings> {
+  const [name, address, phone, introText, liabilityText] = await Promise.all([
+    getSetting("company_name"), getSetting("company_address"), getSetting("company_phone"),
+    getSetting("quote_intro_text"), getSetting("quote_liability_text"),
+  ]);
+  return { company: { name, address, phone }, introText, liabilityText };
+}
+
+/** The default (or first) live BILL_TO — the invoice's own `pickDefault` shape, one kind. */
+function pickDefaultBillTo(addresses: AddressRow[]): AddressRow | null {
+  const of = addresses.filter((a) => a.kind === "BILL_TO");
+  return of.find((a) => a.isDefault) ?? of[0] ?? null;
+}
+
+/** The Attn block's address lines (spec §6): the CUSTOMER name, then the bill-to street and
+ *  city line — the invoice's `renderAddress` resolution, except the customer name always prints
+ *  (the spec's own transcription: "contact name, customer name, bill-to address") and an
+ *  address-row name prints ABOVE it only when it names something else (the sample's own
+ *  department-over-company stacking). Blank components drop so no empty line prints. */
+function billToLines(customerName: string, addr: AddressRow | null): string[] {
+  const cityLine = addr
+    ? [addr.city, [addr.state, addr.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")
+    : "";
+  return [
+    ...(addr && addr.name !== "" && addr.name !== customerName ? [addr.name] : []),
+    customerName,
+    ...(addr?.street ? [addr.street] : []),
+    ...(cityLine ? [cityLine] : []),
+  ];
+}
+
+/**
+ * One quote line's price rows as the ENGINE's own input shape, then the indicative amounts read
+ * back off the computed OPERATION lines (spec §6: "the engine's real math is the display's only
+ * source — no second pricing formula"). The synthetic line is quotedQty + quotedQty×each-weight;
+ * amounts are omitted (null) when:
+ *   - the line is unlimited or has no quoted qty (nothing to extend over), or
+ *   - the row prices per LB and the line has no each-weight (its basis is unknown — a $0-weight
+ *     extension would print the minimum as if it were the real charge).
+ * The engine's break-selection, minimum-floor and setup-on-top semantics apply unchanged.
+ */
+function indicativeAmounts(line: QuoteLineDetail): (number | null)[] {
+  if (line.prices.length === 0) return [];
+  const eligible = !line.quotedUnlimited && line.quotedQty !== null;
+  if (!eligible) return line.prices.map(() => null);
+
+  const rows: PriceRowInput[] = line.prices.map((p) => ({
+    processStepCodeId: p.processStepCodeId, stepCode: p.stepCode, stepName: p.stepName,
+    position: p.position,
+    setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
+    pricePer: p.pricePer, breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
+    glAccountId: null, glAccountName: "",
+  }));
+  const result = priceOrder({
+    lines: [{
+      orderLineId: line.id, position: 1,
+      partNumber: line.partNumber, partName: line.partName, partDescription: line.partDescription,
+      eachWeight: line.eachWeight ?? 0,
+      shippedQty: line.quotedQty!,
+      shippedWeight: line.eachWeight === null ? 0 : line.quotedQty! * line.eachWeight,
+      prices: rows,
+    }],
+    surcharges: [], charges: [], freight: null, cert: null, tax: null,
+  });
+  // One OPERATION line per input price row, in order (the engine's own contract).
+  const ops = result.lines.filter((l) => l.kind === "OPERATION");
+  return line.prices.map((p, i) =>
+    (p.pricePer === "LB" && line.eachWeight === null ? null : ops[i].amount));
+}
+
+/**
+ * Assembles the whole print payload (spec §6) off the caller's `db` — inside `printQuote` that is
+ * the claim-holding `tx` (the `readCertPdfData` rule). A quote is a LIVING document (ruling 8),
+ * so everything here reads live: part identity through the detail's live-or-text resolution, the
+ * terms name, the default bill-to, the contact's name/phone (blank when the contact was deleted —
+ * the stored PDFs keep the printed name), the quotedBy user's displayName + title (ruling 14).
+ * `internalNotes` never enters the payload (the cert notes-pair rule — the builder's input type
+ * cannot even carry it).
+ */
+export async function readQuotePdfData(
+  db: Db, id: string, settings?: QuotePrintSettings,
+): Promise<QuotePdfData> {
+  const detail = await readDetail(db, id); // 404s a missing quote
+  const s = settings ?? await quotePrintSettings();
+
+  const customer = await db.customer.findFirst({
+    where: { id: detail.customerId },
+    select: { name: true, terms: { select: { name: true } } },
+  });
+  if (!customer) throw new HttpError(404, "Customer not found");
+
+  const addresses = await listAddresses(detail.customerId, undefined, db);
+  const billTo = pickDefaultBillTo(addresses);
+
+  // The picked contact's phone, only while the contact is live — the detail's own contactName
+  // rule (a deleted contact renders blank, spec §4.1).
+  let customerPhone = "";
+  if (detail.contactId !== null && detail.contactName !== "") {
+    const contact = await db.customerContact.findFirst({
+      where: { id: detail.contactId, deletedAt: null }, select: { phone: true },
+    });
+    customerPhone = contact?.phone ?? "";
+  }
+
+  // The signature title (ruling 14) — displayName already rides the detail; blank prints nothing.
+  const quotedBy = await db.user.findFirst({
+    where: { id: detail.quotedById }, select: { title: true },
+  });
+
+  const lines: QuotePdfLine[] = detail.lines.map((line) => {
+    const amounts = indicativeAmounts(line);
+    return {
+      quotedQty: line.quotedQty, quotedUnlimited: line.quotedUnlimited,
+      partNumber: line.partNumber, partName: line.partName, partDescription: line.partDescription,
+      eachWeight: line.eachWeight,
+      totalLbs: line.quotedQty !== null && line.eachWeight !== null
+        ? line.quotedQty * line.eachWeight : null,
+      material: line.material,
+      prices: line.prices.map((p, i) => ({
+        stepName: p.stepName, notes: p.notes,
+        setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
+        pricePerLabel: PRICE_PER_LABELS[p.pricePer],
+        breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
+        amount: amounts[i],
+      })),
+    };
+  });
+
+  return {
+    company: s.company,
+    quoteNumber: detail.quoteNumber,
+    effectiveDate: detail.effectiveDate,
+    expiryDate: detail.expiryDate,
+    termsName: customer.terms?.name ?? "",
+    rfqNumber: detail.rfqNumber,
+    attn: detail.contactName,
+    customerPhone,
+    billTo: billToLines(customer.name, billTo),
+    introText: s.introText,
+    lines,
+    endingStatementText: detail.endingStatementText,
+    notes: detail.notes,
+    liabilityText: s.liabilityText,
+    signer: { name: detail.quotedByName, title: quotedBy?.title ?? "" },
+  };
+}
+
+/**
+ * Renders and archives the quote, returning the exact bytes stored (spec §6; the printInvoice/
+ * printCert shape). The claim is the load-bearing part: read-under-claim → render → the ONE
+ * mutation (`storeDocument`, kind `QUOTE`, `quoteId` owner) commit together, so the archive
+ * cannot land against a state a concurrent delete changed out from under it (the Phase 4
+ * print-vs-void lesson). A DELETED quote refuses a NEW print with the shared `VOIDED_PRINT` 400
+ * (`assertPrintable` — the discarded-invoice precedent) while every STORED print stays listable
+ * and reprintable forever (§5.6); a CLOSED or expired quote prints fine — closing forbids edits,
+ * not the paper of the agreement it records.
+ */
+export async function printQuote(
+  id: string,
+): Promise<{ documentId: string; quoteNumber: number; pdf: Buffer }> {
+  const settings = await quotePrintSettings(); // OUTSIDE the transaction (the cert/ticket precedent)
+
+  return withDbErrors({ entity: "Quote" }, () =>
+    prisma.$transaction(async (tx) => {
+      const quote = await claimQuote(tx, id);
+      if (!quote) throw new HttpError(404, "Quote not found");
+      assertPrintable(quote);
+
+      const data = await readQuotePdfData(tx, id, settings);
+      const pdf = await renderPdf(buildQuoteDefinition(data));
+
+      const doc = await storeDocument(tx, { kind: "QUOTE", quoteId: id }, pdf);
+      return { documentId: doc.id, quoteNumber: quote.quoteNumber, pdf };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
