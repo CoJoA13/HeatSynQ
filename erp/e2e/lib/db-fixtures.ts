@@ -131,6 +131,39 @@ const FIXTURE = {
   arPriceStepCodeName: "E2E AR Op",
   arTermsName: "E2E 2/10/30 Terms",
   arPaymentTypeName: "E2E Check",
+  // Task 9 (Phase 5C): backfills the Phase 5B `arPriceStepCode`'s GL account. That step code was
+  // deliberately built with none (the AR fixture's own comment: "invoiceWarnings only warns,
+  // never blocks finalize") — but the close flow's `resolveReadiness`/`buildCurrentJournal` scan
+  // EVERY FINALIZED invoice dated in the target month GLOBALLY, not per-customer (close-periods.ts/
+  // gl-export.ts), and `receivables-apply-age-statement.mjs`'s own invoice stays FINALIZED for the
+  // rest of a run (unlike `invoice-shipped-order.mjs`'s, which ends Unlocked and so drops out of
+  // scope — see that flow's own file header) — so without this, the close flow's own export would
+  // be refused by a gap that isn't its to fix. A step code is shared reference vocabulary (the
+  // `stepCodeB` precedent), so giving it a GL account here changes nothing the Phase 5B flow itself
+  // asserts (it never inspects GL accounts).
+  arOpGlAccountName: "E2E-4703",
+
+  // Task 9 (Phase 5C): the month-end-close flow's own customer/part/terms/payment-type/GL-accounts
+  // — independent of every fixture above, the same reasoning FIXTURE's own comments give for every
+  // earlier phase's set. `closeCustomer` carries its OWN 2/10/30 Terms (so its own payment can earn
+  // an early-pay discount, the `arTerms` shape) and opts out of surcharge/tax (`invSurcharge` is
+  // scope ALL/active and would otherwise ride along) so its invoice total is exactly its one priced
+  // operation. Six dedicated GL accounts: one revenue account for the priced operation, four for the
+  // Admin -> Billing plant defaults the close/export needs (A/R, discount, write-off, sales tax —
+  // set through the real UI, not written directly, per the task brief), and one cash account for the
+  // payment type (the CASH-journal debit side).
+  closeCustomerCode: "E2ECLOSECUST",
+  closePartNumber: "E2E-CLOSE-PART",
+  closePriceStepCodeCode: "E2E-CLOSE-OP",
+  closePriceStepCodeName: "E2E Close Op",
+  closeTermsName: "E2E Close 2/10/30 Terms",
+  closePaymentTypeName: "E2E Close Check",
+  closeRevenueGlAccountName: "E2E-4801",
+  closeArGlAccountName: "E2E-1205",
+  closeDiscountGlAccountName: "E2E-5210",
+  closeWriteOffGlAccountName: "E2E-5220",
+  closeSalesTaxGlAccountName: "E2E-2305",
+  closeCashGlAccountName: "E2E-1010",
 } as const;
 
 /**
@@ -254,6 +287,38 @@ export type Fixtures = {
   arTermsId: string;
   arPaymentTypeId: string;
   arPaymentTypeName: string;
+  /** Task 9 (Phase 5C) backfill — see FIXTURE's comment. */
+  arOpGlAccountId: string;
+  /** Task 9 (Phase 5C): the close flow's own fixtures — see FIXTURE's comment. */
+  closeCustomerId: string;
+  closeCustomerCode: string;
+  closePartId: string;
+  closePartNumber: string;
+  closePriceStepCodeId: string;
+  closeTermsId: string;
+  closePaymentTypeId: string;
+  closePaymentTypeName: string;
+  closeRevenueGlAccountId: string;
+  closeArGlAccountId: string;
+  closeArGlAccountName: string;
+  closeDiscountGlAccountId: string;
+  closeDiscountGlAccountName: string;
+  closeWriteOffGlAccountId: string;
+  closeWriteOffGlAccountName: string;
+  closeSalesTaxGlAccountId: string;
+  closeSalesTaxGlAccountName: string;
+  closeCashGlAccountId: string;
+  /** `BillingConfig`'s four GL-default columns as they stood BEFORE this run's browser touched
+   *  them, captured in `create()` so `cleanup()` can restore the shared singleton row afterward —
+   *  the same singleton-row caution FIXTURE's own comment on `salesTaxRate` explains, but these
+   *  four have no per-customer escape hatch (they ARE the plant-wide GL mapping the close needs),
+   *  so mutating the one shared row through the real Admin -> Billing UI is unavoidable. */
+  priorBillingConfig: {
+    arGlAccountId: string | null;
+    discountGlAccountId: string | null;
+    writeOffGlAccountId: string | null;
+    salesTaxGlAccountId: string | null;
+  };
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -536,6 +601,60 @@ async function deleteKnownEmptyBatch(id: string | null): Promise<void> {
   await prisma.receiptBatch.deleteMany({ where: { id } });
 }
 
+/**
+ * Task 9 (Phase 5C): hard-deletes the ONE `ClosePeriod` (+ its `GlExportBatch`/`GlPosting` rows)
+ * the close-month-end flow ITSELF closed, scoped by the EXACT `(year, month)` it tested — passed
+ * back from `ctx.created`, but (fix round 1, review) recorded by the flow ONLY AFTER its own
+ * `closePeriod` POST has actually succeeded, never up front — see `close-month-end.mjs`'s own file-
+ * header comment on why. A no-op when `year`/`month` is null: that happens whenever this flow never
+ * reached (or never completed) its own close, INCLUDING when the pre-flight guard refused because a
+ * REAL `ClosePeriod` already covered the month — the guard alone stops this script from POSTing into
+ * that period, but it is the assign-after-close ordering in the flow that stops CLEANUP from later
+ * hard-deleting it (a guard failure throws before the flow ever assigns `ctx.created.
+ * closePeriodYear`/`Month`, so `run.mjs`'s `finally { teardown() }` calls this with `null, null` —
+ * a no-op — even though `ctx.created` itself is torn down on every exit path, pass or fail).
+ *
+ * `closedById` is the belt-and-suspenders second check: only a `ClosePeriod` row whose `closedById`
+ * matches THIS run's own fixture admin (`fixtures.adminUserId`) is ever deleted — a genuine second
+ * signal, not just the same fact checked twice, since it also protects against theoretically finding
+ * a stray same-`(year,month)` row that isn't this run's if the id-driven ordering above were ever
+ * weakened by a future edit. Deliberately NOT a name-based `reapLeftovers` sweep either: a
+ * `ClosePeriod` carries no fixture-recognizable name of its own, so a broader "any E2E-looking
+ * period" scan would risk touching a real close a developer or the owner made by hand after this
+ * feature ships — this only ever touches the exact period THIS run itself closed. `GlExportBatch`/
+ * `GlPosting` have no `onDelete` override on their parent FKs (plain RESTRICT), so children go first.
+ */
+async function deleteClosePeriodFixture(
+  year: number | null, month: number | null, closedById: string | null,
+): Promise<void> {
+  if (year === null || month === null) return;
+  const period = await prisma.closePeriod.findFirst({ where: { year, month, closedById }, select: { id: true } });
+  if (!period) return;
+  const batches = await prisma.glExportBatch.findMany({ where: { closePeriodId: period.id }, select: { id: true } });
+  const batchIds = batches.map((b) => b.id);
+  if (batchIds.length > 0) {
+    await prisma.glPosting.deleteMany({ where: { batchId: { in: batchIds } } });
+    await prisma.auditLog.deleteMany({ where: { entity: "glExportBatch", entityId: { in: batchIds } } });
+    await prisma.glExportBatch.deleteMany({ where: { id: { in: batchIds } } });
+  }
+  await prisma.auditLog.deleteMany({ where: { entity: "closePeriod", entityId: period.id } });
+  await prisma.closePeriod.deleteMany({ where: { id: period.id } });
+}
+
+/**
+ * Task 9 (Phase 5C): restores `BillingConfig`'s four GL-default columns to whatever they held
+ * BEFORE this run's close-month-end flow edited them through the real Admin -> Billing UI — the
+ * mitigation for the one singleton-row mutation this file cannot avoid (see the `Fixtures.
+ * priorBillingConfig` doc comment). `prior` is `undefined` only if `create()` never ran this
+ * session (a `cleanup`-only invocation against a payload missing the field) — a no-op, not an error.
+ * MUST run before `deleteInvoicingReference` deletes the fixture GL accounts these columns may
+ * still point at (BillingConfig's four GL FKs are plain RESTRICT, no `onDelete` override).
+ */
+async function restoreBillingConfig(prior: Fixtures["priorBillingConfig"] | undefined): Promise<void> {
+  if (!prior) return;
+  await prisma.billingConfig.update({ where: { id: "singleton" }, data: { ...prior } });
+}
+
 async function deleteInvoicesAndLines(customerIds: string[]): Promise<void> {
   if (customerIds.length === 0) return;
   const orders = await prisma.order.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
@@ -629,6 +748,7 @@ async function reapLeftovers(): Promise<void> {
     shipCustomers, holdCustomers, phase4Parts, scales, codes, containerTypes,
     invCustomers, invParts, invGlAccounts, invSurcharges,
     arCustomers, arParts, arTermsRows, arPaymentTypes,
+    closeCustomers, closeParts, closeGlAccounts, closeTermsRows, closePaymentTypes,
   ] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
@@ -648,7 +768,7 @@ async function reapLeftovers(): Promise<void> {
           in: [
             FIXTURE.stepCodeA, FIXTURE.stepCodeB, FIXTURE.priceStepCodeCode,
             FIXTURE.invPriceStepCodeACode, FIXTURE.invPriceStepCodeBCode,
-            FIXTURE.arPriceStepCodeCode,
+            FIXTURE.arPriceStepCodeCode, FIXTURE.closePriceStepCodeCode,
           ],
         },
       },
@@ -723,23 +843,46 @@ async function reapLeftovers(): Promise<void> {
     }),
     prisma.terms.findMany({ where: { name: FIXTURE.arTermsName }, select: { id: true } }),
     prisma.paymentType.findMany({ where: { name: FIXTURE.arPaymentTypeName }, select: { id: true } }),
+    // Task 9 (Phase 5C): the close flow's own fixtures, looked up the same exact-key,
+    // customer-scoped way as everything above.
+    prisma.customer.findMany({ where: { code: FIXTURE.closeCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: { partNumber: FIXTURE.closePartNumber, customer: { code: FIXTURE.closeCustomerCode } },
+      select: { id: true },
+    }),
+    prisma.glAccount.findMany({
+      where: {
+        name: {
+          in: [
+            FIXTURE.arOpGlAccountName, FIXTURE.closeRevenueGlAccountName, FIXTURE.closeArGlAccountName,
+            FIXTURE.closeDiscountGlAccountName, FIXTURE.closeWriteOffGlAccountName,
+            FIXTURE.closeSalesTaxGlAccountName, FIXTURE.closeCashGlAccountName,
+          ],
+        },
+      },
+      select: { id: true },
+    }),
+    prisma.terms.findMany({ where: { name: FIXTURE.closeTermsName }, select: { id: true } }),
+    prisma.paymentType.findMany({ where: { name: FIXTURE.closePaymentTypeName }, select: { id: true } }),
   ]);
   const templateIds = templates.map((t) => t.id);
   const invCustomerIds = invCustomers.map((c) => c.id);
   const arCustomerIds = arCustomers.map((c) => c.id);
+  const closeCustomerIds = closeCustomers.map((c) => c.id);
   const partIds = [
     ...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id),
-    ...invParts.map((p) => p.id), ...arParts.map((p) => p.id),
+    ...invParts.map((p) => p.id), ...arParts.map((p) => p.id), ...closeParts.map((p) => p.id),
   ];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  // Task 20/Task 17: `invCustomerIds`/`arCustomerIds` ride along in this same set — both the
-  // invoicing flow and the A/R flow ship their own order (a real `Shipper`/`ShipperOrder` pair),
-  // so `deleteShippingAndCerts` must be scoped through both too, or a leftover shipment blocks
-  // `deleteOrdersAndChildren`'s delete of the order it covers with `ShipperOrder_orderId_fkey`'s
-  // RESTRICT (caught live for `invCustomerIds`: the first run of that flow's cleanup failed on
-  // exactly this).
+  // Task 20/Task 17/Task 9: `invCustomerIds`/`arCustomerIds`/`closeCustomerIds` ride along in this
+  // same set — the invoicing flow, the A/R flow, AND the close flow each ship their own order (a
+  // real `Shipper`/`ShipperOrder` pair), so `deleteShippingAndCerts` must be scoped through all
+  // three too, or a leftover shipment blocks `deleteOrdersAndChildren`'s delete of the order it
+  // covers with `ShipperOrder_orderId_fkey`'s RESTRICT (caught live for `invCustomerIds`: the first
+  // run of that flow's cleanup failed on exactly this).
   const shipHoldCustomerIds = [
     ...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id), ...invCustomerIds, ...arCustomerIds,
+    ...closeCustomerIds,
   ];
   const customerIds = [
     ...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds,
@@ -754,12 +897,18 @@ async function reapLeftovers(): Promise<void> {
   const invSurchargeIds = invSurcharges.map((s) => s.id);
   const arTermsIds = arTermsRows.map((t) => t.id);
   const arPaymentTypeIds = arPaymentTypes.map((p) => p.id);
+  // Task 9 (Phase 5C): includes the AR step code's backfilled `arOpGlAccount` alongside the six
+  // dedicated close-flow accounts — one combined lookup, the `invGlAccounts` precedent.
+  const closeGlAccountIds = closeGlAccounts.map((g) => g.id);
+  const closeTermsIds = closeTermsRows.map((t) => t.id);
+  const closePaymentTypeIds = closePaymentTypes.map((p) => p.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
     + customerIds.length + userIds.length + roleIds.length
     + scaleIds.length + codeIds.length + containerTypeIds.length
     + invGlAccountIds.length + invSurchargeIds.length
-    + arTermsIds.length + arPaymentTypeIds.length;
+    + arTermsIds.length + arPaymentTypeIds.length
+    + closeGlAccountIds.length + closeTermsIds.length + closePaymentTypeIds.length;
   if (total === 0) return;
 
   console.error(
@@ -768,7 +917,13 @@ async function reapLeftovers(): Promise<void> {
     `customer(s), ${userIds.length} user(s), ${roleIds.length} role(s), ` +
     `${scaleIds.length + codeIds.length + containerTypeIds.length} Phase 4 reference row(s), ` +
     `${invGlAccountIds.length} GL account(s), ${invSurchargeIds.length} surcharge(s), ` +
-    `${arTermsIds.length} terms row(s), ${arPaymentTypeIds.length} payment type(s).`,
+    `${arTermsIds.length} terms row(s), ${arPaymentTypeIds.length} payment type(s), ` +
+    `${closeGlAccountIds.length} close-flow GL account(s), ${closeTermsIds.length} close-flow ` +
+    `terms row(s), ${closePaymentTypeIds.length} close-flow payment type(s). NOTE: this does NOT ` +
+    `self-heal a leftover ClosePeriod/GlExportBatch/GlPosting row or a BillingConfig singleton row ` +
+    `left mid-edit by a crashed close-month-end.mjs run — neither the exact (year, month) tested nor ` +
+    `the prior BillingConfig values survive a crash outside this script's own memory. If that flow's ` +
+    `own cleanup failed, check GET /api/receivables/close and Admin -> Billing by hand.`,
   );
 
   // Receipts/invoices/shipments/certs first (their children FK into the order/invoice tables),
@@ -777,8 +932,8 @@ async function reapLeftovers(): Promise<void> {
   // crash mid-flow, or left live by a crash before it) must be gone before
   // deletePartsAndCustomers below can touch the fixture parts. `deleteReceivables` runs first of
   // all: its `Application` rows block deleting the invoices `deleteInvoicesAndLines` removes next.
-  await deleteReceivables(arCustomerIds);
-  await deleteInvoicesAndLines([...invCustomerIds, ...arCustomerIds]);
+  await deleteReceivables([...arCustomerIds, ...closeCustomerIds]);
+  await deleteInvoicesAndLines([...invCustomerIds, ...arCustomerIds, ...closeCustomerIds]);
   await deleteShippingAndCerts(shipHoldCustomerIds);
   await deleteOrdersAndChildren(orderCustomerIds);
   await deletePartProcessData(partIds);
@@ -793,10 +948,14 @@ async function reapLeftovers(): Promise<void> {
   await deleteStatementDocuments(arCustomerIds);
   await deletePartsAndCustomers(partIds, customerIds);
   await deletePhase4Reference(scaleIds, codeIds, containerTypeIds);
-  // After deleteStepCodes (the two invoicing step codes' own GL-account FKs).
-  await deleteInvoicingReference(invGlAccountIds, invSurchargeIds);
-  // After deleteReceivables (PaymentType is ON DELETE RESTRICT from Payment).
-  await deleteArReference(arTermsIds, arPaymentTypeIds);
+  // Task 9: BEFORE deleteInvoicingReference (payment types' own GL-account FKs — the close flow's
+  // payment type, unlike the AR flow's, carries one) and after deleteReceivables (PaymentType is ON
+  // DELETE RESTRICT from Payment) — swapped from the pre-Task-9 order, which ran the GL-account
+  // delete first only because no payment type referenced one yet.
+  await deleteArReference([...arTermsIds, ...closeTermsIds], [...arPaymentTypeIds, ...closePaymentTypeIds]);
+  // After deleteStepCodes (the invoicing/close step codes' own GL-account FKs) and after
+  // deleteArReference immediately above (the close payment type's own GL-account FK).
+  await deleteInvoicingReference([...invGlAccountIds, ...closeGlAccountIds], invSurchargeIds);
   await deleteUsersAndRoles(userIds, roleIds);
 }
 
@@ -830,6 +989,19 @@ async function create(): Promise<Fixtures> {
     hashPassword(FIXTURE.adminPassword), hashPassword(FIXTURE.restrictedPassword),
     hashPassword(FIXTURE.clerkPassword), hashPassword(FIXTURE.priceEditPassword),
   ]);
+
+  // Task 9 (Phase 5C): snapshot `BillingConfig`'s four GL-default columns BEFORE the close flow's
+  // browser ever touches them, so `cleanup()` can restore the shared singleton row afterward — see
+  // the `Fixtures.priorBillingConfig` doc comment. Read outside the fixture transaction below: it
+  // is a plain read of a row this script does not itself write (the close flow's own real Admin ->
+  // Billing UI is what mutates it), so it has no ordering dependency on anything in that transaction.
+  const priorBillingConfigRow = await prisma.billingConfig.findFirst({ where: { id: "singleton" } });
+  const priorBillingConfig = {
+    arGlAccountId: priorBillingConfigRow?.arGlAccountId ?? null,
+    discountGlAccountId: priorBillingConfigRow?.discountGlAccountId ?? null,
+    writeOffGlAccountId: priorBillingConfigRow?.writeOffGlAccountId ?? null,
+    salesTaxGlAccountId: priorBillingConfigRow?.salesTaxGlAccountId ?? null,
+  };
 
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
   // Sequential creates committed as they went, and a failure after the first one exited with rows
@@ -1082,6 +1254,74 @@ async function create(): Promise<Fixtures> {
     // (the `stepCodeB` precedent above), so one row serves the whole flow's one check payment.
     const arPaymentType = await tx.paymentType.create({ data: { name: FIXTURE.arPaymentTypeName } });
 
+    // ----- Task 9 (Phase 5C): backfill the AR step code's + payment type's GL accounts (see
+    // FIXTURE's comment) — MUST happen before receivables-apply-age-statement.mjs (Phase 5B) ever
+    // creates an invoice/payment against them, which is why this runs here, inside the SAME
+    // fixture-creation transaction that runs once before any flow starts. -----
+    const arOpGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.arOpGlAccountName, description: "E2E AR Op Revenue (Task 9 GL-export readiness backfill)" },
+    });
+    await tx.processStepCode.update({ where: { id: arPriceStepCode.id }, data: { glAccountId: arOpGlAccount.id } });
+
+    // ----- Task 9 (Phase 5C): the month-end-close flow's own customer/part/terms/payment-type/
+    // GL-accounts (see FIXTURE's comment). -----
+    const closeTerms = await tx.terms.create({
+      data: { name: FIXTURE.closeTermsName, netDays: 30, discountPercent: "2.00", discountDays: 10 },
+    });
+    const closeCustomer = await tx.customer.create({
+      data: {
+        code: FIXTURE.closeCustomerCode, name: "E2E Close Customer", termsId: closeTerms.id,
+        taxable: false, surchargeOptOut: true,
+      },
+    });
+    const closeRevenueGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeRevenueGlAccountName, description: "E2E Close Op Revenue" },
+    });
+    const closeArGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeArGlAccountName, description: "E2E Close A/R Control" },
+    });
+    const closeDiscountGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeDiscountGlAccountName, description: "E2E Close Discounts Given" },
+    });
+    const closeWriteOffGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeWriteOffGlAccountName, description: "E2E Close Write-offs" },
+    });
+    const closeSalesTaxGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeSalesTaxGlAccountName, description: "E2E Close Sales Tax Payable" },
+    });
+    const closeCashGlAccount = await tx.glAccount.create({
+      data: { name: FIXTURE.closeCashGlAccountName, description: "E2E Close Cash" },
+    });
+    const closePriceStepCode = await tx.processStepCode.create({
+      data: {
+        code: FIXTURE.closePriceStepCodeCode, name: FIXTURE.closePriceStepCodeName,
+        glAccountId: closeRevenueGlAccount.id,
+      },
+    });
+    const closePart = await orderablePart({
+      customerId: closeCustomer.id, partNumber: FIXTURE.closePartNumber,
+      name: "E2E Close Part", eachWeight: "5.0000", certRequired: false,
+    });
+    await tx.partPrice.create({
+      data: {
+        partId: closePart.id, processStepCodeId: closePriceStepCode.id, position: 0,
+        unitPrice: "100.0000", minimumCharge: "25.00", pricePer: "EACH",
+      },
+    });
+    // The close/export CASH journal needs a GL account on every in-scope postable payment type
+    // (`resolveReadiness`'s `paymentTypesMissingGl`).
+    const closePaymentType = await tx.paymentType.create({
+      data: { name: FIXTURE.closePaymentTypeName, glAccountId: closeCashGlAccount.id },
+    });
+    // Task 9 backfill (see `arOpGlAccountName`'s comment on `arPriceStepCode` for the same
+    // reasoning, applied here to `arPaymentType`): `receivables-apply-age-statement.mjs`'s own
+    // payment ALSO stays posted/in-scope for the rest of a run, so its payment type needs a GL
+    // account too, or the close flow's own export is refused by a gap that isn't its fixture's to
+    // fix. Reuses `closeCashGlAccount` (the SAME cash account two different payment types debiting
+    // is normal — the `stepCodeB` shared-reference-vocabulary precedent) — must run here, AFTER
+    // `closeCashGlAccount` exists, not up with the `arOpGlAccount`/`arPriceStepCode` backfill above.
+    await tx.paymentType.update({ where: { id: arPaymentType.id }, data: { glAccountId: closeCashGlAccount.id } });
+
     // ALL_PERMISSIONS, the same list prisma/seed.ts grants the seeded Admin role — flows 1-4 reach
     // both the parts/processes screens and the admin step-codes screen, so anything narrower would
     // have to be kept in step with them by hand.
@@ -1191,6 +1431,18 @@ async function create(): Promise<Fixtures> {
       arPartId: arPart.id, arPartNumber: arPart.partNumber,
       arPriceStepCodeId: arPriceStepCode.id, arTermsId: arTerms.id,
       arPaymentTypeId: arPaymentType.id, arPaymentTypeName: arPaymentType.name,
+      arOpGlAccountId: arOpGlAccount.id,
+      closeCustomerId: closeCustomer.id, closeCustomerCode: closeCustomer.code,
+      closePartId: closePart.id, closePartNumber: closePart.partNumber,
+      closePriceStepCodeId: closePriceStepCode.id, closeTermsId: closeTerms.id,
+      closePaymentTypeId: closePaymentType.id, closePaymentTypeName: closePaymentType.name,
+      closeRevenueGlAccountId: closeRevenueGlAccount.id,
+      closeArGlAccountId: closeArGlAccount.id, closeArGlAccountName: closeArGlAccount.name,
+      closeDiscountGlAccountId: closeDiscountGlAccount.id, closeDiscountGlAccountName: closeDiscountGlAccount.name,
+      closeWriteOffGlAccountId: closeWriteOffGlAccount.id, closeWriteOffGlAccountName: closeWriteOffGlAccount.name,
+      closeSalesTaxGlAccountId: closeSalesTaxGlAccount.id, closeSalesTaxGlAccountName: closeSalesTaxGlAccount.name,
+      closeCashGlAccountId: closeCashGlAccount.id,
+      priorBillingConfig,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -1212,8 +1464,26 @@ async function doLockRevision(payload: { partId: string; revisionNumber: number 
  *  `ReceiptBatch` has no customer column, so `deleteReceivables` below can only find one via a
  *  live `Payment`; this is the id-driven backstop for a batch the flow created but never got as
  *  far as paying into, the `templateIds` precedent for "a live-built row's id is only known once
- *  the flow that created it has run." `null` when the flow never got as far as creating a batch. */
-type CleanupPayload = Fixtures & { templateIds: string[]; receivablesBatchId: string | null };
+ *  the flow that created it has run." `null` when the flow never got as far as creating a batch.
+ *  `closeBatchId` (Task 9, Phase 5C) is the SAME backstop for the close flow's own batch — a
+ *  separate field, not a reuse of `receivablesBatchId`, so the two flows' backstops never clobber
+ *  each other if both happen to be live in the same run (run.mjs's `state.created` comment).
+ *  `closePeriodYear`/`closePeriodMonth` (Task 9) are the close flow's own id-driven backstop for
+ *  `deleteClosePeriodFixture` — a `ClosePeriod` carries no id known up front (created live). Unlike
+ *  every OTHER field here, the flow deliberately does NOT record these the moment the target
+ *  `(year, month)` is computed: `ctx.created` is torn down by `run.mjs`'s `finally { teardown() }`
+ *  on every exit path, pass or fail, so recording them before the pre-flight existence guard would
+ *  hand cleanup a target it might not have created — if a REAL ClosePeriod already covers that month,
+ *  the guard correctly refuses to POST, but cleanup would still hard-delete that real row (`@@unique(
+ *  [year,month])`) if these fields were set. The flow assigns them ONLY after its OWN `closePeriod`
+ *  POST has actually succeeded (fix round 1, review finding), so a guard failure — or anything that
+ *  throws before this flow closes the month itself — leaves both `null` and this function a no-op.
+ *  `deleteClosePeriodFixture`'s own `closedById` check is the second, independent belt against the
+ *  same failure mode. */
+type CleanupPayload = Fixtures & {
+  templateIds: string[]; receivablesBatchId: string | null;
+  closeBatchId: string | null; closePeriodYear: number | null; closePeriodMonth: number | null;
+};
 
 /**
  * Deletes every row `create()` and the flows themselves produced. `templateIds` carries the
@@ -1250,23 +1520,32 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // `Application` rows block deleting the invoice `deleteInvoicesAndLines` removes next
   // (`Application_invoiceId_fkey` is `ON DELETE RESTRICT` — see `deleteReceivables`'s own
   // comment) — and `arCustomerId` rides along in every subsequent step the same way
-  // `invCustomerId` already does (this flow ships its own order too).
-  await deleteReceivables([payload.arCustomerId]);
+  // `invCustomerId` already does (this flow ships its own order too). Task 9 (Phase 5C):
+  // `closeCustomerId` rides along the same way, and `deleteClosePeriodFixture`/
+  // `restoreBillingConfig` run here too — the former has no FK dependency on anything else in this
+  // function (GlPosting's `sourceId` is a raw string, not an FK), and the latter MUST run before
+  // `deleteInvoicingReference` far below (BillingConfig's four GL FKs are plain RESTRICT).
+  await deleteReceivables([payload.arCustomerId, payload.closeCustomerId]);
   await deleteKnownEmptyBatch(payload.receivablesBatchId);
-  await deleteInvoicesAndLines([payload.invCustomerId, payload.arCustomerId]);
-  // The invoicing/A-R flows each ship their own order (a real Shipper/ShipperOrder pair) —
-  // invCustomerId/arCustomerId MUST ride along here too, or `ShipperOrder_orderId_fkey`'s
-  // RESTRICT blocks the order delete below (caught live for invCustomerId: the first run of that
-  // flow's cleanup failed on exactly this).
+  await deleteKnownEmptyBatch(payload.closeBatchId);
+  await deleteClosePeriodFixture(payload.closePeriodYear, payload.closePeriodMonth, payload.adminUserId);
+  await restoreBillingConfig(payload.priorBillingConfig);
+  await deleteInvoicesAndLines([payload.invCustomerId, payload.arCustomerId, payload.closeCustomerId]);
+  // The invoicing/A-R/close flows each ship their own order (a real Shipper/ShipperOrder pair) —
+  // invCustomerId/arCustomerId/closeCustomerId MUST ride along here too, or
+  // `ShipperOrder_orderId_fkey`'s RESTRICT blocks the order delete below (caught live for
+  // invCustomerId: the first run of that flow's cleanup failed on exactly this).
   await deleteShippingAndCerts([
     payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
+    payload.closeCustomerId,
   ]);
   await deleteOrdersAndChildren([
     orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
+    payload.closeCustomerId,
   ]);
   await deletePartProcessData([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId, payload.arPartId,
+    payload.invPartId, payload.arPartId, payload.closePartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
   // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
@@ -1277,11 +1556,12 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // screens up.
   await deletePartPrices([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId, payload.arPartId,
+    payload.invPartId, payload.arPartId, payload.closePartId,
   ]);
   await deleteStepCodes([
     stepCodeA.id, stepCodeB.id, payload.priceStepCodeId,
     payload.invPriceStepCodeAId, payload.invPriceStepCodeBId, payload.arPriceStepCodeId,
+    payload.closePriceStepCodeId,
   ]);
   // Before deletePartsAndCustomers: StoredDocument.customerId is ON DELETE SET NULL, which would
   // otherwise violate StoredDocument_kind_owner_check on a live STATEMENT document the moment its
@@ -1291,11 +1571,11 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     [
       partId, orderLeadPartId, orderRiderPartId,
       payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId, payload.invPartId,
-      payload.arPartId,
+      payload.arPartId, payload.closePartId,
     ],
     [
       customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId,
-      payload.arCustomerId,
+      payload.arCustomerId, payload.closeCustomerId,
     ],
   );
   await deletePhase4Reference(
@@ -1303,12 +1583,23 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     [payload.inspectionCodeAId, payload.inspectionCodeBId],
     [payload.containerTypeId],
   );
-  // After deleteStepCodes (the two invoicing step codes' own GL-account FKs).
-  await deleteInvoicingReference(
-    [payload.invGlAccountAId, payload.invGlAccountBId], [payload.invSurchargeId],
+  // Task 9: BEFORE deleteInvoicingReference (the close payment type's own GL-account FK) and AFTER
+  // deleteReceivables (PaymentType is ON DELETE RESTRICT from Payment) — swapped from the
+  // pre-Task-9 order (see reapLeftovers' matching comment for why).
+  await deleteArReference(
+    [payload.arTermsId, payload.closeTermsId], [payload.arPaymentTypeId, payload.closePaymentTypeId],
   );
-  // After deleteReceivables (PaymentType is ON DELETE RESTRICT from Payment).
-  await deleteArReference([payload.arTermsId], [payload.arPaymentTypeId]);
+  // After deleteStepCodes (the invoicing/AR/close step codes' own GL-account FKs) and after
+  // deleteArReference immediately above (the close payment type's own GL-account FK) and after
+  // restoreBillingConfig far above (the four plant-default GL FKs).
+  await deleteInvoicingReference(
+    [
+      payload.invGlAccountAId, payload.invGlAccountBId, payload.arOpGlAccountId,
+      payload.closeRevenueGlAccountId, payload.closeArGlAccountId, payload.closeDiscountGlAccountId,
+      payload.closeWriteOffGlAccountId, payload.closeSalesTaxGlAccountId, payload.closeCashGlAccountId,
+    ],
+    [payload.invSurchargeId],
+  );
   // All four users, not just the restricted one: deleteUsersAndRoles clears each user's Session
   // (and, as of Task 17, OrderDraft/SavedView) rows first, which is the only thing that clears
   // the per-user rows the flows' own logins and the order-entry autosaves created.

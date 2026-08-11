@@ -43,12 +43,21 @@ const HEADED = Boolean(process.env.HEADED);
 // Task 20 (Phase 5A) adds the 16th flow, `invoice-shipped-order`, as admin — it creates its own
 // order/customer and leaves nothing later flows depend on, so it ran last (of 16) for the same
 // reason void-order and credit-hold-block-and-override do (nothing after it needs its state).
-// Task 17 (Phase 5B) adds the 17th and now-last flow, `receivables-apply-age-statement`, as
+// Task 17 (Phase 5B) adds the 17th flow, `receivables-apply-age-statement`, as
 // admin (needs `write_off`, which the admin fixture role holds via ALL_PERMISSIONS) — it seeds
 // its own shipped-and-invoiced order against its own fixture customer (the `invoice-shipped-
 // order.mjs` precedent) and then drives the new `/receivables` screens (batch, apply, aging,
-// statement print+archive) end to end. Runs last for the same "nothing after it needs its state"
-// reason as every other flow at the tail of this list.
+// statement print+archive) end to end.
+// Task 9 (Phase 5C) adds the 18th and now-last flow, `close-month-end`, as admin (needs
+// `close_ar_period`/`run_qbo_export`, both held via ALL_PERMISSIONS) — it sets the four Admin ->
+// Billing GL defaults, seeds its own shipped-and-invoiced order + a discounted/written-off payment
+// against its own fixture customer, closes the current month, exports the GL delta, then
+// reopens/corrects/re-closes/re-exports and confirms the reversing delta. Runs last for the same
+// "nothing after it needs its state" reason as every other flow at the tail of this list — and
+// deliberately AFTER `receivables-apply-age-statement`, whose own invoice stays FINALIZED (never
+// unlocked) for the rest of the run and so lands inside the SAME calendar month's close scope; the
+// close flow's own fixtures backfill that invoice's step code/payment type with GL accounts for
+// exactly this reason (`e2e/lib/db-fixtures.ts`'s `arOpGlAccountName`/`closePaymentType` comments).
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -67,6 +76,7 @@ const FLOWS = [
   { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
   { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
   { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
+  { name: "close-month-end", as: "admin", module: "./flows/close-month-end.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
@@ -84,9 +94,16 @@ const FLOWS = [
 // id-driven backstop alongside the payment-scoped sweep. Still not airtight: a crash hard enough
 // to skip this module's own `finally { await teardown(); }` (never SIGTERM, no live process) loses
 // this in-memory value the same way it loses everything else not yet written to the dev DB.
+// `created.closeBatchId`/`closePeriodYear`/`closePeriodMonth` (Task 9, Phase 5C): the
+// close-month-end flow's own id-driven cleanup backstops, the SAME reasoning as
+// `receivablesBatchId` above but kept as separate fields (never reusing `receivablesBatchId`) so
+// the two A/R flows' backstops can never clobber each other if both are live in one run.
 const state = {
   devServer: null, browser: null, fixtures: null,
-  created: { templateIds: [], orderId: null, orderNumber: null, receivablesBatchId: null },
+  created: {
+    templateIds: [], orderId: null, orderNumber: null, receivablesBatchId: null,
+    closeBatchId: null, closePeriodYear: null, closePeriodMonth: null,
+  },
   cleanupFailed: null,
 };
 let teardownPromise = null;
@@ -208,6 +225,9 @@ function teardown() {
             ...state.fixtures,
             templateIds: state.created.templateIds,
             receivablesBatchId: state.created.receivablesBatchId,
+            closeBatchId: state.created.closeBatchId,
+            closePeriodYear: state.created.closePeriodYear,
+            closePeriodMonth: state.created.closePeriodMonth,
           });
           console.log("  cleanup ok");
         } catch (err) {

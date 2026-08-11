@@ -118,15 +118,19 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
   // letting the main sweep above pass while silently checking nothing.
   it("finds every known reference FK when nothing is registered", () => {
     expect(unregisteredLinks(SCHEMA, new Set()).sort()).toEqual([
+      "billingConfig.arGlAccountId -> glAccount",        // sorts before certChargeStepCodeId
       "billingConfig.certChargeStepCodeId -> processStepCode",
+      "billingConfig.discountGlAccountId -> glAccount",  // between certChargeStepCodeId and freightGlAccountId
       "billingConfig.freightGlAccountId -> glAccount",
       "billingConfig.otherChargeGlAccountId -> glAccount",
       "billingConfig.salesTaxGlAccountId -> glAccount",
+      "billingConfig.writeOffGlAccountId -> glAccount",  // after salesTaxGlAccountId
       "certRequirement.inspectionCodeId -> inspectionCode",
       "certRequirement.scaleId -> inspectionScale",
       "customer.termsId -> terms",
       // `surcharge` is a BlockerTarget (Task 6, kinds.add above) — this FK is now visible too.
       "customerSurcharge.surchargeId -> surcharge",
+      "glPosting.glAccountId -> glAccount",              // after customerSurcharge.*, before invoiceLine.*
       "inspectionCode.defaultScaleId -> inspectionScale",
       // onDelete: SetNull, not Cascade — the exemption in schemaLinks covers cascades only, so
       // these three stay visible to the sweep, which is what forces them into REFERENCE_LINKS.

@@ -34,6 +34,8 @@ model User {
   orderDraft        OrderDraft?
   savedViews        SavedView[]
   finalizedInvoices Invoice[]
+  closedPeriods     ClosePeriod[]
+  glExports         GlExportBatch[]
 }
 
 model Session {
@@ -119,6 +121,10 @@ model GlAccount {
   billingSalesTax    BillingConfig[]   @relation("BillingSalesTaxGl")
   billingFreight     BillingConfig[]   @relation("BillingFreightGl")
   billingOtherCharge BillingConfig[]   @relation("BillingOtherChargeGl")
+  billingAr          BillingConfig[]   @relation("BillingArGl")
+  billingDiscount    BillingConfig[]   @relation("BillingDiscountGl")
+  billingWriteOff    BillingConfig[]   @relation("BillingWriteOffGl")
+  glPostings         GlPosting[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -1325,6 +1331,12 @@ model BillingConfig {
   // Phase 5B (§4.3, §7): the plant default monthly finance-charge rate — a monthly percent
   // (1.5 = 1.5%/month), the discountPercent convention. Customer.financeChargeRate overrides it.
   financeChargeRate      Decimal?         @db.Decimal(6, 4)
+  arGlAccountId          String?
+  arGlAccount            GlAccount?       @relation("BillingArGl", fields: [arGlAccountId], references: [id])
+  discountGlAccountId    String?
+  discountGlAccount      GlAccount?       @relation("BillingDiscountGl", fields: [discountGlAccountId], references: [id])
+  writeOffGlAccountId    String?
+  writeOffGlAccount      GlAccount?       @relation("BillingWriteOffGl", fields: [writeOffGlAccountId], references: [id])
   updatedAt              DateTime         @updatedAt
 }
 
@@ -1416,4 +1428,76 @@ model Application {
   @@index([invoiceId])
   @@index([paymentId])
   @@index([creditInvoiceId])
+}
+
+// ─── Phase 5C: month-end close + GL export (design spec) ──────────────────────────────────────
+
+model ClosePeriod {
+  id            String          @id @default(cuid())
+  year          Int
+  month         Int // 1-12
+  status        String          @default("CLOSED") // CLOSED | REOPENED (gl-constants.ts)
+  // Frozen continuity schedule (§4.1). Beginning = prior close's ending; first = 0.
+  beginningAr   Decimal         @db.Decimal(12, 2)
+  invoicedTotal Decimal         @db.Decimal(12, 2)
+  creditTotal   Decimal         @db.Decimal(12, 2)
+  paymentTotal  Decimal         @db.Decimal(12, 2)
+  discountTotal Decimal         @db.Decimal(12, 2)
+  writeOffTotal Decimal         @db.Decimal(12, 2)
+  endingAr      Decimal         @db.Decimal(12, 2)
+  agingEndingAr Decimal         @db.Decimal(12, 2) // aging net at period end, for the §6 variance
+  closedAt      DateTime        @default(now())
+  closedById    String?
+  closedBy      User?           @relation(fields: [closedById], references: [id])
+  reopenedAt    DateTime?
+  reopenReason  String          @default("")
+  notes         String          @default("")
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  exportBatches GlExportBatch[]
+
+  @@unique([year, month]) // plain unique — not soft-deletable, so no partial index
+}
+
+model GlExportBatch {
+  id                  String      @id @default(cuid())
+  exportNumber        Int         @unique // gl_export_batch_number_next; allocation-only, never reissued
+  closePeriodId       String
+  closePeriod         ClosePeriod @relation(fields: [closePeriodId], references: [id])
+  periodEnd           DateTime    @db.Date // the JE date stamped on every line in this batch (§ ruling 7)
+  emittedAt           DateTime    @default(now())
+  emittedById         String?
+  emittedBy           User?       @relation(fields: [emittedById], references: [id])
+  fileName            String
+  fileContentType     String      @default("text/csv")
+  file                Bytes
+  registerContentType String      @default("application/pdf")
+  register            Bytes
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  postings            GlPosting[]
+
+  @@index([closePeriodId])
+}
+
+model GlPosting {
+  id            String        @id @default(cuid())
+  batchId       String
+  batch         GlExportBatch @relation(fields: [batchId], references: [id])
+  sourceType    String // INVOICE | CREDIT | PAYMENT | DISCOUNT | WRITE_OFF (gl-constants.ts)
+  sourceId      String
+  glDate        DateTime      @db.Date // the event's GL date (§4.3)
+  glAccountId   String?
+  glAccount     GlAccount?    @relation(fields: [glAccountId], references: [id], onDelete: SetNull)
+  glAccountName String        @default("") // frozen account-number text
+  debit         Decimal       @default(0) @db.Decimal(12, 2)
+  credit        Decimal       @default(0) @db.Decimal(12, 2)
+  side          String // SALES | CASH
+  memo          String        @default("") // the line's memo (preserved so reversals reproduce it)
+  isReversal    Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+
+  @@index([sourceType, sourceId])
+  @@index([batchId])
+  @@index([glDate])
 }

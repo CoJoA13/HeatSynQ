@@ -160,6 +160,9 @@ live row goes untouched.`).toEqual([]);
       "Shipper.shipperNumber", "Shipper.bolNumber", "Shipper.clientRequestId",
       "Invoice.creditNumber", "Invoice.clientRequestId",
       "ReceiptBatch.batchNumber",
+      // Allocation-only from gl_export_batch_number_next, never reissued (a discarded/reversed export
+      // must never free a number a batch already carries) — the creditNumber/batchNumber precedent.
+      "GlExportBatch.exportNumber",
     ]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same

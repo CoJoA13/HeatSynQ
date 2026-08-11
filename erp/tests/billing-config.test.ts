@@ -32,6 +32,7 @@ describe("getBillingConfig / setBillingConfig", () => {
       salesTaxRate: null, salesTaxGlAccountId: null, freightGlAccountId: null,
       otherChargeGlAccountId: null, certChargeStepCodeId: null,
       certChargeDefault: null, billForCertDefault: false, financeChargeRate: null,
+      arGlAccountId: null, discountGlAccountId: null, writeOffGlAccountId: null,
     });
   });
 
@@ -134,6 +135,38 @@ describe("getBillingConfig / setBillingConfig", () => {
 
   it("rejects a negative finance-charge rate", async () => {
     await expect(asSystem(() => setBillingConfig({ financeChargeRate: "-1" }))).rejects.toThrow();
+  });
+
+  it("round-trips the three 5C GL defaults and blocks deleting an account in use", async () => {
+    const gl = await prisma.glAccount.create({ data: { name: "1200", description: "A/R" } });
+    const saved = await asSystem(() => setBillingConfig({ arGlAccountId: gl.id }));
+    expect(saved.arGlAccountId).toBe(gl.id);
+    await expect(asSystem(() => deleteReference("glAccount", gl.id))).rejects.toThrow();
+    const blockers = await findBlockers("glAccount", gl.id);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].entityLabel).toBe("Billing settings");
+    expect(blockers[0].href).toBe("/admin/billing");
+  });
+
+  it("refuses a discount/write-off GL account that does not exist", async () => {
+    await expect(asSystem(() => setBillingConfig({ discountGlAccountId: "nope" })))
+      .rejects.toThrow("That gl account does not exist");
+  });
+
+  // Proves GL_POSTING_BLOCKER at runtime (its include/displayName/liveWhere:{} can't be checked by
+  // the static sweep). Build the rows directly — no export service exists yet in this task.
+  it("a GL account on a sent GlPosting blocks its deletion, named by the export batch", async () => {
+    const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Revenue" } });
+    const period = await prisma.closePeriod.create({ data: { year: 2026, month: 7, beginningAr: 0,
+      invoicedTotal: 0, creditTotal: 0, paymentTotal: 0, discountTotal: 0, writeOffTotal: 0, endingAr: 0, agingEndingAr: 0 } });
+    const batch = await prisma.glExportBatch.create({ data: { exportNumber: 1000, closePeriodId: period.id,
+      periodEnd: new Date("2026-07-31"), fileName: "x.csv", file: new Uint8Array([1]), register: new Uint8Array([2]) } });
+    await prisma.glPosting.create({ data: { batchId: batch.id, sourceType: "INVOICE", sourceId: "i1",
+      glDate: new Date("2026-07-15"), glAccountId: gl.id, glAccountName: "4010", debit: 100, credit: 0, side: "SALES" } });
+    const blockers = await findBlockers("glAccount", gl.id);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0].entityLabel).toBe("GL export");
+    expect(blockers[0].name).toBe("GL export #1000");
   });
 });
 

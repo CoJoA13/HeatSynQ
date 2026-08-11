@@ -68,3 +68,35 @@ export async function withDbErrors<T>(opts: DbErrorOpts, fn: () => Promise<T>): 
     translatePrisma(err, opts);
   }
 }
+
+/**
+ * The two RAW Prisma failures a *fresh* transaction can absorb by simply re-running: a serialization
+ * failure (P2034, or the raw-query 40001 Prisma wraps as P2010) and a unique-constraint violation
+ * (P2002). Both are the shapes a losing Serializable writer takes when a concurrent transaction
+ * committed the row its own snapshot could not see — a re-run gets a snapshot that DOES see it and
+ * takes the other branch. Detected on the raw error, so `retryOnSerializationConflict` must sit
+ * INSIDE `withDbErrors` (which would otherwise have already turned these into an `HttpError`).
+ */
+function isRetryableConflict(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  return err.code === "P2034" || err.code === "P2002" || isRawSerializationFailure(err);
+}
+
+/**
+ * Re-run `run` when it fails with a retryable serialization/unique conflict (above), up to `tries`
+ * attempts, then let the last failure escape (to `withDbErrors`, which translates it). Wrap the RAW
+ * `prisma.$transaction` — each `run()` must open its own transaction so the retry gets a new snapshot.
+ * The month-end close (close-periods.ts) uses it: two concurrent Serializable closes serialize on the
+ * month advisory lock, and the loser unblocks with a snapshot fixed BEFORE the winner committed (the
+ * blocking `lockMonth` SELECT takes the snapshot before the lock is granted), so its `findFirst`
+ * misses the just-committed row and its insert collides — the retry re-runs, sees the row, and updates.
+ */
+export async function retryOnSerializationConflict<T>(run: () => Promise<T>, tries = 5): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      if (attempt >= tries || !isRetryableConflict(err)) throw err;
+    }
+  }
+}

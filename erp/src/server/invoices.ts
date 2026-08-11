@@ -8,6 +8,7 @@ import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
 import { hasReceivableActivity } from "./invoice-guards";
+import { assertPeriodOpen } from "./period-locks";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
 import { listSurcharges, type SurchargeRow } from "./surcharges";
@@ -21,7 +22,7 @@ import {
   type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
   type PricingResult, type ComputedLine,
 } from "./pricing";
-import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "../lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly, dateOnly, addDays } from "../lib/business-days";
 import {
   INVOICE_LINE_KINDS, PRICE_SOURCES,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -1152,6 +1153,19 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
       : `${offending.partNumber} — ${offending.description}`;
     throw new HttpError(400, `Line ${offending.position} · ${label} needs a price — price every line before finalizing`);
   }
+  // §4.1 / ruling 8: an invoice is RECOGNIZED in the month it is FINALIZED (`finalizedAt` ≈ now),
+  // not its document `invoiceDate`. So the period lock guards the FINALIZE date (today) — a
+  // July-dated invoice finalized today in August lands in August and must be allowed even if July is
+  // closed; conversely it is refused when TODAY's month is closed. The clock is sampled EXACTLY ONCE
+  // (`now`, below) and reused for both the guard's date-only month (`dateOnly(now)`) and the
+  // `finalizedAt: now` stamp on the write — two independent `new Date()` reads could straddle a UTC
+  // month boundary (the guard seeing month M open while the stamp lands in M+1), which would
+  // reintroduce the closed-month leak this guard exists to close. Read UNDER the invoice-row claim
+  // `claimInvoiceRow` holds and BEFORE the status write, so the period read and that write commit
+  // against one consistent state; the advisory lock inside serializes this against a concurrent
+  // close of the finalize month (period-locks.ts).
+  const now = new Date();
+  await assertPeriodOpen(tx, dateOnly(now));
 
   // Finalize FREEZES the current lines (§5.3): it re-prices nothing, so the number cannot move at the
   // moment of locking. It stamps the finalizer from the actor context (null for a system caller).
@@ -1168,7 +1182,7 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
     () => tx.invoice.update({
       where: { id },
       data: {
-        status: "FINALIZED", finalizedAt: new Date(), finalizedById: actor.id,
+        status: "FINALIZED", finalizedAt: now, finalizedById: actor.id,
         ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
       },
     }), { tx });
@@ -1222,6 +1236,13 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
     throw new HttpError(400,
       `Invoice #${order.orderNumber} has payments applied — void them before unlocking`);
   }
+  // §4.1 / ruling 8: unlocking reverses the SALES-journal paper that finalize posted, removing the
+  // invoice from its FINALIZE month's figures — so the lock must guard `finalizedAt`, NOT
+  // `invoiceDate`. Guarding on `invoiceDate` would let unlocking a July-dated / August-finalized
+  // invoice silently change August's frozen close while only checking July was open (the Task-5
+  // closed-month leak class). A FINALIZED invoice always carries `finalizedAt` (stamped at finalize),
+  // so it is non-null here. Under the claim, before the status write (period-locks.ts).
+  await assertPeriodOpen(tx, invoice.finalizedAt!);
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
@@ -1300,6 +1321,14 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
     // the audit `after` snapshot, so the two can never disagree even across a UTC-midnight boundary
     // mid-transaction.
     const creditDate = todayDateOnly();
+    // §4.1 / ruling 8: this creates a DRAFT credit — it posts nothing and touches no A/R until it is
+    // FINALIZED through the same `finalizeInvoiceInTx` path, whose own period lock (guarding the
+    // finalize date) is the real recognition guard. This create-time guard on `creditDate` (= today)
+    // is the consistent current-month guard finalize also uses: it simply refuses raising a credit
+    // dated into a CLOSED current month (reopen it first). Under the order claim `claimInvoiceRow`
+    // holds, before the audited create; the advisory lock serializes it against a concurrent close of
+    // `creditDate`'s month (period-locks.ts).
+    await assertPeriodOpen(tx, creditDate);
 
     // Copy every source line, money sign flipped, everything else (part identity, gl, qty, weight,
     // pricing snapshots) carried as billed. Source lines arrive position-asc (DETAIL_INCLUDE); the
