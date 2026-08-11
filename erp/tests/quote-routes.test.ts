@@ -12,6 +12,7 @@ import { POST as closeRoute } from "@/app/api/quotes/[id]/close/route";
 import { POST as reopenRoute } from "@/app/api/quotes/[id]/reopen/route";
 import { POST as attachRoute } from "@/app/api/quotes/[id]/attach-part/route";
 import { GET as blockersExportRoute } from "@/app/api/quotes/[id]/blockers/export/route";
+import { GET as eligibleRoute } from "@/app/api/quotes/eligible/route";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -328,5 +329,83 @@ describe("the two Excel exports", () => {
     const row = (sheet.getRow(2).values as unknown[]).slice(1);
     expect(row[0]).toBe("Order");
     expect(row[1]).toBe(`#7103 · ${f.customer.code}`);
+  });
+});
+
+describe("GET /api/quotes/eligible — the entry UI's link-resolution preview (Task 5)", () => {
+  beforeEach(truncateAll);
+
+  /** Two OPEN quotes over the same part, different effective dates — 1001 is the ruling-7
+   *  winner as of 2026-08-15. Built through the service (the file's fixture rule). */
+  async function twoQuotes(f: Awaited<ReturnType<typeof fixture>>) {
+    const older = await asSystem(() => createQuote({
+      customerId: f.customer.id, quotedById: f.quoter.id,
+      quoteDate: "2026-07-01", effectiveDate: "2026-07-01", expiryDate: "2026-12-31",
+      lines: [{ partId: f.part.id, prices: [] }],
+    }));
+    const winner = await asSystem(() => createQuote({
+      customerId: f.customer.id, quotedById: f.quoter.id,
+      quoteDate: "2026-08-01", effectiveDate: "2026-08-01", expiryDate: "2026-12-31",
+      lines: [{ partId: f.part.id, prices: [] }],
+    }));
+    return { older, winner };
+  }
+
+  it("gates on ORDERS view, not quotes — it serves order entry (the §5.15 reasoning)", async () => {
+    const f = await fixture();
+    const url = `http://t/api/quotes/eligible?customerId=${f.customer.id}&partId=${f.part.id}`;
+    expect((await eligibleRoute(getReq(url), noParams)).status).toBe(401);
+
+    // quotes.view alone is NOT enough — the inversion of every other route in this file.
+    const quotesOnly = await signInWith(["quotes.view"], "q-elig-wrong");
+    expect((await eligibleRoute(getReq(url, quotesOnly), noParams)).status).toBe(403);
+
+    const entry = await signInWith(["orders.view"], "q-elig-entry");
+    expect((await eligibleRoute(getReq(url, entry), noParams)).status).toBe(200);
+  });
+
+  it("returns the ruling-7 ordering plus which candidate auto-resolves", async () => {
+    const f = await fixture();
+    const { older, winner } = await twoQuotes(f);
+    const viewer = await signInWith(["orders.view"], "q-elig-viewer");
+
+    const res = await eligibleRoute(getReq(
+      `http://t/api/quotes/eligible?customerId=${f.customer.id}&partId=${f.part.id}&receivedDate=2026-08-15`,
+      viewer), noParams);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.candidates).toEqual([
+      {
+        quoteLineId: winner.lines[0].id, quoteId: winner.id, quoteNumber: winner.quoteNumber,
+        effectiveDate: "2026-08-01", expiryDate: "2026-12-31",
+      },
+      {
+        quoteLineId: older.lines[0].id, quoteId: older.id, quoteNumber: older.quoteNumber,
+        effectiveDate: "2026-07-01", expiryDate: "2026-12-31",
+      },
+    ]);
+    expect(body.autoLink).toEqual(body.candidates[0]);
+  });
+
+  it("an out-of-window received date previews no candidates and a null auto-link", async () => {
+    const f = await fixture();
+    await twoQuotes(f);
+    const viewer = await signInWith(["orders.view"], "q-elig-none");
+    const res = await eligibleRoute(getReq(
+      `http://t/api/quotes/eligible?customerId=${f.customer.id}&partId=${f.part.id}&receivedDate=2026-06-15`,
+      viewer), noParams);
+    expect(await res.json()).toEqual({ candidates: [], autoLink: null });
+  });
+
+  it("400s a missing customerId or partId (blank = absent) and a malformed receivedDate", async () => {
+    const f = await fixture();
+    const viewer = await signInWith(["orders.view"], "q-elig-400");
+    expect((await eligibleRoute(getReq(
+      `http://t/api/quotes/eligible?customerId=&partId=${f.part.id}`, viewer), noParams)).status).toBe(400);
+    expect((await eligibleRoute(getReq(
+      `http://t/api/quotes/eligible?customerId=${f.customer.id}`, viewer), noParams)).status).toBe(400);
+    expect((await eligibleRoute(getReq(
+      `http://t/api/quotes/eligible?customerId=${f.customer.id}&partId=${f.part.id}&receivedDate=nope`,
+      viewer), noParams)).status).toBe(400);
   });
 });
