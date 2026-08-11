@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-09 — **Phase 5B (Accounts Receivable) is MERGED to `main` as `b55da3b` (PR #74, 2026-08-09).** Its full narrative is in `docs/history/2026-08-08-phase-5b-accounts-receivable.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 5C (month-end close + QuickBooks Online summary export) kickoff — the next work.** Final 5B gates: **1879 tests**, `tsc`/`eslint`/`build` clean, E2E **17/17**. Two Codex PR reviews (17 + 7 findings) — **11 fixed on-branch, the rest deferred to issues #68–#87** (#81 aggregate-discount-cap and #84 delete-customer-with-live-payment are the P1s worth doing early). Earlier: Phase 5A merged `359c707` (PR #58, findings → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **29 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#87 plus the older triaged issues (§6).
+**Updated:** 2026-08-10 — **Phase 5C (Month-End Close & QuickBooks Online Summary Export) is MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the next-track decision — Phase 5 is done, so the owner chooses what's next (Phase 6 Quoting per the roadmap, parallel-run/acceptance-month prep, or A/R backlog burn-down).** Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -62,65 +62,24 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**Phase 5C (month-end close + the QuickBooks Online summary export) is IN FLIGHT on branch
-`phase-5c-close-qbo-export` — all nine tasks implemented and task-reviewed, the whole-branch review
-done, and its fix wave landed; pending a PR.** Spec: `docs/superpowers/specs/2026-08-09-phase-5c-close-qbo-export-design.md`
-(9 owner rulings, §3 — rulings 8 & 9 added by the whole-branch review). Plan: `docs/superpowers/plans/2026-08-09-phase-5c-close-qbo-export.md`.
-Execution ledger (every task's brief, implementer report, and reviewer verdict, plus the `progress.md`
-that records what each review found or refuted): `docs/execution/2026-08-09-phase-5c-close-qbo-export/`.
+**Nothing is in flight. Phase 5 (Invoicing & A/R + QBO) is COMPLETE** with the Phase 5C merge
+(`c069b09`, PR #92, 2026-08-10) — see the one-paragraph entry below and
+`docs/history/2026-08-10-phase-5c-close-qbo-export.md` for the full record (the nine tasks, the
+per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review rounds, and the
+lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
+Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**The nine tasks, in build order:** the schema (`ClosePeriod`/`GlExportBatch`/`GlPosting`, the six
-`BillingConfig → GlAccount` GL-default FKs, the `gl_export_batch_number_next` counter, audit/sweep
-registration — one migration, `20260809130000_phase_5c_close_and_gl_export`); the `BillingConfig` GL
-defaults' service, delete-blocker registration, and Admin → Billing UI; `gl-mapping.ts` (the pure
-journal-line + readiness engine); `period-locks.ts` (the leaf `assertPeriodOpen`/`lockMonth`) wired
-into every 5A/5B posting mutation; `close-periods.ts` (the close/reopen lifecycle, the continuity
-schedule, the roll-forward-vs-aging reconciliation) + its routes; `gl-export.ts` (the per-event
-delta engine, the CSV, the batch write) + the export/readiness routes; the posting-register PDF;
-the `/receivables/close` UI; and this task — the E2E flow, the demo doc, and the doc updates.
+**The next track is an owner decision — see §9.** It lays out the roadmap default (Phase 6, Quoting)
+against the milestone alternatives the completion of Phase 5 opens: begin parallel-run/acceptance-month
+prep; burn down the A/R backlog (#68–#93); or clear the owner-owed GL-account list + bookkeeper QBO
+homework that gate a *real* export. Do not assume the next phase — the owner has chosen the track at
+each Phase-5 boundary.
 
-**Four data-integrity/concurrency defects the task reviews caught and fixed, all closed before this
-state was recorded:** (1) `gl-mapping.ts`'s `readinessGaps` didn't flag a missing sales-tax GL
-account, so a taxable invoice could export an unbalanced journal (fixed: `ReadinessInput` gained
-`salesTaxGlAccountId`/`hasTax`); (2) `postBatch` (receipts.ts) guarded a multi-month batch with an
-UNSORTED per-payment advisory-lock loop — an ABBA deadlock (fixed: dedup to distinct months, sorted
-ascending, one lock per month, the `claimOrdersInOrder` rule for advisory mutexes); (3) `closePeriod`/
-`reopenPeriod` were implemented at Read Committed to pass a "two concurrent closes" sample test —
-that strips the SSI backstop from the Serializable posting side, so a Serializable `finalizeInvoice`
-racing a Read-Committed close could leak a FINALIZED invoice into a just-closed month (fixed: both
-kept Serializable, the two-close conflict absorbed by a new `retryOnSerializationConflict`); (4)
-`gl-export.ts`'s `resolveReadiness` only flagged null-GL lines carrying a step code or surcharge —
-FREIGHT/CHARGE/CERT lines could drop from the credit side while A/R still debited the full total, an
-unbalanced batch — and the delta's scope was cumulative (`≤ periodEnd`) rather than strictly
-per-period, so exporting a later month first could vacuum and later double-post an earlier month's
-events (fixed: readiness covers every account-bearing non-TAX line kind, `exportClose` asserts
-Σdebit = Σcredit before persisting as a backstop, and the delta bounds to `[monthStart, monthEnd]`).
-CLAUDE.md's "The period lock" and "The GL-export delta" house rules record the standing invariants
-these fixes established.
-
-**The whole-branch review (two opus lenses) then landed two owner rulings + four fixes** (report:
-`docs/execution/2026-08-09-phase-5c-close-qbo-export/whole-branch-fix-report.md`). Two IMPORTANT
-cross-task findings the per-task reviews structurally couldn't see: (A) the close roll-forward scoped
-invoices by `invoiceDate` but the reconciling aging includes them by `finalizedAt`, so a July-dated /
-August-finalized invoice (the ordinary month-end pattern) made BOTH months fail to reconcile —
-**owner ruling 8: an invoice is recognized in its FINALIZE month (`finalizedAt`), consistently across
-the close roll-forward, the GL-export scoping, and the period lock** (finalize guards ≈today,
-unlock/void guard the invoice's own `finalizedAt`); the scope is the half-open `[monthStart,
-nextMonthStart)` because `finalizedAt` is a timestamp. (B) the export file/register emitted one row
-per event-line, not the spec's summary journal — **owner ruling 9: the file and register aggregate to
-one line per `(account, side)`** (`aggregateLines`), while the per-event `GlPosting` rows stay the
-un-aggregated detail. Plus two clear fixes: `computeSchedule` read the aging inside the outer
-Serializable transaction (a second pooled connection held while acquiring another → P2024 pool
-starvation under concurrent close-screen load) — **the aging is now read OUTSIDE the transaction**;
-and `exportClose` now stamps `GlExportBatch.emittedById` (mirroring `closePeriod`'s `closedById`).
-**Deferred to issues** (self-protecting / cosmetic, none data-integrity): the non-latest-reopen
-continuity-chain stale figures, the freight/charge frozen-null readiness-vs-500 edge, and ~10 cosmetic
-Minors. Gates after the fix wave: **1941 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18** foreground;
-both concurrency directions RED-re-verified under the new basis.
-
-Open A/R follow-up work (Phase 5B, carried unchanged): issues **#68–#87** (§6) — **#81** (aggregate
-discount cap) and **#84** (delete-customer-with-live-payment) are the P1s worth doing early. The
-older backlog (#51–#52, #59–#65, the per-worker-test-DB infra task, §6) remains open too.
+Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
+**#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
+5C's posted-payment-reversal consequence (a posted payment can't be reversed by a re-export; a
+spec-silent accounting decision). The older backlog (#51–#52, #59–#65, the per-worker-test-DB infra
+task, §6) remains open too.
 
 ### Merged, in build order
 
@@ -192,6 +151,21 @@ Vitest 3** (brought current 2026-08-02 across five PRs; the two majors still blo
   live-payment are the P1s). Full record — the 17 tasks, the whole-branch review, the Codex rounds,
   the owner rulings, and the lessons (incl. the review blind spot on spec-deliverable reachability):
   `docs/history/2026-08-08-phase-5b-accounts-receivable.md`.
+- **Phase 5C — Month-End Close & QuickBooks Online Summary Export.** Squash-merged `c069b09` (PR #92,
+  2026-08-10). Completes roadmap Phase 5. The guided, soft-reopenable month-end close (a frozen
+  continuity schedule reconciled against 5B's aging) and the QBO **summary** journal export (a
+  downloadable CSV + stored posting-register PDF, no live Intuit API): an append-only `GlPosting`
+  ledger driving a strictly-per-period per-event **delta**, readiness that refuses any account-less
+  non-TAX line, and a `period-locks.ts` leaf (per-`(year,month)` advisory lock, **all-Serializable**
+  so SSI backstops the posting-vs-close phantom) wired into every 5A/5B posting mutation. Owner
+  ruling 8 — **an invoice is recognized in its `finalizedAt` month** across the roll-forward, export
+  scoping, and period lock; ruling 9 — **the export file is a summary by `(account, side)`**, detail
+  kept in the ledger. Reviews caught four data-integrity/concurrency defects on-branch plus the
+  cross-task reconciliation date-basis defect (the headline blocker) at whole-branch; two Codex PR
+  rounds followed (3 fixed — the re-export-delta reversal of a changed reopened event, a `year>=2000`
+  bound, a `closedAt` refresh; the rest routed to issues **#88–#93** / owner question **#68**). Final
+  gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. Full record:
+  `docs/history/2026-08-10-phase-5c-close-qbo-export.md`.
 
 ## 5. Conventions Phase 2+ must follow (learned and enforced in Phase 1)
 
@@ -248,6 +222,23 @@ finance-charge-exempt setter, standalone bad-debt write-off), the point-in-time 
 and **the two P1s: #81 (the discount cap is per-line, not aggregate — repeated lines can waive a
 whole invoice) and #84 (`deleteCustomer` doesn't block a customer with live payments — strands the
 cash)**. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-receivable/progress.md`.
+
+**Phase 5C (close + QBO export) follow-ups — GitHub issues #88–#93 (2026-08-10), all deferred, none
+blocking the 5C merge.** #88 the continuity chain goes stale when a NON-latest month is reopened
+(self-protecting — the forward close refuses on a nonzero variance and the export is event-based; the
+re-chaining policy is spec-silent, owner's call). #89 a freight/charge line finalized before its GL
+default reads clean in readiness but 500s the export (self-protecting via the Σdebit=Σcredit backstop;
+the fix is an invoice-attributed readiness gap, but there is no invoice detail page to anchor its
+fix-link). #90 the cosmetic follow-ups bundle. #91 whether the summary export should be netted (tied
+to the bookkeeper's QBO import method, with ruling 7's correction-JE dating). #93 the GL-export
+create-audit records batch metadata only, not the emitted journal (the postings ARE persisted
+immutably on the batch, so it is completeness, not data loss). Plus the Codex re-raise of **#68**
+(carried from 5B, now with the GL-export consequence): once a receipt batch is POSTED there is no path
+to correct or reverse its cash — `refusePosted` fires before the period check, there is no un-post, and
+no negative/compensating payment — so a posted payment can never reach a reversing QBO delta.
+Pre-existing and self-protecting; the fix relaxes the documented "POSTED locks the payment list"
+invariant, so it stays the owner's (a)/(b)/(c)/(d) decision. Full triage:
+`docs/execution/2026-08-09-phase-5c-close-qbo-export/progress.md`.
 
 **Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
 per-worker test databases, to lift the suite's serial-execution ceiling.** The suite is at 1425
@@ -484,52 +475,35 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 5C (month-end close + the QuickBooks Online summary export). This is the live kickoff — paste
-the prompt below into a fresh session to begin.** Phase 5B merged 2026-08-09 (`b55da3b`, PR #74); §4
-carries its one-paragraph state and `docs/history/2026-08-08-phase-5b-accounts-receivable.md` its
-full narrative. 5C has no spec or plan yet — brainstorm → spec → plan is its first step.
+**Phase 5 (Invoicing & A/R + QBO) is COMPLETE** — Phase 5C merged 2026-08-10 (`c069b09`, PR #92); §4
+carries its one-paragraph state and `docs/history/2026-08-10-phase-5c-close-qbo-export.md` its full
+narrative. **There is no pre-decided next phase.** Completing Phase 5 is a milestone — parallel-run
+begins after Phase 5 — so the next track is the owner's to choose, as it has been at each Phase-5
+boundary. Bring the options to the owner before brainstorming; do not assume.
 
-> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5B landed and §6 for the carried
-> backlog (the A/R follow-up issues **#68–#87**, of which **#81** (aggregate discount cap) and
-> **#84** (delete-customer-with-live-payment) are the P1s; plus #51–#52, #59–#65, and the
-> per-worker-test-DB infra task). **Phase 5B (Accounts Receivable) is MERGED** (`b55da3b`, PR #74) —
-> the receipts/application/aging/statement ledger with every balance derived live from `Application`
-> rows (never cached on `Invoice`), the `/receivables` UI, the `receivables` permission area, and the
-> `hasReceivableActivity` cross-phase guard. Next is **Phase 5C (month-end close + the QuickBooks
-> Online summary export)** per the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`) and
-> ruling 1's three-way split of the original Phase 5 (5A/5B/5C). Brainstorm it
-> (superpowers:brainstorming) against the roadmap, the original spec's §3 non-goals + §15 decision
-> log, and **the 5B spec §17 (what 5C inherits)**, then write the spec and plan and execute with
-> subagent-driven-development on a `phase-5c-…` branch.
+> Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5 landed and §6 for the carried
+> backlog. **All of Phase 5 is merged** (5A `359c707`/#58, 5B `b55da3b`/#74, 5C `c069b09`/#92):
+> pricing, invoicing/credits, receipts/applications/aging/statements, and the month-end close + QBO
+> summary export. Ask the owner which track to take next, then brainstorm it
+> (superpowers:brainstorming) against the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`),
+> the original spec's §3 non-goals + §15 decision log, and — for a new build phase — the prior phase's
+> spec for the hooks it left. The candidate tracks:
 >
-> **What Phase 5C inherits from Phase 5B** (5B design spec §17,
-> `docs/superpowers/specs/2026-08-08-phase-5b-accounts-receivable-design.md` — read it; each is a
-> real hook 5B built for 5C):
-> - **`Application` + `Payment.paymentTypeId → PaymentType.glAccountId` are the cash-side GL.** 5C's
->   journal maps applications (cash/discount/write-off) to accounts; 5B records the account-bearing
->   rows but posts nothing.
-> - **`BillingConfig` is where 5C's remaining GL defaults belong** (A/R account, discount,
->   adjustment, write-off, and the sales/credit accounts) — FK columns on the singleton, not
->   `Setting` strings.
-> - **The month-end close reads 5B's point-in-time aging** (`aging.ts`) — invoiced/paid/ending-A/R
->   as-of the close date, the close record saved. **But issue #78:** the aging is NOT fully
->   reproducible after a later void/unlock (it keys on current `finalizedAt`/`deletedAt`); if 5C's
->   close needs true historical reproducibility, resolve that design gap first.
-> - **`InvoiceLine.glAccountId` + `glAccountName` are the GL summary** (5A) — the export groups
->   finalized invoice lines by account and never re-walks orders. `ProcessStepCode.needsGlAccount` is
->   surfaced; **5C is where the export refuses** rather than posting without an account (spec §15).
-> - **Finance charges are excluded from the GL/QBO export** — 5B kept them informational-only, so 5C
->   inherits nothing to post (Visual Shop excludes FC; spec §14 open item 2).
-> - **Write-off flavor (small vs bad-debt)** is a GL distinction 5C resolves via the account it maps a
->   `WRITE_OFF` to; 5B carries the reason, not the account choice.
-> - **Owner homework that now gates 5C** (§7): the QBO finance-charge treatment (settle with the
->   bookkeeper), and **the GL account list for operations, surcharges and payment types must be keyed
->   before 5C's demo**, or the export runs through step codes/payment types with no accounts behind
->   them. `credit_number_next`/`invoice_number_next`/`cert_number_next`/`receipt_batch_number_next`
->   allocation is settled; do not re-wire.
->
-> _(The detailed "what 5B inherited from 5A" hook list that lived here has served its purpose — 5B
-> consumed those hooks; see the 5A history file if you need it.)_
+> - **Phase 6 — Quoting** (the roadmap's next linear phase): quotes, a follow-up worklist, and
+>   quote→order auto-link with pricing tier 1 live. Builds on 5A's pricing engine (`pricing.ts`, price
+>   rows keyed by Process Step Code) and Phase 3's order entry. No spec or plan yet — brainstorm →
+>   spec → plan is the first step.
+> - **Parallel-run / acceptance-month prep** (spec §13 — "one full closed month agreeing with the
+>   books"). Phase 5 unlocked "bill a real month in parallel." The heaviest gate here is **owner
+>   homework, not code**: the real GL-account list (operations, surcharges, payment types) and the
+>   bookkeeper's QBO import method — which also settles **#91** (summary netting) and ruling 7
+>   (correction-JE dating). Phase 8 formalizes the comparison scoreboard, but a first real closed month
+>   can be attempted now once the accounts are keyed.
+> - **A/R backlog burn-down** (§6, issues #59–#93): the P1s are **#81** (aggregate discount cap) and
+>   **#84** (delete-customer-with-live-payment); the standing owner questions are **#68** (posted-
+>   payment correction lifecycle — 5C added the GL-export consequence: a posted payment can't be
+>   reversed by a re-export), **#88** (non-latest-reopen continuity chain), and **#89** (freight/charge
+>   readiness-vs-500).
 >
 > - Two standing owner rules apply to every phase: run the Playwright E2E suite whenever a change
 >   touches any UI/flow, and update the appropriate docs as part of the work — never deferred to a
