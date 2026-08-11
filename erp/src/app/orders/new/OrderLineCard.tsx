@@ -5,6 +5,7 @@ import { useLatest } from "@/lib/use-latest";
 import { expandSerialRange } from "@/lib/serial-range";
 import type { Gate } from "@/lib/permission-ui";
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { QuoteLinkPicker } from "./QuoteLinkPicker";
 import type { LineDraft, PartOption, SerialDraft } from "./page";
 
 // Mirrors src/server/part-process-steps.ts's RevisionSummary/RevisionDetail (narrowed to what
@@ -53,7 +54,8 @@ export function findDuplicateSerials(serials: SerialDraft[]): Set<string> {
  * parent's array" — there is no separate "this is the lead" flag to keep in sync.
  */
 export function OrderLineCard({
-  index, isLead, line, parts, customerChosen, partsGate, processesGate, onChange, onRemove, onLeadValidity,
+  index, isLead, line, parts, customerChosen, partsGate, processesGate,
+  customerId, receivedDate, ordersViewAllowed, quotePickGate, onChange, onRemove, onLeadValidity,
 }: {
   index: number;
   isLead: boolean;
@@ -62,6 +64,13 @@ export function OrderLineCard({
   customerChosen: boolean;
   partsGate: Gate;
   processesGate: Gate;
+  /** For the quote-link preview (Task 9): the selected customer, the form's received-date
+   *  override (undefined while untouched — QuoteLinkPicker omits the param and the server
+   *  previews against its own today), and the two gates the picker needs (§5.16). */
+  customerId: string | null;
+  receivedDate: string | undefined;
+  ordersViewAllowed: boolean;
+  quotePickGate: Gate;
   onChange: (patch: Partial<LineDraft>) => void;
   onRemove?: () => void;
   /** Fires only while isLead, reporting THIS line's id alongside the verdict (`null` =
@@ -169,7 +178,11 @@ export function OrderLineCard({
       <div className="grid grid-cols-3 gap-3">
         <label className="col-span-2 block text-sm">
           Part
-          <Combobox value={line.partId} options={partOptions} onSelect={(partId) => onChange({ partId })}
+          {/* A part swap resets the quote pick to auto (spec §5.2's "swapping a line's part
+              clears and re-resolves its link") — an explicit pick made for the OLD part must
+              never ride onto the new one; the fresh part's preview re-resolves from scratch. */}
+          <Combobox value={line.partId} options={partOptions}
+                     onSelect={(partId) => onChange({ partId, quoteLineIdOverride: undefined })}
                      disabled={!customerChosen || !partsGate.allowed} title={partsTitle}
                      placeholder="Part number or name" ariaLabel={`Line ${index + 1} part`} />
         </label>
@@ -190,6 +203,16 @@ export function OrderLineCard({
           This part is not in the selected customer&apos;s catalog — pick a different part.
         </p>
       )}
+
+      {/* Spec §5.2 / Task 9: the resolution shown BEFORE save, with re-pick/unlink. Hidden while
+          the picked part is stale (`part` unresolved — the amber warning above already owns that
+          state, and a preview for a part of another customer would only mislead). */}
+      <QuoteLinkPicker customerId={customerId} partId={part ? line.partId : null}
+                       receivedDate={receivedDate}
+                       value={line.quoteLineIdOverride}
+                       onChange={(pick) => onChange({ quoteLineIdOverride: pick })}
+                       pickGate={quotePickGate} viewAllowed={ordersViewAllowed}
+                       ariaLabel={`Line ${index + 1} quote link`} />
 
       <div className="mt-3 flex items-end gap-3">
         <label className="block text-sm">
