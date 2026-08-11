@@ -311,7 +311,7 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   // the image bytes into a before/after snapshot in the first place. redact()'s "signatureimage"
   // pattern stays defense-in-depth, not the mechanism relied on to keep them out (CLAUDE.md).
   user: {
-    id: true, username: true, passwordHash: true, displayName: true, roleId: true,
+    id: true, username: true, passwordHash: true, displayName: true, title: true, roleId: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
     overrides: true,
   },

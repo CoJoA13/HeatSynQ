@@ -235,6 +235,21 @@ describe("buildCertDefinition", () => {
     expect(names.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("prints the signer's title beneath the name when one exists, and omits the line when blank (Phase 6 ruling 14)", () => {
+    // Blank title (the pre-Phase-6 state, and any user without one) — no title line, nothing
+    // fabricated (CertSigner's own contract; this closes Phase 4 ping #4 the other way too).
+    const blank = allText(buildCertDefinition(sampleCert())).join("\n");
+    expect(blank).not.toContain("Production Manager");
+
+    const titled = allText(buildCertDefinition(sampleCert({
+      signer: {
+        name: "Colton Jones", title: "Production Manager",
+        company: "American Heat Treating - Alabama, LLC", signatureDataUri: null,
+      },
+    }))).join("\n");
+    expect(titled).toContain("Production Manager");
+  });
+
   it("blank packing list for a cert without a shipment, without dropping the field label", () => {
     const text = allText(buildCertDefinition(sampleCert({ packingListNo: null, orderLabel: "72036" }))).join("\n");
     expect(text).toContain("Order No.: 72036");
@@ -281,6 +296,17 @@ describe("printCert", () => {
     expect(text).not.toContain("SECRET-INTERNAL-STRING");
     expect(text).toContain("PUBLIC-FREEFORM");
     expect(JSON.stringify(data)).not.toContain("SECRET-INTERNAL-STRING");
+  });
+
+  it("prints the signer's User.title on the signature block (Phase 6 ruling 14 — Phase 4 ping #4)", async () => {
+    const { cert, user } = await certWithReadings();
+    await prisma.user.update({ where: { id: user.id }, data: { title: "Quality Manager" } });
+    await asSystem(() => printCert(cert.id, user.id));   // the real print renders with the title
+    const settings = await certPrintSettings();
+    const signer = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { data } = await readCertPdfData(prisma, cert.id, settings, signer, "2026-08-11");
+    expect(data.signer.title).toBe("Quality Manager");
+    expect(allText(buildCertDefinition(data)).join("\n")).toContain("Quality Manager");
   });
 
   it("falls back to the display name when the signer has no signature on file", async () => {

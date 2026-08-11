@@ -461,12 +461,14 @@ export async function certPrintSettings(): Promise<CertPrintSettings> {
   return { company: { name, address, phone }, statement };
 }
 
-/** The three signer columns `printCert` reads off the User row under its own transaction —
+/** The signer columns `printCert` reads off the User row under its own transaction —
  *  deliberately NOT users.ts's `getSignature` (that reads on the top-level client; borrowing a
  *  second pooled connection mid-transaction is the pool-starvation shape fix-wave R4 finding 8
- *  exists to prevent). */
+ *  exists to prevent). `title` is Phase 6's `User.title` (ruling 14, closing Phase 4 ping #4) —
+ *  the sample's "Production Manager" line, blank until an admin keys one. */
 export type CertSignerRow = {
-  displayName: string; signatureImage: Uint8Array | null; signatureMimeType: string | null;
+  displayName: string; title: string;
+  signatureImage: Uint8Array | null; signatureMimeType: string | null;
 };
 
 /** pdfkit embeds PNG and JPEG only. New uploads are constrained to exactly these (users.ts's
@@ -648,10 +650,10 @@ export async function readCertPdfData(
     freeform: detail.freeform,
     signer: {
       name: signer.displayName,
-      // The sample prints a title ("Production Manager") but no title field exists anywhere on
-      // this system's User record — "" omits the line rather than fabricating one (CertSigner's
-      // own comment, pdf/cert.ts).
-      title: "",
+      // The printing user's own `User.title` (Phase 6 ruling 14 — the field Phase 4 ping #4 was
+      // waiting on). Blank still omits the line rather than fabricating one (CertSigner's own
+      // comment, pdf/cert.ts).
+      title: signer.title,
       company: settings.company.name,
       signatureDataUri: signatureDataUri(signer),
     },
@@ -689,7 +691,7 @@ export async function printCert(
 
     const signer = await tx.user.findFirst({
       where: { id: signerUserId },
-      select: { displayName: true, signatureImage: true, signatureMimeType: true },
+      select: { displayName: true, title: true, signatureImage: true, signatureMimeType: true },
     });
     if (!signer) throw new HttpError(404, "User not found");
 
