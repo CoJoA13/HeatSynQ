@@ -42,6 +42,12 @@ export type PriceRowInput = {
   setupCharge: number | null; unitPrice: number | null; minimumCharge: number | null;
   pricePer: PricePerValue; breaks: PriceBreakInput[];
   glAccountId: string | null; glAccountName: string;
+  // Phase 6 tier-1 pass-throughs (quoting spec §4.2). The engine does not DECIDE the source — it
+  // emits what the row carries: the assembler stamps QUOTE + the quote number onto rows it built
+  // from a quote line, and every part-price caller omits both (defaults PART_PRICE / null, so no
+  // pre-Phase-6 caller changed). No math in this module reads either field.
+  priceSource?: PriceSourceValue;
+  sourceQuoteNumber?: number | null;
 };
 export type OrderLineInput = {
   orderLineId: string; position: number;
@@ -75,7 +81,8 @@ export type ComputedLine = {
   pricePer: PricePerValue | null;
   unitPrice: number | null; setupCharge: number | null; minimumCharge: number | null;
   breakThreshold: number | null; minimumApplied: boolean;
-  rate: number | null; priceSource: PriceSourceValue | null; needsPrice: boolean;
+  rate: number | null; priceSource: PriceSourceValue | null; sourceQuoteNumber: number | null;
+  needsPrice: boolean;
   amount: number;
 };
 export type PricingResult = {
@@ -182,7 +189,7 @@ function blank(kind: InvoiceLineKindValue): LineFields {
     qty: null, weight: null, eachWeight: null,
     pricePer: null, unitPrice: null, setupCharge: null, minimumCharge: null,
     breakThreshold: null, minimumApplied: false,
-    rate: null, priceSource: null, needsPrice: false,
+    rate: null, priceSource: null, sourceQuoteNumber: null, needsPrice: false,
   };
 }
 
@@ -247,7 +254,10 @@ export function priceOrder(input: PricingInput): PricingResult {
         pricePer: row.pricePer, unitPrice: price,
         setupCharge: row.setupCharge, minimumCharge: row.minimumCharge,
         breakThreshold: chosen?.threshold ?? null, minimumApplied: minimum > extended,
-        priceSource: "PART_PRICE",
+        // The Phase 6 pass-through (§4.2): what the row carries, not a hardcoded PART_PRICE — a
+        // quote-built row lands QUOTE + its quote number; a part-price row defaults as before.
+        priceSource: row.priceSource ?? "PART_PRICE",
+        sourceQuoteNumber: row.sourceQuoteNumber ?? null,
         needsPrice: price === null && row.minimumCharge === null,
       });
       operations.push({ processStepCodeId: row.processStepCodeId, cents: amount });
