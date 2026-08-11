@@ -72,7 +72,7 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
     } catch (e) { setError((e as Error).message); }
   }
 
-  // `draft` is a plain string map (every input writes a string). Two extra-field kinds need
+  // `draft` is a plain string map (every input writes a string). Three extra-field kinds need
   // massaging before that map is a valid request body:
   //   - "number" (Terms' netDays/discountDays, Task 4): a real `z.number().int()` server-side,
   //     not string-accepting like decimalField — so it needs converting to an actual JS number,
@@ -82,7 +82,11 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   //     string fails decimalField's digit-pattern regex with a cryptic 400 instead of being
   //     treated as "no value." A user who types a discount percent and then clears the box must
   //     get "no discount," not that regex error.
-  // Both kinds drop a blank input entirely rather than send `""`, so the field's own `.optional()`
+  //   - "boolean" (endingStatement.isDefault, Phase 6): the Add-row checkbox writes the strings
+  //     "true"/"" into draft; "true" becomes a real `true` here, unchecked drops the key so the
+  //     column default applies — a checkbox has no failed-parse case, so nothing is left behind
+  //     for the server to name.
+  // All three drop a blank input entirely rather than send `""`, so the field's own `.optional()`
   // applies (and, for netDays, so the column's `@default(30)` applies) instead of a 400. Plain
   // "text" fields (glAccount.description, commentSnippet/specification.text) are deliberately left
   // untouched here — `""` is a legitimate stored value for genuine free text, not "no value."
@@ -92,22 +96,26 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   function buildPayload(): Record<string, unknown> {
     const payload: Record<string, unknown> = { ...draft };
     for (const f of extras) {
-      if (f.kind !== "number" && f.kind !== "decimal") continue;
+      if (f.kind !== "number" && f.kind !== "decimal" && f.kind !== "boolean") continue;
       const raw = draft[f.key];
       if (raw === undefined || raw.trim() === "") { delete payload[f.key]; continue; }
       if (f.kind === "number") {
         const n = Number(raw);
         payload[f.key] = Number.isFinite(n) ? n : raw;
       }
+      if (f.kind === "boolean") payload[f.key] = raw === "true";
       // "decimal": decimalField accepts the raw string as-is once it isn't blank.
     }
     return payload;
   }
 
-  async function toggleActive(row: Row) {
+  // One PUT-a-flag helper for the Active column and every "boolean" extra column (Phase 6:
+  // endingStatement.isDefault — flipping it ON is how an existing row is promoted to the default;
+  // the service demotes the old one, and flipping it OFF leaves the kind defaultless).
+  async function toggleFlag(row: Row, key: string) {
     try {
       await api(`/api/admin/reference/${kind}/${row.id}`, {
-        method: "PUT", body: JSON.stringify({ active: !row.active }),
+        method: "PUT", body: JSON.stringify({ [key]: !row[key] }),
       });
       // Retiring a row via the Active toggle is the sanctioned alternative to deleting it (§4.2)
       // — it must not leave a blocker panel from an earlier failed delete attempt on screen.
@@ -176,12 +184,18 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
               <td className="p-2">{r.name}</td>
               {extras.map((f) => (
                 <td key={f.key} className="p-2">
-                  {String(r[f.kind === "ref" ? nameKey(f.key) : f.key] ?? "")}
+                  {f.kind === "boolean" ? (
+                    // Interactive like the Active checkbox one cell over — same PUT, same gate.
+                    <input type="checkbox" checked={Boolean(r[f.key])} disabled={canEdit.disabled}
+                           title={canEdit.title} onChange={() => toggleFlag(r, f.key)} />
+                  ) : (
+                    String(r[f.kind === "ref" ? nameKey(f.key) : f.key] ?? "")
+                  )}
                 </td>
               ))}
               <td className="p-2">
                 <input type="checkbox" checked={r.active} disabled={canEdit.disabled} title={canEdit.title}
-                       onChange={() => toggleActive(r)} />
+                       onChange={() => toggleFlag(r, "active")} />
               </td>
               <td className="p-2 text-right">
                 <button onClick={() => setOpenHistory(openHistory === r.id ? null : r.id)}
@@ -208,6 +222,14 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
                     <option value="">—</option>
                     {(refOptions[f.key] ?? []).map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}
                   </select>
+                ) : f.kind === "boolean" ? (
+                  <>
+                    {/* draft is a string map — the checkbox round-trips through "true"/"" and
+                        buildPayload() turns "true" into a real boolean (unchecked drops the key). */}
+                    <input type="checkbox" checked={draft[f.key] === "true"}
+                           onChange={(e) => setDraft({ ...draft, [f.key]: e.target.checked ? "true" : "" })} />
+                    {f.hint && <span className="mt-0.5 block text-xs text-slate-400">{f.hint}</span>}
+                  </>
                 ) : (
                   <>
                     <input value={draft[f.key] ?? ""}

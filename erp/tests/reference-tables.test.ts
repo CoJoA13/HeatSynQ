@@ -354,6 +354,32 @@ describe("ending statement: at-most-one-live-default normalization", () => {
     expect(await liveDefaults()).toEqual([]);
   });
 
+  // Excel writes a boolean cell as TRUE/FALSE, so that is what a copy-paste hands the importer —
+  // paste.ts coerces it (case-insensitively) to a real boolean before z.boolean() sees it, the
+  // numberColumns shape. Column order matches REFERENCE_EXTRA_FIELDS.endingStatement:
+  // name, text, isDefault.
+  it("paste coerces TRUE/FALSE cells for the default column and normalizes through the service", async () => {
+    const first = await pasteReference("endingStatement", "Standard\tValid 30 days.\tTRUE");
+    expect(first).toEqual({ created: 1, errors: [] });
+
+    const second = await pasteReference("endingStatement", "Rush\tValid 10 days.\ttrue\nPlain\tNo terms.\tFALSE");
+    expect(second).toEqual({ created: 2, errors: [] });
+
+    // Pasted rows go through createReference, so the last TRUE row won the default.
+    const rows = await listReference("endingStatement");
+    expect(rows.find((r) => r.name === "Rush")?.isDefault).toBe(true);
+    expect(rows.find((r) => r.name === "Standard")?.isDefault).toBe(false);
+    expect(rows.find((r) => r.name === "Plain")?.isDefault).toBe(false);
+    expect(await liveDefaults()).toHaveLength(1);
+  });
+
+  it("paste reports a non-boolean default cell per-row instead of guessing", async () => {
+    const result = await pasteReference("endingStatement", "Standard\tValid 30 days.\tmaybe");
+    expect(result.created).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/isDefault.*boolean/i);
+  });
+
   it("deleting the default leaves the kind defaultless", async () => {
     const a = await createReference("endingStatement", { name: "A", isDefault: true });
     await createReference("endingStatement", { name: "B" });

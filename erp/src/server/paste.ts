@@ -25,6 +25,11 @@ export async function pasteReference(kind: string, text: string): Promise<PasteR
   // string, so these need converting before createReference ever sees them, the same reason
   // ReferenceTable.tsx's Add row converts them.
   const numberColumns = new Set(extraFields.filter((f) => f.kind === "number").map((f) => f.key));
+  // "boolean"-kind columns (endingStatement.isDefault, Phase 6) are `z.boolean()` server-side and
+  // export as real boolean cells, which Excel renders — and a copy-paste therefore delivers — as
+  // TRUE/FALSE text. Coerced case-insensitively; anything else stays the original string so zod's
+  // own "expected boolean" names the bad cell per-row, the numberColumns philosophy.
+  const booleanColumns = new Set(extraFields.filter((f) => f.kind === "boolean").map((f) => f.key));
   const { records, error } = parseRecords(text);
 
   const errors: PasteResult["errors"] = [];
@@ -46,10 +51,16 @@ export async function pasteReference(kind: string, text: string): Promise<PasteR
         // rather than becoming NaN — matches ReferenceTable.tsx's buildPayload(), so a bad cell
         // reports the same "Expected number, received string" zod message per-row here that a
         // bad Add-row entry would get from the same server-side schema.
-        .map(([k, v]) => {
-          if (!numberColumns.has(k)) return [k, v];
-          const n = Number(v);
-          return [k, Number.isFinite(n) ? n : v];
+        .map(([k, v]): [string, unknown] => {
+          if (numberColumns.has(k)) {
+            const n = Number(v);
+            return [k, Number.isFinite(n) ? n : v];
+          }
+          if (booleanColumns.has(k)) {
+            const s = v.trim().toLowerCase();
+            return s === "true" ? [k, true] : s === "false" ? [k, false] : [k, v];
+          }
+          return [k, v];
         }),
     );
     try {

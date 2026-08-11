@@ -62,6 +62,23 @@ describe("excel export", () => {
     expect(sheet.getRow(2).values).toEqual([undefined, "4010", "Heat Treat Revenue", true]);
   });
 
+  // Phase 6: the first boolean extra column (endingStatement.isDefault) exports the raw boolean —
+  // a TRUE/FALSE cell, exactly how the Active column already exports — so a copied cell pastes
+  // back through the importer's boolean coercion (see reference-tables.test.ts's paste tests).
+  it("exports an ending statement's text and default flag as real cells", async () => {
+    const ctx = { params: Promise.resolve({ kind: "endingStatement" }) };
+    const cookie = await signInWith(["admin.view"]);
+    await createReference("endingStatement", { name: "Standard", text: "Valid 30 days.", isDefault: true });
+
+    const res = await exportRoute(
+      new Request("http://t/api/admin/reference/endingStatement/export", { headers: { cookie } }), ctx);
+    expect(res.status).toBe(200);
+    const wb = await loadWorkbook(res);
+    const sheet = wb.getWorksheet("Ending statements")!;
+    expect(sheet.getRow(1).values).toEqual([undefined, "Name", "Text", "Default", "Active"]);
+    expect(sheet.getRow(2).values).toEqual([undefined, "Standard", "Valid 30 days.", true, true]);
+  });
+
   it("mirrors the on-screen includeInactive filter: omitted excludes inactive rows, ?includeInactive=1 includes them", async () => {
     const ctx = { params: Promise.resolve({ kind: "glAccount" }) };
     const cookie = await signInWith(["admin.view"]);
