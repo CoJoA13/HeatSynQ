@@ -25,7 +25,7 @@ auto-links" was the spec's rule, not built code), tier-1's insertion point is th
 
 | Task | Status | Implementer | Review | Notes |
 |---|---|---|---|---|
-| 1. Schema, migrations, registrations | — | | | |
+| 1. Schema, migrations, registrations | ✅ implemented | subagent (task-01) | pending | Data layer + 2 hand-written migrations on both DBs + all registrations; gates green (126 files / 1952 tests). eachWeight mirrored at (10,4); endingStatement pulled forward as bare BlockerTarget — see task-01-report.md deviations |
 | 2. `endingStatement` reference kind | — | | | |
 | 3. Quote service: create/read/list/worklist | — | | | |
 | 4. Quote service: update/close/delete + routes | — | | | |
