@@ -5,21 +5,18 @@ import type { ReferenceKind } from "./reference-constants";
  *  the non-reference targets that share the same delete-guard machinery (Phase 2C-3 adds
  *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS;
  *  Task 6 adds `surcharge`, a maintained table with its own delete guard, exactly like a step
- *  code).
- *
- *  `endingStatement` (Phase 6 Task 1) is TEMPORARILY a bare target the same way: the model and
- *  the Quote.endingStatementId FK land with the schema, but the kind's full reference wiring
- *  (REFERENCE_KINDS + labels + EXTRA_SCHEMAS + picklist) is Task 2's — which should absorb this
- *  literal into `ReferenceKind` and drop it (plus its TARGET_LABELS row and the sweep's
- *  kinds.add) in the same stroke. */
-export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge" | "endingStatement";
+ *  code). `endingStatement` was TEMPORARILY a bare target here between Phase 6 Tasks 1 and 2;
+ *  it is now a genuine `ReferenceKind` (ruling 13), so the registry reaches it through that
+ *  union — enforcement is unchanged (same sweep, same delete guard, now plus the generic
+ *  reference kind's own guarded delete path). */
+export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge";
 
 /** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
  *  `REFERENCE_LABELS`. Kept separate rather than folded into `REFERENCE_LABELS` because that
  *  table is typed `Record<ReferenceKind, ...>` and widening it would let a reference kind be
  *  looked up here by mistake. */
-export const TARGET_LABELS: Record<"processStepCode" | "surcharge" | "endingStatement", string> =
-  { processStepCode: "process step code", surcharge: "surcharge", endingStatement: "ending statement" };
+export const TARGET_LABELS: Record<"processStepCode" | "surcharge", string> =
+  { processStepCode: "process step code", surcharge: "surcharge" };
 
 /** Models that hold a foreign key pointing at a reference table. */
 export type ReferenceLinkModel =

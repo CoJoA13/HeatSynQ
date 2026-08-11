@@ -37,6 +37,18 @@ describe("pick-list route", () => {
     expect(row).not.toHaveProperty("glAccountId");
   });
 
+  // Phase 6 (spec §5.15): quote entry reads ending statements with a session, like every other
+  // entry pick-list. The generic delegate branch serves it — id/name/active only, never `text`
+  // or `isDefault` (the quote service resolves the default row itself, server-side).
+  it("serves ending statements to any signed-in user", async () => {
+    await createReference("endingStatement", { name: "Standard", text: "Valid 30 days.", isDefault: true });
+    const cookie = await signInWith([]);
+    const res = await GET(new Request("http://x/api/picklists/endingStatement", { headers: { cookie } }),
+                          ctx("endingStatement"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ id: expect.any(String), name: "Standard", active: true }]);
+  });
+
   it("404s glAccount — it stays admin-only", async () => {
     const cookie = await signInWith([]);
     const res = await GET(new Request("http://x/api/picklists/glAccount", { headers: { cookie } }),

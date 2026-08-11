@@ -44,6 +44,13 @@ const EXTRA_SCHEMAS: Record<ReferenceKind, z.ZodObject<z.ZodRawShape>> = {
     discountPercent: decimalField(5, 2, { min: "nonnegative" }),
     discountDays: z.number().int().min(1).nullable().optional(),
   }),
+  // Phase 6 ruling 13: `text` is the statement body printed on the quote footer (the
+  // commentSnippet.text precedent, same 4000 cap); `isDefault` is service-normalized to at most
+  // one live default.
+  endingStatement: z.object({
+    text: z.string().max(4000).optional(),
+    isDefault: z.boolean().optional(),
+  }),
 };
 
 /**

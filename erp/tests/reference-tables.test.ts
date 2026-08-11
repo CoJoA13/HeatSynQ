@@ -10,8 +10,8 @@ describe("flat reference tables", () => {
 
   it("exposes every kind the owner needs to key", () => {
     expect([...REFERENCE_KINDS].sort()).toEqual([
-      "carrier", "commentSnippet", "containerType", "glAccount", "inspectionCode",
-      "inspectionScale", "material", "paymentType", "specification", "terms",
+      "carrier", "commentSnippet", "containerType", "endingStatement", "glAccount",
+      "inspectionCode", "inspectionScale", "material", "paymentType", "specification", "terms",
     ]);
   });
 
@@ -61,6 +61,23 @@ describe("flat reference tables", () => {
     expect((await listReference("specification"))[0].text).toMatch(/steel/i);
   });
 
+  // Phase 6 ruling 13: the eleventh kind. `text` is the statement body (the commentSnippet
+  // precedent), `isDefault` the at-most-one-live-default flag (its normalization has its own
+  // describe below).
+  it("ending statement carries a text body and a default flag", async () => {
+    const { id } = await createReference("endingStatement", {
+      name: "Standard", text: "This quotation is valid for 30 days.", isDefault: true,
+    });
+    const row = (await listReference("endingStatement")).find((r) => r.id === id);
+    expect(row?.text).toMatch(/valid for 30 days/);
+    expect(row?.isDefault).toBe(true);
+  });
+
+  it("ending statement rejects a text body over 4000 characters, like commentSnippet", async () => {
+    await expect(createReference("endingStatement", { name: "Too long", text: "x".repeat(4001) }))
+      .rejects.toThrow();
+  });
+
   // `setup` returns the non-default extra value to seed the first row with. The two FK fields
   // (inspectionCode.defaultScaleId, paymentType.glAccountId) can't be a static literal — a real
   // row has to exist first to reference — so every entry gets a callback, run inside the test
@@ -79,6 +96,7 @@ describe("flat reference tables", () => {
     },
     { kind: "commentSnippet", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
     { kind: "specification", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
+    { kind: "endingStatement", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
   ] as const;
 
   it.each(KINDS_WITH_EXTRAS)(
