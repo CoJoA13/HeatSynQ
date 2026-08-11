@@ -7,10 +7,24 @@ import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
 type User = {
-  id: string; username: string; displayName: string; roleId: string | null;
+  id: string; username: string; displayName: string; title: string; roleId: string | null;
   roleName: string | null; active: boolean;
   overrides: { permission: string; mode: "GRANT" | "DENY" }[];
 };
+
+/** The signature-title cell (Phase 6 ruling 14): prints on the quote and cert signature blocks;
+ *  blank prints nothing. Local draft, PATCHed on blur only when actually changed — the row's
+ *  other controls PATCH per interaction, and a keystroke-level PATCH would mint an audit entry
+ *  per character. Keyed remount (below) re-baselines it after every reload. */
+function TitleCell({ user, onSave }: { user: User; onSave: (title: string) => void }) {
+  const [draft, setDraft] = useState(user.title);
+  return (
+    <input value={draft} placeholder="— none —"
+           onChange={(e) => setDraft(e.target.value)}
+           onBlur={() => { if (draft !== user.title) onSave(draft); }}
+           className="w-36 rounded border px-1 py-0.5" />
+  );
+}
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -52,7 +66,8 @@ export default function UsersPage() {
       )}
       <table className="mb-6 w-full rounded border bg-white text-sm">
         <thead><tr className="border-b text-left">
-          <th className="p-2">Username</th><th className="p-2">Name</th><th className="p-2">Role</th>
+          <th className="p-2">Username</th><th className="p-2">Name</th>
+          <th className="p-2">Title</th><th className="p-2">Role</th>
           <th className="p-2">Active</th><th className="p-2">Signature</th><th className="p-2">Reset password</th>
         </tr></thead>
         <tbody>
@@ -60,6 +75,10 @@ export default function UsersPage() {
             <tr key={u.id} className="border-b">
               <td className="p-2">{u.username}</td>
               <td className="p-2">{u.displayName}</td>
+              <td className="p-2">
+                {/* key re-baselines the draft when a reload brings fresh server truth. */}
+                <TitleCell key={`${u.id}-${u.title}`} user={u} onSave={(title) => patch(u.id, { title })} />
+              </td>
               <td className="p-2">
                 <select value={u.roleId ?? ""} onChange={(e) => patch(u.id, { roleId: e.target.value || null })}
                         className="rounded border px-1 py-0.5">

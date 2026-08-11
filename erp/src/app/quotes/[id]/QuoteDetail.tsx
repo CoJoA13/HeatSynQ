@@ -57,21 +57,22 @@ function statusLocked(g: Gate, closed: boolean, deleted: boolean): Gate {
   return g;
 }
 
-/** The stored-documents list — mirrors InvoiceDocumentsList (InvoiceDetail.tsx). The route is
- *  Task 10's (it lands with the print button, the invoices Task 18→19 precedent: the section is
- *  wired first, the route follows at this exact path); until then a 404 renders as the empty
- *  state the brief asks for rather than an error. */
-function QuoteDocumentsList({ quoteId, viewGate }: { quoteId: string; viewGate: Gate }) {
+/** The stored-documents list — mirrors InvoiceDocumentsList (InvoiceDetail.tsx). Task 8 wired
+ *  this section one task ahead of the route (the invoices Task 18→19 precedent, 404 rendered as
+ *  the empty state); Task 10 landed `GET /api/quotes/[id]/documents` at exactly this path, so a
+ *  failure now surfaces as the error it is. */
+function QuoteDocumentsList({ quoteId, viewGate, refresh }: {
+  quoteId: string; viewGate: Gate;
+  /** Bumped by every successful print, so a just-archived document appears without a reload. */
+  refresh: number;
+}) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     if (!viewGate.allowed) return;
     api<StoredDoc[]>(`/api/quotes/${quoteId}/documents`).then(setDocs)
-      .catch((e) => {
-        if (e instanceof ApiError && e.status === 404) setDocs([]);
-        else setErr((e as Error).message);
-      });
-  }, [quoteId, viewGate.allowed]);
+      .catch((e) => setErr((e as Error).message));
+  }, [quoteId, viewGate.allowed, refresh]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -186,8 +187,13 @@ export function QuoteDetail({ id }: { id: string }) {
   const deleteGate: Gate = deleted
     ? { allowed: false, disabled: true, title: "Already deleted" }
     : gate(perms, "quotes.delete");
-  // Placeholder until Task 10 lands the print route — §5.16 style: disabled, saying why.
-  const printGate: Gate = { allowed: false, disabled: true, title: "Printing lands in Task 10" };
+  // Print (Task 10) — gated on the area's OWN .view permission, locked only by "deleted" (the
+  // InvoiceDetail printGate / traveler-print precedent: printing is a read of the document, and
+  // the one state that refuses a NEW print is a voided owner — the server's shared VOIDED_PRINT
+  // guard; a CLOSED or expired quote still prints the agreement it records).
+  const printGate: Gate = deleted
+    ? { allowed: false, disabled: true, title: "Quote is deleted — nothing to print" }
+    : gate(perms, "quotes.view");
 
   // Compound picker gates (the PricingSection two-gate precedent): the control needs quotes.edit
   // AND the permission its options ride on; the title names whichever is actually the blocker.
@@ -371,6 +377,39 @@ export function QuoteDetail({ id }: { id: string }) {
         }
       }
       setError(message);
+    }
+  }
+
+  // ---- Print (Task 10; the InvoiceDetail.tsx `printInvoice` precedent — POST, stream the blob
+  // into a new tab, bump the documents list so the just-archived print appears). Legal while the
+  // form is dirty: the print renders the SAVED quote, and the archived paper is the record of
+  // what the server holds — nothing here adopts or discards the draft. ----
+
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const [docsRefresh, setDocsRefresh] = useState(0);
+
+  async function printQuote() {
+    setPrinting(true);
+    setPrintError(null);
+    try {
+      const res = await fetch(`/api/quotes/${id}/print`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const opened = window.open(url, "_blank");
+      if (opened) opened.opener = null;
+      if (opened === null) {
+        setPrintError("The browser blocked the print window — the document was archived and is in Documents below.");
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setDocsRefresh((n) => n + 1);
+    } catch (e) {
+      setPrintError((e as Error).message);
+    } finally {
+      setPrinting(false);
     }
   }
 
@@ -894,9 +933,9 @@ export function QuoteDetail({ id }: { id: string }) {
           )}
         </h1>
         <div className="flex items-center gap-2">
-          <button disabled title={printGate.title}
+          <button onClick={() => void printQuote()} disabled={!printGate.allowed || printing} title={printGate.title}
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">
-            Print
+            {printing ? "Printing…" : "Print"}
           </button>
           {detail.status === "OPEN" ? (
             <button onClick={() => void closeQuote()} disabled={closeGate.disabled} title={closeGate.title}
@@ -919,6 +958,7 @@ export function QuoteDetail({ id }: { id: string }) {
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
       )}
+      {printError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{printError}</p>}
       {optionsError && (
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{optionsError}</p>
       )}
@@ -1096,7 +1136,7 @@ export function QuoteDetail({ id }: { id: string }) {
       {/* ---- Documents + History ---- */}
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Documents</h2>
-        <QuoteDocumentsList quoteId={id} viewGate={docsGate} />
+        <QuoteDocumentsList quoteId={id} viewGate={docsGate} refresh={docsRefresh} />
       </section>
 
       <div className="mb-6">
