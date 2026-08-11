@@ -8,6 +8,7 @@ import {
   createQuote, getQuote, listQuotes, quoteWorklist, exportQuotes,
   updateQuote, attachPart, closeQuote, reopenQuote, deleteQuote, quoteOrderBlockers,
 } from "@/server/quotes";
+import { deleteContact } from "@/server/customer-contacts";
 
 /**
  * Phase 6 Task 1 — SCHEMA smoke only: the quote service (create/list/worklist and its own TDD
@@ -735,6 +736,24 @@ describe("getQuote", () => {
     const detail = await getQuote(created.id);
     expect(detail.contactId).toBe(f.contact.id); // the stored FK survives
     expect(detail.contactName).toBe(""); // the render goes blank
+  });
+
+  // Task 7: the raw-update test above proves the READ survives; this pins the other half of
+  // spec §4.1's deliberate non-block through the REAL delete path — deleteContact carries no
+  // quote guard, so a referencing quote must never make it refuse. If someone ever "helpfully"
+  // adds contacts to the §5.14 blockers, this is the test that names the ruling they're breaking.
+  it("deleteContact itself is NOT blocked by a referencing quote (spec §4.1 — deliberate)", async () => {
+    const f = await serviceFixture();
+    const created = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.contact.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    await asSystem(() => deleteContact(f.customer.id, f.contact.id));
+    expect((await prisma.customerContact.findFirst({ where: { id: f.contact.id } }))!.deletedAt)
+      .not.toBeNull();
+    const detail = await getQuote(created.id);
+    expect(detail.contactId).toBe(f.contact.id); // the stored FK survives
+    expect(detail.contactName).toBe(""); // and the render goes blank, same as above
   });
 
   it("derives expired: OPEN past expiry is expired; expiring today is not; CLOSED past expiry is closed, not expired", async () => {
