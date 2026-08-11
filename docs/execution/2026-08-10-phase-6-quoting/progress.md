@@ -25,7 +25,7 @@ auto-links" was the spec's rule, not built code), tier-1's insertion point is th
 
 | Task | Status | Implementer | Review | Notes |
 |---|---|---|---|---|
-| 1. Schema, migrations, registrations | ✅ implemented | subagent (task-01) | pending | Data layer + 2 hand-written migrations on both DBs + all registrations; gates green (126 files / 1952 tests). eachWeight mirrored at (10,4); endingStatement pulled forward as bare BlockerTarget — see task-01-report.md deviations |
+| 1. Schema, migrations, registrations | ✅ DONE | subagent (task-01) | ✅ Approved, Spec ✅ (task-reviewer, round 1 — zero Critical/Important) | Data layer + 2 hand-written migrations on both DBs + all registrations; gates green (126 files / 1952 tests). Reviewer verified the restated CHECK arm-by-arm, the enum split, and that both sweeps were strengthened. Two spec-text deviations for owner ratification (surfaced in controller summary): eachWeight mirrored at Part's real (10,4) — spec corrected in place; QuoteLine.partId blocker deferred to Task 7 (registry is structurally reference-kind-only). endingStatement pulled forward as bare BlockerTarget — Task 2 absorbs. Minor: no-RED-narration note (schema-only task, sanctioned) |
 | 2. `endingStatement` reference kind | — | | | |
 | 3. Quote service: create/read/list/worklist | — | | | |
 | 4. Quote service: update/close/delete + routes | — | | | |
