@@ -28,6 +28,7 @@
  *    the credit's content differs from the sample's beyond its number and signs.
  */
 import type { Content, TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
+import { PRICE_SOURCE_LABELS } from "../../lib/invoice-constants";
 import { LAYOUT } from "./render";
 
 // ---------------------------------------------------------------------------------------------
@@ -46,10 +47,15 @@ export type InvoicePart = {
 };
 /** One priced operation: its name and billed amount, with the per-unit price and the minimum /
  *  setup shown beneath (spec §10's PRICE grid). A null `unitPrice`/`minimumCharge`/`setupCharge`
- *  prints no line for that detail rather than a fabricated "$0.00". */
+ *  prints no line for that detail rather than a fabricated "$0.00". `sourceQuoteNumber` is the
+ *  Phase 6 tier-1 source (quoting spec §5.3, off `InvoiceLine.sourceQuoteNumber`'s FROZEN
+ *  column): when set, "Quote #N" prints beneath the operation — §7.5's "every line names its
+ *  source". Absent/null (every part-priced or manual line) prints nothing, keeping those rows
+ *  byte-identical to the approved 5A sample. */
 export type InvoicePriceRow = {
   description: string; pricePerLabel: string;
   unitPrice: number | null; minimumCharge: number | null; setupCharge: number | null;
+  sourceQuoteNumber?: number | null;
   amount: number;
 };
 /** A named money line — one surcharge/charge, or the single cert/freight/tax row. */
@@ -260,6 +266,16 @@ function priceBlock(d: InvoicePdfData): Content[] {
       columnGap: 6,
       margin: [0, 3, 0, 0],
     });
+    // The tier-1 source line (quoting spec §5.3): a quote-priced operation names its agreement
+    // first — "Quote #1006", the frozen number the data carries — then the price details. The
+    // label root is PRICE_SOURCE_LABELS.QUOTE with the number appended (the invoice-constants
+    // mechanism); rows without a quote number print no source line at all (sample fidelity).
+    if (pr.sourceQuoteNumber !== null && pr.sourceQuoteNumber !== undefined) {
+      out.push({
+        text: `${PRICE_SOURCE_LABELS.QUOTE} #${pr.sourceQuoteNumber}`,
+        fontSize: 9, alignment: "center", margin: [0, 1, 0, 0],
+      });
+    }
     if (pr.unitPrice !== null) out.push(priceDetailLine(`Price per ${pr.pricePerLabel}:`, money(pr.unitPrice), pr.minimumCharge !== null));
     if (pr.minimumCharge !== null) out.push(priceDetailLine("Minimum Charge:", money(pr.minimumCharge), false));
     if (pr.setupCharge !== null) out.push(priceDetailLine("Setup Charge:", money(pr.setupCharge), false));
