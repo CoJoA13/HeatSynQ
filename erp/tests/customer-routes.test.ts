@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import ExcelJS from "exceljs";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { GET as list, POST as create } from "@/app/api/customers/route";
@@ -102,8 +103,9 @@ describe("customer routes", () => {
   // (parts-routes.test.ts) — same 401/403/200 shape, same xlsx content-type and disposition.
   // Task 15 extends this to the COMBINED part+order list: the route now unions
   // customerPartBlockers with the new customerOrderBlockers (customers.ts) so a refusal is never
-  // discoverable for only half of what's blocking it.
-  it("blockers and blockers/export: 401, 403, 200 with the combined part+order list, xlsx content-type", async () => {
+  // discoverable for only half of what's blocking it. Task 7 (Phase 6) makes it three-way: live
+  // quotes join the union, and the Excel export carries the quote rows too (§5.14's third leg).
+  it("blockers and blockers/export: 401, 403, 200 with the combined part+order+quote list, xlsx content-type", async () => {
     const { id } = await createCustomer({ code: "ACME", name: "Acme" });
     const { id: partId } = await createPart({ customerId: id, partNumber: "12345", eachWeight: 1 });
     const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austenitize" } });
@@ -112,6 +114,14 @@ describe("customer routes", () => {
       data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "x" },
     });
     const { order } = await createOrder({ customerId: id, lines: [{ partId, qty: 1, weight: "10.00" }] });
+    const quoteUser = await prisma.user.create({
+      data: { username: "quoter-cust-routes", passwordHash: "x", displayName: "Quoter" } });
+    const quote = await prisma.quote.create({ data: {
+      quoteNumber: 1000, customerId: id, quotedById: quoteUser.id,
+      quoteDate: new Date("2026-08-01"), effectiveDate: new Date("2026-08-01"),
+      expiryDate: new Date("2026-08-31"),
+      lines: { create: [{ position: 1, partNumberText: "FT-1" }] },
+    } });
 
     expect((await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`), withId(id))).status).toBe(401);
     expect((await blockersExportRoute(getReq(`http://t/api/customers/${id}/blockers/export`), withId(id))).status)
@@ -123,6 +133,7 @@ describe("customer routes", () => {
     expect(await blockers.json()).toEqual([
       { entityLabel: "Part", name: "ACME · 12345", id: partId, href: `/parts/${partId}` },
       { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
+      { entityLabel: "Quote", name: "Quote · #1000", id: quote.id, href: `/quotes/${quote.id}` },
     ]);
 
     const wrong = await signInWith(["admin.view"], "cust-blockers-wrong-1");
@@ -138,6 +149,18 @@ describe("customer routes", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(exportRes.headers.get("content-disposition")).toContain("attachment");
     expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
+
+    // The workbook carries all three categories (the reference-blockers export precedent for
+    // reading it back; see tests/excel.test.ts for the Buffer cast).
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await exportRes.arrayBuffer()) as unknown as ArrayBuffer);
+    const rows = [2, 3, 4].map((n) =>
+      (wb.getWorksheet(1)!.getRow(n).values as unknown[]).map(String));
+    expect(rows[0]).toContain("Part");
+    expect(rows[1]).toContain("Order");
+    expect(rows[2]).toContain("Quote");
+    expect(rows[2]).toContain("Quote · #1000");
+    expect(rows[2]).toContain(`/quotes/${quote.id}`);
   });
 
   // Task 15: the customer page's A/R section — `GET /api/customers/[id]/receivables`
