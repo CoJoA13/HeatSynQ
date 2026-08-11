@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
+import { runWithContext } from "@/server/context";
+import { setSetting } from "@/server/settings";
+import { addDays, formatDateOnly, todayDateOnly } from "@/lib/business-days";
+import { createQuote, getQuote } from "@/server/quotes";
 
 /**
  * Phase 6 Task 1 — SCHEMA smoke only: the quote service (create/list/worklist and its own TDD
@@ -198,5 +202,552 @@ describe("quoting schema (Task 1 smoke)", () => {
       INSERT INTO "StoredDocument" ("id", "customerId", "quoteId", "kind", "fileData")
       VALUES ('bad-3', ${customer.id}, ${quote.id}, 'STATEMENT', decode('70646673', 'hex'))`)
       .rejects.toMatchObject(checkViolation);
+  });
+});
+
+// ============================================================================================
+// Phase 6 Task 3 — the quote SERVICE: createQuote / getQuote / listQuotes / worklist / export.
+// ============================================================================================
+
+const asUser = <T>(user: { id: string; displayName: string }, fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: user.id, name: user.displayName }, user: null }, fn);
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
+
+const today = () => todayDateOnly();
+const iso = (d: Date) => formatDateOnly(d);
+const daysFromToday = (n: number) => iso(addDays(todayDateOnly(), n));
+
+/** Everything a quote can reference: a quoter, two customers, parts (one with material + name +
+ *  description), a contact, two step codes, and a default ending statement. */
+async function serviceFixture() {
+  const quoter = await prisma.user.create({
+    data: { username: "quoter", passwordHash: "x", displayName: "Quinn Quoter" },
+  });
+  const second = await prisma.user.create({
+    data: { username: "second", passwordHash: "x", displayName: "Sam Second" },
+  });
+  const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme Foundry" } });
+  const other = await prisma.customer.create({ data: { code: "BETA", name: "Beta Co" } });
+  const material = await prisma.material.create({ data: { name: "4140" } });
+  const part = await prisma.part.create({
+    data: {
+      customerId: customer.id, partNumber: "P-100", name: "Pinion", description: "A pinion gear",
+      eachWeight: "2.5000", materialId: material.id,
+    },
+  });
+  const part2 = await prisma.part.create({
+    data: { customerId: customer.id, partNumber: "P-200", eachWeight: "1.0000" },
+  });
+  const otherPart = await prisma.part.create({
+    data: { customerId: other.id, partNumber: "X-900", eachWeight: "1.0000" },
+  });
+  const contact = await prisma.customerContact.create({
+    data: { customerId: customer.id, name: "Pat Buyer" },
+  });
+  const otherContact = await prisma.customerContact.create({
+    data: { customerId: other.id, name: "Robin Rival" },
+  });
+  const harden = await prisma.processStepCode.create({ data: { code: "HT", name: "Harden" } });
+  const temper = await prisma.processStepCode.create({ data: { code: "TMP", name: "Temper" } });
+  const statement = await prisma.endingStatement.create({
+    data: { name: "Standard", text: "Thank you for the opportunity to quote.", isDefault: true },
+  });
+  return { quoter, second, customer, other, material, part, part2, otherPart, contact, otherContact,
+    harden, temper, statement };
+}
+
+/** One valid linked line for `part` with one priced operation — the minimal happy payload. */
+function linkedLine(partId: string, stepId: string) {
+  return {
+    partId,
+    prices: [{ processStepCodeId: stepId, setupCharge: "2.00", unitPrice: "0.1500",
+      minimumCharge: "100.00", pricePer: "EACH" }],
+  };
+}
+
+describe("createQuote: defaults and numbering", () => {
+  beforeEach(truncateAll);
+
+  it("fills every entry default: today's dates, the settings-driven expiry, the actor, the default ending statement", async () => {
+    const f = await serviceFixture();
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+
+    expect(detail.quoteNumber).toBe(1000); // the seeded counter default
+    expect(detail.status).toBe("OPEN");
+    expect(detail.expired).toBe(false);
+    expect(detail.quoteDate).toBe(iso(today()));
+    expect(detail.effectiveDate).toBe(detail.quoteDate);
+    expect(detail.expiryDate).toBe(daysFromToday(30)); // quote_valid_days default
+    expect(detail.followUpDate).toBeNull();
+    expect(detail.quotedById).toBe(f.quoter.id);
+    expect(detail.quotedByName).toBe("Quinn Quoter");
+    expect(detail.endingStatementId).toBe(f.statement.id); // the kind's live default row
+    expect(detail.endingStatementName).toBe("Standard");
+    expect(detail.contactId).toBeNull();
+    expect(detail.contactName).toBe("");
+    // The counter moved.
+    const setting = await prisma.setting.findUniqueOrThrow({ where: { key: "quote_number_next" } });
+    expect(setting.value).toBe(1001);
+  });
+
+  it("expiry follows quote_valid_days from the QUOTE date, and effective defaults to the quote date", async () => {
+    const f = await serviceFixture();
+    await asSystem(() => setSetting("quote_valid_days", 45));
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, quoteDate: "2026-08-01",
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(detail.quoteDate).toBe("2026-08-01");
+    expect(detail.effectiveDate).toBe("2026-08-01");
+    expect(detail.expiryDate).toBe("2026-09-15"); // 2026-08-01 + 45 calendar days
+  });
+
+  it("continues from the configured seed", async () => {
+    const f = await serviceFixture();
+    await asSystem(() => setSetting("quote_number_next", 5200));
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(detail.quoteNumber).toBe(5200);
+  });
+
+  it("explicit ending statement beats the default; explicit null means none even when a default exists; no default means none", async () => {
+    const f = await serviceFixture();
+    const alt = await prisma.endingStatement.create({ data: { name: "Alt", text: "Alt text." } });
+
+    const picked = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, endingStatementId: alt.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(picked.endingStatementId).toBe(alt.id);
+
+    const none = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, endingStatementId: null,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(none.endingStatementId).toBeNull();
+    expect(none.endingStatementName).toBe("");
+
+    await prisma.endingStatement.update({ where: { id: f.statement.id }, data: { isDefault: false } });
+    const defaultless = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(defaultless.endingStatementId).toBeNull();
+  });
+
+  it("quotedById is overridable; a deleted user or an actor-less create without one is refused", async () => {
+    const f = await serviceFixture();
+    const overridden = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, quotedById: f.second.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(overridden.quotedById).toBe(f.second.id);
+    expect(overridden.quotedByName).toBe("Sam Second");
+
+    await prisma.user.update({ where: { id: f.second.id }, data: { deletedAt: new Date() } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, quotedById: f.second.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("That quoted-by user does not exist");
+
+    await expect(asSystem(() => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("Quoted by is required");
+  });
+
+  it("consumes no quote number when the create fails — the whole transaction rolls back", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.otherPart.id, prices: [] }], // another customer's part — refused
+    }))).rejects.toMatchObject({ status: 400 });
+    expect(await prisma.quote.count()).toBe(0);
+
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(detail.quoteNumber).toBe(1000); // the failed attempt left no gap
+  });
+
+  // The allocation contract under real concurrency: allocateNumber's SELECT ... FOR UPDATE on the
+  // Setting row serializes the two creates. A loser may surface as a clean 409 (Serializable
+  // write-write on the counter row) — retried, never absorbed as a duplicate or a gap.
+  // RED-verified by replacing the allocateNumber call with a naive unguarded read-then-increment
+  // and dropping the transaction to Read Committed: both creates read 1000, one collides on the
+  // plain quoteNumber unique and surfaces as a 400 this helper refuses to absorb.
+  it("two concurrent creates get distinct, consecutive numbers and never share one", async () => {
+    const f = await serviceFixture();
+    const input = { customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)] };
+
+    const settled = await Promise.allSettled(
+      [input, input].map((i) => asUser(f.quoter, () => createQuote(i))));
+    const numbers: number[] = [];
+    for (const [i, result] of settled.entries()) {
+      if (result.status === "fulfilled") { numbers.push(result.value.quoteNumber); continue; }
+      expect(result.reason).toMatchObject({ status: 409 });
+      const retried = await asUser(f.quoter, () => createQuote([input, input][i]));
+      numbers.push(retried.quoteNumber);
+    }
+
+    expect(new Set(numbers).size).toBe(2);
+    expect([...numbers].sort((a, b) => a - b)).toEqual([1000, 1001]);
+    const stored = await prisma.quote.findMany({ select: { quoteNumber: true }, orderBy: { quoteNumber: "asc" } });
+    expect(stored.map((q) => q.quoteNumber)).toEqual([1000, 1001]);
+  });
+});
+
+describe("createQuote: validation", () => {
+  beforeEach(truncateAll);
+
+  it("refuses an effective date after the expiry date", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, effectiveDate: "2026-09-01", expiryDate: "2026-08-01",
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("The effective date must be on or before the expiry date");
+    // Equal dates are a one-day window, not an error.
+    const oneDay = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, effectiveDate: "2026-08-01", expiryDate: "2026-08-01",
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(oneDay.effectiveDate).toBe(oneDay.expiryDate);
+  });
+
+  it("refuses a malformed date, field-anchored", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, expiryDate: "not-a-date",
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("Expiry date");
+  });
+
+  it("line identity is partId XOR a non-empty trimmed free-text part number", async () => {
+    const f = await serviceFixture();
+    // Both.
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, partNumberText: "FT-1", prices: [] }],
+    }))).rejects.toThrow("Line 1: a line cannot carry both a part and a free-text part number");
+    // Neither.
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ prices: [] }],
+    }))).rejects.toThrow("Line 1: each line needs a part or a free-text part number");
+    // Whitespace-only free text is empty — still neither.
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partNumberText: "   ", prices: [] }],
+    }))).rejects.toThrow("Line 1: each line needs a part or a free-text part number");
+  });
+
+  it("a linked part must exist, be live, and belong to the quote's customer", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partId: "nope", prices: [] }],
+    }))).rejects.toThrow("Line 1: that part does not exist");
+
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partId: f.otherPart.id, prices: [] }],
+    }))).rejects.toThrow("Line 1 (BETA · X-900): that part belongs to another customer");
+
+    await prisma.part.update({ where: { id: f.part2.id }, data: { deletedAt: new Date() } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partId: f.part2.id, prices: [] }],
+    }))).rejects.toThrow("Line 1: that part does not exist");
+  });
+
+  // The rule the DB cannot enforce: the partial unique is per (quoteLineId, processStepCodeId) —
+  // two LINES for one part sail straight through it, so the service must catch the payload dup.
+  it("refuses two lines for the same part inside one payload (one live line per part per quote)", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [linkedLine(f.part.id, f.harden.id), { partId: f.part.id, prices: [] }],
+    }))).rejects.toThrow("Line 2 (ACME · P-100): that part is already quoted on this quote");
+    expect(await prisma.quote.count()).toBe(0);
+
+    // Two DIFFERENT parts, each priced for the same operation, are fine.
+    const ok = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [linkedLine(f.part.id, f.harden.id), linkedLine(f.part2.id, f.harden.id)],
+    }));
+    expect(ok.lines).toHaveLength(2);
+  });
+
+  it("price rows must key to live step codes, once per line", async () => {
+    const f = await serviceFixture();
+    await prisma.processStepCode.update({ where: { id: f.temper.id }, data: { deletedAt: new Date() } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, prices: [{ processStepCodeId: f.temper.id }] }],
+    }))).rejects.toThrow("That process step code does not exist");
+
+    // The service message beats the partial unique's P2002.
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, prices: [
+        { processStepCodeId: f.harden.id, unitPrice: "1.0000" },
+        { processStepCodeId: f.harden.id, unitPrice: "2.0000" },
+      ] }],
+    }))).rejects.toThrow("Line 1 (ACME · P-100): that operation is already priced on this line");
+  });
+
+  it("LOT rows refuse breaks — the part-prices rule and message", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, prices: [{
+        processStepCodeId: f.harden.id, pricePer: "LOT", unitPrice: "500.0000",
+        breaks: [{ threshold: "1000.00", price: "0.1200" }],
+      }] }],
+    }))).rejects.toThrow("A LOT-priced operation cannot carry price breaks");
+  });
+
+  it("mirrors the part-prices decimal scales exactly, field by field", async () => {
+    const f = await serviceFixture();
+    const withPrice = (price: object) => ({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, prices: [{ processStepCodeId: f.harden.id, ...price }] }],
+    });
+    // unitPrice is Decimal(12, 4): five fractional digits must not silently round.
+    await expect(asUser(f.quoter, () => createQuote(withPrice({ unitPrice: "0.12345" }))))
+      .rejects.toThrow(/4 digits after the decimal point/);
+    // setupCharge is Decimal(12, 2).
+    await expect(asUser(f.quoter, () => createQuote(withPrice({ setupCharge: "1.005" }))))
+      .rejects.toThrow(/2 digits after the decimal point/);
+    // A break threshold must be positive.
+    await expect(asUser(f.quoter, () => createQuote(withPrice({
+      unitPrice: "1.0000", breaks: [{ threshold: 0, price: "0.9500" }],
+    })))).rejects.toThrow("Must be greater than zero");
+    // Negative money is refused.
+    await expect(asUser(f.quoter, () => createQuote(withPrice({ unitPrice: "-1.0000" }))))
+      .rejects.toThrow("Must not be negative");
+    // eachWeight mirrors Part.eachWeight's Decimal(10, 4).
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partNumberText: "FT-1", eachWeight: "1.23456", prices: [] }],
+    }))).rejects.toThrow(/4 digits after the decimal point/);
+  });
+
+  it("refuses a duplicate break threshold within one price row", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, prices: [{
+        processStepCodeId: f.harden.id, unitPrice: "1.0000",
+        breaks: [{ threshold: "500.00", price: "0.9500" }, { threshold: "500.00", price: "0.9000" }],
+      }] }],
+    }))).rejects.toThrow("a price break with that threshold already exists");
+  });
+
+  it("the contact must be one of the customer's live contacts", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.otherContact.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("That contact does not exist for this customer");
+
+    await prisma.customerContact.update({ where: { id: f.contact.id }, data: { deletedAt: new Date() } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.contact.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("That contact does not exist for this customer");
+  });
+
+  it("a line cannot be quoted for a quantity AND unlimited", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{ partId: f.part.id, quotedQty: 500, quotedUnlimited: true, prices: [] }],
+    }))).rejects.toThrow("Line 1: a line cannot be both quoted for a quantity and unlimited");
+  });
+
+  it("rejects unknown keys — the shape is .strict() end to end", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, bogus: 1, lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ ...linkedLine(f.part.id, f.harden.id), bogus: 1 }],
+    }))).rejects.toThrow();
+    expect(await prisma.quote.count()).toBe(0);
+  });
+
+  it("the create audit entry carries the real content — names, dates, lines, prices, breaks", async () => {
+    const f = await serviceFixture();
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.contact.id, rfqNumber: "RFQ-42",
+      quoteDate: "2026-08-10",
+      lines: [{
+        partId: f.part.id, quotedQty: 500,
+        prices: [{ processStepCodeId: f.harden.id, setupCharge: "2.00", unitPrice: "0.1500",
+          minimumCharge: "100.00", pricePer: "EACH",
+          breaks: [{ threshold: "1000.00", price: "0.1200" }] }],
+      }],
+    }));
+
+    const entries = await prisma.auditLog.findMany({ where: { entity: "quote", entityId: detail.id } });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].action).toBe("create");
+    expect(entries[0].actorName).toBe("Quinn Quoter");
+    const after = entries[0].after as {
+      quoteNumber: number; customerCode: string; contactName: string; status: string;
+      quoteDate: string; effectiveDate: string; expiryDate: string; rfqNumber: string;
+      quotedByName: string; endingStatementName: string;
+      lines: { position: number; partNumber: string; quotedQty: number | null; prices: {
+        stepCode: string; setupCharge: number | null; unitPrice: number | null;
+        minimumCharge: number | null; pricePer: string;
+        breaks: { threshold: number; price: number }[];
+      }[] }[];
+    };
+    expect(after.quoteNumber).toBe(detail.quoteNumber);
+    expect(after.customerCode).toBe("ACME");
+    expect(after.contactName).toBe("Pat Buyer");
+    expect(after.status).toBe("OPEN");
+    expect(after.quoteDate).toBe("2026-08-10");
+    expect(after.effectiveDate).toBe("2026-08-10");
+    expect(after.rfqNumber).toBe("RFQ-42");
+    expect(after.quotedByName).toBe("Quinn Quoter");
+    expect(after.endingStatementName).toBe("Standard");
+    expect(after.lines).toHaveLength(1);
+    expect(after.lines[0].partNumber).toBe("P-100"); // a name, never a cuid
+    expect(after.lines[0].quotedQty).toBe(500);
+    expect(after.lines[0].prices[0]).toMatchObject({
+      stepCode: "HT", setupCharge: 2, unitPrice: 0.15, minimumCharge: 100, pricePer: "EACH",
+    });
+    expect(after.lines[0].prices[0].breaks).toEqual([{ threshold: 1000, price: 0.12 }]);
+  });
+});
+
+describe("getQuote", () => {
+  beforeEach(truncateAll);
+
+  it("linked lines read the part live; free-text lines read their own fields; prices and breaks come back ordered", async () => {
+    const f = await serviceFixture();
+    const created = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.contact.id,
+      lines: [
+        {
+          partId: f.part.id, quotedQty: 500,
+          prices: [
+            { processStepCodeId: f.temper.id, unitPrice: "0.0500" },
+            { processStepCodeId: f.harden.id, setupCharge: "2.00", unitPrice: "0.1500",
+              minimumCharge: "100.00", notes: "per sample",
+              breaks: [{ threshold: "5000.00", price: "0.1000" }, { threshold: "1000.00", price: "0.1200" }] },
+          ],
+        },
+        { partNumberText: "FT-1", partNameText: "Widget", partDescriptionText: "Free-text widget",
+          materialText: "1045", eachWeight: "1.2500", quotedUnlimited: true, prices: [] },
+      ],
+    }));
+
+    const detail = await getQuote(created.id);
+    expect(detail.customerCode).toBe("ACME");
+    expect(detail.contactName).toBe("Pat Buyer");
+    expect(detail.quotedByName).toBe("Quinn Quoter");
+    expect(detail.endingStatementText).toBe("Thank you for the opportunity to quote.");
+
+    const linked = detail.lines[0];
+    expect(linked.position).toBe(1);
+    expect(linked.partId).toBe(f.part.id);
+    expect(linked.partNumber).toBe("P-100");
+    expect(linked.partName).toBe("Pinion");
+    expect(linked.partDescription).toBe("A pinion gear");
+    expect(linked.material).toBe("4140"); // the part's material reference, live
+    expect(linked.eachWeight).toBe(2.5); // the PART's weight, not the line's own column
+    expect(linked.quotedQty).toBe(500);
+    // Payload order is print order (position), not entry-id order.
+    expect(linked.prices.map((p) => p.stepCode)).toEqual(["TMP", "HT"]);
+    expect(linked.prices[1]).toMatchObject({
+      stepCode: "HT", stepName: "Harden", setupCharge: 2, unitPrice: 0.15, minimumCharge: 100,
+      pricePer: "EACH", notes: "per sample",
+    });
+    expect(linked.prices[1].breaks.map((b) => b.threshold)).toEqual([1000, 5000]); // threshold asc
+
+    const freeText = detail.lines[1];
+    expect(freeText.partId).toBeNull();
+    expect(freeText.partNumber).toBe("FT-1");
+    expect(freeText.partName).toBe("Widget");
+    expect(freeText.partDescription).toBe("Free-text widget");
+    expect(freeText.material).toBe("1045");
+    expect(freeText.eachWeight).toBe(1.25);
+    expect(freeText.quotedUnlimited).toBe(true);
+  });
+
+  it("reflects a later part rename — the linked line is a live join, never a snapshot", async () => {
+    const f = await serviceFixture();
+    const created = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    await prisma.part.update({ where: { id: f.part.id }, data: { partNumber: "P-100-REV-B" } });
+    const detail = await getQuote(created.id);
+    expect(detail.lines[0].partNumber).toBe("P-100-REV-B");
+  });
+
+  it("renders a deleted contact blank — deletion is not blocked, the stored PDFs keep the printed name", async () => {
+    const f = await serviceFixture();
+    const created = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, contactId: f.contact.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    await prisma.customerContact.update({ where: { id: f.contact.id }, data: { deletedAt: new Date() } });
+    const detail = await getQuote(created.id);
+    expect(detail.contactId).toBe(f.contact.id); // the stored FK survives
+    expect(detail.contactName).toBe(""); // the render goes blank
+  });
+
+  it("derives expired: OPEN past expiry is expired; expiring today is not; CLOSED past expiry is closed, not expired", async () => {
+    const f = await serviceFixture();
+    const make = (expiryDate: string) => asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, effectiveDate: daysFromToday(-60), expiryDate,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    const past = await make(daysFromToday(-1));
+    const todayQuote = await make(daysFromToday(0));
+    const closed = await make(daysFromToday(-1));
+    await prisma.quote.update({ where: { id: closed.id }, data: { status: "CLOSED" } });
+
+    expect((await getQuote(past.id)).expired).toBe(true);
+    expect((await getQuote(todayQuote.id)).expired).toBe(false); // expiryDate < today, strictly
+    expect((await getQuote(closed.id)).expired).toBe(false);
+  });
+
+  it("summarizes linked orders per line — distinct live orders, voided ones excluded", async () => {
+    const f = await serviceFixture();
+    const created = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [linkedLine(f.part.id, f.harden.id), linkedLine(f.part2.id, f.harden.id)],
+    }));
+    const [lineA, lineB] = created.lines;
+
+    // Fabricated links (Task 5 owns the real auto-link): two live orders on line A — one of them
+    // linking through TWO of its own lines, which must still count as ONE order — plus a voided one.
+    const mkOrder = async (orderNumber: number, quoteLineIds: string[], voided = false) =>
+      prisma.order.create({
+        data: {
+          orderNumber, customerId: f.customer.id,
+          receivedDate: today(), requestDate: today(),
+          deletedAt: voided ? new Date() : null,
+          lines: { create: quoteLineIds.map((qlId, i) => ({
+            position: i + 1, partId: f.part.id, qty: 5, weight: "10.00", quoteLineId: qlId,
+          })) },
+        },
+      });
+    await mkOrder(7001, [lineA.id, lineA.id]);
+    await mkOrder(7002, [lineA.id]);
+    await mkOrder(7003, [lineA.id], true); // voided — not shown
+
+    const detail = await getQuote(created.id);
+    const a = detail.lines.find((l) => l.id === lineA.id)!;
+    const b = detail.lines.find((l) => l.id === lineB.id)!;
+    expect(a.linkedOrderCount).toBe(2);
+    expect(a.linkedOrders.map((o) => o.orderNumber)).toEqual([7001, 7002]);
+    expect(b.linkedOrderCount).toBe(0);
+    expect(b.linkedOrders).toEqual([]);
+  });
+
+  it("404s an unknown id", async () => {
+    await expect(getQuote("nope")).rejects.toMatchObject({ status: 404 });
   });
 });
