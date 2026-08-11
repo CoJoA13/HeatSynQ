@@ -46,6 +46,11 @@ import { InvoicesSection } from "./InvoicesSection";
 export type OrderLine = {
   id: string; position: number; partId: string; revisionNumber: number | null;
   qty: number; weight: number;
+  /** The stored quote link (Phase 6 Task 5's detail exposure — spec §5.2 Display). Judged at
+   *  link time (ruling 6): what's shown is the STORED link, never a re-derivation, and a
+   *  received-date edit re-fetches nothing here — only the re-pick control, when the user
+   *  opens it, reads eligibility against the CURRENT received date. */
+  quoteLineId: string | null; quoteId: string | null; quoteNumber: number | null;
   // serializationRequired (fix-wave R3 finding 6) rides on the line's own part payload so
   // SerialsSection's warning is governed by orders.view, not a separate parts.view fetch.
   part: {
@@ -552,6 +557,8 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
 
       <LinesSection
         orderId={id} lines={order.lines} customerParts={parts} editGate={editGate} partsGate={partsGate}
+        customerId={order.customerId} receivedDate={order.receivedDate}
+        ordersViewAllowed={gate(perms, "orders.view").allowed}
         applyMutation={applyMutation} onError={setError}
       />
 
