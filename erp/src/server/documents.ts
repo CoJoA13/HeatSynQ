@@ -29,7 +29,7 @@ import { can, type Area, type PermUser } from "./permissions";
  */
 export const AREA_FOR_KIND: Record<DocumentKind, Area> = {
   TRAVELER: "orders", SHIPPER: "shipping", BOL: "shipping", CERT: "certs",
-  INVOICE: "invoicing", CREDIT: "invoicing", STATEMENT: "receivables",
+  INVOICE: "invoicing", CREDIT: "invoicing", STATEMENT: "receivables", QUOTE: "quotes",
 };
 
 /**
@@ -47,12 +47,13 @@ export type DocumentOwner =
   | { kind: "CERT"; certId: string }
   | { kind: "INVOICE"; invoiceId: string }
   | { kind: "CREDIT"; invoiceId: string }
-  | { kind: "STATEMENT"; customerId: string };
+  | { kind: "STATEMENT"; customerId: string }
+  | { kind: "QUOTE"; quoteId: string };
 
 export type DocumentMeta = {
   id: string; kind: DocumentKind; createdAt: Date;
   orderId: string | null; shipperId: string | null; certId: string | null; invoiceId: string | null;
-  customerId: string | null;
+  customerId: string | null; quoteId: string | null;
   loadNumber: number | null;
 };
 
@@ -61,7 +62,8 @@ export type DocumentMeta = {
  *  rather than keeping a second column list that could drift from this one. */
 const DOCUMENT_SELECT = {
   id: true, kind: true, createdAt: true,
-  orderId: true, shipperId: true, certId: true, invoiceId: true, customerId: true, loadNumber: true,
+  orderId: true, shipperId: true, certId: true, invoiceId: true, customerId: true, quoteId: true,
+  loadNumber: true,
 } satisfies Prisma.StoredDocumentSelect;
 
 /** `DocumentOwner` → the four owner/scope columns `storedDocument.create` needs, matching the DB
@@ -70,11 +72,12 @@ const DOCUMENT_SELECT = {
 function ownerColumns(owner: DocumentOwner): {
   kind: DocumentKind;
   orderId: string | null; shipperId: string | null; certId: string | null; invoiceId: string | null;
-  customerId: string | null;
+  customerId: string | null; quoteId: string | null;
   loadNumber: number | null;
 } {
   const none = {
-    orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, loadNumber: null,
+    orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, quoteId: null,
+    loadNumber: null,
   };
   switch (owner.kind) {
     case "TRAVELER":
@@ -91,6 +94,8 @@ function ownerColumns(owner: DocumentOwner): {
       return { ...none, kind: "CREDIT", invoiceId: owner.invoiceId };
     case "STATEMENT":
       return { ...none, kind: "STATEMENT", customerId: owner.customerId };
+    case "QUOTE":
+      return { ...none, kind: "QUOTE", quoteId: owner.quoteId };
   }
 }
 
@@ -277,7 +282,7 @@ export async function getDocument(docId: string): Promise<DocumentMeta & { fileD
  */
 export function documentFilename(
   meta: DocumentMeta, orderNumber?: number, shipperNumber?: number, creditNumber?: number,
-  customerCode?: string,
+  customerCode?: string, quoteNumber?: number,
 ): string {
   switch (meta.kind) {
     case "TRAVELER": {
@@ -303,6 +308,10 @@ export function documentFilename(
     // caller's to supply (falling back to the raw id) exactly as the numbers above are.
     case "STATEMENT":
       return `statement-${customerCode ?? meta.customerId}.pdf`;
+    // A quote is named by its own quote number (Phase 6 §6), the caller's to supply — falling
+    // back to the raw id exactly as every kind above does.
+    case "QUOTE":
+      return `quote-${quoteNumber ?? meta.quoteId}.pdf`;
   }
 }
 
@@ -361,6 +370,11 @@ export async function resolveDocumentFilename(meta: DocumentMeta): Promise<strin
       const customer = meta.customerId === null ? null
         : await prisma.customer.findFirst({ where: { id: meta.customerId }, select: { code: true } });
       return documentFilename(meta, undefined, undefined, undefined, customer?.code);
+    }
+    case "QUOTE": {
+      const quote = meta.quoteId === null ? null
+        : await prisma.quote.findFirst({ where: { id: meta.quoteId }, select: { quoteNumber: true } });
+      return documentFilename(meta, undefined, undefined, undefined, undefined, quote?.quoteNumber);
     }
   }
 }

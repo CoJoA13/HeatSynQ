@@ -16,7 +16,8 @@ export type AuditableModel =
   | "surcharge" | "surchargeStepCode" | "customerSurcharge"
   | "invoice" | "invoiceLine" | "billingConfig"
   | "receiptBatch" | "payment" | "application"
-  | "closePeriod" | "glExportBatch";
+  | "closePeriod" | "glExportBatch"
+  | "quote" | "endingStatement";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -219,6 +220,40 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   },
   closePeriod: undefined,
   glExportBatch: { postings: true }, // the export's audit trail is its batch + the postings it emitted
+  // Phase 6. A quote's lines, price rows, and breaks are edited through the parent document
+  // (array-replace, the invoice-lines shape) — the quote-level diff is only meaningful with the
+  // whole tree included. Live rows only (the partPrice precedent: a soft-deleted child would
+  // surface rows the live read never shows, and QuotePrice's composite / QuotePriceBreak's
+  // threshold are unique only among live rows, so an unfiltered include makes ordering
+  // non-deterministic). Every collection is explicitly orderBy'd (issue #24 — HistoryPanel's
+  // whole-key JSON.stringify comparison is order-sensitive; `id` breaks position ties, which are
+  // service-managed, not DB-unique, on these tables). Live contact/ending-statement/user/part/
+  // step-code names are selected in so a diff reads "Quote line P-1002", never a cuid.
+  quote: {
+    customer: { select: { code: true, name: true } },
+    contact: { select: { name: true } },
+    endingStatement: { select: { name: true } },
+    quotedBy: { select: { displayName: true } },
+    closedBy: { select: { displayName: true } },
+    lines: {
+      where: { deletedAt: null },
+      orderBy: [{ position: "asc" }, { id: "asc" }],
+      include: {
+        part: { select: { partNumber: true } },
+        prices: {
+          where: { deletedAt: null },
+          orderBy: [{ position: "asc" }, { id: "asc" }],
+          include: {
+            processStepCode: { select: { code: true, name: true } },
+            breaks: { where: { deletedAt: null }, orderBy: [{ threshold: "asc" }] },
+          },
+        },
+      },
+    },
+  },
+  // The eleventh reference kind (Phase 6 ruling 13) — audited through the generic reference
+  // machinery Task 2 wires, exactly like commentSnippet/specification. No relations of its own.
+  endingStatement: undefined,
 };
 
 /**
@@ -249,11 +284,13 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     id: true, orderId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
   },
-  // Phase 4 widened this table from one owner to three; Phase 5A added invoiceId and 5B added
-  // customerId. The list stays "every scalar except fileData", so each new owner column belongs
-  // here the moment it exists rather than being something a later phase has to remember.
+  // Phase 4 widened this table from one owner to three; Phase 5A added invoiceId, 5B added
+  // customerId, and Phase 6 added quoteId. The list stays "every scalar except fileData", so each
+  // new owner column belongs here the moment it exists rather than being something a later phase
+  // has to remember.
   storedDocument: {
     id: true, orderId: true, shipperId: true, certId: true, invoiceId: true, customerId: true,
+    quoteId: true,
     kind: true, loadNumber: true, createdAt: true,
   },
   // Task 12: `User.signatureImage` is a bytes column exactly like the three above, and gets the

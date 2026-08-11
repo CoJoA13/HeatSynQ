@@ -270,7 +270,8 @@ describe("documentFilename", () => {
 
   const base = {
     id: "doc1", createdAt: new Date(),
-    orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, loadNumber: null,
+    orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, quoteId: null,
+    loadNumber: null,
   };
 
   it("names a TRAVELER by order and, when given one, load number", async () => {

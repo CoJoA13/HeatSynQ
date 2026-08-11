@@ -60,6 +60,11 @@ export function schemaLinks(schemaText: string): Map<string, string> {
   // maintained table with a delete guard, exactly like a step code, so an unregistered FK aimed
   // at it (customerSurcharge.surchargeId, invoiceLine.surchargeId) must fail the sweep too.
   kinds.add("surcharge");
+  // "endingStatement" (Phase 6 Task 1) is TEMPORARILY a bare BlockerTarget: the model and the
+  // Quote.endingStatementId FK land with the schema, the full reference-kind wiring is Task 2's
+  // — which absorbs this into REFERENCE_KINDS and deletes this line (see BlockerTarget's own
+  // comment in src/lib/reference-links.ts).
+  kinds.add("endingStatement");
   const out = new Map<string, string>();
 
   for (const [modelName, body] of models(schemaText)) {
@@ -151,6 +156,12 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
       "processTemplateStep.codeId -> processStepCode",
+      // Phase 6: the two quoting FKs that target guarded kinds. QuoteLine.partId and
+      // OrderLine.quoteLineId exist too but target Part/QuoteLine — not reference kinds, not
+      // BlockerTargets — so the sweep never surfaces them; their delete guards are the
+      // hand-built blocker lists (parts.ts, and Task 4's quote delete), outside this registry.
+      "quote.endingStatementId -> endingStatement",
+      "quotePrice.processStepCodeId -> processStepCode",
       "shipper.carrierId -> carrier",
       "surcharge.glAccountId -> glAccount",
       "surchargeStepCode.processStepCodeId -> processStepCode",
@@ -160,7 +171,7 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
   // Local, not the shared `kinds` inside schemaLinks: a BlockerTarget, not just a ReferenceKind
   // — REFERENCE_LINKS now carries the two processStepCode entries from §7 of the design spec.
   it("every registered link targets a real reference kind", () => {
-    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode", "surcharge"]);
+    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode", "surcharge", "endingStatement"]);
     expect(REFERENCE_LINKS.filter((l) => !kinds.has(l.targetKind)).map((l) => l.targetKind)).toEqual([]);
   });
 
