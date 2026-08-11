@@ -156,7 +156,10 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       // Phase 6: the two quoting FKs that target guarded kinds. QuoteLine.partId and
       // OrderLine.quoteLineId exist too but target Part/QuoteLine — not reference kinds, not
       // BlockerTargets — so the sweep never surfaces them; their delete guards are the
-      // hand-built blocker lists (parts.ts, and Task 4's quote delete), outside this registry.
+      // hand-built blocker lists (parts.ts's order+quote guards — Task 15/Task 7 — and Task 4's
+      // quote delete), outside this registry. That absence is a decision: those hand-built
+      // lists ARE the enforcement, with no sweep behind them (tests/parts.test.ts and
+      // tests/quotes.test.ts pin the behavior the sweep can't).
       "quote.endingStatementId -> endingStatement",
       "quotePrice.processStepCodeId -> processStepCode",
       "shipper.carrierId -> carrier",

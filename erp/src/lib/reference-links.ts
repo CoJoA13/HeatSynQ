@@ -278,8 +278,10 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
     label: "Step code", ...QUOTE_VIA_PRICE },
   // Quote holds this FK itself, so `liveWhere` stays the default `{ deletedAt: null }`: a
   // deleted quote does not block its ending statement's deletion. `QuoteLine.partId` is NOT here
-  // — Part is not a BlockerTarget (its delete guard is parts.ts's own hand-built blocker list,
-  // which Task 7 extends with quote lines), and this registry only covers reference-kind targets.
+  // — Part is not a BlockerTarget, and this registry only covers reference-kind targets. Its
+  // delete guard is parts.ts's own hand-built blocker list (Task 7: `partQuoteBlockers` + the
+  // quote count in `deletePart`, beside the Task 15 order guard) — THAT list is the enforcement;
+  // there is no parts-side sweep, so a new Part-referencing FK must be added there by hand.
   { model: "quote", column: "endingStatementId", targetKind: "endingStatement",
     label: "Ending statement", entityLabel: "Quote", detailPath: (id) => `/quotes/${id}`,
     displayName: (r) => `Quote · #${r.quoteNumber}` },

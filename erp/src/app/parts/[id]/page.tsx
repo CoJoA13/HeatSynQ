@@ -140,11 +140,14 @@ function PartDetail({ id }: { id: string }) {
       await api(`/api/parts/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
       router.push("/parts");
     } catch (e) {
-      // Matched on "live order(s)" — deletePart's one and only refusal reason (parts.ts) other
-      // than a missing/empty reason, which never reaches this far — the customers/[id]/page.tsx
-      // removeCustomer() precedent for turning a bare-count refusal into a discoverable list.
+      // Matched on "live order(s)" or "live quote(s)" — deletePart's two refusal reasons
+      // (parts.ts; Task 7 added the quotes guard) other than a missing/empty reason, which never
+      // reaches this far — the customers/[id]/page.tsx removeCustomer() precedent for turning a
+      // bare-count refusal into a discoverable list. The blockers route returns the UNION of
+      // both categories, so whichever guard fired, the panel shows everything blocking.
       const message = (e as Error).message;
-      if (e instanceof ApiError && e.status === 400 && message.includes("live order(s)")) {
+      if (e instanceof ApiError && e.status === 400
+        && (message.includes("live order(s)") || message.includes("live quote(s)"))) {
         try {
           const list = await api<Blocker[]>(`/api/parts/${id}/blockers`);
           if (list.length) { setBlocked({ list }); setError(null); return; }

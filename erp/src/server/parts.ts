@@ -226,6 +226,38 @@ export async function partOrderBlockers(partId: string): Promise<Blocker[]> {
   return out;
 }
 
+/**
+ * Every LIVE quote carrying a LIVE line whose `partId` is this part — the quote-side sibling of
+ * `partOrderBlockers` above (Task 7, Phase 6 spec §4.2/§7). A part-linked quote line reads its
+ * printed identity (number/name/description/material/each weight) live from the part, so a
+ * deleted part would hollow out a still-live agreement; §5.14 refuses instead. Liveness needs
+ * BOTH halves of the chain (line AND quote — the QUOTE_VIA_PRICE registry entry's rule, one
+ * level up): a deleted quote carries its lines away, but neither a from-the-grave line under a
+ * live-stamped quote nor a line edited out of a live quote may block. Status is deliberately NOT
+ * consulted — a CLOSED quote is still a live record whose lines still render from the part.
+ * Named the way a Quote names itself in every blocker list it appears in (the reference-links.ts
+ * registry entries): "Quote · #1006", linked to `/quotes/[id]`. Deduped per QUOTE (the
+ * `partOrderBlockers` rule) so this list never disagrees with deletePart's quote count below.
+ */
+export async function partQuoteBlockers(partId: string): Promise<Blocker[]> {
+  const lines = await prisma.quoteLine.findMany({
+    where: { partId, deletedAt: null, quote: { is: { deletedAt: null } } },
+    select: { quote: { select: { id: true, quoteNumber: true } } },
+    orderBy: { quote: { quoteNumber: "asc" } },
+  });
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const { quote } of lines) {
+    if (seen.has(quote.id)) continue;
+    seen.add(quote.id);
+    out.push({
+      entityLabel: "Quote", name: `Quote · #${quote.quoteNumber}`,
+      id: quote.id, href: `/quotes/${quote.id}`,
+    });
+  }
+  return out;
+}
+
 export async function deletePart(id: string, reason: string): Promise<void> {
   const why = reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to delete a part");
@@ -250,6 +282,16 @@ export async function deletePart(id: string, reason: string): Promise<void> {
     // never disagree about how many rows are actually blocking.
     const orders = await tx.order.count({ where: { deletedAt: null, lines: { some: { partId: id } } } });
     if (orders > 0) throw new HttpError(400, `That part is used by ${orders} live order(s)`);
+
+    // Task 7 (Phase 6 spec §4.2/§7): live quote lines block too — same rule, quote-scoped. The
+    // count filters exactly what `partQuoteBlockers` lists (live line AND live quote, status
+    // ignored) and counts QUOTES, not lines, so refusal and panel never disagree. Runs inside
+    // this same Serializable transaction, SSI-pairing with createQuote/updateQuote/attachPart
+    // (quotes.ts), which each read their lines' parts live ON their own Serializable tx before
+    // writing `QuoteLine.partId` — the createOrder/addLine pairing above, one writer over.
+    const quotes = await tx.quote.count({
+      where: { deletedAt: null, lines: { some: { partId: id, deletedAt: null } } } });
+    if (quotes > 0) throw new HttpError(400, `That part is quoted on ${quotes} live quote(s)`);
 
     // Fix-wave R3 finding 5: attachments join the cascade exactly like every other child —
     // without this, a deleted part's attachment rows stayed live (deletedAt null) yet
