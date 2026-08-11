@@ -116,9 +116,10 @@ function paddedDate(iso: string): string {
   return `${m}/${d}/${y}`;
 }
 
-/** A bold label with a regular value — the sample's "Effective: 06/30/2018" line shape. */
-const labelled = (label: string, value: string, fontSize = 9.5): Content =>
-  ({ text: [{ text: label, bold: true }, value], fontSize, margin: [0, 1, 0, 0] });
+/** A bold label with a regular value — the sample's "Effective: 06/30/2018" line shape.
+ *  `topMargin` separates the sample's own line groups (RFQ and phone sit apart). */
+const labelled = (label: string, value: string, topMargin = 1): Content =>
+  ({ text: [{ text: label, bold: true }, value], fontSize: 9.5, margin: [0, topMargin, 0, 0] });
 
 // The line grid and price rows share the invoice's column widths so every number lands under the
 // header strip's "Each weight" / "Total Lbs / Price" columns.
@@ -174,10 +175,8 @@ function partiesBlock(d: QuotePdfData): Content {
     labelled("Effective: ", paddedDate(d.effectiveDate)),
     labelled("Expires On: ", paddedDate(d.expiryDate)),
     labelled("Terms: ", d.termsName),
-    { ...labelled("Your R.F.Q. Number: ", d.rfqNumber), margin: [0, 8, 0, 0] },
-    ...(d.customerPhone === ""
-      ? []
-      : [{ ...labelled("Your Phone No.: ", d.customerPhone), margin: [0, 8, 0, 0] } satisfies Content]),
+    labelled("Your R.F.Q. Number: ", d.rfqNumber, 8),
+    ...(d.customerPhone === "" ? [] : [labelled("Your Phone No.: ", d.customerPhone, 8)]),
   ];
   return {
     columns: [
