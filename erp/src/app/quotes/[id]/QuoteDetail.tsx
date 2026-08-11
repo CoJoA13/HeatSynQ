@@ -293,9 +293,18 @@ export function QuoteDetail({ id }: { id: string }) {
       setError(null);
     } catch (e) {
       // §5.13: back to server truth first (another session may have closed it already), then
-      // report why. The form is clean here — close is dirty-locked — so nothing is lost.
-      await load().catch(() => undefined);
-      setError((e as Error).message);
+      // report why. The form is clean here — close is dirty-locked — so nothing is lost. A
+      // failed rollback reload is APPENDED, never swallowed (the deleteQuote shape below):
+      // stale detail beside a banner explaining a different failure would misdescribe what the
+      // user is looking at.
+      const message = (e as Error).message;
+      try {
+        await load();
+        setError(message);
+      } catch (reloadErr) {
+        setError(`${message} — and the page could not be refreshed ` +
+          `(${(reloadErr as Error).message}). Reload to see the current state.`);
+      }
     }
   }
 
@@ -315,8 +324,15 @@ export function QuoteDetail({ id }: { id: string }) {
       setError(null);
       setCloseWarning(null);
     } catch (e) {
-      await load().catch(() => undefined);
-      setError((e as Error).message);
+      // Same rollback-then-report shape as closeQuote, reload failure appended.
+      const message = (e as Error).message;
+      try {
+        await load();
+        setError(message);
+      } catch (reloadErr) {
+        setError(`${message} — and the page could not be refreshed ` +
+          `(${(reloadErr as Error).message}). Reload to see the current state.`);
+      }
     }
   }
 
@@ -337,10 +353,15 @@ export function QuoteDetail({ id }: { id: string }) {
       // The §5.14 refusal ("order(s) … still price from it") becomes the discoverable blockers
       // panel (the parts/[id] removePart precedent) — the list derives from a FRESH detail so it
       // names what is blocking right now, with the Excel export riding the existing route.
+      // Deliberately NOT adopt(fresh): delete is the one action allowed while the form is dirty
+      // (report deviation 3 — "a refusal leaves the draft untouched"), so adopting here would
+      // silently discard the user's unsaved edits, the exact clobber the dirty-lock model
+      // exists to prevent (review fix round, Important 1). The panel gets the fresh truth; the
+      // per-line indicators keep the load-time links until the next adopt — the server guard,
+      // not the indicator, is the enforcement.
       if (e instanceof ApiError && e.status === 400 && message.includes("still price from it")) {
         try {
           const fresh = await api<QuoteDetailData>(`/api/quotes/${id}`);
-          adopt(fresh);
           const list = blockersFrom(fresh);
           if (list.length > 0) { setBlocked({ list }); setError(null); return; }
         } catch (listErr) {
@@ -829,7 +850,9 @@ export function QuoteDetail({ id }: { id: string }) {
                          className="w-24 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
                   <button type="button" onClick={() => addBreak(line.key, price.key)}
                           disabled={editGate.disabled || !draftFor(price.key).threshold || !draftFor(price.key).price}
-                          title={editGate.title}
+                          title={editGate.disabled ? editGate.title
+                            : !draftFor(price.key).threshold || !draftFor(price.key).price
+                              ? "Enter a threshold and price first" : undefined}
                           className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
                     Add break
                   </button>
