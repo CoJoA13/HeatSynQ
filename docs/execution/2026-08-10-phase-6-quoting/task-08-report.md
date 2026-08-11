@@ -151,7 +151,11 @@ client component and renders only the banner).
    ordinary quoting users re-assigning quotedBy, that needs a session-gated users pick-list —
    a route change, so: reported, not built.
 3. **Delete is not dirty-locked** (close/reopen/attach are): deleting discards the quote anyway,
-   and the prompt makes the intent explicit; a refusal leaves the draft untouched.
+   and the prompt makes the intent explicit; a refusal leaves the draft untouched — the §5.14
+   blockers panel refreshes from a fresh fetch that is deliberately NOT adopted into the form
+   state (fix round 1, Important 1: the original code adopted it, silently discarding the
+   draft), so the panel shows current truth while the per-line indicators keep their load-time
+   links until the next adopt — the server guard, not the indicator, is the enforcement.
 4. **The list page's search/filters refetch per keystroke** under the shared `useLatest` gate
    (the parts/customers list precedent) rather than debouncing — house pattern, kept.
 5. **New-quote part picker is a plain filtered select**, not the orders/new `Combobox` — that
@@ -177,6 +181,32 @@ rerun). Dev-DB fixtures are clean twice over: the manual-verification fixtures w
 hand (zero rows verified in every quote table; fixture customer/part/step-code/user removed),
 and the E2E rerun's own teardown ran to normal completion (post-run check: all fixture tables
 zero rows, `admin` the only live user).
+
+## Fix round 1 (task-reviewer: Needs fixes — 1 Important, 2 Minor)
+
+Commit `4866093`, all three findings closed:
+
+1. **Important — refused delete discarded a dirty draft.** The blocker-refusal path called
+   `adopt(fresh)`, replacing header+lines wholesale — the exact silent draft-discard the
+   dirty-lock model exists to prevent, and it contradicted deviation 3. **Chosen fix: refresh
+   without adopting** (the reviewer's first suggestion) rather than dirty-locking Delete — a
+   dirty-locked Delete would force the user to save edits they may be deleting the quote to
+   escape from. The fresh fetch now feeds ONLY `blockersFrom`; the form state is untouched.
+   Verified live: with unsaved line text in the form and a fabricated order link, the refused
+   delete rendered the panel naming order #7941 while the draft text, the dirty indicator, and
+   the free-text eachWeight (3.25) all survived. Deviation 3 updated to record the mechanism.
+2. **Minor — close/reopen rollback-reload failures were swallowed** (`.catch(() => undefined)`),
+   leaving stale detail beside a banner explaining a different failure. Both now use the delete
+   path's shape: reload first (§5.13), and a failed reload is APPENDED to the message
+   ("… — and the page could not be refreshed (…). Reload to see the current state.").
+3. **Minor — "Add break" disabled with no tooltip** when the draft threshold/price were empty.
+   Now titled "Enter a threshold and price first" (§5.16 style); verified live (disabled+title
+   with empty drafts, enabled+no-title once both are filled).
+
+Gates re-run after the fixes: vitest **129 files / 2094 passed**; tsc clean; eslint clean;
+build compiled; **E2E all 18 flows passed (exit 0)**, watched to completion — fix-round
+fixtures purged from the dev DB (all quote tables and the fabricated
+order/part/step-code/customer at zero, re-verified after the E2E teardown).
 
 ## For the reviewer to scrutinize
 
