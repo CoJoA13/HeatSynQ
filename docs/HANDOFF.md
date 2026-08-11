@@ -69,10 +69,18 @@ per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review 
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**The owner chose Phase 6 (Quoting) as the next track (2026-08-10); §9 is its live kickoff — but it
-has not started (no spec, plan, or branch yet).** The milestone alternatives Phase 5's completion
-opened — parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — are deferred to their own
-sessions; the owner-owed GL-account list + bookkeeper QBO homework gate a *real* export, not Quoting.
+**Phase 6 (Quoting) is IN PROGRESS (design approved 2026-08-10).** The brainstorm ran as a
+one-question-at-a-time owner session (fourteen rulings); the approved spec is
+`docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 is the ruling table — standing
+agreement, per-order-line link, wholesale tier 1, judged-at-link-time, latest-effective-wins,
+live-until-finalize, the `endingStatement` reference kind, `User.title`), the plan
+`docs/superpowers/plans/2026-08-10-phase-6-quoting.md` (11 tasks), the branch `phase-6-quoting`, and
+the execution ledger `docs/execution/2026-08-10-phase-6-quoting/`. The owner supplied the quote PDF
+build target `docs/samples/Quote_Sample_Form.jpeg` (VS's stock quote form) and approved the seven
+precedent-based calls flagged at spec review. The original spec gained a Phase 6 amendment table in
+§15. The milestone alternatives Phase 5's completion opened — parallel-run/acceptance-month prep, and
+the A/R backlog (#68–#93) — stay deferred to their own sessions; the owner-owed GL-account list +
+bookkeeper QBO homework gate a *real* export, not Quoting.
 
 Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
 **#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
@@ -429,8 +437,11 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
       (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
       follow-up).
-   4. **No `User.title` column exists**, so the cert signature block prints name + company with no
-      title line (the sample shows one) — a small follow-up migration if the owner wants it.
+   4. ~~**No `User.title` column exists**, so the cert signature block prints name + company with no
+      title line (the sample shows one) — a small follow-up migration if the owner wants it.~~
+      **RULED 2026-08-10 (Phase 6 spec ruling 14): `User.title` is built in Phase 6** — the quote
+      signature block needs it and the cert signature block gains its missing title line in the same
+      stroke.
 
 ## 8. Fresh machine setup (Fedora)
 
