@@ -252,7 +252,7 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
     },
   },
   // The eleventh reference kind (Phase 6 ruling 13) — audited through the generic reference
-  // machinery Task 2 wires, exactly like commentSnippet/specification. No relations of its own.
+  // machinery, exactly like commentSnippet/specification. No relations of its own.
   endingStatement: undefined,
 };
 
