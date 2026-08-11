@@ -29,8 +29,8 @@ import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import {
-  INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS, INVOICE_LINE_KIND_LABELS,
-  type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue,
+  INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS, INVOICE_LINE_KIND_LABELS, PRICE_SOURCE_LABELS,
+  type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "@/lib/invoice-constants";
 
 // ---------------------------------------------------------------------------------------------
@@ -51,7 +51,11 @@ export type InvoiceLineRow = {
   pricePer: string | null;
   unitPrice: number | null; setupCharge: number | null; minimumCharge: number | null;
   breakThreshold: number | null; minimumApplied: boolean;
-  rate: number | null; priceSource: string | null; needsPrice: boolean;
+  rate: number | null; priceSource: string | null;
+  /** The FROZEN quote number ("Quote #N" on a QUOTE-sourced line) — the line's own column,
+   *  never a live join to the quote (the frozen-paper rule; the quote may be long deleted). */
+  sourceQuoteNumber: number | null;
+  needsPrice: boolean;
   amount: number;
 };
 
@@ -162,8 +166,21 @@ type LineFields = {
   description: string; glAccountName: string;
   qty: string; weight: string; eachWeight: string;
   pricePer: string; unitPrice: string; setupCharge: string; minimumCharge: string; breakThreshold: string;
-  minimumApplied: string; rate: string; priceSource: string; needsPrice: string; amount: string;
+  minimumApplied: string; rate: string; priceSource: string; sourceQuoteNumber: string;
+  needsPrice: string; amount: string;
 };
+
+/** The §7.5 "every line names its source" label for an OPERATION row: "Part price", "Manual", or
+ *  "Quote #1006" — the QUOTE label with the line's FROZEN sourceQuoteNumber appended (never a live
+ *  join; the quote may be long deleted and the label must not blank). */
+function sourceLabel(row: { priceSource: string; sourceQuoteNumber: string }): string | null {
+  if (row.priceSource === "") return null;
+  const label = PRICE_SOURCE_LABELS[row.priceSource as PriceSourceValue] ?? row.priceSource;
+  if (row.priceSource === "QUOTE" && row.sourceQuoteNumber !== "") {
+    return `${label} #${row.sourceQuoteNumber}`;
+  }
+  return label;
+}
 
 function toLineFields(l: InvoiceLineRow): LineFields {
   return {
@@ -183,6 +200,7 @@ function toLineFields(l: InvoiceLineRow): LineFields {
     minimumApplied: String(l.minimumApplied),
     rate: l.rate === null ? "" : String(l.rate),
     priceSource: l.priceSource ?? "",
+    sourceQuoteNumber: l.sourceQuoteNumber === null ? "" : String(l.sourceQuoteNumber),
     needsPrice: String(l.needsPrice),
     amount: String(l.amount),
   };
@@ -198,7 +216,8 @@ function blankChargeRow(): LineFields {
     partNumber: "", partName: "", partDescription: "", description: "", glAccountName: "",
     qty: "", weight: "", eachWeight: "",
     pricePer: "", unitPrice: "", setupCharge: "", minimumCharge: "", breakThreshold: "",
-    minimumApplied: "false", rate: "", priceSource: "MANUAL", needsPrice: "false", amount: "0",
+    minimumApplied: "false", rate: "", priceSource: "MANUAL", sourceQuoteNumber: "",
+    needsPrice: "false", amount: "0",
   };
 }
 
@@ -254,6 +273,9 @@ function InvoiceLinesGrid({
         minimumApplied: row.minimumApplied === "true",
         rate: row.rate.trim() === "" ? null : row.rate,
         priceSource: row.priceSource === "" ? null : row.priceSource,
+        // Echoed back whole (a hidden round-trip field, like priceSource): dropping it from the
+        // save would blank the frozen "Quote #N" off the paper on any line edit.
+        sourceQuoteNumber: row.sourceQuoteNumber === "" ? null : Number(row.sourceQuoteNumber),
         needsPrice: row.needsPrice === "true",
         amount,
       });
@@ -281,6 +303,10 @@ function InvoiceLinesGrid({
                  aria-label={`Line ${i + 1} description`}
                  className="w-full rounded border px-2 py-1 disabled:bg-slate-50" />
           {row.partNumber && <div className="text-xs text-slate-500">{row.partNumber} · {row.partName}</div>}
+          {row.kind === "OPERATION" && sourceLabel(row) && (
+            // §7.5: every line names its source — "Quote #1006" reads the FROZEN sourceQuoteNumber.
+            <div className="text-xs text-slate-500">{sourceLabel(row)}</div>
+          )}
         </td>
         <td className="w-20 pr-2">
           <input value={row.qty} inputMode="numeric" disabled={!moneyGate.allowed} title={moneyGate.title}
