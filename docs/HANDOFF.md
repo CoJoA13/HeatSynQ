@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-10 — **Phase 5C (Month-End Close & QuickBooks Online Summary Export) is MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the next-track decision — Phase 5 is done, so the owner chooses what's next (Phase 6 Quoting per the roadmap, parallel-run/acceptance-month prep, or A/R backlog burn-down).** Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
+**Updated:** 2026-08-10 — **Phase 5C (Month-End Close & QuickBooks Online Summary Export) is MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 6 (Quoting) kickoff — the owner chose that track 2026-08-10; the deferred owner-homework and A/R backlog are non-blocking for it.** Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -62,18 +62,17 @@ every fresh session and has to stay readable in one pass.
 
 ### The current phase
 
-**Nothing is in flight. Phase 5 (Invoicing & A/R + QBO) is COMPLETE** with the Phase 5C merge
-(`c069b09`, PR #92, 2026-08-10) — see the one-paragraph entry below and
+**Phase 5 (Invoicing & A/R + QBO) is COMPLETE** with the Phase 5C merge (`c069b09`, PR #92,
+2026-08-10) — see the one-paragraph entry below and
 `docs/history/2026-08-10-phase-5c-close-qbo-export.md` for the full record (the nine tasks, the
 per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review rounds, and the
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**The next track is an owner decision — see §9.** It lays out the roadmap default (Phase 6, Quoting)
-against the milestone alternatives the completion of Phase 5 opens: begin parallel-run/acceptance-month
-prep; burn down the A/R backlog (#68–#93); or clear the owner-owed GL-account list + bookkeeper QBO
-homework that gate a *real* export. Do not assume the next phase — the owner has chosen the track at
-each Phase-5 boundary.
+**The owner chose Phase 6 (Quoting) as the next track (2026-08-10); §9 is its live kickoff — but it
+has not started (no spec, plan, or branch yet).** The milestone alternatives Phase 5's completion
+opened — parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — are deferred to their own
+sessions; the owner-owed GL-account list + bookkeeper QBO homework gate a *real* export, not Quoting.
 
 Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
 **#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
@@ -475,35 +474,44 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 5 (Invoicing & A/R + QBO) is COMPLETE** — Phase 5C merged 2026-08-10 (`c069b09`, PR #92); §4
-carries its one-paragraph state and `docs/history/2026-08-10-phase-5c-close-qbo-export.md` its full
-narrative. **There is no pre-decided next phase.** Completing Phase 5 is a milestone — parallel-run
-begins after Phase 5 — so the next track is the owner's to choose, as it has been at each Phase-5
-boundary. Bring the options to the owner before brainstorming; do not assume.
+**Phase 6 (Quoting). This is the live kickoff — paste the prompt below into a fresh session to begin.**
+Phase 5 (Invoicing & A/R + QBO) is COMPLETE — 5C merged 2026-08-10 (`c069b09`, PR #92); §4 carries its
+one-paragraph state and `docs/history/2026-08-10-phase-5c-close-qbo-export.md` its full narrative. The
+owner chose Phase 6 as the next track (2026-08-10). The deferred owner-homework (the real GL list + the
+bookkeeper's QBO import method) and the A/R backlog are **NON-blocking for Quoting** — they wait for
+their own sessions. Phase 6 has no spec or plan yet — brainstorm → spec → plan is its first step.
 
 > Read `CLAUDE.md`, then `docs/HANDOFF.md` — §4 for where Phase 5 landed and §6 for the carried
 > backlog. **All of Phase 5 is merged** (5A `359c707`/#58, 5B `b55da3b`/#74, 5C `c069b09`/#92):
 > pricing, invoicing/credits, receipts/applications/aging/statements, and the month-end close + QBO
-> summary export. Ask the owner which track to take next, then brainstorm it
-> (superpowers:brainstorming) against the roadmap (`docs/superpowers/plans/2026-07-29-roadmap.md`),
-> the original spec's §3 non-goals + §15 decision log, and — for a new build phase — the prior phase's
-> spec for the hooks it left. The candidate tracks:
+> summary export. **Next is Phase 6 — Quoting** per the roadmap
+> (`docs/superpowers/plans/2026-07-29-roadmap.md`). Brainstorm it (superpowers:brainstorming) against
+> the roadmap, the original design spec's **§7.7 Quoting**, the **Quote** entity (§4) and **§7.5
+> pricing tier 1** (`docs/superpowers/specs/2026-07-29-heat-treat-erp-design.md`), and the §3
+> non-goals + §15 decision log, then write the spec and plan and execute with
+> subagent-driven-development on a `phase-6-quoting` branch.
 >
-> - **Phase 6 — Quoting** (the roadmap's next linear phase): quotes, a follow-up worklist, and
->   quote→order auto-link with pricing tier 1 live. Builds on 5A's pricing engine (`pricing.ts`, price
->   rows keyed by Process Step Code) and Phase 3's order entry. No spec or plan yet — brainstorm →
->   spec → plan is the first step.
-> - **Parallel-run / acceptance-month prep** (spec §13 — "one full closed month agreeing with the
->   books"). Phase 5 unlocked "bill a real month in parallel." The heaviest gate here is **owner
->   homework, not code**: the real GL-account list (operations, surcharges, payment types) and the
->   bookkeeper's QBO import method — which also settles **#91** (summary netting) and ruling 7
->   (correction-JE dating). Phase 8 formalizes the comparison scoreboard, but a first real closed month
->   can be attempted now once the accounts are keyed.
-> - **A/R backlog burn-down** (§6, issues #59–#93): the P1s are **#81** (aggregate discount cap) and
->   **#84** (delete-customer-with-live-payment); the standing owner questions are **#68** (posted-
->   payment correction lifecycle — 5C added the GL-export consequence: a posted payment can't be
->   reversed by a re-export), **#88** (non-latest-reopen continuity chain), and **#89** (freight/charge
->   readiness-vs-500).
+> **Scope (roadmap + spec §7.7):** customer quotes with part/price lines (the same price-per
+> vocabulary as 5A pricing); effective + expiry dates; a follow-up date and a follow-up/expired
+> worklist; **quote → order linkage (pull a quote into an order, which locks pricing tier 1)**;
+> close/reopen with reason; the quote PDF (the eighth document type); `quote` document numbering.
+>
+> **What Phase 6 builds on (real hooks already in the codebase — verify each before relying on it):**
+> - **Pricing tier 1 is the point.** 5A's `pricing.ts` resolves a price from part price rows keyed by
+>   Process Step Code; spec §7.5 makes **tier 1 = "a quote referenced on the order (customer + part
+>   match, in-date)."** Order entry already auto-links a part's active quote when one exists (spec §7
+>   order rules) — Phase 6 supplies the Quote the order pulls from and the resolution that locks its
+>   price. Quotes carry their OWN price lines; do not re-key pricing off Part columns.
+> - **Order entry is Phase 3.** The quote→order link lands in the existing one-transaction order save
+>   (number allocation + recipe row-lock); a quote reference is a new order-side field, not a rewrite.
+> - **`quotes` is already a permission area** (`src/lib/permission-constants.ts` — no new area needed;
+>   wire routes to it). The vestigial `ar` area beside the real `receivables` is issue #72, untouched.
+> - **Number allocation is settled** (`allocateNumber`, `settings.ts`; the key MUST end
+>   `_number_next`). Add `quote_number_next`; do not re-wire the existing counters.
+> - **The quote PDF + `StoredDocument`** follow the traveler/invoice precedent (`src/server/pdf/`): a
+>   new `QUOTE` `DocumentKind` means a migration that DROP/re-ADDs the hand-written kind→owner CHECK
+>   plus the `DocumentOwner`/`AREA_FOR_KIND` update, with the enum `ADD VALUE` in its OWN earlier
+>   migration (CLAUDE.md's StoredDocument rule).
 >
 > - Two standing owner rules apply to every phase: run the Playwright E2E suite whenever a change
 >   touches any UI/flow, and update the appropriate docs as part of the work — never deferred to a
