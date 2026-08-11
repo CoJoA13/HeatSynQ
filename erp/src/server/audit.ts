@@ -106,7 +106,18 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // live part number / each container's live type name is pulled in so the diff reads "P-1002",
   // not a cuid.
   order: {
-    lines: { orderBy: { position: "asc" }, include: { part: { select: { partNumber: true } } } },
+    // `quoteLine` (Phase 6 Task 5): `OrderLine.quoteLineId` is written by createOrder/addLine/
+    // updateLine, and the scalar alone would diff as a bare cuid — the quote NUMBER rides along
+    // so a link/unlink/re-pick reads "Quote 1006 → 1008" in history (the same rule that pulls
+    // each line's live part number). Live join is safe: §5.14 refuses deleting a quote (or line)
+    // any order line references, so a stored link always resolves.
+    lines: {
+      orderBy: { position: "asc" },
+      include: {
+        part: { select: { partNumber: true } },
+        quoteLine: { select: { quote: { select: { quoteNumber: true } } } },
+      },
+    },
     containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
     // lineId is an opaque cuid — ordering by it made snapshot order arbitrary with respect to the
     // order the operator actually entered lines in, so a later line insert could produce a

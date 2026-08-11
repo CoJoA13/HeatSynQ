@@ -14,6 +14,7 @@ import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
 import { finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder } from "./invoice-guards";
+import { judgeQuoteLine, resolveAutoLink, type QuoteLinkCandidate } from "./quote-links";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
@@ -36,6 +37,11 @@ export type OrderWarnings = string[];
 export type OrderLineDetail = {
   id: string; position: number; partId: string; revisionNumber: number | null;
   qty: number; weight: number;
+  /** The per-line quote link (Phase 6, ruling 5) — minimal display exposure for the entry form
+   *  and the hub ("Quote #1006", linked): the stored line id plus the quote's id and number,
+   *  live-joined (a linked quote line cannot be deleted — §5.14 — so the join always resolves).
+   *  Task 9 builds the UI on these three fields. */
+  quoteLineId: string | null; quoteId: string | null; quoteNumber: number | null;
   // Fix-wave R3 finding 6: `serializationRequired` rides on the line's OWN part payload — not a
   // second, caller-supplied parts-catalog lookup — so the hub's serialization warning is governed
   // by `orders.view` (this DTO's own gate) rather than an unrelated `parts.view` grant.
@@ -154,6 +160,13 @@ const LINE = z.object({
   qty: LINE_QTY,
   weight: decimalField(12, 2, { required: true, min: "positive" }),
   serials: z.array(SERIAL_ITEM).max(10_000).default([]),
+  // The per-line quote link (Phase 6, spec §5.2 — rulings 5–7). THREE distinct states, so
+  // `.nullable().optional()`, never `.default()`: an EXPLICIT id is the operator's re-pick,
+  // validated against the full §5.2 eligibility rule (quote-links.ts) and refused with the line
+  // and reason named; an EXPLICIT null is "no link" (the line falls to part prices); an ABSENT
+  // key gets the server's auto-resolution (latest-effective-wins, tie → higher quote number) —
+  // so API callers, the entry UI, and the idempotent replay all behave identically (§5.2).
+  quoteLineId: z.string().min(1).nullable().optional(),
 }).strict();
 
 const CREATE = z.object({
@@ -274,6 +287,43 @@ async function resolveLineParts(
 }
 
 /**
+ * Resolves every line's quote link (spec §5.2, rulings 5–7) — the three-way `quoteLineId`
+ * semantics documented on LINE above, one shared walk for createOrder and addLine (`base` is
+ * `resolveLineParts`' same label offset). Returns the full candidate per linked line so the
+ * write stores `quoteLineId` and the audit entry prints the quote NUMBER, never a bare cuid.
+ *
+ * ⚠️ THE READS HERE ARE LOAD-BEARING BEYOND THEIR ANSWERS — the §5.14 SSI pairing (Task 4's
+ * review, Important #1). They MUST run on the caller's own Serializable `tx`, never the bare
+ * `prisma` client (the #60 lesson): this in-transaction read of the QuoteLine/Quote rows is the
+ * order-side half of the guard that keeps `updateQuote`/`deleteQuote` (quotes.ts) from dropping
+ * or re-pointing a quote line this save is concurrently linking to. Their Serializable
+ * OrderLine-predicate read plus THIS read plus both sides' writes form the rw-antidependency
+ * cycle SSI aborts; without this read (or below Serializable) there is one edge, no cycle, and
+ * the link lands on a dead line. The dangerous-direction test in tests/quote-links.test.ts is
+ * this contract's tripwire.
+ */
+async function resolveQuoteLinks(
+  tx: Db, customerId: string, receivedDate: Date, lines: LineInput[], parts: ResolvedPart[], base = 0,
+): Promise<(QuoteLinkCandidate | null)[]> {
+  const out: (QuoteLinkCandidate | null)[] = [];
+  for (const [i, line] of lines.entries()) {
+    if (line.quoteLineId === null) {
+      out.push(null);
+    } else if (line.quoteLineId !== undefined) {
+      const verdict = await judgeQuoteLine(tx, line.quoteLineId,
+        { customerId, partId: line.partId, receivedDate });
+      if (!verdict.ok) {
+        throw new HttpError(400, `${lineLabel(base + i, parts[i])}: ${verdict.reason}`);
+      }
+      out.push(verdict.candidate);
+    } else {
+      out.push(await resolveAutoLink(tx, { customerId, partId: line.partId, receivedDate }));
+    }
+  }
+  return out;
+}
+
+/**
  * Σqty and Σweight over the lines. The weight sum runs in integer cents: `decimalField(12, 2)`
  * has already bounded every line to two decimal places, so the cents are exact and the single
  * division back to pounds is the only floating step — load-split.ts's reasoning applied one
@@ -387,6 +437,7 @@ function auditPayload(args: {
   loads: { qty: number; weight: number }[];
   containerTypeNames: Map<string, string>;
   certResolution: CertResolution;
+  quoteLinks: (QuoteLinkCandidate | null)[];
 }) {
   const { orderNumber, customer, data, parts, loads, containerTypeNames, certResolution } = args;
   return {
@@ -407,6 +458,11 @@ function auditPayload(args: {
     lines: data.lines.map((line, i) => ({
       position: i + 1, partId: line.partId, partNumber: parts[i].partNumber,
       revisionNumber: i === 0 ? args.revisionNumber : null, qty: line.qty, weight: line.weight,
+      // The resolved link (explicit or auto — §5.2), with the quote NUMBER beside the id so the
+      // create entry and every later update diff (SNAPSHOT_INCLUDE.order pulls the same pair)
+      // describe the same fields and history reads "1006", never a cuid.
+      quoteLineId: args.quoteLinks[i]?.quoteLineId ?? null,
+      quoteNumber: args.quoteLinks[i]?.quoteNumber ?? null,
     })),
     containers: data.containers.map((c, i) => ({
       position: i + 1, typeId: c.typeId, typeName: containerTypeNames.get(c.typeId) ?? null,
@@ -439,6 +495,8 @@ const DETAIL_INCLUDE = {
           customer: { select: { code: true } },
         },
       },
+      // The link's display pair (OrderLineDetail's own comment) — quote id + number only.
+      quoteLine: { select: { quoteId: true, quote: { select: { quoteNumber: true } } } },
     },
   },
   containers: { orderBy: { position: "asc" }, include: { type: { select: { name: true } } } },
@@ -491,6 +549,9 @@ function toDetail(
     lines: row.lines.map((l) => ({
       id: l.id, position: l.position, partId: l.partId, revisionNumber: l.revisionNumber,
       qty: l.qty, weight: l.weight.toNumber(), part: l.part,
+      quoteLineId: l.quoteLineId,
+      quoteId: l.quoteLine?.quoteId ?? null,
+      quoteNumber: l.quoteLine?.quote.quoteNumber ?? null,
     })),
     containers: row.containers.map((c) => ({
       id: c.id, position: c.position, typeId: c.typeId, count: c.count, qty: c.qty,
@@ -576,6 +637,16 @@ export function isDuplicateClientRequestId(err: unknown): boolean {
  * guard — the other half is deleteReference's Serializable blocker scan). It is emphatically NOT
  * what protects the locked revision: `lockCurrentRevision`'s `SELECT … FOR UPDATE` row lock is
  * the guarantee (spec §5.3), and this transaction's isolation level is irrelevant to it.
+ *
+ * ⚠️ Since Phase 6, Serializable is ALSO load-bearing for the §5.14 quote-link pairing — no
+ * longer mere uniformity, and never downgrade it: `resolveQuoteLinks`' eligibility read of the
+ * quote line this save links (on this same `tx` — both halves matter, the isolation level AND
+ * the in-transaction read) pairs with `updateQuote`/`deleteQuote`'s Serializable OrderLine-
+ * predicate guard so SSI aborts a link racing a quote-line drop (quote-links.test.ts's
+ * dangerous-direction test is the tripwire). One race is deliberately NOT prevented and no
+ * hardening should assume it is: a link committing concurrently onto a just-CLOSED quote is
+ * spec-sanctioned (judged-at-link-time, ruling 6 — the `OrderLine.quoteLineId` schema comment);
+ * `closeQuote` runs claim-only, so isolation does not stop it, by design.
  *
  * A serialization failure — two saves colliding on the number sequence or on the same part's
  * revision — surfaces as the retryable 409 `withDbErrors` already maps 40001 to. Nothing is
@@ -666,6 +737,12 @@ async function saveNewOrder(
         lead.requestDaysOverride ?? customer.requestDaysOverride ?? defaultRequestDays);
     const targetDate = data.targetDate ? parseDate(data.targetDate, "Target date") : null;
 
+    // Per-line quote links (spec §5.2), judged AT LINK TIME against THIS order's received date
+    // (ruling 6). On `tx`, before the allocation below — validation refuses before a number is
+    // consumed, and the in-transaction read is the §5.14 SSI pairing's order-side half (see
+    // resolveQuoteLinks' own ⚠️ comment).
+    const quoteLinks = await resolveQuoteLinks(tx, customer.id, receivedDate, data.lines, parts);
+
     const orderNumber = await allocateNumber("order_number_next", tx);
     const { revisionNumber } = await lockCurrentRevision(lead.id, tx); // the row lock IS the guarantee
 
@@ -693,7 +770,7 @@ async function saveNewOrder(
       "order",
       auditPayload({
         orderNumber, customer, data, parts, receivedDate, requestDate, targetDate,
-        revisionNumber, loads, containerTypeNames, certResolution,
+        revisionNumber, loads, containerTypeNames, certResolution, quoteLinks,
       }),
       () => tx.order.create({
         data: {
@@ -711,6 +788,7 @@ async function saveNewOrder(
               // pair (lines[0].partId, lines[0].revisionNumber). Spec §4.
               revisionNumber: i === 0 ? revisionNumber : null,
               qty: line.qty, weight: line.weight,
+              quoteLineId: quoteLinks[i]?.quoteLineId ?? null,
             })),
           },
           containers: {
@@ -962,7 +1040,10 @@ export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
 // Edits, void, and linked orders (Task 5, spec §5a/§5c/§5d). Every mutator below shares one
 // shape: `withDbErrors` wraps a Serializable `$transaction` (uniform with createOrder's own, even
 // where nothing here assigns a registered FK — global-constraints: "the whole order save runs
-// Serializable for uniformity") that resolves the order with `claimOrder` (fix-wave R3 finding 1)
+// Serializable for uniformity"; ⚠️ but for `addLine`/`updateLine` — every writer of
+// `OrderLine.quoteLineId` — Serializable is now LOAD-BEARING, not uniformity: the §5.14 quote-
+// link pairing needs the isolation level AND the in-transaction eligibility read together, see
+// createOrder's own doc comment) that resolves the order with `claimOrder` (fix-wave R3 finding 1)
 // — 404 "Order not found" catches both an unknown id and a voided (`deletedAt !== null`) one,
 // since a voided order is read-only (spec §5a/§5c) — then writes through `auditedUpdate("order",
 // id, ...)` so history carries a real before/after diff on the order's own row. `SNAPSHOT_INCLUDE.
@@ -992,6 +1073,15 @@ const UPDATE_ORDER = z.object({
 const UPDATE_LINE = z.object({
   qty: LINE_QTY.optional(),
   weight: decimalField(12, 2, { required: true, min: "positive" }).optional(),
+  // The link's EDIT semantics (spec §5.2) differ from LINE's create semantics in exactly one
+  // arm: an ABSENT key KEEPS the stored link — never re-resolves, never re-judges (ruling 6: a
+  // qty edit must not silently move a line onto a newer quote). An explicit id is the operator's
+  // re-pick, judged against the order's CURRENT received date (§5.2's re-pick rule); an explicit
+  // null is the deliberate unlink ruling 6 names. Spec §5.2's "part swap clears + re-resolves"
+  // is vacuous here BY CONSTRUCTION: this shape has no partId key (spec §5a), so the only part
+  // swap is removeLine + addLine — and addLine auto-resolves the fresh line, which IS the
+  // clear-and-re-resolve.
+  quoteLineId: z.string().min(1).nullable().optional(),
 }).strict();
 
 const REPLACE_CONTAINERS = z.array(CONTAINER_ITEM);
@@ -1089,10 +1179,17 @@ export async function addLine(
     const position = (_max.position ?? 0) + 1;
     const [part] = await resolveLineParts(tx, order.customerId, [data], position - 1);
 
+    // The same three-way link semantics as createOrder (§5.2), judged against the ORDER's stored
+    // received date (ruling 6 — link time is judged at the order's own date, however backdated).
+    // On `tx`: the §5.14 SSI read (resolveQuoteLinks' ⚠️ comment).
+    const [quoteLink] = await resolveQuoteLinks(
+      tx, order.customerId, order.receivedDate, [data], [part], position - 1);
+
     await auditedUpdate("order", orderId, async () => {
       const line = await tx.orderLine.create({
         data: {
           orderId, position, partId: data.partId, revisionNumber: null, qty: data.qty, weight: data.weight,
+          quoteLineId: quoteLink?.quoteLineId ?? null,
         },
       });
       await createSerials(tx, orderId, [line.id], [data], [part], position - 1);
@@ -1127,7 +1224,7 @@ export async function updateLine(
     const line = await tx.orderLine.findFirst({
       where: { id: lineId, orderId },
       select: {
-        id: true, position: true,
+        id: true, position: true, partId: true,
         part: { select: { partNumber: true, customer: { select: { code: true } } } },
       },
     });
@@ -1152,9 +1249,22 @@ export async function updateLine(
       }
     }
 
-    const patch: Prisma.OrderLineUpdateInput = {
+    // UPDATE_LINE's own comment holds the semantics: absent = keep, null = unlink, id = re-pick
+    // judged against the CURRENT received date. The judge read runs on `tx` (the §5.14 SSI read,
+    // resolveQuoteLinks' ⚠️ comment — this is the third writer of `OrderLine.quoteLineId`).
+    if (typeof data.quoteLineId === "string") {
+      const verdict = await judgeQuoteLine(tx, data.quoteLineId,
+        { customerId: order.customerId, partId: line.partId, receivedDate: order.receivedDate });
+      if (!verdict.ok) {
+        throw new HttpError(400, `${lineLabel(line.position - 1, line.part)}: ${verdict.reason}`);
+      }
+    }
+
+    // Unchecked variant (scalar FK write) — the link column is set directly, like the create path.
+    const patch: Prisma.OrderLineUncheckedUpdateInput = {
       ...(data.qty !== undefined ? { qty: data.qty } : {}),
       ...(data.weight !== undefined ? { weight: data.weight } : {}),
+      ...(data.quoteLineId !== undefined ? { quoteLineId: data.quoteLineId } : {}),
     };
 
     await auditedUpdate("order", orderId, () => tx.orderLine.update({ where: { id: lineId }, data: patch }), { tx });
