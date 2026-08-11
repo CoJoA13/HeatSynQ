@@ -1,9 +1,11 @@
 import { z } from "zod";
-import { Prisma } from "../../prisma/generated/prisma/client";
+import { Prisma, type Quote } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
-import { auditedCreate } from "./audit";
+import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
+import { finalizedInvoicesFor } from "./invoice-guards";
+import type { Blocker } from "./reference-blockers";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { LOT_WITH_BREAKS } from "./part-prices";
@@ -24,8 +26,10 @@ import {
 // mirrors part-prices.ts's validation shapes for the same reason). "Expired" is DERIVED from
 // the expiry date against today — never a status flip, never a job.
 //
-// This file owns create/read/list/worklist/export (Task 3). Update/close/reopen/delete and the
-// routes are Task 4; the order-side eligibility leaf (quote-links.ts) is Task 5.
+// This file owns the whole lifecycle: create/read/list/worklist/export (Task 3) and the
+// mutation half — update/attach-part/close/reopen/delete (Task 4). Every mutation claims the
+// Quote row with SELECT … FOR UPDATE (claimQuote below) before reading the state it acts on;
+// the order-side eligibility leaf (quote-links.ts) is Task 5.
 // ============================================================================================
 
 export type QuoteBreakRow = { id: string; threshold: number; price: number };
@@ -149,8 +153,42 @@ const CREATE = z.object({
 
 type CreateInput = z.infer<typeof CREATE>;
 type LineInput = CreateInput["lines"][number];
+type PriceInput = LineInput["prices"][number];
 
 type Db = Prisma.TransactionClient;
+
+// The one line-shape → row-columns mapping, shared by createQuote's nested create and
+// updateQuote's create-branch (Task 4's array-replace) so the two can never drift. Positions are
+// always derived from array order (index + 1) — the payload array IS the print order.
+function priceCreateData(price: PriceInput, position: number) {
+  return {
+    position,
+    processStepCodeId: price.processStepCodeId,
+    setupCharge: price.setupCharge ?? null,
+    unitPrice: price.unitPrice ?? null,
+    minimumCharge: price.minimumCharge ?? null,
+    pricePer: price.pricePer ?? ("EACH" as const),
+    notes: price.notes,
+    breaks: {
+      create: price.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
+    },
+  };
+}
+
+function lineCreateData(line: LineInput, position: number) {
+  return {
+    position,
+    partId: line.partId ?? null,
+    partNumberText: line.partNumberText,
+    partNameText: line.partNameText,
+    partDescriptionText: line.partDescriptionText,
+    materialText: line.materialText,
+    eachWeight: line.eachWeight ?? null,
+    quotedQty: line.quotedQty ?? null,
+    quotedUnlimited: line.quotedUnlimited,
+    prices: { create: line.prices.map((price, j) => priceCreateData(price, j + 1)) },
+  };
+}
 
 const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 
@@ -429,33 +467,7 @@ export async function createQuote(input: unknown): Promise<QuoteDetail> {
             quoteDate, effectiveDate, expiryDate, followUpDate,
             rfqNumber: data.rfqNumber, quotedById, endingStatementId,
             notes: data.notes, internalNotes: data.internalNotes,
-            lines: {
-              create: data.lines.map((line, i) => ({
-                position: i + 1,
-                partId: line.partId ?? null,
-                partNumberText: line.partNumberText,
-                partNameText: line.partNameText,
-                partDescriptionText: line.partDescriptionText,
-                materialText: line.materialText,
-                eachWeight: line.eachWeight ?? null,
-                quotedQty: line.quotedQty ?? null,
-                quotedUnlimited: line.quotedUnlimited,
-                prices: {
-                  create: line.prices.map((price, j) => ({
-                    position: j + 1,
-                    processStepCodeId: price.processStepCodeId,
-                    setupCharge: price.setupCharge ?? null,
-                    unitPrice: price.unitPrice ?? null,
-                    minimumCharge: price.minimumCharge ?? null,
-                    pricePer: price.pricePer ?? "EACH",
-                    notes: price.notes,
-                    breaks: {
-                      create: price.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
-                    },
-                  })),
-                },
-              })),
-            },
+            lines: { create: data.lines.map((line, i) => lineCreateData(line, i + 1)) },
           },
           select: { id: true },
         }),
@@ -795,4 +807,637 @@ export async function exportQuotes(filter: QuoteFilter): Promise<Buffer> {
     status: r.expired ? QUOTE_EXPIRED_LABEL : QUOTE_STATUS_LABELS[r.status],
   }));
   return toXlsx("Quotes", QUOTE_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mutations (Task 4, spec §5.1): update / attach-part / close / reopen / delete. Every one
+// claims the Quote row FIRST (SELECT … FOR UPDATE) and only then reads the state it acts on —
+// the claimOrder discipline (order-locks.ts), restated here for the Quote row. Two mutators run
+// Serializable, each for a stated reason; the rest ride the claim at default isolation:
+//
+//   - `updateQuote` is Serializable exactly when the payload can assign a registered FK — the
+//     `assignsFk` pattern (reference.ts): a `lines` array can write `QuoteLine.partId` and
+//     `QuotePrice.processStepCodeId`, and a non-null `endingStatementId` writes the third
+//     registered column, so those payloads pair `assertRefExists`'s live read with the write
+//     inside one Serializable transaction (the FK-writer pattern). A header-only patch assigns
+//     none and runs at default isolation — the row claim alone is its guard. Being Serializable
+//     whenever `lines` is present ALSO covers the §5.14 guard below: "no order line references
+//     this quote line" is a predicate over OrderLine rows (rows that may not exist — the
+//     period-lock shape, un-claimable by FOR UPDATE), and every writer of
+//     `OrderLine.quoteLineId` (the Phase 3 order save, which Task 5 extends) runs Serializable,
+//     so SSI aborts the link-vs-line-delete interleaving no serial order could produce.
+//   - `attachPart` assigns `QuoteLine.partId` → always Serializable (same FK-writer reasoning).
+//   - `deleteQuote` assigns nothing but its §5.14 blocker read is the same OrderLine predicate →
+//     Serializable so SSI pairs it with the Serializable order-save linker.
+//   - `closeQuote`/`reopenQuote` read and write only the Quote row's own columns; the linked-
+//     open-orders list is a WARNING, not a guard (ruling 6 — it never blocks), so a stale read
+//     there costs nothing. Default isolation, claim only.
+//
+// Unlike createQuote, none of this touches `allocateNumber` — the create transaction's second
+// Serializable master (Task 3's report) does not apply here.
+// ---------------------------------------------------------------------------------------------
+
+/** Claims the Quote row for the rest of the caller's OWN transaction — the `claimOrder` shape
+ *  (order-locks.ts): raw because Prisma has no FOR UPDATE of its own; id only, with the full row
+ *  read back through the ordinary client once the lock is held. The guarded state every mutator
+ *  acts on (`status`, `deletedAt`, and the child rows written under it) lives on or under this
+ *  row, so the claim is the guard at ANY caller isolation. */
+async function claimQuote(tx: Db, id: string): Promise<Quote | null> {
+  await tx.$queryRaw`SELECT "id" FROM "Quote" WHERE "id" = ${id} FOR UPDATE`;
+  return tx.quote.findFirst({ where: { id } });
+}
+
+/** Missing and soft-deleted quotes both 404 for mutations (the orders `claimOrder` caller
+ *  convention) — `getQuote` is the one reader that shows a deleted quote (shown-never-hidden). */
+function requireLiveQuote(row: Quote | null): Quote {
+  if (!row || row.deletedAt !== null) throw new HttpError(404, "Quote not found");
+  return row;
+}
+
+// The update shapes: the CREATE tree with an optional `id` at every level. A row WITH an id must
+// be a live row of this quote (validated against the claimed tree, never trusted) and is updated
+// in place — QuoteLine ids MUST stay stable, because `OrderLine.quoteLineId` points at them
+// (ruling 5); price/break ids are kept stable too so an untouched row never diffs in history.
+// A row WITHOUT an id is created; a live row missing from the payload is soft-deleted.
+const UPDATE_BREAK = BREAK.extend({ id: z.string().min(1).optional() });
+const UPDATE_PRICE = PRICE.extend({
+  id: z.string().min(1).optional(),
+  breaks: z.array(UPDATE_BREAK).default([]),
+});
+const UPDATE_LINE = LINE.extend({
+  id: z.string().min(1).optional(),
+  prices: z.array(UPDATE_PRICE).default([]),
+});
+
+const UPDATE = z.object({
+  // Present-and-equal is tolerated (a full-form client echoes it back); a DIFFERENT id is the
+  // immutability 400 (spec §4.1 — the agreement's identity; wrong customer = delete + re-key).
+  customerId: z.string().min(1).optional(),
+  contactId: z.string().min(1).nullable().optional(),
+  quoteDate: z.string().optional(),
+  effectiveDate: z.string().optional(),
+  expiryDate: z.string().optional(),
+  followUpDate: z.string().nullable().optional(),
+  rfqNumber: z.string().trim().max(200).optional(),
+  quotedById: z.string().min(1).optional(),
+  // Explicit id = validated; explicit null = none; ABSENT = keep the stored pick. No re-default:
+  // the kind's default row is an ENTRY default (spec §5.1), not a standing rule.
+  endingStatementId: z.string().min(1).nullable().optional(),
+  notes: z.string().max(4000).optional(),
+  internalNotes: z.string().max(4000).optional(),
+  // Whole-array replace when present (min 1 — a quote must keep at least one line, the create
+  // rule); ABSENT leaves the line tree completely untouched (a header-only patch).
+  lines: z.array(UPDATE_LINE).min(1).optional(),
+}).strict();
+
+type UpdateInput = z.infer<typeof UPDATE>;
+type UpdateLineInput = UpdateInput["lines"] extends (infer L)[] | undefined ? L : never;
+
+/** The quote's live line → price → break tree plus each line's live part number (for §5.14
+ *  refusal labels), read on the caller's `tx` UNDER the claim. */
+async function loadLiveTree(tx: Db, quoteId: string) {
+  return tx.quoteLine.findMany({
+    where: { quoteId, deletedAt: null },
+    orderBy: [{ position: "asc" }, { id: "asc" }],
+    include: {
+      part: { select: { partNumber: true } },
+      prices: {
+        where: { deletedAt: null },
+        orderBy: [{ position: "asc" }, { id: "asc" }],
+        include: { breaks: { where: { deletedAt: null }, orderBy: { threshold: "asc" } } },
+      },
+    },
+  });
+}
+type LiveTree = Awaited<ReturnType<typeof loadLiveTree>>;
+type LiveLine = LiveTree[number];
+
+/** Every payload id must name a live row of THIS quote, at the level it appears, exactly once —
+ *  an id is a claim about existing data and is never trusted. Runs before any write. */
+function validateUpdateIds(current: LiveTree, lines: UpdateLineInput[], resolved: ResolvedQuoteLine[]): void {
+  const lineById = new Map(current.map((l) => [l.id, l]));
+  const seenLines = new Set<string>();
+  for (const [i, line] of lines.entries()) {
+    const label = resolved[i].label;
+    let cur: LiveLine | undefined;
+    if (line.id !== undefined) {
+      if (seenLines.has(line.id)) {
+        throw new HttpError(400, `${label}: the same line appears twice in the payload`);
+      }
+      seenLines.add(line.id);
+      cur = lineById.get(line.id);
+      if (!cur) throw new HttpError(400, `${label}: that line does not exist on this quote`);
+    }
+    const curPrices = new Map((cur?.prices ?? []).map((p) => [p.id, p]));
+    const seenPrices = new Set<string>();
+    for (const price of line.prices) {
+      let curPrice;
+      if (price.id !== undefined) {
+        if (seenPrices.has(price.id)) {
+          throw new HttpError(400, `${label}: the same price row appears twice in the payload`);
+        }
+        seenPrices.add(price.id);
+        curPrice = curPrices.get(price.id);
+        if (!curPrice) throw new HttpError(400, `${label}: that price row does not exist on this line`);
+      }
+      const curBreaks = new Set((curPrice?.breaks ?? []).map((b) => b.id));
+      const seenBreaks = new Set<string>();
+      for (const brk of price.breaks) {
+        if (brk.id === undefined) continue;
+        if (seenBreaks.has(brk.id)) {
+          throw new HttpError(400, `${label}: the same price break appears twice in the payload`);
+        }
+        seenBreaks.add(brk.id);
+        if (!curBreaks.has(brk.id)) {
+          throw new HttpError(400, `${label}: that price break does not exist on this price row`);
+        }
+      }
+    }
+  }
+}
+
+const orderNumbers = (orders: Map<string, number>): string =>
+  [...orders.values()].sort((a, b) => a - b).map((n) => `#${n}`).join(", ");
+
+/**
+ * The §5.14 refusals, read under the quote row claim on the caller's own `tx`: a payload that
+ * DROPS a line — or changes a kept line's `partId` (re-point, attach, or detach alike) — while
+ * any LIVE order's line still references it is refused with every blocking order NAMED. A
+ * vanished or re-pointed line would silently re-price those orders, the exact failure §7.5
+ * exists to prevent. Free-text and price-row edits on a linked line are always allowed (ruling
+ * 8 — live until finalize); voided orders never block (house rule).
+ */
+async function assertLinkedLinesUntouched(
+  tx: Db, current: LiveTree, lines: UpdateLineInput[], resolved: ResolvedQuoteLine[],
+): Promise<void> {
+  const keptIds = new Set(lines.flatMap((l) => (l.id === undefined ? [] : [l.id])));
+  const curById = new Map(current.map((l) => [l.id, l]));
+  const removed = current.filter((l) => !keptIds.has(l.id));
+  const rePointed = lines.flatMap((line, i) => {
+    if (line.id === undefined) return [];
+    const cur = curById.get(line.id)!;
+    return cur.partId !== (line.partId ?? null) ? [{ cur, index: i }] : [];
+  });
+  const affected = [...removed.map((l) => l.id), ...rePointed.map((r) => r.cur.id)];
+  if (affected.length === 0) return;
+
+  const links = await tx.orderLine.findMany({
+    where: { quoteLineId: { in: affected }, order: { deletedAt: null } },
+    select: { quoteLineId: true, order: { select: { id: true, orderNumber: true } } },
+  });
+  if (links.length === 0) return;
+  const byLine = new Map<string, Map<string, number>>();
+  for (const link of links) {
+    if (!link.quoteLineId) continue;
+    const orders = byLine.get(link.quoteLineId) ?? new Map<string, number>();
+    orders.set(link.order.id, link.order.orderNumber);
+    byLine.set(link.quoteLineId, orders);
+  }
+
+  for (const line of removed) {
+    const orders = byLine.get(line.id);
+    if (!orders) continue;
+    const display = line.part?.partNumber ?? line.partNumberText;
+    throw new HttpError(400,
+      `Line ${line.position} (${display}) cannot be removed — order(s) ${orderNumbers(orders)} ` +
+      "still price from it");
+  }
+  for (const { cur, index } of rePointed) {
+    const orders = byLine.get(cur.id);
+    if (!orders) continue;
+    throw new HttpError(400,
+      `${resolved[index].label}: its part cannot be changed — order(s) ${orderNumbers(orders)} ` +
+      "still price from it");
+  }
+}
+
+const decEq = (a: Prisma.Decimal | null, b: number | null): boolean =>
+  a === null ? b === null : b !== null && a.toNumber() === b;
+
+/** Only the columns whose values actually changed — an untouched kept row gets NO write, so the
+ *  audit diff never shows churn an operator didn't make (the linkOrder "identical value: skip"
+ *  rule, applied field-by-field). */
+function lineChanges(cur: LiveLine, line: UpdateLineInput, position: number): Prisma.QuoteLineUncheckedUpdateInput {
+  const patch: Prisma.QuoteLineUncheckedUpdateInput = {};
+  if (cur.position !== position) patch.position = position;
+  if (cur.partId !== (line.partId ?? null)) patch.partId = line.partId ?? null;
+  if (cur.partNumberText !== line.partNumberText) patch.partNumberText = line.partNumberText;
+  if (cur.partNameText !== line.partNameText) patch.partNameText = line.partNameText;
+  if (cur.partDescriptionText !== line.partDescriptionText) {
+    patch.partDescriptionText = line.partDescriptionText;
+  }
+  if (cur.materialText !== line.materialText) patch.materialText = line.materialText;
+  if (!decEq(cur.eachWeight, line.eachWeight ?? null)) patch.eachWeight = line.eachWeight ?? null;
+  if (cur.quotedQty !== (line.quotedQty ?? null)) patch.quotedQty = line.quotedQty ?? null;
+  if (cur.quotedUnlimited !== line.quotedUnlimited) patch.quotedUnlimited = line.quotedUnlimited;
+  return patch;
+}
+
+function priceChanges(
+  cur: LiveLine["prices"][number], price: UpdateLineInput["prices"][number], position: number,
+): Prisma.QuotePriceUncheckedUpdateInput {
+  const patch: Prisma.QuotePriceUncheckedUpdateInput = {};
+  if (cur.position !== position) patch.position = position;
+  if (!decEq(cur.setupCharge, price.setupCharge ?? null)) patch.setupCharge = price.setupCharge ?? null;
+  if (!decEq(cur.unitPrice, price.unitPrice ?? null)) patch.unitPrice = price.unitPrice ?? null;
+  if (!decEq(cur.minimumCharge, price.minimumCharge ?? null)) {
+    patch.minimumCharge = price.minimumCharge ?? null;
+  }
+  if (cur.pricePer !== (price.pricePer ?? "EACH")) patch.pricePer = price.pricePer ?? "EACH";
+  if (cur.notes !== price.notes) patch.notes = price.notes;
+  return patch;
+}
+
+/**
+ * The array-replace, diff-and-write: kept rows (payload id) update IN PLACE — `QuoteLine` ids
+ * must survive an edit because `OrderLine.quoteLineId` points at them, and stable price/break
+ * ids keep unchanged rows out of the audit diff; new rows are created; live rows missing from
+ * the payload are soft-deleted. NOT the invoice-lines delete-and-recreate (§5.5 reminta ids
+ * every save — an id-stable contract can't be built on that shape).
+ *
+ * Two orderings are load-bearing, both for the live-rows-only partial uniques:
+ *   - a kept price row whose `processStepCodeId` changed (and a kept break whose `threshold`
+ *     changed) is STAMPED AND RE-MINTED, never patched in place — patching a swap of two rows'
+ *     codes collides with the sibling's still-live (quoteLineId, processStepCodeId) index
+ *     mid-sequence, since each UPDATE is checked as its own statement;
+ *   - all stamps happen BEFORE all creates/patches, so a freed value is genuinely free.
+ * Grandchildren of a stamped row are left as-is — unreachable behind the dead parent, the
+ * deletePartPrice rule.
+ */
+async function applyQuoteLines(
+  tx: Db, quoteId: string, lines: UpdateLineInput[], current: LiveTree,
+): Promise<void> {
+  const now = new Date();
+  const curLineById = new Map(current.map((l) => [l.id, l]));
+  const keptLineIds = new Set(lines.flatMap((l) => (l.id === undefined ? [] : [l.id])));
+
+  // Pass 1 — every stamp: dropped lines, then dropped/re-keyed price rows and breaks of kept
+  // lines. `reMinted` remembers which payload rows must take the create path in pass 2.
+  const droppedLines = current.filter((l) => !keptLineIds.has(l.id)).map((l) => l.id);
+  if (droppedLines.length > 0) {
+    await tx.quoteLine.updateMany({
+      where: { id: { in: droppedLines } }, data: { deletedAt: now },
+    });
+  }
+  const reMintedPrices = new Set<UpdateLineInput["prices"][number]>();
+  const reMintedBreaks = new Set<UpdateLineInput["prices"][number]["breaks"][number]>();
+  const stampPrices: string[] = [];
+  const stampBreaks: string[] = [];
+  for (const line of lines) {
+    if (line.id === undefined) continue;
+    const cur = curLineById.get(line.id)!;
+    const keptPriceIds = new Set(line.prices.flatMap((p) => (p.id === undefined ? [] : [p.id])));
+    stampPrices.push(...cur.prices.filter((p) => !keptPriceIds.has(p.id)).map((p) => p.id));
+    const curPriceById = new Map(cur.prices.map((p) => [p.id, p]));
+    for (const price of line.prices) {
+      if (price.id === undefined) continue;
+      const curPrice = curPriceById.get(price.id)!;
+      if (curPrice.processStepCodeId !== price.processStepCodeId) {
+        reMintedPrices.add(price);
+        stampPrices.push(price.id);
+        continue; // its breaks ride the re-mint; the old row's breaks stay behind it
+      }
+      const keptBreakIds = new Set(price.breaks.flatMap((b) => (b.id === undefined ? [] : [b.id])));
+      stampBreaks.push(...curPrice.breaks.filter((b) => !keptBreakIds.has(b.id)).map((b) => b.id));
+      const curBreakById = new Map(curPrice.breaks.map((b) => [b.id, b]));
+      for (const brk of price.breaks) {
+        if (brk.id === undefined) continue;
+        const curBreak = curBreakById.get(brk.id)!;
+        if (curBreak.threshold.toNumber() !== brk.threshold) {
+          reMintedBreaks.add(brk);
+          stampBreaks.push(brk.id);
+        }
+      }
+    }
+  }
+  if (stampPrices.length > 0) {
+    await tx.quotePrice.updateMany({ where: { id: { in: stampPrices } }, data: { deletedAt: now } });
+  }
+  if (stampBreaks.length > 0) {
+    await tx.quotePriceBreak.updateMany({ where: { id: { in: stampBreaks } }, data: { deletedAt: now } });
+  }
+
+  // Pass 2 — creates and in-place patches, positions re-derived from array order throughout.
+  for (const [i, line] of lines.entries()) {
+    const position = i + 1;
+    if (line.id === undefined) {
+      await tx.quoteLine.create({ data: { quoteId, ...lineCreateData(line, position) } });
+      continue;
+    }
+    const cur = curLineById.get(line.id)!;
+    const patch = lineChanges(cur, line, position);
+    if (Object.keys(patch).length > 0) {
+      await tx.quoteLine.update({ where: { id: line.id }, data: patch });
+    }
+    const curPriceById = new Map(cur.prices.map((p) => [p.id, p]));
+    for (const [j, price] of line.prices.entries()) {
+      const pricePosition = j + 1;
+      if (price.id === undefined || reMintedPrices.has(price)) {
+        await tx.quotePrice.create({
+          data: { quoteLineId: line.id, ...priceCreateData(price, pricePosition) },
+        });
+        continue;
+      }
+      const curPrice = curPriceById.get(price.id)!;
+      const pricePatch = priceChanges(curPrice, price, pricePosition);
+      if (Object.keys(pricePatch).length > 0) {
+        await tx.quotePrice.update({ where: { id: price.id }, data: pricePatch });
+      }
+      const curBreakById = new Map(curPrice.breaks.map((b) => [b.id, b]));
+      for (const brk of price.breaks) {
+        if (brk.id === undefined || reMintedBreaks.has(brk)) {
+          await tx.quotePriceBreak.create({
+            data: { quotePriceId: price.id, threshold: brk.threshold, price: brk.price },
+          });
+          continue;
+        }
+        const curBreak = curBreakById.get(brk.id)!;
+        if (curBreak.price.toNumber() !== brk.price) {
+          await tx.quotePriceBreak.update({ where: { id: brk.id }, data: { price: brk.price } });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Edit an OPEN quote (spec §5.1, `quotes.edit`): header fields patch; a `lines` array replaces
+ * the whole line/price/break tree (array-replace, ids kept stable — see `applyQuoteLines`).
+ * `customerId` is immutable. Everything create validates is re-validated through the SAME
+ * helpers (`resolveQuoteLines`/`validateQuotePrices`); the §5.14 linked-line guards run under
+ * the row claim. One `auditedUpdate` wraps every write — the quote-level before/after diff (the
+ * order-children precedent: editing the tree IS editing the quote) is the audit trail, and this
+ * is SNAPSHOT_INCLUDE.quote's consumer. Isolation: see the section comment above.
+ */
+export async function updateQuote(id: string, input: unknown): Promise<QuoteDetail> {
+  const data = UPDATE.parse(input);
+  const assignsFk = data.lines !== undefined || data.endingStatementId != null;
+
+  return withDbErrors({ entity: "Quote", conflictField: "operation" }, () =>
+    prisma.$transaction(async (tx) => {
+      const quote = requireLiveQuote(await claimQuote(tx, id));
+      if (quote.status !== "OPEN") {
+        throw new HttpError(400, "This quote is closed — reopen it before editing");
+      }
+      if (data.customerId !== undefined && data.customerId !== quote.customerId) {
+        throw new HttpError(400,
+          "The customer on a quote cannot be changed — delete this quote and enter a new one");
+      }
+
+      if (data.contactId != null) {
+        const contact = await tx.customerContact.findFirst({
+          where: { id: data.contactId, customerId: quote.customerId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!contact) throw new HttpError(400, "That contact does not exist for this customer");
+      }
+      if (data.quotedById !== undefined) {
+        const quotedBy = await tx.user.findFirst({
+          where: { id: data.quotedById, deletedAt: null }, select: { id: true },
+        });
+        if (!quotedBy) throw new HttpError(400, "That quoted-by user does not exist");
+      }
+      if (data.endingStatementId != null) {
+        await assertRefExists("endingStatement", data.endingStatementId, tx);
+      }
+
+      // The date window is validated on the MERGED result — a payload touching one end must
+      // still agree with the stored other end.
+      const effectiveDate = data.effectiveDate !== undefined
+        ? parseDate(data.effectiveDate, "Effective date") : quote.effectiveDate;
+      const expiryDate = data.expiryDate !== undefined
+        ? parseDate(data.expiryDate, "Expiry date") : quote.expiryDate;
+      if (effectiveDate.getTime() > expiryDate.getTime()) {
+        throw new HttpError(400, "The effective date must be on or before the expiry date");
+      }
+
+      let current: LiveTree | undefined;
+      if (data.lines !== undefined) {
+        const resolved = await resolveQuoteLines(tx, quote.customerId, data.lines);
+        await validateQuotePrices(tx, data.lines, resolved);
+        current = await loadLiveTree(tx, id);
+        validateUpdateIds(current, data.lines, resolved);
+        await assertLinkedLinesUntouched(tx, current, data.lines, resolved);
+      }
+
+      const patch: Prisma.QuoteUncheckedUpdateInput = {
+        ...(data.contactId !== undefined ? { contactId: data.contactId } : {}),
+        ...(data.quoteDate !== undefined
+          ? { quoteDate: parseDate(data.quoteDate, "Quote date") } : {}),
+        ...(data.effectiveDate !== undefined ? { effectiveDate } : {}),
+        ...(data.expiryDate !== undefined ? { expiryDate } : {}),
+        ...(data.followUpDate !== undefined
+          ? {
+            followUpDate: data.followUpDate === null
+              ? null : parseDate(data.followUpDate, "Follow-up date"),
+          } : {}),
+        ...(data.rfqNumber !== undefined ? { rfqNumber: data.rfqNumber } : {}),
+        ...(data.quotedById !== undefined ? { quotedById: data.quotedById } : {}),
+        ...(data.endingStatementId !== undefined ? { endingStatementId: data.endingStatementId } : {}),
+        ...(data.notes !== undefined ? { notes: data.notes } : {}),
+        ...(data.internalNotes !== undefined ? { internalNotes: data.internalNotes } : {}),
+      };
+
+      await auditedUpdate("quote", id, async () => {
+        if (Object.keys(patch).length > 0) {
+          await tx.quote.update({ where: { id }, data: patch });
+        }
+        if (data.lines !== undefined) {
+          await applyQuoteLines(tx, id, data.lines, current!);
+        }
+      }, { tx });
+
+      return readDetail(tx, id);
+    }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
+}
+
+const ATTACH = z.object({
+  lineId: z.string().min(1),
+  partId: z.string().min(1),
+}).strict();
+
+/**
+ * Attaches a part to a live FREE-TEXT line of an OPEN quote (spec §4.1, ruling 1) — from then on
+ * the line auto-links and prices tier 1. Same validation as create (live part, the quote's own
+ * customer, one live line per part), refused on a line that already carries one. The free-text
+ * columns stay as-is — dormant history the read model stops consulting the moment `partId` is
+ * set. Serializable: assigns the registered `QuoteLine.partId` FK (the section comment above).
+ */
+export async function attachPart(quoteId: string, input: unknown): Promise<QuoteDetail> {
+  const data = ATTACH.parse(input);
+
+  return withDbErrors({ entity: "Quote" }, () =>
+    prisma.$transaction(async (tx) => {
+      const quote = requireLiveQuote(await claimQuote(tx, quoteId));
+      if (quote.status !== "OPEN") {
+        throw new HttpError(400, "This quote is closed — reopen it before editing");
+      }
+      const line = await tx.quoteLine.findFirst({
+        where: { id: data.lineId, quoteId, deletedAt: null },
+        select: { id: true, partId: true },
+      });
+      if (!line) throw new HttpError(404, "Quote line not found");
+      if (line.partId !== null) throw new HttpError(400, "That line already carries a part");
+
+      const part = await tx.part.findFirst({
+        where: { id: data.partId, deletedAt: null },
+        select: { id: true, customerId: true },
+      });
+      if (!part) throw new HttpError(400, "That part does not exist");
+      if (part.customerId !== quote.customerId) {
+        throw new HttpError(400, "That part belongs to another customer");
+      }
+      const dupe = await tx.quoteLine.findFirst({
+        where: { quoteId, partId: part.id, deletedAt: null, id: { not: line.id } },
+        select: { id: true },
+      });
+      if (dupe) throw new HttpError(400, "That part is already quoted on this quote");
+
+      await auditedUpdate("quote", quoteId,
+        () => tx.quoteLine.update({ where: { id: line.id }, data: { partId: part.id } }), { tx });
+
+      return readDetail(tx, quoteId);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+}
+
+export type LinkedOpenOrder = { id: string; orderNumber: number };
+
+/**
+ * The close warning's order list (ruling 6): every LIVE order still linked to any of this
+ * quote's lines that is not yet FULLY INVOICED — where "fully invoiced" means a live FINALIZED
+ * INVOICE covers the order (invoice-guards.ts's FROZEN predicate: `kind INVOICE`, `status
+ * FINALIZED`, `deletedAt null`). The Invoice row is the source of truth, deliberately NOT
+ * `Order.status`: `INVOICED` and `REOPENED` are both invoice-owned values (ship-ledger.ts) that
+ * recompute paths move on and off, while `finalizedInvoicesFor` reads the fact itself — and an
+ * order at REOPENED still has its finalized paper, so it is not listed either. Deduped (one
+ * order linking through several lines lists once), ascending by order number.
+ */
+async function linkedOpenOrdersFor(tx: Db, quoteId: string): Promise<LinkedOpenOrder[]> {
+  const links = await tx.orderLine.findMany({
+    where: { quoteLine: { quoteId }, order: { deletedAt: null } },
+    select: { order: { select: { id: true, orderNumber: true } } },
+  });
+  const orders = new Map(links.map((l) => [l.order.id, l.order.orderNumber]));
+  if (orders.size === 0) return [];
+  const frozen = new Set((await finalizedInvoicesFor(tx, [...orders.keys()])).map((f) => f.orderId));
+  return [...orders.entries()]
+    .filter(([orderId]) => !frozen.has(orderId))
+    .map(([orderId, orderNumber]) => ({ id: orderId, orderNumber }))
+    .sort((a, b) => a.orderNumber - b.orderNumber);
+}
+
+export type QuoteCloseResult = { quote: QuoteDetail; linkedOpenOrders: LinkedOpenOrder[] };
+
+/**
+ * Close (spec §5.1, `quotes.edit` — reversible, takes nothing with it, so no special action):
+ * reason trimmed non-empty IN THE SERVICE (§5.17), status/closedAt/closedBy/closeReason
+ * stamped under the row claim (a second close 400s off the fresh post-claim read), audited with
+ * the reason. The response WARNS-AND-LISTS the linked open orders — never a block (ruling 6):
+ * their stored links keep pricing them regardless, so there is nothing a block would protect.
+ */
+export async function closeQuote(id: string, reason: string): Promise<QuoteCloseResult> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to close a quote");
+
+  return withDbErrors({ entity: "Quote" }, () =>
+    prisma.$transaction(async (tx) => {
+      const quote = requireLiveQuote(await claimQuote(tx, id));
+      if (quote.status === "CLOSED") throw new HttpError(400, "This quote is already closed");
+
+      const linkedOpenOrders = await linkedOpenOrdersFor(tx, id);
+      await auditedUpdate("quote", id, () => tx.quote.update({
+        where: { id },
+        data: {
+          status: "CLOSED", closedAt: new Date(), closedById: currentActor().id, closeReason: why,
+        },
+      }), { tx, reason: why });
+
+      return { quote: await readDetail(tx, id), linkedOpenOrders };
+    }));
+}
+
+/**
+ * Reopen (`quotes.edit`): back to OPEN with the close fields CLEARED — `closedAt`/`closedById`
+ * null, `closeReason` "". The schema deliberately has no reopen columns (unlike ClosePeriod's
+ * `reopenedAt`/`reopenReason`), and the detail read renders the close fields unconditionally, so
+ * a stale reason surviving onto an OPEN quote would print state that is no longer true. Nothing
+ * is lost: the reopen's audit entry carries the reason arg AND a before snapshot holding the
+ * whole close story; a later re-close stamps fresh values.
+ */
+export async function reopenQuote(id: string, reason: string): Promise<QuoteDetail> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to reopen a quote");
+
+  return withDbErrors({ entity: "Quote" }, () =>
+    prisma.$transaction(async (tx) => {
+      const quote = requireLiveQuote(await claimQuote(tx, id));
+      if (quote.status !== "CLOSED") throw new HttpError(400, "This quote is not closed");
+
+      await auditedUpdate("quote", id, () => tx.quote.update({
+        where: { id },
+        data: { status: "OPEN", closedAt: null, closedById: null, closeReason: "" },
+      }), { tx, reason: why });
+
+      return readDetail(tx, id);
+    }));
+}
+
+/**
+ * The §5.14 blocker list for the delete refusal and the blockers Excel export (the
+ * `partOrderBlockers` shape, quote-scoped): every LIVE order carrying a line that references
+ * any of this quote's lines — named "#1042 · ACME", deduped per order, ascending. Callers with
+ * a claim pass their own `tx` so the guard and the write it guards see the same state; the
+ * export route reads on the bare client.
+ */
+export async function quoteOrderBlockers(quoteId: string, db: Db = prisma): Promise<Blocker[]> {
+  const links = await db.orderLine.findMany({
+    where: { quoteLine: { quoteId }, order: { deletedAt: null } },
+    select: {
+      order: { select: { id: true, orderNumber: true, customer: { select: { code: true } } } },
+    },
+    orderBy: { order: { orderNumber: "asc" } },
+  });
+  const seen = new Set<string>();
+  const out: Blocker[] = [];
+  for (const { order } of links) {
+    if (seen.has(order.id)) continue;
+    seen.add(order.id);
+    out.push({
+      entityLabel: "Order", name: `#${order.orderNumber} · ${order.customer.code}`,
+      id: order.id, href: `/orders/${order.id}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Delete (spec §5.1, `quotes.delete`): soft, reason required (§5.17 — it carries lines and
+ * price rows away), REFUSED-AND-NAMED while any live order line references any of its lines
+ * (§5.14 — the full blocker list; its Excel rides the blockers route). A CLOSED quote deletes
+ * fine — closing is not a prerequisite, and the typo case may well have been closed first.
+ * The quote's own delete entry snapshots the live tree BEFORE anything is stamped, then the
+ * live lines are stamped in the same transaction (children are audited through the parent — the
+ * order-children rule; grandchildren stay behind their dead line, the deletePartPrice rule).
+ * Serializable: the blocker read is the OrderLine predicate the section comment covers.
+ */
+export async function deleteQuote(id: string, reason: string): Promise<void> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to delete a quote");
+
+  await withDbErrors({ entity: "Quote" }, () =>
+    prisma.$transaction(async (tx) => {
+      requireLiveQuote(await claimQuote(tx, id));
+
+      const blockers = await quoteOrderBlockers(id, tx);
+      if (blockers.length > 0) {
+        throw new HttpError(400,
+          `This quote cannot be deleted — order(s) ${blockers.map((b) => b.name).join(", ")} ` +
+          "still price from it");
+      }
+
+      await auditedSoftDelete("quote", id, why, tx);
+      await tx.quoteLine.updateMany({
+        where: { quoteId: id, deletedAt: null }, data: { deletedAt: new Date() },
+      });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

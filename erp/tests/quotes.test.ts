@@ -4,7 +4,10 @@ import { runWithContext } from "@/server/context";
 import { setSetting } from "@/server/settings";
 import { addDays, formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import ExcelJS from "exceljs";
-import { createQuote, getQuote, listQuotes, quoteWorklist, exportQuotes } from "@/server/quotes";
+import {
+  createQuote, getQuote, listQuotes, quoteWorklist, exportQuotes,
+  updateQuote, attachPart, closeQuote, reopenQuote, deleteQuote, quoteOrderBlockers,
+} from "@/server/quotes";
 
 /**
  * Phase 6 Task 1 — SCHEMA smoke only: the quote service (create/list/worklist and its own TDD
@@ -1000,5 +1003,748 @@ describe("exportQuotes", () => {
     expect(row(4)[8]).toBe("RFQ-A");
     expect(row(4)[9]).toBe(1); // live line count
     expect(row(4)[10]).toBe("Quinn Quoter");
+  });
+});
+
+// ============================================================================================
+// Phase 6 Task 4 — the MUTATION half: updateQuote / attachPart / closeQuote / reopenQuote /
+// deleteQuote + quoteOrderBlockers. Every mutation claims the Quote row (SELECT … FOR UPDATE)
+// before reading the state it acts on; the §5.14 refusals name their blocking orders.
+// ============================================================================================
+
+/** A created quote plus the ids the update payloads need. Two lines — one part-linked and
+ *  priced, one free-text — so every mutation test starts from the same realistic document. */
+async function updatableQuote(f: Awaited<ReturnType<typeof serviceFixture>>) {
+  const detail = await asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id,
+    contactId: f.contact.id,
+    rfqNumber: "RFQ-U",
+    lines: [
+      {
+        partId: f.part.id, quotedQty: 500,
+        prices: [{
+          processStepCodeId: f.harden.id, setupCharge: "2.00", unitPrice: "0.1500",
+          minimumCharge: "100.00", pricePer: "EACH", notes: "per sample",
+          breaks: [{ threshold: "1000.00", price: "0.1200" }],
+        }],
+      },
+      { partNumberText: "FT-1", partNameText: "Widget", materialText: "4140", prices: [] },
+    ],
+  }));
+  return detail;
+}
+
+/** Echoes a QuoteDetail back as an update `lines` payload — the round-trip a real client makes:
+ *  ids kept, linked lines send blank free-text (the detail reads identity live from the part). */
+function linesPayloadFrom(detail: Awaited<ReturnType<typeof getQuote>>) {
+  return detail.lines.map((l) => ({
+    id: l.id,
+    partId: l.partId,
+    partNumberText: l.partId ? "" : l.partNumber,
+    partNameText: l.partId ? "" : l.partName,
+    partDescriptionText: l.partId ? "" : l.partDescription,
+    materialText: l.partId ? "" : l.material,
+    quotedQty: l.quotedQty,
+    quotedUnlimited: l.quotedUnlimited,
+    prices: l.prices.map((p) => ({
+      id: p.id,
+      processStepCodeId: p.processStepCodeId,
+      setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
+      pricePer: p.pricePer, notes: p.notes,
+      breaks: p.breaks.map((b) => ({ id: b.id, threshold: b.threshold, price: b.price })),
+    })),
+  }));
+}
+
+/** Fabricates a live order whose lines link the given quote lines (Task 5 owns the real
+ *  auto-link) — the linked-order-summary test's own shape, reused for the §5.14 refusals. */
+async function linkOrderTo(
+  f: Awaited<ReturnType<typeof serviceFixture>>,
+  orderNumber: number, quoteLineIds: string[], opts?: { voided?: boolean },
+) {
+  return prisma.order.create({
+    data: {
+      orderNumber, customerId: f.customer.id,
+      receivedDate: today(), requestDate: today(),
+      deletedAt: opts?.voided ? new Date() : null,
+      lines: { create: quoteLineIds.map((qlId, i) => ({
+        position: i + 1, partId: f.part.id, qty: 5, weight: "10.00", quoteLineId: qlId,
+      })) },
+    },
+  });
+}
+
+const latestAudit = async (entityId: string) =>
+  (await prisma.auditLog.findMany({
+    where: { entity: "quote", entityId }, orderBy: [{ at: "desc" }, { id: "desc" }], take: 1,
+  }))[0];
+
+describe("updateQuote: guards and header fields", () => {
+  beforeEach(truncateAll);
+
+  it("404s an unknown or deleted quote; 400s a CLOSED one", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => updateQuote("nope", { notes: "x" })))
+      .rejects.toMatchObject({ status: 404 });
+
+    await prisma.quote.update({ where: { id: q.id }, data: { status: "CLOSED" } });
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { notes: "x" })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("closed") });
+
+    await prisma.quote.update({
+      where: { id: q.id }, data: { status: "OPEN", deletedAt: new Date() },
+    });
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { notes: "x" })))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it("customerId is immutable — a different id 400s, the same id is a no-op key", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { customerId: f.other.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("customer") });
+
+    const same = await asUser(f.quoter, () =>
+      updateQuote(q.id, { customerId: f.customer.id, notes: "kept" }));
+    expect(same.customerId).toBe(f.customer.id);
+    expect(same.notes).toBe("kept");
+  });
+
+  it("patches header fields; omitted keys stay untouched; explicit nulls clear the nullables", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    const edited = await asUser(f.quoter, () => updateQuote(q.id, {
+      rfqNumber: "RFQ-2", notes: "prints", internalNotes: "never prints",
+      quoteDate: "2026-08-01", effectiveDate: "2026-08-02", expiryDate: "2026-12-31",
+      followUpDate: "2026-09-01", quotedById: f.second.id,
+    }));
+    expect(edited.rfqNumber).toBe("RFQ-2");
+    expect(edited.notes).toBe("prints");
+    expect(edited.internalNotes).toBe("never prints");
+    expect(edited.quoteDate).toBe("2026-08-01");
+    expect(edited.effectiveDate).toBe("2026-08-02");
+    expect(edited.expiryDate).toBe("2026-12-31");
+    expect(edited.followUpDate).toBe("2026-09-01");
+    expect(edited.quotedByName).toBe("Sam Second");
+    expect(edited.contactName).toBe("Pat Buyer"); // untouched
+    expect(edited.lines).toHaveLength(2); // untouched — no lines key, no line writes
+
+    const cleared = await asUser(f.quoter, () => updateQuote(q.id, {
+      followUpDate: null, contactId: null, endingStatementId: null,
+    }));
+    expect(cleared.followUpDate).toBeNull();
+    expect(cleared.contactId).toBeNull();
+    expect(cleared.endingStatementId).toBeNull();
+    expect(cleared.rfqNumber).toBe("RFQ-2"); // still untouched by the second patch
+  });
+
+  it("validates the MERGED date window — moving effectiveDate past the stored expiry 400s", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const past = iso(addDays(todayDateOnly(), 40)); // default expiry is +30 days
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { effectiveDate: past })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("effective") });
+  });
+
+  it("re-validates contact, quotedBy, and endingStatement like create; absent endingStatement keeps the stored pick, never re-defaults", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { contactId: f.otherContact.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("contact") });
+
+    const gone = await prisma.user.create({
+      data: { username: "gone", passwordHash: "x", displayName: "Gone", deletedAt: new Date() },
+    });
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { quotedById: gone.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("quoted-by") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { endingStatementId: "nope" })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("ending statement") });
+
+    // Clear the pick, then edit something else with the key ABSENT: the null must survive even
+    // though the kind still has a live default — the default is an ENTRY default (spec §5.1).
+    await asUser(f.quoter, () => updateQuote(q.id, { endingStatementId: null }));
+    const after = await asUser(f.quoter, () => updateQuote(q.id, { notes: "still no statement" }));
+    expect(after.endingStatementId).toBeNull();
+  });
+});
+
+describe("updateQuote: line/price/break array-replace", () => {
+  beforeEach(truncateAll);
+
+  it("keeps ids STABLE for kept lines and price rows, re-derives positions from array order, creates and soft-deletes the rest", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const [linked, freeText] = q.lines;
+
+    // Reverse the two lines, edit the price, drop nothing, add a third (new part) line.
+    const payload = linesPayloadFrom(q);
+    const edited = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [
+        payload[1], // free-text first now
+        { ...payload[0], prices: [{ ...payload[0].prices[0], unitPrice: "0.2000" }] },
+        { partId: f.part2.id, prices: [] },
+      ],
+    }));
+
+    expect(edited.lines).toHaveLength(3);
+    expect(edited.lines.map((l) => l.position)).toEqual([1, 2, 3]);
+    expect(edited.lines[0].id).toBe(freeText.id); // kept, new position, SAME id
+    expect(edited.lines[1].id).toBe(linked.id);
+    expect(edited.lines[1].prices[0].id).toBe(linked.prices[0].id); // price row id stable too
+    expect(edited.lines[1].prices[0].unitPrice).toBe(0.2);
+    expect(edited.lines[1].prices[0].breaks[0].id).toBe(linked.prices[0].breaks[0].id);
+    expect(edited.lines[2].partNumber).toBe("P-200");
+
+    // Now DROP the free-text line: it soft-deletes (still in the DB, out of every live read).
+    const dropped = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: linesPayloadFrom(edited).filter((l) => l.id !== freeText.id),
+    }));
+    expect(dropped.lines.map((l) => l.id)).toEqual([linked.id, edited.lines[2].id]);
+    const row = await prisma.quoteLine.findFirst({ where: { id: freeText.id } });
+    expect(row?.deletedAt).not.toBeNull();
+  });
+
+  it("refuses unknown, foreign, and duplicate row ids at every level", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const other = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partNumberText: "OTHER", prices: [] }],
+    }));
+    const payload = linesPayloadFrom(q);
+
+    // A line id that is not this quote's.
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ ...payload[1], id: other.lines[0].id }],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("line") });
+
+    // The same line twice.
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [payload[1], { ...payload[1], partNumberText: "FT-2" }],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("twice") });
+
+    // A price-row id from a different line.
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [
+        payload[0],
+        { ...payload[1], prices: [{ ...payload[0].prices[0] }] },
+      ],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("price row") });
+
+    // A break id that does not belong to the row.
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [
+        {
+          ...payload[0],
+          prices: [{
+            ...payload[0].prices[0],
+            breaks: [{ id: "nope", threshold: "5.00", price: "0.1000" }],
+          }],
+        },
+        payload[1],
+      ],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("break") });
+  });
+
+  it("re-validates everything create validates — XOR, part ownership, payload part dup, step dup, LOT-with-breaks", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const payload = linesPayloadFrom(q);
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ prices: [] }],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("part") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ partId: f.otherPart.id, prices: [] }],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("another customer") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [payload[0], { partId: f.part.id, prices: [] }],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("already quoted") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [payload[0].prices[0], { processStepCodeId: f.harden.id, unitPrice: "0.9000" }],
+      }, payload[1]],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("already priced") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [{
+          ...payload[0].prices[0], pricePer: "LOT",
+        }],
+      }, payload[1]],
+    }))).rejects.toMatchObject({
+      status: 400, message: expect.stringContaining("LOT-priced operation cannot carry price breaks"),
+    });
+  });
+
+  it("a kept row's step-code change re-mints the row (stamp + recreate — the partial unique's swap hazard); a swap of two rows' codes lands cleanly", async () => {
+    const f = await serviceFixture();
+    const q = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [{
+        partId: f.part.id,
+        prices: [
+          { processStepCodeId: f.harden.id, unitPrice: "0.1000" },
+          { processStepCodeId: f.temper.id, unitPrice: "0.2000" },
+        ],
+      }],
+    }));
+    const [ht, tmp] = q.lines[0].prices;
+    const payload = linesPayloadFrom(q);
+
+    // Swap the two rows' step codes in place — with naive in-place updates the first write
+    // collides with the second row's still-live (quoteLineId, processStepCodeId) partial unique.
+    const swapped = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [
+          { ...payload[0].prices[0], processStepCodeId: f.temper.id },
+          { ...payload[0].prices[1], processStepCodeId: f.harden.id },
+        ],
+      }],
+    }));
+    const prices = swapped.lines[0].prices;
+    expect(prices.map((p) => p.stepCode)).toEqual(["TMP", "HT"]);
+    expect(prices.map((p) => p.unitPrice)).toEqual([0.1, 0.2]); // values followed the rows
+    expect(prices[0].id).not.toBe(ht.id); // re-minted — a re-keyed row is a different agreement row
+    expect(prices[1].id).not.toBe(tmp.id);
+    const old = await prisma.quotePrice.findFirst({ where: { id: ht.id } });
+    expect(old?.deletedAt).not.toBeNull();
+  });
+
+  it("breaks: price edits in place (id stable), threshold changes re-mint, removals soft-delete", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const payload = linesPayloadFrom(q);
+    const brk = q.lines[0].prices[0].breaks[0];
+
+    const priceEdited = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [{
+          ...payload[0].prices[0],
+          breaks: [
+            { id: brk.id, threshold: brk.threshold, price: "0.1100" },
+            { threshold: "5000.00", price: "0.1000" },
+          ],
+        }],
+      }, payload[1]],
+    }));
+    const edited = priceEdited.lines[0].prices[0].breaks;
+    expect(edited).toHaveLength(2);
+    expect(edited[0].id).toBe(brk.id); // price-only edit: id stable
+    expect(edited[0].price).toBe(0.11);
+    expect(edited[1].threshold).toBe(5000);
+
+    const rethresholded = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [{
+          ...payload[0].prices[0],
+          breaks: [{ id: brk.id, threshold: "2000.00", price: "0.1100" }],
+        }],
+      }, payload[1]],
+    }));
+    const only = rethresholded.lines[0].prices[0].breaks;
+    expect(only).toHaveLength(1);
+    expect(only[0].threshold).toBe(2000);
+    expect(only[0].id).not.toBe(brk.id); // threshold change re-mints (partial-unique swap hazard)
+    const goneRow = await prisma.quotePriceBreak.findFirst({ where: { id: brk.id } });
+    expect(goneRow?.deletedAt).not.toBeNull();
+  });
+});
+
+describe("updateQuote: §5.14 linked-line guards (ruling 8)", () => {
+  beforeEach(truncateAll);
+
+  it("refuses to drop a linked line, naming every blocking order number", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const linked = q.lines[0];
+    await linkOrderTo(f, 7001, [linked.id]);
+    await linkOrderTo(f, 7002, [linked.id]);
+
+    const withoutLinked = linesPayloadFrom(q).filter((l) => l.id !== linked.id);
+    await expect(asUser(f.quoter, () => updateQuote(q.id, { lines: withoutLinked })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(/#7001.*#7002/),
+      });
+  });
+
+  it("refuses to re-point (or detach) a linked line's part, naming the orders; a voided order never blocks", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const linked = q.lines[0];
+    await linkOrderTo(f, 7003, [linked.id]);
+    const payload = linesPayloadFrom(q);
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ ...payload[0], partId: f.part2.id }, payload[1]],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("#7003") });
+
+    await expect(asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ ...payload[0], partId: null, partNumberText: "NOW-TEXT" }, payload[1]],
+    }))).rejects.toMatchObject({ status: 400, message: expect.stringContaining("#7003") });
+
+    // Void the order: the same edits sail through — voided blocks nothing (house rule).
+    await prisma.order.updateMany({ where: { orderNumber: 7003 }, data: { deletedAt: new Date() } });
+    const ok = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ ...payload[0], partId: f.part2.id }, payload[1]],
+    }));
+    expect(ok.lines[0].partNumber).toBe("P-200");
+  });
+
+  it("free-text and price-row edits on a linked line stay allowed — including emptying its price rows", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const linked = q.lines[0];
+    await linkOrderTo(f, 7004, [linked.id]);
+    const payload = linesPayloadFrom(q);
+
+    const edited = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        quotedQty: 900,
+        prices: [{ ...payload[0].prices[0], unitPrice: "0.2500", notes: "renegotiated" }],
+      }, payload[1]],
+    }));
+    expect(edited.lines[0].id).toBe(linked.id); // the id OrderLine.quoteLineId points at survives
+    expect(edited.lines[0].quotedQty).toBe(900);
+    expect(edited.lines[0].prices[0].unitPrice).toBe(0.25);
+
+    // Emptying the linked line's rows is legal too (an empty agreement = needs-price, ruling 4).
+    const emptied = await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{ ...payload[0], quotedQty: 900, prices: [] }, payload[1]],
+    }));
+    expect(emptied.lines[0].id).toBe(linked.id);
+    expect(emptied.lines[0].prices).toEqual([]);
+    const link = await prisma.orderLine.findFirst({ where: { quoteLineId: linked.id } });
+    expect(link).not.toBeNull();
+  });
+});
+
+describe("updateQuote: audit content — SNAPSHOT_INCLUDE.quote's first exercise", () => {
+  beforeEach(truncateAll);
+
+  it("a price edit shows in the before/after diff, with the step code named, not a cuid", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const payload = linesPayloadFrom(q);
+
+    await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [{ ...payload[0].prices[0], unitPrice: "0.2000" }],
+      }, payload[1]],
+    }));
+
+    const entry = await latestAudit(q.id);
+    expect(entry.action).toBe("update");
+    type Snap = { lines: { prices: {
+      unitPrice: string; processStepCode: { code: string; name: string };
+      breaks: { threshold: string }[];
+    }[] }[] };
+    const before = entry.before as unknown as Snap;
+    const after = entry.after as unknown as Snap;
+    expect(before.lines[0].prices[0].unitPrice).toBe("0.15");
+    expect(after.lines[0].prices[0].unitPrice).toBe("0.2");
+    expect(after.lines[0].prices[0].processStepCode.code).toBe("HT"); // the relation tree rode in
+    expect(after.lines[0].prices[0].breaks[0].threshold).toBe("1000"); // breaks nested under rows
+  });
+
+  it("a break add shows in the diff; a dropped line is EXCLUDED from the after snapshot (live rows only)", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const payload = linesPayloadFrom(q);
+
+    await asUser(f.quoter, () => updateQuote(q.id, {
+      lines: [{
+        ...payload[0],
+        prices: [{
+          ...payload[0].prices[0],
+          breaks: [...payload[0].prices[0].breaks, { threshold: "5000.00", price: "0.1000" }],
+        }],
+      }], // the free-text line is DROPPED in the same edit
+    }));
+
+    const entry = await latestAudit(q.id);
+    type Snap = { lines: { partNumberText: string; prices: { breaks: unknown[] }[] }[] };
+    const before = entry.before as unknown as Snap;
+    const after = entry.after as unknown as Snap;
+    expect(before.lines).toHaveLength(2);
+    expect(before.lines[1].partNumberText).toBe("FT-1");
+    expect(after.lines).toHaveLength(1); // the soft-deleted child is gone from the snapshot
+    expect(before.lines[0].prices[0].breaks).toHaveLength(1);
+    expect(after.lines[0].prices[0].breaks).toHaveLength(2); // the break add shows
+  });
+});
+
+describe("attachPart", () => {
+  beforeEach(truncateAll);
+
+  it("sets partId on a live free-text line, keeps the text columns as dormant history, and audits", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const freeText = q.lines[1];
+
+    const detail = await asUser(f.quoter, () =>
+      attachPart(q.id, { lineId: freeText.id, partId: f.part2.id }));
+    const line = detail.lines[1];
+    expect(line.id).toBe(freeText.id);
+    expect(line.partId).toBe(f.part2.id);
+    expect(line.partNumber).toBe("P-200"); // reads live from the part now
+
+    const row = await prisma.quoteLine.findFirst({ where: { id: freeText.id } });
+    expect(row?.partNumberText).toBe("FT-1"); // dormant, untouched (spec §4.1)
+    expect(row?.materialText).toBe("4140");
+
+    const entry = await latestAudit(q.id);
+    expect(entry.action).toBe("update");
+    type Snap = { lines: { partId: string | null }[] };
+    expect((entry.before as unknown as Snap).lines[1].partId).toBeNull();
+    expect((entry.after as unknown as Snap).lines[1].partId).toBe(f.part2.id);
+  });
+
+  it("refuses: a line that already carries a part, a foreign part, a duplicate part, a closed quote, a missing line", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const [linked, freeText] = q.lines;
+
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: linked.id, partId: f.part2.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("already carries") });
+
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: freeText.id, partId: f.otherPart.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("another customer") });
+
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: freeText.id, partId: f.part.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("already quoted") });
+
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: "nope", partId: f.part2.id })))
+      .rejects.toMatchObject({ status: 404 });
+
+    // A line of some OTHER quote is "not found" on this one.
+    const other = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [{ partNumberText: "ELSEWHERE", prices: [] }],
+    }));
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: other.lines[0].id, partId: f.part2.id })))
+      .rejects.toMatchObject({ status: 404 });
+
+    await prisma.quote.update({ where: { id: q.id }, data: { status: "CLOSED" } });
+    await expect(asUser(f.quoter, () => attachPart(q.id, { lineId: freeText.id, partId: f.part2.id })))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("closed") });
+  });
+});
+
+describe("closeQuote / reopenQuote", () => {
+  beforeEach(truncateAll);
+
+  it("close needs a non-blank reason, stamps status/closedAt/closedBy/closeReason, audits with the reason; a second close 400s", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => closeQuote(q.id, "   ")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("reason") });
+
+    const { quote } = await asUser(f.quoter, () => closeQuote(q.id, "  won elsewhere  "));
+    expect(quote.status).toBe("CLOSED");
+    expect(quote.closeReason).toBe("won elsewhere"); // trimmed IN THE SERVICE (§5.17)
+    expect(quote.closedAt).not.toBeNull();
+    expect(quote.closedByName).toBe("Quinn Quoter");
+    expect(quote.expired).toBe(false); // CLOSED never renders as Expired
+
+    const entry = await latestAudit(q.id);
+    expect(entry.action).toBe("update");
+    expect(entry.reason).toBe("won elsewhere");
+
+    await expect(asUser(f.quoter, () => closeQuote(q.id, "again")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("already closed") });
+    await expect(asUser(f.quoter, () => closeQuote("nope", "x")))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it("close WARNS-AND-LISTS the open, not-yet-fully-invoiced linked orders — deduped, sorted, voided and invoiced ones excluded — and never blocks", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const linked = q.lines[0];
+
+    // Four linked orders: one open (linking twice — must list ONCE), one voided, one carrying a
+    // live FINALIZED invoice, and a second open one to prove the ascending sort.
+    await linkOrderTo(f, 7020, [linked.id, linked.id]);
+    await linkOrderTo(f, 7018, [linked.id]);
+    const voided = await linkOrderTo(f, 7021, [linked.id], { voided: true });
+    const invoiced = await linkOrderTo(f, 7019, [linked.id]);
+    await prisma.invoice.create({
+      data: {
+        orderId: invoiced.id, customerId: f.customer.id,
+        kind: "INVOICE", status: "FINALIZED", invoiceDate: today(), finalizedAt: new Date(),
+      },
+    });
+
+    const { quote, linkedOpenOrders } = await asUser(f.quoter, () => closeQuote(q.id, "expiring"));
+    expect(quote.status).toBe("CLOSED"); // warn, NEVER block (ruling 6)
+    expect(linkedOpenOrders.map((o) => o.orderNumber)).toEqual([7018, 7020]);
+    expect(linkedOpenOrders.map((o) => o.id)).not.toContain(voided.id);
+    expect(linkedOpenOrders.map((o) => o.id)).not.toContain(invoiced.id);
+  });
+
+  it("reopen needs a reason, returns the quote to OPEN, CLEARS the close fields, and audits with the reason", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => reopenQuote(q.id, "not closed yet")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("not closed") });
+
+    await asUser(f.quoter, () => closeQuote(q.id, "mistake"));
+    await expect(asUser(f.quoter, () => reopenQuote(q.id, " ")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("reason") });
+
+    const reopened = await asUser(f.second, () => reopenQuote(q.id, "customer came back"));
+    expect(reopened.status).toBe("OPEN");
+    expect(reopened.closedAt).toBeNull();
+    expect(reopened.closedByName).toBe("");
+    expect(reopened.closeReason).toBe("");
+
+    const entry = await latestAudit(q.id);
+    expect(entry.reason).toBe("customer came back");
+    // The close's own story is not lost: the reopen entry's BEFORE snapshot carries it.
+    expect((entry.before as { closeReason: string }).closeReason).toBe("mistake");
+
+    // And the quote is editable again.
+    const edited = await asUser(f.quoter, () => updateQuote(q.id, { notes: "back in play" }));
+    expect(edited.notes).toBe("back in play");
+  });
+});
+
+describe("deleteQuote + quoteOrderBlockers", () => {
+  beforeEach(truncateAll);
+
+  it("requires a reason; a clean delete stamps the quote AND its live lines (price rows left behind the dead line), audited", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    await expect(asUser(f.quoter, () => deleteQuote(q.id, "  ")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringContaining("reason") });
+
+    await asUser(f.quoter, () => deleteQuote(q.id, "typo — rekeyed as 1001"));
+
+    const quote = await prisma.quote.findFirst({ where: { id: q.id } });
+    expect(quote?.deletedAt).not.toBeNull();
+    const lines = await prisma.quoteLine.findMany({ where: { quoteId: q.id } });
+    expect(lines.every((l) => l.deletedAt !== null)).toBe(true);
+    // Grandchildren stay unstamped — unreachable behind the dead line (the deletePartPrice rule).
+    const price = await prisma.quotePrice.findFirst({ where: { quoteLineId: q.lines[0].id } });
+    expect(price?.deletedAt).toBeNull();
+
+    const entry = await latestAudit(q.id);
+    expect(entry.action).toBe("delete");
+    expect(entry.reason).toBe("typo — rekeyed as 1001");
+    // The before snapshot preserved the LIVE tree the delete took away.
+    expect((entry.before as { lines: unknown[] }).lines).toHaveLength(2);
+
+    // Shown-never-hidden on the detail; gone from the list.
+    expect((await getQuote(q.id)).deletedAt).not.toBeNull();
+    expect(await listQuotes({})).toEqual([]);
+
+    await expect(asUser(f.quoter, () => deleteQuote(q.id, "again")))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it("is refused-and-named while ANY live order line references any of its lines; voided orders never block; CLOSED deletes fine", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const linked = q.lines[0];
+    await linkOrderTo(f, 7031, [linked.id]);
+    await linkOrderTo(f, 7030, [linked.id]);
+
+    await expect(asUser(f.quoter, () => deleteQuote(q.id, "try")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/#7030.*#7031/) });
+
+    await prisma.order.updateMany({
+      where: { orderNumber: { in: [7030, 7031] } }, data: { deletedAt: new Date() },
+    });
+    await asUser(f.quoter, () => closeQuote(q.id, "closing before delete"));
+    await asUser(f.quoter, () => deleteQuote(q.id, "voided orders never block"));
+    expect((await getQuote(q.id)).deletedAt).not.toBeNull();
+  });
+
+  it("quoteOrderBlockers lists each blocking order once — named, linked, ascending", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const [linked, freeText] = q.lines;
+    const b = await linkOrderTo(f, 7041, [linked.id]);
+    const a = await linkOrderTo(f, 7040, [linked.id, freeText.id]); // two links, ONE row
+    await linkOrderTo(f, 7042, [linked.id], { voided: true });
+
+    expect(await quoteOrderBlockers(q.id)).toEqual([
+      { entityLabel: "Order", name: "#7040 · ACME", id: a.id, href: `/orders/${a.id}` },
+      { entityLabel: "Order", name: "#7041 · ACME", id: b.id, href: `/orders/${b.id}` },
+    ]);
+  });
+});
+
+// The close-vs-update race (the certs.test.ts scripted-holder technique): the CLOSER is a
+// hand-scripted DEFAULT-isolation (Read Committed) transaction running closeQuote's own
+// claim-then-write sequence, so SSI is off the table for it — the ONLY thing that can stop a
+// header-only updateQuote (itself Read Committed: no lines, no FK assignment) from writing
+// through the close is updateQuote's own FOR UPDATE claim on the Quote row. RED-verified with
+// the claim removed (a bare findFirst): the update read OPEN from its pre-close snapshot,
+// blocked on the row lock at its WRITE instead, and after the close committed the edit landed
+// on the CLOSED quote — the exact stale-read shape the claim exists to prevent.
+describe("close-vs-update race: the row claim is the guard", () => {
+  beforeEach(truncateAll);
+
+  it("an update racing a Read-Committed close blocks on the claim, then refuses on the fresh read — nothing lands on the closed quote", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((resolve) => { hasClaimed = resolve; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((resolve) => { mayRelease = resolve; });
+
+    // The closer: claim, signal, hold, then commit the close — Read Committed throughout.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Quote" WHERE "id" = ${q.id} FOR UPDATE`;
+      hasClaimed();
+      await release;
+      await tx.quote.update({
+        where: { id: q.id },
+        data: { status: "CLOSED", closedAt: new Date(), closeReason: "raced" },
+      });
+    }, { timeout: 20000 });
+
+    await claimed;
+    const updateCall = asUser(f.quoter, () => updateQuote(q.id, { notes: "sneaky edit" }));
+
+    // Not the discriminator — just proof the update is genuinely BLOCKED on the holder's claim
+    // before the close is released (the certs.test.ts probe shape).
+    const TIMED_OUT = Symbol("timed out");
+    const raceResult = await Promise.race([
+      updateCall.then(() => "settled" as const, () => "settled" as const),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), 200)),
+    ]);
+    expect(raceResult).toBe(TIMED_OUT);
+
+    mayRelease();
+    await holder;
+
+    // The discriminator: the post-claim re-read sees CLOSED and refuses; the notes never land.
+    await expect(updateCall).rejects.toMatchObject({
+      status: 400, message: expect.stringContaining("closed"),
+    });
+    const after = await prisma.quote.findFirst({ where: { id: q.id } });
+    expect(after?.status).toBe("CLOSED");
+    expect(after?.notes).toBe("");
   });
 });
