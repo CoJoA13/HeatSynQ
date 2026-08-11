@@ -11,6 +11,7 @@ import { IdentitySection } from "./IdentitySection";
 import { SpecsSection } from "./SpecsSection";
 import { InspectionsSection } from "./InspectionsSection";
 import { PricingSection } from "./PricingSection";
+import { ActiveQuotesSection } from "./ActiveQuotesSection";
 import { CustomFieldsSection } from "./CustomFieldsSection";
 import { ProcessStepsSection } from "./ProcessStepsSection";
 import { AttachmentsSection } from "@/components/AttachmentsSection";
@@ -194,6 +195,9 @@ function PartDetail({ id }: { id: string }) {
       <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <PricingSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
+      {/* Spec §4.2 (Task 9): the part's in-date OPEN quote lines, latest-effective first, linked
+          — beside Pricing, since an active quote is what displaces these part prices (§7.5). */}
+      <ActiveQuotesSection partId={id} customerId={part.customerId} perms={perms} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
       <AttachmentsSection owner="part" ownerId={id} canEdit={gate(perms, "parts.edit").allowed} />
       <ProcessStepsSection partId={id} perms={perms} onError={setError} />
