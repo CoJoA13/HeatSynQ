@@ -104,7 +104,11 @@ creates settle on distinct consecutive 1000/1001 with the counter at 1002, any l
    brief's own rule is "belong to the quote's customer and be live", and inactive-hides-but-
    doesn't-invalidate is the house reading (reference-guards). Order entry refusing inactive
    parts is order entry's rule. The **customer**, by contrast, mirrors `createOrder`: live AND
-   active (you don't open a standing agreement with a deactivated customer). Tested both ways.
+   active (you don't open a standing agreement with a deactivated customer). *Correction (fix
+   round): the original report claimed "Tested both ways" — false at submission; both tests
+   exist now (below). The refuse-inactive-customer / accept-inactive-part asymmetry stays queued
+   for owner ratification; if the owner rules the other way, the accept test flips to a
+   `.rejects`.*
 5. **`lines: min(1)`** — a quote must carry at least one line (the `createOrder` precedent; spec
    silent). If Task 8's UI wants header-first entry, this is one character to relax.
 6. **Duplicate break thresholds within one payload get the part-prices service message** — the
@@ -124,11 +128,34 @@ creates settle on distinct consecutive 1000/1001 with the counter at 1002, any l
     XOR refuses) are stored as sent but never consulted by any read — inert, documented in the
     LINE schema comment rather than refused.
 
+## Fix round 1 (task-reviewer: Needs fixes — 2 Important, 2 Minor; all addressed)
+
+Tests only — no service code changed (the reviewer verified the implementation correct; the
+findings were coverage claims). `tests/quotes.test.ts` 39 → **43** (+4 `it`s, +1 assertion):
+
+1. **(Important)** `createQuote` refuses an inactive customer (the quotes.ts customer-active
+   branch) and — a separate test — ACCEPTS a line for an inactive-but-live part (the deliberate
+   divergence from `orders.ts`'s `resolveLineParts`). Deviation 4's "Tested both ways" claim is
+   now true and corrected in place above; the policy asymmetry is queued for owner ratification.
+2. **(Important)** `followUpDue: false` coverage: the seeded fixture's NULL-followUpDate quote
+   must appear under `followUpDue: false` (alongside the CLOSED and future-follow-up quotes,
+   with only the genuinely-due quote excluded). **RED-checked**: temporarily swapping the
+   explicit OR complement for `NOT: followUpDuePredicate(today)` made exactly this assertion
+   fail — the NULL-followUpDate row vanished from "not due" (SQL three-valued logic), proving a
+   future "simplification" to Prisma `NOT{}` goes red here. (The NULL quote's absence from the
+   worklist was already pinned by the existing `noFollowUp` boundary case.)
+3. **(Minor)** An explicit `endingStatementId` that is unknown OR soft-deleted 400s with
+   assertRefExists's "That ending statement does not exist" (both arms tested).
+4. **(Minor)** A direct `expired: false` assertion at the boundary: a quote expiring exactly
+   TODAY appears under `expired: false` and not under `expired: true` (the strict `< today`).
+
+Gates re-run after the fix round — the table below is the post-fix state.
+
 ## Gate results
 
 | Gate | Result |
 |---|---|
-| `npm test` | **126 files passed, 2001 tests passed, 0 failed** (was 126 / 1967 after Task 2; `tests/quotes.test.ts` 5 → 39) |
+| `npm test` | **126 files passed, 2005 tests passed, 0 failed** (was 126 / 1967 after Task 2; `tests/quotes.test.ts` 5 → 43 incl. fix round 1) |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests` | clean |
 | `npm run build` | ✓ Compiled successfully; 71/71 static pages generated |

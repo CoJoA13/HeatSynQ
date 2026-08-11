@@ -542,6 +542,42 @@ describe("createQuote: validation", () => {
     }))).rejects.toThrow("a price break with that threshold already exists");
   });
 
+  it("refuses an inactive customer — the createOrder rule mirrored", async () => {
+    const f = await serviceFixture();
+    await prisma.customer.update({ where: { id: f.other.id }, data: { active: false } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.other.id, lines: [{ partNumberText: "FT-1", prices: [] }],
+    }))).rejects.toThrow("That customer is inactive");
+  });
+
+  // The deliberate asymmetry with order entry (which refuses inactive parts): the Task 3 rule is
+  // "live", not "active" — inactive hides a part from pick lists, it does not invalidate a
+  // standing agreement over it. Policy queued for owner ratification; if the owner rules the
+  // other way, this test flips to a `.rejects`.
+  it("ACCEPTS a line for an inactive (but live) part", async () => {
+    const f = await serviceFixture();
+    await prisma.part.update({ where: { id: f.part.id }, data: { active: false } });
+    const detail = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect(detail.lines[0].partNumber).toBe("P-100");
+  });
+
+  it("refuses an explicit ending statement that does not exist or was deleted", async () => {
+    const f = await serviceFixture();
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, endingStatementId: "nope",
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("That ending statement does not exist");
+
+    await prisma.endingStatement.update({
+      where: { id: f.statement.id }, data: { deletedAt: new Date() } });
+    await expect(asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, endingStatementId: f.statement.id,
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }))).rejects.toThrow("That ending statement does not exist");
+  });
+
   it("the contact must be one of the customer's live contacts", async () => {
     const f = await serviceFixture();
     await expect(asUser(f.quoter, () => createQuote({
@@ -830,6 +866,12 @@ describe("listQuotes", () => {
       .toEqual([q.closed.id, q.freeText.id, q.open.id]);
 
     expect(ids(await listQuotes({ followUpDue: true }))).toEqual([q.expired.id]);
+    // The FALSE branch is explicit OR arms, never Prisma NOT{}: freeText's followUpDate is NULL,
+    // and NOT(followUpDate <= today) is three-valued NULL in SQL — a "simplification" to NOT{}
+    // silently drops that row from "not due" and goes red right here. closed (CLOSED) and open
+    // (future follow-up) belong too; only the genuinely-due quote is excluded.
+    expect(ids(await listQuotes({ followUpDue: false })))
+      .toEqual([q.closed.id, q.freeText.id, q.open.id]);
 
     expect(ids(await listQuotes({ quoteFrom: daysFromToday(-12), quoteTo: daysFromToday(-4) })))
       .toEqual([q.freeText.id, q.open.id]);
@@ -837,6 +879,16 @@ describe("listQuotes", () => {
       .toEqual([q.freeText.id, q.open.id]);
     expect(ids(await listQuotes({ expiryTo: daysFromToday(0) })))
       .toEqual([q.expired.id, q.closed.id]);
+  });
+
+  it("expired: false includes a quote expiring exactly today — the strict < today boundary", async () => {
+    const f = await serviceFixture();
+    const edge = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id, effectiveDate: daysFromToday(-10), expiryDate: daysFromToday(0),
+      lines: [linkedLine(f.part.id, f.harden.id)],
+    }));
+    expect((await listQuotes({ expired: false })).map((r) => r.id)).toContain(edge.id);
+    expect((await listQuotes({ expired: true })).map((r) => r.id)).not.toContain(edge.id);
   });
 
   it("hides soft-deleted quotes and counts only live lines", async () => {
