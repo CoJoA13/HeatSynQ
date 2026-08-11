@@ -187,6 +187,97 @@ async function resolveLinkNames(kind: ReferenceKind, input: Record<string, unkno
   return data;
 }
 
+/**
+ * EndingStatement's at-most-one-live-default invariant (Phase 6 ruling 13; the customer-address
+ * default precedent, enforced HERE in the service per §5.17 so no future caller bypasses it).
+ * Unlike addresses there is NO auto-promotion: deactivating or deleting the default leaves the
+ * kind defaultless, which is legal — `Quote.endingStatementId` is nullable, and a quote created
+ * against a defaultless kind simply stores no ending statement.
+ *
+ * THE CONCURRENCY DESIGN (load-bearing — do not reduce to a plain scan-and-demote). "At most one
+ * live default" is a *predicate over the whole table* — a kind with zero defaults has no row that
+ * expresses the state — so, exactly like the period lock (period-locks.ts), no `SELECT … FOR
+ * UPDATE` on a row can claim it: two concurrent make-me-default writes promoting different rows
+ * may share no row at all (each scan sees nothing to demote while the other's flag write is
+ * uncommitted, both commit, two defaults survive). Every write that can ADD a default therefore
+ * takes this transaction-level advisory lock first; the demote-scan then runs after any competing
+ * writer has committed, so it sees (and demotes) that writer's flag at ANY caller isolation.
+ * `(4300, 0)` is the two-int namespacing form: 4300 is this module's classifier (period-locks
+ * owns 4200; keep them distinct), 0 the single key — only one table carries this invariant.
+ * Writes that can only SHRINK the default set (an explicit `isDefault: false`) skip the lock;
+ * the deactivation strip takes it so a deactivate racing a promote of the SAME row cannot leave
+ * an inactive row flagged. The concurrency test in tests/reference-tables.test.ts is
+ * RED-verified against the promote branch losing this lock.
+ */
+const ENDING_STATEMENT_DEFAULT_LOCK = 4300;
+
+async function lockEndingStatementDefault(tx: Prisma.TransactionClient): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${ENDING_STATEMENT_DEFAULT_LOCK}, 0)`;
+}
+
+/** Clears the flag on every LIVE default except `exceptId`, through the audit helpers — the
+ *  customer-address setDefault lesson: a bare update leaves the demoted row's history claiming
+ *  isDefault: true forever. Call only under `lockEndingStatementDefault`. */
+async function demoteOtherEndingStatementDefaults(
+  tx: Prisma.TransactionClient, exceptId?: string,
+): Promise<void> {
+  const rows = await tx.endingStatement.findMany({
+    where: { deletedAt: null, isDefault: true, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    select: { id: true },
+  });
+  for (const row of rows) {
+    await auditedUpdate("endingStatement", row.id, () =>
+      tx.endingStatement.update({ where: { id: row.id }, data: { isDefault: false } }), { tx });
+  }
+}
+
+/** Create side: an inactive row never carries the flag (rejected, not silently stripped — the
+ *  caller asked for a contradiction), and a new default demotes the old one under the lock. */
+async function normalizeEndingStatementDefaultOnCreate(
+  tx: Prisma.TransactionClient, data: Record<string, unknown>,
+): Promise<void> {
+  if (data.isDefault !== true) return;
+  if (data.active === false) {
+    throw new HttpError(400, "An inactive ending statement cannot be the default");
+  }
+  await lockEndingStatementDefault(tx);
+  await demoteOtherEndingStatementDefaults(tx);
+}
+
+/** Update side. Three writes can touch the default set:
+ *  - promote (`isDefault: true`): lock, then re-read the row's `active` UNDER the lock (a
+ *    pre-lock read could race a concurrent deactivation into flagging an inactive row), refuse
+ *    if the row is/stays inactive, demote the others;
+ *  - deactivate (`active: false`): strip the flag in the same write — the kind goes defaultless
+ *    (legal), and a later reactivation must not silently resurrect a default beside a newer one.
+ *    Also under the lock, for the same promote-vs-deactivate race;
+ *  - explicit clear (`isDefault: false`): can only shrink the set — no lock needed.
+ *  Mutates `data` (the strip) before the caller's audited write, so the audit snapshot and the
+ *  stored row agree. */
+async function normalizeEndingStatementDefaultOnUpdate(
+  tx: Prisma.TransactionClient, id: string, data: Record<string, unknown>,
+): Promise<void> {
+  if (data.active === false && data.isDefault === true) {
+    throw new HttpError(400, "An inactive ending statement cannot be the default");
+  }
+  if (data.isDefault === true) {
+    await lockEndingStatementDefault(tx);
+    const current = await tx.endingStatement.findFirst({
+      where: { id, deletedAt: null }, select: { active: true },
+    });
+    if (!current) return; // no such live row — the update() below raises the real error
+    if (data.active !== true && !current.active) {
+      throw new HttpError(400, "An inactive ending statement cannot be the default");
+    }
+    await demoteOtherEndingStatementDefaults(tx, id);
+    return;
+  }
+  if (data.active === false) {
+    await lockEndingStatementDefault(tx);
+    data.isDefault = false;
+  }
+}
+
 export async function createReference(kind: string, input: Record<string, unknown>): Promise<{ id: string }> {
   assertKind(kind);
   // EXTRA_SCHEMAS[kind] widens to the Record's general value type once indexed by a non-literal
@@ -224,6 +315,7 @@ export async function createReference(kind: string, input: Record<string, unknow
         const value = data[link.column];
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
       }
+      if (kind === "endingStatement") await normalizeEndingStatementDefaultOnCreate(tx, data);
       return auditedCreate(kind, data, () => delegate(kind, tx).create({ data }), { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
   return { id: row.id };
@@ -276,6 +368,7 @@ export async function updateReference(kind: string, id: string, input: Record<st
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
       }
       if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);
+      if (kind === "endingStatement") await normalizeEndingStatementDefaultOnUpdate(tx, id, data);
       await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
