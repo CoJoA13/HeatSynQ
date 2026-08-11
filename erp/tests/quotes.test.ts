@@ -3,7 +3,8 @@ import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { setSetting } from "@/server/settings";
 import { addDays, formatDateOnly, todayDateOnly } from "@/lib/business-days";
-import { createQuote, getQuote } from "@/server/quotes";
+import ExcelJS from "exceljs";
+import { createQuote, getQuote, listQuotes, quoteWorklist, exportQuotes } from "@/server/quotes";
 
 /**
  * Phase 6 Task 1 — SCHEMA smoke only: the quote service (create/list/worklist and its own TDD
@@ -749,5 +750,203 @@ describe("getQuote", () => {
 
   it("404s an unknown id", async () => {
     await expect(getQuote("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+/** Four quotes spanning the list's search/filter axes:
+ *  - open:    ACME, part P-100, RFQ-A, in-date window, follow-up tomorrow
+ *  - freeText: BETA, free-text "FT-9", in-date window
+ *  - closed:  ACME, part P-200, past expiry but CLOSED (so never "Expired")
+ *  - expired: ACME, part P-200, OPEN with expiry yesterday and follow-up yesterday (in BOTH
+ *    worklist sections). */
+async function seedListQuotes(f: Awaited<ReturnType<typeof serviceFixture>>) {
+  const open = await asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id, rfqNumber: "RFQ-A",
+    quoteDate: daysFromToday(-10), expiryDate: daysFromToday(20), followUpDate: daysFromToday(1),
+    lines: [linkedLine(f.part.id, f.harden.id)],
+  }));
+  const freeText = await asUser(f.quoter, () => createQuote({
+    customerId: f.other.id, quoteDate: daysFromToday(-5), expiryDate: daysFromToday(25),
+    lines: [{ partNumberText: "FT-9", prices: [] }],
+  }));
+  const closed = await asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id, quoteDate: daysFromToday(-40),
+    effectiveDate: daysFromToday(-40), expiryDate: daysFromToday(-10),
+    lines: [linkedLine(f.part2.id, f.harden.id)],
+  }));
+  await prisma.quote.update({ where: { id: closed.id }, data: { status: "CLOSED" } });
+  const expired = await asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id, quoteDate: daysFromToday(-30),
+    effectiveDate: daysFromToday(-30), expiryDate: daysFromToday(-1), followUpDate: daysFromToday(-1),
+    lines: [linkedLine(f.part2.id, f.harden.id)],
+  }));
+  return { open, freeText, closed, expired };
+}
+
+describe("listQuotes", () => {
+  beforeEach(truncateAll);
+
+  it("orders newest-first by quote number and derives each row's expired state", async () => {
+    const f = await serviceFixture();
+    const q = await seedListQuotes(f);
+    const rows = await listQuotes({});
+    expect(rows.map((r) => r.quoteNumber)).toEqual(
+      [q.expired, q.closed, q.freeText, q.open].map((x) => x.quoteNumber));
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(q.open.id)).toMatchObject({ status: "OPEN", expired: false, customerCode: "ACME" });
+    expect(byId.get(q.expired.id)).toMatchObject({ status: "OPEN", expired: true });
+    expect(byId.get(q.closed.id)).toMatchObject({ status: "CLOSED", expired: false }); // closed, never "Expired"
+    expect(byId.get(q.open.id)?.quotedByName).toBe("Quinn Quoter");
+  });
+
+  it("searches by quote number digits, customer code/name, RFQ, and part number including free-text", async () => {
+    const f = await serviceFixture();
+    const q = await seedListQuotes(f);
+    const idsFor = async (search: string) => (await listQuotes({ search })).map((r) => r.id);
+
+    expect(await idsFor(String(q.open.quoteNumber))).toEqual([q.open.id]);
+    expect(await idsFor("BETA")).toEqual([q.freeText.id]);
+    expect(await idsFor("acme foundry")).toEqual([q.expired.id, q.closed.id, q.open.id]);
+    expect(await idsFor("RFQ-A")).toEqual([q.open.id]);
+    expect(await idsFor("P-100")).toEqual([q.open.id]); // a LINKED line's live part number
+    expect(await idsFor("FT-9")).toEqual([q.freeText.id]); // a free-text line's own text
+    expect(await idsFor("no-such-thing")).toEqual([]);
+    // A digit string too long for Int4 must not blow up the quoteNumber clause.
+    expect(await idsFor("99999999999999999999")).toEqual([]);
+  });
+
+  it("filters by status, derived expired, follow-up due, customer, and date ranges", async () => {
+    const f = await serviceFixture();
+    const q = await seedListQuotes(f);
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
+
+    expect(ids(await listQuotes({ status: "CLOSED" }))).toEqual([q.closed.id]);
+    expect(ids(await listQuotes({ status: "OPEN" })))
+      .toEqual([q.expired.id, q.freeText.id, q.open.id]);
+    expect(ids(await listQuotes({ customerId: f.other.id }))).toEqual([q.freeText.id]);
+
+    expect(ids(await listQuotes({ expired: true }))).toEqual([q.expired.id]);
+    expect(ids(await listQuotes({ expired: false })))
+      .toEqual([q.closed.id, q.freeText.id, q.open.id]);
+
+    expect(ids(await listQuotes({ followUpDue: true }))).toEqual([q.expired.id]);
+
+    expect(ids(await listQuotes({ quoteFrom: daysFromToday(-12), quoteTo: daysFromToday(-4) })))
+      .toEqual([q.freeText.id, q.open.id]);
+    expect(ids(await listQuotes({ effectiveFrom: daysFromToday(-20) })))
+      .toEqual([q.freeText.id, q.open.id]);
+    expect(ids(await listQuotes({ expiryTo: daysFromToday(0) })))
+      .toEqual([q.expired.id, q.closed.id]);
+  });
+
+  it("hides soft-deleted quotes and counts only live lines", async () => {
+    const f = await serviceFixture();
+    const q = await seedListQuotes(f);
+    await prisma.quote.update({ where: { id: q.freeText.id }, data: { deletedAt: new Date() } });
+
+    const rows = await listQuotes({});
+    expect(rows.map((r) => r.id)).not.toContain(q.freeText.id);
+
+    const twoLines = await asUser(f.quoter, () => createQuote({
+      customerId: f.customer.id,
+      lines: [linkedLine(f.part.id, f.harden.id), { partNumberText: "FT-2", prices: [] }],
+    }));
+    await prisma.quoteLine.update({
+      where: { id: twoLines.lines[1].id }, data: { deletedAt: new Date() } });
+    const row = (await listQuotes({})).find((r) => r.id === twoLines.id);
+    expect(row?.lineCount).toBe(1);
+  });
+});
+
+describe("quoteWorklist (spec §5.4)", () => {
+  beforeEach(truncateAll);
+
+  const make = (f: Awaited<ReturnType<typeof serviceFixture>>, dates: {
+    expiryDate: string; followUpDate?: string | null;
+  }) => asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id, effectiveDate: daysFromToday(-60), ...dates,
+    lines: [linkedLine(f.part.id, f.harden.id)],
+  }));
+
+  it("follow-up due is followUpDate ≤ today (inclusive); expired is expiryDate < today (exclusive)", async () => {
+    const f = await serviceFixture();
+    const dueYesterday = await make(f, { expiryDate: daysFromToday(30), followUpDate: daysFromToday(-1) });
+    const dueToday = await make(f, { expiryDate: daysFromToday(30), followUpDate: daysFromToday(0) });
+    const dueTomorrow = await make(f, { expiryDate: daysFromToday(30), followUpDate: daysFromToday(1) });
+    const noFollowUp = await make(f, { expiryDate: daysFromToday(30) });
+    const expiredYesterday = await make(f, { expiryDate: daysFromToday(-1) });
+    const expiresToday = await make(f, { expiryDate: daysFromToday(0) });
+
+    const wl = await quoteWorklist();
+    const dueIds = wl.followUpDue.rows.map((r) => r.id);
+    expect(dueIds).toContain(dueYesterday.id);
+    expect(dueIds).toContain(dueToday.id); // ≤ today — today itself is DUE
+    expect(dueIds).not.toContain(dueTomorrow.id);
+    expect(dueIds).not.toContain(noFollowUp.id);
+
+    const expiredIds = wl.expired.rows.map((r) => r.id);
+    expect(expiredIds).toContain(expiredYesterday.id);
+    expect(expiredIds).not.toContain(expiresToday.id); // < today — today's expiry is still in-date
+    expect(wl.followUpDue.count).toBe(dueIds.length);
+    expect(wl.expired.count).toBe(expiredIds.length);
+  });
+
+  it("both sections require OPEN and live; one quote may appear in BOTH", async () => {
+    const f = await serviceFixture();
+    const both = await make(f, { expiryDate: daysFromToday(-1), followUpDate: daysFromToday(-1) });
+    const closed = await make(f, { expiryDate: daysFromToday(-1), followUpDate: daysFromToday(-1) });
+    await prisma.quote.update({ where: { id: closed.id }, data: { status: "CLOSED" } });
+    const deleted = await make(f, { expiryDate: daysFromToday(-1), followUpDate: daysFromToday(-1) });
+    await prisma.quote.update({ where: { id: deleted.id }, data: { deletedAt: new Date() } });
+
+    const wl = await quoteWorklist();
+    expect(wl.followUpDue.rows.map((r) => r.id)).toEqual([both.id]);
+    expect(wl.expired.rows.map((r) => r.id)).toEqual([both.id]); // the same quote, both sections
+    expect(wl.followUpDue.count).toBe(1);
+    expect(wl.expired.count).toBe(1);
+    expect(wl.expired.rows[0].expired).toBe(true);
+  });
+
+  it("orders follow-ups most-overdue first and expiries oldest first", async () => {
+    const f = await serviceFixture();
+    const newer = await make(f, { expiryDate: daysFromToday(-1), followUpDate: daysFromToday(-1) });
+    const older = await make(f, { expiryDate: daysFromToday(-9), followUpDate: daysFromToday(-9) });
+
+    const wl = await quoteWorklist();
+    expect(wl.followUpDue.rows.map((r) => r.id)).toEqual([older.id, newer.id]);
+    expect(wl.expired.rows.map((r) => r.id)).toEqual([older.id, newer.id]);
+  });
+});
+
+describe("exportQuotes", () => {
+  beforeEach(truncateAll);
+
+  it("exports exactly what listQuotes returns for the same filter, humanized — derived Expired included", async () => {
+    const f = await serviceFixture();
+    const q = await seedListQuotes(f);
+
+    const buf = await exportQuotes({ customerId: f.customer.id });
+    const wb = new ExcelJS.Workbook();
+    // See tests/excel.test.ts for why exceljs's own Buffer type needs this cast.
+    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    const sheet = wb.getWorksheet("Quotes")!;
+
+    const header = (sheet.getRow(1).values as (string | undefined)[]).slice(1);
+    expect(header).toEqual(["Quote #", "Customer code", "Customer name", "Status", "Quote date",
+      "Effective", "Expires", "Follow-up", "RFQ", "Lines", "Quoted by"]);
+
+    // Three ACME quotes, newest-first — the same rows, same order, as the filtered list.
+    expect(sheet.rowCount).toBe(4);
+    const row = (n: number) => (sheet.getRow(n).values as unknown[]).slice(1);
+    expect(row(2)[0]).toBe(q.expired.quoteNumber);
+    expect(row(2)[3]).toBe("Expired"); // the derived display state, not the stored status
+    expect(row(3)[0]).toBe(q.closed.quoteNumber);
+    expect(row(3)[3]).toBe("Closed");
+    expect(row(4)[0]).toBe(q.open.quoteNumber);
+    expect(row(4)[3]).toBe("Open");
+    expect(row(4)[1]).toBe("ACME");
+    expect(row(4)[8]).toBe("RFQ-A");
+    expect(row(4)[9]).toBe(1); // live line count
+    expect(row(4)[10]).toBe("Quinn Quoter");
   });
 });

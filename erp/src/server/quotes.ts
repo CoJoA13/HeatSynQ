@@ -10,9 +10,12 @@ import { LOT_WITH_BREAKS } from "./part-prices";
 import { currentActor } from "./context";
 import { getSetting, allocateNumber } from "./settings";
 import { addDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
+import { toXlsx } from "./excel";
 import { PRICE_PER, type PricePerValue } from "../lib/part-constants";
 import { INT4_MAX } from "../lib/order-constants";
-import { type QuoteStatusValue } from "../lib/quote-constants";
+import {
+  QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL, type QuoteStatusValue,
+} from "../lib/quote-constants";
 
 // ============================================================================================
 // The quote service (Phase 6, spec §5.1/§5.4). A quote is a STANDING PRICE AGREEMENT (ruling
@@ -584,4 +587,212 @@ async function readDetail(db: Db, id: string): Promise<QuoteDetail> {
 
 export async function getQuote(id: string): Promise<QuoteDetail> {
   return readDetail(prisma, id);
+}
+
+// ---------------------------------------------------------------------------------------------
+// List, worklist (spec §5.4), Excel export — the house list pattern (the certs/orders shape),
+// deliberately NOT the order board's saved-views machinery (ruling 11).
+// ---------------------------------------------------------------------------------------------
+
+export type QuoteFilter = {
+  search?: string;
+  status?: QuoteStatusValue;
+  /** Derived state (ruling 3), not a status: true narrows to OPEN quotes past expiry, false to
+   *  everything not currently rendering as Expired (closed OR still in-date). */
+  expired?: boolean;
+  /** True narrows to the follow-up-due worklist predicate (OPEN, followUpDate ≤ today). */
+  followUpDue?: boolean;
+  customerId?: string;
+  quoteFrom?: string; quoteTo?: string;
+  effectiveFrom?: string; effectiveTo?: string;
+  expiryFrom?: string; expiryTo?: string;
+};
+
+export type QuoteRow = {
+  id: string;
+  quoteNumber: number;
+  customerId: string;
+  customerCode: string;
+  customerName: string;
+  status: QuoteStatusValue;
+  expired: boolean;
+  quoteDate: string;
+  effectiveDate: string;
+  expiryDate: string;
+  followUpDate: string | null;
+  rfqNumber: string;
+  quotedByName: string;
+  lineCount: number;
+};
+
+// Minimal projection for listing (the certs ROW_SELECT precedent) — no line detail, just a
+// filtered live-line count; the detail read is `getQuote`'s job.
+const ROW_SELECT = {
+  id: true, quoteNumber: true, customerId: true, status: true,
+  quoteDate: true, effectiveDate: true, expiryDate: true, followUpDate: true, rfqNumber: true,
+  customer: { select: { code: true, name: true } },
+  quotedBy: { select: { displayName: true } },
+  _count: { select: { lines: { where: { deletedAt: null } } } },
+} satisfies Prisma.QuoteSelect;
+
+type RowShape = Prisma.QuoteGetPayload<{ select: typeof ROW_SELECT }>;
+
+/** `today` is sampled ONCE per request and threaded through, so every row in one response
+ *  derives its expired state from the same instant. */
+function toRow(row: RowShape, today: Date): QuoteRow {
+  return {
+    id: row.id, quoteNumber: row.quoteNumber,
+    customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
+    status: row.status as QuoteStatusValue,
+    expired: row.status === "OPEN" && row.expiryDate.getTime() < today.getTime(),
+    quoteDate: formatDateOnly(row.quoteDate),
+    effectiveDate: formatDateOnly(row.effectiveDate),
+    expiryDate: formatDateOnly(row.expiryDate),
+    followUpDate: row.followUpDate === null ? null : formatDateOnly(row.followUpDate),
+    rfqNumber: row.rfqNumber,
+    quotedByName: row.quotedBy.displayName,
+    lineCount: row._count.lines,
+  };
+}
+
+function dateRange(
+  from: string | undefined, to: string | undefined, fromField: string, toField: string,
+): Prisma.DateTimeFilter | undefined {
+  if (!from && !to) return undefined;
+  return {
+    ...(from ? { gte: parseDate(from, fromField) } : {}),
+    ...(to ? { lte: parseDate(to, toField) } : {}),
+  };
+}
+
+function quoteSearchWhere(term: string): Prisma.QuoteWhereInput[] {
+  const clauses: Prisma.QuoteWhereInput[] = [
+    { customer: { code: { contains: term, mode: "insensitive" } } },
+    { customer: { name: { contains: term, mode: "insensitive" } } },
+    { rfqNumber: { contains: term, mode: "insensitive" } },
+    // ANY live line, matched on its resolved identity: the linked part's live number or the
+    // free-text line's own text. (Unlike the order board's lead-line-only rule — a quote's
+    // lines are peers, and no single part labels the row.)
+    { lines: { some: { deletedAt: null, OR: [
+      { part: { partNumber: { contains: term, mode: "insensitive" } } },
+      { partNumberText: { contains: term, mode: "insensitive" } },
+    ] } } },
+  ];
+  // quoteNumber is an Int4 column (the searchWhere precedent, orders.ts): a longer digit string
+  // is not a value it can hold, and handing it to Prisma is a validation error, not "no match".
+  const asNumber = Number(term);
+  if (/^\d+$/.test(term) && Number.isSafeInteger(asNumber) && asNumber <= INT4_MAX) {
+    clauses.push({ quoteNumber: asNumber });
+  }
+  return clauses;
+}
+
+// The two §5.4 predicates, shared verbatim by the worklist queries and the list's derived
+// filters so the section a quote appears in and the filter that finds it can never disagree.
+// Boundaries per spec: follow-up due is `followUpDate ≤ today` (today itself is DUE); expired is
+// `expiryDate < today` (a quote expiring today is still in-date).
+const followUpDuePredicate = (today: Date): Prisma.QuoteWhereInput =>
+  ({ status: "OPEN", followUpDate: { lte: today } });
+const expiredPredicate = (today: Date): Prisma.QuoteWhereInput =>
+  ({ status: "OPEN", expiryDate: { lt: today } });
+
+function quoteListWhere(filter: QuoteFilter, today: Date): Prisma.QuoteWhereInput {
+  const term = filter.search?.trim();
+  const quote = dateRange(filter.quoteFrom, filter.quoteTo, "Quote from", "Quote to");
+  const effective = dateRange(filter.effectiveFrom, filter.effectiveTo, "Effective from", "Effective to");
+  const expiry = dateRange(filter.expiryFrom, filter.expiryTo, "Expiry from", "Expiry to");
+
+  // The derived filters go in an AND list so they compose with the status/date keys above them
+  // instead of colliding on the `status` key. The FALSE branches are written as explicit
+  // complements, never Prisma `NOT { ... }`: a NULL followUpDate makes `followUpDate <= x`
+  // three-valued NULL in SQL, and NOT(NULL) is still NULL — the row would silently vanish from
+  // "not due" instead of belonging there.
+  const and: Prisma.QuoteWhereInput[] = [];
+  if (filter.expired === true) and.push(expiredPredicate(today));
+  if (filter.expired === false) {
+    and.push({ OR: [{ status: { not: "OPEN" } }, { expiryDate: { gte: today } }] });
+  }
+  if (filter.followUpDue === true) and.push(followUpDuePredicate(today));
+  if (filter.followUpDue === false) {
+    and.push({ OR: [{ status: { not: "OPEN" } }, { followUpDate: null }, { followUpDate: { gt: today } }] });
+  }
+
+  return {
+    deletedAt: null,
+    ...(filter.status ? { status: filter.status } : {}),
+    ...(filter.customerId ? { customerId: filter.customerId } : {}),
+    ...(quote ? { quoteDate: quote } : {}),
+    ...(effective ? { effectiveDate: effective } : {}),
+    ...(expiry ? { expiryDate: expiry } : {}),
+    ...(term ? { OR: quoteSearchWhere(term) } : {}),
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+}
+
+/** Newest-first by quoteNumber — unique, so it is its own tiebreak. */
+export async function listQuotes(filter: QuoteFilter): Promise<QuoteRow[]> {
+  const today = todayDateOnly();
+  const rows = await prisma.quote.findMany({
+    where: quoteListWhere(filter, today),
+    select: ROW_SELECT,
+    orderBy: { quoteNumber: "desc" },
+  });
+  return rows.map((row) => toRow(row, today));
+}
+
+export type QuoteWorklist = {
+  followUpDue: { count: number; rows: QuoteRow[] };
+  expired: { count: number; rows: QuoteRow[] };
+};
+
+/**
+ * The two §5.4 sections, both OPEN + live, each with its count. A quote may appear in BOTH
+ * (overdue follow-up on an already-expired quote) — that is information, not a bug. Ordered
+ * most-overdue first (the section exists to be worked oldest-debt-down), quoteNumber desc
+ * breaking date ties deterministically.
+ */
+export async function quoteWorklist(): Promise<QuoteWorklist> {
+  const today = todayDateOnly();
+  const [due, expired] = await Promise.all([
+    prisma.quote.findMany({
+      where: { deletedAt: null, ...followUpDuePredicate(today) },
+      select: ROW_SELECT,
+      orderBy: [{ followUpDate: "asc" }, { quoteNumber: "desc" }],
+    }),
+    prisma.quote.findMany({
+      where: { deletedAt: null, ...expiredPredicate(today) },
+      select: ROW_SELECT,
+      orderBy: [{ expiryDate: "asc" }, { quoteNumber: "desc" }],
+    }),
+  ]);
+  return {
+    followUpDue: { count: due.length, rows: due.map((r) => toRow(r, today)) },
+    expired: { count: expired.length, rows: expired.map((r) => toRow(r, today)) },
+  };
+}
+
+const QUOTE_COLUMNS = [
+  { key: "quoteNumber", header: "Quote #" },
+  { key: "customerCode", header: "Customer code" },
+  { key: "customerName", header: "Customer name" },
+  { key: "status", header: "Status" },
+  { key: "quoteDate", header: "Quote date" },
+  { key: "effectiveDate", header: "Effective" },
+  { key: "expiryDate", header: "Expires" },
+  { key: "followUpDate", header: "Follow-up" },
+  { key: "rfqNumber", header: "RFQ" },
+  { key: "lineCount", header: "Lines" },
+  { key: "quotedByName", header: "Quoted by" },
+];
+
+/** Exactly what `listQuotes` returned for the same filter (the `exportOrders` precedent) — same
+ *  query, same rows, humanized cells: the status cell renders the DERIVED display state, so an
+ *  open-but-expired quote exports as "Expired" exactly as it renders everywhere (ruling 3). */
+export async function exportQuotes(filter: QuoteFilter): Promise<Buffer> {
+  const rows = await listQuotes(filter);
+  const xlsxRows = rows.map((r) => ({
+    ...r,
+    status: r.expired ? QUOTE_EXPIRED_LABEL : QUOTE_STATUS_LABELS[r.status],
+  }));
+  return toXlsx("Quotes", QUOTE_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
 }
