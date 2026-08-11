@@ -567,6 +567,14 @@ describe("GET /api/receivables/close/preliminary", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("400s a year below 2000 (the Date.UTC 0-99 -> 1900-1999 remap guard)", async () => {
+    const viewer = await signInWith(["receivables.view"], "close-prelim-yr");
+    const res = await preliminaryRoute(
+      getReq("http://t/api/receivables/close/preliminary?year=26&month=7", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("POST /api/receivables/close", () => {
@@ -592,6 +600,14 @@ describe("POST /api/receivables/close", () => {
     const body = await res.json();
     expect(body.status).toBe("CLOSED");
     expect(body.endingAr).toBe(100);
+  });
+
+  it("400s a year below 2000 (the Date.UTC 0-99 -> 1900-1999 remap guard)", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period"], "close-post-yr");
+    const res = await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", closer, { year: 26, month: 7 }), withParams({}),
+    );
+    expect(res.status).toBe(400);
   });
 });
 

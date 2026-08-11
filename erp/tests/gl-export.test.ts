@@ -282,6 +282,44 @@ describe("gl-export delta", () => {
     expect(again.postings.length).toBe(0);
   });
 
+  it("a reopen -> re-finalize WITHIN the month with a changed account emits reverse-then-repost, not a no-op", async () => {
+    // The membership-only-delta defect: a reopen + edit + re-finalize that keeps the invoice IN the
+    // recognition month keeps its id (event key) AND its finalizedAt in-scope, so the event is present
+    // in BOTH the current journal and the prior net. Checking `.has(key)` alone would emit nothing and
+    // leave QBO holding the stale entry. Modelled here by re-mapping the revenue to a DIFFERENT account
+    // at the SAME total (so the close still reconciles) — the journal content changes, the key does not.
+    const gl = await seedGlDefaults();
+    const inv = await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+    await asSystem(() => exportClose(period.id)); // batch 1: A/R 100 dr / 4010-REV 100 cr
+
+    const rev2 = await prisma.glAccount.create({ data: { name: "4020-REV-2" } });
+    await asSystem(() => reopenPeriod(period.id, "re-mapping the revenue account"));
+    await prisma.invoiceLine.updateMany({
+      where: { invoiceId: inv.invoiceId, kind: "OPERATION" },
+      data: { glAccountId: rev2.id, glAccountName: "4020-REV-2" },
+    });
+    await asSystem(() => closePeriod(2026, 7)); // total unchanged -> reconciles
+
+    const delta = await asSystem(() => exportClose(period.id));
+    expect(delta.postings.length).toBeGreaterThan(0); // NOT the empty no-op the old membership check gave
+    const byAccount = (id: string) => delta.postings.filter((p) => p.glAccountId === id);
+    // Old revenue account (4010): its original credit is reversed -> now an isReversal DEBIT.
+    expect(byAccount(gl.revId).some((p) => p.isReversal && p.debit > 0)).toBe(true);
+    // New revenue account (4020): a fresh, non-reversal CREDIT.
+    expect(byAccount(rev2.id).some((p) => !p.isReversal && p.credit > 0)).toBe(true);
+    // A/R nets to zero across the delta (100 reversed + 100 re-posted) and the whole batch balances.
+    const arNet = byAccount(gl.arId).reduce((s, p) => s + (p.debit - p.credit), 0);
+    expect(Math.round(arNet * 100)).toBe(0);
+    const net = delta.postings.reduce((s, p) => s + (p.debit - p.credit), 0);
+    expect(Math.round(net * 100)).toBe(0);
+
+    // A further re-export with nothing changed is empty again (the reverse+repost is now the prior net).
+    const again = await asSystem(() => exportClose(period.id));
+    expect(again.postings.length).toBe(0);
+  });
+
   it("re-exporting an earlier month after a later one closed leaves the later month untouched", async () => {
     const gl = await seedGlDefaults();
     const julyInv = await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);

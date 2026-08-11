@@ -16,7 +16,10 @@ export const GET = handle(async () => {
 // POST /api/receivables/close — commit the month-end close (spec §4.1). Gated on the dangerous
 // `close_ar_period` special on top of `receivables.edit`. The service owns every rule (prior-month,
 // zero-variance reconciliation, the month advisory lock).
-const BODY = z.object({ year: z.number().int(), month: z.number().int().min(1).max(12) }).strict();
+// year >= 2000 (matching readiness/period.ts): a year of 0-99 would let `Date.UTC(year, …)` in the
+// service silently remap the window into 1900-1999 while the ClosePeriod row is stored under the
+// supplied year — the posting guards would then look for a year the close never wrote.
+const BODY = z.object({ year: z.number().int().min(2000), month: z.number().int().min(1).max(12) }).strict();
 
 export const POST = handle(async (req) => {
   const user = requireUser();

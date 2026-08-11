@@ -131,7 +131,18 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 
     const lines: JournalLine[] = [];
     for (const [key, cur] of currentByKey) {
-      if (!priorByKey.has(key)) lines.push(...cur); // new event -> post
+      const prior = priorByKey.get(key);
+      if (!prior) {
+        lines.push(...cur); // new event -> post
+      } else if (!sameNet(cur, prior)) {
+        // CHANGED event — same key in both, but a reopen + edit + re-finalize WITHIN the recognition
+        // month kept the id while moving the amounts/accounts (finalizedAt stays in-month, glDate
+        // stays this period, so both `.has(key)`). Membership alone would emit nothing and leave QBO
+        // holding the stale entry. Reverse the prior net and re-post the current — the pair nets to
+        // exactly the delta, and each side is self-balancing so the batch stays balanced.
+        lines.push(...reverseLines(prior), ...cur);
+      }
+      // else: unchanged -> nothing (the true no-op re-run)
     }
     for (const [key, prior] of priorByKey) {
       if (!currentByKey.has(key)) lines.push(...reverseLines(prior)); // net-posted, no longer live -> reverse
@@ -222,6 +233,30 @@ function keyOf(sourceType: PostingSourceType | string, sourceId: string): string
  *  dropping it keeps the delta clean and the re-run a true no-op). */
 function nonZero(lines: JournalLine[]): JournalLine[] {
   return lines.filter((l) => cents(l.debit) !== 0 || cents(l.credit) !== 0);
+}
+
+/** Net a line set to `(side, account) -> (debit - credit)` cents, dropping zero nets. The account key
+ *  is the live `glAccountId` when present, else the frozen `glAccountName` (a SetNull line) — the same
+ *  key `aggregateLines`/`buildPriorNet` collapse on — so a current set and a reconstructed prior net
+ *  are comparable regardless of how many raw lines each carried. */
+function netSig(lines: JournalLine[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const l of lines) {
+    const acct = l.glAccountId !== "" ? l.glAccountId : l.glAccountName;
+    const k = `${l.side}|${acct}`;
+    m.set(k, (m.get(k) ?? 0) + cents(l.debit) - cents(l.credit));
+  }
+  for (const [k, v] of m) if (v === 0) m.delete(k);
+  return m;
+}
+
+/** Do two event line sets post the identical net journal? Used to tell an UNCHANGED re-exported event
+ *  (emit nothing) from one edited under a reopen (reverse the old, post the new). */
+function sameNet(a: JournalLine[], b: JournalLine[]): boolean {
+  const ma = netSig(a), mb = netSig(b);
+  if (ma.size !== mb.size) return false;
+  for (const [k, v] of ma) if (mb.get(k) !== v) return false;
+  return true;
 }
 
 /**

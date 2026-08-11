@@ -258,7 +258,10 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
       }
       const existing = await tx.closePeriod.findFirst({ where: { year, month } });
       const data = {
-        year, month, status: "CLOSED", closedById: currentActor().id, reopenedAt: null, reopenReason: "",
+        // Set closedAt explicitly, not only via @default(now()): re-closing a REOPENED month UPDATEs
+        // this row in place, and the default fires on INSERT only — so a plain update would leave
+        // closedAt at the ORIGINAL close time while the frozen figures below are re-committed now.
+        year, month, status: "CLOSED", closedById: currentActor().id, closedAt: new Date(), reopenedAt: null, reopenReason: "",
         beginningAr: schedule.beginningAr, invoicedTotal: schedule.invoicedTotal, creditTotal: schedule.creditTotal,
         paymentTotal: schedule.paymentTotal, discountTotal: schedule.discountTotal, writeOffTotal: schedule.writeOffTotal,
         endingAr: schedule.endingAr, agingEndingAr: schedule.agingEndingAr,

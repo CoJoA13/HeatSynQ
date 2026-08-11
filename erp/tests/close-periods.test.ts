@@ -208,6 +208,25 @@ describe("close/reopen lifecycle", () => {
     expect(reclosed.id).toBe(c.id);
     expect(await prisma.closePeriod.count({ where: { year: 2026, month: 7 } })).toBe(1);
   });
+
+  it("refreshes closedAt on re-close of a reopened month (not the stale original close time)", async () => {
+    await makeFinalizedInvoiceDated("2026-07-05", 100);
+    await asSystem(() => closePeriod(2026, 7));
+    const first = await prisma.closePeriod.findFirstOrThrow({ where: { year: 2026, month: 7 } });
+
+    await asSystem(() => reopenPeriod(first.id, "correcting"));
+    const reopened = await prisma.closePeriod.findFirstOrThrow({ where: { id: first.id } });
+
+    await asSystem(() => closePeriod(2026, 7));
+    const reclosed = await prisma.closePeriod.findFirstOrThrow({ where: { id: first.id } });
+
+    // closedAt defaults on INSERT only; the re-close UPDATEs the row in place. It must advance to the
+    // re-close time — the pre-fix bug left it at the ORIGINAL close, which is strictly BEFORE the
+    // reopen, so `>= reopenedAt` (a timestamp between the two closes) distinguishes fixed from stale.
+    expect(reopened.reopenedAt).not.toBeNull();
+    expect(reclosed.closedAt.getTime()).toBeGreaterThanOrEqual(reopened.reopenedAt!.getTime());
+    expect(reclosed.closedAt.getTime()).toBeGreaterThan(first.closedAt.getTime());
+  });
 });
 
 // -------------------------------------------------------------------------------------------
