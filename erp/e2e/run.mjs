@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Playwright E2E harness (spec §12 / HANDOFF §5a). Drives the bundled Chromium against a
-// throwaway `next dev` instance on port 3100, running seventeen owner-reviewable flows in sequence.
+// throwaway `next dev` instance on port 3100, running the owner-reviewable flows in sequence.
 // Each flow gets its own browser context (so it gets its own video.webm) and its own numbered
 // screenshot sequence under e2e-artifacts/<flow>/.
 //
@@ -48,16 +48,25 @@ const HEADED = Boolean(process.env.HEADED);
 // its own shipped-and-invoiced order against its own fixture customer (the `invoice-shipped-
 // order.mjs` precedent) and then drives the new `/receivables` screens (batch, apply, aging,
 // statement print+archive) end to end.
-// Task 9 (Phase 5C) adds the 18th and now-last flow, `close-month-end`, as admin (needs
+// Task 9 (Phase 5C) adds the 18th flow, `close-month-end`, as admin (needs
 // `close_ar_period`/`run_qbo_export`, both held via ALL_PERMISSIONS) — it sets the four Admin ->
 // Billing GL defaults, seeds its own shipped-and-invoiced order + a discounted/written-off payment
 // against its own fixture customer, closes the current month, exports the GL delta, then
-// reopens/corrects/re-closes/re-exports and confirms the reversing delta. Runs last for the same
-// "nothing after it needs its state" reason as every other flow at the tail of this list — and
+// reopens/corrects/re-closes/re-exports and confirms the reversing delta. Ran last (of 18) for the
+// same "nothing after it needs its state" reason as every other flow at the tail of this list — and
 // deliberately AFTER `receivables-apply-age-statement`, whose own invoice stays FINALIZED (never
 // unlocked) for the rest of the run and so lands inside the SAME calendar month's close scope; the
 // close flow's own fixtures backfill that invoice's step code/payment type with GL accounts for
 // exactly this reason (`e2e/lib/db-fixtures.ts`'s `arOpGlAccountName`/`closePaymentType` comments).
+// Task 11 (Phase 6) adds the 19th and now-last flow, `quotes`, as admin — the full quoting
+// lifecycle (ending statement default → quote with linked + free-text lines and a price break →
+// print → order-entry auto-link → ship → draft invoice naming "Quote #N" → close-with-reason
+// warning → follow-up/expired worklist) against its own fixture customer/part. It runs last for
+// the usual nothing-after-needs-its-state reason, and running AFTER `close-month-end` (which
+// leaves the current month CLOSED until teardown) is safe by construction: the flow's invoice is
+// created and STAYS a DRAFT — `createInvoice` is not a posting mutation, so `assertPeriodOpen`
+// never guards it — and a draft has no `finalizedAt`, so it can never enter the close flow's
+// readiness/export scope either (which is also why the quote fixtures carry no GL accounts).
 const FLOWS = [
   { name: "template-build-and-load", as: "admin", module: "./flows/template-build-and-load.mjs" },
   { name: "typed-fields", as: "admin", module: "./flows/typed-fields.mjs" },
@@ -77,6 +86,7 @@ const FLOWS = [
   { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
   { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
   { name: "close-month-end", as: "admin", module: "./flows/close-month-end.mjs" },
+  { name: "quotes", as: "admin", module: "./flows/quotes.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
