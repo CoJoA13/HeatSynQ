@@ -69,18 +69,43 @@ per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review 
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**Phase 6 (Quoting) is IN PROGRESS (design approved 2026-08-10).** The brainstorm ran as a
-one-question-at-a-time owner session (fourteen rulings); the approved spec is
-`docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 is the ruling table — standing
-agreement, per-order-line link, wholesale tier 1, judged-at-link-time, latest-effective-wins,
-live-until-finalize, the `endingStatement` reference kind, `User.title`), the plan
-`docs/superpowers/plans/2026-08-10-phase-6-quoting.md` (11 tasks), the branch `phase-6-quoting`, and
-the execution ledger `docs/execution/2026-08-10-phase-6-quoting/`. The owner supplied the quote PDF
-build target `docs/samples/Quote_Sample_Form.jpeg` (VS's stock quote form) and approved the seven
-precedent-based calls flagged at spec review. The original spec gained a Phase 6 amendment table in
-§15. The milestone alternatives Phase 5's completion opened — parallel-run/acceptance-month prep, and
-the A/R backlog (#68–#93) — stay deferred to their own sessions; the owner-owed GL-account list +
-bookkeeper QBO homework gate a *real* export, not Quoting.
+**Phase 6 (Quoting) is BUILT — all 11 tasks complete and task-approved on `phase-6-quoting`
+(2026-08-11); next: the whole-branch review → one fix wave → PR (attribution in the body).** The
+approved spec is `docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 is the
+fourteen-ruling table — standing agreement, per-order-line link, wholesale tier 1,
+judged-at-link-time, latest-effective-wins, live-until-finalize, the `endingStatement` reference
+kind, `User.title`), the plan `docs/superpowers/plans/2026-08-10-phase-6-quoting.md`, and the
+execution ledger `docs/execution/2026-08-10-phase-6-quoting/` — per-task briefs, reports, reviewer
+verdicts, and the `progress.md` whose carried flags ARE the whole-branch review's triage inputs.
+Delivered: the Quote data layer + registrations (2 hand-written migrations); the eleventh
+reference kind (`endingStatement`, at-most-one-live-default under an advisory lock); the quote
+service (create/read/list/§5.4-worklist/update/close/reopen/delete/attach-part, all under a
+`claimQuote` row claim); the `quote-links.ts` eligibility LEAF + per-order-line auto-link with
+the §5.14 SSI pairing dangerous-direction-tested (see CLAUDE.md's new STANDING INVARIANT
+sentence); tier-1 wholesale invoice substitution with `sourceQuoteNumber` frozen per line;
+cross-entity §5.14 delete blocks (part/customer/step-code/ending-statement); the `/quotes` UI
+(single-save form — the notes-clobber family gets no fourth member); order-entry/hub/part-page
+link surfaces; the quote PDF (eighth document type, built to `docs/samples/
+Quote_Sample_Form.jpeg`, indicative amounts through the real pricing engine) + print/documents
+routes + `User.title` (closing Phase 4 ping #4); and the 19th E2E flow driving the whole
+lifecycle through the real UI. **Final gates (2026-08-11): 2122 tests / 130 files,
+`tsc`/`eslint`/`build` clean, E2E 19/19 (watched; dev-DB fixtures verified clean, incl. the
+snapshot-and-restored ending-statement default).**
+
+**The owner-ratification queue (assembled from the ledger for the demo/merge):** (1) `createQuote`
+refuses an inactive customer but accepts an inactive part on a linked line (T3); (2) a CLOSED
+quote still blocks `deletePart`/`deleteCustomer` — only deletion clears the block (T7; the
+reviewer ruled it right under the standing-agreement model — ratify); (3) the one-time
+dormant-column audit churn on the first line-tree save after attach-part (T4/T8); (4) the invoice
+grid names EVERY operation line's source while the PDF annotates QUOTE lines only (T6 → demo);
+(5) the part page's Active-quotes section reads `/api/quotes/eligible` with `orders.view` —
+arguably `parts.view`/`quotes.view` by that route's own §5.15 reasoning (T9); (6) the "Quoted by"
+picker's options require `manage_users` — the only users list (T8/T10); (7) `QuoteLine.eachWeight`
+mirrored at the Part's real Decimal(10,4), spec text corrected in place (T1); (8) the quote PDF's
+9 documented layout deviations (T10 → demo, the 5A-demo channel). The milestone alternatives
+Phase 5's completion opened — parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) —
+stay deferred to their own sessions; the owner-owed GL-account list + bookkeeper QBO homework gate
+a *real* export, not Quoting.
 
 Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
 **#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
