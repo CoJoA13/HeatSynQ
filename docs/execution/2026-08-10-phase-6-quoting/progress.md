@@ -113,4 +113,16 @@ The owner ruled F1 **built in-phase**: Task 12 (brief `task-12-brief.md`, report
 warnings on create/update/attach-part riding the responses per the §5.7 precedent, the amber
 non-blocking banners in the quote UI, TDD RED-first with message-content assertions. F2–F7
 remain issues to file as the review triaged them; ratification-queue item 9 is thereby resolved
+
+## Task 12 review verdict (2026-08-11)
+
+✅ Approved, Spec ✅ (task-reviewer round 1 — zero Critical/Important). The reviewer verified the
+inclusive-boundary predicate, warns-never-block on every path, the customer-scoping-via-partId
+claim in both writers, §5.13 banner discipline (exactly two write sites), and the RED narration's
+failure shapes against the assertions as written. 3 Minors → issues/demo: the advisory reads widen
+the Serializable SSI footprint (transient 409 exposure class that already existed — the one sense
+in which the computation can fail a mutation, now on the record), the stale banner on a closed
+quote (demo), the create stop-panel's missing dismiss affordance (demo/polish). Controller
+spot-checks the same day: dev DB clean (0/0/0), quote_number_next restored to 1015, queue-item-9
+mapping confirmed.
 (the remaining 8 owner-ratification items stand).
