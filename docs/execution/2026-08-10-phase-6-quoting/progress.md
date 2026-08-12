@@ -75,3 +75,32 @@ corrected in place (T1); (8) the quote PDF's 9 documented layout deviations (T10
 
 Review package: base = the branch point off `main`, head = the final docs commit; the per-task
 `review-*.diff` packages remain regenerable from the SHAs in each row.
+
+## Whole-branch review (2026-08-11, strongest model, full 16k-line diff read)
+
+**Verdict: READY FOR PR — EMPTY mandatory fix wave.** No correctness/concurrency/data-integrity
+defect survived verification anywhere on the branch (the three-of-four-phases blocking-defect
+precedent does not repeat). Every hunt-list seam verified clean: all cross-transaction reads under
+the right claim/isolation, the frozen/live boundary end-to-end (incl. REOPENED re-invoice and
+credit copy), print-vs-delete both claiming the row, the finalize gap closed in vitest, GL/5C
+untouched by quote-priced lines (readiness has no priceSource branch; finalize refuses needs-price
+so an empty agreement can never reach export), registries/sweeps complete, free-text-line linkage
+verified impossible.
+
+**Headline finding F1 (the cross-task seam per-task review cannot see): spec §3 ruling 7's
+overlap-save warning was never built** — the clause ("saving a quote that overlaps an existing open
+quote for the same part warns but doesn't block") never made it from the spec into any task brief,
+so eleven approved tasks each satisfied a brief that lacked it. Not a defect (issue-grade by the
+triage rule) but a §3 contract clause the branch ships without → owner-ratification queue item 9;
+owner decides in-phase build (small additive warn) vs issue.
+
+**Issues to file (none fix-wave):** F1 overlap warn; F2 dangerous-direction tests for the
+deletePart/deleteCustomer↔quote-writer SSI pairings (holes verified NOT live today; customerId
+immutability is the load-bearing dependency); F3 zero-net lead-line corrupt-link asymmetry;
+F4 indicativeAmounts ops[i] length assert; F5 sourceQuoteNumber .refine on the manual-lines save;
+F6 soft-deleted-row promote 200s (inherited generic-service hole); F7 minors (no-op audit entry on
+same-customerId PATCH, SSI-test sleep flake window, LineQuoteRepick useLatest, TitleCell page-level
+gating note, float indicative display math, dev-DB orphaned audit rows).
+
+**Controller verification the same day:** E2E independently rerun — all 19 flows passed, exit 0,
+dev DB verified clean after (0 quotes / 0 orders / no stray ending statement).
