@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-11 — **Phase 6 (Quoting) is BUILT on `phase-6-quoting`: all 11 tasks complete and task-approved; next is the whole-branch review → fix wave → PR — see §4 for the state, the dated final gates, and the assembled owner-ratification queue.** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; §9's Phase 6 kickoff prompt was consumed 2026-08-10 (kept for the record until the merge rewrites §9); the deferred owner-homework and A/R backlog stay non-blocking. Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
+**Updated:** 2026-08-12 — **Phase 6 (Quoting) is BUILT and REVIEWED on `phase-6-quoting`: all 11 tasks task-approved; the whole-branch review returned READY FOR PR with an EMPTY mandatory fix wave, and its one owner-directed follow-up (Task 12 — spec §3 ruling 7's overlap-save warning, the review's F1) is built and green; next is the PR (attribution in the body) — see §4 for the state, the dated final gates, and the assembled owner-ratification queue.** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; §9's Phase 6 kickoff prompt was consumed 2026-08-10 (kept for the record until the merge rewrites §9); the deferred owner-homework and A/R backlog stay non-blocking. Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -69,8 +69,16 @@ per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review 
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**Phase 6 (Quoting) is BUILT — all 11 tasks complete and task-approved on `phase-6-quoting`
-(2026-08-11); next: the whole-branch review → one fix wave → PR (attribution in the body).** The
+**Phase 6 (Quoting) is BUILT and REVIEWED — all 11 tasks task-approved on `phase-6-quoting`; the
+whole-branch review (2026-08-11, strongest model, full-diff read) returned READY FOR PR with an
+EMPTY mandatory fix wave and one headline finding, F1: spec §3 ruling 7's overlap-save warning
+("warns but doesn't block") never reached any task brief, so eleven approved tasks shipped
+without it. The owner ruled it built in-phase — landed as Task 12 (2026-08-12, `7d5a64d`):
+`createQuote`/`updateQuote`/`attachPart` return `warnings: string[]` computed in-transaction
+(inclusive-boundary window overlap, other live OPEN quotes' live lines for the same part —
+customer scoping implicit via partId), the §5.7 `shipmentWarnings` precedent, rendered as the
+house amber non-blocking banners in the quote UI; F2–F7 go to issues at PR time. Next: the PR
+(attribution in the body).** The
 approved spec is `docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 is the
 fourteen-ruling table — standing agreement, per-order-line link, wholesale tier 1,
 judged-at-link-time, latest-effective-wins, live-until-finalize, the `endingStatement` reference
@@ -87,10 +95,11 @@ cross-entity §5.14 delete blocks (part/customer/step-code/ending-statement); th
 (single-save form — the notes-clobber family gets no fourth member); order-entry/hub/part-page
 link surfaces; the quote PDF (eighth document type, built to `docs/samples/
 Quote_Sample_Form.jpeg`, indicative amounts through the real pricing engine) + print/documents
-routes + `User.title` (closing Phase 4 ping #4); and the 19th E2E flow driving the whole
-lifecycle through the real UI. **Final gates (2026-08-11): 2122 tests / 130 files,
-`tsc`/`eslint`/`build` clean, E2E 19/19 (watched; dev-DB fixtures verified clean, incl. the
-snapshot-and-restored ending-statement default).**
+routes + `User.title` (closing Phase 4 ping #4); the 19th E2E flow driving the whole
+lifecycle through the real UI; and the Task 12 fix wave (ruling 7's overlap-save warning,
+TDD RED-first with message-content assertions). **Final gates (2026-08-12, post-fix-wave):
+2133 tests / 130 files, `tsc`/`eslint`/`build` clean, E2E 19/19 (watched; dev-DB fixtures
+verified clean).**
 
 **The owner-ratification queue (assembled from the ledger for the demo/merge):** (1) `createQuote`
 refuses an inactive customer but accepts an inactive part on a linked line (T3); (2) a CLOSED
