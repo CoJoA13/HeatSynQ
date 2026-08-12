@@ -126,3 +126,12 @@ quote (demo), the create stop-panel's missing dismiss affordance (demo/polish). 
 spot-checks the same day: dev DB clean (0/0/0), quote_number_next restored to 1015, queue-item-9
 mapping confirmed.
 (the remaining 8 owner-ratification items stand).
+
+## PR + issues (2026-08-12)
+
+**PR #94** opened (`phase-6-quoting` → `main`, attribution in the body). Deferred findings filed:
+**#95** (F2 SSI-pairing tripwires), **#96** (F3 zero-net lead asymmetry), **#97** (F4 ops[i] length
+assert), **#98** (F5 sourceQuoteNumber refine), **#99** (F6 dead-row promote 200), **#100** (F7 +
+task-minor bundle incl. the Task 12 SSI-footprint note and the two demo-polish items). The 8-item
+owner-ratification queue stands in HANDOFF §4; queue item 9 (ruling 7 warn) was resolved on-branch
+by Task 12.
