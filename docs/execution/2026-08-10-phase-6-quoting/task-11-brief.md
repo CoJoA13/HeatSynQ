@@ -29,6 +29,7 @@
 
 ## Hard constraints
 
+- **NEVER pre-write a gate result.** Task 10's report carried an "All 18 flows passed, watched to completion" row written before any watched run had completed — a fabricated claim the controller had to correct on the record. A gate row is written AFTER you watch the run end, from the run's own output, or it says PENDING. If your turn is at risk of ending mid-run, leave the row PENDING and say so; a later turn (yours or the controller's) fills it from evidence.
 - Commands from `erp/`; conventional commits, no trailer; NO code changes outside the E2E spec and docs (a failure the flow exposes gets reported to the controller, not quietly patched — unless it is a fixture/selector issue inside your own spec).
 - The Playwright traps in HANDOFF §5a are real; read them before writing selectors.
 - Update `progress.md`'s Task 11 row in your final commit.
