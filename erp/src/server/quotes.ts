@@ -389,8 +389,11 @@ function auditPayload(args: {
  * Entry defaults (spec §5.1): quoteDate today; effective = quoteDate; expiry = quoteDate +
  * `quote_valid_days` CALENDAR days (ruling 9 — a validity window, not a lead-time, so no
  * business-day skipping); ending statement = the kind's live default row; quotedBy = the actor.
+ *
+ * The response carries ruling 7's overlap-save warnings (`overlapWarnings` — advisory, never a
+ * refusal), computed inside this same transaction after the write.
  */
-export async function createQuote(input: unknown): Promise<QuoteDetail> {
+export async function createQuote(input: unknown): Promise<QuoteMutationResult> {
   const data = CREATE.parse(input);
   const validDays = await getSetting("quote_valid_days");
 
@@ -479,7 +482,8 @@ export async function createQuote(input: unknown): Promise<QuoteDetail> {
         { tx },
       );
 
-      return readDetail(tx, quote.id);
+      const detail = await readDetail(tx, quote.id);
+      return { ...detail, warnings: await overlapWarnings(tx, quote.id) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
@@ -604,6 +608,80 @@ async function readDetail(db: Db, id: string): Promise<QuoteDetail> {
 
 export async function getQuote(id: string): Promise<QuoteDetail> {
   return readDetail(prisma, id);
+}
+
+/** What the three quote mutations return (Task 12): the fresh detail plus ruling 7's
+ *  overlap-save warnings — ADVISORY, never blocking. `getQuote` stays a bare detail: the
+ *  warnings describe a save the caller just made, not standing state a reader must recompute. */
+export type QuoteMutationResult = QuoteDetail & { warnings: string[] };
+
+/**
+ * Ruling 7's second sentence (spec §3): "Saving a quote that overlaps an existing open quote for
+ * the same part warns but doesn't block." The §5.7 `shipmentWarnings` shape — an advisory
+ * surface computed AFTER the write on the caller's own claim-holding `tx`, riding the mutation
+ * response — so it describes exactly the state the mutation is committing. WARNS, NEVER BLOCKS:
+ * no caller may turn a non-empty result into a refusal.
+ *
+ * One warning per (part, other-quote): for each live PART-LINKED line of this quote (free-text
+ * lines carry no part and never warn), every OTHER live OPEN quote holding a live line for the
+ * same part whose [effectiveDate, expiryDate] window overlaps this quote's — INCLUSIVE both
+ * ends, the §5.2 eligibility boundary: an order received on the one shared day is priceable by
+ * both quotes, which is precisely the ambiguity the warning names. Deterministic order: this
+ * quote's lines by position, other quotes ascending by number.
+ *
+ * Customer scoping is implicit through `partId` (verified for Task 12): `Part.customerId` is a
+ * required FK, and every writer of `QuoteLine.partId` (`resolveQuoteLines`, `attachPart`)
+ * refuses a part belonging to another customer — so two quotes holding live lines for one part
+ * are necessarily the same customer's quotes, and no customer filter is needed here.
+ */
+async function overlapWarnings(tx: Db, quoteId: string): Promise<string[]> {
+  const quote = await tx.quote.findFirst({
+    where: { id: quoteId },
+    select: {
+      status: true, deletedAt: true, effectiveDate: true, expiryDate: true,
+      lines: {
+        where: { deletedAt: null, partId: { not: null } },
+        orderBy: [{ position: "asc" }, { id: "asc" }],
+        select: { partId: true, part: { select: { partNumber: true } } },
+      },
+    },
+  });
+  // Belt-and-braces: every caller has just mutated a live OPEN quote, but the guard keeps the
+  // helper honest if it ever rides another path.
+  if (!quote || quote.deletedAt !== null || quote.status !== "OPEN") return [];
+  const partIds = quote.lines.flatMap((l) => (l.partId === null ? [] : [l.partId]));
+  if (partIds.length === 0) return [];
+
+  const others = await tx.quote.findMany({
+    where: {
+      id: { not: quoteId }, deletedAt: null, status: "OPEN",
+      // Inclusive-boundary window overlap: other.effective ≤ this.expiry AND other.expiry ≥
+      // this.effective. Both columns are date-only DateTimes, so lte/gte ARE the inclusive
+      // comparisons — two windows sharing exactly one day overlap; adjacent-by-one-day do not.
+      effectiveDate: { lte: quote.expiryDate },
+      expiryDate: { gte: quote.effectiveDate },
+      lines: { some: { deletedAt: null, partId: { in: partIds } } },
+    },
+    select: {
+      quoteNumber: true, effectiveDate: true, expiryDate: true,
+      lines: { where: { deletedAt: null, partId: { in: partIds } }, select: { partId: true } },
+    },
+    orderBy: { quoteNumber: "asc" },
+  });
+  if (others.length === 0) return [];
+
+  const warnings: string[] = [];
+  for (const line of quote.lines) {
+    for (const other of others) {
+      if (!other.lines.some((l) => l.partId === line.partId)) continue;
+      // `part` is non-null by the line filter above (partId: { not: null }).
+      warnings.push(
+        `Part ${line.part!.partNumber} is also quoted on open quote #${other.quoteNumber} ` +
+        `(effective ${formatDateOnly(other.effectiveDate)} – ${formatDateOnly(other.expiryDate)}, ` +
+        "overlapping this quote's window) — at order entry, the latest effective date wins");
+    }
+  }
+  return warnings;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1173,8 +1251,13 @@ async function applyQuoteLines(
  * the row claim. One `auditedUpdate` wraps every write — the quote-level before/after diff (the
  * order-children precedent: editing the tree IS editing the quote) is the audit trail, and this
  * is SNAPSHOT_INCLUDE.quote's consumer. Isolation: see the section comment above.
+ *
+ * EVERY update response carries ruling 7's overlap warnings, not only `lines` payloads: a
+ * date-only patch can itself create (extend) or dissolve (shrink) the overlap, and the §5.7
+ * precedent is that every edit response carries the full advisory surface. The read is
+ * advisory-only, so the header-only default-isolation path needs no upgrade for it.
  */
-export async function updateQuote(id: string, input: unknown): Promise<QuoteDetail> {
+export async function updateQuote(id: string, input: unknown): Promise<QuoteMutationResult> {
   const data = UPDATE.parse(input);
   const assignsFk = data.lines !== undefined || data.endingStatementId != null;
 
@@ -1252,7 +1335,8 @@ export async function updateQuote(id: string, input: unknown): Promise<QuoteDeta
         }
       }, { tx });
 
-      return readDetail(tx, id);
+      const detail = await readDetail(tx, id);
+      return { ...detail, warnings: await overlapWarnings(tx, id) };
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
@@ -1267,8 +1351,10 @@ const ATTACH = z.object({
  * customer, one live line per part), refused on a line that already carries one. The free-text
  * columns stay as-is — dormant history the read model stops consulting the moment `partId` is
  * set. Serializable: assigns the registered `QuoteLine.partId` FK (the section comment above).
+ * The response carries ruling 7's overlap warnings — attaching a part is exactly the act that
+ * can put one part on two open quotes at once.
  */
-export async function attachPart(quoteId: string, input: unknown): Promise<QuoteDetail> {
+export async function attachPart(quoteId: string, input: unknown): Promise<QuoteMutationResult> {
   const data = ATTACH.parse(input);
 
   return withDbErrors({ entity: "Quote" }, () =>
@@ -1301,7 +1387,8 @@ export async function attachPart(quoteId: string, input: unknown): Promise<Quote
       await auditedUpdate("quote", quoteId,
         () => tx.quoteLine.update({ where: { id: line.id }, data: { partId: part.id } }), { tx });
 
-      return readDetail(tx, quoteId);
+      const detail = await readDetail(tx, quoteId);
+      return { ...detail, warnings: await overlapWarnings(tx, quoteId) };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 

@@ -62,6 +62,9 @@ export type QuoteDetailData = {
   lines: QuoteLineData[];
 };
 export type QuoteCloseResultData = { quote: QuoteDetailData; linkedOpenOrders: LinkedOrderRef[] };
+/** Mutation responses (POST /api/quotes, PATCH /api/quotes/[id], attach-part): the detail plus
+ *  ruling 7's overlap-save warnings — advisory, never blocking (mirrors QuoteMutationResult). */
+export type QuoteMutationData = QuoteDetailData & { warnings: string[] };
 
 export type QuoteRowData = {
   id: string; quoteNumber: number;

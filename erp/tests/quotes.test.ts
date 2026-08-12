@@ -1767,3 +1767,180 @@ describe("close-vs-update race: the row claim is the guard", () => {
     expect(after?.notes).toBe("");
   });
 });
+
+// ============================================================================================
+// Phase 6 Task 12 (fix wave) — ruling 7's overlap-save warning (spec §3, second sentence):
+// createQuote / updateQuote / attachPart responses carry `warnings: string[]`, one entry per
+// (part, other-quote) where another live OPEN quote holds a live line for the same part over an
+// overlapping [effectiveDate, expiryDate] window — INCLUSIVE both ends. Warns NEVER block:
+// every assertion below rides a SUCCESSFUL response. Customer scoping is implicit via partId
+// (Part.customerId is required, and every QuoteLine.partId writer refuses another customer's
+// part), so no cross-customer case can exist to test.
+// ============================================================================================
+
+describe("overlap-save warnings (ruling 7)", () => {
+  beforeEach(truncateAll);
+
+  /** An OPEN quote over an explicit window; each `lines` entry is a partId or free-text. */
+  const openQuote = (
+    f: Awaited<ReturnType<typeof serviceFixture>>,
+    window: { from: string; to: string },
+    lines: ({ partId: string } | { partNumberText: string })[],
+  ) => asUser(f.quoter, () => createQuote({
+    customerId: f.customer.id,
+    effectiveDate: window.from, expiryDate: window.to,
+    lines: lines.map((l) => ({ ...l, prices: [] })),
+  }));
+
+  it("a create overlapping an existing open quote for the same part WARNS on the response — and still lands (never blocks)", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    expect(a.warnings).toEqual([]); // nothing to collide with yet
+
+    const b = await openQuote(f, { from: "2026-08-20", to: "2026-09-15" }, [{ partId: f.part.id }]);
+    expect(b.status).toBe("OPEN"); // saved fine — the warning rides a success
+    expect(b.warnings).toEqual([
+      `Part P-100 is also quoted on open quote #${a.quoteNumber} (effective 2026-08-01 – ` +
+      "2026-08-31, overlapping this quote's window) — at order entry, the latest effective date wins",
+    ]);
+    // And the overlap reads the same from the OTHER side: editing A now warns about B.
+    const backAtA = await asUser(f.quoter, () => updateQuote(a.id, { rfqNumber: "RFQ-OL" }));
+    expect(backAtA.warnings).toHaveLength(1);
+    expect(backAtA.warnings[0]).toContain("P-100");
+    expect(backAtA.warnings[0]).toContain(`#${b.quoteNumber}`);
+  });
+
+  it("overlap is inclusive at both boundaries and direction-free: touch-left, touch-right, contained, containing all warn", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+
+    const cases: [string, string][] = [
+      ["2026-07-01", "2026-08-01"], // expiry lands ON a's effective date — one shared day
+      ["2026-08-31", "2026-09-30"], // effective lands ON a's expiry date — one shared day
+      ["2026-08-10", "2026-08-15"], // contained inside a's window
+      ["2026-07-01", "2026-12-31"], // contains a's window whole
+    ];
+    for (const [from, to] of cases) {
+      const q = await openQuote(f, { from, to }, [{ partId: f.part.id }]);
+      expect(
+        q.warnings.some((w) => w.includes("P-100") && w.includes(`#${a.quoteNumber}`)),
+        `window ${from}..${to} should warn against #${a.quoteNumber}`,
+      ).toBe(true);
+    }
+  });
+
+  it("disjoint windows do not warn — adjacent-by-one-day is NOT overlap", async () => {
+    const f = await serviceFixture();
+    await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    const b = await openQuote(f, { from: "2026-09-01", to: "2026-09-30" }, [{ partId: f.part.id }]);
+    expect(b.warnings).toEqual([]);
+  });
+
+  it("a CLOSED other quote does not warn, and neither does a deleted one", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    await asUser(f.quoter, () => closeQuote(a.id, "superseded"));
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    expect(b.warnings).toEqual([]);
+
+    const c = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part2.id }]);
+    await asUser(f.quoter, () => deleteQuote(c.id, "typo"));
+    const d = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part2.id }]);
+    expect(d.warnings).toEqual([]);
+  });
+
+  it("a deleted line on the other quote does not warn; its surviving lines for OTHER parts do not collide", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" },
+      [{ partId: f.part.id }, { partId: f.part2.id }]);
+    // Kill a's P-100 line out from under it (raw stamp — the READ side is what's under test).
+    await prisma.quoteLine.updateMany({
+      where: { quoteId: a.id, partId: f.part.id }, data: { deletedAt: new Date() },
+    });
+
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    expect(b.warnings).toEqual([]); // a's only P-100 line is dead; its live P-200 line is another part
+  });
+
+  it("free-text lines never warn — no part, nothing to collide on, matching text included", async () => {
+    const f = await serviceFixture();
+    await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partNumberText: "FT-9" }]);
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partNumberText: "FT-9" }]);
+    expect(b.warnings).toEqual([]);
+  });
+
+  it("a quote never warns against itself: quiet at create with no sibling, quiet echoing its own lines back through update", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    expect(a.warnings).toEqual([]);
+    const echo = linesPayloadFrom(await getQuote(a.id));
+    const updated = await asUser(f.quoter, () => updateQuote(a.id, { lines: echo }));
+    expect(updated.warnings).toEqual([]);
+  });
+
+  it("an update whose lines payload CREATES the overlap warns, naming the part and the other quote", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partNumberText: "FT-1" }]);
+    expect(b.warnings).toEqual([]); // free text — quiet
+
+    const echo = linesPayloadFrom(await getQuote(b.id));
+    const updated = await asUser(f.quoter, () => updateQuote(b.id, {
+      lines: [...echo, { partId: f.part.id }],
+    }));
+    expect(updated.warnings).toHaveLength(1);
+    expect(updated.warnings[0]).toContain("P-100");
+    expect(updated.warnings[0]).toContain(`#${a.quoteNumber}`);
+  });
+
+  it("a date-only update that SHRINKS the window out of overlap stops warning; extending back in warns again", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    const b = await openQuote(f, { from: "2026-08-20", to: "2026-09-15" }, [{ partId: f.part.id }]);
+    expect(b.warnings).toHaveLength(1);
+
+    const shrunk = await asUser(f.quoter, () => updateQuote(b.id, { effectiveDate: "2026-09-01" }));
+    expect(shrunk.warnings).toEqual([]);
+
+    const widened = await asUser(f.quoter, () => updateQuote(b.id, { effectiveDate: "2026-08-31" }));
+    expect(widened.warnings).toHaveLength(1);
+    expect(widened.warnings[0]).toContain("P-100");
+    expect(widened.warnings[0]).toContain(`#${a.quoteNumber}`);
+  });
+
+  it("attachPart warns on its own response when the attach creates the overlap — and the attach lands", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partNumberText: "FT-1" }]);
+    expect(b.warnings).toEqual([]);
+
+    const attached = await asUser(f.quoter, () => attachPart(b.id, {
+      lineId: b.lines[0].id, partId: f.part.id,
+    }));
+    expect(attached.lines[0].partId).toBe(f.part.id); // warned, not blocked
+    expect(attached.warnings).toEqual([
+      `Part P-100 is also quoted on open quote #${a.quoteNumber} (effective 2026-08-01 – ` +
+      "2026-08-31, overlapping this quote's window) — at order entry, the latest effective date wins",
+    ]);
+  });
+
+  it("one warning per (part, other-quote): shared parts × other quotes each get their own named line", async () => {
+    const f = await serviceFixture();
+    const a = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" },
+      [{ partId: f.part.id }, { partId: f.part2.id }]);
+    const b = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" }, [{ partId: f.part.id }]);
+    expect(b.warnings).toHaveLength(1); // vs a alone
+
+    const c = await openQuote(f, { from: "2026-08-01", to: "2026-08-31" },
+      [{ partId: f.part.id }, { partId: f.part2.id }]);
+    // P-100 collides with a AND b; P-200 with a alone — this quote's lines in position order,
+    // other quotes ascending by number within each line.
+    expect(c.warnings).toHaveLength(3);
+    expect(c.warnings[0]).toContain("P-100");
+    expect(c.warnings[0]).toContain(`#${a.quoteNumber}`);
+    expect(c.warnings[1]).toContain("P-100");
+    expect(c.warnings[1]).toContain(`#${b.quoteNumber}`);
+    expect(c.warnings[2]).toContain("P-200");
+    expect(c.warnings[2]).toContain(`#${a.quoteNumber}`);
+  });
+});

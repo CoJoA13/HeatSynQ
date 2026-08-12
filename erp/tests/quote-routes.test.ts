@@ -137,6 +137,16 @@ describe("POST /api/quotes", () => {
     const detail = await res.json();
     expect(detail.quoteNumber).toBe(1000);
     expect(detail.quotedByName).toBe("q-create-ok"); // the actor flowed through the route context
+
+    // Ruling 7's warnings ride the route response (Task 12): quiet with no sibling, and a second
+    // create for the same part over the same default window warns — a 200 both times.
+    expect(detail.warnings).toEqual([]);
+    const res2 = await createRoute(bodyReq("http://t/api/quotes", "POST", creator, input), noParams);
+    expect(res2.status).toBe(200);
+    const detail2 = await res2.json();
+    expect(detail2.warnings).toHaveLength(1);
+    expect(detail2.warnings[0]).toContain(f.part.partNumber);
+    expect(detail2.warnings[0]).toContain(`#${detail.quoteNumber}`);
   });
 });
 
@@ -174,7 +184,9 @@ describe("GET/PATCH/DELETE /api/quotes/[id]", () => {
       bodyReq(`http://t/api/quotes/${q.id}`, "PATCH", editor, { notes: "edited via route" }),
       withParams({ id: q.id }));
     expect(res.status).toBe(200);
-    expect((await res.json()).notes).toBe("edited via route");
+    const patched = await res.json();
+    expect(patched.notes).toBe("edited via route");
+    expect(patched.warnings).toEqual([]); // the ruling-7 rider is on every update response
 
     const other = await prisma.customer.create({ data: { code: "QR-X", name: "Other" } });
     const immutable = await patchRoute(
@@ -282,6 +294,7 @@ describe("POST /api/quotes/[id]/attach-part", () => {
     const detail = await res.json();
     expect(detail.lines[1].partId).toBe(f.part2.id);
     expect(detail.lines[1].partNumber).toBe(f.part2.partNumber);
+    expect(detail.warnings).toEqual([]); // the ruling-7 rider — no overlapping sibling here
   });
 });
 

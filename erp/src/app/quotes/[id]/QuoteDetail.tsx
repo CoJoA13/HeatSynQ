@@ -33,7 +33,7 @@ import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL } from "@/lib/quote-constants"
 import {
   headerFormFrom, headerPatch, lineFormsFrom, linesComparable, linesPayload,
   type HeaderForm, type LineForm, type LinkedOrderRef, type PriceForm,
-  type QuoteCloseResultData, type QuoteDetailData,
+  type QuoteCloseResultData, type QuoteDetailData, type QuoteMutationData,
 } from "../quote-form";
 
 // Picker option slices (local mirrors, never src/server/** imports — CLAUDE.md).
@@ -132,6 +132,14 @@ export function QuoteDetail({ id }: { id: string }) {
   }, []);
   const [saving, setSaving] = useState(false);
   const [closeWarning, setCloseWarning] = useState<LinkedOrderRef[] | null>(null);
+  // Ruling 7's overlap-save warnings (amber, non-blocking — the ShipmentDetail warnings banner).
+  // Set ONLY from mutation responses (Save and attach-part carry them; GET does not), and load()
+  // deliberately never touches this state — so a reload that follows the save (§5.13's
+  // rollback-first refresh after some LATER failed action, or any other adopt) cannot clear a
+  // warning the save just raised. Navigation dismisses it: page.tsx remounts this component per
+  // id. A later save with ZERO warnings replaces it with the empty surface — the fresh save's
+  // truth (the §5.7 full-surface rule).
+  const [overlapWarnings, setOverlapWarnings] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
 
   // Minted React keys for rows added client-side (their server ids don't exist yet).
@@ -259,9 +267,11 @@ export function QuoteDetail({ id }: { id: string }) {
     if (Object.keys(body).length === 0) return; // Save is disabled when clean — belt and braces.
     setSaving(true);
     try {
-      adopt(await api<QuoteDetailData>(`/api/quotes/${id}`, {
+      const res = await api<QuoteMutationData>(`/api/quotes/${id}`, {
         method: "PATCH", body: JSON.stringify(body),
-      }));
+      });
+      adopt(res);
+      setOverlapWarnings(res.warnings);
       setError(null);
     } catch (e) {
       // Draft retained on purpose (see the top comment): the server refused, the user's edits
@@ -531,9 +541,11 @@ export function QuoteDetail({ id }: { id: string }) {
     const partId = attachPicks[line.key];
     if (!partId || line.id === undefined) return;
     try {
-      adopt(await api<QuoteDetailData>(`/api/quotes/${id}/attach-part`, {
+      const res = await api<QuoteMutationData>(`/api/quotes/${id}/attach-part`, {
         method: "POST", body: JSON.stringify({ lineId: line.id, partId }),
-      }));
+      });
+      adopt(res);
+      setOverlapWarnings(res.warnings);
       setAttachPicks((cur) => ({ ...cur, [line.key]: "" }));
       setError(null);
     } catch (e) {
@@ -961,6 +973,13 @@ export function QuoteDetail({ id }: { id: string }) {
       {printError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{printError}</p>}
       {optionsError && (
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{optionsError}</p>
+      )}
+      {overlapWarnings.length > 0 && (
+        // Ruling 7: overlapping open quotes for the same part WARN at save and never block —
+        // the house amber warnings list (ShipmentDetail.tsx's §5.7 banner).
+        <ul className="mb-3 list-disc space-y-0.5 rounded bg-amber-50 p-2 pl-7 text-sm text-amber-800">
+          {overlapWarnings.map((w, i) => <li key={i}>{w}</li>)}
+        </ul>
       )}
       {closed && (
         <p className="mb-3 rounded bg-slate-100 p-2 text-sm text-slate-700">

@@ -13,7 +13,10 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL, type QuoteStatusValue } from "@/lib/quote-constants";
-import type { LinkedOrderRef, QuoteCloseResultData, QuoteDetailData, QuoteRowData, QuoteWorklistData } from "./quote-form";
+import type {
+  LinkedOrderRef, QuoteCloseResultData, QuoteDetailData, QuoteMutationData, QuoteRowData,
+  QuoteWorklistData,
+} from "./quote-form";
 
 // The orders board / InvoicingList precedent: only the slice each picker renders.
 type CustomerOption = { id: string; code: string; name: string };
@@ -208,6 +211,12 @@ export function Quotes() {
   const [draft, setDraft] = useState({ customerId: "", partId: "", partNumberText: "" });
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Set only when the create SUCCEEDS with non-empty ruling-7 overlap warnings — the NewShipment
+  // `savedShipment` precedent (§5.7: a warning returned alongside a successful save must be
+  // SEEN, never raced past by an immediate navigate). Zero warnings navigates immediately,
+  // exactly as before; navigating away (Go to quote) is what dismisses the panel.
+  const [createdQuote, setCreatedQuote] =
+    useState<{ id: string; quoteNumber: number; warnings: string[] } | null>(null);
   const customerParts = draft.customerId
     ? parts.filter((p) => p.customerId === draft.customerId && p.active) : [];
 
@@ -220,7 +229,7 @@ export function Quotes() {
     setCreating(true);
     setCreateError(null);
     try {
-      const created = await api<QuoteDetailData>("/api/quotes", {
+      const created = await api<QuoteMutationData>("/api/quotes", {
         method: "POST",
         body: JSON.stringify({
           customerId: draft.customerId,
@@ -229,7 +238,13 @@ export function Quotes() {
             : { partNumberText: draft.partNumberText.trim(), prices: [] }],
         }),
       });
-      router.push(`/quotes/${created.id}`);
+      if (created.warnings.length > 0) {
+        setCreating(false);
+        setCreatedQuote({ id: created.id, quoteNumber: created.quoteNumber, warnings: created.warnings });
+        void reloadAll(); // the quote is real — the worklists and list below should show it
+      } else {
+        router.push(`/quotes/${created.id}`);
+      }
     } catch (e) {
       setCreateError((e as Error).message);
       setCreating(false);
@@ -346,6 +361,22 @@ export function Quotes() {
       <section className="mb-8 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">New quote</h2>
         {createError && <p className="mb-2 text-sm text-red-700">{createError}</p>}
+        {createdQuote ? (
+          // A create that succeeded WITH ruling-7 overlap warnings stops here instead of
+          // navigating straight past them (the NewShipment precedent). The form is gone — the
+          // quote exists, and a stray second "New quote" from a kept-alive form is exactly what
+          // this panel prevents. The warnings warn; they never block.
+          <div className="rounded border border-green-300 bg-green-50 p-4">
+            <p className="mb-2 font-medium">Quote #{createdQuote.quoteNumber} created.</p>
+            <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-amber-800">
+              {createdQuote.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+            <button type="button" onClick={() => router.push(`/quotes/${createdQuote.id}`)}
+                    className="rounded bg-slate-800 px-4 py-2 text-sm text-white">
+              Go to quote
+            </button>
+          </div>
+        ) : (
         <div className="flex flex-wrap items-end gap-3 text-sm">
           <label className="block">
             Customer
@@ -388,6 +419,7 @@ export function Quotes() {
             {creating ? "Creating…" : "New quote"}
           </button>
         </div>
+        )}
       </section>
 
       {/* ------------------------------ All quotes ------------------------------ */}
