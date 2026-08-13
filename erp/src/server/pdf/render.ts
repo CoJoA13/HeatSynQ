@@ -4,6 +4,8 @@
  * template-as-data contract Phase 7's designer will edit — so swapping the renderer never
  * reaches past this module.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import PdfPrinter from "pdfmake/src/printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
@@ -14,25 +16,55 @@ import { toBuffer } from "bwip-js/node";
 import { PDFDocument } from "pdf-lib";
 
 /**
- * pdfmake's own bundled Roboto, decoded out of its virtual file system into buffers.
+ * The font map — the four contract-enumerated families (Phase 7 spec §6.2, owner ruling 5),
+ * every family fed to `PdfPrinter` as BUFFERS built once at module load. ONE mechanism per
+ * family, and each family keeps its own:
  *
- * The browser build's `pdfMake.createPdf(def).getBuffer(...)` was tried first (task brief) and is
- * the wrong tool under Node: it wants a global `window`, and its vfs plumbing exists to fetch
- * fonts the browser cannot read off disk. `PdfPrinter` is pdfmake's documented server entry
- * point. It normally takes .ttf FILE PATHS — deliberately not used here, because a path would
- * have to survive `output: "standalone"`'s file tracing into the Docker image; buffers decoded
- * from a module the bundler already follows cannot go missing.
+ * - **Roboto** stays decoded out of pdfmake's own bundled vfs — the pre-Phase-7 mechanism,
+ *   under the exact same map key, so every unconverted builder and the posting register render
+ *   byte-for-byte the paths they always have. The browser build's `pdfMake.createPdf(...)` was
+ *   tried first (Phase 3) and is the wrong tool under Node: it wants a global `window`, and its
+ *   vfs plumbing exists to fetch fonts the browser cannot read off disk. `PdfPrinter` is
+ *   pdfmake's documented server entry point.
+ * - **Liberation Sans / Liberation Serif / Roboto Mono** are `.ttf` assets vendored in
+ *   `fonts/` beside this file (provenance + sha256 per file: `fonts/PROVENANCE.md`), read from
+ *   an app-root-resolved path. `PdfPrinter` normally takes .ttf FILE PATHS — deliberately not
+ *   used for either mechanism, because a path handed to pdfkit at render time would have to
+ *   survive `output: "standalone"`'s file tracing into the Docker image unverified; reading the
+ *   bytes eagerly at module load fails loudly at boot instead of at the first print, and
+ *   `next.config.ts`'s `outputFileTracingIncludes` carries the files into the standalone output
+ *   (physically verified, Task 6 report).
  *
- * Built once at module load (~1 MB of font data, four base64 decodes) rather than per render:
- * the printer is stateless across `createPdfKitDocument` calls, and a traveler for a 14-load
- * order is one call, not fourteen.
+ * Built once rather than per render: the printer is stateless across `createPdfKitDocument`
+ * calls, and a traveler for a 14-load order is one call, not fourteen.
  */
+const FONT_DIR = path.join(process.cwd(), "src", "server", "pdf", "fonts");
+const ttf = (rel: string): Buffer => readFileSync(path.join(FONT_DIR, rel));
+
 const FONTS = {
   Roboto: {
     normal: Buffer.from(vfs["Roboto-Regular.ttf"], "base64"),
     bold: Buffer.from(vfs["Roboto-Medium.ttf"], "base64"),
     italics: Buffer.from(vfs["Roboto-Italic.ttf"], "base64"),
     bolditalics: Buffer.from(vfs["Roboto-MediumItalic.ttf"], "base64"),
+  },
+  "Liberation Sans": {
+    normal: ttf("liberation-sans/LiberationSans-Regular.ttf"),
+    bold: ttf("liberation-sans/LiberationSans-Bold.ttf"),
+    italics: ttf("liberation-sans/LiberationSans-Italic.ttf"),
+    bolditalics: ttf("liberation-sans/LiberationSans-BoldItalic.ttf"),
+  },
+  "Liberation Serif": {
+    normal: ttf("liberation-serif/LiberationSerif-Regular.ttf"),
+    bold: ttf("liberation-serif/LiberationSerif-Bold.ttf"),
+    italics: ttf("liberation-serif/LiberationSerif-Italic.ttf"),
+    bolditalics: ttf("liberation-serif/LiberationSerif-BoldItalic.ttf"),
+  },
+  "Roboto Mono": {
+    normal: ttf("roboto-mono/RobotoMono-Regular.ttf"),
+    bold: ttf("roboto-mono/RobotoMono-Bold.ttf"),
+    italics: ttf("roboto-mono/RobotoMono-Italic.ttf"),
+    bolditalics: ttf("roboto-mono/RobotoMono-BoldItalic.ttf"),
   },
 };
 

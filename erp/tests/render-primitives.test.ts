@@ -394,6 +394,31 @@ describe("jpegDataUri — the pngDataUri sibling", () => {
   });
 });
 
+// ------------------------------------------------------------------------------------------------
+// The four-family font map (spec §6.2, owner ruling 5)
+// ------------------------------------------------------------------------------------------------
+
+describe("the contract-enumerated font families all render", () => {
+  it.each(["Roboto", "Liberation Sans", "Liberation Serif", "Roboto Mono"])(
+    "'%s' renders in all four styles and the drawn text reads back", async (family) => {
+      const pdf = await renderPdf({
+        defaultStyle: { font: family },
+        content: [
+          { text: `body set in ${family}` },
+          { text: "bold run", bold: true },
+          { text: "italic run", italics: true },
+          { text: "bold italic run", bold: true, italics: true },
+        ],
+      });
+      expect(pdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+      const text = drawnText(pdf);
+      expect(text).toContain(`body set in ${family}`);
+      expect(text).toContain("bold run");
+      expect(text).toContain("italic run");
+      expect(text).toContain("bold italic run");
+    });
+});
+
 describe("unregistered font families fail the render loudly", () => {
   it("defaultStyle naming an unregistered family throws naming it and the registered set", async () => {
     await expect(renderPdf({
