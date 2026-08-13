@@ -18,11 +18,13 @@
  */
 import {
   CONTENT_WIDTH,
+  lockedElements,
   type ContractField,
   type ContractSection,
   type FieldConfig,
   type FontsConfig,
   type FormatsConfig,
+  type LockScope,
   type LogoPlacement,
   type SectionConfig,
   type TemplateConfig,
@@ -33,6 +35,30 @@ import { swapAt } from "./reorder";
 /** A logo default width in points — a header mark, well within the content width. Used when the
  *  user first picks a placement (bytes are uploaded separately, via the logo route). */
 export const DEFAULT_LOGO_WIDTH = 120;
+
+// ---------------------------------------------------------------------------------------------
+// Locked-element lookup — what the panels render padlocks from
+// ---------------------------------------------------------------------------------------------
+
+/** The namespaced key a `lockIndex` entry lives under — a section and a field can share a key
+ *  (each is only unique within its own kind), so the map is keyed by scope, never key alone. */
+export function lockKey(scope: LockScope, key: string): string {
+  return `${scope}:${key}`;
+}
+
+/**
+ * The `(scope, key) -> lock reason` map the editor keys its padlocks off of, built from the
+ * contract's own `lockedElements` (spec §5.6) — so the reason the padlock shows and the reason the
+ * server quotes when it refuses a hiding/reorder are the SAME string, one source. Keyed by scope
+ * (`lockKey`) because a locked section and a free field may share a key: a bare-key map would
+ * render one an ambiguous padlock (the Task 1 review carry the namespace tightening closed). A
+ * missing entry means "not locked" — the control is free (subject only to the edit permission).
+ */
+export function lockIndex(contract: TemplateContract): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const el of lockedElements(contract)) index.set(lockKey(el.scope, el.key), el.reason);
+  return index;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Immutable update primitives

@@ -4,6 +4,7 @@ import {
   canMoveField,
   canMoveSection,
   clearLogoPlacement,
+  lockIndex,
   moveField,
   moveSection,
   setFieldLabel,
@@ -28,6 +29,7 @@ import {
   TemplateConfigError,
   validateConfig,
   type TemplateConfig,
+  type TemplateContract,
 } from "@/lib/template-contracts";
 
 // Pure module, no DB, no DOM: the config-editing logic the editor's panels are thin wrappers over
@@ -223,6 +225,44 @@ describe("logo placement + width", () => {
 
   it("clearLogoPlacement removes the logo block", () => {
     expect(clearLogoPlacement(setLogoPlacement(traveler(), "header-left")).logo).toBeNull();
+  });
+});
+
+describe("lockIndex — the namespaced padlock lookup the panels render from", () => {
+  it("keys each locked element by (scope, key) so a section lookup never matches a field lookup", () => {
+    const idx = lockIndex(TRAVELER_CONTRACT);
+    // The steps section AND its typed-field columns are both locked (spec §5.6) — each reachable
+    // under its own scope, both carrying the step-fields reason.
+    expect(idx.get("section:steps")).toMatch(/Step-fields ruling/);
+    expect(idx.get("field:step_code")).toMatch(/Step-fields ruling/);
+    // The header section is locked (it carries the barcode) and so is the barcode field.
+    expect(idx.get("section:header")).toBeDefined();
+    expect(idx.get("field:barcode")).toBeDefined();
+    // A free section/field is absent — the editor renders no padlock for it.
+    expect(idx.get("section:lines")).toBeUndefined();
+    expect(idx.get("field:line_qty")).toBeUndefined();
+  });
+
+  it("resolves a section and a field that SHARE a key independently, by scope", () => {
+    // A section key and a field key are each only unique within their own kind, so a contract can
+    // legitimately carry both "shared" a locked section and "shared" a free field. Keyed by scope,
+    // the two never collide into one ambiguous padlock (the Task 1 review carry's whole point).
+    const SECTION_LOCK = "the shared section is pinned";
+    const collide: TemplateContract = {
+      docType: "TRAVELER", name: "Collide",
+      sections: [
+        {
+          key: "shared", name: "Shared section", hideable: false, reorderable: true,
+          lockReason: SECTION_LOCK,
+          fields: [{ key: "shared", name: "Shared field", defaultLabel: "", removable: true }],
+        },
+      ],
+      textBlocks: [], formats: {},
+      fonts: { family: "Roboto", baseSize: 8, headingSize: 12, smallSize: 6 },
+    };
+    const idx = lockIndex(collide);
+    expect(idx.get("section:shared")).toBe(SECTION_LOCK); // the section is locked
+    expect(idx.get("field:shared")).toBeUndefined();      // the same-keyed field is NOT
   });
 });
 
