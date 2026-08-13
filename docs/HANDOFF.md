@@ -81,9 +81,20 @@ adversarially reviewed on four lenses before approval (all APPROVE-WITH-FIXES, f
 incorporated — among them the never-published-template resolution hole, the honest
 immutability-not-locking publish-vs-print argument, discard-as-status-flip instead of a
 hard delete, config diffs kept in audit, and the `pdf-lib` dependency surfaced for explicit
-sign-off — **approved**). Branch: `phase-7-template-designer` (created at plan approval). Next
-step: the implementation plan, then subagent-driven execution with the record in
-`docs/execution/2026-08-12-phase-7-template-designer/`, committed on the first task.
+sign-off — **approved**). Branch: `phase-7-template-designer`; the record is in
+`docs/execution/2026-08-12-phase-7-template-designer/` (committed on the first task).
+**Tasks 1–14 are APPROVED (2026-08-13) — the entire document-conversion track is complete: all
+eight document builders (traveler, shipper/MOS, BOL, cert, invoice/credit, statement, quote) are
+now config-consumers over a validated `TemplateConfig`, each golden gate met the strong way (the
+builder's own pdf test unedited). Task 14 (quote, the last) also retired the four standing-text
+Settings — `cert_statement` / `shipper_liability_text` / `quote_intro_text` /
+`quote_liability_text` are template text blocks now (migration
+`20260813120000_retire_standing_text_settings` deletes the orphaned rows; the values were
+COALESCE-copied into the seeded configs at Task 3, so nothing is stranded) — and folded in #97
+(the indicative-amounts index-map guard). Branch state after Task 14: 2665 tests / 144 files,
+tsc/eslint/build clean, E2E 19/19, 35 migrations on the branch.** Remaining: the UI tasks
+15–21 (templates admin + nav, editor panels + logo, save/conflict UX, preview,
+customer-page assignment picker, restyle E2E + docs + final gates).
 
 **Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12).** The full Phase 6 narrative — the
 fourteen-ruling design session, the twelve tasks and their reviews, the whole-branch review's F1
