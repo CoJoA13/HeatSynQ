@@ -23,7 +23,7 @@ Both DBs: 32 migrations, `migrate status` clean. Docker active, `erp-db-1` healt
 
 | # | Task | Implementer | Review | State |
 |---|---|---|---|---|
-| 1 | Contract machinery + order-side contracts | — | — | BRIEFED |
+| 1 | Contract machinery + order-side contracts | subagent 2026-08-12 (`6142d33`, `0cae14f`; report filed; gates watched: vitest 2195/2195 in 213.4s, tsc 1.6s, eslint 9.0s, build exit 0 in 15.5s; E2E n/a — no UI/flow) | — | IMPLEMENTED — awaiting review |
 | 2 | Billing-side contracts | — | — | — |
 | 3 | Schema, migrations, seeds, registrations | — | — | — |
 | 4 | Template service | — | — | — |
