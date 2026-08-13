@@ -10,6 +10,7 @@ import {
 import { POST as publishRoute } from "@/app/api/templates/[id]/publish/route";
 import { POST as defaultRoute } from "@/app/api/templates/[id]/default/route";
 import { POST as uploadLogoRoute, DELETE as clearLogoRoute } from "@/app/api/templates/[id]/logo/route";
+import { GET as blockersRoute } from "@/app/api/templates/[id]/blockers/route";
 import { GET as blockersExportRoute } from "@/app/api/templates/[id]/blockers/export/route";
 import { GET as versionRoute } from "@/app/api/templates/[id]/versions/[versionNumber]/route";
 
@@ -268,6 +269,24 @@ describe("GET /api/templates/[id]/blockers/export and /versions/[versionNumber]"
     const none = await signInWith([], "tnone2");
     expect((await blockersExportRoute(getReq("http://t/x/blockers/export", none),
       withParams({ id: STANDARD_TRAVELER }))).status).toBe(403);
+  });
+
+  it("the §5.14 blocker LIST route gates 401/403 and returns the list for templates.view", async () => {
+    // The JSON list route (Task 16), byte-identical auth to the /blockers/export sibling above —
+    // the ctx-typed coverage the Task 16 review asked Task 17 to add. 401 signed out, 403 without
+    // templates.view, 200 (an array) with it.
+    expect((await blockersRoute(getReq("http://t/x/blockers"), withParams({ id: STANDARD_TRAVELER }))).status).toBe(401);
+    const none = await signInWith([], "tnone3");
+    expect((await blockersRoute(getReq("http://t/x/blockers", none), withParams({ id: STANDARD_TRAVELER }))).status).toBe(403);
+    const acme = await prisma.customer.create({ data: { code: "AC2", name: "Acme 2" } });
+    await prisma.customerTemplateAssignment.create({
+      data: { customerId: acme.id, docType: "TRAVELER", templateId: STANDARD_TRAVELER },
+    });
+    const ok = await blockersRoute(getReq("http://t/x/blockers", viewer), withParams({ id: STANDARD_TRAVELER }));
+    expect(ok.status).toBe(200);
+    const list = await ok.json();
+    expect(Array.isArray(list)).toBe(true);
+    expect(list.some((b: { name: string }) => b.name === "AC2 · Acme 2")).toBe(true);
   });
 
   it("a version-detail read returns that one version's config", async () => {
