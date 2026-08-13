@@ -1,6 +1,13 @@
-import { describe, it, expect } from "vitest";
-import { pageCount, textRunsWithY } from "./helpers/pdf";
-import { renderPdf } from "@/server/pdf/render";
+import { describe, it, expect, beforeEach } from "vitest";
+import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { drawnPages, drawnText, pageCount, paintedImageCounts, textRunsWithY } from "./helpers/pdf";
+import { runWithContext } from "@/server/context";
+import { createOrder, type OrderDetail } from "@/server/orders";
+import { setSetting } from "@/server/settings";
+import { createShipper, printShippingTickets, type ShipperDetail } from "@/server/shippers";
+import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
+import { assignTemplate } from "@/server/template-assignments";
+import { barcodePng, renderPdf } from "@/server/pdf/render";
 import {
   buildShippingTicketDefinition, buildShippingTicketDefinitions,
   type TicketData, type TicketDocType,
@@ -8,6 +15,7 @@ import {
 import {
   SHIPPER_DEFAULT_CONFIG, MOS_SHIPPER_DEFAULT_CONFIG, validateConfig, type TemplateConfig,
 } from "@/lib/template-contracts/index";
+import type { Customer } from "../prisma/generated/prisma/client";
 
 /**
  * Phase 7 Task 9 — the shipping-ticket conversion: ONE builder serving BOTH the `SHIPPER` and
@@ -479,5 +487,274 @@ describe("buildShippingTicketDefinition — purity, config included", () => {
     const def = buildShippingTicketDefinition([sampleTicket()], "MOS_SHIPPER", config, LOGO_URI);
     expect(JSON.parse(JSON.stringify(def))).toEqual(def);
     expect(buildShippingTicketDefinition([sampleTicket()], "MOS_SHIPPER", config, LOGO_URI)).toEqual(def);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// The print path (spec §5.2): docType by the SHIPMENT'S order count — a multi-order shipment's
+// per-order ticket ALSO resolves MOS_SHIPPER (all paper from one shipment styles alike) — the
+// resolved version's config renders, its id stamps the stored row, and the liability text comes
+// from the CONFIG's text block, not the Setting (spec §8; settings.ts untouched until Task 14).
+// ------------------------------------------------------------------------------------------------
+
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
+
+let customerSeq = 0;
+async function makeCustomer(): Promise<Customer> {
+  customerSeq += 1;
+  return prisma.customer.create({
+    data: { code: `TT${customerSeq}`, name: `Ticket Template Customer ${customerSeq}` },
+  });
+}
+
+let partSeq = 0;
+async function makePart(customerId: string) {
+  partSeq += 1;
+  const part = await prisma.part.create({
+    data: {
+      customerId, partNumber: `TTP-${partSeq}`, name: `Template Part ${partSeq}`,
+      description: "T-130", eachWeight: "21.5000",
+    },
+  });
+  const code = await prisma.processStepCode.create({ data: { code: `TT-${part.id}`, name: "Austenitize" } });
+  const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+  await prisma.partProcessStep.create({
+    data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Austenitize at 1650F." },
+  });
+  return part;
+}
+
+async function makeAddresses(customerId: string) {
+  await prisma.customerAddress.create({
+    data: {
+      customerId, kind: "BILL_TO", name: "Accounts payable", street: "2101 W. 10th St.",
+      city: "Anniston", state: "AL", zip: "36201", isDefault: true,
+    },
+  });
+  return prisma.customerAddress.create({
+    data: {
+      customerId, kind: "SHIP_TO", name: "AMZ Manufacturing Corporation", street: "2101 W. 10th St.",
+      city: "Anniston", state: "AL", zip: "36201", isDefault: true,
+    },
+  });
+}
+
+async function orderFor(customer: Customer, poNumber = "PT24115"): Promise<OrderDetail> {
+  const part = await makePart(customer.id);
+  const { order } = await asSystem(() => createOrder({
+    customerId: customer.id, poNumber, customerJobNo: "JOB-9",
+    lines: [{ partId: part.id, qty: 192, weight: "4128.00" }],
+  }));
+  return order;
+}
+
+function shipOrderInput(order: OrderDetail) {
+  return {
+    orderId: order.id,
+    lines: [{
+      orderLineId: order.lines[0].id, qty: order.lines[0].qty, weight: order.lines[0].weight,
+      lineComplete: true,
+    }],
+    containers: [] as { orderContainerId: string; count: number }[],
+    serials: [] as { orderSerialId: string; printOnShipper?: boolean }[],
+  };
+}
+
+async function oneOrderShipment(customer?: Customer): Promise<{ shipper: ShipperDetail; order: OrderDetail; customer: Customer }> {
+  const c = customer ?? await makeCustomer();
+  const shipTo = await makeAddresses(c.id);
+  const order = await orderFor(c);
+  const { shipper } = await asSystem(() => createShipper({
+    customerId: c.id, shipDate: "2026-07-29", shipToAddressId: shipTo.id, route: "South",
+    orders: [shipOrderInput(order)],
+  }, { canOverrideCreditHold: false }));
+  return { shipper, order, customer: c };
+}
+
+async function twoOrderShipment(customer?: Customer): Promise<{
+  shipper: ShipperDetail; orderA: OrderDetail; orderB: OrderDetail; customer: Customer;
+}> {
+  const c = customer ?? await makeCustomer();
+  const shipTo = await makeAddresses(c.id);
+  const orderA = await orderFor(c, "PO-A");
+  const orderB = await orderFor(c, "PO-B");
+  const { shipper } = await asSystem(() => createShipper({
+    customerId: c.id, shipDate: "2026-07-29", shipToAddressId: shipTo.id,
+    orders: [shipOrderInput(orderA), shipOrderInput(orderB)],
+  }, { canOverrideCreditHold: false }));
+  return { shipper, orderA, orderB, customer: c };
+}
+
+/** Create → tweak the v1 draft → (optionally logo) → publish, for either ticket docType. */
+async function publishCustom(
+  docType: TicketDocType, tweak: (c: TemplateConfig) => void, logo?: { data: Buffer; mime: string },
+) {
+  const t = await asSystem(() => createTemplate(docType, `Custom ${docType}`));
+  const c = cfg(docType);
+  tweak(c);
+  await asSystem(() => editDraft(t.id, { config: c, updatedAt: t.draft.updatedAt }));
+  if (logo) await asSystem(() => uploadLogo(t.id, logo.data, logo.mime));
+  const { versionId } = await asSystem(() => publishDraft(t.id));
+  return { templateId: t.id, versionId };
+}
+
+async function stampOf(documentId: string): Promise<string | null> {
+  const row = await prisma.storedDocument.findUnique({
+    where: { id: documentId }, select: { templateVersionId: true },
+  });
+  return row!.templateVersionId;
+}
+
+describe("printShippingTickets — resolution by the SHIPMENT'S order count + the stamp", () => {
+  beforeEach(truncateAll);
+
+  it("no assignment: a single-order shipment resolves the seeded Standard SHIPPER and stamps ITS version id", async () => {
+    const { shipper } = await oneOrderShipment();
+    const { documentId, pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    expect(drawnText(pdf)).toContain("Shipping Ticket");
+    expect(await stampOf(documentId)).toBe(templateVersionId("SHIPPER"));
+  });
+
+  it("no assignment: a multi-order shipment stamps the seeded MOS_SHIPPER id — whole set AND per-order", async () => {
+    const { shipper, orderA } = await twoOrderShipment();
+    const whole = await asSystem(() => printShippingTickets(shipper.id));
+    expect(pageCount(whole.pdf)).toBe(2);
+    expect(await stampOf(whole.documentId)).toBe(templateVersionId("MOS_SHIPPER"));
+
+    // The per-order ticket of a MULTI-order shipment resolves MOS_SHIPPER too (spec §5.2: the
+    // SHIPMENT'S order count decides, not the tickets being printed).
+    const single = await asSystem(() => printShippingTickets(shipper.id, orderA.id));
+    expect(pageCount(single.pdf)).toBe(1);
+    expect(await stampOf(single.documentId)).toBe(templateVersionId("MOS_SHIPPER"));
+  });
+
+  it("customer-assigned templates: the three resolution cases through the real path, styled apart", async () => {
+    const customer = await makeCustomer();
+    const shipperTpl = await publishCustom("SHIPPER", (c) => {
+      fieldOf(c, "header", "title").label = "SINGLE-STYLE-MARKER";
+    });
+    const mosTpl = await publishCustom("MOS_SHIPPER", (c) => {
+      fieldOf(c, "header", "title").label = "MULTI-STYLE-MARKER";
+    });
+    await asSystem(() => assignTemplate(customer.id, "SHIPPER", shipperTpl.templateId));
+    await asSystem(() => assignTemplate(customer.id, "MOS_SHIPPER", mosTpl.templateId));
+
+    // 1. single-order shipment → SHIPPER.
+    const single = await oneOrderShipment(customer);
+    const p1 = await asSystem(() => printShippingTickets(single.shipper.id));
+    expect(drawnText(p1.pdf)).toContain("SINGLE-STYLE-MARKER");
+    expect(drawnText(p1.pdf)).not.toContain("MULTI-STYLE-MARKER");
+    expect(await stampOf(p1.documentId)).toBe(shipperTpl.versionId);
+
+    // 2. multi-order whole set → MOS_SHIPPER, on every sheet.
+    const multi = await twoOrderShipment(customer);
+    const p2 = await asSystem(() => printShippingTickets(multi.shipper.id));
+    const pages = drawnPages(p2.pdf);
+    expect(pages).toHaveLength(2);
+    for (const page of pages) expect(page).toContain("MULTI-STYLE-MARKER");
+    expect(drawnText(p2.pdf)).not.toContain("SINGLE-STYLE-MARKER");
+    expect(await stampOf(p2.documentId)).toBe(mosTpl.versionId);
+
+    // 3. the multi-order shipment's PER-ORDER ticket → still MOS_SHIPPER (explicit, spec §5.2).
+    const p3 = await asSystem(() => printShippingTickets(multi.shipper.id, multi.orderA.id));
+    expect(drawnText(p3.pdf)).toContain("MULTI-STYLE-MARKER");
+    expect(await stampOf(p3.documentId)).toBe(mosTpl.versionId);
+  });
+});
+
+describe("printShippingTickets — the liability text comes from the CONFIG, not the Setting", () => {
+  beforeEach(truncateAll);
+
+  it("the seeded Standard's text block prints; an edited Setting no longer reaches ticket paper", async () => {
+    await asSystem(() => setSetting("shipper_liability_text", "SETTING-ONLY-LIABILITY"));
+    const { shipper } = await oneOrderShipment();
+    const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    const text = drawnText(pdf);
+    // The seeded config's text block is the code default — assert a token unique to it.
+    expect(text).toContain("INSTITUTE");
+    expect(text).not.toContain("SETTING-ONLY-LIABILITY");
+  });
+
+  it("an assigned template's edited text block prints", async () => {
+    await asSystem(() => setSetting("shipper_liability_text", "SETTING-ONLY-LIABILITY"));
+    const customer = await makeCustomer();
+    const tpl = await publishCustom("SHIPPER", (c) => {
+      c.textBlocks.shipper_liability_text = "CONFIG-LIABILITY-MARKER";
+    });
+    await asSystem(() => assignTemplate(customer.id, "SHIPPER", tpl.templateId));
+    const { shipper } = await oneOrderShipment(customer);
+    const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    const text = drawnText(pdf);
+    expect(text).toContain("CONFIG-LIABILITY-MARKER");
+    expect(text).not.toContain("SETTING-ONLY-LIABILITY");
+    expect(text).not.toContain("INSTITUTE");
+  });
+});
+
+describe("printShippingTickets — per-ticket sheet groups through the real path", () => {
+  beforeEach(truncateAll);
+
+  it("the pageFooter knob restarts numbering per ticket group; the default prints none", async () => {
+    const customer = await makeCustomer();
+    const tpl = await publishCustom("MOS_SHIPPER", (c) => { c.pageFooter = true; });
+    await asSystem(() => assignTemplate(customer.id, "MOS_SHIPPER", tpl.templateId));
+
+    const { shipper } = await twoOrderShipment(customer);
+    const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    expect(pageCount(pdf)).toBe(2);
+    const pages = drawnPages(pdf);
+    // Each one-page ticket numbers ITSELF: "Page 1 of 1" twice, never "of 2".
+    expect(pages[0]).toContain("Page 1 of 1");
+    expect(pages[1]).toContain("Page 1 of 1");
+    expect(drawnText(pdf)).not.toContain("of 2");
+
+    // Default OFF — golden: the unassigned print carries no page numbers at all.
+    const bare = await twoOrderShipment();
+    const bareprint = await asSystem(() => printShippingTickets(bare.shipper.id));
+    expect(drawnText(bareprint.pdf)).not.toMatch(/Page \d+ of \d+/);
+  });
+
+  it("a ticket overflowing LETTER repeats its order identity on the continuation page", async () => {
+    const { shipper, order } = await oneOrderShipment();
+    // 80 printable serials overflow one sheet; the shipment's serial picks are re-saved below.
+    await prisma.orderSerial.createMany({
+      data: Array.from({ length: 80 }, (_, i) => ({
+        orderId: order.id, lineId: order.lines[0].id, position: i + 1,
+        serial: `SER-${String(i + 1).padStart(3, "0")}`, description: "",
+      })),
+    });
+    const serialIds = await prisma.orderSerial.findMany({
+      where: { orderId: order.id }, select: { id: true, serial: true, lineId: true },
+    });
+    await prisma.shipperSerial.createMany({
+      data: serialIds.map((s) => ({
+        shipperOrderId: shipper.orders[0].id, orderSerialId: s.id,
+        printOnShipper: true, serial: s.serial, description: "",
+        orderLineIdAtSave: s.lineId ?? "",
+      })),
+    });
+
+    const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+    const pages = drawnPages(pdf);
+    expect(pages[0]).not.toContain("(continued)");
+    expect(pages[1]).toContain("(continued)");
+    expect(pages[1]).toContain(`Order No.: ${order.orderNumber}-1`);
+  });
+
+  it("a placed logo prints through the real path; the bare ticket paints no image", async () => {
+    const bare = await oneOrderShipment();
+    const bareprint = await asSystem(() => printShippingTickets(bare.shipper.id));
+    expect(paintedImageCounts(bareprint.pdf)).toEqual([0]);
+
+    const customer = await makeCustomer();
+    const tpl = await publishCustom("SHIPPER",
+      (c) => { c.logo = { placement: "header-right", width: 90 }; },
+      { data: await barcodePng("TICKETLOGO"), mime: "image/png" });
+    await asSystem(() => assignTemplate(customer.id, "SHIPPER", tpl.templateId));
+    const { shipper } = await oneOrderShipment(customer);
+    const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
+    expect(paintedImageCounts(pdf)).toEqual([1]);
   });
 });

@@ -10,8 +10,9 @@ import { allocateNumber, getSetting } from "./settings";
 import { claimOrdersInOrder } from "./order-locks";
 import { finalizedInvoicesFor, invoiceBlockMessage } from "./invoice-guards";
 import { listAddresses } from "./customer-addresses";
-import { renderPdf } from "./pdf/render";
-import { buildShippingTicketDefinition, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { renderPdf, renderSheetGroups, jpegDataUri, pngDataUri } from "./pdf/render";
+import { buildShippingTicketDefinitions, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { resolveTemplateForPrint } from "./template-assignments";
 import { buildBolDefinition, type BolData, type BolParty } from "./pdf/bol";
 import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
@@ -1878,21 +1879,51 @@ export async function printShippingTickets(
     // acted on below is re-read under the claim.
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
-    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    const shipmentOrderIds = await shipperOrderIds(tx, shipperId);
+    await claimOrdersInOrder(tx, shipmentOrderIds);
     await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
     if (!shipper) throw new HttpError(404, "Shipment not found");
     assertPrintable(shipper);
 
+    // Resolution by the SHIPMENT'S order count (P7 spec §5.2): a multi-order shipment's tickets
+    // — INCLUDING the per-order print of one of its orders — resolve MOS_SHIPPER; a single-order
+    // shipment's resolve SHIPPER. All paper from one shipment styles alike, so the count is the
+    // shipment's, never the count of tickets being printed. Counted under the claims, so a
+    // concurrent add/remove cannot flip the type mid-print. Resolution runs on THIS claimed
+    // transaction at its isolation — correct by §5.1 immutability, not by locking (the
+    // printTraveler comment); no template row is claimed and none is needed.
+    const docType = shipmentOrderIds.length > 1 ? ("MOS_SHIPPER" as const) : ("SHIPPER" as const);
+    const resolved = await resolveTemplateForPrint(tx, docType, shipper.customerId);
+    // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only
+    // when the config also places it, so an unplaced upload converts nothing.
+    const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+      ? (resolved.logoMimeType === "image/jpeg"
+          ? jpegDataUri(Buffer.from(resolved.logoImage))
+          : pngDataUri(Buffer.from(resolved.logoImage)))
+      : undefined;
+
     const { certs, warnings } = opts.withCerts
       ? await resolveShipmentCerts(tx, shipperId, orderId)
       : { certs: [], warnings: [] };
 
-    const data = await readShippingTicketData(tx, shipperId, settings, orderId);
-    const pdf = await renderPdf(buildShippingTicketDefinition(data));
+    // The liability text is the resolved CONFIG'S text block now (P7 spec §8: the template owns
+    // the standing text; the `Setting` keeps its other readers until Task 14) — injected at the
+    // data seam so the builder keeps one source per fact (its own doc comment tells the why).
+    const data = await readShippingTicketData(tx, shipperId,
+      { ...settings, liabilityText: resolved.config.textBlocks.shipper_liability_text }, orderId);
+    // One definition per ticket, merged (P7 spec §6.1): each order's continuation band and — when
+    // the template turns the knob on — page numbering scope to ITS OWN sheet group. The render
+    // this claim spans is bounded by the shipment's own order count (the very claims above lock
+    // one row per order, so the group count can never exceed what this transaction already
+    // holds), each group page-bounded by its ticket's content — the #43-comment discipline.
+    const pdf = await renderSheetGroups(
+      buildShippingTicketDefinitions(data, docType, resolved.config, logoDataUri));
 
-    const doc = await storeDocument(tx, { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf);
+    // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    const doc = await storeDocument(tx,
+      { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf, resolved.versionId);
     return {
       documentId: doc.id, shipperNumber: shipper.shipperNumber,
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
