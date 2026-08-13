@@ -218,7 +218,7 @@ match a predecessor's artifact.
    data, breaking the golden pure-builder test — and the only escape would be argument-presence
    sniffing (`config === undefined ? data : config`), a two-sources-in-one-renderer shape.
    Instead the builder keeps one source per fact and the path that owns resolution injects the
-   template's text at the data seam (one line; the preview path does the same with a draft
+   template's text at the data seam (one line; the FUTURE preview path (Task 19) will do the same with a draft — no ticket-preview code exists yet; this names the traveler precedent —
    config). Both directions are pinned through the real path: an edited Setting no longer
    reaches paper, an edited text block does.
 3. **The banner and the strip's rows are hand-laid, order applying where a row exists**: the
@@ -278,7 +278,3 @@ match a predecessor's artifact.
   chasing) — if a future renderer changes the emission shape, extend it rather than trusting
   zeros.
 
-## E2E fixture hygiene
-
-To be completed from the detached run's log and a post-run dev-DB count (below, after the
-sentinel).
