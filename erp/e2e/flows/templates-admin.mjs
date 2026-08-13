@@ -33,6 +33,12 @@ export async function run(page, shot, ctx) {
   await page.waitForURL(`${ctx.baseURL}/admin/templates`);
   await page.getByRole("heading", { name: "Document templates" }).waitFor({ state: "visible" });
 
+  // The list loads via an async GET /api/templates, so the rows appear AFTER the (static) heading —
+  // and on the E2E run this route is compiled by `next dev` on first hit, widening that gap to
+  // seconds. `locator.count()` does NOT auto-wait, so wait for the list to render (a starred
+  // default is visible) before counting, or the count reads 0 against an empty list.
+  await page.locator('li [aria-label="default"]').first().waitFor({ state: "visible" });
+
   // All 8 document types are offered (the create picker) and each has its Standard default starred.
   const docTypePicker = page.getByRole("combobox", { name: "New template document type" });
   await assert.equal(await docTypePicker.locator("option").count(), 8, "the create picker offers all 8 document types");
@@ -100,6 +106,8 @@ export async function run(page, shot, ctx) {
     "the disabled Create names the missing permission",
   );
   // The list still renders fully for a viewer — this is the disabled-with-reason path, not denied.
+  // Wait for the async list before counting (same reason as the admin section above).
+  await page.getByRole("listitem").filter({ hasText: "Standard" }).first().waitFor({ state: "visible" });
   await assert.equal(
     await page.getByRole("listitem").filter({ hasText: "Standard" }).count(), 8,
     "a view-only user still sees all 8 types' templates",
