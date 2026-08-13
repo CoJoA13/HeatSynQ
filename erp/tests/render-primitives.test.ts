@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import zlib from "node:zlib";
-import { jpegDataUri, renderPdf } from "@/server/pdf/render";
+import { jpegDataUri, renderPdf, renderSheetGroups } from "@/server/pdf/render";
 import type { RenderableDefinition } from "@/server/pdf/render";
 
 /**
@@ -274,6 +274,68 @@ describe("continuationHeaderSpec — static content on every page after the firs
     await expect(renderPdf(twoPageDef({
       header: { text: "hand-written" }, continuationHeaderSpec: SPEC,
     }))).rejects.toThrow(/continuationHeaderSpec/);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// Per-sheet-group rendering + merge (spec §6.1 — the pdf-lib seam, #36's mechanism)
+// ------------------------------------------------------------------------------------------------
+
+describe("renderSheetGroups — each group renders alone, the PDFs merge into one document", () => {
+  /** A three-page sibling of twoPageDef — digit-free body text, one node per page. */
+  const threePageDef = (extra: Partial<RenderableDefinition> = {}): RenderableDefinition => ({
+    content: [
+      { text: "gamma body", pageBreak: "after" },
+      { text: "delta body", pageBreak: "after" },
+      { text: "epsilon body" },
+    ],
+    ...extra,
+  });
+
+  it("2-page + 3-page groups merge to /Count 5, and each group's footer restarts at ITS OWN 'Page 1 of N'", async () => {
+    const merged = await renderSheetGroups([
+      twoPageDef({ pageFooterSpec: { kind: "pageNofM" } }),
+      threePageDef({ pageFooterSpec: { kind: "pageNofM" } }),
+    ]);
+    expect(merged.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(pageCount(merged)).toBe(5); // the uncompressed marker survives useObjectStreams: false
+
+    const pages = drawnPages(merged);
+    expect(pages).toHaveLength(5);
+    // Group one numbers its own two pages…
+    expect(pages[0]).toContain("Page 1 of 2");
+    expect(pages[1]).toContain("Page 2 of 2");
+    // …group two restarts at 1 and counts to ITS three…
+    expect(pages[2]).toContain("Page 1 of 3");
+    expect(pages[3]).toContain("Page 2 of 3");
+    expect(pages[4]).toContain("Page 3 of 3");
+    // …and nothing ever numbers against the merged document's five (per-group, not per-document).
+    expect(drawnText(merged)).not.toContain("of 5");
+  });
+
+  it("each group's continuation header stays scoped to its own pages", async () => {
+    const merged = await renderSheetGroups([
+      twoPageDef({ continuationHeaderSpec: { content: { text: "CONTINUED-MARKER-ALPHA" } } }),
+      threePageDef({ continuationHeaderSpec: { content: { text: "CONTINUED-MARKER-BETA" } } }),
+    ]);
+    const pages = drawnPages(merged);
+    expect(pages).toHaveLength(5);
+    // Each group's FIRST page is bare — page three of the merged document is a first page again.
+    expect(pages[0]).not.toContain("CONTINUED-MARKER");
+    expect(pages[1]).toContain("CONTINUED-MARKER-ALPHA");
+    expect(pages[2]).not.toContain("CONTINUED-MARKER");
+    expect(pages[3]).toContain("CONTINUED-MARKER-BETA");
+    expect(pages[4]).toContain("CONTINUED-MARKER-BETA");
+  });
+
+  it("a single group still comes out whole (its own count, its own numbering)", async () => {
+    const merged = await renderSheetGroups([twoPageDef({ pageFooterSpec: { kind: "pageNofM" } })]);
+    expect(pageCount(merged)).toBe(2);
+    expect(drawnText(merged)).toContain("Page 2 of 2");
+  });
+
+  it("an empty group list is refused loudly — a zero-page PDF is never produced", async () => {
+    await expect(renderSheetGroups([])).rejects.toThrow(/at least one/);
   });
 });
 

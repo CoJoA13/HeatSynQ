@@ -8,6 +8,10 @@ import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import PdfPrinter from "pdfmake/src/printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
 import { toBuffer } from "bwip-js/node";
+// pdf-lib is imported ONLY here (plan Global Constraints): it exists solely to merge the
+// per-sheet-group PDFs renderSheetGroups produces, and no other file may reach for it — the
+// same module boundary that confines pdfmake and bwip-js to this file.
+import { PDFDocument } from "pdf-lib";
 
 /**
  * pdfmake's own bundled Roboto, decoded out of its virtual file system into buffers.
@@ -169,6 +173,33 @@ export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
     doc.on("error", reject);
     doc.end();
   });
+}
+
+/**
+ * Renders each sheet-group definition as its OWN document and merges the results into one PDF
+ * (spec §6.1). This is the whole mechanism behind per-group page numbers and continuation
+ * headers: pdfmake's callbacks only ever see whole-document page counts, so "Page 1 of 2" on a
+ * ticket meaning THAT ticket's pages requires each group to BE a document — each render's
+ * `pageFooterSpec`/`continuationHeaderSpec` scopes to its group for free, restarting at every
+ * group boundary.
+ *
+ * The merge is saved with `useObjectStreams: false`: object streams would deflate the page tree,
+ * and the uncompressed `/Type /Pages /Count N` marker is what every house content assertion
+ * (and the E2E flows) read off stored bytes. Groups render sequentially — a print is one request,
+ * and #43's load bound caps the group count.
+ */
+export async function renderSheetGroups(defs: RenderableDefinition[]): Promise<Buffer> {
+  if (defs.length === 0) {
+    throw new Error("renderSheetGroups needs at least one sheet-group definition");
+  }
+  const merged = await PDFDocument.create();
+  for (const def of defs) {
+    const src = await PDFDocument.load(await renderPdf(def));
+    for (const page of await merged.copyPages(src, src.getPageIndices())) {
+      merged.addPage(page);
+    }
+  }
+  return Buffer.from(await merged.save({ useObjectStreams: false }));
 }
 
 /**
