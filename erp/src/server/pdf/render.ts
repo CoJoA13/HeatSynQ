@@ -4,7 +4,7 @@
  * template-as-data contract Phase 7's designer will edit — so swapping the renderer never
  * reaches past this module.
  */
-import type { TDocumentDefinitions } from "pdfmake/interfaces";
+import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import PdfPrinter from "pdfmake/src/printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
 import { toBuffer } from "bwip-js/node";
@@ -65,9 +65,100 @@ const TABLE_LAYOUTS = {
   },
 };
 
+// ------------------------------------------------------------------------------------------------
+// Declarative page callbacks (Phase 7 spec §6.1) — the named-table-layouts indirection, again
+// ------------------------------------------------------------------------------------------------
+
+/** `{ kind: "pageNofM" }` renders `"${label} N of M"` (label defaults to `"Page"`) bottom-right
+ *  on every page — the quote's hand-written footer, generalized (label `"Page:"` reproduces it
+ *  exactly, Task 14's conversion). */
+export type PageFooterSpec = { kind: "pageNofM"; label?: string };
+
+/** Static JSON content (text/images — never functions) repeated by a renderer-side header
+ *  callback on every page AFTER the first of the definition. */
+export type ContinuationHeaderSpec = { content: Content };
+
+/**
+ * A pdfmake document definition plus the two declarative keys `renderPdf` understands. The key
+ * names are deliberately NOT pdfmake's own (`footer`/`header`) and carry the `Spec` suffix no
+ * pdfmake key uses, so they can never collide with a definition key pdfmake consumes itself.
+ * Both are plain data — the JSON round-trip contract (spec §10) extends to them; the CALLBACKS
+ * they describe are constructed below, in the renderer, and exist only in this file.
+ */
+export type RenderableDefinition = TDocumentDefinitions & {
+  pageFooterSpec?: PageFooterSpec;
+  continuationHeaderSpec?: ContinuationHeaderSpec;
+};
+
+/**
+ * Strips the declarative keys off the definition and hands pdfmake the callbacks they describe.
+ * A definition carrying BOTH a spec key and the pdfmake key it drives is refused loudly — two
+ * competing footers is a builder bug, and pdfmake would silently honor whichever this function
+ * happened to assign last. An unknown footer kind is refused the same way (a typo'd kind must
+ * never render as "no footer").
+ */
+function toPdfmakeDefinition(def: RenderableDefinition): TDocumentDefinitions {
+  const { pageFooterSpec, continuationHeaderSpec, ...rest } = def;
+  const out: TDocumentDefinitions = rest;
+  if (pageFooterSpec !== undefined) {
+    if (rest.footer !== undefined) {
+      throw new Error(
+        "Definition carries both a pdfmake `footer` and a `pageFooterSpec` — use one or the other");
+    }
+    if (pageFooterSpec.kind !== "pageNofM") {
+      throw new Error(
+        `Unknown pageFooterSpec kind "${String(pageFooterSpec.kind)}" — the renderer knows: pageNofM`);
+    }
+    const label = pageFooterSpec.label ?? "Page";
+    // The quote's exact footer styling (pdf/quote.ts) — its Task 14 conversion must be invisible.
+    out.footer = (currentPage: number, totalPages: number): Content => ({
+      text: `${label} ${currentPage} of ${totalPages}`,
+      bold: true, fontSize: 8.5, alignment: "right", margin: [24, 8, 24, 0],
+    });
+  }
+  if (continuationHeaderSpec !== undefined) {
+    if (rest.header !== undefined) {
+      throw new Error(
+        "Definition carries both a pdfmake `header` and a `continuationHeaderSpec` — use one or the other");
+    }
+    out.header = (currentPage: number): Content | null =>
+      currentPage > 1 ? continuationHeaderSpec.content : null;
+  }
+  return out;
+}
+
+/**
+ * The render-side font belt (spec §6.2): the contracts already refuse unknown families at
+ * config-validation time, but a definition reaching the renderer with an unregistered family —
+ * a hand-built fixture, a future builder bug — must fail NAMING the family, never fall back
+ * silently. pdfmake does throw its own error today; this belt makes the guarantee ours, with the
+ * registered set in the message, independent of pdfmake's internals. The walk skips functions
+ * (a definition's own callbacks are not JSON) and only ever inspects `font` string values —
+ * pdfmake's one meaning for that key.
+ */
+function assertFontsRegistered(def: RenderableDefinition): void {
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === "font" && typeof value === "string" && !Object.hasOwn(FONTS, value)) {
+        throw new Error(
+          `Font family "${value}" is not registered with the PDF renderer — ` +
+          `registered families: ${Object.keys(FONTS).join(", ")}`);
+      }
+      if (typeof value === "object") walk(value);
+    }
+  };
+  walk(def);
+}
+
 /** Renders a document definition to PDF bytes. */
-export async function renderPdf(def: TDocumentDefinitions): Promise<Buffer> {
-  const doc = printer.createPdfKitDocument(def, { tableLayouts: TABLE_LAYOUTS });
+export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
+  assertFontsRegistered(def);
+  const doc = printer.createPdfKitDocument(toPdfmakeDefinition(def), { tableLayouts: TABLE_LAYOUTS });
   const chunks: Buffer[] = [];
   return new Promise<Buffer>((resolve, reject) => {
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -94,4 +185,10 @@ export async function barcodePng(text: string): Promise<Buffer> {
 /** `{ image }` content nodes take a data URI; the definition stays plain JSON either way. */
 export function pngDataUri(png: Buffer): string {
   return `data:image/png;base64,${png.toString("base64")}`;
+}
+
+/** The JPEG sibling (spec §6.3) — template logos are PNG or JPEG, sniffed at upload; the stored
+ *  mime type picks which helper embeds them. */
+export function jpegDataUri(jpeg: Buffer): string {
+  return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
 }
