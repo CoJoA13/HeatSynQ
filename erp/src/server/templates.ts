@@ -101,8 +101,13 @@ export type TemplateDetail = {
  * through the ordinary client once the lock is held (so a waiter that unblocks reads the state
  * its rival just committed, not the state it queued behind). Missing and soft-deleted templates
  * both 404.
+ *
+ * Exported for Task 5's assignment writer: assigning a template to a customer must claim the
+ * template row through THIS function before writing (plan Global Constraints — that shared claim
+ * is what closes the assign-vs-delete race, whose test lands with that writer). One claim path,
+ * never a second differently-shaped one.
  */
-async function claimTemplate(tx: Db, id: string) {
+export async function claimTemplate(tx: Db, id: string) {
   await tx.$queryRaw`SELECT "id" FROM "DocumentTemplate" WHERE "id" = ${id} FOR UPDATE`;
   const row = await tx.documentTemplate.findFirst({ where: { id } });
   if (!row || row.deletedAt !== null) throw new HttpError(404, "Template not found");
