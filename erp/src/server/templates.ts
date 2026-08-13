@@ -512,26 +512,37 @@ const SUMMARY_SELECT = {
 } satisfies Prisma.DocumentTemplateVersionSelect;
 
 /** Template detail: the published pointer, the open draft (WITH its config — the editor's
- *  working copy), and the version history WITHOUT config bodies (see `TemplateDetail`). */
+ *  working copy), and the version history WITHOUT config bodies (see `TemplateDetail`).
+ *
+ *  The two reads (the template + its history, then the open draft) run in ONE `RepeatableRead`
+ *  transaction so they see a single snapshot — the aging.ts precedent (carried Task-4 review
+ *  minor a, made live by Task 16's detail pane, which renders the version history and the
+ *  draft-vs-published state side by side). Two autocommit reads would tear: a publish committing
+ *  between them can leave the history listing a version as DRAFT while the draft read (after the
+ *  flip to PUBLISHED) returns null — self-healing on refresh, but confusing on screen. A plain
+ *  `$transaction` at the default Read Committed level would NOT fix it (each statement gets a
+ *  fresh snapshot); RepeatableRead pins one snapshot for both. Read-only, no lock, no retry. */
 export async function getTemplate(id: string): Promise<TemplateDetail> {
-  const row = await prisma.documentTemplate.findFirst({
-    where: { id, deletedAt: null },
-    select: {
-      id: true, docType: true, name: true, isDefault: true,
-      publishedVersion: { select: { versionNumber: true } },
-      versions: { orderBy: { versionNumber: "desc" }, select: SUMMARY_SELECT },
-    },
-  });
-  if (!row) throw new HttpError(404, "Template not found");
-  const draft = await prisma.documentTemplateVersion.findFirst({
-    where: { templateId: id, status: DRAFT }, select: VERSION_SELECT,
-  });
-  return {
-    id: row.id, docType: row.docType, name: row.name, isDefault: row.isDefault,
-    publishedVersionNumber: row.publishedVersion?.versionNumber ?? null,
-    draft: draft === null ? null : toDraftDetail(draft),
-    versions: row.versions.map(toVersionSummary),
-  };
+  return prisma.$transaction(async (tx) => {
+    const row = await tx.documentTemplate.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true, docType: true, name: true, isDefault: true,
+        publishedVersion: { select: { versionNumber: true } },
+        versions: { orderBy: { versionNumber: "desc" }, select: SUMMARY_SELECT },
+      },
+    });
+    if (!row) throw new HttpError(404, "Template not found");
+    const draft = await tx.documentTemplateVersion.findFirst({
+      where: { templateId: id, status: DRAFT }, select: VERSION_SELECT,
+    });
+    return {
+      id: row.id, docType: row.docType, name: row.name, isDefault: row.isDefault,
+      publishedVersionNumber: row.publishedVersion?.versionNumber ?? null,
+      draft: draft === null ? null : toDraftDetail(draft),
+      versions: row.versions.map(toVersionSummary),
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 /** One version's stored config, VERBATIM — history is frozen; the §5.3 backfill belongs to the
