@@ -5,6 +5,7 @@ import { ALL_PERMISSIONS, canDo } from "./permissions";
 import { auditedCreate, auditedUpdate } from "./audit";
 import { currentActor } from "./context";
 import { withDbErrors } from "./db-errors";
+import { matchesDeclaredImage } from "./image-sniff";
 
 /**
  * Active, non-deleted users whose effective permissions currently include action.manage_users.
@@ -156,18 +157,10 @@ export const SIGNATURE_MIME = ["image/png", "image/jpeg"] as const;
  * rather than an unbounded list, so there is no separate list/get-by-id shape, just the three
  * verbs a single optional field needs.
  */
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-/** Magic-byte sniff (#49): the declared MIME alone let renamed/corrupt bytes persist and poison
- *  that user's cert prints until an admin cleared the signature. A prefix check is deliberate —
- *  pdfkit performs the full parse at render time, and since round 5 the bundled print survives a
- *  bad image with a warning; this closes the ordinary case (a mis-named file) at upload time. */
-function matchesDeclaredImage(mimeType: string, data: Buffer): boolean {
-  if (mimeType === "image/png") {
-    return data.byteLength >= PNG_MAGIC.byteLength && data.subarray(0, PNG_MAGIC.byteLength).equals(PNG_MAGIC);
-  }
-  // image/jpeg: SOI marker then another marker byte.
-  return data.byteLength >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
-}
+// Magic-byte sniff (#49): the declared MIME alone let renamed/corrupt bytes persist and poison
+// that user's cert prints until an admin cleared the signature. The sniff itself moved to the
+// shared image-sniff.ts leaf when Phase 7's template-logo upload became its second caller —
+// same magic numbers, same prefix-check rationale (see that file's header).
 
 export async function setSignature(userId: string, data: Buffer, mimeType: string): Promise<void> {
   if (!(SIGNATURE_MIME as readonly string[]).includes(mimeType)) {
