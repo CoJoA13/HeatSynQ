@@ -152,6 +152,9 @@ the Lines section mid-interaction (proven deterministically 2/2 → 0/2 with for
 `5e7b4b3` with the house stale-gate idiom; full record in `quotes-e2e-fix-report.md`. The 19/19 run
 above is the first full pass after that fix; Task 6's "compile-pause" flake hypothesis is superseded
 by this root cause. A sibling-page sweep for the same hole is queued as a background task chip.
+Dev-DB fixture hygiene for that run: verified in `quotes-e2e-fix-report.md` (harness teardown
+"cleanup ok" + a direct check — 0 E2E rows remained in `erp`); this replaces the placeholder that
+previously promised counts below this row.
 
 ## Config-mapping decisions (the ones a reviewer should weigh)
 
