@@ -203,6 +203,64 @@ export function drawnText(pdf: Buffer): string {
 }
 
 /**
+ * Decoded text runs WITH their device-space positions, per page — what a reading-order/overlap
+ * assertion needs (Task 9's tear-off reflow regression: "the strip must sit BELOW every part
+ * row on the page they share", which plain `drawnPages` cannot see because stream order and
+ * paper order diverge exactly when `absolutePosition` is involved).
+ *
+ * Coordinates: PDF device space, y from the page's BOTTOM edge — larger y is HIGHER on the
+ * paper. pdfkit brackets every run as `q / 1 0 0 -1 0 792 cm / BT / a b c d x y Tm / Tf / TJ /
+ * ET / Q` inside a stream whose OWN leading flip cm composes with that inner flip back to the
+ * identity, so the Tm translation IS the run's device-space baseline position (verified against
+ * a flowed node at the 24pt top margin decoding to y≈757 and an `absolutePosition: {y: 648}`
+ * node to y≈133). Deliberately additive beside `drawnPages` — that decoder is load-bearing for
+ * every content assertion in the suite, and this one's Tm tracking is pdfkit-shaped (no Td/TD
+ * chasing, which pdfkit does not emit).
+ */
+export function textRunsWithY(pdf: Buffer): { text: string; x: number; y: number }[][] {
+  const objs = parseObjects(pdf);
+  return pagesInOrder(objs).map((page) => {
+    const resRef = /\/Resources\s+(\d+)\s+0\s+R/.exec(page.body);
+    const resources = resRef ? (objs.get(Number(resRef[1]))?.body ?? "") : page.body;
+    const fontDict = /\/Font\s*<<([\s\S]*?)>>/.exec(resources)?.[1] ?? "";
+    const fonts = new Map<string, Cmap>();
+    for (const [, name, num] of fontDict.matchAll(/\/(\w+)\s+(\d+)\s+0\s+R/g)) {
+      const fontObj = objs.get(Number(num));
+      const toUni = fontObj && /\/ToUnicode\s+(\d+)\s+0\s+R/.exec(fontObj.body);
+      const cmapStream = toUni && objs.get(Number(toUni[1]))?.stream;
+      if (cmapStream) fonts.set(name, parseCmap(cmapStream));
+    }
+    const contentsMatch = /\/Contents\s+(\[[\s\S]*?\]|\d+\s+0\s+R)/.exec(page.body);
+    const contentRefs = contentsMatch
+      ? [...contentsMatch[1].matchAll(/(\d+)\s+0\s+R/g)].map((r) => Number(r[1]))
+      : [];
+    const runs: { text: string; x: number; y: number }[] = [];
+    for (const ref of contentRefs) {
+      const content = objs.get(ref)?.stream?.toString("latin1") ?? "";
+      const opRe =
+        /\/(\w+)\s+[\d.]+\s+Tf|(?:[-\d.]+\s+){4}([-\d.]+)\s+([-\d.]+)\s+Tm|\[((?:<[0-9a-fA-F]+>|[-\d.\s])+)\]\s*TJ|<([0-9a-fA-F]+)>\s*Tj/g;
+      let active: Cmap | undefined;
+      let x = 0;
+      let y = 0;
+      let m: RegExpExecArray | null;
+      while ((m = opRe.exec(content)) !== null) {
+        if (m[1] !== undefined) { active = fonts.get(m[1]); continue; }
+        if (m[2] !== undefined) { x = Number(m[2]); y = Number(m[3]); continue; }
+        const hexes = [...(m[4] ?? `<${m[5]}>`).matchAll(/<([0-9a-fA-F]+)>/g)].map((h) => h[1]);
+        let text = "";
+        for (const h of hexes) {
+          for (let i = 0; i + 4 <= h.length; i += 4) {
+            text += active?.get(parseInt(h.slice(i, i + 4), 16)) ?? "�";
+          }
+        }
+        runs.push({ text, x, y });
+      }
+    }
+    return runs;
+  });
+}
+
+/**
  * Image paints per page, in page order: each `/Name Do` in a page's content stream(s) whose
  * resource entry is an image XObject counts once. SMask children never paint via `Do` (they are
  * referenced from an image's own dict), so like traveler-templates' `countImages` this counts

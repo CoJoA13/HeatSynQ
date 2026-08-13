@@ -508,9 +508,18 @@ function totalsBlock(ctx: Ctx, d: TicketData): Content[] {
 }
 
 /**
- * The footer tear-off strip, pinned to the page bottom with `absolutePosition` (plain JSON —
- * the one instrument a data-only definition has for the sample's page-bottom placement; the
- * blank middle of the sample page is genuinely blank).
+ * The footer tear-off strip. FLOW-BASED since Task 9 (P7 spec §5.6, ruling 3's guardrail;
+ * HANDOFF §7 item 5.3): the strip used to be stamped at `absolutePosition {x: 24, y: 648}` —
+ * the one instrument a data-only definition had for the sample's page-bottom placement — and a
+ * part table long enough to reach that fixed slot simply ran UNDER it. The strip now follows
+ * the content as an `unbreakable` stack behind a fixed gap: long tables and width overrides
+ * reflow it (to the next page when it no longer fits) instead of overlapping it, and
+ * `unbreakable` keeps the strip whole across page breaks — the flow-safe replacement for what
+ * the absolute pin incidentally provided. Accepted deviation from the sample: on a sparse
+ * ticket the strip sits below the totals rather than at the page's bottom edge — bottom-pinning
+ * would need render-time measurement, exactly the layout coupling plain-JSON definitions exist
+ * to avoid (the two-pass precedent in render.ts reserves MARGIN space; it cannot push flowed
+ * content down without measuring it).
  *
  * Bare order number — the sample's tear-off prints "72036", not "72036-3" — totals again in
  * their boxed pair, the hand-completed Received By / Date rules, then Sold To and Shipped ON.
@@ -610,8 +619,9 @@ function tearOff(ctx: Ctx, d: TicketData): Content[] {
   if (active.length === 0) return [];
 
   return [{
-    absolutePosition: { x: 24, y: 648 },
     stack: [rule([0, 0, 0, 6]), ...active.map(({ g }) => g.build())],
+    margin: [0, 16, 0, 0],
+    unbreakable: true,
   }];
 }
 

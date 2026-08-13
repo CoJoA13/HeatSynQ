@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { pageCount, textRunsWithY } from "./helpers/pdf";
+import { renderPdf } from "@/server/pdf/render";
 import {
   buildShippingTicketDefinition, type TicketData, type TicketDocType,
 } from "@/server/pdf/shipping-ticket";
@@ -311,6 +313,90 @@ describe("buildShippingTicketDefinition — logo placement", () => {
     expect(JSON.stringify(placed)).not.toContain(LOGO_URI);
     const unplaced = buildShippingTicketDefinition([sampleTicket()], "SHIPPER", cfg(), LOGO_URI);
     expect(JSON.stringify(unplaced)).not.toContain(LOGO_URI);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// The tear-off reflow (P7 spec §5.6 ruling-3 guardrail; HANDOFF §7 item 5.3). The strip used to
+// be stamped at `absolutePosition {x:24, y:648}`, so past ~8 extra multi-line part rows the
+// flowed table ran UNDER it. Flow-based, the strip follows the content — the reading-order
+// assertions below decode RENDERED bytes with their positions (textRunsWithY): on any page the
+// strip shares with part rows, every row must sit ABOVE the strip's topmost text.
+// ------------------------------------------------------------------------------------------------
+
+/** `count` stacked three-line part rows with distinctive, greppable part numbers. */
+function manyRowTicket(count: number): TicketData {
+  return sampleTicket({
+    lines: Array.from({ length: count }, (_, i) => ({
+      qty: 10 + i, partNumber: `RFL-${String(i + 1).padStart(2, "0")}`,
+      partName: "Reflow Regression Part", partDescription: "Stacked third line",
+      pounds: 100 + i,
+    })),
+  });
+}
+
+/** The strip's textual TOP on a page: the bare tear-off order number ("72036" — the header
+ *  prints "72036-3", so the bare run is unique to the strip). */
+const tearTopY = (runs: { text: string; y: number }[]): number | null => {
+  const run = runs.find((r) => r.text.trim() === "72036");
+  return run === undefined ? null : run.y;
+};
+const partYs = (runs: { text: string; y: number }[]): number[] =>
+  runs.filter((r) => r.text.trim().startsWith("RFL-")).map((r) => r.y);
+
+/** A validated config keeping only the blocks ABOVE the part table plus the strip itself — the
+ *  layout a long pick list legitimately produces, and the exact regime the HANDOFF §7 item 5.3
+ *  ping describes: enough part rows and the table reaches the strip's old fixed slot (y=648,
+ *  device y≈128). Nothing on this contract is locked, so the validator accepts the hiding. */
+const longTableConfig = (): TemplateConfig => {
+  const c = cfg();
+  for (const key of ["containers", "serials", "liability", "totals"]) {
+    sectionOf(c, key).visible = false;
+  }
+  return checked(c);
+};
+
+describe("the tear-off strip is flow-based (the >8-row overlap regression)", () => {
+  it("the definition carries no absolutePosition anywhere", () => {
+    const def = buildShippingTicketDefinition([sampleTicket()]);
+    expect(JSON.stringify(def)).not.toContain("absolutePosition");
+  });
+
+  it("a part table reaching the strip's old fixed slot reflows instead of running under it", async () => {
+    // 16 three-line rows end below device y≈128 — inside the absolutely-positioned strip's box.
+    const pdf = await renderPdf(
+      buildShippingTicketDefinition([manyRowTicket(16)], "SHIPPER", longTableConfig()));
+    const pages = textRunsWithY(pdf);
+
+    // Every row printed, and the strip printed once.
+    const flat = pages.flat().map((r) => r.text).join("");
+    for (let i = 1; i <= 16; i++) expect(flat).toContain(`RFL-${String(i).padStart(2, "0")}`);
+    expect(flat).toContain("Received By:");
+
+    const tearPage = pages.findIndex((runs) => tearTopY(runs) !== null);
+    expect(tearPage).toBeGreaterThanOrEqual(0);
+    const lastPartPage = pages.reduce((last, runs, i) => (partYs(runs).length > 0 ? i : last), -1);
+    // Reading order: the strip never precedes part rows…
+    expect(tearPage).toBeGreaterThanOrEqual(lastPartPage);
+    // …and on the page they share (if any), every row sits ABOVE the strip's top (device y is
+    // bottom-up: higher on paper = larger y). Pre-reflow this is the exact violation: rows past
+    // y≈648-from-top drew UNDER the absolutely-positioned strip.
+    const sharedPartYs = partYs(pages[tearPage]);
+    const top = tearTopY(pages[tearPage])!;
+    for (const y of sharedPartYs) expect(y).toBeGreaterThan(top);
+  });
+
+  it("a longer table shares its last page with the strip, rows strictly above it (the flow pin)", async () => {
+    const pdf = await renderPdf(
+      buildShippingTicketDefinition([manyRowTicket(24)], "SHIPPER", longTableConfig()));
+    const pages = textRunsWithY(pdf);
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+
+    const tearPage = pages.findIndex((runs) => tearTopY(runs) !== null);
+    const shared = partYs(pages[tearPage]);
+    expect(shared.length).toBeGreaterThan(0); // the strip and the table tail DO share this page
+    const top = tearTopY(pages[tearPage])!;
+    for (const y of shared) expect(y).toBeGreaterThan(top);
   });
 });
 
