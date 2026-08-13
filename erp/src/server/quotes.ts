@@ -16,7 +16,9 @@ import { toXlsx } from "./excel";
 import { listAddresses, type AddressRow } from "./customer-addresses";
 import { priceOrder, type PriceRowInput } from "./pricing";
 import { assertPrintable, storeDocument } from "./documents";
-import { renderPdf } from "./pdf/render";
+import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
+import { resolveTemplateForPrint } from "./template-assignments";
+import { QUOTE_DEFAULT_CONFIG } from "../lib/template-contracts/index";
 import { buildQuoteDefinition, type QuotePdfData, type QuotePdfLine } from "./pdf/quote";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
 import { INT4_MAX } from "../lib/order-constants";
@@ -1549,13 +1551,19 @@ export type QuotePrintSettings = {
 
 /** The plant-wide print blocks, read BEFORE the print transaction opens (the cert/ticket/invoice
  *  precedent — a settings read on the top-level client inside a Serializable transaction is the
- *  pool-starvation shape fix-wave R4 finding 8 exists to prevent). */
+ *  pool-starvation shape fix-wave R4 finding 8 exists to prevent). The two standing texts default
+ *  to the QUOTE contract's own text blocks; `printQuote` REPLACES them at the data seam with the
+ *  resolved template's config (spec §8 — the `quote_intro_text`/`quote_liability_text` Settings are
+ *  retired in Task 14). A direct `readQuotePdfData` call (a preview/test) gets the contract default. */
 export async function quotePrintSettings(): Promise<QuotePrintSettings> {
-  const [name, address, phone, introText, liabilityText] = await Promise.all([
+  const [name, address, phone] = await Promise.all([
     getSetting("company_name"), getSetting("company_address"), getSetting("company_phone"),
-    getSetting("quote_intro_text"), getSetting("quote_liability_text"),
   ]);
-  return { company: { name, address, phone }, introText, liabilityText };
+  return {
+    company: { name, address, phone },
+    introText: QUOTE_DEFAULT_CONFIG.textBlocks.quote_intro_text,
+    liabilityText: QUOTE_DEFAULT_CONFIG.textBlocks.quote_liability_text,
+  };
 }
 
 /** The default (or first) live BILL_TO — the invoice's own `pickDefault` shape, one kind. */
@@ -1616,8 +1624,29 @@ function indicativeAmounts(line: QuoteLineDetail): (number | null)[] {
   });
   // One OPERATION line per input price row, in order (the engine's own contract).
   const ops = result.lines.filter((l) => l.kind === "OPERATION");
-  return line.prices.map((p, i) =>
-    (p.pricePer === "LB" && line.eachWeight === null ? null : ops[i].amount));
+  return alignOperationAmounts(line.prices, ops, line.eachWeight);
+}
+
+/**
+ * #97 (whole-branch review F4): map the engine's OPERATION amounts back to the price rows BY INDEX,
+ * asserting the counts match FIRST. `pricing.ts` emits exactly one OPERATION line per input price
+ * row today (even a $0 row pushes), so `ops[i]` lines up with `prices[i]`; but a future engine
+ * change that filtered or reordered operations would turn `ops[i]` into misaligned money or an
+ * out-of-bounds crash. The guard turns that into a loud, named throw instead. An LB row with no
+ * each-weight is omitted (null) rather than extended over a $0 basis. Pure and exported so the guard
+ * is tested both directions without driving the whole engine.
+ */
+export function alignOperationAmounts(
+  prices: readonly { pricePer: PricePerValue }[],
+  ops: readonly { amount: number }[],
+  eachWeight: number | null,
+): (number | null)[] {
+  if (ops.length !== prices.length) {
+    throw new Error(
+      `indicativeAmounts: the pricing engine returned ${ops.length} operation line(s) for a quote ` +
+      `line with ${prices.length} price row(s) — the one-operation-per-row contract broke`);
+  }
+  return prices.map((p, i) => (p.pricePer === "LB" && eachWeight === null ? null : ops[i].amount));
 }
 
 /**
@@ -1706,6 +1735,13 @@ export async function readQuotePdfData(
  * (`assertPrintable` — the discarded-invoice precedent) while every STORED print stays listable
  * and reprintable forever (§5.6); a CLOSED or expired quote prints fine — closing forbids edits,
  * not the paper of the agreement it records.
+ *
+ * Phase 7 (spec §5.2): the paper renders from the template `resolveTemplateForPrint` resolves for
+ * docType `QUOTE` on the quote's customer, on THIS claimed Serializable tx — correct by §5.1
+ * immutability, not by locking (the printCert precedent); no template row is claimed and none is
+ * needed. `storeDocument` stamps `resolved.versionId`. The two standing texts bind from the resolved
+ * config at the DATA SEAM (the setting values passed to `readQuotePdfData` are replaced), so the
+ * template designer owns the quote's intro and liability text.
  */
 export async function printQuote(
   id: string,
@@ -1718,10 +1754,27 @@ export async function printQuote(
       if (!quote) throw new HttpError(404, "Quote not found");
       assertPrintable(quote);
 
-      const data = await readQuotePdfData(tx, id, settings);
-      const pdf = await renderPdf(buildQuoteDefinition(data));
+      const resolved = await resolveTemplateForPrint(tx, "QUOTE", quote.customerId);
+      // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only when
+      // the config also places it, so an unplaced upload converts nothing.
+      const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+        ? (resolved.logoMimeType === "image/jpeg"
+            ? jpegDataUri(Buffer.from(resolved.logoImage))
+            : pngDataUri(Buffer.from(resolved.logoImage)))
+        : undefined;
 
-      const doc = await storeDocument(tx, { kind: "QUOTE", quoteId: id }, pdf);
+      // The two standing texts bind at the DATA SEAM from the resolved config (the cert's shape):
+      // `quotePrintSettings`' contract-default text is replaced by the template's own blocks, so the
+      // retired Settings no longer reach paper. The builder still reads `input.introText`/
+      // `input.liabilityText` — one source per fact, the pure-builder golden test intact.
+      const data = await readQuotePdfData(tx, id, {
+        ...settings,
+        introText: resolved.config.textBlocks.quote_intro_text,
+        liabilityText: resolved.config.textBlocks.quote_liability_text,
+      });
+      const pdf = await renderPdf(buildQuoteDefinition(data, resolved.config, logoDataUri));
+
+      const doc = await storeDocument(tx, { kind: "QUOTE", quoteId: id }, pdf, resolved.versionId);
       return { documentId: doc.id, quoteNumber: quote.quoteNumber, pdf };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
