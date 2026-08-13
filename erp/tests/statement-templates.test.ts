@@ -1,8 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { drawnPages, pageCount } from "./helpers/pdf";
-import { buildStatementDefinition, type StatementData } from "@/server/pdf/statement";
-import { renderPdf } from "@/server/pdf/render";
+import { describe, it, expect, beforeEach } from "vitest";
+import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { drawnText, drawnPages, pageCount, paintedImageCounts } from "./helpers/pdf";
+import { runWithContext } from "@/server/context";
+import { setSetting } from "@/server/settings";
+import { printStatement, buildStatement, type StatementData } from "@/server/statements";
+import { buildStatementDefinition } from "@/server/pdf/statement";
+import { renderPdf, barcodePng } from "@/server/pdf/render";
+import { getDocument } from "@/server/documents";
+import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
+import { assignTemplate } from "@/server/template-assignments";
 import { STATEMENT_DEFAULT_CONFIG, validateConfig, type TemplateConfig } from "@/lib/template-contracts/index";
+import type { Customer } from "../prisma/generated/prisma/client";
 
 /**
  * Phase 7 Task 13 — the statement conversion. `buildStatementDefinition` becomes a config-consumer
@@ -12,6 +20,9 @@ import { STATEMENT_DEFAULT_CONFIG, validateConfig, type TemplateConfig } from "@
  * invoice's frozen-paper proof). The golden 5B suites (statement-pdf/statements) stay UNTOUCHED —
  * all Task-13 tests live here.
  */
+
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
 // ------------------------------------------------------------------------------------------------
 // Pure builder fixtures — copied in shape from tests/statement-pdf.test.ts (copying across test
@@ -357,5 +368,205 @@ describe("buildStatementDefinition — purity, config included", () => {
     const def = buildStatementDefinition(sampleData(), config, LOGO_URI);
     expect(JSON.parse(JSON.stringify(def))).toEqual(def);
     expect(buildStatementDefinition(sampleData(), config, LOGO_URI)).toEqual(def);
+  });
+});
+
+// ================================================================================================
+// The print path (spec §5.2): resolve docType STATEMENT on the statement's customer, render the
+// resolved config, stamp `templateVersionId`. The statement is CLAIM-FREE by design (no single
+// owner row) — resolution runs on the print's own Serializable tx. The preview GET writes NO
+// StoredDocument. And the LIVE-REBUILD character is preserved: a data change between two prints
+// shows in the second (the mirror image of the invoice's frozen-paper proof).
+// ================================================================================================
+
+let customerSeq = 0;
+async function makeCustomer(): Promise<Customer> {
+  customerSeq += 1;
+  return prisma.customer.create({ data: { code: `STP${customerSeq}`, name: `Statement Template Customer ${customerSeq}` } });
+}
+
+async function makeBillTo(customerId: string, name = "GFMCO - Columbus LLC") {
+  return prisma.customerAddress.create({
+    data: {
+      customerId, kind: "BILL_TO", name, street: "600 12th Street",
+      city: "Columbus", state: "GA", zip: "31902-0096", isDefault: true,
+    },
+  });
+}
+
+/** One finalized invoice owned by `customerId`, past-due, with an open balance — enough for the
+ *  statement to carry an open item and a nonzero aging/net (the statements.test.ts fixture shape). */
+let orderSeq = 0;
+async function finalizedInvoice(customerId: string, total: number): Promise<void> {
+  orderSeq += 1;
+  const order = await prisma.order.create({
+    data: {
+      orderNumber: 90000 + orderSeq, customerId, status: "SHIPPED",
+      receivedDate: new Date("2026-05-01"), requestDate: new Date("2026-05-05"),
+    },
+  });
+  await prisma.invoice.create({
+    data: {
+      orderId: order.id, customerId, kind: "INVOICE", status: "FINALIZED",
+      invoiceDate: new Date("2026-05-10"), dueDate: new Date("2026-05-20"),
+      finalizedAt: new Date("2026-05-10"), total,
+    },
+  });
+}
+
+const ASOF = "2026-07-29";
+
+/** Create → tweak the v1 draft → (optionally logo) → publish, for the STATEMENT docType. */
+let tplSeq = 0;
+async function publishCustom(tweak: (c: TemplateConfig) => void, logo?: { data: Buffer; mime: string }) {
+  tplSeq += 1;
+  const t = await asSystem(() => createTemplate("STATEMENT", `Custom Statement ${tplSeq}`));
+  const c = cfg();
+  tweak(c);
+  await asSystem(() => editDraft(t.id, { config: c, updatedAt: t.draft.updatedAt }));
+  if (logo) await asSystem(() => uploadLogo(t.id, logo.data, logo.mime));
+  const { versionId } = await asSystem(() => publishDraft(t.id));
+  return { templateId: t.id, versionId };
+}
+
+async function stampOf(documentId: string): Promise<string | null> {
+  const row = await prisma.storedDocument.findUnique({
+    where: { id: documentId }, select: { templateVersionId: true },
+  });
+  return row!.templateVersionId;
+}
+
+describe("printStatement — resolution stamps the STATEMENT version", () => {
+  beforeEach(async () => {
+    await truncateAll();
+    await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama, LLC"));
+    await asSystem(() => setSetting("company_address", "3008 Red Morris Parkway\nAnniston AL 36207"));
+    await asSystem(() => setSetting("company_phone", "256-835-3370"));
+  });
+
+  it("no assignment: resolves the seeded Standard statement and stamps ITS version id", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    await finalizedInvoice(customer.id, 400);
+    const { documentId, pdf } = await asSystem(() =>
+      printStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(pdf)).toContain("Statement");
+    expect(await stampOf(documentId)).toBe(templateVersionId("STATEMENT"));
+  });
+
+  it("a label override prints through the real path and stamps the assigned version", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    await finalizedInvoice(customer.id, 400);
+    const tpl = await publishCustom((c) => { fieldOf(c, "total", "total_due").label = "TOTAL-MARKER:"; });
+    await asSystem(() => assignTemplate(customer.id, "STATEMENT", tpl.templateId));
+    const { documentId, pdf } = await asSystem(() =>
+      printStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(pdf)).toContain("TOTAL-MARKER:");
+    expect(await stampOf(documentId)).toBe(tpl.versionId);
+  });
+
+  it("the negativeStyle knob formats a credit through the real path", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    await finalizedInvoice(customer.id, 400);
+    // A stand-alone finalized credit with an open remaining → a negative Open line on the statement.
+    orderSeq += 1;
+    const order = await prisma.order.create({
+      data: { orderNumber: 95000 + orderSeq, customerId: customer.id, status: "SHIPPED", receivedDate: new Date("2026-05-01"), requestDate: new Date("2026-05-05") },
+    });
+    await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "CREDIT", status: "FINALIZED",
+        invoiceDate: new Date("2026-06-01"), finalizedAt: new Date("2026-06-01"), creditNumber: 5000 + orderSeq,
+        total: -200,
+      },
+    });
+    const tpl = await publishCustom((c) => { c.formats.negativeStyle = "PARENTHESES"; });
+    await asSystem(() => assignTemplate(customer.id, "STATEMENT", tpl.templateId));
+    const { pdf } = await asSystem(() =>
+      printStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(pdf)).toContain("($200.00)");
+  });
+
+  it("the pageFooter knob prints per-page numbers; the default prints none", async () => {
+    const a = await makeCustomer();
+    await makeBillTo(a.id);
+    await finalizedInvoice(a.id, 400);
+    const tpl = await publishCustom((c) => { c.pageFooter = true; });
+    await asSystem(() => assignTemplate(a.id, "STATEMENT", tpl.templateId));
+    const withFooter = await asSystem(() =>
+      printStatement(a.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(withFooter.pdf)).toContain("Page 1 of 1");
+
+    const b = await makeCustomer();
+    await makeBillTo(b.id);
+    await finalizedInvoice(b.id, 400);
+    const bare = await asSystem(() =>
+      printStatement(b.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(bare.pdf)).not.toMatch(/Page \d+ of \d+/);
+  });
+
+  it("a placed logo prints through the real path; the bare statement paints none", async () => {
+    const a = await makeCustomer();
+    await makeBillTo(a.id);
+    await finalizedInvoice(a.id, 400);
+    const tpl = await publishCustom(
+      (c) => { c.logo = { placement: "header-left", width: 90 }; },
+      { data: await barcodePng("STMTLOGO"), mime: "image/png" });
+    await asSystem(() => assignTemplate(a.id, "STATEMENT", tpl.templateId));
+    const placed = await asSystem(() =>
+      printStatement(a.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(paintedImageCounts(placed.pdf)).toEqual([1]);
+
+    const b = await makeCustomer();
+    await makeBillTo(b.id);
+    await finalizedInvoice(b.id, 400);
+    const bare = await asSystem(() =>
+      printStatement(b.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(paintedImageCounts(bare.pdf)).toEqual([0]);
+  });
+});
+
+describe("printStatement — the LIVE-REBUILD proof (the OPPOSITE of the invoice's frozen paper)", () => {
+  beforeEach(async () => {
+    await truncateAll();
+    await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama, LLC"));
+    await asSystem(() => setSetting("company_address", "3008 Red Morris Parkway\nAnniston AL 36207"));
+  });
+
+  it("a live bill-to change between two prints shows in the SECOND print (a statement is rebuilt, not frozen)", async () => {
+    const customer = await makeCustomer();
+    const addr = await makeBillTo(customer.id, "ORIGINALBILLTO INC");
+    await finalizedInvoice(customer.id, 400);
+
+    // First print carries the live bill-to as it stands now.
+    const first = await asSystem(() =>
+      printStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    expect(drawnText(first.pdf)).toContain("ORIGINALBILLTO INC");
+
+    // Change the LIVE default bill-to address AFTER the first print.
+    await prisma.customerAddress.update({ where: { id: addr.id }, data: { name: "CHANGEDBILLTO LLC" } });
+
+    // A second print reflects the change — the statement is a fresh rebuild, not frozen paper...
+    const second = await asSystem(() =>
+      printStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    const text = drawnText(second.pdf);
+    expect(text).toContain("CHANGEDBILLTO LLC");
+    expect(text).not.toContain("ORIGINALBILLTO INC");
+
+    // ...while the FIRST print's STORED bytes are frozen at print time (reissued, never re-rendered).
+    const stored = await getDocument(first.documentId);
+    expect(Buffer.compare(stored.fileData, first.pdf)).toBe(0);
+    expect(drawnText(stored.fileData)).toContain("ORIGINALBILLTO INC");
+  });
+
+  it("the preview build (buildStatement) writes NO StoredDocument — it stays side-effect-free", async () => {
+    const customer = await makeCustomer();
+    await makeBillTo(customer.id);
+    await finalizedInvoice(customer.id, 400);
+    await asSystem(() => buildStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false }));
+    const docs = await prisma.storedDocument.count({ where: { customerId: customer.id } });
+    expect(docs).toBe(0);
   });
 });

@@ -21,6 +21,13 @@
  * violate: a statement is a point-in-time snapshot by construction, and two concurrent prints of
  * the same customer simply produce two independent, individually-consistent archived documents).
  *
+ * Phase 7 Task 13: `printStatementInTx` resolves the customer's STATEMENT template (§5.2) on that
+ * same claim-free Serializable transaction — correct by §5.1 immutability, not by locking — renders
+ * `buildStatementDefinition` against the resolved config + logo, and stamps `resolved.versionId`
+ * onto the archived row. **The statement is a FULLY-LIVE rebuild** (the third snapshot posture,
+ * the OPPOSITE of the invoice's frozen paper): the config only styles the paper — the numbers are
+ * rebuilt live from A/R every print, so a data change between two prints shows in the second.
+ *
  * `runStatements` prints one statement for every customer carrying a NONZERO net balance as of the
  * chosen date — never combining family (spec §8: "combined" vs. "per-division" is a choice made
  * PER print, not run-wide; the run treats every customer independently).
@@ -36,9 +43,10 @@ import { getBillingConfig } from "./billing-config";
 import { listAddresses, type AddressRow } from "./customer-addresses";
 import { invoicePrintSettings, type InvoicePrintSettings } from "./invoices";
 import { getSetting } from "./settings";
-import { renderPdf } from "./pdf/render";
+import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildStatementDefinition, type StatementData } from "./pdf/statement";
 import { storeDocument } from "./documents";
+import { resolveTemplateForPrint } from "./template-assignments";
 import type { ApplicationTypeValue } from "../lib/ar-constants";
 import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
 
@@ -333,8 +341,23 @@ async function printStatementInTx(
   tx: Db, customerId: string, opts: StatementOpts, settings: InvoicePrintSettings,
 ): Promise<{ documentId: string; pdf: Buffer }> {
   const data = await buildStatementInTx(tx, customerId, opts, settings);
-  const pdf = await renderPdf(buildStatementDefinition(data));
-  const doc = await storeDocument(tx, { kind: "STATEMENT", customerId }, pdf);
+
+  // §5.2 resolution on THIS Serializable transaction at its isolation — correct by §5.1
+  // immutability, not by locking (the printInvoice/printCert precedent). The statement is CLAIM-FREE
+  // by design (no single owner row to CLAIM — see the file header), so no template row is claimed and
+  // none is needed; resolution walks from the statement's own customer up the §5.2 chain.
+  const resolved = await resolveTemplateForPrint(tx, "STATEMENT", customerId);
+  // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only when the
+  // config also places it, so an unplaced upload converts nothing.
+  const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+    ? (resolved.logoMimeType === "image/jpeg"
+        ? jpegDataUri(Buffer.from(resolved.logoImage))
+        : pngDataUri(Buffer.from(resolved.logoImage)))
+    : undefined;
+
+  const pdf = await renderPdf(buildStatementDefinition(data, resolved.config, logoDataUri));
+  // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+  const doc = await storeDocument(tx, { kind: "STATEMENT", customerId }, pdf, resolved.versionId);
   return { documentId: doc.id, pdf };
 }
 
