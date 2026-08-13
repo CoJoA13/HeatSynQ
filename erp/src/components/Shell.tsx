@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { useLatest } from "@/lib/use-latest";
+import { visibleNav, visibleAdmin } from "@/lib/nav";
 
 type Me = { displayName: string; permissions: string[] };
 
@@ -17,30 +18,10 @@ type SearchResults = {
   customers: { id: string; code: string; name: string }[];
 };
 
-const NAV: { label: string; href: string; area: string }[] = [
-  { label: "Orders", href: "/", area: "orders" },
-  { label: "Quotes", href: "/quotes", area: "quotes" },
-  { label: "Certifications", href: "/certs", area: "certs" },
-  { label: "Shipping", href: "/shipping", area: "shipping" },
-  { label: "Invoicing", href: "/invoicing", area: "invoicing" },
-  { label: "Receivables", href: "/receivables", area: "receivables" },
-  { label: "Customers", href: "/customers", area: "customers" },
-  { label: "Parts", href: "/parts", area: "parts" },
-  { label: "Processes", href: "/processes", area: "processes" },
-  { label: "Reports", href: "/reports", area: "reports" },
-];
-
-const ADMIN = [
-  { label: "Users", href: "/admin/users" },
-  { label: "Roles", href: "/admin/roles" },
-  { label: "Reference data", href: "/admin/reference" },
-  { label: "Process step codes", href: "/admin/step-codes" },
-  { label: "Part fields", href: "/admin/part-fields" },
-  { label: "Settings", href: "/admin/settings" },
-  { label: "Billing", href: "/admin/billing" },
-  { label: "Surcharges", href: "/admin/surcharges" },
-  { label: "Audit log", href: "/admin/audit" },
-];
+// NAV, ADMIN, and the visible-entries decision live in src/lib/nav.ts — a pure client-safe module
+// so the gating is unit-testable (tests/nav.test.ts). THE NAV DECISION (Task 16) is documented
+// there: Templates is an admin-group entry gated on `templates.view` specifically, and the Admin
+// group header shows whenever any admin-group entry is visible.
 
 // "Orders" now lands on "/" (the board replaces the Phase 1 welcome stub), and every other nav
 // entry still highlights on a path-prefix match — but "/".startsWith is true for EVERY pathname,
@@ -159,7 +140,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
   if (pathname === "/login") return <>{children}</>;
   if (!me) return null;
 
-  const canView = (area: string) => me.permissions.includes(`${area}.view`);
+  // Which admin-group entries this user can see — the Admin header renders iff any are visible
+  // (admin.view OR the templates.view-gated Templates entry). See src/lib/nav.ts's nav decision.
+  const adminEntries = visibleAdmin(me.permissions);
   const noMatches = results !== null
     && results.orders.length === 0 && results.parts.length === 0 && results.customers.length === 0;
 
@@ -168,16 +151,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <aside className="w-52 shrink-0 bg-slate-900 text-slate-100">
         <div className="p-4 text-lg font-semibold">Shop ERP</div>
         <nav className="space-y-1 px-2 text-sm">
-          {NAV.filter((n) => canView(n.area)).map((n) => (
+          {visibleNav(me.permissions).map((n) => (
             <Link key={n.href} href={n.href}
                   className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
               {n.label}
             </Link>
           ))}
-          {canView("admin") && (
+          {adminEntries.length > 0 && (
             <>
               <div className="pt-3 text-xs uppercase text-slate-400">Admin</div>
-              {ADMIN.map((n) => (
+              {adminEntries.map((n) => (
                 <Link key={n.href} href={n.href}
                       className={`block rounded px-2 py-1.5 hover:bg-slate-700 ${navIsActive(n.href, pathname) ? "bg-slate-700" : ""}`}>
                   {n.label}
