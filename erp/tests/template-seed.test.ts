@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { prisma, truncateAll, templateId } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { auditedUpdate, readAudit, redact } from "@/server/audit";
-import { SETTINGS } from "@/server/settings";
 import {
   TEMPLATE_DOC_TYPES,
   defaultConfigFor,
@@ -96,15 +95,14 @@ describe("the seed migration's SQL literals (drift guard — parses the file, ne
     expect(occurrences(subquery("quote_intro_text"))).toBe(1);
     expect(occurrences(subquery("quote_liability_text"))).toBe(1);
 
-    // Every fallback equals the code default — settings.ts's registry default AND the contract's
-    // defaultText (Task 2 pinned those equal; this pins the SQL to both).
+    // Every fallback equals the contract's defaultText — the canonical code default now that the
+    // four standing-text Settings retired in Task 14 (they were pinned equal to the registry
+    // default while it existed; the contract module is the sole copy today).
     const expectFallbacks = (key: string, docType: TemplateDocTypeString, count: number) => {
       const literals = fallbackLiterals(key);
       expect(literals, key).toHaveLength(count);
-      const settingsDefault = SETTINGS[key as keyof typeof SETTINGS].default;
       const contractDefault = defaultConfigFor(docType).textBlocks[key];
       for (const literal of literals) {
-        expect(literal, key).toBe(settingsDefault);
         expect(literal, key).toBe(contractDefault);
       }
     };

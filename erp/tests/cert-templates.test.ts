@@ -9,7 +9,6 @@ import {
 import { replaceReadings } from "@/server/cert-results";
 import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
 import { assignTemplate } from "@/server/template-assignments";
-import { setSetting } from "@/server/settings";
 import { barcodePng, renderPdf } from "@/server/pdf/render";
 import { buildCertDefinition, type CertPdfData } from "@/server/pdf/cert";
 import { CERT_DEFAULT_CONFIG, validateConfig, type TemplateConfig } from "@/lib/template-contracts/index";
@@ -636,12 +635,11 @@ describe("printCert — resolution stamps the version and binds cert_statement f
     expect(await stampOf(documentId)).toBe(tpl.versionId);
   });
 
-  it("the config's cert_statement reaches paper; the retired Setting no longer does", async () => {
+  it("the config's cert_statement reaches paper (the Setting is retired in Task 14)", async () => {
     const customer = await makeCustomer();
     await makeBillTo(customer.id);
-    // The Setting is set to a DISTINCT marker — if the builder still bound the Setting, it would
-    // print; the config's block must win at the data seam.
-    await setSetting("cert_statement", "SETTING-STATEMENT-MARKER-SHOULD-NOT-PRINT");
+    // The config's block is the only source now — cert_statement left settings.ts. A DISTINCT
+    // marker proves the seam binds the resolved config, not the contract default.
     const tpl = await publishCustom((c) => {
       c.textBlocks.cert_statement = "CONFIG-STATEMENT-MARKER";
     });
@@ -650,7 +648,8 @@ describe("printCert — resolution stamps the version and binds cert_statement f
     const { pdf } = await asSystem(() => printCert(cert.id, user.id));
     const text = drawnText(pdf);
     expect(text).toContain("CONFIG-STATEMENT-MARKER");
-    expect(text).not.toContain("SETTING-STATEMENT-MARKER-SHOULD-NOT-PRINT");
+    // The contract-default statement is not reached — the template's own block wins at the seam.
+    expect(text).not.toContain("We certify that the listed Parts");
   });
 
   it("the pageFooter knob prints per-page numbers; the default prints none", async () => {

@@ -21,6 +21,7 @@ import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildCertDefinition, type CertPdfData, type CertPartRow, type CertSerialBlock } from "./pdf/cert";
 import { storeDocument, assertPrintable } from "./documents";
 import { resolveTemplateForPrint } from "./template-assignments";
+import { CERT_DEFAULT_CONFIG } from "../lib/template-contracts/index";
 import { listAddresses } from "./customer-addresses";
 import { formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
@@ -453,13 +454,15 @@ export type CertPrintSettings = {
 };
 
 export async function certPrintSettings(): Promise<CertPrintSettings> {
-  const [name, address, phone, statement] = await Promise.all([
+  const [name, address, phone] = await Promise.all([
     getSetting("company_name"),
     getSetting("company_address"),
     getSetting("company_phone"),
-    getSetting("cert_statement"),
   ]);
-  return { company: { name, address, phone }, statement };
+  // `statement` defaults to the CERT contract's own text block; `printCert` REPLACES it at the data
+  // seam with the resolved template's `cert_statement` (spec §8). The `cert_statement` Setting was
+  // retired in Task 14 — a direct `readCertPdfData` call (a preview/test) gets the contract default.
+  return { company: { name, address, phone }, statement: CERT_DEFAULT_CONFIG.textBlocks.cert_statement };
 }
 
 /** The signer columns `printCert` reads off the User row under its own transaction —

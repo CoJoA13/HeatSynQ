@@ -3,7 +3,6 @@ import { prisma, truncateAll, templateVersionId } from "./helpers/db";
 import { drawnPages, drawnText, pageCount, paintedImageCounts, textRunsWithY } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
-import { setSetting } from "@/server/settings";
 import { createShipper, printShippingTickets, type ShipperDetail } from "@/server/shippers";
 import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
 import { assignTemplate } from "@/server/template-assignments";
@@ -666,18 +665,14 @@ describe("printShippingTickets — resolution by the SHIPMENT'S order count + th
 describe("printShippingTickets — the liability text comes from the CONFIG, not the Setting", () => {
   beforeEach(truncateAll);
 
-  it("the seeded Standard's text block prints; an edited Setting no longer reaches ticket paper", async () => {
-    await asSystem(() => setSetting("shipper_liability_text", "SETTING-ONLY-LIABILITY"));
+  it("the seeded Standard's text block prints (the Setting is retired in Task 14)", async () => {
     const { shipper } = await oneOrderShipment();
     const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
-    const text = drawnText(pdf);
     // The seeded config's text block is the code default — assert a token unique to it.
-    expect(text).toContain("INSTITUTE");
-    expect(text).not.toContain("SETTING-ONLY-LIABILITY");
+    expect(drawnText(pdf)).toContain("INSTITUTE");
   });
 
-  it("an assigned template's edited text block prints", async () => {
-    await asSystem(() => setSetting("shipper_liability_text", "SETTING-ONLY-LIABILITY"));
+  it("an assigned template's edited text block prints (not the contract default)", async () => {
     const customer = await makeCustomer();
     const tpl = await publishCustom("SHIPPER", (c) => {
       c.textBlocks.shipper_liability_text = "CONFIG-LIABILITY-MARKER";
@@ -687,7 +682,6 @@ describe("printShippingTickets — the liability text comes from the CONFIG, not
     const { pdf } = await asSystem(() => printShippingTickets(shipper.id));
     const text = drawnText(pdf);
     expect(text).toContain("CONFIG-LIABILITY-MARKER");
-    expect(text).not.toContain("SETTING-ONLY-LIABILITY");
     expect(text).not.toContain("INSTITUTE");
   });
 });

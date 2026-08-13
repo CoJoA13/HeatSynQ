@@ -13,6 +13,7 @@ import { listAddresses } from "./customer-addresses";
 import { renderPdf, renderSheetGroups, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildShippingTicketDefinitions, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
 import { resolveTemplateForPrint } from "./template-assignments";
+import { SHIPPER_DEFAULT_CONFIG } from "../lib/template-contracts/index";
 import { buildBolDefinition, type BolData, type BolParty } from "./pdf/bol";
 import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
@@ -1743,13 +1744,16 @@ export type TicketSettings = {
 };
 
 export async function ticketSettings(): Promise<TicketSettings> {
-  const [name, address, phone, liabilityText] = await Promise.all([
+  const [name, address, phone] = await Promise.all([
     getSetting("company_name"),
     getSetting("company_address"),
     getSetting("company_phone"),
-    getSetting("shipper_liability_text"),
   ]);
-  return { company: { name, address, phone }, liabilityText };
+  // `liabilityText` defaults to the SHIPPER contract's own text block; `printShippingTickets`
+  // REPLACES it at the data seam with the resolved template's `shipper_liability_text` (spec §8).
+  // The `shipper_liability_text` Setting was retired in Task 14 — a direct `readShippingTicketData`
+  // call (a preview/test) gets the contract default (SHIPPER and MOS_SHIPPER share this text block).
+  return { company: { name, address, phone }, liabilityText: SHIPPER_DEFAULT_CONFIG.textBlocks.shipper_liability_text };
 }
 
 /**

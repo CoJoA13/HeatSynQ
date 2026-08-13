@@ -21,9 +21,11 @@ describe("settings page widget selection (Task 12 Step 0a/0b)", () => {
     expect(selectLabelsFor("cert_scope_default")).toEqual(CERT_SCOPE_LABELS);
   });
 
-  it("renders a textarea for the two long standing-text keys", () => {
-    expect(widgetKindFor("cert_statement", "some long legal text")).toBe("textarea");
-    expect(widgetKindFor("shipper_liability_text", "some long legal text")).toBe("textarea");
+  it("no longer special-cases the retired standing-text keys — they render as plain text now", () => {
+    // cert_statement / shipper_liability_text retired into template text blocks (Phase 7 Task 14),
+    // so no textarea keys remain on the settings page; a stray string key falls through to text.
+    expect(widgetKindFor("cert_statement", "some long legal text")).toBe("text");
+    expect(widgetKindFor("shipper_liability_text", "some long legal text")).toBe("text");
   });
 
   it("renders a number input for a numeric setting", () => {

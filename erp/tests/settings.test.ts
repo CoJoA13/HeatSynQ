@@ -111,20 +111,16 @@ describe("settings", () => {
     expect((err as HttpError).status).toBe(400);
   });
 
-  it("round-trips cert_statement, defaulting to the transcribed certification statement", async () => {
-    const initial = await getSetting("cert_statement");
-    expect(initial).toMatch(/^We certify that the listed Parts \/ Materials were heat treated/);
-    expect(initial).toContain("American Heat Treating - Alabama, LLC");
-    await setSetting("cert_statement", "Custom statement text");
-    expect(await getSetting("cert_statement")).toBe("Custom statement text");
-  });
-
-  it("round-trips shipper_liability_text, defaulting to the transcribed liability text", async () => {
-    const initial = await getSetting("shipper_liability_text");
-    expect(initial).toMatch(/^Above pricing is based on American Heat Treating - Alabama/);
-    expect(initial).toContain("STATEMENT OF LIMITED LIABILITY");
-    await setSetting("shipper_liability_text", "Custom liability text");
-    expect(await getSetting("shipper_liability_text")).toBe("Custom liability text");
+  // Phase 7 Task 14: the four standing-text keys (cert_statement / shipper_liability_text /
+  // quote_intro_text / quote_liability_text) are RETIRED — every document builder is now a
+  // config-consumer and each standing text lives in its template's own text block (spec §8). The
+  // keys leave the registry; a read or write of any of them is now an "Unknown setting" refusal.
+  it.each([
+    "cert_statement", "shipper_liability_text", "quote_intro_text", "quote_liability_text",
+  ])("refuses the retired standing-text key %s", async (key) => {
+    const err = await setSetting(key, "anything").catch((e) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).message).toMatch(/Unknown setting/);
   });
 
   it("round-trips the invoice number prefix", async () => {

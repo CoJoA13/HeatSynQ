@@ -27,10 +27,11 @@ const SELECT_LABELS: Record<string, Record<string, string>> = {
   cert_scope_default: CERT_SCOPE_LABELS,
 };
 
-/** Keys whose stored text is long, multi-paragraph legal boilerplate (settings.ts's
- *  CERT_STATEMENT_DEFAULT / SHIPPER_LIABILITY_DEFAULT transcribed from the owner's printed
- *  samples) — a single-line `<input>` makes them uneditable in practice. */
-const TEXTAREA_KEYS = new Set(["cert_statement", "shipper_liability_text"]);
+/** Keys whose stored text is long, multi-paragraph legal boilerplate — a single-line `<input>`
+ *  makes them uneditable in practice. EMPTY since Phase 7 Task 14: the two long standing-text
+ *  settings (cert_statement / shipper_liability_text) retired into template text blocks, edited in
+ *  the template designer, not this page. The mechanism stays for any future long-text setting. */
+const TEXTAREA_KEYS = new Set<string>();
 
 /**
  * Picks the control a setting renders as. `value` is the setting's CURRENT value, exactly as
