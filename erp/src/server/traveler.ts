@@ -31,7 +31,10 @@ import { getRevision } from "./part-process-steps";
 import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
 import { getSetting } from "./settings";
-import { renderPdf, barcodePng, pngDataUri, jpegDataUri, LAYOUT } from "./pdf/render";
+import {
+  renderSheetGroups, barcodePng, pngDataUri, jpegDataUri, LAYOUT,
+  type RenderableDefinition,
+} from "./pdf/render";
 import { storeDocument, listDocumentsForOrder, documentFilename, assertPrintable } from "./documents";
 import { resolveTemplateForPrint } from "./template-assignments";
 import { TRAVELER_CONTRACT, DEFAULT_CONFIG as TRAVELER_DEFAULT_CONFIG } from "../lib/template-contracts/traveler";
@@ -650,6 +653,76 @@ function renderSection(key: string, ctx: Ctx, sheet: TravelerSheet): Content | n
   }
 }
 
+/** #36's margin reserve: the identity band is 44pt of barcode under a 10pt offset plus its text
+ *  lines — 64 gives it clearance over the body. Only OVERFLOWING sheets pay it (the renderer's
+ *  two-pass, render.ts); a one-page sheet keeps today's 24pt top margin untouched. */
+const CONTINUATION_TOP_MARGIN = 64;
+/** Bottom margin when a template turns the `pageFooter` knob on: the footer draws in the bottom
+ *  margin and needs ≥ ~28pt (Task 6's note) — 44 is the quote's own value, the house precedent.
+ *  The knob defaults OFF, so the default paper keeps its 24pt (golden compat). */
+const FOOTER_BOTTOM_MARGIN = 44;
+
+/**
+ * #36's identity band — what a sheet overflowing LETTER repeats on its continuation pages: the
+ * order number, THAT load's number, and the barcode, so a page torn loose on the floor still
+ * names its work. Rendered REGARDLESS of the config's visibility flags (the barcode treatment —
+ * identity on shop paper is locked, not configurable), though label overrides still carry
+ * through. The `[24, 10, 24, 0]` margin aligns the band with the page's 24pt side margins:
+ * pdfmake header content spans the full page width (the footer spec's own convention).
+ */
+function continuationHeader(ctx: Ctx, sheet: TravelerSheet): Content {
+  const v = ctx.sections.get("header")!;
+  return {
+    columns: [
+      {
+        width: "*",
+        stack: [
+          { text: `${v.field("order_number").label} ${ctx.d.orderNumber}`, bold: true },
+          ...(sheet.loadNumber === null
+            ? [] : [{ text: `${v.field("load_number").label} ${sheet.loadNumber}`, bold: true }]),
+          { text: "(continued)", italics: true, fontSize: ctx.fonts.smallSize },
+        ],
+      },
+      // The sheet header's own right-slot shape: a 190pt column, the barcode at 186×44.
+      { width: 190, stack: [{ image: ctx.d.barcodeDataUri, width: 186, height: 44 }] },
+    ],
+    columnGap: 10,
+    margin: [24, 10, 24, 0],
+  };
+}
+
+/** What both builders share: the resolved views and the per-sheet block stack. The belt's
+ *  OMISSION half (Task 8 pre-step) lives here: views resolve over the config's lists MERGED with
+ *  the contract's key list — a config that omits a locked entry (rather than flag-flipping it,
+ *  which sectionView's belt already catches) still renders it. See completeSections. */
+function prepareSheets(
+  input: TravelerData, config: TemplateConfig, logoDataUri?: string,
+): { ctx: Ctx; sheetBlocks: (sheet: TravelerSheet) => Content[] } {
+  const sectionConfigs = completeSections(TRAVELER_CONTRACT, config.sections);
+  const sections = new Map(sectionConfigs.map((sc) => [sc.key, sectionView(sc)] as const));
+  const ctx: Ctx = {
+    d: input,
+    fonts: config.fonts,
+    num: makeNum(config.formats),
+    sections,
+    logo: config.logo !== null && logoDataUri !== undefined
+      ? { placement: config.logo.placement, width: config.logo.width, dataUri: logoDataUri }
+      : null,
+  };
+  const sheetBlocks = (sheet: TravelerSheet): Content[] => {
+    const blocks: Content[] = [];
+    // Stack order IS the config's section order; hidden sections are omitted — except the
+    // §5.6-locked ones, whose views the belt forces visible (see sectionView).
+    for (const sc of sectionConfigs) {
+      if (!sections.get(sc.key)!.visible) continue;
+      const block = renderSection(sc.key, ctx, sheet);
+      if (block !== null) blocks.push(block);
+    }
+    return blocks;
+  };
+  return { ctx, sheetBlocks };
+}
+
 /**
  * The traveler builder, a CONFIG-CONSUMER since Phase 7 Task 7 (P7 spec §5.4). PURE — data and
  * config in, JSON out; no I/O, no clock.
@@ -667,50 +740,25 @@ function renderSection(key: string, ctx: Ctx, sheet: TravelerSheet): Content | n
  * `logoMimeType`) and passes them alongside the config they arrived with. It only renders when
  * the config also PLACES a logo (spec §6.3).
  *
- * `config.pageFooter` is deliberately NOT consumed yet: the traveler's contract pins it false
- * (golden compat — no Phase 3 traveler prints one), and Task 8's per-load sheet groups own the
- * traveler's page-number/continuation story (#36/#43).
- *
- * One sheet-set per load, all in ONE document: printing an order prints every load's paperwork
- * as a single PDF, and printing load N prints just that one (`sheets` is already filtered by
- * `collectTravelerData`).
+ * SINCE TASK 8 this whole-document shape (every sheet in one definition, page breaks between) is
+ * the LEGACY view — kept for the pre-Phase-7 suite and any caller wanting one definition, and
+ * deliberately consuming neither `config.pageFooter` nor the continuation band: per-group page
+ * numbers and #36's identity headers only exist per sheet GROUP, which this single document
+ * cannot express. The print path (and Task 19's preview, when it lands) uses
+ * `buildTravelerDefinitions` below; both builders share `prepareSheets`, so their per-sheet
+ * content can never drift.
  */
 export function buildTravelerDefinition(
   input: TravelerData,
   config: TemplateConfig = TRAVELER_DEFAULT_CONFIG,
   logoDataUri?: string,
 ): TDocumentDefinitions {
-  // The belt's OMISSION half (Task 8 pre-step): resolve the views over the config's lists MERGED
-  // with the contract's key list — a config that omits a locked entry (rather than flag-flipping
-  // it, which sectionView's belt already catches) still renders it. See completeSections.
-  const sectionConfigs = completeSections(TRAVELER_CONTRACT, config.sections);
-  const sections = new Map(sectionConfigs.map((sc) => [sc.key, sectionView(sc)] as const));
-  const ctx: Ctx = {
-    d: input,
-    fonts: config.fonts,
-    num: makeNum(config.formats),
-    sections,
-    logo: config.logo !== null && logoDataUri !== undefined
-      ? { placement: config.logo.placement, width: config.logo.width, dataUri: logoDataUri }
-      : null,
-  };
-
-  const content: Content[] = [];
-  for (const [index, sheet] of input.sheets.entries()) {
-    const blocks: Content[] = [];
-    // Stack order IS the config's section order; hidden sections are omitted — except the
-    // §5.6-locked ones, whose views the belt forces visible (see sectionView).
-    for (const sc of sectionConfigs) {
-      if (!sections.get(sc.key)!.visible) continue;
-      const block = renderSection(sc.key, ctx, sheet);
-      if (block !== null) blocks.push(block);
-    }
-    content.push({
-      // Page break BEFORE every sheet but the first — never a trailing blank page.
-      ...(index === 0 ? {} : { pageBreak: "before" as const }),
-      stack: blocks,
-    });
-  }
+  const { sheetBlocks } = prepareSheets(input, config, logoDataUri);
+  const content: Content[] = input.sheets.map((sheet, index) => ({
+    // Page break BEFORE every sheet but the first — never a trailing blank page.
+    ...(index === 0 ? {} : { pageBreak: "before" as const }),
+    stack: sheetBlocks(sheet),
+  }));
   return {
     pageSize: "LETTER",
     pageMargins: [24, 24, 24, 24],
@@ -719,6 +767,40 @@ export function buildTravelerDefinition(
     // two prints of the same order differ for no reason, and would break this builder's purity.
     content,
   };
+}
+
+/**
+ * #36 — ONE DEFINITION PER LOAD (P7 spec §5.8/§6.1), the print path's builder since Task 8. As
+ * pure as the singular above (same `prepareSheets`, same per-sheet content — pinned by test),
+ * but each sheet becomes its own `RenderableDefinition` for `renderSheetGroups` to merge:
+ *
+ *  - each definition carries ITS load's `continuationHeaderSpec` (the identity band above), so a
+ *    sheet overflowing LETTER repeats the right order/load/barcode on its continuation pages and
+ *    a following load's first page can never inherit a stale header — per-GROUP scoping is the
+ *    whole mechanism, not a page-number trick (render.ts's renderSheetGroups comment);
+ *  - `overflowTopMargin` makes the band's room a two-pass reserve: a sheet that fits one page
+ *    renders with today's exact margins (golden compat), only overflow pays for header space;
+ *  - `config.pageFooter` (default OFF — golden) turns on the per-group `pageNofM` footer, whose
+ *    numbering restarts with every load because each group IS its own document, and widens the
+ *    bottom margin to fit it.
+ */
+export function buildTravelerDefinitions(
+  input: TravelerData,
+  config: TemplateConfig = TRAVELER_DEFAULT_CONFIG,
+  logoDataUri?: string,
+): RenderableDefinition[] {
+  const { ctx, sheetBlocks } = prepareSheets(input, config, logoDataUri);
+  return input.sheets.map((sheet) => ({
+    pageSize: "LETTER",
+    pageMargins: [24, 24, 24, config.pageFooter ? FOOTER_BOTTOM_MARGIN : 24],
+    defaultStyle: { font: config.fonts.family, fontSize: config.fonts.baseSize },
+    content: [{ stack: sheetBlocks(sheet) }],
+    continuationHeaderSpec: {
+      content: continuationHeader(ctx, sheet),
+      overflowTopMargin: CONTINUATION_TOP_MARGIN,
+    },
+    ...(config.pageFooter ? { pageFooterSpec: { kind: "pageNofM" as const } } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -978,7 +1060,10 @@ export async function printTraveler(
       // holding a connection of its own — a pool-starvation shape under concurrent prints, and a
       // snapshot the surrounding claim did not actually cover.
       const data = await readTravelerData(tx, orderId, settings, loadNumber);
-      const pdf = await renderPdf(buildTravelerDefinition(data, resolved.config, logoDataUri));
+      // #36: one definition per load, merged — each load's continuation header and (when a
+      // template turns the knob on) page numbering scope to ITS OWN sheet group, and the
+      // single-load print is simply a one-group merge of the same shape.
+      const pdf = await renderSheetGroups(buildTravelerDefinitions(data, resolved.config, logoDataUri));
 
       // Storage itself — permanence, the audit-payload/bytes split, and the `new Uint8Array`
       // conversion — is documents.ts's job now (Phase 4 Task 3); this claim-holding transaction

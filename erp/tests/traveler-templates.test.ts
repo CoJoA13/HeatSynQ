@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll, templateVersionId } from "./helpers/db";
-import { TINY_JPEG, drawnText, pageCount, parseObjects } from "./helpers/pdf";
+import {
+  TINY_JPEG, drawnPages, drawnText, pageCount, paintedImageCounts, parseObjects,
+} from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder } from "@/server/orders";
 import { storeDocument } from "@/server/documents";
@@ -8,7 +10,8 @@ import { createTemplate, editDraft, openDraft, publishDraft, uploadLogo } from "
 import { assignTemplate } from "@/server/template-assignments";
 import { barcodePng, pngDataUri, renderPdf } from "@/server/pdf/render";
 import {
-  buildTravelerDefinition, collectTravelerData, printTraveler, type TravelerData,
+  buildTravelerDefinition, buildTravelerDefinitions, collectTravelerData, printTraveler,
+  type TravelerData,
 } from "@/server/traveler";
 import {
   TRAVELER_DEFAULT_CONFIG, validateConfig, type TemplateConfig,
@@ -25,8 +28,9 @@ import {
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
-/** A minimal single-load order (loadQty ≥ qty → exactly one load, one traveler sheet). */
-async function miniOrder(partExtra: { processName?: string } = {}) {
+/** A minimal single-load order (loadQty ≥ qty → exactly one load, one traveler sheet).
+ *  A smaller `loadQty` splits it — `loadQty: 5` against the qty of 10 gives two loads. */
+async function miniOrder(partExtra: { processName?: string; loadQty?: number } = {}) {
   const customer = await prisma.customer.create({ data: { code: "TPL", name: "Template Test Co" } });
   const code = await prisma.processStepCode.create({ data: { code: "AUS", name: "Austemper" } });
   const part = await prisma.part.create({
@@ -547,5 +551,174 @@ describe("printTraveler — template resolution and the version stamp", () => {
     await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
     const { pdf } = await asSystem(() => printTraveler(order.id));
     expect(countImages(pdf)).toBe(1);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// #36 — per-load sheet groups (Task 8): buildTravelerDefinitions + the identity band
+// ------------------------------------------------------------------------------------------------
+
+describe("buildTravelerDefinitions — one definition per load (pure)", () => {
+  const twoSheetData = () => travelerData({
+    sheets: [
+      { loadNumber: 1, loadQty: 336, loadWeight: 4536 },
+      { loadNumber: 2, loadQty: 164, loadWeight: 2214 },
+    ],
+  });
+
+  it("returns one definition per sheet, each content-identical to the singular's per-sheet stack", () => {
+    const defs = buildTravelerDefinitions(twoSheetData());
+    expect(defs).toHaveLength(2);
+    const singular = buildTravelerDefinition(twoSheetData());
+    const singularStacks = (singular.content as { stack: unknown }[]).map((c) => c.stack);
+    const groupStacks = defs.map((d) => (d.content as { stack: unknown }[])[0].stack);
+    expect(groupStacks).toEqual(singularStacks);
+  });
+
+  it("each definition carries ITS load's identity band — order number, that load, the barcode — with the margin reserve", () => {
+    const defs = buildTravelerDefinitions(twoSheetData());
+    for (const [i, def] of defs.entries()) {
+      const spec = def.continuationHeaderSpec!;
+      expect(spec.overflowTopMargin).toBeGreaterThanOrEqual(54); // the 44pt barcode + its offset must fit
+      const bandText = allText(spec.content).join("\n");
+      expect(bandText).toContain("Order Number 71246");
+      expect(bandText).toContain(`Load ${i + 1}`);
+      expect(bandText).toContain("(continued)");
+      expect(JSON.stringify(spec.content)).toContain(BARCODE);
+    }
+    // Never a following load's number on the wrong band.
+    expect(allText(defs[0].continuationHeaderSpec!.content).join("\n")).not.toContain("Load 2");
+  });
+
+  it("a null-load sheet's band omits the load line and label overrides carry through", () => {
+    const c = cfg();
+    fieldOf(c, "header", "order_number").label = "WO#";
+    const defs = buildTravelerDefinitions(
+      travelerData({ sheets: [{ loadNumber: null, loadQty: null, loadWeight: null }] }), checked(c));
+    const bandText = allText(defs[0].continuationHeaderSpec!.content).join("\n");
+    expect(bandText).toContain("WO# 71246");
+    expect(bandText).not.toContain("Load");
+  });
+
+  it("the identity band ignores the visibility flags — a page torn loose still names its work", () => {
+    // `order_number`/`load_number` are removable ON THE SHEET (the contract marks them so), but
+    // the continuation band is the barcode treatment: identity on shop paper is locked, not
+    // configurable. Hiding them must empty the sheet's header block, never the band.
+    const c = cfg();
+    fieldOf(c, "header", "order_number").visible = false;
+    fieldOf(c, "header", "load_number").visible = false;
+    const defs = buildTravelerDefinitions(twoSheetData(), checked(c));
+    const bandText = allText(defs[1].continuationHeaderSpec!.content).join("\n");
+    expect(bandText).toContain("Order Number 71246");
+    expect(bandText).toContain("Load 2");
+    expect(JSON.stringify(defs[1].continuationHeaderSpec!.content)).toContain(BARCODE);
+    // …and the sheet body itself did honour the flags.
+    expect(textOf(defs[1].content)).not.toContain("Order Number");
+  });
+
+  it("the pageFooter knob turns on the per-group footer spec and widens the bottom margin; default stays off", () => {
+    const on = cfg();
+    on.pageFooter = true;
+    const withFooter = buildTravelerDefinitions(travelerData(), checked(on));
+    expect(withFooter[0].pageFooterSpec).toEqual({ kind: "pageNofM" });
+    expect(withFooter[0].pageMargins).toEqual([24, 24, 24, 44]);
+
+    const dflt = buildTravelerDefinitions(travelerData());
+    expect(dflt[0].pageFooterSpec).toBeUndefined();
+    expect(dflt[0].pageMargins).toEqual([24, 24, 24, 24]); // golden — today's margins exactly
+  });
+
+  it("is pure: plain JSON, deterministic, spec keys included", () => {
+    const defs = buildTravelerDefinitions(twoSheetData());
+    expect(JSON.parse(JSON.stringify(defs))).toEqual(defs);
+    expect(buildTravelerDefinitions(twoSheetData())).toEqual(defs);
+  });
+});
+
+describe("printTraveler — sheet groups through the real path (#36)", () => {
+  beforeEach(truncateAll);
+
+  /** A single-load order whose recipe overflows LETTER: 25 steps with wrapping instructions. */
+  async function overflowOrder() {
+    const customer = await prisma.customer.create({ data: { code: "OVF", name: "Overflow Co" } });
+    const code = await prisma.processStepCode.create({ data: { code: "AUS", name: "Austemper" } });
+    const part = await prisma.part.create({
+      data: {
+        customerId: customer.id, partNumber: "OVF-1", name: "Overflow Part",
+        eachWeight: "1.0000", loadQty: 100,
+      },
+    });
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    const instruction =
+      "Ramp the furnace to soak temperature, hold until the whole load equalizes, verify with " +
+      "the pyrometer log, then transfer to the quench within the allowed window and record the " +
+      "elapsed transfer time on this line before the next step begins.";
+    await prisma.partProcessStep.createMany({
+      data: Array.from({ length: 25 }, (_, i) => ({
+        revisionId: rev.id, position: i + 1, codeId: code.id, instruction,
+      })),
+    });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: part.id, qty: 10, weight: "10.00" }],
+    }));
+    return { order };
+  }
+
+  it("a 20+-step recipe overflows one load's sheet and the continuation page carries order number, load number and barcode", async () => {
+    const { order } = await overflowOrder();
+    const { pdf } = await asSystem(() => printTraveler(order.id, 1));
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+
+    const pages = drawnPages(pdf);
+    expect(pages[0]).not.toContain("(continued)");
+    expect(pages[1]).toContain(`Order Number ${order.orderNumber}`);
+    expect(pages[1]).toContain("Load 1");
+    expect(pages[1]).toContain("(continued)");
+    // The band's barcode is painted on the continuation page (page one's is the sheet's own).
+    expect(paintedImageCounts(pdf)[1]).toBeGreaterThanOrEqual(1);
+  });
+
+  it("the pageFooter knob restarts numbering per load group through the traveler path", async () => {
+    const { customer, order } = await miniOrder({ loadQty: 5 }); // two loads
+    const t = await asSystem(() => createTemplate("TRAVELER", "Footered"));
+    const c = cfg();
+    c.pageFooter = true;
+    await asSystem(() => editDraft(t.id, { config: c, updatedAt: t.draft.updatedAt }));
+    await asSystem(() => publishDraft(t.id));
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", t.id));
+
+    const { pdf } = await asSystem(() => printTraveler(order.id));
+    expect(pageCount(pdf)).toBe(2);
+    const pages = drawnPages(pdf);
+    // Each one-page load group numbers ITSELF: "Page 1 of 1" twice, never "of 2".
+    expect(pages[0]).toContain("Page 1 of 1");
+    expect(pages[1]).toContain("Page 1 of 1");
+    expect(drawnText(pdf)).not.toContain("of 2");
+  });
+
+  it("the default multi-load print is a merge with today's content — no footer, no band, one barcode per page", async () => {
+    const { order } = await miniOrder({ loadQty: 5 }); // two loads
+    const { pdf } = await asSystem(() => printTraveler(order.id));
+    expect(pageCount(pdf)).toBe(2);
+    const text = drawnText(pdf);
+    expect(text).not.toContain("(continued)");
+    expect(text).not.toMatch(/Page \d+ of \d+/);
+    expect(paintedImageCounts(pdf)).toEqual([1, 1]);
+    // Each page still carries its own load's sheet (the header prints label and value as
+    // separate nodes, so they are asserted separately).
+    const pages = drawnPages(pdf);
+    for (const page of pages) {
+      expect(page).toContain("Order Number");
+      expect(page).toContain(String(order.orderNumber));
+    }
+  });
+
+  it("a non-overflowing single-load print stays content-identical to the pre-Task-8 render", async () => {
+    const { order } = await miniOrder();
+    const data = await asSystem(() => collectTravelerData(order.id, 1));
+    const legacy = await renderPdf(buildTravelerDefinition(data));
+    const { pdf } = await asSystem(() => printTraveler(order.id, 1));
+    expect(pageCount(pdf)).toBe(1);
+    expect(drawnText(pdf)).toBe(drawnText(legacy));
   });
 });
