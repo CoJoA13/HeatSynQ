@@ -4,6 +4,7 @@ import { handle, requireUser, HttpError } from "@/server/http";
 import { mustCan } from "@/server/permissions";
 import { buildStatement, printStatement } from "@/server/statements";
 import { getDocument, resolveDocumentFilename } from "@/server/documents";
+import { contentDispositionValue } from "@/server/content-disposition";
 
 // GET /api/receivables/statements?customerId=&asOf=&combineFamily=&assessFinanceCharges= —
 // builds (does NOT archive) one customer's — or its family's — open-item statement (Task 12,
@@ -46,7 +47,10 @@ export const POST = handle(async (req) => {
     status: 200,
     headers: {
       "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${filename}"`,
+      // Sanitized through the shared leaf (issue #87): a customer `code` carrying a newline/quote
+      // is stripped/escaped here rather than crashing the `Headers` constructor AFTER the archive
+      // above already committed.
+      "content-disposition": contentDispositionValue("inline", filename),
       "x-document-id": printed.documentId,
     },
   });
