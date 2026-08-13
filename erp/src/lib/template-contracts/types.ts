@@ -40,9 +40,13 @@ export type FontFamily = (typeof FONT_FAMILIES)[number];
 
 /** The fixed date-format set (ruling 3). Every style a Phase 3–6 builder prints is here, so each
  *  DEFAULT_CONFIG can reproduce today's paper exactly: "M/D/YYYY" is the ticket header's
- *  `shortDate`, "MM/DD/YYYY" its tear-off's `paddedDate`, "MMM - DD - YYYY" the BOL's `bolDate`. */
+ *  `shortDate`, "MM/DD/YYYY" its tear-off's `paddedDate`, "MMM - DD - YYYY" the BOL's `bolDate`,
+ *  and "MMMM D, YYYY" the invoice/statement `longDate`'s FULL month name ("July 29, 2026") —
+ *  renamed from "MMM D, YYYY" before any config was stored (Task 2 review carry: the abbreviated
+ *  token would have had Tasks 12/13 render "Jul 29" per convention and silently break golden
+ *  compatibility). */
 export const DATE_FORMATS = [
-  "M/D/YYYY", "MM/DD/YYYY", "YYYY-MM-DD", "MMM D, YYYY", "MMM - DD - YYYY",
+  "M/D/YYYY", "MM/DD/YYYY", "YYYY-MM-DD", "MMMM D, YYYY", "MMM - DD - YYYY",
 ] as const;
 export type DateFormat = (typeof DATE_FORMATS)[number];
 

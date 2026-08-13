@@ -16,6 +16,7 @@
  * amounts are what the knob formats. Today's value is `SIGN_AFTER_SYMBOL` — the 5A ruling's
  * "$-937.44", the sign between the "$" and the digits.
  */
+import { PRICE_SOURCE_LABELS } from "../invoice-constants";
 import { defaultConfig, type TemplateConfig, type TemplateContract } from "./types";
 
 export const INVOICE_CONTRACT: TemplateContract = {
@@ -111,7 +112,13 @@ export const INVOICE_CONTRACT: TemplateContract = {
         { key: "price_heading", name: "Price heading", defaultLabel: "PRICE", removable: true },
         { key: "price_description", name: "Operation name", defaultLabel: "", removable: true },
         { key: "price_amount", name: "Billed amount", defaultLabel: "", removable: true },
-        { key: "quote_source", name: "Quote source line", defaultLabel: "Quote", removable: true },
+        {
+          // The label root is PRICE_SOURCE_LABELS.QUOTE (invoice-constants.ts, client-safe) —
+          // the aging-labels anti-drift rule: the builder prints from the same constant, so
+          // contract and paper cannot drift (Task 2 review carry).
+          key: "quote_source", name: "Quote source line",
+          defaultLabel: PRICE_SOURCE_LABELS.QUOTE, removable: true,
+        },
         { key: "price_per", name: "Per-unit price", defaultLabel: "Price per", removable: true },
         {
           key: "minimum_charge", name: "Minimum charge", defaultLabel: "Minimum Charge:",
@@ -150,11 +157,11 @@ export const INVOICE_CONTRACT: TemplateContract = {
   ],
   textBlocks: [], // the invoice carries no standing paragraph — its texts are all data or labels
   // `money()` prints "$937.44" / "$-937.44" (SIGN_AFTER_SYMBOL, 2 decimals, grouped thousands);
-  // `longDate` prints "July 29, 2026" — "MMM D, YYYY" is the fixed set's token for that long
-  // style (the Task 1 DATE_FORMATS note; Task 12 maps token → rendering).
+  // `longDate` prints "July 29, 2026" — "MMMM D, YYYY" is the fixed set's token for that long
+  // FULL-month style (the Task 1 DATE_FORMATS note; Task 12 maps token → rendering).
   formats: {
     negativeStyle: "SIGN_AFTER_SYMBOL", priceDecimals: 2, thousandsSeparator: true,
-    dateFormat: "MMM D, YYYY",
+    dateFormat: "MMMM D, YYYY",
   },
   // Today's builder: defaultStyle 9pt; the title (20pt) is the heading; 7.5pt is the footer
   // strip's fine print.

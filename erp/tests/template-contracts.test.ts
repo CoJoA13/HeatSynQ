@@ -33,6 +33,7 @@ import {
   validateConfig,
 } from "@/lib/template-contracts";
 import { AGING_BUCKET_LABELS } from "@/lib/ar-constants";
+import { PRICE_SOURCE_LABELS } from "@/lib/invoice-constants";
 // Type-only, erased at runtime — the frozen-columns walk pins the invoice contract's field keys
 // against the builder's own input type without loading any server module into this pure test.
 import type { InvoicePdfData } from "@/server/pdf/invoice";
@@ -916,6 +917,9 @@ describe("the invoice contract", () => {
     expect(labels.process).toBe("Process:");
     expect(labels.parts_heading).toBe("PARTS");
     expect(labels.price_heading).toBe("PRICE");
+    // Referenced from PRICE_SOURCE_LABELS.QUOTE (invoice-constants.ts), never a duplicated
+    // string — the statement's AGING_BUCKET_LABELS anti-drift rule (Task 2 review carry).
+    expect(labels.quote_source).toBe(PRICE_SOURCE_LABELS.QUOTE);
     expect(labels.quote_source).toBe("Quote");
     expect(labels.price_per).toBe("Price per");
     expect(labels.minimum_charge).toBe("Minimum Charge:");
@@ -932,7 +936,7 @@ describe("the invoice contract", () => {
     expect(NEGATIVE_STYLES).toEqual(["SIGN_AFTER_SYMBOL", "LEADING_MINUS", "PARENTHESES"]);
     expect(INVOICE_CONTRACT.formats).toEqual({
       negativeStyle: "SIGN_AFTER_SYMBOL", priceDecimals: 2, thousandsSeparator: true,
-      dateFormat: "MMM D, YYYY",
+      dateFormat: "MMMM D, YYYY",
     });
   });
 
@@ -1012,7 +1016,7 @@ describe("the statement contract", () => {
   it("declares today's formats and fonts — negative money prints on credit/payment rows, so the style knob is on", () => {
     expect(STATEMENT_CONTRACT.formats).toEqual({
       negativeStyle: "SIGN_AFTER_SYMBOL", priceDecimals: 2, thousandsSeparator: true,
-      dateFormat: "MMM D, YYYY",
+      dateFormat: "MMMM D, YYYY",
     });
     expect(STATEMENT_DEFAULT_CONFIG.formats).toEqual(STATEMENT_CONTRACT.formats);
     expect(STATEMENT_CONTRACT.fonts).toEqual({

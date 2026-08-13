@@ -110,10 +110,10 @@ export const STATEMENT_CONTRACT: TemplateContract = {
   textBlocks: [], // the statement carries no standing paragraph
   // `money()` is the invoice's own (SIGN_AFTER_SYMBOL, 2 decimals, grouped thousands) — a credit
   // or on-account payment row prints negative money, so the style knob is on this surface;
-  // `longDate` prints "July 29, 2026" ("MMM D, YYYY", the long-style token — Task 13 maps it).
+  // `longDate` prints "July 29, 2026" ("MMMM D, YYYY", the full-month token — Task 13 maps it).
   formats: {
     negativeStyle: "SIGN_AFTER_SYMBOL", priceDecimals: 2, thousandsSeparator: true,
-    dateFormat: "MMM D, YYYY",
+    dateFormat: "MMMM D, YYYY",
   },
   // Today's builder: defaultStyle 9pt; "Statement" (20pt) is the heading. No fine print smaller
   // than the base ever prints, so the small role starts pinned to the base size until a
