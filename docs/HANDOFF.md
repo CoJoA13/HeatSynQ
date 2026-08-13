@@ -552,8 +552,9 @@ Fedora-specific notes:
 spec the same day** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md`,
 approved including `pdf-lib`; seven rulings in its §3; §15 amendments recorded). A fresh session
 should read CLAUDE.md, this file's §4, the Phase 7 spec, and the Phase 7 implementation plan
-(`docs/superpowers/plans/`, dated 2026-08-12 — if it does not exist yet, writing it is the next
-step; propose the four plan-time confirmations from the spec's §12 item 3 to the owner with it),
+(`docs/superpowers/plans/2026-08-12-phase-7-template-designer.md` — **owner-approved 2026-08-12**,
+21 tasks, adversarially reviewed on two lenses; the four plan-time confirmations are ruled: 4-family
+fonts, refuse >100 loads, "Standard" seed naming, walk-to-root resolution),
 then continue subagent-driven execution on branch `phase-7-template-designer`: fresh subagent per
 task → the repo's task-reviewer agent → fix rounds until approved → whole-branch review on the
 strongest model → one fix wave → PR with attribution in the PR body. The execution record lives in
