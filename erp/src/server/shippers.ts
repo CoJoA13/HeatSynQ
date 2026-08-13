@@ -1890,9 +1890,12 @@ export async function printShippingTickets(
     // Resolution by the SHIPMENT'S order count (P7 spec §5.2): a multi-order shipment's tickets
     // — INCLUDING the per-order print of one of its orders — resolve MOS_SHIPPER; a single-order
     // shipment's resolve SHIPPER. All paper from one shipment styles alike, so the count is the
-    // shipment's, never the count of tickets being printed. Counted under the claims, so a
-    // concurrent add/remove cannot flip the type mid-print. Resolution runs on THIS claimed
-    // transaction at its isolation — correct by §5.1 immutability, not by locking (the
+    // shipment's, never the count of tickets being printed. `shipmentOrderIds` was read BEFORE
+    // the lock statements — what keeps the count honest is this transaction's Serializable
+    // snapshot, fixed at the stub read: the count and every read the render uses come from that
+    // one snapshot, so a concurrent add/remove can never make the type disagree with the paper
+    // (it either misses the snapshot entirely or SSI aborts one side). Resolution runs on THIS
+    // claimed transaction at its isolation — correct by §5.1 immutability, not by locking (the
     // printTraveler comment); no template row is claimed and none is needed.
     const docType = shipmentOrderIds.length > 1 ? ("MOS_SHIPPER" as const) : ("SHIPPER" as const);
     const resolved = await resolveTemplateForPrint(tx, docType, shipper.customerId);
