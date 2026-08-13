@@ -177,14 +177,16 @@ stored row.
 
 | Gate | Result | Timing |
 |---|---|---|
-| `npm test` | PENDING | — |
+| `npm test` | **2578/2578, 141 files** (Task 11 baseline 2530/140 — **+48**: this task's new `tests/invoice-templates.test.ts`) | 259.3s |
 | `npx tsc --noEmit` | clean | 1.8s |
 | `npx eslint src tests` | clean | — |
-| `npm run build` | PENDING (deferred until E2E finishes — shared `.next`) | — |
-| `npm run test:e2e` | PENDING (detached, sentinel `e2e-task12.done`) | — |
+| `npm run build` | exit 0 (deferred until E2E finished — shared `.next`) | — |
+| `npm run test:e2e` | **19/19 flows PASS** — detached from the start with the PER-TASK sentinel `e2e-task12.done`, result read from the run's own log (19 `PASS` lines, "All 19 flows passed", "cleanup ok", `EXIT:0`) | ~9 min |
 
 Dev-DB fixture hygiene: pre-run counts 0 across all E2E fixture values
-(`Customer.code`/`User.username`/`Role.name`/`ProcessStepCode.code`/`DocumentTemplate.name`).
+(`Customer.code`/`User.username`/`Role.name`/`ProcessStepCode.code`/`DocumentTemplate.name`);
+post-run direct check against the DEV database (`erp`) **0/0/0/0/0 again**, alongside the harness's
+own "cleanup ok".
 
 ## Deviations
 
