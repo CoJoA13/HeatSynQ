@@ -394,6 +394,18 @@ function assertLocksHonored(contract: TemplateContract, sections: SectionConfig[
     if (!s.visible && !cs.hideable) {
       throw new TemplateConfigError(lockMessage(cs.name, "hidden", cs.lockReason));
     }
+    // Hiding a section hides every field in it (the Task 1 review carry): a *hideable* section
+    // sheltering a non-removable field is refused with the FIELD's lock reason — otherwise the
+    // section knob is a lock bypass, and only contract discipline (pinning such sections
+    // non-hideable) would stand between a config and a quietly-omitted locked element.
+    if (!s.visible) {
+      const lockedField = cs.fields.find((cf) => !cf.removable);
+      if (lockedField !== undefined) {
+        throw new TemplateConfigError(
+          `Hiding "${cs.name}" would hide "${lockedField.name}", which cannot be hidden` +
+          (lockedField.lockReason === undefined ? "" : `: ${lockedField.lockReason}`));
+      }
+    }
     const fieldByKey = new Map(cs.fields.map((cf) => [cf.key, cf]));
     for (const f of s.fields) {
       const cf = fieldByKey.get(f.key);

@@ -204,6 +204,61 @@ describe("locked elements (§5.6)", () => {
   });
 });
 
+describe("section-hide counts as hiding its fields (the Task 1 review carry)", () => {
+  // The latent bypass: FIXTURE's alpha section is non-hideable, so hiding it is refused for the
+  // SECTION's own sake — but nothing refused hiding a *hideable* section sheltering a
+  // non-removable field, which hides the locked field just as thoroughly. Task 1's contracts
+  // compensated by pinning such sections non-hideable; the machinery must enforce the pairing.
+  const SHELTER_LOCK = "spec §5.6 fixture: the sheltered field is automatic and cannot be hidden";
+  const sheltering: TemplateContract = {
+    docType: "TRAVELER",
+    name: "Sheltering fixture",
+    sections: [
+      {
+        key: "gamma", name: "Gamma", hideable: true, reorderable: true,
+        fields: [
+          {
+            key: "g_locked", name: "Sheltered locked field", defaultLabel: "", removable: false,
+            lockReason: SHELTER_LOCK,
+          },
+          { key: "g_free", name: "Free field", defaultLabel: "Free", removable: true },
+        ],
+      },
+    ],
+    textBlocks: [],
+    formats: {},
+    fonts: { family: "Roboto", baseSize: 8, headingSize: 12, smallSize: 6 },
+  };
+
+  it("refuses hiding a hideable section that shelters a non-removable field, quoting the FIELD's lock", () => {
+    const config = roundTrip(defaultConfig(sheltering));
+    config.sections[0].visible = false;
+    expect(() => validateContractConfig(sheltering, config)).toThrow(TemplateConfigError);
+    expect(() => validateContractConfig(sheltering, config)).toThrow(SHELTER_LOCK);
+    expect(() => validateContractConfig(sheltering, config)).toThrow(/Sheltered locked field/);
+  });
+
+  it("the same section hides fine once the contract no longer carries the locked field", () => {
+    const unlocked: TemplateContract = {
+      ...sheltering,
+      sections: [{
+        ...sheltering.sections[0],
+        fields: sheltering.sections[0].fields.filter((f) => f.key !== "g_locked"),
+      }],
+    };
+    const config = roundTrip(defaultConfig(unlocked));
+    config.sections[0].visible = false;
+    expect(validateContractConfig(unlocked, config).sections[0].visible).toBe(false);
+  });
+
+  it("a hidden hideable section with only removable fields still hides fine (no over-refusal)", () => {
+    // FIXTURE's beta section: hideable, both fields removable — the fix must not refuse it.
+    const config = roundTrip(defaultConfig(FIXTURE));
+    config.sections[1].visible = false;
+    expect(validateContractConfig(FIXTURE, config).sections[1].visible).toBe(false);
+  });
+});
+
 describe("column widths (ruling 3's guardrail)", () => {
   it("refuses visible column widths totalling past the 564pt content width", () => {
     const config = roundTrip(defaultConfig(FIXTURE));
