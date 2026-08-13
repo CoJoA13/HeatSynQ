@@ -39,6 +39,24 @@ function twoPageDef(extra: Partial<RenderableDefinition> = {}): RenderableDefini
 }
 
 // ------------------------------------------------------------------------------------------------
+// The decoder itself — every assertion below is only as true as this (Task 8)
+// ------------------------------------------------------------------------------------------------
+
+describe("the ToUnicode decoder — LIGATURES (tests/helpers/pdf.ts)", () => {
+  // Task 8 found this through the traveler: a fixture customer named "Overflow Co" decoded as a
+  // consistent substitution cipher ("the" → "lfe"). pdfkit maps a ligature glyph to MULTIPLE code
+  // points (`fl` → `<0066 006c>`), and inside a bfrange array they are space-separated — a hex
+  // pattern that stopped at the space matched no item for that entry, so every LATER glyph id in
+  // the array shifted down one. Nothing about it is traveler-specific: any fixture text with
+  // fi/fl/ff would have silently corrupted every content assertion in the document.
+  it("decodes text whose glyphs are ligatures, and everything after them", async () => {
+    const line = "Overflow office affix — the quick brown fox jumps over the lazy dog";
+    const pdf = await renderPdf({ content: [{ text: line }] });
+    expect(drawnText(pdf)).toContain(line);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
 // The page-footer spec
 // ------------------------------------------------------------------------------------------------
 

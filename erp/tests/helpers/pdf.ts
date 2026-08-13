@@ -71,12 +71,23 @@ export function parseObjects(pdf: Buffer): Map<number, PdfObj> {
 
 type Cmap = Map<number, string>;
 
-/** One embedded font's glyph-id → Unicode map, parsed from its ToUnicode CMap stream (bfchar
- *  pairs, bfrange with an array, and sequential bfrange all handled). */
+/**
+ * One embedded font's glyph-id → Unicode map, parsed from its ToUnicode CMap stream (bfchar
+ * pairs, bfrange with an array, and sequential bfrange all handled).
+ *
+ * A destination is a UTF-16BE *string*, not one code point: pdfkit writes a LIGATURE's glyph as a
+ * multi-code-point destination (`fl` → `<0066 006c>`), and inside a bfrange array those code
+ * points arrive space-separated. Task 8 found this the hard way — a hex pattern that stopped at
+ * the space matched no item at all for the ligature, so every LATER entry in the array shifted
+ * down one glyph id and the page decoded as a consistent substitution cipher ("the" → "lfe").
+ * Any fixture text containing fi/fl/ff hits it (the Task 8 overflow fixture's "Overflow Co" did),
+ * so the hex classes below deliberately admit whitespace and `hexToUtf16` strips it.
+ */
 function parseCmap(buf: Buffer): Cmap {
   const s = buf.toString("latin1");
   const map: Cmap = new Map();
-  const hexToUtf16 = (hex: string): string => {
+  const hexToUtf16 = (raw: string): string => {
+    const hex = raw.replace(/\s+/g, "");
     let out = "";
     for (let i = 0; i + 4 <= hex.length; i += 4) {
       out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
@@ -86,23 +97,27 @@ function parseCmap(buf: Buffer): Cmap {
   const bfchar = /beginbfchar([\s\S]*?)endbfchar/g;
   let m: RegExpExecArray | null;
   while ((m = bfchar.exec(s)) !== null) {
-    const pairRe = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g;
+    const pairRe = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F\s]+)>/g;
     let p: RegExpExecArray | null;
     while ((p = pairRe.exec(m[1])) !== null) map.set(parseInt(p[1], 16), hexToUtf16(p[2]));
   }
   const bfrange = /beginbfrange([\s\S]*?)endbfrange/g;
   while ((m = bfrange.exec(s)) !== null) {
-    const entryRe = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(\[[\s\S]*?\]|<[0-9a-fA-F]+>)/g;
+    const entryRe = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(\[[\s\S]*?\]|<[0-9a-fA-F\s]+>)/g;
     let e: RegExpExecArray | null;
     while ((e = entryRe.exec(m[1])) !== null) {
       const lo = parseInt(e[1], 16);
       if (e[3].startsWith("[")) {
-        const items = [...e[3].matchAll(/<([0-9a-fA-F]+)>/g)].map((x) => x[1]);
+        const items = [...e[3].matchAll(/<([0-9a-fA-F\s]+)>/g)].map((x) => x[1]);
         items.forEach((u, i) => map.set(lo + i, hexToUtf16(u)));
       } else {
-        const start = parseInt(e[3].slice(1, -1), 16);
+        // A sequential range increments the destination's LAST code unit; anything before it is a
+        // fixed prefix (the multi-code-point case again).
+        const hex = e[3].slice(1, -1).replace(/\s+/g, "");
+        const prefix = hexToUtf16(hex.slice(0, -4));
+        const start = parseInt(hex.slice(-4), 16);
         const hi = parseInt(e[2], 16);
-        for (let g = lo; g <= hi; g++) map.set(g, String.fromCharCode(start + (g - lo)));
+        for (let g = lo; g <= hi; g++) map.set(g, prefix + String.fromCharCode(start + (g - lo)));
       }
     }
   }
@@ -185,6 +200,42 @@ export function drawnPages(pdf: Buffer): string[] {
 /** All pages' drawn text, newline-joined — the whole-document containment assertion. */
 export function drawnText(pdf: Buffer): string {
   return drawnPages(pdf).join("\n");
+}
+
+/**
+ * Image paints per page, in page order: each `/Name Do` in a page's content stream(s) whose
+ * resource entry is an image XObject counts once. SMask children never paint via `Do` (they are
+ * referenced from an image's own dict), so like traveler-templates' `countImages` this counts
+ * pictures ON the paper — but per page, which is what a continuation-header assertion needs
+ * ("page two carries the barcode"). Survives the pdf-lib merge; the /XObject dict may arrive
+ * inline (pdfkit) or as an indirect reference (pdf-lib copies), so both shapes resolve.
+ */
+export function paintedImageCounts(pdf: Buffer): number[] {
+  const objs = parseObjects(pdf);
+  return pagesInOrder(objs).map((page) => {
+    const resRef = /\/Resources\s+(\d+)\s+0\s+R/.exec(page.body);
+    const resources = resRef ? (objs.get(Number(resRef[1]))?.body ?? "") : page.body;
+    const xobjRef = /\/XObject\s+(\d+)\s+0\s+R/.exec(resources);
+    const xobjDict = xobjRef
+      ? (objs.get(Number(xobjRef[1]))?.body ?? "")
+      : (/\/XObject\s*<<([\s\S]*?)>>/.exec(resources)?.[1] ?? "");
+    const imageNames = new Set<string>();
+    for (const [, name, num] of xobjDict.matchAll(/\/(\w+)\s+(\d+)\s+0\s+R/g)) {
+      if (/\/Subtype\s*\/Image/.test(objs.get(Number(num))?.body ?? "")) imageNames.add(name);
+    }
+    const contentsMatch = /\/Contents\s+(\[[\s\S]*?\]|\d+\s+0\s+R)/.exec(page.body);
+    const contentRefs = contentsMatch
+      ? [...contentsMatch[1].matchAll(/(\d+)\s+0\s+R/g)].map((r) => Number(r[1]))
+      : [];
+    let painted = 0;
+    for (const ref of contentRefs) {
+      const content = objs.get(ref)?.stream?.toString("latin1") ?? "";
+      for (const [, name] of content.matchAll(/\/(\w+)\s+Do\b/g)) {
+        if (imageNames.has(name)) painted++;
+      }
+    }
+    return painted;
+  });
 }
 
 // A real 2×2 JPEG (PIL-generated for the Task 6 suite; SOI + JFIF + SOF0, 633 bytes) — pdfkit
