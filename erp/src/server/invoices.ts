@@ -28,9 +28,10 @@ import {
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
-import { renderPdf } from "./pdf/render";
+import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildInvoiceDefinition, type InvoicePdfData, type InvoiceAmountRow } from "./pdf/invoice";
 import { storeDocument, assertPrintable } from "./documents";
+import { resolveTemplateForPrint } from "./template-assignments";
 
 // -------------------------------------------------------------------------------------------
 // Task 11 (P5A §5.4/§5.7/§10): where pricing becomes a customer-facing invoice. `listInvoice
@@ -1644,15 +1645,29 @@ async function printInvoiceInTx(
   assertPrintable(order);
   assertPrintable(invoice);
 
+  // §5.2 resolution on THIS claimed transaction at its isolation — correct by §5.1 immutability,
+  // not by locking (the printCert/printBol precedent); no template row is claimed and none is
+  // needed. BOTH an invoice AND a credit resolve the INVOICE docType (spec §4.1: one contract
+  // covers credits — the title/signs are data), on the invoice row's OWN frozen customer id.
+  const resolved = await resolveTemplateForPrint(tx, "INVOICE", invoice.customerId);
+  // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only when the
+  // config also places it, so an unplaced upload converts nothing.
+  const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+    ? (resolved.logoMimeType === "image/jpeg"
+        ? jpegDataUri(Buffer.from(resolved.logoImage))
+        : pngDataUri(Buffer.from(resolved.logoImage)))
+    : undefined;
+
   const data = await readInvoicePdfData(tx, id, settings);
-  const pdf = await renderPdf(buildInvoiceDefinition(data));
+  const pdf = await renderPdf(buildInvoiceDefinition(data, resolved.config, logoDataUri));
 
   // The kind follows the invoice ROW's own kind — a credit archives as CREDIT, an invoice as
   // INVOICE, both owning `invoiceId` alone (the kind→owner CHECK). This insert is the ONE mutation
   // here, through the sanctioned `storeDocument` path, on `tx`, UNDER the claim above — so the
   // archive cannot commit against a state (a concurrent discard) that changed out from under it.
+  // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
   const doc = await storeDocument(
-    tx, { kind: invoice.kind === "CREDIT" ? "CREDIT" : "INVOICE", invoiceId: id }, pdf);
+    tx, { kind: invoice.kind === "CREDIT" ? "CREDIT" : "INVOICE", invoiceId: id }, pdf, resolved.versionId);
   return { documentId: doc.id, documentNumber: data.documentNumber, pdf };
 }
 

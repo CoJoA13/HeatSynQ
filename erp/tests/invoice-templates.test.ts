@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
-import { drawnPages, drawnText, pageCount } from "./helpers/pdf";
+import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { drawnPages, drawnText, pageCount, paintedImageCounts } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper } from "@/server/shippers";
@@ -10,8 +10,10 @@ import {
   createInvoice, finalizeInvoice, createCredit, replaceInvoiceLines, printInvoice,
 } from "@/server/invoices";
 import { buildInvoiceDefinition, type InvoicePdfData } from "@/server/pdf/invoice";
-import { renderPdf } from "@/server/pdf/render";
+import { renderPdf, barcodePng } from "@/server/pdf/render";
 import { getDocument } from "@/server/documents";
+import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
+import { assignTemplate } from "@/server/template-assignments";
 import { INVOICE_DEFAULT_CONFIG, validateConfig, type TemplateConfig } from "@/lib/template-contracts/index";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -569,5 +571,130 @@ describe("buildInvoiceDefinition — purity, config included", () => {
     const def = buildInvoiceDefinition(creditData(), config, LOGO_URI);
     expect(JSON.parse(JSON.stringify(def))).toEqual(def);
     expect(buildInvoiceDefinition(creditData(), config, LOGO_URI)).toEqual(def);
+  });
+});
+
+// ================================================================================================
+// The print path (spec §5.2): resolve docType `INVOICE` on the invoice's own customer (BOTH an
+// invoice and a credit resolve INVOICE — spec §4.1: one contract covers credits), render the
+// resolved config, stamp `templateVersionId`. `claimInvoiceForPrint`'s order+invoice claim and the
+// print-vs-discard serialization are untouched. Reprints reissue STORED bytes, never re-render.
+// ================================================================================================
+
+/** Create → tweak the v1 draft → (optionally logo) → publish, for the INVOICE docType. */
+let tplSeq = 0;
+async function publishCustom(tweak: (c: TemplateConfig) => void, logo?: { data: Buffer; mime: string }) {
+  tplSeq += 1;
+  const t = await asSystem(() => createTemplate("INVOICE", `Custom Invoice ${tplSeq}`));
+  const c = cfg();
+  tweak(c);
+  await asSystem(() => editDraft(t.id, { config: c, updatedAt: t.draft.updatedAt }));
+  if (logo) await asSystem(() => uploadLogo(t.id, logo.data, logo.mime));
+  const { versionId } = await asSystem(() => publishDraft(t.id));
+  return { templateId: t.id, versionId };
+}
+
+async function stampOf(documentId: string): Promise<string | null> {
+  const row = await prisma.storedDocument.findUnique({
+    where: { id: documentId }, select: { templateVersionId: true },
+  });
+  return row!.templateVersionId;
+}
+
+describe("printInvoice — resolution stamps the version (INVOICE for both invoice and credit)", () => {
+  beforeEach(async () => {
+    await truncateAll();
+    await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama, LLC"));
+    await asSystem(() => setSetting("company_address", "3008 Red Morris Parkway\nAnniston AL 36207"));
+    await asSystem(() => setSetting("company_phone", "256-835-3370"));
+  });
+
+  it("no assignment: resolves the seeded Standard invoice and stamps ITS version id", async () => {
+    const { invoice } = await finalizedFixture();
+    const { documentId, pdf } = await asSystem(() => printInvoice(invoice.id));
+    expect(drawnText(pdf)).toContain("Invoice");
+    expect(await stampOf(documentId)).toBe(templateVersionId("INVOICE"));
+  });
+
+  it("a label override prints through the real path and stamps the assigned version", async () => {
+    const { invoice, customer } = await finalizedFixture();
+    const tpl = await publishCustom((c) => { fieldOf(c, "totals", "total").label = "TOTAL-MARKER:"; });
+    await asSystem(() => assignTemplate(customer.id, "INVOICE", tpl.templateId));
+    const { documentId, pdf } = await asSystem(() => printInvoice(invoice.id));
+    expect(drawnText(pdf)).toContain("TOTAL-MARKER:");
+    expect(await stampOf(documentId)).toBe(tpl.versionId);
+  });
+
+  it("BOTH an invoice and its credit resolve INVOICE — same assigned template, same version stamp", async () => {
+    const { invoice, customer } = await finalizedFixture();
+    const tpl = await publishCustom((c) => { fieldOf(c, "totals", "total").label = "SHARED-MARKER:"; });
+    await asSystem(() => assignTemplate(customer.id, "INVOICE", tpl.templateId));
+
+    const inv = await asSystem(() => printInvoice(invoice.id));
+    expect(drawnText(inv.pdf)).toContain("SHARED-MARKER:");
+    expect(await stampOf(inv.documentId)).toBe(tpl.versionId);
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    const cr = await asSystem(() => printInvoice(credit.id));
+    expect(drawnText(cr.pdf)).toContain("SHARED-MARKER:");
+    expect(await stampOf(cr.documentId)).toBe(tpl.versionId);
+  });
+
+  it("the negativeStyle knob formats a credit through the real path", async () => {
+    const { invoice, customer } = await finalizedFixture();
+    const tpl = await publishCustom((c) => { c.formats.negativeStyle = "PARENTHESES"; });
+    await asSystem(() => assignTemplate(customer.id, "INVOICE", tpl.templateId));
+    const credit = await asSystem(() => createCredit(invoice.id));
+    const { pdf } = await asSystem(() => printInvoice(credit.id));
+    const text = drawnText(pdf);
+    expect(text).toContain("Credit");
+    expect(text).toContain("($937.44)");
+  });
+
+  it("the pageFooter knob prints per-page numbers; the default prints none", async () => {
+    const a = await finalizedFixture();
+    const tpl = await publishCustom((c) => { c.pageFooter = true; });
+    await asSystem(() => assignTemplate(a.customer.id, "INVOICE", tpl.templateId));
+    const withFooter = await asSystem(() => printInvoice(a.invoice.id));
+    expect(drawnText(withFooter.pdf)).toContain("Page 1 of 1");
+
+    const b = await finalizedFixture();
+    const bare = await asSystem(() => printInvoice(b.invoice.id));
+    expect(drawnText(bare.pdf)).not.toMatch(/Page \d+ of \d+/);
+  });
+
+  it("a placed logo prints through the real path; the bare invoice paints none", async () => {
+    const a = await finalizedFixture();
+    const tpl = await publishCustom(
+      (c) => { c.logo = { placement: "header-left", width: 90 }; },
+      { data: await barcodePng("INVLOGO"), mime: "image/png" });
+    await asSystem(() => assignTemplate(a.customer.id, "INVOICE", tpl.templateId));
+    const placed = await asSystem(() => printInvoice(a.invoice.id));
+    expect(paintedImageCounts(placed.pdf)).toEqual([1]);
+
+    const b = await finalizedFixture();
+    const bare = await asSystem(() => printInvoice(b.invoice.id));
+    expect(paintedImageCounts(bare.pdf)).toEqual([0]);
+  });
+
+  it("a template edit after an invoice is raised changes NOTHING on reprint — the frozen-paper proof", async () => {
+    const { invoice, customer } = await finalizedFixture();
+    // Assign a template that relabels the total, then print — the paper carries that label.
+    const first = await publishCustom((c) => { fieldOf(c, "totals", "total").label = "ORIGINAL-MARKER:"; });
+    await asSystem(() => assignTemplate(customer.id, "INVOICE", first.templateId));
+    const printed = await asSystem(() => printInvoice(invoice.id));
+    expect(drawnText(printed.pdf)).toContain("ORIGINAL-MARKER:");
+
+    // Publish and assign a DIFFERENT template AFTER the invoice was raised and printed.
+    const second = await publishCustom((c) => { fieldOf(c, "totals", "total").label = "CHANGED-MARKER:"; });
+    await asSystem(() => assignTemplate(customer.id, "INVOICE", second.templateId));
+
+    // The STORED bytes of the raised paper are byte-for-byte unchanged — a reprint reissues them,
+    // never re-renders under the new template.
+    const stored = await getDocument(printed.documentId);
+    expect(Buffer.compare(stored.fileData, printed.pdf)).toBe(0);
+    const storedText = drawnText(stored.fileData);
+    expect(storedText).toContain("ORIGINAL-MARKER:");
+    expect(storedText).not.toContain("CHANGED-MARKER:");
   });
 });
