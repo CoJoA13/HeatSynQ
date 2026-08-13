@@ -833,6 +833,23 @@ export async function travelerSettings(): Promise<TravelerSettings> {
 }
 
 /**
+ * #43, OWNER-RULED: the all-loads traveler REFUSES above 100 loads and tells the user to print
+ * per load. A constant, deliberately NOT a setting — the number exists to bound one request's
+ * memory and the time the order row spends claimed, which is an engineering property of the print
+ * path, not a business preference someone should be able to raise to 5,000 from a settings page.
+ * (`MAX_LOADS` in src/lib/load-split.ts caps an ORDER at 10,000 loads; this is the far smaller
+ * cap on what ONE print may render at once.)
+ *
+ * Enforced here, at the single point where "every load" is decided, so BOTH the print path and
+ * the standalone/preview path (`collectTravelerData`) refuse identically — and, because the read
+ * happens before any definition is built, `printTraveler`'s claim can never span an unbounded
+ * render: at or under the bound the render is ≤ 100 per-load documents, each one page-bounded by
+ * its own sheet. A single-load print (`?load=N`) is never subject to it — that IS the remedy the
+ * message names.
+ */
+const MAX_TRAVELER_LOADS_PER_PRINT = 100;
+
+/**
  * Assembles a print payload for one order (every load) or one load of it, reading EVERYTHING
  * through `db`.
  *
@@ -905,6 +922,12 @@ export async function readTravelerData(
   if (loadNumber !== undefined) {
     sheets = allSheets.filter((s) => s.loadNumber === loadNumber);
     if (sheets.length === 0) throw new HttpError(404, `This order has no load ${loadNumber}`);
+  } else if (allSheets.length > MAX_TRAVELER_LOADS_PER_PRINT) {
+    // #43 (see MAX_TRAVELER_LOADS_PER_PRINT above) — refuse before anything is rendered.
+    throw new HttpError(400,
+      `This order has ${allSheets.length} loads — more than the ` +
+      `${MAX_TRAVELER_LOADS_PER_PRINT} an all-loads traveler prints at once. ` +
+      `Print the loads one at a time.`);
   }
   // An order with no loads at all still prints one sheet — the paper is what the shop works
   // from, and refusing to print it would be a worse answer than a blank Load box.
@@ -1063,6 +1086,12 @@ export async function printTraveler(
       // #36: one definition per load, merged — each load's continuation header and (when a
       // template turns the knob on) page numbering scope to ITS OWN sheet group, and the
       // single-load print is simply a one-group merge of the same shape.
+      //
+      // The render this claim spans is BOUNDED by construction: `readTravelerData` above already
+      // refused an all-loads print over MAX_TRAVELER_LOADS_PER_PRINT (#43), so what follows is at
+      // most that many per-load documents rather than one unbounded pass over every load an order
+      // may legally carry (up to MAX_LOADS = 10,000). Nothing else may commit against this order
+      // while the claim is held, so the bound is what keeps that window finite.
       const pdf = await renderSheetGroups(buildTravelerDefinitions(data, resolved.config, logoDataUri));
 
       // Storage itself — permanence, the audit-payload/bytes split, and the `new Uint8Array`

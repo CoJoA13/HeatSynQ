@@ -722,3 +722,69 @@ describe("printTraveler — sheet groups through the real path (#36)", () => {
     expect(drawnText(pdf)).toBe(drawnText(legacy));
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// #43 — the all-loads bound (owner ruling: REFUSE above 100 loads, print per load instead)
+// ------------------------------------------------------------------------------------------------
+
+describe("the all-loads traveler's load bound (#43)", () => {
+  beforeEach(truncateAll);
+
+  /** An order auto-split into exactly `loads` loads: one piece per load, no recipe. The row COUNT
+   *  is the whole point — qty/weight are trivial and the part carries no steps or inspections, so
+   *  each sheet renders in milliseconds and a 100-load print stays a sane test. */
+  async function orderWithLoads(loads: number) {
+    const customer = await prisma.customer.create({ data: { code: "BND", name: "Bound Co" } });
+    const code = await prisma.processStepCode.create({ data: { code: "BND", name: "Bake" } });
+    const part = await prisma.part.create({
+      data: {
+        customerId: customer.id, partNumber: "BND-1", name: "Bound Part",
+        eachWeight: "1.0000", loadQty: 1,
+      },
+    });
+    // One step, because `createOrder` locks a revision and refuses a part without one.
+    const rev = await prisma.partProcessRevision.create({
+      data: { partId: part.id, revisionNumber: 1 },
+    });
+    await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Bake." },
+    });
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [{ partId: part.id, qty: loads, weight: String(loads) + ".00" }],
+    }));
+    expect(order.loads).toHaveLength(loads);
+    return { order };
+  }
+
+  it("prints AT the bound — 100 loads, one page per load, in one merged document", async () => {
+    const { order } = await orderWithLoads(100);
+    const { pdf } = await asSystem(() => printTraveler(order.id));
+    expect(pageCount(pdf)).toBe(100);
+  }, 120_000);
+
+  it("refuses ABOVE it with a 400 naming the bound and the per-load remedy", async () => {
+    const { order } = await orderWithLoads(101);
+    await expect(asSystem(() => printTraveler(order.id))).rejects.toMatchObject({
+      status: 400,
+      message: "This order has 101 loads — more than the 100 an all-loads traveler prints at " +
+        "once. Print the loads one at a time.",
+    });
+    // Nothing was rendered or archived — the refusal precedes both.
+    expect(await prisma.storedDocument.count({ where: { orderId: order.id } })).toBe(0);
+  }, 120_000);
+
+  it("the remedy works: a single-load print of the same over-bound order succeeds", async () => {
+    const { order } = await orderWithLoads(101);
+    const { pdf } = await asSystem(() => printTraveler(order.id, 101));
+    expect(pageCount(pdf)).toBe(1);
+    expect(drawnPages(pdf)[0]).toContain("101");
+  }, 120_000);
+
+  it("the standalone read refuses identically — the preview path cannot bypass the bound", async () => {
+    const { order } = await orderWithLoads(101);
+    await expect(collectTravelerData(order.id)).rejects.toMatchObject({ status: 400 });
+    // …while one load of it reads fine.
+    expect((await collectTravelerData(order.id, 7)).sheets).toHaveLength(1);
+  }, 120_000);
+});
