@@ -46,7 +46,10 @@ export const DATE_FORMATS = [
 ] as const;
 export type DateFormat = (typeof DATE_FORMATS)[number];
 
-export const NEGATIVE_STYLES = ["MINUS", "PARENTHESES"] as const;
+/** Ruling 3's fixed negative-style picker. `SIGN_AFTER_SYMBOL` is today's "$-937.44" (the 5A
+ *  ruling: the sign sits between the "$" and the digits, so magnitude and sign both read at a
+ *  glance); `LEADING_MINUS` is "-$937.44"; `PARENTHESES` is "($937.44)". */
+export const NEGATIVE_STYLES = ["SIGN_AFTER_SYMBOL", "LEADING_MINUS", "PARENTHESES"] as const;
 export type NegativeStyle = (typeof NEGATIVE_STYLES)[number];
 
 export const PRICE_DECIMALS = [2, 3, 4] as const;
@@ -135,6 +138,10 @@ export type TemplateContract = {
    *  twice side-by-side (the ticket's container fold) or beside a fixed sidebar (the BOL's
    *  freight block) declares the width its columns actually have. Absent = CONTENT_WIDTH. */
   tableBudgets?: Record<string, number>;
+  /** The config's `pageFooter` default. Absent = false — no Phase 3–6 paper prints one EXCEPT
+   *  the quote, whose builder already prints "Page: N of M" via its footer callback: golden
+   *  compatibility means the quote's default reproduces THAT, so its contract alone sets true. */
+  pageFooter?: boolean;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -180,8 +187,9 @@ export type TemplateConfig = {
   fonts: FontsConfig;
   textBlocks: Record<string, string>;
   logo: LogoConfig | null;
-  /** "Page N of M" (spec §6.1). Defaults false everywhere: no Phase 3–6 paper prints one today,
-   *  and the backfill must keep old versions rendering identically. */
+  /** "Page N of M" (spec §6.1). Defaults to the contract's `pageFooter` (false everywhere but
+   *  the quote, whose builder prints one today) — the backfill must keep old versions rendering
+   *  identically. */
   pageFooter: boolean;
 };
 
@@ -218,7 +226,7 @@ export function defaultConfig(contract: TemplateContract): TemplateConfig {
     fonts: { ...contract.fonts },
     textBlocks: defaultTextBlocks(contract),
     logo: null,
-    pageFooter: false,
+    pageFooter: contract.pageFooter ?? false,
   };
 }
 
@@ -338,7 +346,7 @@ export function configSchema(contract: TemplateContract): z.ZodType<TemplateConf
       placement: z.enum(LOGO_PLACEMENTS),
       width: z.number().positive().max(CONTENT_WIDTH),
     }).strict().nullable().default(null),
-    pageFooter: z.boolean().default(false),
+    pageFooter: z.boolean().default(contract.pageFooter ?? false),
   }).strict();
 
   // The runtime shape is exactly TemplateConfig; zod's inferred type is wider (dynamic object
