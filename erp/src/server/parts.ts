@@ -17,6 +17,10 @@ import type { Blocker } from "./reference-blockers";
 export type PartRow = {
   id: string; customerId: string; customerCode: string; customerName: string;
   partNumber: string; name: string; description: string;
+  /** Presentation vocabulary for the traveler's Process: slot / the invoice's create-time
+   *  snapshot (spec §5.7 ruling 4) — surfaced for data entry in Phase 7 Task 15. Nothing
+   *  resolves or validates against it; blank ("") prints nothing, exactly as today. */
+  processName: string;
   materialId: string | null; materialName: string | null;
   eachWeight: number; loadQty: number | null; loadWeight: number | null;
   requestDaysOverride: number | null;
@@ -48,6 +52,11 @@ const FIELDS = {
   partNumber: z.string().trim().min(1).max(60),
   name: z.string().max(200).optional(),
   description: z.string().max(4000).optional(),
+  // Phase 7 Task 15: the part's process name for the traveler's Process: slot / the invoice
+  // snapshot (spec §5.7 ruling 4). Optional display text, capped like `name`, defaulting "" at
+  // the DB level — the parts convention (required identifiers use .trim().min(1); optional
+  // display text uses .max(n) with no minimum). Nothing resolves or validates against it.
+  processName: z.string().max(200).optional(),
   materialId: z.string().nullable().optional(),
   eachWeight: decimalField(10, 4, { required: true, min: "positive" }),
   loadQty: z.number().int().min(1).nullable().optional(),
@@ -67,7 +76,7 @@ const CREATE = z.object({ customerId: z.string().min(1), ...FIELDS }).strict();
 const UPDATE = z.object(FIELDS).partial().strict();   // no customerId — immutable by design
 
 const SELECT = {
-  id: true, customerId: true, partNumber: true, name: true, description: true,
+  id: true, customerId: true, partNumber: true, name: true, description: true, processName: true,
   materialId: true, eachWeight: true, loadQty: true, loadWeight: true, requestDaysOverride: true,
   certRequired: true, certScope: true,
   serializationRequired: true, active: true,
@@ -376,6 +385,7 @@ export async function pasteParts(text: string): Promise<PasteResult> {
       };
       if (row.name !== "") input.name = row.name;
       if (row.description !== "") input.description = row.description;
+      if (row.processName !== "") input.processName = row.processName;
       if (materialId) input.materialId = materialId;
       if (loadQty !== undefined) input.loadQty = loadQty;
       if (row.loadWeight !== "") input.loadWeight = row.loadWeight;
