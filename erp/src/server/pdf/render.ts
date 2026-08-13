@@ -107,8 +107,16 @@ const TABLE_LAYOUTS = {
 
 /** `{ kind: "pageNofM" }` renders `"${label} N of M"` (label defaults to `"Page"`) bottom-right
  *  on every page — the quote's hand-written footer, generalized (label `"Page:"` reproduces it
- *  exactly, Task 14's conversion). */
-export type PageFooterSpec = { kind: "pageNofM"; label?: string };
+ *  exactly, Task 14's conversion).
+ *
+ *  `above` (Task 11): static JSON content stacked OVER the page line, drawn on every page by the
+ *  same callback. It exists because the cert (and Task 12's invoice) already print a static
+ *  per-page company strip through pdfmake's `footer`, and the both-keys refusal below is
+ *  deliberate — a builder whose paper carries such a strip passes it here when the knob turns
+ *  on, instead of losing it or competing for the one footer slot. Plain data, like everything
+ *  else on these specs; the callback deep-clones it per page (pdfmake decorates laid-out nodes —
+ *  the two-pass probe's own lesson). */
+export type PageFooterSpec = { kind: "pageNofM"; label?: string; above?: Content };
 
 /** Static JSON content (text/images — never functions) repeated by a renderer-side header
  *  callback on every page AFTER the first of the definition.
@@ -156,11 +164,17 @@ function toPdfmakeDefinition(def: RenderableDefinition): TDocumentDefinitions {
         `Unknown pageFooterSpec kind "${String(pageFooterSpec.kind)}" — the renderer knows: pageNofM`);
     }
     const label = pageFooterSpec.label ?? "Page";
+    const above = pageFooterSpec.above;
     // The quote's exact footer styling (pdf/quote.ts) — its Task 14 conversion must be invisible.
-    out.footer = (currentPage: number, totalPages: number): Content => ({
-      text: `${label} ${currentPage} of ${totalPages}`,
-      bold: true, fontSize: 8.5, alignment: "right", margin: [24, 8, 24, 0],
-    });
+    out.footer = (currentPage: number, totalPages: number): Content => {
+      const pageLine: Content = {
+        text: `${label} ${currentPage} of ${totalPages}`,
+        bold: true, fontSize: 8.5, alignment: "right", margin: [24, 8, 24, 0],
+      };
+      if (above === undefined) return pageLine;
+      // Pristine nodes per page — see the spec's doc comment (lossless: `above` is plain JSON).
+      return { stack: [JSON.parse(JSON.stringify(above)) as Content, pageLine] };
+    };
   }
   if (continuationHeaderSpec !== undefined) {
     if (rest.header !== undefined) {

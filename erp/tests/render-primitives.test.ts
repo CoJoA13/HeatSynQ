@@ -97,6 +97,42 @@ describe("pageFooterSpec — the declarative pageNofM footer (spec §6.1)", () =
       pageFooterSpec: { kind: "pageXofY" } as never,
     }))).rejects.toThrow(/pageXofY/);
   });
+
+  // Task 11's addition: the cert (and Task 12's invoice) carry a STATIC per-page company strip in
+  // pdfmake's `footer` today. Turning the pageFooter knob on must not cost that strip, and the
+  // both-keys refusal above stays — so the spec itself gains `above`: static JSON content stacked
+  // over the page line, both rendered by the ONE renderer-side callback.
+  it("static `above` content stacks over the page line on EVERY page — the cert's company strip shape", async () => {
+    const pdf = await renderPdf(twoPageDef({
+      pageFooterSpec: {
+        kind: "pageNofM",
+        above: { text: "COMPANY-STRIP-MARKER", fontSize: 7.5 },
+      },
+    }));
+    const pages = drawnPages(pdf);
+    expect(count(pages[0], "COMPANY-STRIP-MARKER")).toBe(1);
+    expect(count(pages[1], "COMPANY-STRIP-MARKER")).toBe(1);
+    expect(count(pages[0], "Page 1 of 2")).toBe(1);
+    expect(count(pages[1], "Page 2 of 2")).toBe(1);
+  });
+
+  it("`above` is handed to pdfmake as pristine nodes per page — repeated layout never corrupts it", async () => {
+    // pdfmake decorates laid-out nodes (the two-pass probe's own lesson); if the callback handed
+    // the SAME node object to every page, page two would lay out a decorated node. A 3-page render
+    // exercises the repetition; the strip must draw exactly once per page.
+    const pdf = await renderPdf({
+      content: [
+        { text: "alpha body", pageBreak: "after" },
+        { text: "beta body", pageBreak: "after" },
+        { text: "gamma body" },
+      ],
+      pageFooterSpec: { kind: "pageNofM", above: { columns: [{ width: "*", text: "LEFT-STRIP" }, { width: 100, text: "RIGHT-STRIP", alignment: "right" }] } },
+    });
+    for (const page of drawnPages(pdf)) {
+      expect(count(page, "LEFT-STRIP")).toBe(1);
+      expect(count(page, "RIGHT-STRIP")).toBe(1);
+    }
+  });
 });
 
 // ------------------------------------------------------------------------------------------------
