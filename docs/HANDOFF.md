@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-12 — **Phase 6 (Quoting) is MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**; **owed: the Phase 6 demo + its 8-item owner-ratification queue (§6)**. **No phase is in flight — §9 is the open next-track decision (owner's choice).** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
+**Updated:** 2026-08-12 — **Phase 6 (Quoting) is MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). **No phase is in flight — §9 is the open next-track decision (owner's choice).** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -73,9 +73,10 @@ Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with
 track is the owner's choice (§9).** The full Phase 6 narrative — the fourteen-ruling design
 session, the twelve tasks and their reviews, the whole-branch review's F1 story, the process
 incident and its rule, and the lessons — is `docs/history/2026-08-12-phase-6-quoting.md`; the
-one-paragraph entry is below under "Merged, in build order". **Owed from Phase 6: the demo, and
-its 8-item owner-ratification queue** (carried in §6 so it cannot vanish into history); deferred
-findings are issues **#95–#100**. The milestone alternatives Phase 5's completion opened —
+one-paragraph entry is below under "Merged, in build order". **The Phase 6 demo ran 2026-08-12 — all 8 ratification
+items RULED** (`docs/2026-08-12-phase-6-demo.md`: rulings 1–4/6–8 as-built; ruling 5 re-gates the
+part-page quotes read to `quotes.view` → issue #101; ruling 8 adds the empty-Material suppression
+to #100); deferred findings are issues **#95–#101**. The milestone alternatives Phase 5's completion opened —
 parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — stay available as next tracks
 alongside roadmap Phases 7 (template designer) and 8 (reports & parallel-run tools); the
 owner-owed GL-account list + bookkeeper QBO homework gate a *real* export.
@@ -241,8 +242,10 @@ a soft-deleted reference row's `isDefault` 200s silently (inherited generic-serv
 terms); #100 the minors bundle. Full triage: the whole-branch section of
 `docs/execution/2026-08-10-phase-6-quoting/progress.md`.
 
-**OWNER RATIFICATION OWED (Phase 6 demo) — the 8-item queue assembled at Task 11** (item 9, the
-ruling-7 overlap warn, was resolved on-branch by Task 12): (1) `createQuote` refuses an inactive
+**RULED at the Phase 6 demo, 2026-08-12 — all eight items** (full record `docs/2026-08-12-phase-6-demo.md`;
+items 1–4 and 6–8 ratified/accepted as built, item 5 → issue #101, item 8's demo observation →
+#100). The queue as it was assembled (item 9, the ruling-7 overlap warn, was resolved on-branch
+by Task 12): (1) `createQuote` refuses an inactive
 customer but accepts an inactive part on a linked line; (2) a CLOSED quote still blocks
 `deletePart`/`deleteCustomer` — only deletion clears the block (the reviewer ruled it right under
 the standing-agreement model — ratify); (3) the one-time dormant-column audit churn on the first
