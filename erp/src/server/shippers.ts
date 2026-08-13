@@ -2051,10 +2051,29 @@ export async function printBol(
         () => tx.shipper.update({ where: { id: shipperId }, data: { bolNumber: allocated } }), { tx });
     }
 
-    const data = await readBolData(tx, shipperId, bolNumber, settings);
-    const pdf = await renderPdf(buildBolDefinition(data));
+    // Resolution is docType "BOL" REGARDLESS of the shipment's order count (P7 spec §5.2's other
+    // half: the ticket splits SHIPPER/MOS_SHIPPER by count; the BOL is one per shipment and the
+    // registry has no MOS_BOL — count-independence pinned in tests/bol-templates.test.ts).
+    // Resolution runs on THIS claimed transaction at its isolation — correct by §5.1
+    // immutability, not by locking (the printShippingTickets comment); no template row is
+    // claimed and none is needed.
+    const resolved = await resolveTemplateForPrint(tx, "BOL", shipper.customerId);
+    // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only
+    // when the config also places it, so an unplaced upload converts nothing.
+    const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+      ? (resolved.logoMimeType === "image/jpeg"
+          ? jpegDataUri(Buffer.from(resolved.logoImage))
+          : pngDataUri(Buffer.from(resolved.logoImage)))
+      : undefined;
 
-    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf);
+    const data = await readBolData(tx, shipperId, bolNumber, settings);
+    // ONE definition — the BOL is single-document paper, so `renderPdf` consumes it directly
+    // (no sheet groups); its continuation band and the config's pageFooter knob ride on the
+    // RenderableDefinition itself (buildBolDefinition's doc comment).
+    const pdf = await renderPdf(buildBolDefinition(data, resolved.config, logoDataUri));
+
+    // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf, resolved.versionId);
     return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
