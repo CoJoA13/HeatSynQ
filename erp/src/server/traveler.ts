@@ -35,8 +35,10 @@ import { renderPdf, barcodePng, pngDataUri, jpegDataUri, LAYOUT } from "./pdf/re
 import { storeDocument, listDocumentsForOrder, documentFilename, assertPrintable } from "./documents";
 import { resolveTemplateForPrint } from "./template-assignments";
 import { TRAVELER_CONTRACT, DEFAULT_CONFIG as TRAVELER_DEFAULT_CONFIG } from "../lib/template-contracts/traveler";
-import type {
-  FontsConfig, FormatsConfig, LogoPlacement, SectionConfig, TemplateConfig,
+import {
+  completeSections,
+  type FontsConfig, type FormatsConfig, type LogoPlacement, type SectionConfig,
+  type TemplateConfig,
 } from "../lib/template-contracts/types";
 
 // Re-exported unchanged: `src/app/api/orders/[id]/documents/route.ts` and this file's own tests
@@ -678,7 +680,11 @@ export function buildTravelerDefinition(
   config: TemplateConfig = TRAVELER_DEFAULT_CONFIG,
   logoDataUri?: string,
 ): TDocumentDefinitions {
-  const sections = new Map(config.sections.map((sc) => [sc.key, sectionView(sc)] as const));
+  // The belt's OMISSION half (Task 8 pre-step): resolve the views over the config's lists MERGED
+  // with the contract's key list — a config that omits a locked entry (rather than flag-flipping
+  // it, which sectionView's belt already catches) still renders it. See completeSections.
+  const sectionConfigs = completeSections(TRAVELER_CONTRACT, config.sections);
+  const sections = new Map(sectionConfigs.map((sc) => [sc.key, sectionView(sc)] as const));
   const ctx: Ctx = {
     d: input,
     fonts: config.fonts,
@@ -694,7 +700,7 @@ export function buildTravelerDefinition(
     const blocks: Content[] = [];
     // Stack order IS the config's section order; hidden sections are omitted — except the
     // §5.6-locked ones, whose views the belt forces visible (see sectionView).
-    for (const sc of config.sections) {
+    for (const sc of sectionConfigs) {
       if (!sections.get(sc.key)!.visible) continue;
       const block = renderSection(sc.key, ctx, sheet);
       if (block !== null) blocks.push(block);

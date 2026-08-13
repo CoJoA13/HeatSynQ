@@ -308,6 +308,44 @@ describe("buildTravelerDefinition — the §5.6 builder-side belt (locked elemen
     expect(JSON.stringify(def)).toContain(BARCODE);
     expect(textOf(def)).toContain("Order Number");
   });
+
+  // The belt's OMISSION half (Task 8 pre-step, carried from the Task 7 review): the flag belt
+  // above only forces entries that are PRESENT — a validator-bypassing config that simply OMITS
+  // the entry used to drop the locked element. The builder now resolves its views over
+  // `completeSections(TRAVELER_CONTRACT, config.sections)`, so omission cannot drop anything.
+  // (The validator's §5.3 backfill re-inserts missing entries in every STORED config — like the
+  // flag cases above, these feed the builder RAW, deliberately.)
+  it("a raw config OMITTING the steps section entry still renders the steps", () => {
+    const c = cfg();
+    c.sections = c.sections.filter((s) => s.key !== "steps");
+    const text = textOf(buildTravelerDefinition(travelerData(), c));
+    expect(text).toContain("PROCESS STEPS:");
+    expect(text).toContain("Austemper");
+    expect(text).toContain("Pre-heat to 1100F.");
+    expect(text).toContain("Furnace Temp: 1650 °F");
+  });
+
+  it("a raw config OMITTING a locked field entry still renders it", () => {
+    const c = cfg();
+    const steps = sectionOf(c, "steps");
+    steps.fields = steps.fields.filter((f) => f.key !== "step_instruction");
+    const def = buildTravelerDefinition(travelerData(), c);
+    const text = textOf(def);
+    // The instruction column (and the locked typed-value rendering inside it) is back on paper —
+    // appended after the config's own run, so presence is the assertion, not position.
+    expect(text).toContain("Pre-heat to 1100F.");
+    expect(text).toContain("Furnace Temp: 1650 °F");
+    const stepsWidths = allWidths(def).find((w) => w.includes(16) && w.includes(62))!;
+    expect(stepsWidths).toContain("*");
+  });
+
+  it("a raw config OMITTING the header section still renders the barcode and order number", () => {
+    const c = cfg();
+    c.sections = c.sections.filter((s) => s.key !== "header");
+    const def = buildTravelerDefinition(travelerData(), c);
+    expect(JSON.stringify(def)).toContain(BARCODE);
+    expect(textOf(def)).toContain("Order Number");
+  });
 });
 
 describe("buildTravelerDefinition — the Process: slot (ruling 4, spec §5.7)", () => {

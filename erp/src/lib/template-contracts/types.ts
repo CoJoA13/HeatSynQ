@@ -234,6 +234,48 @@ export function defaultConfig(contract: TemplateContract): TemplateConfig {
   };
 }
 
+/**
+ * The §5.6 belt's OMISSION half (Phase 7 Task 8, carried from the Task 7 review) — the merge
+ * every BUILDER resolves its section views over instead of using `config.sections` raw.
+ *
+ * The flag-based builder belt (each builder's `sectionView`) forces visibility on locked entries,
+ * but it can only force entries that are PRESENT: a validator-bypassing config that simply omits
+ * the steps section entry (or a locked field entry) would drop the locked element without ever
+ * tripping a flag. This helper merges the config's section/field lists with the contract's key
+ * list — a leading-run merge: the config's entries lead, untouched and in config order; every
+ * contract section or field missing from the config appends after them in contract order with
+ * the contract's defaults (`defaultSectionConfig`/`defaultFieldConfig`), so omission cannot drop
+ * anything.
+ *
+ * Unreachable through stored configs — `validateContractConfig`'s §5.3 backfill re-inserts
+ * missing entries at their contract POSITION — but the belt's own rationale (spec §5.6: the
+ * editor and validator alone are not the enforcement) applies to the builder too. Deliberately
+ * APPEND, not the backfill's position splice: the belt's one job is presence — it must never
+ * reorder what a config actually says, and where an omitted element lands on a config that could
+ * never have been stored is unspecified. Unknown keys pass through untouched: they stay the
+ * validator's refusal, and each builder's own view resolution throws on them.
+ *
+ * Client-safe like everything in this module; Tasks 9–14's builders adopt this same helper.
+ */
+export function completeSections(
+  contract: TemplateContract, sections: SectionConfig[],
+): SectionConfig[] {
+  const merged = [...sections];
+  for (const cs of contract.sections) {
+    if (!merged.some((s) => s.key === cs.key)) merged.push(defaultSectionConfig(cs));
+  }
+  const contractByKey = new Map(contract.sections.map((cs) => [cs.key, cs]));
+  return merged.map((s) => {
+    const cs = contractByKey.get(s.key);
+    if (cs === undefined) return s; // unknown key — the validator's refusal, not the belt's
+    const fields = [...s.fields];
+    for (const cf of cs.fields) {
+      if (!fields.some((f) => f.key === cf.key)) fields.push(defaultFieldConfig(cf));
+    }
+    return { ...s, fields };
+  });
+}
+
 /** Every §5.6-locked element with its reason — what the editor renders the padlock from. */
 export function lockedElements(contract: TemplateContract): { key: string; reason: string }[] {
   const out: { key: string; reason: string }[] = [];

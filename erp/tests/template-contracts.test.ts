@@ -3,8 +3,11 @@ import {
   CONTENT_WIDTH,
   NEGATIVE_STYLES,
   TemplateConfigError,
+  completeSections,
   configSchema,
   defaultConfig,
+  defaultFieldConfig,
+  defaultSectionConfig,
   lockedElements,
   validateContractConfig,
   type TemplateConfig,
@@ -181,6 +184,58 @@ describe("the §5.3 default backfill", () => {
   it("is idempotent: validating a validated config changes nothing", () => {
     const once = validateContractConfig(FIXTURE, {});
     expect(validateContractConfig(FIXTURE, roundTrip(once))).toEqual(once);
+  });
+});
+
+// The §5.6 belt's OMISSION half (Task 8 pre-step, carried from the Task 7 review): the flag-based
+// builder belt can only force entries that are PRESENT — a validator-bypassing config that simply
+// omits a locked section/field entry would drop the locked element without tripping any flag.
+// `completeSections` is the builder-facing merge every builder resolves its views over: the
+// config's entries lead untouched (in config order), and every contract entry missing from the
+// config appends after them in contract order with contract defaults. Tasks 9–14 adopt the same
+// helper.
+describe("completeSections — the §5.6 belt's omission half", () => {
+  it("is the identity on a complete config's sections", () => {
+    const sections = defaultConfig(FIXTURE).sections;
+    expect(completeSections(FIXTURE, sections)).toEqual(sections);
+  });
+
+  it("appends an omitted LOCKED section after the config's own entries, with contract defaults", () => {
+    // Omitting "alpha" (non-hideable) is the exact shape the flag belt cannot see.
+    const sections = defaultConfig(FIXTURE).sections.filter((s) => s.key !== "alpha");
+    const merged = completeSections(FIXTURE, sections);
+    expect(merged.map((s) => s.key)).toEqual(["beta", "alpha"]);
+    expect(merged[1]).toEqual(defaultSectionConfig(FIXTURE.sections[0]));
+  });
+
+  it("appends omitted fields inside a present section, preserving the config's leading run", () => {
+    const sections = roundTrip(defaultConfig(FIXTURE)).sections;
+    // Drop the LOCKED field and reorder what remains — the belt must restore presence without
+    // touching the config's own order or overrides.
+    sections[0].fields = [{ key: "a_free", visible: true, label: "Renamed", width: 40 }];
+    const merged = completeSections(FIXTURE, sections);
+    expect(merged[0].fields).toEqual([
+      { key: "a_free", visible: true, label: "Renamed", width: 40 },
+      defaultFieldConfig(FIXTURE.sections[0].fields[0]),
+    ]);
+  });
+
+  it("multiple omissions append in CONTRACT order; config entries are never reordered or rewritten", () => {
+    const sections = roundTrip(defaultConfig(FIXTURE)).sections;
+    // Config carries only beta, hidden — the belt appends alpha but must not flip beta visible.
+    const betaOnly = [{ ...sections[1], visible: false }];
+    const merged = completeSections(FIXTURE, betaOnly);
+    expect(merged.map((s) => s.key)).toEqual(["beta", "alpha"]);
+    expect(merged[0].visible).toBe(false);
+    // Everything omitted: the whole contract appends in contract order.
+    expect(completeSections(FIXTURE, []).map((s) => s.key)).toEqual(["alpha", "beta"]);
+  });
+
+  it("passes unknown section keys through untouched — they stay the validator's refusal", () => {
+    const stray = { key: "stray", visible: true, fields: [] };
+    const merged = completeSections(FIXTURE, [stray, ...defaultConfig(FIXTURE).sections]);
+    expect(merged[0]).toEqual(stray);
+    expect(merged.map((s) => s.key)).toEqual(["stray", "alpha", "beta"]);
   });
 });
 
