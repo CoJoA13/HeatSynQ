@@ -5,6 +5,13 @@
 // starred, create a template (which opens its v1 draft — "opening a draft"), publish it, and open
 // a fresh draft from the published version (the lifecycle end to end).
 //
+// Then open the Task 17 structured editor on that v2 draft and exercise the contract-driven panels:
+// a LOCKED element (the traveler barcode / Process-steps section) renders locked and disabled with
+// its §5.6 reason; a free section toggles (and the draft goes dirty); a field label override is set;
+// a format knob is picked; and the fixture logo is uploaded through the Task 4 sniff/cap route with
+// a header placement chosen. The Save button + the updatedAt-409 conflict UX are Task 18, so this
+// flow does NOT save — it proves the panels produce the edited config in state.
+//
 // Then, re-logged-in as the restricted VIEW-ONLY user (holds templates.view but NOT admin.view):
 // prove the nav decision + §5.16 — that user still sees the Templates entry and reaches the page
 // (the silent-dead-end rule) while NOT seeing the admin.view-gated entries, and every mutating
@@ -15,7 +22,12 @@
 // db-fixtures.ts (deleteDocumentTemplatesByName); the seeded Standard templates are only read, and
 // this flow never sets a default or assigns to a customer, so no shared/seeded state is mutated.
 import assert from "node:assert/strict";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { login } from "../lib/auth.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOGO_FIXTURE = path.join(__dirname, "..", "fixtures", "logo.png");
 
 const DOC_TEMPLATE_NAME = "E2E Doc Template";
 const DOC_TYPES = [
@@ -83,6 +95,57 @@ export async function run(page, shot, ctx) {
   await page.getByRole("button", { name: "Open draft", exact: true }).click();
   await page.getByText("Open draft: v2").waitFor({ state: "visible" });
   await shot("template-published-then-redrafted-v2");
+
+  // --- The structured editor (Task 17): open the v2 draft and exercise the contract-driven panels ---
+  // The panels are the whole point of Task 17; SAVE + the updatedAt-409 conflict UX is Task 18, so
+  // this flow drives the panels (and the logo route, a separate write) but does NOT click "Save draft".
+  await page.getByRole("link", { name: "Edit draft" }).click();
+  await page.waitForURL(new RegExp(`${ctx.baseURL}/admin/templates/[^/]+/edit`));
+  await page.getByRole("heading", { name: DOC_TEMPLATE_NAME }).waitFor({ state: "visible" });
+  await page.getByText("Traveler · editing draft v2").waitFor({ state: "visible" });
+
+  // A LOCKED element renders locked and its controls are disabled (spec §5.6): the traveler barcode
+  // and the whole Process-steps section cannot be hidden — the padlock + reason are shown.
+  const barcodeToggle = page.getByRole("checkbox", { name: "Show field Order barcode" });
+  await barcodeToggle.waitFor({ state: "visible" });
+  assert.equal(await barcodeToggle.isDisabled(), true, "the locked barcode field cannot be hidden");
+  assert.equal(
+    await page.getByRole("checkbox", { name: "Show section Process steps" }).isDisabled(), true,
+    "the locked steps section cannot be hidden",
+  );
+  await page.locator('[aria-label^="locked:"]').first().waitFor({ state: "visible" });
+  await shot("editor-locked-elements");
+
+  // Toggle a FREE section (Part lines is hideable) — it flips and the draft is marked dirty.
+  const partLines = page.getByRole("checkbox", { name: "Show section Part lines" });
+  assert.equal(await partLines.isDisabled(), false, "a hideable section's toggle is enabled");
+  await partLines.uncheck();
+  assert.equal(await partLines.isChecked(), false, "the section is now hidden in the working config");
+  await page.getByText("Unsaved changes").waitFor({ state: "visible" });
+
+  // Set a LABEL override on a free field.
+  const labelInput = page.getByRole("textbox", { name: "Label for Order number" });
+  await labelInput.fill("Work Order #");
+  assert.equal(await labelInput.inputValue(), "Work Order #", "the label override is held in state");
+
+  // Pick a FORMAT knob — the traveler declares thousands grouping (the FormatsPanel renders exactly
+  // the knobs the contract declares; the billing docs' negative-style/date dropdowns are the same
+  // panel, no per-type branch).
+  const thousands = page.getByRole("checkbox", { name: "Group thousands" });
+  await thousands.waitFor({ state: "visible" });
+  const wasGrouped = await thousands.isChecked();
+  await thousands.setChecked(!wasGrouped);
+  assert.equal(await thousands.isChecked(), !wasGrouped, "the format knob flips");
+
+  // Upload the FIXTURE logo (the Task 4 route sniffs + caps the bytes) and choose a placement.
+  await page.getByText("No image uploaded").waitFor({ state: "visible" });
+  await page.getByLabel("Upload logo image").setInputFiles(LOGO_FIXTURE);
+  await page.getByText(/Image on file \(image\/png\)/).waitFor({ state: "visible" });
+  await page.getByRole("combobox", { name: "Logo placement" }).selectOption("header-left");
+  await shot("editor-panels-exercised-logo-uploaded");
+  // The config edits stay UNSAVED — the Save button + the updatedAt-409 conflict UX are Task 18's;
+  // this flow proves the panels. The logo BYTES were written (a separate route), and the whole
+  // template is reaped by name in teardown, logo and all.
 
   // --- Re-logged-in as the restricted VIEW-ONLY user (templates.view, NOT admin.view) ---
   await login(page, ctx.baseURL, fixtures.restrictedUsername, fixtures.restrictedPassword);
