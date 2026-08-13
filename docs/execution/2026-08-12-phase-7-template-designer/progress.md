@@ -23,7 +23,7 @@ Both DBs: 32 migrations, `migrate status` clean. Docker active, `erp-db-1` healt
 
 | # | Task | Implementer | Review | State |
 |---|---|---|---|---|
-| 1 | Contract machinery + order-side contracts | subagent 2026-08-12 (`6142d33`, `0cae14f`; report filed; gates watched: vitest 2195/2195 in 213.4s, tsc 1.6s, eslint 9.0s, build exit 0 in 15.5s; E2E n/a — no UI/flow) | — | IMPLEMENTED — awaiting review |
+| 1 | Contract machinery + order-side contracts | subagent 2026-08-12 (`6142d33`, `0cae14f`; report filed; gates watched: vitest 2195/2195 in 213.4s, tsc 1.6s, eslint 9.0s, build exit 0 in 15.5s; E2E n/a — no UI/flow) | Spec ✅ / **Approved** (round 1; every binding value verified verbatim against the builders; 4 minors, none blocking — carried below) | **APPROVED** |
 | 2 | Billing-side contracts | — | — | — |
 | 3 | Schema, migrations, seeds, registrations | — | — | — |
 | 4 | Template service | — | — | — |
@@ -44,3 +44,10 @@ Both DBs: 32 migrations, `migrate status` clean. Docker active, `erp-db-1` healt
 | 19 | Preview | — | — | — |
 | 20 | Customer-page assignment picker | — | — | — |
 | 21 | Restyle E2E flow, docs, final gates | — | — | — |
+
+## Carried minors (from per-task reviews; each routed to a named later task)
+
+- **From Task 1 review → Task 2:** latent lock-bypass in the generic machinery — `assertLocksHonored` does not refuse hiding a *hideable* section that contains a non-removable field (Task 1's contracts compensate by pinning those sections non-hideable, but nothing enforces the pairing for later contracts). Task 2 fixes the semantics (a section-hide counts as hiding its fields for lock purposes) + tests it.
+- **From Task 1 review → Task 9:** the shipping ticket prints TWO date styles (header `shortDate` M/D/YYYY vs tear-off `paddedDate` MM/DD/YYYY) against the contract's ONE date knob — Task 9's mapping must not let the single knob change the tear-off at the golden-compat gate (map the knob to the header; the tear-off keeps its own style, or gets its own knob).
+- **From Task 1 review → Task 17 (editor):** `lockedElements` returns a flat `{key, reason}` list mixing section and field keys — tighten the namespace before rendering padlocks.
+- **From Task 1 review → all future briefs:** implementer reports must include RED-run evidence (a failing-test output snippet), not just the claim.
