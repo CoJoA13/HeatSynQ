@@ -27,7 +27,7 @@
  *    §10.1 does not list it — not printed (do not invent fields, task brief Step 1).
  */
 import type { Column, Content, TableCell, TDocumentDefinitions } from "pdfmake/interfaces";
-import { LAYOUT } from "./render";
+import { LAYOUT, type RenderableDefinition } from "./render";
 import { SHIPPER_CONTRACT, DEFAULT_CONFIG as SHIPPER_DEFAULT_CONFIG } from "../../lib/template-contracts/shipper";
 import { MOS_SHIPPER_CONTRACT, DEFAULT_CONFIG as MOS_SHIPPER_DEFAULT_CONFIG } from "../../lib/template-contracts/mos-shipper";
 import {
@@ -690,10 +690,12 @@ function prepareTickets(
  * without re-defaulting any individual key. `logoDataUri` is the traveler's deliberate extra
  * parameter: the logo bytes belong to the resolved template version, not to the shipment data.
  *
- * `config.pageFooter` is deliberately unconsumed by this whole-document shape: per-ticket page
- * numbers and continuation headers only exist per sheet GROUP (P7 spec §6.1) — the sheet-group
- * builder is this task's next step and shares `prepareTickets`, so per-ticket content cannot
- * drift between the two.
+ * SINCE TASK 9 this whole-document shape (every ticket in one definition, page breaks between)
+ * is the LEGACY view — kept for the pre-Phase-7 suite and as the golden oracle, and deliberately
+ * consuming neither `config.pageFooter` nor a continuation band: per-ticket page numbers and
+ * identity headers only exist per sheet GROUP (P7 spec §6.1), which one whole document cannot
+ * express. The print path uses `buildShippingTicketDefinitions` below; both share
+ * `prepareTickets`, so their per-ticket content can never drift (pinned by test).
  */
 export function buildShippingTicketDefinition(
   input: TicketData[],
@@ -716,4 +718,69 @@ export function buildShippingTicketDefinition(
     // for no reason (the traveler's purity rule).
     content,
   };
+}
+
+/** The continuation band's margin reserve: one 11pt identity line plus the small "(continued)"
+ *  line under a 10pt offset — 40 clears the body (the traveler's CONTINUATION_TOP_MARGIN story,
+ *  sized for a text-only band; the ticket repeats no barcode). Only OVERFLOWING tickets pay it
+ *  (render.ts's two-pass); a one-page ticket keeps today's 24pt top margin untouched. */
+const CONTINUATION_TOP_MARGIN = 40;
+/** Bottom margin when a template turns the `pageFooter` knob on: the footer draws in the bottom
+ *  margin and needs ≥ ~28pt — 44 is the quote's own value, the house precedent (Task 8's
+ *  FOOTER_BOTTOM_MARGIN). The knob defaults OFF, so the default paper keeps its 24pt (golden). */
+const FOOTER_BOTTOM_MARGIN = 44;
+
+/**
+ * The ticket's identity band — what a ticket overflowing LETTER repeats on its continuation
+ * pages: THAT order's label, so a page separated from its ticket still names its work. Rendered
+ * REGARDLESS of the config's visibility flags (the traveler band's identity treatment — identity
+ * on paper is locked, not configurable), though the order-number label override still carries
+ * through. The `[24, 10, 24, 0]` margin aligns the band with the page's 24pt side margins:
+ * pdfmake header content spans the full page width (the footer spec's own convention).
+ */
+function continuationHeader(ctx: Ctx, d: TicketData): Content {
+  const v = ctx.sections.get("header")!;
+  return {
+    stack: [
+      { text: `${v.field("order_no").label} ${d.orderLabel}`, bold: true, fontSize: 11 },
+      { text: "(continued)", italics: true, fontSize: ctx.fonts.smallSize },
+    ],
+    margin: [24, 10, 24, 0],
+  };
+}
+
+/**
+ * ONE DEFINITION PER TICKET (P7 spec §6.1) — the print path's builder since Task 9, the
+ * traveler's Task 8 shape applied to orders-on-a-shipment. As pure as the singular above (same
+ * `prepareTickets`, same per-ticket content — pinned by test), but each ticket becomes its own
+ * `RenderableDefinition` for `renderSheetGroups` to merge:
+ *
+ *  - each definition carries ITS order's `continuationHeaderSpec` (the identity band above), so
+ *    a ticket overflowing LETTER repeats the right order label on its continuation pages and a
+ *    following ticket's first page can never inherit a stale header — per-GROUP scoping is the
+ *    whole mechanism (render.ts's renderSheetGroups comment);
+ *  - `overflowTopMargin` makes the band's room a two-pass reserve: a ticket that fits one page
+ *    renders with today's exact margins (golden compat), only overflow pays for header space;
+ *  - `config.pageFooter` (default OFF — golden) turns on the per-group `pageNofM` footer, whose
+ *    numbering restarts with every ticket because each group IS its own document, and widens
+ *    the bottom margin to fit it.
+ */
+export function buildShippingTicketDefinitions(
+  input: TicketData[],
+  docType: TicketDocType = "SHIPPER",
+  config: TemplateConfig = DEFAULT_CONFIGS[docType],
+  logoDataUri?: string,
+): RenderableDefinition[] {
+  const { ctx, ticketBlocks } = prepareTickets(docType, config, logoDataUri);
+  return input.map((ticket) => ({
+    pageSize: "LETTER",
+    pageMargins: [24, 24, 24, config.pageFooter ? FOOTER_BOTTOM_MARGIN : 24],
+    defaultStyle: { font: config.fonts.family, fontSize: config.fonts.baseSize },
+    content: [{ stack: ticketBlocks(ticket) }],
+    continuationHeaderSpec: {
+      content: continuationHeader(ctx, ticket),
+      overflowTopMargin: CONTINUATION_TOP_MARGIN,
+    },
+    ...(config.pageFooter ? { pageFooterSpec: { kind: "pageNofM" as const } } : {}),
+  }));
 }

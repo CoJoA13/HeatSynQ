@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { pageCount, textRunsWithY } from "./helpers/pdf";
 import { renderPdf } from "@/server/pdf/render";
 import {
-  buildShippingTicketDefinition, type TicketData, type TicketDocType,
+  buildShippingTicketDefinition, buildShippingTicketDefinitions,
+  type TicketData, type TicketDocType,
 } from "@/server/pdf/shipping-ticket";
 import {
   SHIPPER_DEFAULT_CONFIG, MOS_SHIPPER_DEFAULT_CONFIG, validateConfig, type TemplateConfig,
@@ -397,6 +398,70 @@ describe("the tear-off strip is flow-based (the >8-row overlap regression)", () 
     expect(shared.length).toBeGreaterThan(0); // the strip and the table tail DO share this page
     const top = tearTopY(pages[tearPage])!;
     for (const y of shared) expect(y).toBeGreaterThan(top);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// Per-ticket sheet groups (P7 spec §6.1): one RenderableDefinition per order's ticket, merged by
+// renderSheetGroups in the print path — the traveler's Task 8 shape. Each definition carries ITS
+// order's continuation band and (behind the pageFooter knob, default OFF) its own per-group
+// page-number footer.
+// ------------------------------------------------------------------------------------------------
+
+describe("buildShippingTicketDefinitions — one definition per ticket (pure)", () => {
+  const twoTickets = (): TicketData[] => [
+    sampleTicket(),
+    sampleTicket({ orderLabel: "72037-1", orderNumber: 72037, poNumber: "PO-B" }),
+  ];
+
+  it("returns one definition per ticket, each content-identical to the singular's per-sheet stack", () => {
+    const defs = buildShippingTicketDefinitions(twoTickets());
+    expect(defs).toHaveLength(2);
+    const singular = buildShippingTicketDefinition(twoTickets());
+    const singularStacks = (singular.content as { stack: unknown }[]).map((c) => c.stack);
+    const groupStacks = defs.map((d) => (d.content as { stack: unknown }[])[0].stack);
+    expect(groupStacks).toEqual(singularStacks);
+  });
+
+  it("each definition carries ITS order's continuation band — never a sibling ticket's", () => {
+    const defs = buildShippingTicketDefinitions(twoTickets());
+    const bands = defs.map((d) => allText(d.continuationHeaderSpec!.content).join("\n"));
+    expect(bands[0]).toContain("Order No.: 72036-3");
+    expect(bands[0]).toContain("(continued)");
+    expect(bands[0]).not.toContain("72037");
+    expect(bands[1]).toContain("Order No.: 72037-1");
+    expect(bands[1]).not.toContain("72036");
+    // The band draws in the top margin; the reserve must clear its own height.
+    expect(defs[0].continuationHeaderSpec!.overflowTopMargin).toBeGreaterThanOrEqual(36);
+  });
+
+  it("the band carries a label override but ignores the visibility flags — identity on paper is locked", () => {
+    const c = cfg();
+    fieldOf(c, "header", "order_no").label = "Work Order:";
+    fieldOf(c, "header", "order_no").visible = false;
+    const defs = buildShippingTicketDefinitions([sampleTicket()], "SHIPPER", checked(c));
+    const band = allText(defs[0].continuationHeaderSpec!.content).join("\n");
+    expect(band).toContain("Work Order: 72036-3");
+    // …while the sheet body itself honours the hide.
+    expect(textOf(defs[0].content)).not.toContain("Work Order:");
+  });
+
+  it("the pageFooter knob turns on the per-group footer spec and widens the bottom margin; default stays off", () => {
+    const on = cfg();
+    on.pageFooter = true;
+    const withFooter = buildShippingTicketDefinitions(twoTickets(), "SHIPPER", checked(on));
+    expect(withFooter[0].pageFooterSpec).toEqual({ kind: "pageNofM" });
+    expect(withFooter[0].pageMargins).toEqual([24, 24, 24, 44]);
+
+    const dflt = buildShippingTicketDefinitions(twoTickets());
+    expect(dflt[0].pageFooterSpec).toBeUndefined();
+    expect(dflt[0].pageMargins).toEqual([24, 24, 24, 24]); // golden — today's margins exactly
+  });
+
+  it("is pure: plain JSON, deterministic, spec keys included", () => {
+    const defs = buildShippingTicketDefinitions(twoTickets(), "MOS_SHIPPER");
+    expect(JSON.parse(JSON.stringify(defs))).toEqual(defs);
+    expect(buildShippingTicketDefinitions(twoTickets(), "MOS_SHIPPER")).toEqual(defs);
   });
 });
 
