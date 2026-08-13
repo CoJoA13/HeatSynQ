@@ -91,22 +91,15 @@ Settings — `cert_statement` / `shipper_liability_text` / `quote_intro_text` /
 `quote_liability_text` are template text blocks now (migration
 `20260813120000_retire_standing_text_settings` deletes the orphaned rows; the values were
 COALESCE-copied into the seeded configs at Task 3, so nothing is stranded) — and folded in #97
-(the indicative-amounts index-map guard). Branch state after Task 14: 2665 tests / 144 files,
-tsc/eslint/build clean, E2E 19/19, 35 migrations on the branch.** **Task 15 (`Part.processName`
-UI, APPROVED 2026-08-13) surfaced the already-existing column for data entry (form field + export +
-paste; no schema/builder/print change). Task 16 (templates admin + nav) is IMPLEMENTED (review
-pending): the first template-designer SCREEN — `/admin/templates` lists the 8 docTypes with the
-default starred, live assignment counts, create/rename, and the full lifecycle (open-draft /
-discard / publish[edit_templates] / set-default[edit_templates] / version-history with
-open-draft-from-version-N / reasoned §5.14 delete naming linked customers + the Excel export from
-the refusal only). THE NAV DECISION = Option B (spec §5.5 "under the existing admin area UI"):
-Templates is an admin-group entry gated on `templates.view` specifically, and the Admin header
-shows iff any admin-group entry is visible (admin.view OR templates.view) — NAV/ADMIN + the gating
-lifted into a pure client-safe `src/lib/nav.ts` (unit-tested). Carried Task-4 minors both closed:
-(a) `getTemplate` reads its draft + history in one RepeatableRead tx; (b) the blocker export is
-reachable from the delete refusal only. Gates: vitest 2675/2675 (145 files), tsc/eslint/build clean,
-E2E 20/20 (the new `templates-admin` flow + the 19 existing).** Remaining: Tasks 17–21 (editor panels + logo, save/conflict
-UX, preview, customer-page assignment picker, restyle E2E + docs + final gates).
+(the indicative-amounts index-map guard). The UI stretch is under way: **Task 15
+(`Part.processName` field) and Task 16 (templates admin + nav — the first designer screen, nav
+decision Option B: an admin-group entry gated on `templates.view` specifically) are both APPROVED.**
+Branch state after Task 16: **2675 tests / 145 files, tsc/eslint/build clean, E2E 20/20 (the new
+`templates-admin` flow joined), 35 migrations.** Per-task detail lives in the execution ledger
+`docs/execution/2026-08-12-phase-7-template-designer/progress.md`. Remaining: Tasks 17–21 (editor
+panels + logo, save/conflict UX, preview, customer-page assignment picker, restyle E2E + docs +
+final gates), then the whole-branch review, one fix wave, and the PR. Deferred findings so far →
+issue #102 (the render two-pass blank-trailing-page artifact).
 
 **Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12).** The full Phase 6 narrative — the
 fourteen-ruling design session, the twelve tasks and their reviews, the whole-branch review's F1
