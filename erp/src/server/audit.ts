@@ -17,7 +17,8 @@ export type AuditableModel =
   | "invoice" | "invoiceLine" | "billingConfig"
   | "receiptBatch" | "payment" | "application"
   | "closePeriod" | "glExportBatch"
-  | "quote" | "endingStatement";
+  | "quote" | "endingStatement"
+  | "documentTemplate" | "documentTemplateVersion" | "customerTemplateAssignment";
 
 // Relations pulled into before/after snapshots so audit history reflects changes made through
 // associated tables (setRolePermissions, setUserOverrides) and not just scalar columns on the
@@ -265,6 +266,27 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // The eleventh reference kind (Phase 6 ruling 13) — audited through the generic reference
   // machinery, exactly like commentSnippet/specification. No relations of its own.
   endingStatement: undefined,
+  // Phase 7 (spec §4.2). A template's assignments are what its delete guard names, so the
+  // template-level diff pulls them in — live rows only (the partPrice precedent: a soft-deleted
+  // assignment would surface rows the live read never shows), explicitly orderBy'd (issue #24),
+  // with the customer's code/name selected in so history reads "AC1 · Acme", never a cuid.
+  // Versions are audited as their OWN model and are deliberately NOT included here: a template
+  // accumulates them forever, and the interesting version diffs are the version rows' own.
+  documentTemplate: {
+    assignments: {
+      where: { deletedAt: null },
+      orderBy: [{ id: "asc" }],
+      include: { customer: { select: { code: true, name: true } } },
+    },
+  },
+  // Snapshot projection lives in SNAPSHOT_SELECT below (never both — Prisma rejects a query
+  // carrying include AND select): logoImage is a bytes column exactly like signatureImage.
+  documentTemplateVersion: undefined,
+  // History names both ends of the assignment (the customerSurcharge precedent).
+  customerTemplateAssignment: {
+    customer: { select: { code: true, name: true } },
+    template: { select: { name: true, docType: true } },
+  },
 };
 
 /**
@@ -315,13 +337,21 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
     overrides: true,
   },
+  // Phase 7 (spec §4.2): `logoImage` is a bytes column exactly like signatureImage/fileData —
+  // every scalar EXCEPT it, so a draft edit's before→after snapshot carries the real `config`
+  // diff (the point of auditing template edits) without half a megabyte of logo bytes riding
+  // along twice per save. redact()'s "logoimage" pattern stays defense-in-depth.
+  documentTemplateVersion: {
+    id: true, templateId: true, versionNumber: true, status: true, config: true,
+    logoMimeType: true, publishedAt: true, publishedById: true, createdAt: true, updatedAt: true,
+  },
 };
 
 export function redact(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === null || value === undefined) return undefined;
   const clone = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 
-  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage", "filedata"];
+  const sensitiveKeyPatterns = ["passwordhash", "password", "token", "secret", "signatureimage", "filedata", "logoimage"];
 
   function redactRecursive(obj: unknown): unknown {
     if (obj === null || obj === undefined) return obj;
