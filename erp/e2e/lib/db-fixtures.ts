@@ -186,6 +186,12 @@ const FIXTURE = {
   quoteStepCodeCode: "E2E-QUOTE-OP",
   quoteStepCodeName: "E2E Quote Op",
   quoteEndingStatementName: "E2E Quote Ending Statement",
+  // Task 16 (Phase 7): the document-template admin flow creates ONE DocumentTemplate LIVE through
+  // /admin/templates (the `liveTemplateName` precedent — its name is known up front, its id only
+  // once the flow has run), publishes it, and re-drafts it. It owns no customer, so it is reaped by
+  // this exact name alone. The seeded "Standard" templates (one per docType, from migration 34)
+  // are read-only in the flow and never touched, so they need no cleanup.
+  docTemplateName: "E2E Doc Template",
 } as const;
 
 /**
@@ -410,6 +416,37 @@ async function deleteTemplatesAndSteps(templateIds: string[]): Promise<void> {
   await prisma.auditLog.deleteMany({ where: { entity: "processTemplate", entityId: { in: templateIds } } });
   await prisma.processTemplateStep.deleteMany({ where: { templateId: { in: templateIds } } });
   await prisma.processTemplate.deleteMany({ where: { id: { in: templateIds } } });
+}
+
+/**
+ * Task 16 (Phase 7): the ONE `DocumentTemplate` the templates-admin flow creates live through
+ * /admin/templates — name-driven (the `liveTemplateName`/`deleteEndingStatementFixture` precedent:
+ * its exact FIXTURE name is known up front, its id only once the flow has run). Children before
+ * parent: `DocumentTemplateVersion.templateId` IS `ON DELETE CASCADE`, but the versions are deleted
+ * explicitly first so `DocumentTemplate.publishedVersionId` (`ON DELETE SET NULL`) is cleared before
+ * the template row goes, matching this file's children-before-parents discipline everywhere else.
+ * Both entities are audited by templates.ts (documentTemplate + documentTemplateVersion), so both
+ * audit-row sets are swept. `StoredDocument.templateVersionId` is `ON DELETE SET NULL` (the flow
+ * prints nothing anyway), and the flow creates NO `CustomerTemplateAssignment` — the one RESTRICT FK
+ * into DocumentTemplate — so nothing blocks. Idempotent and independent (no fixture-customer scope),
+ * so it is called unconditionally, outside reapLeftovers' `total === 0` gate.
+ */
+async function deleteDocumentTemplatesByName(): Promise<void> {
+  const templates = await prisma.documentTemplate.findMany({
+    where: { name: FIXTURE.docTemplateName }, select: { id: true },
+  });
+  const ids = templates.map((t) => t.id);
+  if (ids.length === 0) return;
+  const versions = await prisma.documentTemplateVersion.findMany({
+    where: { templateId: { in: ids } }, select: { id: true },
+  });
+  const versionIds = versions.map((v) => v.id);
+  if (versionIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "documentTemplateVersion", entityId: { in: versionIds } } });
+    await prisma.documentTemplateVersion.deleteMany({ where: { id: { in: versionIds } } });
+  }
+  await prisma.auditLog.deleteMany({ where: { entity: "documentTemplate", entityId: { in: ids } } });
+  await prisma.documentTemplate.deleteMany({ where: { id: { in: ids } } });
 }
 
 async function deleteStepCodes(stepCodeIds: string[]): Promise<void> {
@@ -858,6 +895,10 @@ async function deleteUsersAndRoles(userIds: string[], roleIds: string[]): Promis
  * do nothing too — no self-heal, wedged indefinitely).
  */
 async function reapLeftovers(): Promise<void> {
+  // Task 16: name-based and independent of every fixture-customer scope below, so it runs first and
+  // unconditionally — a lone leftover document template must be reaped even when the `total === 0`
+  // gate further down would otherwise return early.
+  await deleteDocumentTemplatesByName();
   const [
     templates, parts, stepCodes, customers, users, roles, orderCustomers, orderParts,
     shipCustomers, holdCustomers, phase4Parts, scales, codes, containerTypes,
@@ -1507,10 +1548,17 @@ async function create(): Promise<Fixtures> {
         passwordHash: adminHash, roleId: adminRole.id,
       },
     });
+    // Task 16 (Phase 7): `templates.view` rides along so the templates-admin flow can prove the
+    // nav decision + §5.16 as this deliberately view-only user — a user holding templates.view but
+    // NOT admin.view still reaches /admin/templates via the Admin > Templates nav entry (the
+    // silent-dead-end rule), where every mutating control is disabled-with-reason. Orthogonal to
+    // the parts/processes designer this user also exercises (permission-gating/processes-list).
     const restrictedRole = await tx.role.create({
       data: {
         name: FIXTURE.restrictedRoleName,
-        permissions: { create: [{ permission: "parts.view" }, { permission: "processes.view" }] },
+        permissions: { create: [
+          { permission: "parts.view" }, { permission: "processes.view" }, { permission: "templates.view" },
+        ] },
       },
     });
     const restrictedUser = await tx.user.create({
@@ -1731,6 +1779,7 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     payload.invPartId, payload.arPartId, payload.closePartId, payload.quotePartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
+  await deleteDocumentTemplatesByName(); // Task 16: the templates-admin flow's own live-built document template
   // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
   // restrict-on-delete FK) and deletePartsAndCustomers (partId's). Fix-wave 2 (finding 1): sweep
   // the same full part-id list deletePartProcessData receives above, not just partId — otherwise

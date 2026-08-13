@@ -87,6 +87,14 @@ const FLOWS = [
   { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
   { name: "close-month-end", as: "admin", module: "./flows/close-month-end.mjs" },
   { name: "quotes", as: "admin", module: "./flows/quotes.mjs" },
+  // Task 16 (Phase 7) adds the 20th flow, `templates-admin`, as admin — the first
+  // template-designer screen: reach /admin/templates via the nav, see the 8 document types with
+  // their Standard defaults starred, create/publish/re-draft a template, then re-log-in as the
+  // restricted view-only user to prove the nav decision + §5.16. It creates ONE fully-owned
+  // DocumentTemplate (reaped by name in db-fixtures.ts) and mutates no seeded/shared state, so it
+  // runs last for the usual nothing-after-needs-its-state reason and is safe after the CLOSED
+  // month close-month-end leaves behind (it touches no invoicing/period state).
+  { name: "templates-admin", as: "admin", module: "./flows/templates-admin.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
