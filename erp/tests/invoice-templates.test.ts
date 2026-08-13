@@ -1,22 +1,17 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
-import { drawnPages, drawnText, pageCount, paintedImageCounts } from "./helpers/pdf";
+import { prisma, truncateAll } from "./helpers/db";
+import { drawnPages, drawnText, pageCount } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper } from "@/server/shippers";
 import { addPartPrice } from "@/server/part-prices";
-import { createSurcharge } from "@/server/surcharges";
 import { setSetting } from "@/server/settings";
 import {
   createInvoice, finalizeInvoice, createCredit, replaceInvoiceLines, printInvoice,
-  readInvoicePdfData,
 } from "@/server/invoices";
 import { buildInvoiceDefinition, type InvoicePdfData } from "@/server/pdf/invoice";
 import { renderPdf } from "@/server/pdf/render";
 import { getDocument } from "@/server/documents";
-import { createTemplate, editDraft, publishDraft, uploadLogo } from "@/server/templates";
-import { assignTemplate } from "@/server/template-assignments";
-import { barcodePng } from "@/server/pdf/render";
 import { INVOICE_DEFAULT_CONFIG, validateConfig, type TemplateConfig } from "@/lib/template-contracts/index";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -215,5 +210,364 @@ describe("invoice processNames — create-time source (spec §5.7)", () => {
     const credit = await asSystem(() => createCredit(invoice.id));
     const row = await prisma.invoice.findUniqueOrThrow({ where: { id: credit.id }, select: { processNames: true } });
     expect(row.processNames).toBe("MARQUENCHZONE");
+  });
+});
+
+// ================================================================================================
+// The builder as a CONFIG-CONSUMER over FROZEN data (spec §5.4/§5.6). Pure, plain-JSON fixtures —
+// the golden suite's sampleData, kept value-distinctive. The config maps placement/labels/widths/
+// fonts/formats/logo over the frozen data; it introduces NO live re-join.
+// ================================================================================================
+
+/** The owner's own invoice as plain builder input (order 72026) — billTo/shipTo/remitTo are line
+ *  arrays (an invoice's billTo/shipTo are FROZEN snapshot strings, split here into lines). */
+function sampleData(overrides: Partial<InvoicePdfData> = {}): InvoicePdfData {
+  return {
+    company: { name: "American Heat Treating - Alabama, LLC", address: "3008 Red Morris Parkway\nAnniston AL 36207", phone: "256-835-3370" },
+    remitTo: { name: "American Heat Treating - Alabama, LLC", lines: ["3008 Red Morris Parkway", "Anniston AL 36207"] },
+    billTo: ["GFMCO - Columbus LLC", "PO Box 96", "600 12th Street", "Columbus  GA  31902-0096"],
+    shipTo: ["GFMCO - Columbus LLC", "PO Box 96", "600 12th Street", "Columbus  GA  31902-0096"],
+    title: "Invoice",
+    documentNumber: "7 - 72026", invoiceDate: "2026-07-29", termsName: "Net 30",
+    orderNumber: 72026, poNumber: "49499",
+    materialName: "Ductile Iron", processNames: "Austemper",
+    parts: [{ qty: 144, partNumber: "A16-21591-000", partName: "EQUALIZER-RR SUSP", partDescription: "", eachWeight: 21, totalWeight: 3024 }],
+    priceRows: [{ description: "Austemper", pricePerLabel: "Each", unitPrice: 6.51, minimumCharge: 600, setupCharge: null, amount: 937.44 }],
+    subtotal: 937.44,
+    surchargeRows: [{ description: "EnergySur", amount: 37.5 }],
+    chargeRows: [], certRow: null, freightRow: null, taxRow: null,
+    total: 974.94,
+    ...overrides,
+  };
+}
+
+/** A credit-shaped fixture — negative amounts, the credit number as the bare document number. */
+function creditData(overrides: Partial<InvoicePdfData> = {}): InvoicePdfData {
+  return sampleData({
+    title: "Credit", documentNumber: "1000",
+    priceRows: [{ description: "Austemper", pricePerLabel: "Each", unitPrice: 6.51, minimumCharge: 600, setupCharge: null, amount: -937.44 }],
+    subtotal: -937.44, surchargeRows: [{ description: "EnergySur", amount: -37.5 }], total: -974.94,
+    ...overrides,
+  });
+}
+
+const cfg = (): TemplateConfig => structuredClone(INVOICE_DEFAULT_CONFIG);
+/** Round-trips a tweaked config through the REAL validator — every config a test feeds the builder
+ *  (the raw omission-belt shapes excepted, deliberately) is one a template could store. */
+const checked = (c: TemplateConfig): TemplateConfig => validateConfig("INVOICE", c);
+const sectionOf = (c: TemplateConfig, key: string) => c.sections.find((s) => s.key === key)!;
+const fieldOf = (c: TemplateConfig, section: string, key: string) =>
+  sectionOf(c, section).fields.find((f) => f.key === key)!;
+
+/** Every `text` string/number in a definition, flattened (skips `image` so a data-URI never
+ *  pollutes a text assertion). */
+function allText(node: unknown, out: string[] = []): string[] {
+  if (node === null || node === undefined) return out;
+  if (typeof node === "string" || typeof node === "number") { out.push(String(node)); return out; }
+  if (Array.isArray(node)) { for (const n of node) allText(n, out); return out; }
+  if (typeof node === "object") {
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === "image") continue;
+      allText(value, out);
+    }
+  }
+  return out;
+}
+const textOf = (def: unknown): string => allText(def).join("\n");
+
+/** Every node in a definition matching `pred` — structural assertions (font sizes, widths). */
+function findNodes(node: unknown, pred: (n: Record<string, unknown>) => boolean,
+  out: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (node === null || typeof node !== "object") return out;
+  if (Array.isArray(node)) { for (const n of node) findNodes(n, pred, out); return out; }
+  const obj = node as Record<string, unknown>;
+  if (pred(obj)) out.push(obj);
+  for (const value of Object.values(obj)) findNodes(value, pred, out);
+  return out;
+}
+
+/** Every table's `widths` array in the definition. */
+function allWidths(def: unknown): (number | string)[][] {
+  return findNodes(def, (n) => typeof n.table === "object" && n.table !== null)
+    .map((n) => (n.table as { widths?: (number | string)[] }).widths)
+    .filter((w): w is (number | string)[] => Array.isArray(w));
+}
+
+describe("buildInvoiceDefinition — config-driven over frozen data", () => {
+  it("a label override prints in place of the contract default", () => {
+    const c = cfg();
+    fieldOf(c, "identity", "invoice_no").label = "INV NO:";
+    fieldOf(c, "order_strip", "material").label = "Alloy:";
+    fieldOf(c, "totals", "total").label = "Balance Due:";
+    const text = textOf(buildInvoiceDefinition(sampleData(), checked(c)));
+    expect(text).toContain("INV NO:");
+    expect(text).not.toContain("Invoice No.:");
+    expect(text).toContain("Alloy: ");
+    expect(text).toContain("Balance Due:");
+    expect(text).not.toContain("Total Amount Due:");
+    // The FROZEN values are untouched by the relabel — the config maps over frozen data.
+    expect(text).toContain("7 - 72026");
+    expect(text).toContain("$974.94");
+  });
+
+  it("a width override lands in the column-header strip's widths array", () => {
+    const c = cfg();
+    fieldOf(c, "column_header", "col_each_weight").width = 90;
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    expect(allWidths(def)).toContainEqual([52, "*", 90, 84]);
+    // …the default keeps the sample's [52, "*", 66, 84].
+    expect(allWidths(buildInvoiceDefinition(sampleData()))).toContainEqual([52, "*", 66, 84]);
+  });
+
+  it("a hidden section is omitted from the stack; the default still prints it", () => {
+    const c = cfg();
+    sectionOf(c, "totals").visible = false;
+    const text = textOf(buildInvoiceDefinition(sampleData(), checked(c)));
+    expect(text).not.toContain("Sub Total Amount:");
+    expect(text).not.toContain("Total Amount Due:");
+    expect(textOf(buildInvoiceDefinition(sampleData()))).toContain("Sub Total Amount:");
+  });
+
+  it("a hidden column field drops the strip header AND the parts cell; width frees the budget", () => {
+    const c = cfg();
+    fieldOf(c, "column_header", "col_each_weight").visible = false;
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    expect(textOf(def)).not.toContain("Each weight");
+    expect(allWidths(def)).toContainEqual([52, "*", 84]); // the each-weight column is gone from the grid
+  });
+
+  it("a hidden non-column field drops its slice of the order strip", () => {
+    const c = cfg();
+    fieldOf(c, "order_strip", "your_po").visible = false;
+    const text = textOf(buildInvoiceDefinition(sampleData(), checked(c)));
+    expect(text).not.toContain("Your PO #:");
+    expect(text).not.toContain("49499");
+    expect(text).toContain("Our Order #:"); // its sibling on the same line survives
+  });
+
+  it("stack order follows the config's section order", () => {
+    const c = cfg();
+    const i = c.sections.findIndex((s) => s.key === "parties");
+    const j = c.sections.findIndex((s) => s.key === "identity");
+    [c.sections[i], c.sections[j]] = [c.sections[j], c.sections[i]];
+    const text = textOf(buildInvoiceDefinition(sampleData(), checked(c)));
+    expect(text.indexOf("Billto:")).toBeLessThan(text.indexOf("Remit To"));
+    // …the default order is the other way around.
+    const dflt = textOf(buildInvoiceDefinition(sampleData()));
+    expect(dflt.indexOf("Remit To")).toBeLessThan(dflt.indexOf("Billto:"));
+  });
+
+  it("field order follows the config WITHIN the identity block", () => {
+    const c = cfg();
+    const identity = sectionOf(c, "identity");
+    const terms = identity.fields.find((f) => f.key === "terms")!;
+    identity.fields = [terms, ...identity.fields.filter((f) => f.key !== "terms")];
+    const text = textOf(buildInvoiceDefinition(sampleData(), checked(c)));
+    expect(text.indexOf("Terms:")).toBeLessThan(text.indexOf("Invoice No.:"));
+  });
+});
+
+describe("buildInvoiceDefinition — fonts and number formats", () => {
+  it("family, base size and role sizes map into the definition", () => {
+    const c = cfg();
+    c.fonts = { family: "Liberation Serif", baseSize: 8, headingSize: 26, smallSize: 5 };
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    expect(def.defaultStyle).toEqual({ font: "Liberation Serif", fontSize: 8 });
+    // headingSize drives the "Invoice" title; smallSize the footer strip's fine print.
+    expect(findNodes(def, (n) => n.text === "Invoice")[0].fontSize).toBe(26);
+    expect(findNodes(def, (n) => n.text === "Contact: Accounts Receivable")[0].fontSize).toBe(5);
+    // …the default keeps today's literals.
+    const dflt = buildInvoiceDefinition(sampleData());
+    expect(dflt.defaultStyle).toEqual({ font: "Roboto", fontSize: 9 });
+    expect(findNodes(dflt, (n) => n.text === "Invoice")[0].fontSize).toBe(20);
+    expect(findNodes(dflt, (n) => n.text === "Contact: Accounts Receivable")[0].fontSize).toBe(7.5);
+  });
+
+  it("thousandsSeparator: false ungroups quantities, weights and money", () => {
+    const c = cfg();
+    c.formats.thousandsSeparator = false;
+    const big = sampleData({
+      parts: [{ qty: 1440, partNumber: "X", partName: "Y", partDescription: "", eachWeight: 21, totalWeight: 30240 }],
+      priceRows: [{ description: "Op", pricePerLabel: "Each", unitPrice: 6.51, minimumCharge: null, setupCharge: null, amount: 9374.4 }],
+      subtotal: 9374.4, surchargeRows: [], total: 9374.4,
+    });
+    const text = textOf(buildInvoiceDefinition(big, checked(c)));
+    expect(text).toContain("1440");
+    expect(text).toContain("30240.00");
+    expect(text).toContain("$9374.40");
+    expect(text).not.toContain("1,440");
+    expect(text).not.toContain("$9,374.40");
+  });
+});
+
+describe("buildInvoiceDefinition — the date knob (the sample's long full-month style)", () => {
+  it.each([
+    ["M/D/YYYY", "7/29/2026"],
+    ["MM/DD/YYYY", "07/29/2026"],
+    ["YYYY-MM-DD", "2026-07-29"],
+    ["MMMM D, YYYY", "July 29, 2026"],
+    ["MMM - DD - YYYY", "Jul - 29 - 2026"],
+  ])("renders the invoice date as %s", (format, expected) => {
+    const c = cfg();
+    c.formats.dateFormat = format as TemplateConfig["formats"]["dateFormat"];
+    expect(textOf(buildInvoiceDefinition(sampleData(), checked(c)))).toContain(expected);
+  });
+
+  it("defaults to the sample's 'July 29, 2026' style", () => {
+    expect(textOf(buildInvoiceDefinition(sampleData()))).toContain("July 29, 2026");
+  });
+});
+
+describe("buildInvoiceDefinition — the negativeStyle knob formats a credit (ruling 3)", () => {
+  it.each([
+    ["SIGN_AFTER_SYMBOL", "$-937.44", "$-974.94"],
+    ["LEADING_MINUS", "-$937.44", "-$974.94"],
+    ["PARENTHESES", "($937.44)", "($974.94)"],
+  ])("renders %s on a credit's negative amounts", (style, amount, total) => {
+    const c = cfg();
+    c.formats.negativeStyle = style as TemplateConfig["formats"]["negativeStyle"];
+    const text = textOf(buildInvoiceDefinition(creditData(), checked(c)));
+    expect(text).toContain("Credit");
+    expect(text).toContain(amount);
+    expect(text).toContain(total);
+  });
+
+  it("defaults to SIGN_AFTER_SYMBOL — today's '$-937.44'; a positive invoice is unchanged", () => {
+    expect(textOf(buildInvoiceDefinition(creditData()))).toContain("$-937.44");
+    expect(textOf(buildInvoiceDefinition(sampleData()))).toContain("$937.44");
+  });
+});
+
+describe("buildInvoiceDefinition — the §5.6 belt, both halves", () => {
+  it("nothing on this contract is locked: a validated config may hide ANY section and the builder honors it", () => {
+    const c = cfg();
+    sectionOf(c, "parties").visible = false;
+    sectionOf(c, "footer").visible = false;
+    const validated = checked(c);
+    const text = textOf(buildInvoiceDefinition(sampleData(), validated));
+    expect(text).not.toContain("Billto:");
+    expect(text).not.toContain("Contact: Accounts Receivable");
+  });
+
+  it("a raw config OMITTING the totals section entry still renders it (the omission half)", () => {
+    const c = cfg();
+    c.sections = c.sections.filter((s) => s.key !== "totals");
+    const text = textOf(buildInvoiceDefinition(sampleData(), c));
+    expect(text).toContain("Sub Total Amount:");
+    expect(text).toContain("Total Amount Due:");
+  });
+
+  it("a raw config OMITTING a field entry inside a present section still renders it", () => {
+    const c = cfg();
+    const order = sectionOf(c, "order_strip");
+    order.fields = order.fields.filter((f) => f.key !== "process");
+    const text = textOf(buildInvoiceDefinition(sampleData(), c));
+    expect(text).toContain("Process: ");
+  });
+});
+
+const LOGO_URI = "data:image/png;base64,INVOICELOGOFIXTURE";
+
+describe("buildInvoiceDefinition — logo placement (spec §6.3)", () => {
+  const placedConfig = (placement: "header-left" | "header-center" | "header-right") => {
+    const c = cfg();
+    c.logo = { placement, width: 90 };
+    return checked(c);
+  };
+  const header = (def: unknown) => (def as { content: Record<string, unknown>[] }).content[0];
+
+  it("a header-center logo unshifts into the centered header stack", () => {
+    const h = header(buildInvoiceDefinition(sampleData(), placedConfig("header-center"), LOGO_URI));
+    expect((h.stack as { image?: string }[])[0]).toEqual({ image: LOGO_URI, width: 90 });
+  });
+
+  it("a header-left logo rides the left column at its configured width", () => {
+    const h = header(buildInvoiceDefinition(sampleData(), placedConfig("header-left"), LOGO_URI));
+    const cols = h.columns as { width?: number; stack?: { image?: string }[] }[];
+    expect(cols[0].stack![0]).toEqual({ image: LOGO_URI, width: 90 });
+  });
+
+  it("a header-right logo rides the right column", () => {
+    const h = header(buildInvoiceDefinition(sampleData(), placedConfig("header-right"), LOGO_URI));
+    const cols = h.columns as { width?: number; stack?: { image?: string }[] }[];
+    expect(cols[cols.length - 1].stack![0]).toEqual({ image: LOGO_URI, width: 90 });
+  });
+
+  it("config placement without bytes, and bytes without placement, both fall back to the text-only header", () => {
+    expect(JSON.stringify(buildInvoiceDefinition(sampleData(), placedConfig("header-center")))).not.toContain(LOGO_URI);
+    expect(JSON.stringify(buildInvoiceDefinition(sampleData(), cfg(), LOGO_URI))).not.toContain(LOGO_URI);
+  });
+});
+
+describe("buildInvoiceDefinition — pageFooter knob and continuation band", () => {
+  it("the knob OFF keeps the static company-strip footer; the margins are today's", () => {
+    const dflt = buildInvoiceDefinition(sampleData());
+    expect(dflt.pageFooterSpec).toBeUndefined();
+    expect(textOf(dflt.footer)).toContain("Phone: 256-835-3370");
+    expect(dflt.pageMargins).toEqual([24, 24, 24, 44]);
+  });
+
+  it("the knob ON moves the company strip onto the pageNofM footer's `above` slot, dropping the plain footer", () => {
+    const c = cfg();
+    c.pageFooter = true;
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    expect(def.footer).toBeUndefined();
+    expect(def.pageFooterSpec!.kind).toBe("pageNofM");
+    expect(textOf(def.pageFooterSpec!.above)).toContain("Phone: 256-835-3370");
+    expect(def.pageMargins).toEqual([24, 24, 24, 44]);
+  });
+
+  it("the knob ON with the footer section hidden carries the page line alone", () => {
+    const c = cfg();
+    c.pageFooter = true;
+    sectionOf(c, "footer").visible = false;
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    expect(def.pageFooterSpec).toEqual({ kind: "pageNofM" });
+    expect(def.footer).toBeUndefined();
+  });
+
+  it("the definition carries the invoice's identity band for continuation pages", () => {
+    const def = buildInvoiceDefinition(sampleData());
+    const band = allText(def.continuationHeaderSpec!.content).join("\n");
+    expect(band).toContain("Invoice No.: 7 - 72026");
+    expect(band).toContain("(continued)");
+    expect(def.continuationHeaderSpec!.overflowTopMargin).toBeGreaterThanOrEqual(36);
+  });
+
+  it("the band carries an invoice_no label override but ignores its visibility flag — identity on paper is locked", () => {
+    const c = cfg();
+    fieldOf(c, "identity", "invoice_no").label = "Job No.:";
+    fieldOf(c, "identity", "invoice_no").visible = false;
+    const def = buildInvoiceDefinition(sampleData(), checked(c));
+    const band = allText(def.continuationHeaderSpec!.content).join("\n");
+    expect(band).toContain("Job No.: 7 - 72026");
+    // …while the sheet body honours the hide.
+    expect(textOf(def.content)).not.toContain("Job No.:");
+  });
+
+  it("a many-part invoice overflows LETTER and repeats its identity on the last page (the live overflow path)", async () => {
+    const parts = Array.from({ length: 40 }, (_, i) => ({
+      qty: 144, partNumber: `A16-${i}`, partName: "EQUALIZER-RR SUSP", partDescription: "SUSP", eachWeight: 21, totalWeight: 3024,
+    }));
+    const pdf = await renderPdf(buildInvoiceDefinition(sampleData({ parts })));
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+    const pages = drawnPages(pdf);
+    expect(pages[0]).not.toContain("(continued)");
+    expect(pages[pages.length - 1]).toContain("(continued)");
+  });
+});
+
+describe("buildInvoiceDefinition — purity, config included", () => {
+  it("a config-driven definition survives the JSON round trip and is deterministic", () => {
+    const c = cfg();
+    c.logo = { placement: "header-right", width: 80 };
+    fieldOf(c, "identity", "invoice_no").label = "INV:";
+    c.formats.dateFormat = "YYYY-MM-DD";
+    c.formats.negativeStyle = "PARENTHESES";
+    c.pageFooter = true;
+    const config = checked(c);
+    const def = buildInvoiceDefinition(creditData(), config, LOGO_URI);
+    expect(JSON.parse(JSON.stringify(def))).toEqual(def);
+    expect(buildInvoiceDefinition(creditData(), config, LOGO_URI)).toEqual(def);
   });
 });
