@@ -1,6 +1,22 @@
 import { prisma } from "@/server/db";
-import { TEMPLATE_DOC_TYPES, defaultConfigFor } from "@/lib/template-contracts/index";
+import {
+  TEMPLATE_DOC_TYPES, defaultConfigFor, type TemplateDocTypeString,
+} from "@/lib/template-contracts/index";
 import type { Prisma } from "../../prisma/generated/prisma/client";
+
+/** 'MOS_SHIPPER' → 'standard-mos-shipper' — the seed migration's fixed template row ids,
+ *  re-created by `truncateAll()` below after every TRUNCATE. Exported ONCE from here (Task 3
+ *  review carry): the drift guard and the Task 4+ service fixtures reference the same seeded
+ *  rows, and a second hand-rolled copy of the minting rule is exactly the drift the guard
+ *  exists to catch. */
+export function templateId(docType: TemplateDocTypeString): string {
+  return `standard-${docType.toLowerCase().replace(/_/g, "-")}`;
+}
+
+/** The seeded template's v1 PUBLISHED version id ('standard-traveler-v1'). */
+export function templateVersionId(docType: TemplateDocTypeString): string {
+  return `${templateId(docType)}-v1`;
+}
 
 /**
  * Deletes all rows from every table except _prisma_migrations, then restores the rows the
@@ -37,7 +53,6 @@ export async function truncateAll(): Promise<void> {
     ON CONFLICT ("id") DO NOTHING`;
 
   const now = new Date();
-  const templateId = (docType: string) => `standard-${docType.toLowerCase().replace(/_/g, "-")}`;
   await prisma.documentTemplate.createMany({
     data: TEMPLATE_DOC_TYPES.map((docType) => ({
       id: templateId(docType), docType, name: "Standard", isDefault: true, updatedAt: now,
@@ -45,7 +60,7 @@ export async function truncateAll(): Promise<void> {
   });
   await prisma.documentTemplateVersion.createMany({
     data: TEMPLATE_DOC_TYPES.map((docType) => ({
-      id: `${templateId(docType)}-v1`, templateId: templateId(docType), versionNumber: 1,
+      id: templateVersionId(docType), templateId: templateId(docType), versionNumber: 1,
       status: "PUBLISHED", config: defaultConfigFor(docType) as unknown as Prisma.InputJsonValue,
       publishedAt: now, updatedAt: now,
     })),

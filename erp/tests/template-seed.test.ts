@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, templateId } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { auditedUpdate, readAudit, redact } from "@/server/audit";
 import { SETTINGS } from "@/server/settings";
@@ -29,21 +29,24 @@ const seedDir = readdirSync(MIGRATIONS).find((d) => d.endsWith("_seed_standard_t
 if (seedDir === undefined) throw new Error("no _seed_standard_templates migration directory");
 const SQL = readFileSync(join(MIGRATIONS, seedDir, "migration.sql"), "utf8");
 
-/** 'MOS_SHIPPER' → 'standard-mos-shipper' — the migration's fixed row ids (and truncateAll's). */
-function templateId(docType: TemplateDocTypeString): string {
-  return `standard-${docType.toLowerCase().replace(/_/g, "-")}`;
-}
+// `templateId` (the migration's fixed row ids, and truncateAll's) is imported from ./helpers/db —
+// one exported copy of the minting rule (Task 3 review carry), never a second hand-rolled one.
 
-/** The dollar-quoted config literal for one docType, JSON-parsed. Each literal carries its own
- *  per-type tag ($traveler_config$ …), so extraction needs no SQL grammar. */
-function configLiteral(docType: TemplateDocTypeString): TemplateConfig {
+/** The dollar-quoted config literal for one docType, as its RAW text. Each literal carries its
+ *  own per-type tag ($traveler_config$ …), so extraction needs no SQL grammar. */
+function rawConfigLiteral(docType: TemplateDocTypeString): string {
   const tag = `$${docType.toLowerCase()}_config$`;
   const start = SQL.indexOf(tag);
   expect(start, `the seed migration has no ${tag} literal`).toBeGreaterThanOrEqual(0);
   const end = SQL.indexOf(tag, start + tag.length);
   expect(end, `${tag} literal is unterminated`).toBeGreaterThan(start);
   expect(SQL.indexOf(tag, end + tag.length), `${tag} appears more than once`).toBe(-1);
-  return JSON.parse(SQL.slice(start + tag.length, end)) as TemplateConfig;
+  return SQL.slice(start + tag.length, end);
+}
+
+/** The same literal, JSON-parsed. */
+function configLiteral(docType: TemplateDocTypeString): TemplateConfig {
+  return JSON.parse(rawConfigLiteral(docType)) as TemplateConfig;
 }
 
 /** Every $<key>_default$ COALESCE-fallback literal for one standing-text key, JSON-parsed —
@@ -111,6 +114,20 @@ describe("the seed migration's SQL literals (drift guard — parses the file, ne
     expectFallbacks("quote_liability_text", "QUOTE", 1);
   });
 
+  it("pins the five jsonb_set target paths — each copy lands exactly on the key the contracts read", () => {
+    // Task 3 review carry: the subquery-count test above proves the copy READS the right Setting
+    // rows; this pins where each copy is WRITTEN. An applied migration is frozen, so this is
+    // documentation-grade — but a typo'd path ('{textBlocks,cert_statment}') would have seeded
+    // the value BESIDE the key every consumer reads, and nothing else in the suite looks at the
+    // target path.
+    expect(occurrences("'{textBlocks,cert_statement}'")).toBe(1);
+    expect(occurrences("'{textBlocks,shipper_liability_text}'")).toBe(2);
+    expect(occurrences("'{textBlocks,quote_intro_text}'")).toBe(1);
+    expect(occurrences("'{textBlocks,quote_liability_text}'")).toBe(1);
+    // …and those five are ALL the jsonb_set calls, so no copy targets an unpinned path.
+    expect(occurrences("jsonb_set(")).toBe(5);
+  });
+
   it("quote_liability_text's fallback is a PRESENT key holding the empty string, never an absent key", () => {
     // The owner keys the shop's wording; the builder omits the strip when blank, so "" IS
     // today's paper (Task 2). An absent key would parse fine (.strict() textBlocks would
@@ -153,8 +170,12 @@ describe("the seed migration's SQL literals (drift guard — parses the file, ne
     for (const section of statement.sections) {
       for (const field of section.fields) expect(field.label, field.key).toBeNull();
     }
-    expect(SQL).not.toContain("1-30");
-    expect(SQL).not.toContain("1–30");
+    // Scoped to the STATEMENT literal (Task 3 review carry, cosmetic): the risk being pinned is
+    // an aging label baked into the statement's own config as an override — the other literals
+    // never carried aging labels to begin with.
+    const raw = rawConfigLiteral("STATEMENT");
+    expect(raw).not.toContain("1-30");
+    expect(raw).not.toContain("1–30");
   });
 });
 
