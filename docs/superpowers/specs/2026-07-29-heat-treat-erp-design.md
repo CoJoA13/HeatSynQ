@@ -247,3 +247,17 @@ Full design: `docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its 
 | Quote scope | **Real customer required; part optional per line** — free-text lines are paper-only until a part is attached. No prospect/lead customers |
 | Ending statements | **Built as the eleventh reference kind** (listed in §5.1's reference-data row, shipped late) — admin list with one default, per-quote pick, `text` body |
 | User title | **`User.title` added** — prints on the quote signature block and closes Phase 4's cert-signature-title ping (HANDOFF §7.5.4) |
+
+### Amendments for Phase 7 — Template designer (owner Q&A 2026-08-12)
+
+Full design: `docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md` (its §3 records all seven rulings; approved 2026-08-12 including the `pdf-lib` dependency).
+
+| Decision | Answer |
+|---|---|
+| §8 versioning | **Draft → publish**: prints resolve the last published version; drafts never print; discarded drafts are kept as append-only history (a status flip, never a delete). A print racing a publish may render the prior published version — "from that moment" means commit order, accepted by design |
+| §8 editable surface | **Label overrides, number formats, date formats, and column widths** join the editor beyond §8's core list (widths with validation guardrails; the ticket tear-off goes flow-based) |
+| §8 "steps on traveler" | The show/hide example is **superseded** by the 2026-07-30 Step-fields ruling — traveler templates cannot hide typed step fields or the barcode; the editor shows them locked and the config validator refuses a config that hides them |
+| §8 fonts | **Curated bundled set** (4–6 open-source families vendored as `.ttf` assets); no font-file upload |
+| §8 assignment | **Division inherits the parent's assignment**: resolution walks to the nearest assigned ancestor, then the type's default template. A template with no published version can be neither the default nor assigned |
+| §5.1 Part | gains optional **`processName`** — prints on the traveler's Process: slot (live) and folds into the invoice's create-time `processNames` snapshot (blank falls back to the priced-operation join) |
+| §10 Settings | the four standing-text keys (`cert_statement`, `shipper_liability_text`, `quote_intro_text`, `quote_liability_text`) **migrate into template content and retire from Settings**; company identity keys stay |

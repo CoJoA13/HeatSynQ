@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-12 — **Phase 6 (Quoting) is MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). **No phase is in flight — §9 is the open next-track decision (owner's choice).** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
+**Updated:** 2026-08-12 (later the same day) — **Phase 7 (Template designer) is IN FLIGHT: the owner chose it as the next track and approved its design spec** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md` — seven rulings in its §3, approved including the `pdf-lib` dependency; §15 amendments recorded). §4 carries the current-phase state; §9 is now the Phase 7 kickoff. Earlier the same day: **Phase 6 (Quoting) MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -69,17 +69,32 @@ per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review 
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12) — no phase is in flight; the next
-track is the owner's choice (§9).** The full Phase 6 narrative — the fourteen-ruling design
-session, the twelve tasks and their reviews, the whole-branch review's F1 story, the process
-incident and its rule, and the lessons — is `docs/history/2026-08-12-phase-6-quoting.md`; the
-one-paragraph entry is below under "Merged, in build order". **The Phase 6 demo ran 2026-08-12 — all 8 ratification
-items RULED** (`docs/2026-08-12-phase-6-demo.md`: rulings 1–4/6–8 as-built; ruling 5 re-gates the
-part-page quotes read to `quotes.view` → issue #101; ruling 8 adds the empty-Material suppression
-to #100); deferred findings are issues **#95–#101**. The milestone alternatives Phase 5's completion opened —
-parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — stay available as next tracks
-alongside roadmap Phases 7 (template designer) and 8 (reports & parallel-run tools); the
-owner-owed GL-account list + bookkeeper QBO homework gate a *real* export.
+**Phase 7 (Template designer) is IN FLIGHT — design spec approved by the owner 2026-08-12**
+(`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md`), chosen over Phase 8,
+parallel-run prep, and the backlog burn-down (§9's four candidates). The design session took
+**seven rulings** (the spec's §3): all eight document types at full §8 depth in one phase;
+draft → publish versioning; all four format knobs (labels, number formats, date formats, column
+widths); `Part.processName` fills the traveler's Process: slot and the invoice's create-time
+snapshot; a curated bundled font set (no upload); fold-ins **#36, #43, #97, #98, #87** (#85 and
+#52 stay in the backlog); division → parent → type-default assignment resolution. The spec was
+adversarially reviewed on four lenses before approval (all APPROVE-WITH-FIXES, findings
+incorporated — among them the never-published-template resolution hole, the honest
+immutability-not-locking publish-vs-print argument, discard-as-status-flip instead of a
+hard delete, config diffs kept in audit, and the `pdf-lib` dependency surfaced for explicit
+sign-off — **approved**). Branch: `phase-7-template-designer` (created at plan approval). Next
+step: the implementation plan, then subagent-driven execution with the record in
+`docs/execution/2026-08-12-phase-7-template-designer/`, committed on the first task.
+
+**Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12).** The full Phase 6 narrative — the
+fourteen-ruling design session, the twelve tasks and their reviews, the whole-branch review's F1
+story, the process incident and its rule, and the lessons — is
+`docs/history/2026-08-12-phase-6-quoting.md`; the one-paragraph entry is below under "Merged, in
+build order". **The Phase 6 demo ran 2026-08-12 — all 8 ratification items RULED**
+(`docs/2026-08-12-phase-6-demo.md`: rulings 1–4/6–8 as-built; ruling 5 re-gates the part-page
+quotes read to `quotes.view` → issue #101; ruling 8 adds the empty-Material suppression to #100);
+deferred findings are issues **#95–#101**. The milestone alternatives Phase 5's completion opened —
+parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — remain available after Phase 7;
+the owner-owed GL-account list + bookkeeper QBO homework gate a *real* export.
 
 Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
 **#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
@@ -231,6 +246,12 @@ Then write a small `.mjs` that imports `chromium` from that cached `playwright` 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
 ## 6. Known backlog (all triaged, none blocking)
+
+**Five issues are absorbed into Phase 7's scope by owner ruling 6 (2026-08-12, P7 spec §5.8):
+#36 (traveler continuation-page header), #43 (bounded all-loads traveler render), #97
+(`indicativeAmounts` length assert), #98 (`sourceQuoteNumber` `.refine`), #87 (safe
+Content-Disposition filenames).** They stay open on GitHub until their fixes land on the Phase 7
+branch; the entries below are unchanged as the record of what they are.
 
 **Phase 6 (Quoting) follow-ups — GitHub issues #95–#100 (2026-08-12), all deferred by the
 whole-branch triage rule, none correctness/concurrency/data-integrity.** #95 dangerous-direction
@@ -467,18 +488,23 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
    session; §9 carries them into the next PR:
-   1. The shipping ticket prints no **"Page N of M"** — spec §10.1 lists it, but a pure-JSON template
-      cannot carry page-count functions and a render-level footer would number across the multi-ticket
-      PDF; Phase 7's template designer is the natural home.
+   1. ~~The shipping ticket prints no **"Page N of M"**~~ — **IN PHASE 7 SCOPE (spec approved
+      2026-08-12)**: the render runtime gains a renderer-side page-number primitive with
+      per-sheet-group rendering (P7 spec §6.1), closing this for every document type.
    2. **Serial re-shipment has no warning**: no per-serial shipped fact exists, so re-selecting an
       already-shipped serial on a later shipment gets no §5.7-class notice — worth an owner decision.
-   3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
-      (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
-      follow-up).
+      **Deliberately NOT Phase 7 scope** (workflow/data-model, not template work — P7 spec §2) —
+      still open.
+   3. ~~The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**~~ —
+      **IN PHASE 7 SCOPE (spec approved 2026-08-12)**: the tear-off goes flow-based as ruling 3's
+      column-widths guardrail (P7 spec §5.6).
    4. ~~**No `User.title` column exists**, so the cert signature block prints name + company with no
       title line (the sample shows one) — a small follow-up migration if the owner wants it.~~
       **CLOSED — built in Phase 6** (`e2c91e8`, ruling 14): `User.title` on the admin user form,
       printing on both the quote and cert signature blocks (blank title prints nothing).
+6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — Phase 7's testable outcome
+   is "owner restyles the traveler/logo", so the real logo (PNG or JPEG) belongs in `docs/samples/`.
+   Nothing blocks the build; the E2E flow uses a fixture logo until it lands.
 
 ## 8. Fresh machine setup (Fedora)
 
@@ -522,31 +548,31 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**No phase is in flight (Phase 6 merged `e2c91e8`, PR #94, 2026-08-12) — the next track is the
-owner's choice. A fresh session should read CLAUDE.md and this file's §4 + §6, then ask the owner
-to pick; do not pick for them.** The candidates, none blocking any other:
+**Phase 7 (Template designer) is IN FLIGHT — the owner chose it 2026-08-12 and approved its design
+spec the same day** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md`,
+approved including `pdf-lib`; seven rulings in its §3; §15 amendments recorded). A fresh session
+should read CLAUDE.md, this file's §4, the Phase 7 spec, and the Phase 7 implementation plan
+(`docs/superpowers/plans/`, dated 2026-08-12 — if it does not exist yet, writing it is the next
+step; propose the four plan-time confirmations from the spec's §12 item 3 to the owner with it),
+then continue subagent-driven execution on branch `phase-7-template-designer`: fresh subagent per
+task → the repo's task-reviewer agent → fix rounds until approved → whole-branch review on the
+strongest model → one fix wave → PR with attribution in the PR body. The execution record lives in
+`docs/execution/2026-08-12-phase-7-template-designer/` and is **committed on the first task**.
 
-1. **The Phase 6 demo** — walk the owner through quoting end-to-end and take the 8 ratification
-   rulings queued in §6 (the 5A-demo precedent: rulings recorded, deviations accepted or turned
-   into fixes/issues).
-2. **Roadmap Phase 7 — Template designer** (visual editor, per-customer variants, template
-   versioning; the traveler/quote layout pings from Phases 4 and 6 are its natural inputs).
-3. **Roadmap Phase 8 — Reports & parallel-run tools** (report set, comparison scoreboard, practice
-   database, first-run wizard, backup polish) — spec §13's acceptance month needs the comparison
-   page.
-4. **Parallel-run / acceptance-month prep** — Phase 5 unlocked it; needs the owner-owed GL-account
-   list and the bookkeeper's QBO import method (§7) before a *real* export month.
-5. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
-   (delete-customer-with-live-payment), the Phase 6 follow-ups #95–#100 (#95's SSI tripwires and
-   #98's forgeable `sourceQuoteNumber` are the most substantive), the per-worker-test-DB infra
-   task (§6), and owner question #68 (posted-payment reversal policy).
+Phase 7 absorbs issues **#36, #43, #97, #98, #87** (ruling 6 — close them from the branch as their
+fixes land); #85 and #52 stay in the backlog. The owner owes the shop logo file (§7 item 6) —
+nothing blocks on it.
 
-Whichever track is chosen: brainstorm → spec → plan → subagent-driven execution on a fresh branch,
-per-task reviews, whole-branch review on the strongest model, one fix wave, PR with attribution in
-the body. Standing rules that bind every phase: run `npm run test:e2e` on any UI/flow-touching
-change and update the docs as part of the work; **a gate row is written after watching the run
-end, or it says PENDING** (the Phase 6 Task 10 lesson); check `systemctl is-active docker` before
-diagnosing ECONNREFUSED (this machine's Docker is disabled at boot). The prime directive: do not
-assume — ask the owner.
+Standing rules that bind every phase: run `npm run test:e2e` on any UI/flow-touching change and
+update the docs as part of the work; **a gate row is written after watching the run end, or it
+says PENDING** (the Phase 6 Task 10 lesson); check `systemctl is-active docker` before diagnosing
+ECONNREFUSED (this machine's Docker is disabled at boot). The prime directive: do not assume — ask
+the owner.
+
+**After Phase 7**, the remaining tracks (none blocking): roadmap Phase 8 (reports & parallel-run
+tools — spec §13's acceptance month needs the comparison page); parallel-run/acceptance-month prep
+(needs the owner-owed GL-account list and the bookkeeper's QBO import method, §7); the backlog
+burn-down (P1s #81 and #84, Phase 6 follow-ups #95–#96/#99–#101, the per-worker-test-DB infra
+task in §6, owner question #68).
 
 Process that worked in Phase 1 and should be kept: brainstorm/clarify → spec → detailed plan → fresh subagent per task → independent spec+quality review per task → fix rounds until approved → final whole-branch review on the strongest model → one fix wave → merge. The per-task reviews caught real bugs the plan itself contained (plaintext password in audit payload, `__proto__` registry crash, blank-page login, resurrection with stale permissions, silent empty backups) — **the review loop is not optional ceremony**.
