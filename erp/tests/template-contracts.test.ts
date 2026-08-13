@@ -266,10 +266,14 @@ describe("locked elements (§5.6)", () => {
     expect(validateContractConfig(FIXTURE, config).sections[1].visible).toBe(false);
   });
 
-  it("lockedElements lists exactly the locked keys with their reasons", () => {
+  it("lockedElements lists exactly the locked keys, NAMESPACED by scope, with their reasons", () => {
+    // The namespace tightening (Task 1 review carry → Task 17): a section key equal to a field
+    // key would otherwise render ambiguous padlocks in the editor. `scope` disambiguates so the
+    // editor can key its lookups by (scope, key) — a section-scoped lock never matches a
+    // field-scoped one and vice versa.
     expect(lockedElements(FIXTURE)).toEqual([
-      { key: "alpha", reason: ALPHA_LOCK },
-      { key: "a_locked", reason: FIELD_LOCK },
+      { scope: "section", key: "alpha", reason: ALPHA_LOCK },
+      { scope: "field", key: "a_locked", reason: FIELD_LOCK },
     ]);
   });
 });

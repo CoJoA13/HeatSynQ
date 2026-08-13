@@ -276,13 +276,24 @@ export function completeSections(
   });
 }
 
-/** Every §5.6-locked element with its reason — what the editor renders the padlock from. */
-export function lockedElements(contract: TemplateContract): { key: string; reason: string }[] {
-  const out: { key: string; reason: string }[] = [];
+/** The namespace a locked element lives in — a section key and a field key can collide (each is
+ *  only unique within its own kind), so the editor must key its padlock lookups by (scope, key),
+ *  never key alone (Task 1 review carry). */
+export type LockScope = "section" | "field";
+export type LockedElement = { scope: LockScope; key: string; reason: string };
+
+/** Every §5.6-locked element with its reason, NAMESPACED by scope — what the editor renders the
+ *  padlock from. Sections come before their fields, contract order preserved. */
+export function lockedElements(contract: TemplateContract): LockedElement[] {
+  const out: LockedElement[] = [];
   for (const section of contract.sections) {
-    if (section.lockReason !== undefined) out.push({ key: section.key, reason: section.lockReason });
+    if (section.lockReason !== undefined) {
+      out.push({ scope: "section", key: section.key, reason: section.lockReason });
+    }
     for (const field of section.fields) {
-      if (field.lockReason !== undefined) out.push({ key: field.key, reason: field.lockReason });
+      if (field.lockReason !== undefined) {
+        out.push({ scope: "field", key: field.key, reason: field.lockReason });
+      }
     }
   }
   return out;
