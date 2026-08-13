@@ -296,6 +296,27 @@ export async function customerOrderBlockers(customerId: string): Promise<Blocker
 }
 
 /**
+ * Every LIVE quote whose `customerId` is this customer — the third category beside
+ * `customerPartBlockers`/`customerOrderBlockers` above (Task 7, Phase 6 spec §4.2). A quote's
+ * customer is immutable after create (spec §4.1 — the agreement's identity), so a deleted
+ * customer would leave the agreement pointing at a record no screen can show. Liveness is the
+ * quote row alone (`deletedAt`, never status — a CLOSED quote is still the record of an
+ * agreement); the quote's lines are irrelevant here, free-text and part-linked alike. Named the
+ * way a Quote names itself in every blocker list it appears in (the reference-links.ts registry
+ * entries): "Quote · #1006", linked to `/quotes/[id]`.
+ */
+export async function customerQuoteBlockers(customerId: string): Promise<Blocker[]> {
+  const quotes = await prisma.quote.findMany({
+    where: { customerId, deletedAt: null },
+    select: { id: true, quoteNumber: true },
+    orderBy: { quoteNumber: "asc" },
+  });
+  return quotes.map((q) => ({
+    entityLabel: "Quote", name: `Quote · #${q.quoteNumber}`, id: q.id, href: `/quotes/${q.id}`,
+  }));
+}
+
+/**
  * `reason` is required, not optional — spec §9: "destructive-ish actions require a reason". This
  * one qualifies on three counts: it soft-deletes every address and contact along with the row,
  * it frees the `code` for reuse by a future customer that will be unrelated to this one, and it
@@ -346,6 +367,16 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     // guard (parts.ts) and every other "voided blocks nothing" rule in this app.
     const orders = await tx.order.count({ where: { customerId: id, deletedAt: null } });
     if (orders > 0) throw new HttpError(400, `That customer still has ${orders} live order(s)`);
+
+    // Task 7 (Phase 6 spec §4.2): live quotes block too — a quote's customerId is immutable, so
+    // there is no re-point escape and §5.14's name-the-blockers list (customerQuoteBlockers
+    // above, served by the /blockers route union) is what keeps the refusal honest. Same live
+    // rule as everything here: deletedAt only, a CLOSED quote still blocks, a deleted one never.
+    // In-tx under this same Serializable transaction, SSI-pairing with createQuote (quotes.ts),
+    // which reads the customer live on its own Serializable tx before writing — the createPart
+    // pairing above, one writer over.
+    const quotes = await tx.quote.count({ where: { customerId: id, deletedAt: null } });
+    if (quotes > 0) throw new HttpError(400, `That customer still has ${quotes} live quote(s)`);
 
     // Addresses and contacts have no meaning without their parent, so they are soft-deleted
     // alongside it, in the same transaction and through the same audited* helpers as every other

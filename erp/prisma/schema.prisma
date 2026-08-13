@@ -25,6 +25,9 @@ model User {
   // Persisted alongside signatureImage so GET can stream it back with its real Content-Type —
   // the upload is constrained to SIGNATURE_MIME (users.ts), never inferred or defaulted.
   signatureMimeType String?
+  /// Prints on the quote and certification signature blocks beside the display name (Phase 6
+  /// ruling 14 — also closes Phase 4 ping #4). Blank prints nothing.
+  title             String                   @default("")
   active            Boolean                  @default(true)
   deletedAt         DateTime?
   createdAt         DateTime                 @default(now())
@@ -36,6 +39,10 @@ model User {
   finalizedInvoices Invoice[]
   closedPeriods     ClosePeriod[]
   glExports         GlExportBatch[]
+  // Two FKs from Quote to this one model, so each needs a NAME (the BillingConfig/GlAccount
+  // precedent above).
+  quotedQuotes      Quote[]                  @relation("QuoteQuotedBy")
+  closedQuotes      Quote[]                  @relation("QuoteClosedBy")
 }
 
 model Session {
@@ -154,6 +161,7 @@ model ProcessStepCode {
   surchargeStepCodes SurchargeStepCode[]
   invoiceLines       InvoiceLine[]
   billingConfigs     BillingConfig[]
+  quotePrices        QuotePrice[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
 }
@@ -345,6 +353,7 @@ model Customer {
   surchargeRules       CustomerSurcharge[]
   payments             Payment[]
   documents            StoredDocument[]
+  quotes               Quote[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -391,6 +400,7 @@ model CustomerContact {
   deletedAt      DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  quotes         Quote[]
 
   @@index([customerId])
 }
@@ -451,6 +461,7 @@ model Part {
   processRevisions      PartProcessRevision[]
   orderLines            OrderLine[]
   attachments           PartAttachment[]
+  quoteLines            QuoteLine[]
 
   @@unique([customerId, partNumber], where: raw("\"deletedAt\" IS NULL"))
   @@index([partNumber])
@@ -674,6 +685,13 @@ model OrderLine {
   revisionNumber   Int? // lead line only: the locked PartProcessRevision number
   qty              Int
   weight           Decimal           @db.Decimal(12, 2)
+  /// Which quote line prices this order line (Phase 6, ruling 5 — the per-LINE link). Judged at
+  /// link time against the order's received date (ruling 6); the stored link then rides through
+  /// shipping and invoicing untouched — later quote expiry or closure never silently re-prices
+  /// it. Plain live reference, no snapshot-and-release: quotes only soft-delete, and §5.14
+  /// refuses deleting a quote (or a quote line) any order line references, so this never dangles.
+  quoteLineId      String?
+  quoteLine        QuoteLine?        @relation(fields: [quoteLineId], references: [id])
   serials          OrderSerial[]
   shipperLines     ShipperLine[]
   certRequirements CertRequirement[]
@@ -681,6 +699,7 @@ model OrderLine {
 
   @@unique([orderId, position])
   @@index([partId])
+  @@index([quoteLineId])
 }
 
 model OrderContainer {
@@ -803,6 +822,7 @@ enum DocumentKind {
   INVOICE
   CREDIT
   STATEMENT
+  QUOTE
 }
 
 model StoredDocument {
@@ -817,6 +837,8 @@ model StoredDocument {
   invoice    Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
   customerId String? // STATEMENT: owner (Phase 5B §8)
   customer   Customer?    @relation(fields: [customerId], references: [id])
+  quoteId    String? // QUOTE: owner (Phase 6 §4.2)
+  quote      Quote?       @relation(fields: [quoteId], references: [id])
   kind       DocumentKind
   loadNumber Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
   fileData   Bytes
@@ -834,12 +856,15 @@ model StoredDocument {
   // enum with INVOICE and CREDIT and re-stated the CHECK in
   // migrations/<ts>_pricing_and_invoicing/migration.sql — both own `invoiceId` alone. Phase 5B
   // widened it again with STATEMENT (owner = `customerId` alone) and re-stated the CHECK in
-  // migrations/<ts>_accounts_receivable/migration.sql — that is now the current definition.
+  // migrations/<ts>_accounts_receivable/migration.sql. Phase 6 widened it again with QUOTE
+  // (owner = `quoteId` alone) and re-stated the CHECK in migrations/<ts>_quoting/migration.sql —
+  // that is now the current definition.
   @@index([orderId])
   @@index([shipperId])
   @@index([certId])
   @@index([invoiceId])
   @@index([customerId])
+  @@index([quoteId])
 }
 
 enum CertScope {
@@ -1190,6 +1215,7 @@ enum InvoiceLineKind {
 enum PriceSource {
   PART_PRICE
   MANUAL
+  QUOTE
 }
 
 /// The live-rows-only @@unique([orderId]), further filtered to kind = 'INVOICE', is the real guard
@@ -1301,6 +1327,10 @@ model InvoiceLine {
   minimumApplied Boolean      @default(false)
   rate           Decimal?     @db.Decimal(9, 6) // SURCHARGE percent or TAX rate
   priceSource    PriceSource?
+  /// Frozen snapshot, written when priceSource = QUOTE and read UNCONDITIONALLY (the
+  /// invoice-is-frozen-paper rule, §5.4): every line names its source (§7.5), and a later quote
+  /// delete must never blank sent paper. Deliberately the NUMBER, not a QuoteLine FK.
+  sourceQuoteNumber Int?
   needsPrice     Boolean      @default(false)
 
   amount Decimal @default(0) @db.Decimal(12, 2)
@@ -1500,4 +1530,149 @@ model GlPosting {
   @@index([sourceType, sourceId])
   @@index([batchId])
   @@index([glDate])
+}
+
+// ─── Phase 6: quoting (design spec 2026-08-10, §4.1–§4.2) ─────────────────────────────────────
+//
+// A quote is a STANDING PRICE AGREEMENT (ruling 3): born numbered and OPEN, effective over a
+// date window, pricing every order entered inside that window; closed or reopened only by a
+// deliberate reasoned act, "expired" always DERIVED from expiryDate, never a status flip. Its
+// price rows are the PartPrice/PartPriceBreak vocabulary mirrored per quote line; money scales
+// follow Phase 5A (Decimal(12, 2) money, Decimal(12, 4) unit prices).
+
+model Quote {
+  id                String           @id @default(cuid())
+  /// Allocated from the existing `quote_number_next` counter inside the create transaction.
+  /// Plain @unique on a soft-deletable model, deliberately NOT live-rows-only (spec §4.1; sweep
+  /// exemption in tests/partial-unique-sweep.test.ts — the Order.orderNumber precedent):
+  /// allocation-only, a deleted quote keeps its number forever, never reused or re-entered.
+  quoteNumber       Int              @unique
+  /// IMMUTABLE after create (spec §4.1) — the agreement's identity. A wrong customer is
+  /// delete-and-recreate, which the §5.14 delete block keeps honest.
+  customerId        String
+  customer          Customer         @relation(fields: [customerId], references: [id])
+  /// Live-join on read, renders blank if the contact is later deleted — contact deletion is
+  /// deliberately NOT blocked (spec §4.1): the quote's stored PDFs keep the printed name.
+  contactId         String?
+  contact           CustomerContact? @relation(fields: [contactId], references: [id])
+  /// OPEN ↔ CLOSED — close/reopen are deliberate reasoned acts (ruling 3), values in the quote
+  /// service (Task 3's quote-constants.ts), not a Prisma enum (the ReceiptBatch.status shape).
+  status            String           @default("OPEN")
+  closeReason       String           @default("")
+  closedAt          DateTime?
+  closedById        String?
+  closedBy          User?            @relation("QuoteClosedBy", fields: [closedById], references: [id])
+  quoteDate         DateTime         @db.Date
+  /// The agreement's window. Eligibility is judged AT LINK TIME against the order's received
+  /// date (ruling 6): effectiveDate ≤ receivedDate ≤ expiryDate, both ends inclusive. Once
+  /// linked, the stored link prices the order through shipping and invoicing — later expiry or
+  /// closure never silently re-prices it.
+  effectiveDate     DateTime         @db.Date
+  expiryDate        DateTime         @db.Date
+  followUpDate      DateTime?        @db.Date
+  rfqNumber         String           @default("")
+  quotedById        String
+  quotedBy          User             @relation("QuoteQuotedBy", fields: [quotedById], references: [id])
+  /// Defaulted to the kind's default row at creation, editable; null = none prints (ruling 13).
+  endingStatementId String?
+  endingStatement   EndingStatement? @relation(fields: [endingStatementId], references: [id])
+  notes             String           @default("") // prints
+  internalNotes     String           @default("") // never prints (the cert notes-pair precedent)
+  deletedAt         DateTime? // deleted with reason (§5.17); refused while any order line links here (§5.14)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  lines             QuoteLine[]
+  documents         StoredDocument[]
+
+  @@index([customerId])
+}
+
+model QuoteLine {
+  id                  String       @id @default(cuid())
+  quoteId             String
+  quote               Quote        @relation(fields: [quoteId], references: [id])
+  position            Int
+  /// Line identity is `partId` XOR a non-empty `partNumberText`, service-enforced (spec §4.1,
+  /// ruling 1): a part-linked line participates in auto-link and tier-1 pricing; a free-text
+  /// line is paper-only until a part is attached to it later (an audited quotes.edit action).
+  /// One live line per part per quote — service-enforced, not indexed.
+  partId              String?
+  part                Part?        @relation(fields: [partId], references: [id])
+  /// Free-text identity, read ONLY when `partId` is null — part-linked lines read all of these
+  /// (and material/each weight) live from the part.
+  partNumberText      String       @default("")
+  partNameText        String       @default("")
+  partDescriptionText String       @default("")
+  materialText        String       @default("")
+  /// Display + indicative math only. Scale mirrors Part.eachWeight's actual Decimal(10, 4).
+  eachWeight          Decimal?     @db.Decimal(10, 4)
+  quotedQty           Int? // informational "based on N pcs" (ruling 9) — brackets remain the breaks' job
+  quotedUnlimited     Boolean      @default(false)
+  deletedAt           DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  prices              QuotePrice[]
+  orderLines          OrderLine[]
+
+  @@index([quoteId])
+  @@index([partId])
+}
+
+/// The PartPrice mirror, parented on the quote line (spec §4.1, ruling 2): per Process Step Code
+/// — setup charge / unit price / minimum charge, price-per, plus breaks. Deliberately NO GL
+/// columns: GL is internal, resolved live from the step code at invoice assembly exactly as
+/// part-price rows resolve it — a customer's quote paper never carries account numbers.
+model QuotePrice {
+  id                String            @id @default(cuid())
+  quoteLineId       String
+  quoteLine         QuoteLine         @relation(fields: [quoteLineId], references: [id])
+  processStepCodeId String
+  processStepCode   ProcessStepCode   @relation(fields: [processStepCodeId], references: [id])
+  position          Int
+  setupCharge       Decimal?          @db.Decimal(12, 2)
+  unitPrice         Decimal?          @db.Decimal(12, 4)
+  minimumCharge     Decimal?          @db.Decimal(12, 2)
+  pricePer          PricePer          @default(EACH)
+  notes             String            @default("") // the sample's per-row "Quote Notes" — prints under the step name
+  deletedAt         DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  breaks            QuotePriceBreak[]
+
+  @@unique([quoteLineId, processStepCodeId], where: raw("\"deletedAt\" IS NULL"))
+  @@index([quoteLineId])
+  @@index([processStepCodeId])
+}
+
+/// The PartPriceBreak mirror (spec §4.1): `threshold` is in the parent row's own price-per unit.
+/// LOT rows refuse breaks (the part-prices rule, service-enforced).
+model QuotePriceBreak {
+  id           String     @id @default(cuid())
+  quotePriceId String
+  quotePrice   QuotePrice @relation(fields: [quotePriceId], references: [id])
+  threshold    Decimal    @db.Decimal(12, 2)
+  price        Decimal    @db.Decimal(12, 4)
+  deletedAt    DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([quotePriceId, threshold], where: raw("\"deletedAt\" IS NULL"))
+}
+
+/// The eleventh reference kind (ruling 13) — standard reference shape plus the statement body
+/// and a default flag, service-normalized to at most one live default (the address-default
+/// precedent). Wired through the generic reference machinery in Task 2; the model lands with
+/// the schema so Quote.endingStatementId has its target.
+model EndingStatement {
+  id        String    @id @default(cuid())
+  name      String
+  text      String    @default("") // max 4000 app-enforced (the commentSnippet.text precedent)
+  isDefault Boolean   @default(false)
+  active    Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  quotes    Quote[]
+
+  @@unique([name], where: raw("\"deletedAt\" IS NULL"))
 }

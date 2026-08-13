@@ -11,6 +11,7 @@ import { IdentitySection } from "./IdentitySection";
 import { SpecsSection } from "./SpecsSection";
 import { InspectionsSection } from "./InspectionsSection";
 import { PricingSection } from "./PricingSection";
+import { ActiveQuotesSection } from "./ActiveQuotesSection";
 import { CustomFieldsSection } from "./CustomFieldsSection";
 import { ProcessStepsSection } from "./ProcessStepsSection";
 import { AttachmentsSection } from "@/components/AttachmentsSection";
@@ -140,11 +141,14 @@ function PartDetail({ id }: { id: string }) {
       await api(`/api/parts/${id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
       router.push("/parts");
     } catch (e) {
-      // Matched on "live order(s)" — deletePart's one and only refusal reason (parts.ts) other
-      // than a missing/empty reason, which never reaches this far — the customers/[id]/page.tsx
-      // removeCustomer() precedent for turning a bare-count refusal into a discoverable list.
+      // Matched on "live order(s)" or "live quote(s)" — deletePart's two refusal reasons
+      // (parts.ts; Task 7 added the quotes guard) other than a missing/empty reason, which never
+      // reaches this far — the customers/[id]/page.tsx removeCustomer() precedent for turning a
+      // bare-count refusal into a discoverable list. The blockers route returns the UNION of
+      // both categories, so whichever guard fired, the panel shows everything blocking.
       const message = (e as Error).message;
-      if (e instanceof ApiError && e.status === 400 && message.includes("live order(s)")) {
+      if (e instanceof ApiError && e.status === 400
+        && (message.includes("live order(s)") || message.includes("live quote(s)"))) {
         try {
           const list = await api<Blocker[]>(`/api/parts/${id}/blockers`);
           if (list.length) { setBlocked({ list }); setError(null); return; }
@@ -191,6 +195,9 @@ function PartDetail({ id }: { id: string }) {
       <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <PricingSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
+      {/* Spec §4.2 (Task 9): the part's in-date OPEN quote lines, latest-effective first, linked
+          — beside Pricing, since an active quote is what displaces these part prices (§7.5). */}
+      <ActiveQuotesSection partId={id} customerId={part.customerId} perms={perms} />
       <CustomFieldsSection partId={id} perms={perms} onError={setError} />
       <AttachmentsSection owner="part" ownerId={id} canEdit={gate(perms, "parts.edit").allowed} />
       <ProcessStepsSection partId={id} perms={perms} onError={setError} />

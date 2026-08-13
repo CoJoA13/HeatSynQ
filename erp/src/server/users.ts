@@ -39,7 +39,7 @@ export async function listUsers() {
   const users = await prisma.user.findMany({
     where: { deletedAt: null },
     select: {
-      id: true, username: true, displayName: true, roleId: true, active: true,
+      id: true, username: true, displayName: true, title: true, roleId: true, active: true,
       role: { select: { name: true } },
       overrides: { select: { permission: true, mode: true } },
     },
@@ -49,6 +49,7 @@ export async function listUsers() {
     id: u.id,
     username: u.username,
     displayName: u.displayName,
+    title: u.title,
     roleName: u.role?.name ?? null,
     roleId: u.roleId,
     active: u.active,
@@ -82,7 +83,9 @@ export async function createUser(input: { username: string; displayName: string;
 
 export async function updateUser(
   id: string,
-  input: { displayName?: string; roleId?: string | null; active?: boolean; password?: string },
+  // `title` prints on the quote and cert signature blocks (Phase 6 ruling 14); "" clears it and
+  // both builders then omit the line rather than print a blank.
+  input: { displayName?: string; title?: string; roleId?: string | null; active?: boolean; password?: string },
 ) {
   if (input.active === false && id === currentActor().id) {
     throw new HttpError(400, "You cannot deactivate your own account");
@@ -113,6 +116,7 @@ export async function updateUser(
           where: { id },
           data: {
             ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+            ...(input.title !== undefined ? { title: input.title } : {}),
             ...(input.roleId !== undefined ? { roleId: input.roleId } : {}),
             ...(input.active !== undefined ? { active: input.active } : {}),
             ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),

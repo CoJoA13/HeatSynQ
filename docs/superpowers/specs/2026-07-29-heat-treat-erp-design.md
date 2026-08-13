@@ -231,3 +231,19 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 | Parent/child customers | **Modelled now** — a nullable self-reference. Most customers have no parent; divisions of one company can. Phase 2B stores and displays it only. Phase 5 A/R needs it so one check can pay several children's invoices and a statement can roll up (confirmed as real Visual Shop behaviour in the crossref findings). Modelled early for the same reason as surcharge opt-out and the finance-charge override: avoiding a migration once live A/R data exists |
 | Salespersons | **Not used by this shop.** Nothing is assigned a salesperson, so the `Salesperson` reference table shipped in Phase 2A is unreferenced. It is **removed in Phase 2B** rather than left as an unused pick-list in the admin screens. Supersedes the salespersons entry in §5.1's Reference data row and §10's implied use. Spec §7.8's "sales by salesperson" report is likewise dropped from the initial report set |
 | Serialization | **A real column on the Part** (`serializationRequired`, boolean), not an owner-defined custom field — owner decision 2026-07-30. The system acts on it: Phase 3 order entry validates against it, warning when a part flagged for serialization has no serial numbers entered. A custom field is inert and unreadable by that check. Settles kickoff open item 2 |
+
+### Amendments for Phase 6 — Quoting (owner Q&A 2026-08-10)
+
+Full design: `docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 records all fourteen rulings).
+
+| Decision | Answer |
+|---|---|
+| Quote reference granularity | **Per order line**, not per order — each order line stores which quote line prices it. Supersedes §7.5 tier 1's "referenced on the order" wording; two parts on one order can sit on different quotes |
+| Tier 1 substitution | **Wholesale per line**: a linked line prices from the quote's rows ONLY; the part's rows are ignored for that line, and a linked quote line with zero rows invoices as needs-price, never a silent part-price fallback |
+| Quote validity | **Judged at link time** against the order's received date. A stored link prices the order through invoicing; later expiry or closure never silently re-prices. Closing warns and lists still-linked open orders |
+| Auto-link ambiguity | **Latest effective date wins silently** (tie → higher quote number); always overridable at entry; overlapping open quotes warn at quote save but are not blocked |
+| Quote edits | **Live until finalize** — invoices resolve quote rows at creation time (the part-price behavior); finalized invoices stay frozen. No snapshot-at-link layer |
+| Quote lifecycle | **Standing agreement**: born numbered + OPEN, prices any number of orders in its window, close/reopen are deliberate reasoned acts (free-text reason), "expired" is derived from the expiry date |
+| Quote scope | **Real customer required; part optional per line** — free-text lines are paper-only until a part is attached. No prospect/lead customers |
+| Ending statements | **Built as the eleventh reference kind** (listed in §5.1's reference-data row, shipped late) — admin list with one default, per-quote pick, `text` body |
+| User title | **`User.title` added** — prints on the quote signature block and closes Phase 4's cert-signature-title ping (HANDOFF §7.5.4) |

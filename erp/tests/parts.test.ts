@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
-  createPart, updatePart, deletePart, getPart, listParts, partOrderBlockers,
+  createPart, updatePart, deletePart, getPart, listParts, partOrderBlockers, partQuoteBlockers,
 } from "@/server/parts";
 import { createOrder, voidOrder } from "@/server/orders";
 import { addAttachment } from "@/server/attachments";
@@ -227,6 +227,95 @@ describe("parts core", () => {
       expect((await prisma.part.findFirst({ where: { id: rider } }))!.deletedAt).not.toBeNull();
       expect((await prisma.part.findFirst({ where: { id: lead } }))!.deletedAt).not.toBeNull();
       expect(await partOrderBlockers(rider)).toEqual([]);
+    });
+  });
+
+  // Task 7 (Phase 6 spec §4.2/§7): live quote lines block part deletion the same way live orders
+  // do — a part-linked quote line reads its printed identity (number/name/description/material/
+  // weight) live from the part, so deleting the part would hollow out a still-live agreement.
+  // Raw-prisma quote fixtures for the same reason giveSteps is raw: parts.ts's guard must not be
+  // proven through quotes.ts's own validation.
+  describe("deletePart is guarded by live quotes", () => {
+    async function quoteOn(customerId: string, partId: string, quoteNumber: number,
+                           extra: Record<string, unknown> = {}) {
+      const user = await prisma.user.findFirst({ where: { username: "quoter-fixture" } })
+        ?? await prisma.user.create({
+          data: { username: "quoter-fixture", passwordHash: "x", displayName: "Quoter" } });
+      return prisma.quote.create({
+        data: {
+          quoteNumber, customerId, quotedById: user.id,
+          quoteDate: new Date("2026-08-01"), effectiveDate: new Date("2026-08-01"),
+          expiryDate: new Date("2026-08-31"),
+          lines: { create: [{ position: 1, partId }] },
+          ...extra,
+        },
+        include: { lines: true },
+      });
+    }
+
+    it("refuses while a live quote's live line references the part — OPEN or CLOSED — with a "
+      + "discoverable blocker list named the Quote way", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "Q1", eachWeight: 1 }));
+      const open = await quoteOn(acme.id, id, 1000);
+      // CLOSED is not deleted: the agreement's record survives closing, so it still blocks —
+      // "live" in §5.14 means deletedAt null, never a status.
+      const closed = await quoteOn(acme.id, id, 1001,
+        { status: "CLOSED", closeReason: "went elsewhere", closedAt: new Date() });
+
+      await expect(asSystem(() => deletePart(id, "cleanup"))).rejects.toThrow(/live quote/i);
+      expect(await partQuoteBlockers(id)).toEqual([
+        { entityLabel: "Quote", name: "Quote · #1000", id: open.id, href: `/quotes/${open.id}` },
+        { entityLabel: "Quote", name: "Quote · #1001", id: closed.id, href: `/quotes/${closed.id}` },
+      ]);
+      // Refused, not allowed-and-dangled — the part survives.
+      expect((await prisma.part.findFirst({ where: { id } }))!.deletedAt).toBeNull();
+    });
+
+    it("the refusal counts QUOTES, not lines, so the message and the panel never disagree", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "Q2", eachWeight: 1 }));
+      // Two live lines on ONE quote referencing the same part — unreachable through the quote
+      // service (one-live-line-per-part rule) but not indexed, so the guard must not trust it.
+      const q = await quoteOn(acme.id, id, 1002);
+      await prisma.quoteLine.create({ data: { quoteId: q.id, position: 2, partId: id } });
+
+      await expect(asSystem(() => deletePart(id, "cleanup")))
+        .rejects.toThrow("That part is quoted on 1 live quote(s)");
+      expect(await partQuoteBlockers(id)).toHaveLength(1);
+    });
+
+    it("a deleted quote's lines, and a line removed from a live quote, block nothing — the part "
+      + "then deletes cleanly", async () => {
+      const { acme } = await twoCustomers();
+      const { id: viaDeadQuote } = await asSystem(() =>
+        createPart({ customerId: acme.id, partNumber: "Q3", eachWeight: 1 }));
+      const { id: viaDeadLine } = await asSystem(() =>
+        createPart({ customerId: acme.id, partNumber: "Q4", eachWeight: 1 }));
+
+      // deleteQuote's own shape: the quote stamped AND its lines stamped with it.
+      const dead = await quoteOn(acme.id, viaDeadQuote, 1003, { deletedAt: new Date() });
+      await prisma.quoteLine.updateMany({ where: { quoteId: dead.id }, data: { deletedAt: new Date() } });
+      // A line edited out of a live quote: the line is stamped, the quote lives on.
+      const live = await quoteOn(acme.id, viaDeadLine, 1004);
+      await prisma.quoteLine.updateMany({ where: { quoteId: live.id }, data: { deletedAt: new Date() } });
+
+      expect(await partQuoteBlockers(viaDeadQuote)).toEqual([]);
+      expect(await partQuoteBlockers(viaDeadLine)).toEqual([]);
+      await asSystem(() => deletePart(viaDeadQuote, "cleanup"));
+      await asSystem(() => deletePart(viaDeadLine, "cleanup"));
+      expect((await prisma.part.findFirst({ where: { id: viaDeadQuote } }))!.deletedAt).not.toBeNull();
+      expect((await prisma.part.findFirst({ where: { id: viaDeadLine } }))!.deletedAt).not.toBeNull();
+    });
+
+    // Belt-and-braces for deleteQuote's own belt: a quote soft-deleted while its lines were
+    // (wrongly) left live must still not block from the grave — the guard walks the CHAIN.
+    it("a live-looking line under a soft-deleted quote does not block", async () => {
+      const { acme } = await twoCustomers();
+      const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "Q5", eachWeight: 1 }));
+      await quoteOn(acme.id, id, 1005, { deletedAt: new Date() }); // lines stay unstamped
+      expect(await partQuoteBlockers(id)).toEqual([]);
+      await asSystem(() => deletePart(id, "cleanup"));
     });
   });
 

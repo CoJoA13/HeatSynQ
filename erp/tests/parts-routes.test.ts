@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import ExcelJS from "exceljs";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 
@@ -160,8 +161,11 @@ describe("parts routes", () => {
 
   // Task 15: mirrors customer-routes.test.ts's "blockers and blockers/export" test — same
   // 401/403/200 shape, same xlsx content-type and disposition, now for parts' own new
-  // live-order blocker list.
-  it("blockers and blockers/export: 401, 403, 200 with the order list, xlsx content-type", async () => {
+  // live-order blocker list. Task 7 (Phase 6): the route returns the UNION of order and quote
+  // blockers regardless of which of deletePart's two guards threw first (the customers-route
+  // rule — a refusal is never discoverable for only half of what's blocking it), and the Excel
+  // export carries the quote rows too (§5.14's third leg).
+  it("blockers and blockers/export: 401, 403, 200 with the combined order+quote list, xlsx content-type", async () => {
     const { customer, partId } = await partFixture();
     const code = await prisma.processStepCode.create({ data: { code: "HT-01", name: "Austenitize" } });
     const rev = await prisma.partProcessRevision.create({ data: { partId, revisionNumber: 1 } });
@@ -169,6 +173,14 @@ describe("parts routes", () => {
       data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "x" },
     });
     const { order } = await createOrder({ customerId: customer.id, lines: [{ partId, qty: 1, weight: "10.00" }] });
+    const quoteUser = await prisma.user.create({
+      data: { username: "quoter-routes", passwordHash: "x", displayName: "Quoter" } });
+    const quote = await prisma.quote.create({ data: {
+      quoteNumber: 1000, customerId: customer.id, quotedById: quoteUser.id,
+      quoteDate: new Date("2026-08-01"), effectiveDate: new Date("2026-08-01"),
+      expiryDate: new Date("2026-08-31"),
+      lines: { create: [{ position: 1, partId }] },
+    } });
 
     expect((await blockersRoute(getReq(`http://t/api/parts/${partId}/blockers`), withParams({ id: partId }))).status)
       .toBe(401);
@@ -180,6 +192,7 @@ describe("parts routes", () => {
     expect(blockers.status).toBe(200);
     expect(await blockers.json()).toEqual([
       { entityLabel: "Order", name: `#${order.orderNumber} · ACME`, id: order.id, href: `/orders/${order.id}` },
+      { entityLabel: "Quote", name: "Quote · #1000", id: quote.id, href: `/quotes/${quote.id}` },
     ]);
 
     const wrong = await signInWith(["admin.view"], "part-blockers-wrong-1");
@@ -195,6 +208,17 @@ describe("parts routes", () => {
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     expect(exportRes.headers.get("content-disposition")).toContain("attachment");
     expect(exportRes.headers.get("content-disposition")).toContain(".xlsx");
+
+    // The workbook carries BOTH kinds of blocker row (the reference-blockers export precedent
+    // for reading it back; see tests/excel.test.ts for the Buffer cast).
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await exportRes.arrayBuffer()) as unknown as ArrayBuffer);
+    const rows = [wb.getWorksheet(1)!.getRow(2).values, wb.getWorksheet(1)!.getRow(3).values]
+      .map((v) => (v as unknown[]).map(String));
+    expect(rows[0]).toContain("Order");
+    expect(rows[1]).toContain("Quote");
+    expect(rows[1]).toContain("Quote · #1000");
+    expect(rows[1]).toContain(`/quotes/${quote.id}`);
   });
 
   it("GET /api/parts/[id] requires parts.view", async () => {

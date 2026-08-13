@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import { prisma, truncateAll } from "./helpers/db";
 import {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
-  customerPartBlockers, customerOrderBlockers,
+  customerPartBlockers, customerOrderBlockers, customerQuoteBlockers,
 } from "@/server/customers";
 import { addAddress, listAddresses } from "@/server/customer-addresses";
 import { addContact, listContacts } from "@/server/customer-contacts";
@@ -438,6 +438,54 @@ describe("customers service", () => {
       await deletePart(partId2, "test cleanup"); // no longer blocked, by the same rule
       await deleteCustomer(id2, "test cleanup"); // zero live parts, zero live orders now
       expect((await prisma.customer.findFirst({ where: { id: id2 } }))!.deletedAt).not.toBeNull();
+    });
+  });
+
+  // Task 7 (Phase 6 spec §4.2): live quotes join deleteCustomer's blocker list beside children,
+  // parts and orders — a quote is the customer's own agreement (customerId is immutable, spec
+  // §4.1), so a customer with quotes is refused-and-named, never silently orphaned. Raw-prisma
+  // quote fixtures with FREE-TEXT lines: no part rows, so the pre-existing parts guard stays at
+  // zero and it is unambiguously the quotes guard under test.
+  describe("deleteCustomer is guarded by live quotes", () => {
+    async function quoteFor(customerId: string, quoteNumber: number,
+                            extra: Record<string, unknown> = {}) {
+      const user = await prisma.user.findFirst({ where: { username: "quoter-cust" } })
+        ?? await prisma.user.create({
+          data: { username: "quoter-cust", passwordHash: "x", displayName: "Quoter" } });
+      return prisma.quote.create({ data: {
+        quoteNumber, customerId, quotedById: user.id,
+        quoteDate: new Date("2026-08-01"), effectiveDate: new Date("2026-08-01"),
+        expiryDate: new Date("2026-08-31"),
+        lines: { create: [{ position: 1, partNumberText: `FT-${quoteNumber}` }] },
+        ...extra,
+      } });
+    }
+
+    it("refuses on live quotes — OPEN or CLOSED — with a discoverable blocker list named the "
+      + "Quote way", async () => {
+      const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+      const open = await quoteFor(id, 1000);
+      // CLOSED is not deleted: closing is reversible and takes nothing with it (spec §5.1), so a
+      // closed quote is still a live record and still blocks — "live" is deletedAt, not status.
+      const closed = await quoteFor(id, 1001,
+        { status: "CLOSED", closeReason: "went elsewhere", closedAt: new Date() });
+
+      await expect(deleteCustomer(id, "test cleanup"))
+        .rejects.toThrow("That customer still has 2 live quote(s)");
+      expect(await customerQuoteBlockers(id)).toEqual([
+        { entityLabel: "Quote", name: "Quote · #1000", id: open.id, href: `/quotes/${open.id}` },
+        { entityLabel: "Quote", name: "Quote · #1001", id: closed.id, href: `/quotes/${closed.id}` },
+      ]);
+      // Refused, not allowed-and-dangled — the customer survives, quotes still point at it.
+      expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).toBeNull();
+    });
+
+    it("a customer with only DELETED quotes deletes cleanly — a dead quote blocks nothing", async () => {
+      const { id } = await createCustomer({ code: "BETA", name: "Beta" });
+      await quoteFor(id, 1002, { deletedAt: new Date() });
+      expect(await customerQuoteBlockers(id)).toEqual([]);
+      await deleteCustomer(id, "test cleanup");
+      expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
     });
   });
 

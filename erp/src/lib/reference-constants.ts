@@ -2,6 +2,7 @@
 export const REFERENCE_KINDS = [
   "glAccount", "material", "inspectionScale", "inspectionCode", "containerType",
   "carrier", "terms", "paymentType", "commentSnippet", "specification",
+  "endingStatement", // Phase 6 ruling 13 — the eleventh kind, the quote footer's statement list
 ] as const;
 export type ReferenceKind = (typeof REFERENCE_KINDS)[number];
 
@@ -16,6 +17,7 @@ export const REFERENCE_LABELS: Record<ReferenceKind, { singular: string; plural:
   paymentType:     { singular: "Payment type",     plural: "Payment types",     nameLabel: "Name" },
   commentSnippet:  { singular: "Comment snippet",  plural: "Comment snippets",  nameLabel: "Name" },
   specification:   { singular: "Specification",    plural: "Specifications",    nameLabel: "Name" },
+  endingStatement: { singular: "Ending statement", plural: "Ending statements", nameLabel: "Name" },
 };
 
 /** Kinds readable by any signed-in user. A distinct set from ReferenceKind, and NOT a subset:
@@ -42,10 +44,19 @@ export type PickListKind = (typeof PICKLIST_KINDS)[number];
  *  row needs to know, per field, whether a cleared input means "store empty text" or "no value, drop
  *  the key" (Terms.discountPercent). Conflating the two by leaving discountPercent `"text"` was
  *  exactly the bug this kind exists to prevent.
+ *  `kind: "boolean"` (Phase 6, for endingStatement.isDefault — the first boolean extra column;
+ *  the nearest in-grid precedent is the Active column itself, so it follows that shape at every
+ *  surface): the grid renders it as a checkbox — interactive on existing rows like the Active
+ *  toggle (a PUT of `{ [key]: !current }`, gated admin.edit), a plain checkbox on the Add row —
+ *  the export writes the raw boolean (a TRUE/FALSE cell, exactly how Active already exports),
+ *  and the paste importer coerces a case-insensitive "true"/"false" cell to a real boolean
+ *  before the server's `z.boolean()` sees it (anything else stays a string so zod's own
+ *  "expected boolean" names the bad cell, the numberColumns philosophy). A blank cell is
+ *  dropped like every other optional field, so the column default applies.
  *  `hint` is optional, generic UI-note text shown under an Add-row input — used here for the
  *  early-pay discount's all-or-nothing pairing. */
 export const REFERENCE_EXTRA_FIELDS: Record<
-  ReferenceKind, { key: string; label: string; kind: "text" | "ref" | "number" | "decimal"; hint?: string }[]
+  ReferenceKind, { key: string; label: string; kind: "text" | "ref" | "number" | "decimal" | "boolean"; hint?: string }[]
 > = {
   glAccount:       [{ key: "description",    label: "Description",   kind: "text" }],
   inspectionCode:  [{ key: "defaultScaleId", label: "Default scale", kind: "ref" }],
@@ -57,5 +68,9 @@ export const REFERENCE_EXTRA_FIELDS: Record<
     { key: "netDays", label: "Net days", kind: "number" },
     { key: "discountPercent", label: "Discount %", kind: "decimal", hint: "needs Discount days too" },
     { key: "discountDays", label: "Discount days", kind: "number", hint: "needs Discount % too" },
+  ],
+  endingStatement: [
+    { key: "text",      label: "Text",    kind: "text" },
+    { key: "isDefault", label: "Default", kind: "boolean", hint: "setting it clears the current default" },
   ],
 };

@@ -46,7 +46,10 @@ const BREAK_FIELDS = {
 const ADD_BREAK = z.object(BREAK_FIELDS).strict();
 const EDIT_BREAK = z.object(BREAK_FIELDS).partial().strict();
 
-const LOT_WITH_BREAKS = "A LOT-priced operation cannot carry price breaks";
+// Exported for quotes.ts (Phase 6): QuotePrice is the exact PartPrice mirror (spec ruling 2),
+// and the LOT-refuses-breaks refusal must read identically in both places rather than drifting
+// as two hand-kept copies.
+export const LOT_WITH_BREAKS = "A LOT-priced operation cannot carry price breaks";
 
 export async function listPartPrices(partId: string): Promise<PartPriceRow[]> {
   const rows = await prisma.partPrice.findMany({

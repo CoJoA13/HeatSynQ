@@ -56,6 +56,17 @@ describe("users service", () => {
     expect(JSON.stringify(log)).not.toContain("S3cretUnique!");
   });
 
+  it("updates the signature title, lists it, and the audit diff shows the change (Phase 6 ruling 14)", async () => {
+    const { id } = await createUser({ username: "titled", displayName: "T", password: "pw123456" });
+    expect((await listUsers())[0].title).toBe("");             // schema default — blank prints nothing
+    await updateUser(id, { title: "V.P. Sales" });
+    expect((await listUsers())[0].title).toBe("V.P. Sales");
+    const [entry] = await readAudit("user", id);
+    expect(entry.action).toBe("update");
+    expect((entry.before as { title?: string }).title).toBe("");
+    expect((entry.after as { title?: string }).title).toBe("V.P. Sales");
+  });
+
   it("setUserOverrides produces an audit entry whose before/after overrides differ", async () => {
     const { id } = await createUser({ username: "overrideaudit", displayName: "O", password: "pw123456" });
     await setUserOverrides(id, [{ permission: "orders.view", mode: "GRANT" }]);

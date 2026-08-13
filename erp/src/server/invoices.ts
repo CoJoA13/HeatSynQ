@@ -19,8 +19,8 @@ import { isDuplicateClientRequestId } from "./orders";
 import { shippedTotals, recomputeOrderStatus } from "./ship-ledger";
 import {
   priceOrder,
-  type PricingInput, type OrderLineInput, type SurchargeInput, type ChargeInput, type GlRef,
-  type PricingResult, type ComputedLine,
+  type PricingInput, type OrderLineInput, type PriceRowInput, type SurchargeInput, type ChargeInput,
+  type GlRef, type PricingResult, type ComputedLine,
 } from "./pricing";
 import { parseDateOnly, formatDateOnly, todayDateOnly, dateOnly, addDays } from "../lib/business-days";
 import {
@@ -78,7 +78,11 @@ export type InvoiceLineDetail = {
   pricePer: PricePerValue | null;
   unitPrice: number | null; setupCharge: number | null; minimumCharge: number | null;
   breakThreshold: number | null; minimumApplied: boolean;
-  rate: number | null; priceSource: PriceSourceValue | null; needsPrice: boolean;
+  rate: number | null; priceSource: PriceSourceValue | null;
+  /** Frozen at line write when `priceSource = QUOTE`, read UNCONDITIONALLY (the frozen-paper
+   *  rule): a later quote delete must never blank sent paper. Never a live join to the quote. */
+  sourceQuoteNumber: number | null;
+  needsPrice: boolean;
   amount: number;
 };
 
@@ -132,7 +136,8 @@ function toLineDetail(l: LineRow): InvoiceLineDetail {
     pricePer: l.pricePer, unitPrice: num(l.unitPrice),
     setupCharge: num(l.setupCharge), minimumCharge: num(l.minimumCharge),
     breakThreshold: num(l.breakThreshold), minimumApplied: l.minimumApplied,
-    rate: num(l.rate), priceSource: l.priceSource, needsPrice: l.needsPrice,
+    rate: num(l.rate), priceSource: l.priceSource, sourceQuoteNumber: l.sourceQuoteNumber,
+    needsPrice: l.needsPrice,
     amount: l.amount.toNumber(),
   };
 }
@@ -340,7 +345,89 @@ type LeadPart = {
   partNumber: string; name: string; description: string; eachWeight: Prisma.Decimal;
   billForCert: boolean | null; certCharge: Prisma.Decimal | null; material: { name: string } | null;
 };
-type OrderLineRow = { id: string; position: number; partId: string; part: LeadPart };
+type OrderLineRow = { id: string; position: number; partId: string; quoteLineId: string | null; part: LeadPart };
+
+/** The `select` both `createInvoiceInTx` and `recalculateInvoice` read order lines with — one
+ *  shape, so the two assembly paths can never see different line facts. `quoteLineId` is the
+ *  Phase 6 tier-1 switch (§5.3): its presence swaps the line's price-row source below. */
+const ORDER_LINE_SELECT = {
+  id: true, position: true, partId: true, quoteLineId: true,
+  part: {
+    select: {
+      partNumber: true, name: true, description: true, eachWeight: true,
+      billForCert: true, certCharge: true, material: { select: { name: true } },
+    },
+  },
+} satisfies Prisma.OrderLineSelect;
+
+/**
+ * Tier-1 substitution (Phase 6 spec §5.3, rulings 4 + 8): the `PriceRowInput[]` for an order line
+ * that carries a quote link — the linked quote line's LIVE `QuotePrice` rows with their LIVE
+ * breaks, WHOLESALE. When the link is taken the part's rows are not fetched, not merged, not
+ * fallen back to: a linked line with zero live rows returns `[]`, which the engine prices as
+ * tier 3's needs-price — the link declared the agreement, and an empty agreement is a flag, not
+ * permission to bill something else.
+ *
+ * Reads run on the invoice transaction's OWN client (the #60 lesson): the eligibility the link
+ * was judged under is order-entry's business; what matters HERE is that a concurrent quote edit
+ * lands inside this Serializable transaction's read set, so SSI sees it.
+ *
+ * Shape rules, mirrored from `listPartPrices` (part-prices.ts) so tier 1 and tier 2 resolve
+ * identically: GL comes from each row's STEP CODE (`glAccountId` + live account name, `?? ""` —
+ * quote rows deliberately carry no GL columns, spec §4.1), rows order `position asc, id asc`,
+ * breaks `threshold asc`, live-rows-only throughout — and every read here is keyed through the
+ * LIVE parent just verified (the Task 4 dangling-grandchildren shape: live breaks can exist
+ * under a soft-deleted row; keying breaks through the live rows is what keeps them unreachable).
+ *
+ * The two throws are INVARIANT asserts, not expected failures (plain Error → the handler's 500):
+ * §5.14 refuses deleting or re-pointing a quote line any order line references, and every stored
+ * link was judged at save time (quote-links.ts), so a dead or wrong-part target here is corrupt
+ * state. Falling back to part rows instead would be the silent re-price §7.5 exists to prevent.
+ */
+async function quotePriceRowInputs(
+  tx: Db, ol: { id: string; partId: string; quoteLineId: string },
+): Promise<PriceRowInput[]> {
+  const quoteLine = await tx.quoteLine.findFirst({
+    where: { id: ol.quoteLineId },
+    select: {
+      id: true, partId: true, deletedAt: true,
+      quote: { select: { quoteNumber: true, deletedAt: true } },
+    },
+  });
+  if (!quoteLine || quoteLine.deletedAt !== null || quoteLine.quote.deletedAt !== null) {
+    throw new Error(
+      `Order line ${ol.id} links quote line ${ol.quoteLineId}, which is deleted or missing — ` +
+      "§5.14 makes this unreachable; refusing to price the line");
+  }
+  if (quoteLine.partId !== ol.partId) {
+    throw new Error(
+      `Order line ${ol.id} links quote line ${ol.quoteLineId}, which quotes a different part ` +
+      `(${quoteLine.partId ?? "free-text"} vs ${ol.partId}) — refusing to price the line`);
+  }
+
+  const rows = await tx.quotePrice.findMany({
+    where: { quoteLineId: quoteLine.id, deletedAt: null },
+    include: {
+      processStepCode: {
+        select: { code: true, name: true, glAccountId: true, glAccount: { select: { name: true } } },
+      },
+      breaks: { where: { deletedAt: null }, orderBy: { threshold: "asc" } },
+    },
+    orderBy: [{ position: "asc" }, { id: "asc" }],
+  });
+  return rows.map((r) => ({
+    processStepCodeId: r.processStepCodeId,
+    stepCode: r.processStepCode.code, stepName: r.processStepCode.name,
+    glAccountId: r.processStepCode.glAccountId,
+    glAccountName: r.processStepCode.glAccount?.name ?? "",
+    position: r.position,
+    setupCharge: num(r.setupCharge), unitPrice: num(r.unitPrice), minimumCharge: num(r.minimumCharge),
+    pricePer: r.pricePer,
+    breaks: r.breaks.map((b) => ({ threshold: b.threshold.toNumber(), price: b.price.toNumber() })),
+    priceSource: "QUOTE",
+    sourceQuoteNumber: quoteLine.quote.quoteNumber,
+  }));
+}
 
 /** The surcharges the engine should price, after this customer's blanket opt-out and per-surcharge
  *  overrides (§4.2). Seam #2 lands here: `SurchargeRow.glAccountName` (string | null) is normalized
@@ -393,23 +480,28 @@ async function buildPricingInput(
   const otherChargeGlName = config.otherChargeGlAccountId === null
     ? "" : (glNameById.get(config.otherChargeGlAccountId) ?? "");
 
-  // Operation lines — one per order line with a NON-ZERO net shipped total (seam #3).
+  // Operation lines — one per order line with a NON-ZERO net shipped total (seam #3). The row
+  // source is the Phase 6 tier fork (§5.3): a linked line's rows come from its quote line
+  // WHOLESALE (`quotePriceRowInputs` — the part's rows are not even fetched, ruling 4); an
+  // unlinked line reads `listPartPrices` exactly as before.
   const lines: OrderLineInput[] = [];
   for (const ol of orderLines) {
     const totals = shipped.get(ol.id) ?? { qty: 0, weight: 0 };
     if (totals.qty === 0 && totals.weight === 0) continue;
-    const prices = await listPartPrices(ol.partId);
+    const prices: PriceRowInput[] = ol.quoteLineId !== null
+      ? await quotePriceRowInputs(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId })
+      : (await listPartPrices(ol.partId)).map((p) => ({
+          processStepCodeId: p.processStepCodeId, stepCode: p.stepCode, stepName: p.stepName, position: p.position,
+          setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
+          pricePer: p.pricePer, breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
+          glAccountId: p.glAccountId, glAccountName: p.glAccountName,
+        }));
     lines.push({
       orderLineId: ol.id, position: ol.position,
       partNumber: ol.part.partNumber, partName: ol.part.name, partDescription: ol.part.description,
       eachWeight: ol.part.eachWeight.toNumber(),
       shippedQty: totals.qty, shippedWeight: totals.weight,
-      prices: prices.map((p) => ({
-        processStepCodeId: p.processStepCodeId, stepCode: p.stepCode, stepName: p.stepName, position: p.position,
-        setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
-        pricePer: p.pricePer, breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
-        glAccountId: p.glAccountId, glAccountName: p.glAccountName,
-      })),
+      prices,
     });
   }
 
@@ -496,7 +588,8 @@ type InvoiceLineWrite = {
   pricePer: PricePerValue | null;
   unitPrice: number | null; setupCharge: number | null; minimumCharge: number | null;
   breakThreshold: number | null; minimumApplied: boolean;
-  rate: number | null; priceSource: PriceSourceValue | null; needsPrice: boolean;
+  rate: number | null; priceSource: PriceSourceValue | null; sourceQuoteNumber: number | null;
+  needsPrice: boolean;
   amount: number;
 };
 
@@ -517,7 +610,8 @@ function mapComputedLines(computed: PricingResult, otherChargeGl: GlRef): Invoic
     qty: l.qty, weight: l.weight, eachWeight: l.eachWeight,
     pricePer: l.pricePer, unitPrice: l.unitPrice, setupCharge: l.setupCharge, minimumCharge: l.minimumCharge,
     breakThreshold: l.breakThreshold, minimumApplied: l.minimumApplied,
-    rate: l.rate, priceSource: l.priceSource, needsPrice: l.needsPrice, amount: l.amount,
+    rate: l.rate, priceSource: l.priceSource, sourceQuoteNumber: l.sourceQuoteNumber,
+    needsPrice: l.needsPrice, amount: l.amount,
   }));
 }
 
@@ -635,15 +729,7 @@ async function createInvoiceInTx(
   const orderLines: OrderLineRow[] = await tx.orderLine.findMany({
     where: { orderId: data.orderId },
     orderBy: { position: "asc" },
-    select: {
-      id: true, position: true, partId: true,
-      part: {
-        select: {
-          partNumber: true, name: true, description: true, eachWeight: true,
-          billForCert: true, certCharge: true, material: { select: { name: true } },
-        },
-      },
-    },
+    select: ORDER_LINE_SELECT,
   });
 
   const { input, otherChargeGlName } =
@@ -651,7 +737,15 @@ async function createInvoiceInTx(
   const computed = priceOrder(input); // the pure engine — all the arithmetic
 
   // The lead line's priced operations, comma-joined — the invoice header's "process names" (§10).
-  const leadPrices = orderLines[0] ? await listPartPrices(orderLines[0].partId) : [];
+  // The Phase 6 tier fork applies HERE too (§5.3's wholesale rule reaches every read that
+  // assembles this order's price rows): a linked lead line names the QUOTE's operations — the
+  // steps this invoice actually bills — and its part's rows are not fetched.
+  const lead = orderLines[0] ?? null;
+  const leadPrices = lead === null
+    ? []
+    : lead.quoteLineId !== null
+      ? await quotePriceRowInputs(tx, { id: lead.id, partId: lead.partId, quoteLineId: lead.quoteLineId })
+      : await listPartPrices(lead.partId);
   const processNames = leadPrices.map((p) => p.stepName).join(", ");
   const materialName = orderLines[0]?.part.material?.name ?? "";
 
@@ -911,6 +1005,9 @@ const LINE_INPUT = z.object({
   minimumApplied: z.boolean().optional(),
   rate: decimalField(9, 6),
   priceSource: z.enum(PRICE_SOURCES).nullable().optional(),
+  // The frozen quote number rides the round-trip: the UI grid echoes every column back on a lines
+  // save, and a schema that dropped this one would blank "Quote #N" off the paper on any edit.
+  sourceQuoteNumber: z.number().int().nullable().optional(),
   needsPrice: z.boolean().optional(),
   amount: decimalField(12, 2, { required: true }),
 }).strict();
@@ -932,7 +1029,9 @@ function lineColumns(l: LineInput) {
     pricePer: l.pricePer ?? null, unitPrice: l.unitPrice ?? null,
     setupCharge: l.setupCharge ?? null, minimumCharge: l.minimumCharge ?? null,
     breakThreshold: l.breakThreshold ?? null, minimumApplied: l.minimumApplied ?? false,
-    rate: l.rate ?? null, priceSource: l.priceSource ?? null, needsPrice: l.needsPrice ?? false,
+    rate: l.rate ?? null, priceSource: l.priceSource ?? null,
+    sourceQuoteNumber: l.sourceQuoteNumber ?? null,
+    needsPrice: l.needsPrice ?? false,
     amount: l.amount,
   };
 }
@@ -1014,18 +1113,12 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     });
     if (!customer) throw new HttpError(404, "Customer not found");
 
+    // ORDER_LINE_SELECT carries `quoteLineId`, so this whole re-price resolves tier 1 the same
+    // way create does (ruling 8's unlock-and-recalculate: the link honored, CURRENT quote rows).
     const orderLines: OrderLineRow[] = await tx.orderLine.findMany({
       where: { orderId: order.id },
       orderBy: { position: "asc" },
-      select: {
-        id: true, position: true, partId: true,
-        part: {
-          select: {
-            partNumber: true, name: true, description: true, eachWeight: true,
-            billForCert: true, certCharge: true, material: { select: { name: true } },
-          },
-        },
-      },
+      select: ORDER_LINE_SELECT,
     });
 
     const { input, otherChargeGlName } =
@@ -1065,7 +1158,8 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
             qty: m.qty, weight: m.weight, eachWeight: m.eachWeight,
             pricePer: m.pricePer, unitPrice: m.unitPrice, setupCharge: m.setupCharge,
             minimumCharge: m.minimumCharge, breakThreshold: m.breakThreshold, minimumApplied: m.minimumApplied,
-            rate: m.rate, priceSource: m.priceSource, needsPrice: m.needsPrice, amount: m.amount,
+            rate: m.rate, priceSource: m.priceSource, sourceQuoteNumber: m.sourceQuoteNumber,
+            needsPrice: m.needsPrice, amount: m.amount,
           })),
         });
       }
@@ -1343,7 +1437,10 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
       pricePer: l.pricePer, unitPrice: num(l.unitPrice),
       setupCharge: num(l.setupCharge), minimumCharge: num(l.minimumCharge),
       breakThreshold: num(l.breakThreshold), minimumApplied: l.minimumApplied,
-      rate: num(l.rate), priceSource: l.priceSource, needsPrice: l.needsPrice,
+      // The frozen source travels with the copy (§4.2): a credit against quote-priced paper still
+      // names "Quote #N" — off its own column, exactly like the invoice it corrects.
+      rate: num(l.rate), priceSource: l.priceSource, sourceQuoteNumber: l.sourceQuoteNumber,
+      needsPrice: l.needsPrice,
       amount: negateMoney(l.amount),
     }));
 
@@ -1485,6 +1582,10 @@ export async function readInvoicePdfData(
       description: l.description,
       pricePerLabel: l.pricePer ? PRICE_PER_LABELS[l.pricePer] : "",
       unitPrice: l.unitPrice, minimumCharge: l.minimumCharge, setupCharge: l.setupCharge,
+      // §5.3: a quote-priced operation names its source on the paper — off the line's own FROZEN
+      // column (never a live join; the quote may be long deleted). Non-QUOTE lines pass null and
+      // print exactly as the approved 5A sample.
+      sourceQuoteNumber: l.priceSource === "QUOTE" ? l.sourceQuoteNumber : null,
       amount: l.amount,
     })),
     subtotal: detail.subtotal,

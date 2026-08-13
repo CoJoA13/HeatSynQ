@@ -687,7 +687,7 @@ export const listDocuments = listDocumentsForOrder;
 export function travelerFilename(orderNumber: number, loadNumber: number | null): string {
   return documentFilename(
     { id: "", createdAt: new Date(0), kind: "TRAVELER",
-      orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, loadNumber },
+      orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, quoteId: null, loadNumber },
     orderNumber,
   );
 }

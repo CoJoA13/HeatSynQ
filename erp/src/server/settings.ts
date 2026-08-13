@@ -73,9 +73,24 @@ export const SETTINGS = {
     schema: z.string(), default: SHIPPER_LIABILITY_DEFAULT,
     label: "Shipping ticket liability text", group: "Shipping",
   },
+  // Phase 6 document text blocks (spec §6) — the cert_statement/shipper_liability_text shape, in
+  // their own per-document group. The intro default is the owner sample's own wording
+  // (docs/samples/Quote_Sample_Form.jpeg); the liability block ships empty — the owner keys the
+  // shop's limited-liability wording.
+  quote_intro_text: {
+    schema: z.string(), default: "We are pleased to provide you with the following quotation:",
+    label: "Quote intro line", group: "Quoting",
+  },
+  quote_liability_text: {
+    schema: z.string(), default: "", label: "Quote liability text", group: "Quoting",
+  },
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the plant-wide default.
   request_days_default: { schema: int(0, 3650), default: 5, label: "Default request days", group: "Dates" },
+  // Phase 6 (ruling 9): pre-fills a new quote's expiry as quoteDate + this many days, editable
+  // per quote. Positive — a quote effective for zero days is a contradiction, not a default —
+  // and capped like request_days_default above: the value feeds date arithmetic.
+  quote_valid_days: { schema: int(1, 3650), default: 30, label: "Quote validity (days)", group: "Dates" },
   traffic_may_miss_days: { schema: int(0), default: 5, label: "May-miss window (days)", group: "Dates" },
   traffic_will_miss_days: { schema: int(0), default: 3, label: "Will-miss window (days)", group: "Dates" },
   session_timeout_minutes: { schema: int(5, 1440), default: 480, label: "Session timeout (minutes)", group: "System" },

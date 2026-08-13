@@ -164,6 +164,28 @@ const FIXTURE = {
   closeWriteOffGlAccountName: "E2E-5220",
   closeSalesTaxGlAccountName: "E2E-2305",
   closeCashGlAccountName: "E2E-1010",
+
+  // Task 11 (Phase 6): the quoting flow's own customer/part/step-code — independent of every set
+  // above, the same per-phase separation reasoning throughout this file. `quoteCustomer` opts out
+  // of surcharge and tax (the `arCustomer` shape) so the flow's DRAFT invoice carries exactly the
+  // ONE operation row its quote prices — the "Quote #N" source-label assertion has no surcharge or
+  // tax rows to share the grid with. The part deliberately carries NO PartPrice row at all: the
+  // invoice's operation row can then ONLY have come from the quote line's own QuotePrice (tier-1
+  // wholesale substitution, ruling 4) — if the link failed, the line would read "needs price",
+  // which the flow asserts absent. The step code prices the QUOTE row (QuotePrice.
+  // processStepCodeId); it needs no GL account because the flow's invoice stays a DRAFT forever
+  // (never finalized — see flows/quotes.mjs's header for why that also keeps it out of
+  // close-month-end's readiness scan). `quoteEndingStatementName` is the ending statement the flow
+  // creates LIVE through the admin reference page (the `liveTemplateName` precedent: name known up
+  // front, id only once the flow has run) — create() does NOT insert it, but reapLeftovers/cleanup
+  // both remove it by this exact name, and create() snapshots which statement was the live default
+  // BEFORE the flow's promote demotes it (`priorDefaultEndingStatementId`, the `priorBillingConfig`
+  // precedent for restoring shared state the flow must mutate through the real UI).
+  quoteCustomerCode: "E2EQUOTECUST",
+  quotePartNumber: "E2E-QUOTE-PART",
+  quoteStepCodeCode: "E2E-QUOTE-OP",
+  quoteStepCodeName: "E2E Quote Op",
+  quoteEndingStatementName: "E2E Quote Ending Statement",
 } as const;
 
 /**
@@ -319,6 +341,22 @@ export type Fixtures = {
     writeOffGlAccountId: string | null;
     salesTaxGlAccountId: string | null;
   };
+  /** Task 11 (Phase 6): the quoting flow's own fixtures — see FIXTURE's comment. */
+  quoteCustomerId: string;
+  quoteCustomerCode: string;
+  quotePartId: string;
+  quotePartNumber: string;
+  quoteStepCodeId: string;
+  quoteStepCodeCode: string;
+  quoteStepCodeName: string;
+  quoteEndingStatementName: string;
+  /** The id of whichever ending statement was the live default BEFORE this run — the quoting
+   *  flow's create-with-default demotes it through the real service (audited on that row; that
+   *  history is genuine and stays), and `cleanup()` re-promotes it after deleting the fixture
+   *  statement. Null when the dev DB had no live default (the demote never fires). The
+   *  `priorBillingConfig` precedent: shared state the flow must mutate through the real UI is
+   *  snapshot-and-restored, never guessed. */
+  priorDefaultEndingStatementId: string | null;
 };
 
 // --- Shared FK-ordered deletion, used by both cleanup() (id-driven, from a known Fixtures
@@ -677,6 +715,83 @@ async function deleteInvoicesAndLines(customerIds: string[]): Promise<void> {
   await prisma.invoice.deleteMany({ where: { id: { in: invoiceIds } } });
 }
 
+/**
+ * Task 11 (Phase 6): every quote (lines, price rows, breaks, stored QUOTE documents) the quoting
+ * flow produced, scoped through the fixture quote-customer's id exactly like
+ * `deleteOrdersAndChildren` — `Quote.customerId` is the natural scope, and quotes are only ever
+ * created live through the app, so the customer is the gate. `deletedAt` is deliberately NOT
+ * filtered (a soft-deleted quote is exactly as unwelcome as a live one).
+ *
+ * FK order (all verified against migrations/20260810120100_quoting/migration.sql):
+ *  - `StoredDocument.quoteId` is `ON DELETE SET NULL`, which would immediately violate
+ *    `StoredDocument_kind_owner_check` on a QUOTE-kind row (QUOTE requires `quoteId` NOT NULL) —
+ *    so QUOTE documents (and their own document-keyed audit rows) go explicitly first, the
+ *    `deleteStatementDocuments` precedent.
+ *  - `QuotePriceBreak.quotePriceId` / `QuotePrice.quoteLineId` / `QuoteLine.quoteId` are all
+ *    RESTRICT — children before parents.
+ *  - Callers must run this BEFORE `deleteStepCodes` (`QuotePrice.processStepCodeId` RESTRICT),
+ *    BEFORE `deletePartsAndCustomers` (`Quote.customerId` RESTRICT), and BEFORE
+ *    `deleteUsersAndRoles` (`Quote.quotedById` RESTRICT). `OrderLine.quoteLineId` is SET NULL, so
+ *    ordering against `deleteOrdersAndChildren` is not FK-forced — run after it anyway, matching
+ *    the app's own orders→quote resolution direction.
+ *
+ * Audit rows: every quote mutation is audited at the QUOTE level (quotes.ts — create/update/
+ * attach/close/reopen/delete all key entity "quote", entityId the quote's own id; lines/prices/
+ * breaks ride the quote-level snapshot diff, never their own entries), so one entity-"quote"
+ * sweep covers the tree.
+ */
+async function deleteQuotesAndChildren(customerIds: string[]): Promise<void> {
+  if (customerIds.length === 0) return;
+  const quotes = await prisma.quote.findMany({ where: { customerId: { in: customerIds } }, select: { id: true } });
+  const quoteIds = quotes.map((q) => q.id);
+  if (quoteIds.length === 0) return;
+
+  const documents = await prisma.storedDocument.findMany({
+    where: { quoteId: { in: quoteIds } }, select: { id: true },
+  });
+  const documentIds = documents.map((d) => d.id);
+  if (documentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "storedDocument", entityId: { in: documentIds } } });
+    await prisma.storedDocument.deleteMany({ where: { id: { in: documentIds } } });
+  }
+
+  await prisma.auditLog.deleteMany({ where: { entity: "quote", entityId: { in: quoteIds } } });
+  await prisma.quotePriceBreak.deleteMany({ where: { quotePrice: { quoteLine: { quoteId: { in: quoteIds } } } } });
+  await prisma.quotePrice.deleteMany({ where: { quoteLine: { quoteId: { in: quoteIds } } } });
+  await prisma.quoteLine.deleteMany({ where: { quoteId: { in: quoteIds } } });
+  await prisma.quote.deleteMany({ where: { id: { in: quoteIds } } });
+}
+
+/**
+ * Task 11 (Phase 6): removes the ending statement the quoting flow created LIVE through the admin
+ * reference page — name-driven (the `liveTemplateName` precedent: its id is only known once the
+ * flow has run, its exact `FIXTURE` name is known up front), with its own audit rows swept first
+ * (the row IS created through the audited reference service, unlike this script's direct-`tx`
+ * reference fixtures). Then restores the pre-run default: the flow's create-with-default demoted
+ * whichever statement was the live default through the real service, and `priorDefaultId` (from
+ * `create()`'s snapshot) is re-promoted with a direct conditional write — the
+ * `restoreBillingConfig` precedent for shared dev-DB state a flow must mutate through the real UI.
+ * The demote's audit entry on that row is genuine history and stays. No-ops throughout: no fixture
+ * row found, no prior default, or the prior row since deleted (`updateMany` guarded on
+ * `deletedAt: null`). Run AFTER `deleteQuotesAndChildren` — `Quote.endingStatementId` is SET NULL,
+ * so this is convention (quotes reference the statement), not an FK requirement.
+ */
+async function deleteEndingStatementFixture(priorDefaultId: string | null | undefined): Promise<void> {
+  const rows = await prisma.endingStatement.findMany({
+    where: { name: FIXTURE.quoteEndingStatementName }, select: { id: true },
+  });
+  const ids = rows.map((r) => r.id);
+  if (ids.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "endingStatement", entityId: { in: ids } } });
+    await prisma.endingStatement.deleteMany({ where: { id: { in: ids } } });
+  }
+  if (priorDefaultId) {
+    await prisma.endingStatement.updateMany({
+      where: { id: priorDefaultId, deletedAt: null }, data: { isDefault: true },
+    });
+  }
+}
+
 /** Phase 4 reference rows (created by this script, never through the app, so no audit rows).
  *  Runs LAST of the data deletes: `CertRequirement.inspectionCodeId`/`scaleId`,
  *  `PartInspection.inspectionCodeId`/`scaleId` and `OrderContainer.typeId` are restrict-on-delete
@@ -749,6 +864,7 @@ async function reapLeftovers(): Promise<void> {
     invCustomers, invParts, invGlAccounts, invSurcharges,
     arCustomers, arParts, arTermsRows, arPaymentTypes,
     closeCustomers, closeParts, closeGlAccounts, closeTermsRows, closePaymentTypes,
+    quoteCustomers, quoteParts, endingStatements,
   ] = await Promise.all([
     prisma.processTemplate.findMany({
       where: { name: { in: [FIXTURE.decoyTemplateName, FIXTURE.liveTemplateName] } }, select: { id: true },
@@ -769,6 +885,7 @@ async function reapLeftovers(): Promise<void> {
             FIXTURE.stepCodeA, FIXTURE.stepCodeB, FIXTURE.priceStepCodeCode,
             FIXTURE.invPriceStepCodeACode, FIXTURE.invPriceStepCodeBCode,
             FIXTURE.arPriceStepCodeCode, FIXTURE.closePriceStepCodeCode,
+            FIXTURE.quoteStepCodeCode,
           ],
         },
       },
@@ -864,25 +981,37 @@ async function reapLeftovers(): Promise<void> {
     }),
     prisma.terms.findMany({ where: { name: FIXTURE.closeTermsName }, select: { id: true } }),
     prisma.paymentType.findMany({ where: { name: FIXTURE.closePaymentTypeName }, select: { id: true } }),
+    // Task 11 (Phase 6): the quoting flow's own fixtures, looked up the same exact-key,
+    // customer-scoped way as everything above. The ending statement is matched by its exact
+    // FIXTURE name (the flow creates it live through the reference page).
+    prisma.customer.findMany({ where: { code: FIXTURE.quoteCustomerCode }, select: { id: true } }),
+    prisma.part.findMany({
+      where: { partNumber: FIXTURE.quotePartNumber, customer: { code: FIXTURE.quoteCustomerCode } },
+      select: { id: true },
+    }),
+    prisma.endingStatement.findMany({ where: { name: FIXTURE.quoteEndingStatementName }, select: { id: true } }),
   ]);
   const templateIds = templates.map((t) => t.id);
   const invCustomerIds = invCustomers.map((c) => c.id);
   const arCustomerIds = arCustomers.map((c) => c.id);
   const closeCustomerIds = closeCustomers.map((c) => c.id);
+  const quoteCustomerIds = quoteCustomers.map((c) => c.id);
   const partIds = [
     ...parts.map((p) => p.id), ...orderParts.map((p) => p.id), ...phase4Parts.map((p) => p.id),
     ...invParts.map((p) => p.id), ...arParts.map((p) => p.id), ...closeParts.map((p) => p.id),
+    ...quoteParts.map((p) => p.id),
   ];
   const stepCodeIds = stepCodes.map((c) => c.id);
-  // Task 20/Task 17/Task 9: `invCustomerIds`/`arCustomerIds`/`closeCustomerIds` ride along in this
-  // same set — the invoicing flow, the A/R flow, AND the close flow each ship their own order (a
-  // real `Shipper`/`ShipperOrder` pair), so `deleteShippingAndCerts` must be scoped through all
-  // three too, or a leftover shipment blocks `deleteOrdersAndChildren`'s delete of the order it
-  // covers with `ShipperOrder_orderId_fkey`'s RESTRICT (caught live for `invCustomerIds`: the first
-  // run of that flow's cleanup failed on exactly this).
+  // Task 20/Task 17/Task 9/Task 11: `invCustomerIds`/`arCustomerIds`/`closeCustomerIds`/
+  // `quoteCustomerIds` ride along in this same set — the invoicing flow, the A/R flow, the close
+  // flow, AND the quoting flow each ship their own order (a real `Shipper`/`ShipperOrder` pair),
+  // so `deleteShippingAndCerts` must be scoped through all of them, or a leftover shipment blocks
+  // `deleteOrdersAndChildren`'s delete of the order it covers with `ShipperOrder_orderId_fkey`'s
+  // RESTRICT (caught live for `invCustomerIds`: the first run of that flow's cleanup failed on
+  // exactly this).
   const shipHoldCustomerIds = [
     ...shipCustomers.map((c) => c.id), ...holdCustomers.map((c) => c.id), ...invCustomerIds, ...arCustomerIds,
-    ...closeCustomerIds,
+    ...closeCustomerIds, ...quoteCustomerIds,
   ];
   const customerIds = [
     ...customers.map((c) => c.id), ...orderCustomers.map((c) => c.id), ...shipHoldCustomerIds,
@@ -902,13 +1031,15 @@ async function reapLeftovers(): Promise<void> {
   const closeGlAccountIds = closeGlAccounts.map((g) => g.id);
   const closeTermsIds = closeTermsRows.map((t) => t.id);
   const closePaymentTypeIds = closePaymentTypes.map((p) => p.id);
+  const endingStatementIds = endingStatements.map((s) => s.id);
 
   const total = templateIds.length + partIds.length + stepCodeIds.length
     + customerIds.length + userIds.length + roleIds.length
     + scaleIds.length + codeIds.length + containerTypeIds.length
     + invGlAccountIds.length + invSurchargeIds.length
     + arTermsIds.length + arPaymentTypeIds.length
-    + closeGlAccountIds.length + closeTermsIds.length + closePaymentTypeIds.length;
+    + closeGlAccountIds.length + closeTermsIds.length + closePaymentTypeIds.length
+    + endingStatementIds.length;
   if (total === 0) return;
 
   console.error(
@@ -919,11 +1050,15 @@ async function reapLeftovers(): Promise<void> {
     `${invGlAccountIds.length} GL account(s), ${invSurchargeIds.length} surcharge(s), ` +
     `${arTermsIds.length} terms row(s), ${arPaymentTypeIds.length} payment type(s), ` +
     `${closeGlAccountIds.length} close-flow GL account(s), ${closeTermsIds.length} close-flow ` +
-    `terms row(s), ${closePaymentTypeIds.length} close-flow payment type(s). NOTE: this does NOT ` +
+    `terms row(s), ${closePaymentTypeIds.length} close-flow payment type(s), ` +
+    `${endingStatementIds.length} ending statement(s). NOTE: this does NOT ` +
     `self-heal a leftover ClosePeriod/GlExportBatch/GlPosting row or a BillingConfig singleton row ` +
     `left mid-edit by a crashed close-month-end.mjs run — neither the exact (year, month) tested nor ` +
     `the prior BillingConfig values survive a crash outside this script's own memory. If that flow's ` +
-    `own cleanup failed, check GET /api/receivables/close and Admin -> Billing by hand.`,
+    `own cleanup failed, check GET /api/receivables/close and Admin -> Billing by hand. It also ` +
+    `cannot RE-PROMOTE an ending-statement default a crashed quotes.mjs run demoted (which row WAS ` +
+    `the default doesn't survive the crash either — the fixture statement above is deleted, but if ` +
+    `your dev DB had its own default, re-tick it under Admin -> Reference -> Ending statements).`,
   );
 
   // Receipts/invoices/shipments/certs first (their children FK into the order/invoice tables),
@@ -933,9 +1068,15 @@ async function reapLeftovers(): Promise<void> {
   // deletePartsAndCustomers below can touch the fixture parts. `deleteReceivables` runs first of
   // all: its `Application` rows block deleting the invoices `deleteInvoicesAndLines` removes next.
   await deleteReceivables([...arCustomerIds, ...closeCustomerIds]);
-  await deleteInvoicesAndLines([...invCustomerIds, ...arCustomerIds, ...closeCustomerIds]);
+  await deleteInvoicesAndLines([...invCustomerIds, ...arCustomerIds, ...closeCustomerIds, ...quoteCustomerIds]);
   await deleteShippingAndCerts(shipHoldCustomerIds);
   await deleteOrdersAndChildren(orderCustomerIds);
+  // Task 11: quotes after orders (convention — OrderLine.quoteLineId is SET NULL either way),
+  // before step codes/parts/customers/users (all RESTRICT — see deleteQuotesAndChildren's own
+  // comment). The ending statement follows the quotes that reference it; no prior default to
+  // restore here (see the NOTE above — that id doesn't survive a crash).
+  await deleteQuotesAndChildren(quoteCustomerIds);
+  await deleteEndingStatementFixture(null);
   await deletePartProcessData(partIds);
   await deleteTemplatesAndSteps(templateIds);
   // Before both deleteStepCodes (the price step code's own restrict-on-delete FK) and
@@ -1002,6 +1143,16 @@ async function create(): Promise<Fixtures> {
     writeOffGlAccountId: priorBillingConfigRow?.writeOffGlAccountId ?? null,
     salesTaxGlAccountId: priorBillingConfigRow?.salesTaxGlAccountId ?? null,
   };
+
+  // Task 11 (Phase 6): snapshot which ending statement is the live default BEFORE the quoting
+  // flow's create-with-default demotes it through the real reference service — see the
+  // `Fixtures.priorDefaultEndingStatementId` doc comment. Read AFTER reapLeftovers above (a
+  // leftover fixture statement from a crashed run must not be mistaken for the developer's own
+  // default) and outside the fixture transaction below, the `priorBillingConfigRow` precedent.
+  const priorDefaultEndingStatementRow = await prisma.endingStatement.findFirst({
+    where: { isDefault: true, deletedAt: null }, select: { id: true },
+  });
+  const priorDefaultEndingStatementId = priorDefaultEndingStatementRow?.id ?? null;
 
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
   // Sequential creates committed as they went, and a failure after the first one exited with rows
@@ -1313,6 +1464,25 @@ async function create(): Promise<Fixtures> {
     const closePaymentType = await tx.paymentType.create({
       data: { name: FIXTURE.closePaymentTypeName, glAccountId: closeCashGlAccount.id },
     });
+
+    // ----- Task 11 (Phase 6): the quoting flow's own customer/part/step-code (see FIXTURE's
+    // comment — surcharge/tax opted out; the part carries NO PartPrice so the flow's invoice can
+    // only price from the quote; the step code prices the QuotePrice row and needs no GL because
+    // the invoice stays a DRAFT). The ending statement is NOT created here — the flow builds it
+    // live through the admin reference page. -----
+    const quoteCustomer = await tx.customer.create({
+      data: {
+        code: FIXTURE.quoteCustomerCode, name: "E2E Quoting Customer",
+        taxable: false, surchargeOptOut: true,
+      },
+    });
+    const quoteStepCode = await tx.processStepCode.create({
+      data: { code: FIXTURE.quoteStepCodeCode, name: FIXTURE.quoteStepCodeName },
+    });
+    const quotePart = await orderablePart({
+      customerId: quoteCustomer.id, partNumber: FIXTURE.quotePartNumber,
+      name: "E2E Quoted Part", eachWeight: "5.0000", certRequired: false,
+    });
     // Task 9 backfill (see `arOpGlAccountName`'s comment on `arPriceStepCode` for the same
     // reasoning, applied here to `arPaymentType`): `receivables-apply-age-statement.mjs`'s own
     // payment ALSO stays posted/in-scope for the rest of a run, so its payment type needs a GL
@@ -1443,6 +1613,12 @@ async function create(): Promise<Fixtures> {
       closeSalesTaxGlAccountId: closeSalesTaxGlAccount.id, closeSalesTaxGlAccountName: closeSalesTaxGlAccount.name,
       closeCashGlAccountId: closeCashGlAccount.id,
       priorBillingConfig,
+      quoteCustomerId: quoteCustomer.id, quoteCustomerCode: quoteCustomer.code,
+      quotePartId: quotePart.id, quotePartNumber: quotePart.partNumber,
+      quoteStepCodeId: quoteStepCode.id, quoteStepCodeCode: quoteStepCode.code,
+      quoteStepCodeName: quoteStepCode.name,
+      quoteEndingStatementName: FIXTURE.quoteEndingStatementName,
+      priorDefaultEndingStatementId,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -1530,22 +1706,29 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   await deleteKnownEmptyBatch(payload.closeBatchId);
   await deleteClosePeriodFixture(payload.closePeriodYear, payload.closePeriodMonth, payload.adminUserId);
   await restoreBillingConfig(payload.priorBillingConfig);
-  await deleteInvoicesAndLines([payload.invCustomerId, payload.arCustomerId, payload.closeCustomerId]);
-  // The invoicing/A-R/close flows each ship their own order (a real Shipper/ShipperOrder pair) —
-  // invCustomerId/arCustomerId/closeCustomerId MUST ride along here too, or
-  // `ShipperOrder_orderId_fkey`'s RESTRICT blocks the order delete below (caught live for
+  await deleteInvoicesAndLines([
+    payload.invCustomerId, payload.arCustomerId, payload.closeCustomerId, payload.quoteCustomerId,
+  ]);
+  // The invoicing/A-R/close/quoting flows each ship their own order (a real Shipper/ShipperOrder
+  // pair) — invCustomerId/arCustomerId/closeCustomerId/quoteCustomerId MUST ride along here too,
+  // or `ShipperOrder_orderId_fkey`'s RESTRICT blocks the order delete below (caught live for
   // invCustomerId: the first run of that flow's cleanup failed on exactly this).
   await deleteShippingAndCerts([
     payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
-    payload.closeCustomerId,
+    payload.closeCustomerId, payload.quoteCustomerId,
   ]);
   await deleteOrdersAndChildren([
     orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId, payload.arCustomerId,
-    payload.closeCustomerId,
+    payload.closeCustomerId, payload.quoteCustomerId,
   ]);
+  // Task 11: quotes after orders, before the step-code/part/customer/user deletes below (all
+  // RESTRICT — deleteQuotesAndChildren's own comment); then the fixture ending statement, with
+  // the pre-run default re-promoted from create()'s snapshot.
+  await deleteQuotesAndChildren([payload.quoteCustomerId]);
+  await deleteEndingStatementFixture(payload.priorDefaultEndingStatementId);
   await deletePartProcessData([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId, payload.arPartId, payload.closePartId,
+    payload.invPartId, payload.arPartId, payload.closePartId, payload.quotePartId,
   ]);
   await deleteTemplatesAndSteps(templateIds);
   // Fix-wave 1 (Task 5 review, finding 8): before both deleteStepCodes (priceStepCodeId's own
@@ -1556,12 +1739,12 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   // screens up.
   await deletePartPrices([
     partId, orderLeadPartId, payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId,
-    payload.invPartId, payload.arPartId, payload.closePartId,
+    payload.invPartId, payload.arPartId, payload.closePartId, payload.quotePartId,
   ]);
   await deleteStepCodes([
     stepCodeA.id, stepCodeB.id, payload.priceStepCodeId,
     payload.invPriceStepCodeAId, payload.invPriceStepCodeBId, payload.arPriceStepCodeId,
-    payload.closePriceStepCodeId,
+    payload.closePriceStepCodeId, payload.quoteStepCodeId,
   ]);
   // Before deletePartsAndCustomers: StoredDocument.customerId is ON DELETE SET NULL, which would
   // otherwise violate StoredDocument_kind_owner_check on a live STATEMENT document the moment its
@@ -1571,11 +1754,11 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
     [
       partId, orderLeadPartId, orderRiderPartId,
       payload.shipPartAId, payload.shipPartBId, payload.certPartId, payload.holdPartId, payload.invPartId,
-      payload.arPartId, payload.closePartId,
+      payload.arPartId, payload.closePartId, payload.quotePartId,
     ],
     [
       customerId, orderCustomerId, payload.shipCustomerId, payload.holdCustomerId, payload.invCustomerId,
-      payload.arCustomerId, payload.closeCustomerId,
+      payload.arCustomerId, payload.closeCustomerId, payload.quoteCustomerId,
     ],
   );
   await deletePhase4Reference(

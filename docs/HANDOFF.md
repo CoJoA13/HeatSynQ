@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-10 — **Phase 5C (Month-End Close & QuickBooks Online Summary Export) is MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; **§9 is now the live Phase 6 (Quoting) kickoff — the owner chose that track 2026-08-10; the deferred owner-homework and A/R backlog are non-blocking for it.** Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
+**Updated:** 2026-08-12 — **Phase 6 (Quoting) is BUILT and REVIEWED on `phase-6-quoting`: all 11 tasks task-approved; the whole-branch review returned READY FOR PR with an EMPTY mandatory fix wave, and its one owner-directed follow-up (Task 12 — spec §3 ruling 7's overlap-save warning, the review's F1) is built and green; **PR #94 is OPEN** (2026-08-12, attribution in the body) and the deferred findings are filed as issues **#95–#100** — see §4 for the state, the dated final gates, and the assembled owner-ratification queue; the owner reviews/merges the PR.** Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; §4's "Merged, in build order" keeps the one-paragraph entry; §9's Phase 6 kickoff prompt was consumed 2026-08-10 (kept for the record until the merge rewrites §9); the deferred owner-homework and A/R backlog stay non-blocking. Final 5C gates: **1947 tests**, `tsc`/`eslint`/`build` clean, E2E **18/18**. The reviews caught four data-integrity/concurrency defects on-branch plus the cross-task reconciliation date-basis blocker at whole-branch (owner rulings 8 & 9); two Codex PR rounds followed — **3 fixed on-branch, the rest to issues #88–#93 / owner question #68**. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **30 migrations on `main`**; open backlog: #51–#52, #59–#65, and #68–#93 plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -69,10 +69,52 @@ per-task and whole-branch reviews, owner rulings 8 & 9, the two Codex PR-review 
 lessons). Phase 5's completion unlocks parallel-run (roadmap: "Parallel-run capability begins after
 Phase 5"; acceptance criterion spec §13 — one full closed month agreeing with the books).
 
-**The owner chose Phase 6 (Quoting) as the next track (2026-08-10); §9 is its live kickoff — but it
-has not started (no spec, plan, or branch yet).** The milestone alternatives Phase 5's completion
-opened — parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) — are deferred to their own
-sessions; the owner-owed GL-account list + bookkeeper QBO homework gate a *real* export, not Quoting.
+**Phase 6 (Quoting) is BUILT and REVIEWED — all 11 tasks task-approved on `phase-6-quoting`; the
+whole-branch review (2026-08-11, strongest model, full-diff read) returned READY FOR PR with an
+EMPTY mandatory fix wave and one headline finding, F1: spec §3 ruling 7's overlap-save warning
+("warns but doesn't block") never reached any task brief, so eleven approved tasks shipped
+without it. The owner ruled it built in-phase — landed as Task 12 (2026-08-12, `7d5a64d`):
+`createQuote`/`updateQuote`/`attachPart` return `warnings: string[]` computed in-transaction
+(inclusive-boundary window overlap, other live OPEN quotes' live lines for the same part —
+customer scoping implicit via partId), the §5.7 `shipmentWarnings` precedent, rendered as the
+house amber non-blocking banners in the quote UI; F2–F7 go to issues at PR time. Next: the PR
+(attribution in the body).** The
+approved spec is `docs/superpowers/specs/2026-08-10-phase-6-quoting-design.md` (its §3 is the
+fourteen-ruling table — standing agreement, per-order-line link, wholesale tier 1,
+judged-at-link-time, latest-effective-wins, live-until-finalize, the `endingStatement` reference
+kind, `User.title`), the plan `docs/superpowers/plans/2026-08-10-phase-6-quoting.md`, and the
+execution ledger `docs/execution/2026-08-10-phase-6-quoting/` — per-task briefs, reports, reviewer
+verdicts, and the `progress.md` whose carried flags ARE the whole-branch review's triage inputs.
+Delivered: the Quote data layer + registrations (2 hand-written migrations); the eleventh
+reference kind (`endingStatement`, at-most-one-live-default under an advisory lock); the quote
+service (create/read/list/§5.4-worklist/update/close/reopen/delete/attach-part, all under a
+`claimQuote` row claim); the `quote-links.ts` eligibility LEAF + per-order-line auto-link with
+the §5.14 SSI pairing dangerous-direction-tested (see CLAUDE.md's new STANDING INVARIANT
+sentence); tier-1 wholesale invoice substitution with `sourceQuoteNumber` frozen per line;
+cross-entity §5.14 delete blocks (part/customer/step-code/ending-statement); the `/quotes` UI
+(single-save form — the notes-clobber family gets no fourth member); order-entry/hub/part-page
+link surfaces; the quote PDF (eighth document type, built to `docs/samples/
+Quote_Sample_Form.jpeg`, indicative amounts through the real pricing engine) + print/documents
+routes + `User.title` (closing Phase 4 ping #4); the 19th E2E flow driving the whole
+lifecycle through the real UI; and the Task 12 fix wave (ruling 7's overlap-save warning,
+TDD RED-first with message-content assertions). **Final gates (2026-08-12, post-fix-wave):
+2133 tests / 130 files, `tsc`/`eslint`/`build` clean, E2E 19/19 (watched; dev-DB fixtures
+verified clean).**
+
+**The owner-ratification queue (assembled from the ledger for the demo/merge):** (1) `createQuote`
+refuses an inactive customer but accepts an inactive part on a linked line (T3); (2) a CLOSED
+quote still blocks `deletePart`/`deleteCustomer` — only deletion clears the block (T7; the
+reviewer ruled it right under the standing-agreement model — ratify); (3) the one-time
+dormant-column audit churn on the first line-tree save after attach-part (T4/T8); (4) the invoice
+grid names EVERY operation line's source while the PDF annotates QUOTE lines only (T6 → demo);
+(5) the part page's Active-quotes section reads `/api/quotes/eligible` with `orders.view` —
+arguably `parts.view`/`quotes.view` by that route's own §5.15 reasoning (T9); (6) the "Quoted by"
+picker's options require `manage_users` — the only users list (T8/T10); (7) `QuoteLine.eachWeight`
+mirrored at the Part's real Decimal(10,4), spec text corrected in place (T1); (8) the quote PDF's
+9 documented layout deviations (T10 → demo, the 5A-demo channel). The milestone alternatives
+Phase 5's completion opened — parallel-run/acceptance-month prep, and the A/R backlog (#68–#93) —
+stay deferred to their own sessions; the owner-owed GL-account list + bookkeeper QBO homework gate
+a *real* export, not Quoting.
 
 Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
 **#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
@@ -429,8 +471,11 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    3. The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**
       (absolutePosition; cosmetic-only failure; a flow-based fallback belongs to Phase 7 or a
       follow-up).
-   4. **No `User.title` column exists**, so the cert signature block prints name + company with no
-      title line (the sample shows one) — a small follow-up migration if the owner wants it.
+   4. ~~**No `User.title` column exists**, so the cert signature block prints name + company with no
+      title line (the sample shows one) — a small follow-up migration if the owner wants it.~~
+      **RULED 2026-08-10 (Phase 6 spec ruling 14): `User.title` is built in Phase 6** — the quote
+      signature block needs it and the cert signature block gains its missing title line in the same
+      stroke.
 
 ## 8. Fresh machine setup (Fedora)
 
@@ -474,7 +519,8 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 6 (Quoting). This is the live kickoff — paste the prompt below into a fresh session to begin.**
+**Phase 6 (Quoting). This kickoff was CONSUMED 2026-08-10 — the phase is built on `phase-6-quoting`
+(§4); the prompt below is kept for the record until the merge rewrites this section.**
 Phase 5 (Invoicing & A/R + QBO) is COMPLETE — 5C merged 2026-08-10 (`c069b09`, PR #92); §4 carries its
 one-paragraph state and `docs/history/2026-08-10-phase-5c-close-qbo-export.md` its full narrative. The
 owner chose Phase 6 as the next track (2026-08-10). The deferred owner-homework (the real GL list + the

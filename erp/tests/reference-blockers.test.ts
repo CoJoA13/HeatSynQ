@@ -110,6 +110,38 @@ describe("reference delete guard", () => {
     ]);
   });
 
+  // Task 7 (Phase 6): behavioral verification of the `quote.endingStatementId` registry entry
+  // Task 1 registered — `endingStatement` is a genuine ReferenceKind (ruling 13), so its guarded
+  // delete path is the generic deleteReference above, with no quote-side code at all. Quote holds
+  // the FK itself, so `liveWhere` stays the default `{ deletedAt: null }`.
+  it("a live quote blocks its ending statement's deletion, named the Quote way; a deleted quote "
+    + "does not, and the statement then deletes", async () => {
+    const statement = await createReference("endingStatement", { name: "Standard", text: "Thanks." });
+    const customer = await prisma.customer.create({ data: { code: "QAC", name: "Quote Acme" } });
+    const user = await prisma.user.create({
+      data: { username: "quoter-ref", passwordHash: "x", displayName: "Quoter" } });
+    const quote = await prisma.quote.create({ data: {
+      quoteNumber: 1000, customerId: customer.id, quotedById: user.id,
+      endingStatementId: statement.id,
+      quoteDate: new Date("2026-08-01"), effectiveDate: new Date("2026-08-01"),
+      expiryDate: new Date("2026-08-31"),
+    } });
+
+    expect(await findBlockers("endingStatement", statement.id)).toEqual([
+      { entityLabel: "Quote", name: "Quote · #1000", id: quote.id, href: `/quotes/${quote.id}` },
+    ]);
+    await expect(deleteReference("endingStatement", statement.id))
+      .rejects.toThrow("still in use by 1 record(s)");
+    // Refused, not allowed-and-cleared: the quote keeps its statement.
+    expect((await listReference("endingStatement")).map((r) => r.id)).toContain(statement.id);
+
+    // A deleted quote keeps its endingStatementId forever, but blocks nothing from the grave.
+    await prisma.quote.update({ where: { id: quote.id }, data: { deletedAt: new Date() } });
+    expect(await findBlockers("endingStatement", statement.id)).toEqual([]);
+    await expect(deleteReference("endingStatement", statement.id)).resolves.toBeUndefined();
+    expect((await listReference("endingStatement")).map((r) => r.id)).not.toContain(statement.id);
+  });
+
   it("serves the blocker list to an admin and 403s a non-admin", async () => {
     const terms = await createReference("terms", { name: "Net 30" });
     await createCustomer({ code: "ACME", name: "Acme Foundry", termsId: terms.id });

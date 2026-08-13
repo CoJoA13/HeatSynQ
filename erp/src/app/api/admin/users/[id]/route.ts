@@ -6,6 +6,8 @@ import { updateUser, setUserOverrides } from "@/server/users";
 
 const Body = z.object({
   displayName: z.string().min(1).optional(),
+  // The signature title (Phase 6 ruling 14) — blank is legal and clears it (blank prints nothing).
+  title: z.string().max(200).optional(),
   roleId: z.string().nullable().optional(),
   active: z.boolean().optional(),
   password: z.string().min(8).optional(),

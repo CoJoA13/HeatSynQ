@@ -610,6 +610,36 @@ describe("pricing — nothing to price", () => {
   });
 });
 
+describe("pricing — the priceSource / sourceQuoteNumber pass-through (Phase 6 §4.2)", () => {
+  // The engine does not DECIDE the source — it emits what the row carries. The assembler
+  // (invoices.ts) stamps QUOTE + the quote number onto rows it builds from a quote line; every
+  // pre-Phase-6 caller omits both and gets the old hardcoded PART_PRICE/null. No math reads
+  // either field — the amounts in these cases are pinned identical to the defaulted ones.
+  it("defaults to PART_PRICE with no quote number when the row carries neither", () => {
+    const op = priceOrder(input()).lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.priceSource).toBe("PART_PRICE");
+    expect(op.sourceQuoteNumber).toBeNull();
+  });
+
+  it("emits a supplied QUOTE source and quote number onto the OPERATION line, math untouched", () => {
+    const result = priceOrder(input({
+      lines: [{ ...input().lines[0],
+                prices: [row({ priceSource: "QUOTE", sourceQuoteNumber: 1006 })] }],
+    }));
+    const op = result.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.priceSource).toBe("QUOTE");
+    expect(op.sourceQuoteNumber).toBe(1006);
+    expect(op.amount).toBe(937.44); // identical to the defaulted sample case — no math change
+  });
+
+  it("the needs-price line of a rowless order line still carries no source at all", () => {
+    const result = priceOrder(input({ lines: [{ ...input().lines[0], prices: [] }] }));
+    const op = result.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.priceSource).toBeNull();
+    expect(op.sourceQuoteNumber).toBeNull();
+  });
+});
+
 describe("roundCents — the rest of its contract", () => {
   it("survives the classic float-representation cases", () => {
     expect(roundCents(2.675)).toBe(2.68);        // 2.675 is 2.67499999999999982 in IEEE 754

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { Prisma } from "../prisma/generated/prisma/client";
 import { prisma, truncateAll } from "./helpers/db";
 import { listReference, createReference, updateReference, deleteReference } from "@/server/reference";
+import { readAudit } from "@/server/audit";
 import { pasteReference } from "@/server/paste";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
@@ -10,8 +12,8 @@ describe("flat reference tables", () => {
 
   it("exposes every kind the owner needs to key", () => {
     expect([...REFERENCE_KINDS].sort()).toEqual([
-      "carrier", "commentSnippet", "containerType", "glAccount", "inspectionCode",
-      "inspectionScale", "material", "paymentType", "specification", "terms",
+      "carrier", "commentSnippet", "containerType", "endingStatement", "glAccount",
+      "inspectionCode", "inspectionScale", "material", "paymentType", "specification", "terms",
     ]);
   });
 
@@ -61,6 +63,23 @@ describe("flat reference tables", () => {
     expect((await listReference("specification"))[0].text).toMatch(/steel/i);
   });
 
+  // Phase 6 ruling 13: the eleventh kind. `text` is the statement body (the commentSnippet
+  // precedent), `isDefault` the at-most-one-live-default flag (its normalization has its own
+  // describe below).
+  it("ending statement carries a text body and a default flag", async () => {
+    const { id } = await createReference("endingStatement", {
+      name: "Standard", text: "This quotation is valid for 30 days.", isDefault: true,
+    });
+    const row = (await listReference("endingStatement")).find((r) => r.id === id);
+    expect(row?.text).toMatch(/valid for 30 days/);
+    expect(row?.isDefault).toBe(true);
+  });
+
+  it("ending statement rejects a text body over 4000 characters, like commentSnippet", async () => {
+    await expect(createReference("endingStatement", { name: "Too long", text: "x".repeat(4001) }))
+      .rejects.toThrow();
+  });
+
   // `setup` returns the non-default extra value to seed the first row with. The two FK fields
   // (inspectionCode.defaultScaleId, paymentType.glAccountId) can't be a static literal — a real
   // row has to exist first to reference — so every entry gets a callback, run inside the test
@@ -79,6 +98,7 @@ describe("flat reference tables", () => {
     },
     { kind: "commentSnippet", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
     { kind: "specification", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
+    { kind: "endingStatement", setup: async () => ({ text: "old" }), field: "text", fresh: "" },
   ] as const;
 
   it.each(KINDS_WITH_EXTRAS)(
@@ -254,4 +274,169 @@ describe("terms: netDays + early-pay discount", () => {
     });
   });
 
+});
+
+// Phase 6 ruling 13: at most one LIVE ending statement carries isDefault — the customer-address
+// default precedent, enforced in the SERVICE (reference.ts's endingStatement hooks) so no future
+// caller can bypass it (§5.17 discipline). Unlike addresses there is NO auto-promotion: a kind
+// with zero defaults is legal (Quote.endingStatementId is nullable — a quote created then simply
+// stores no ending statement).
+describe("ending statement: at-most-one-live-default normalization", () => {
+  beforeEach(async () => await truncateAll());
+
+  const liveDefaults = () =>
+    prisma.endingStatement.findMany({
+      where: { deletedAt: null, isDefault: true }, orderBy: { name: "asc" },
+    });
+
+  it("a create with isDefault demotes the previous default in the same transaction, audited", async () => {
+    const first = await createReference("endingStatement", { name: "A", isDefault: true });
+    const second = await createReference("endingStatement", { name: "B", isDefault: true });
+
+    expect((await liveDefaults()).map((r) => r.id)).toEqual([second.id]);
+
+    // The demotion must be a real audited write (the customer-address setDefault lesson): without
+    // it, A's history keeps claiming isDefault: true forever after the demotion.
+    const entries = await readAudit("endingStatement", first.id);
+    expect(entries.map((e) => e.action)).toEqual(["update", "create"]);
+    expect((entries[0].before as { isDefault: boolean }).isDefault).toBe(true);
+    expect((entries[0].after as { isDefault: boolean }).isDefault).toBe(false);
+  });
+
+  it("an update promoting a row demotes the previous default", async () => {
+    const a = await createReference("endingStatement", { name: "A", isDefault: true });
+    const b = await createReference("endingStatement", { name: "B" });
+
+    await updateReference("endingStatement", b.id, { isDefault: true });
+
+    expect((await liveDefaults()).map((r) => r.id)).toEqual([b.id]);
+    const aRow = await prisma.endingStatement.findFirst({ where: { id: a.id } });
+    expect(aRow?.isDefault).toBe(false);
+  });
+
+  it("explicitly clearing the default leaves the kind defaultless — legal, no auto-promotion", async () => {
+    const a = await createReference("endingStatement", { name: "A", isDefault: true });
+    await createReference("endingStatement", { name: "B" });
+
+    await updateReference("endingStatement", a.id, { isDefault: false });
+
+    expect(await liveDefaults()).toEqual([]);
+  });
+
+  it("deactivating the default strips the flag — defaultless, and a later reactivation does not resurrect it", async () => {
+    const a = await createReference("endingStatement", { name: "A", isDefault: true });
+
+    await updateReference("endingStatement", a.id, { active: false });
+    expect(await liveDefaults()).toEqual([]);
+    const stored = (await listReference("endingStatement", { includeInactive: true }))
+      .find((r) => r.id === a.id);
+    expect(stored?.active).toBe(false);
+    expect(stored?.isDefault).toBe(false); // stripped in the same write, not merely hidden
+
+    // Reactivation must not silently restore default status past a newer default.
+    const b = await createReference("endingStatement", { name: "B", isDefault: true });
+    await updateReference("endingStatement", a.id, { active: true });
+    expect((await liveDefaults()).map((r) => r.id)).toEqual([b.id]);
+  });
+
+  it("an inactive row cannot be made the default — 400, on create and on update", async () => {
+    await expect(createReference("endingStatement", { name: "A", active: false, isDefault: true }))
+      .rejects.toMatchObject({ status: 400 });
+
+    const b = await createReference("endingStatement", { name: "B", active: false });
+    await expect(updateReference("endingStatement", b.id, { isDefault: true }))
+      .rejects.toMatchObject({ status: 400 });
+
+    const c = await createReference("endingStatement", { name: "C" });
+    await expect(updateReference("endingStatement", c.id, { active: false, isDefault: true }))
+      .rejects.toMatchObject({ status: 400 });
+
+    expect(await liveDefaults()).toEqual([]);
+  });
+
+  // Excel writes a boolean cell as TRUE/FALSE, so that is what a copy-paste hands the importer —
+  // paste.ts coerces it (case-insensitively) to a real boolean before z.boolean() sees it, the
+  // numberColumns shape. Column order matches REFERENCE_EXTRA_FIELDS.endingStatement:
+  // name, text, isDefault.
+  it("paste coerces TRUE/FALSE cells for the default column and normalizes through the service", async () => {
+    const first = await pasteReference("endingStatement", "Standard\tValid 30 days.\tTRUE");
+    expect(first).toEqual({ created: 1, errors: [] });
+
+    const second = await pasteReference("endingStatement", "Rush\tValid 10 days.\ttrue\nPlain\tNo terms.\tFALSE");
+    expect(second).toEqual({ created: 2, errors: [] });
+
+    // Pasted rows go through createReference, so the last TRUE row won the default.
+    const rows = await listReference("endingStatement");
+    expect(rows.find((r) => r.name === "Rush")?.isDefault).toBe(true);
+    expect(rows.find((r) => r.name === "Standard")?.isDefault).toBe(false);
+    expect(rows.find((r) => r.name === "Plain")?.isDefault).toBe(false);
+    expect(await liveDefaults()).toHaveLength(1);
+  });
+
+  it("paste reports a non-boolean default cell per-row instead of guessing", async () => {
+    const result = await pasteReference("endingStatement", "Standard\tValid 30 days.\tmaybe");
+    expect(result.created).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toMatch(/isDefault.*boolean/i);
+  });
+
+  it("deleting the default leaves the kind defaultless", async () => {
+    const a = await createReference("endingStatement", { name: "A", isDefault: true });
+    await createReference("endingStatement", { name: "B" });
+
+    await deleteReference("endingStatement", a.id);
+
+    expect(await liveDefaults()).toEqual([]);
+  });
+
+  // The house rule: a passing concurrency test is not evidence unless RED-verified. This one is —
+  // remove `lockEndingStatementDefault` from the promote branch of
+  // `normalizeEndingStatementDefaultOnUpdate` (reference.ts) and the competitor no longer blocks:
+  // its demote-scan runs while the holder's flag write is still uncommitted (invisible at Read
+  // Committed), both commit, and TWO live defaults survive — the final assertion fails. Restored,
+  // the competitor queues on the advisory lock until the holder commits, its scan then sees the
+  // committed flag, and exactly one default remains.
+  it("two concurrent make-me-default writes end with exactly ONE live default (advisory-lock claim)", async () => {
+    const a = await createReference("endingStatement", { name: "A" });
+    const b = await createReference("endingStatement", { name: "B" });
+
+    let holderReady!: () => void;
+    const ready = new Promise<void>((r) => { holderReady = r; });
+    let releaseHolder!: () => void;
+    const release = new Promise<void>((r) => { releaseHolder = r; });
+
+    // HOLDER: hand-scripts the competing "make A the default" caller's critical section — the
+    // SAME advisory lock the service takes, the same demote-scan (sees nothing to demote), the
+    // same flag write — then holds it all uncommitted. Pinned to READ COMMITTED on purpose (the
+    // RED-verification rule): the claim must serialize the two writers at ANY isolation; SSI
+    // must never be what saves us.
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(4300, 0)`;
+      const defaults = await tx.endingStatement.findMany({
+        where: { deletedAt: null, isDefault: true }, select: { id: true },
+      });
+      for (const row of defaults) {
+        await tx.endingStatement.update({ where: { id: row.id }, data: { isDefault: false } });
+      }
+      await tx.endingStatement.update({ where: { id: a.id }, data: { isDefault: true } });
+      holderReady();
+      await release;
+    }, { timeout: 20000, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+
+    await ready;
+
+    // COMPETITOR: the REAL service call promoting B, racing the held write.
+    const competitor = updateReference("endingStatement", b.id, { isDefault: true })
+      .then(() => "resolved" as const, (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 200)); // let it reach (and block on) the lock
+    releaseHolder();
+    await holder;
+
+    expect(await competitor).toBe("resolved");
+    // Exactly ONE live default, and it is the later writer — the competitor saw the holder's
+    // committed flag and demoted it.
+    expect((await liveDefaults()).map((r) => r.id)).toEqual([b.id]);
+    const aRow = await prisma.endingStatement.findFirst({ where: { id: a.id } });
+    expect(aRow?.isDefault).toBe(false);
+  });
 });

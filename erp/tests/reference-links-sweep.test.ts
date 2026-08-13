@@ -60,6 +60,8 @@ export function schemaLinks(schemaText: string): Map<string, string> {
   // maintained table with a delete guard, exactly like a step code, so an unregistered FK aimed
   // at it (customerSurcharge.surchargeId, invoiceLine.surchargeId) must fail the sweep too.
   kinds.add("surcharge");
+  // "endingStatement" needs no add here since Phase 6 Task 2: it is a genuine ReferenceKind
+  // (ruling 13), so REFERENCE_KINDS already carries it into `kinds` above.
   const out = new Map<string, string>();
 
   for (const [modelName, body] of models(schemaText)) {
@@ -151,6 +153,15 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "paymentType.glAccountId -> glAccount",
       "processStepCode.glAccountId -> glAccount",
       "processTemplateStep.codeId -> processStepCode",
+      // Phase 6: the two quoting FKs that target guarded kinds. QuoteLine.partId and
+      // OrderLine.quoteLineId exist too but target Part/QuoteLine — not reference kinds, not
+      // BlockerTargets — so the sweep never surfaces them; their delete guards are the
+      // hand-built blocker lists (parts.ts's order+quote guards — Task 15/Task 7 — and Task 4's
+      // quote delete), outside this registry. That absence is a decision: those hand-built
+      // lists ARE the enforcement, with no sweep behind them (tests/parts.test.ts and
+      // tests/quotes.test.ts pin the behavior the sweep can't).
+      "quote.endingStatementId -> endingStatement",
+      "quotePrice.processStepCodeId -> processStepCode",
       "shipper.carrierId -> carrier",
       "surcharge.glAccountId -> glAccount",
       "surchargeStepCode.processStepCodeId -> processStepCode",

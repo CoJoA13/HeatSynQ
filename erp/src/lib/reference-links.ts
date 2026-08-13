@@ -5,7 +5,10 @@ import type { ReferenceKind } from "./reference-constants";
  *  the non-reference targets that share the same delete-guard machinery (Phase 2C-3 adds
  *  `processStepCode`, which is a pick-list kind, not a reference kind — see PICKLIST_KINDS;
  *  Task 6 adds `surcharge`, a maintained table with its own delete guard, exactly like a step
- *  code). */
+ *  code). `endingStatement` was TEMPORARILY a bare target here between Phase 6 Tasks 1 and 2;
+ *  it is now a genuine `ReferenceKind` (ruling 13), so the registry reaches it through that
+ *  union — enforcement is unchanged (same sweep, same delete guard, now plus the generic
+ *  reference kind's own guarded delete path). */
 export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge";
 
 /** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
@@ -22,7 +25,8 @@ export type ReferenceLinkModel =
   | "partProcessStep" | "processTemplateStep" | "orderContainer"
   | "shipper" | "certRequirement"
   | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
-  | "invoiceLine" | "billingConfig" | "payment" | "glPosting";
+  | "invoiceLine" | "billingConfig" | "payment" | "glPosting"
+  | "quote" | "quotePrice";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -122,6 +126,21 @@ const BILLING_CONFIG_BLOCKER = {
   detailPath: () => "/admin/billing",
   liveWhere: {},
   displayName: () => "Plant billing settings",
+} as const;
+
+/** A QuotePrice's step-code FK sits two levels below the row a person can act on — the QUOTE
+ *  (the PART_VIA_CHILD shape, one level deeper). Liveness needs the whole chain live: the price
+ *  row itself (it has its own deletedAt, unlike PartProcessStep), its line, and the quote — a
+ *  deleted quote carries its lines and price rows away (§5.17), and none of them should block a
+ *  step-code delete from the grave. */
+const QUOTE_VIA_PRICE = {
+  entityLabel: "Quote",
+  detailPath: (id: string) => `/quotes/${id}`,
+  liveWhere: { deletedAt: null, quoteLine: { is: { deletedAt: null, quote: { is: { deletedAt: null } } } } },
+  include: { quoteLine: { select: { quote: { select: { id: true, quoteNumber: true } } } } },
+  blockerId: (r: Record<string, unknown>) => String(((r.quoteLine as { quote: { id: string } }).quote).id),
+  displayName: (r: Record<string, unknown>) =>
+    `Quote · #${((r.quoteLine as { quote: { quoteNumber: number } }).quote).quoteNumber}`,
 } as const;
 
 // GlPosting has no `deletedAt` (append-only), so `liveWhere: {}` is required (the BillingConfig
@@ -250,6 +269,22 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
   { model: "payment", column: "paymentTypeId", targetKind: "paymentType",
     label: "Payment type", entityLabel: "Payment",
     displayName: (r) => { const ref = r.reference as string; return ref ? `Payment · ${ref}` : "Payment"; } },
+  // Phase 6 (design spec §7): registered in Task 1 with the schema — the registry entry is what
+  // gives the FK its delete protection via the generic findBlockers walk; the quote screens and
+  // the behavioral §5.14 messages arrive in later tasks. Same stated consequence as the
+  // partPrice/invoiceLine entries above: a step code a live quote prices through cannot be
+  // deleted while that quote lives (retirement is `active: false`, deletion is for mistakes).
+  { model: "quotePrice", column: "processStepCodeId", targetKind: "processStepCode",
+    label: "Step code", ...QUOTE_VIA_PRICE },
+  // Quote holds this FK itself, so `liveWhere` stays the default `{ deletedAt: null }`: a
+  // deleted quote does not block its ending statement's deletion. `QuoteLine.partId` is NOT here
+  // — Part is not a BlockerTarget, and this registry only covers reference-kind targets. Its
+  // delete guard is parts.ts's own hand-built blocker list (Task 7: `partQuoteBlockers` + the
+  // quote count in `deletePart`, beside the Task 15 order guard) — THAT list is the enforcement;
+  // there is no parts-side sweep, so a new Part-referencing FK must be added there by hand.
+  { model: "quote", column: "endingStatementId", targetKind: "endingStatement",
+    label: "Ending statement", entityLabel: "Quote", detailPath: (id) => `/quotes/${id}`,
+    displayName: (r) => `Quote · #${r.quoteNumber}` },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

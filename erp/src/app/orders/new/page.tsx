@@ -63,6 +63,15 @@ export type LineDraft = {
    *  typed text, which wins until they use the "reset to computed" affordance. */
   weightOverride: string | null;
   serials: SerialDraft[];
+  /** The three-way quote-link pick (spec §5.2, Task 9). ABSENT/undefined = untouched — the
+   *  create body OMITS `quoteLineId` and the SERVER's auto-resolution stays authoritative at the
+   *  moment it saves; a string = the operator's explicit re-pick; null = the explicit "No quote".
+   *  The previewed auto-link's id is NEVER copied in here (QuoteLinkPicker's own contract: the
+   *  preview is display, the sentinel is state), which is what structurally guarantees an
+   *  untouched control sends ABSENT, not the displayed id. Autosave round-trip: JSON.stringify
+   *  drops undefined keys, so a draft carries the pick exactly — absent key = auto, null and an
+   *  explicit id survive as themselves (`pickOrUndefined` restores all three states). */
+  quoteLineIdOverride?: string | null;
 };
 
 export type ContainerDraft = {
@@ -135,6 +144,12 @@ function blankDraft(): OrderDraftState {
 // buildStepOriginals's callers take with server data of unknown shape.
 function str(v: unknown): string { return typeof v === "string" ? v : ""; }
 function strOrNull(v: unknown): string | null { return typeof v === "string" ? v : null; }
+/** The quote pick's three states must all survive the round trip — unlike `strOrNull`, a
+ *  genuine null here means the explicit "No quote", so only a truly absent/garbage value
+ *  degrades to undefined (= auto, the safe state: the server resolves). */
+function pickOrUndefined(v: unknown): string | null | undefined {
+  return v === null ? null : typeof v === "string" ? v : undefined;
+}
 function arr(v: unknown): unknown[] { return Array.isArray(v) ? v : []; }
 function rec(v: unknown): Record<string, unknown> {
   return v !== null && typeof v === "object" ? (v as Record<string, unknown>) : {};
@@ -151,6 +166,7 @@ function normalizeLine(raw: unknown): LineDraft {
       const sr = rec(s);
       return { id: typeof sr.id === "string" ? sr.id : crypto.randomUUID(), serial: str(sr.serial), description: str(sr.description) };
     }),
+    quoteLineIdOverride: pickOrUndefined(r.quoteLineIdOverride),
   };
 }
 function normalizeContainer(raw: unknown): ContainerDraft {
@@ -210,7 +226,8 @@ function isDraftEmpty(d: OrderDraftState): boolean {
     && d.receivedDateOverride === null && d.requestDateOverride === null && d.targetDate === null
     && d.notes === "" && d.containers.length === 0 && d.charges.length === 0
     && d.lines.length === 1 && d.lines[0].partId === null && d.lines[0].qty === ""
-    && d.lines[0].weightOverride === null && d.lines[0].serials.length === 0;
+    && d.lines[0].weightOverride === null && d.lines[0].serials.length === 0
+    && d.lines[0].quoteLineIdOverride === undefined;
 }
 
 function netWeight(gross: string, tare: string): number | null {
@@ -272,6 +289,9 @@ export default function NewOrderPage() {
   const partsGate = gate(perms, "parts.view");
   const processesGate = gate(perms, "processes.view");
   const saveGate = gate(perms, "orders.create");
+  // The quote-link preview fetch (/api/quotes/eligible) is gated orders.view server-side; the
+  // re-pick CONTROL itself is gated on the save permission this form feeds (§5.16 — saveGate).
+  const ordersViewGate = gate(perms, "orders.view");
 
   // ---- mount-time fetches ----
 
@@ -541,6 +561,10 @@ export default function NewOrderPage() {
           qty,
           weight,
           serials: l.serials.map((s) => ({ serial: s.serial, description: s.description })),
+          // Three-way (spec §5.2): the key is PRESENT only for an explicit pick (id) or an
+          // explicit "No quote" (null); untouched sends ABSENT and the server auto-resolves at
+          // save time — never the previewed id (LineDraft.quoteLineIdOverride's contract).
+          ...(l.quoteLineIdOverride !== undefined ? { quoteLineId: l.quoteLineIdOverride } : {}),
         };
       }),
       containers: draft.containers.map((c) => ({
@@ -819,6 +843,14 @@ export default function NewOrderPage() {
                 {draft.lines.map((line, i) => (
                   <OrderLineCard key={line.id} index={i} isLead={i === 0} line={line} parts={customerParts}
                                  customerChosen={!!draft.customerId} partsGate={partsGate} processesGate={processesGate}
+                                 customerId={draft.customerId}
+                                 // Untouched = undefined = the param is OMITTED and the preview
+                                 // uses the server's own today, exactly like the save would
+                                 // (QuoteLinkPicker's contract). A change re-runs every line's
+                                 // preview — all entry lines are unsaved, so this is precisely
+                                 // ruling 6's "refresh the preview for unsaved lines".
+                                 receivedDate={draft.receivedDateOverride ?? undefined}
+                                 ordersViewAllowed={ordersViewGate.allowed} quotePickGate={saveGate}
                                  onChange={(p) => patchLine(line.id, p)}
                                  onRemove={draft.lines.length > 1 ? () => removeLine(line.id) : undefined}
                                  onLeadValidity={i === 0 ? onLeadValidity : undefined} />

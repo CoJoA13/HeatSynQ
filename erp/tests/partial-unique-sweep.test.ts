@@ -155,6 +155,13 @@ live row goes untouched.`).toEqual([]);
     //
     // ReceiptBatch.batchNumber (Phase 5B, Task 2 — the model doesn't exist yet, so this entry
     // sits unused until then): allocation-only, never reissued — a voided batch keeps its number.
+    //
+    // Quote.quoteNumber (Phase 6 §4.1) is Order.orderNumber's exact reasoning one document
+    // earlier in the sequence: allocation-only from quote_number_next, never reused or
+    // re-entered — a deleted quote keeps its number forever, because that number is already on
+    // paper (and in a customer's purchasing files) as the standing agreement's identity, and
+    // freeing it for a later quote to claim would put two different price agreements behind one
+    // quote number. Do not "fix" this by giving quoteNumber the partial-unique treatment.
     const ALLOWED = new Set([
       "User.username", "Order.orderNumber", "Order.clientRequestId",
       "Shipper.shipperNumber", "Shipper.bolNumber", "Shipper.clientRequestId",
@@ -163,6 +170,7 @@ live row goes untouched.`).toEqual([]);
       // Allocation-only from gl_export_batch_number_next, never reissued (a discarded/reversed export
       // must never free a number a batch already carries) — the creditNumber/batchNumber precedent.
       "GlExportBatch.exportNumber",
+      "Quote.quoteNumber",
     ]);
 
     // [ \t]+ (not \s+) here too: \s+ would let this match bridge across a blank line the same

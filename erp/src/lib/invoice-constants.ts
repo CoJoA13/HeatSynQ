@@ -26,11 +26,14 @@ export const INVOICE_LINE_KIND_LABELS: Record<InvoiceLineKindValue, string> = {
   TAX: "Sales tax",
 };
 
-export const PRICE_SOURCES = ["PART_PRICE", "MANUAL"] as const;
+// QUOTE (Phase 6): the "Quote #N" display an invoice line actually shows comes from the line's
+// own frozen `sourceQuoteNumber`, never from this generic label.
+export const PRICE_SOURCES = ["PART_PRICE", "MANUAL", "QUOTE"] as const;
 export type PriceSourceValue = (typeof PRICE_SOURCES)[number];
 export const PRICE_SOURCE_LABELS: Record<PriceSourceValue, string> = {
   PART_PRICE: "Part price",
   MANUAL: "Manual",
+  QUOTE: "Quote",
 };
 
 export const SURCHARGE_KINDS = ["PERCENT", "FLAT"] as const;
