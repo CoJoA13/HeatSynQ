@@ -31,8 +31,9 @@ import { getRevision } from "./part-process-steps";
 import { listPartInspections } from "./part-inspections";
 import { listAddresses } from "./customer-addresses";
 import { getSetting } from "./settings";
-import { renderPdf, barcodePng, pngDataUri, LAYOUT } from "./pdf/render";
+import { renderPdf, barcodePng, pngDataUri, jpegDataUri, LAYOUT } from "./pdf/render";
 import { storeDocument, listDocumentsForOrder, documentFilename, assertPrintable } from "./documents";
+import { resolveTemplateForPrint } from "./template-assignments";
 import { TRAVELER_CONTRACT, DEFAULT_CONFIG as TRAVELER_DEFAULT_CONFIG } from "../lib/template-contracts/traveler";
 import type {
   FontsConfig, FormatsConfig, LogoPlacement, SectionConfig, TemplateConfig,
@@ -943,6 +944,24 @@ export async function printTraveler(
       if (!live) throw new HttpError(404, "Order not found");
       assertPrintable(live);
 
+      // Template resolution on THIS claimed transaction, at its DEFAULT isolation — deliberately
+      // unchanged (P7 spec §5.1). The resolution is correct at ANY isolation **by immutability,
+      // not by locking**: publish commits the immutable published version row and the
+      // `publishedVersionId` pointer move atomically, so any committed pointer this read follows
+      // yields a complete published config; drafts can never print; and the stamped
+      // `templateVersionId` below records exactly which version produced the paper. A print
+      // racing a publish may legitimately render with the previous published version — ruling
+      // 2's "from that moment" means COMMIT order, not wall clock (accepted-by-design, §5.1).
+      // No template row is claimed here and none is needed — do not add one.
+      const resolved = await resolveTemplateForPrint(tx, "TRAVELER", live.customerId);
+      // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only
+      // when the config also places it, so an unplaced upload converts nothing.
+      const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+        ? (resolved.logoMimeType === "image/jpeg"
+            ? jpegDataUri(Buffer.from(resolved.logoImage))
+            : pngDataUri(Buffer.from(resolved.logoImage)))
+        : undefined;
+
       // Only now, with the claim held: the read that decides what the PDF says, and the render
       // itself. Nothing else touching this order's traveler-relevant children can commit until
       // this whole transaction ends — see the fix-wave R3 finding 1 comment above.
@@ -953,13 +972,14 @@ export async function printTraveler(
       // holding a connection of its own — a pool-starvation shape under concurrent prints, and a
       // snapshot the surrounding claim did not actually cover.
       const data = await readTravelerData(tx, orderId, settings, loadNumber);
-      const pdf = await renderPdf(buildTravelerDefinition(data));
+      const pdf = await renderPdf(buildTravelerDefinition(data, resolved.config, logoDataUri));
 
       // Storage itself — permanence, the audit-payload/bytes split, and the `new Uint8Array`
       // conversion — is documents.ts's job now (Phase 4 Task 3); this claim-holding transaction
       // is still the one thing that has to stay HERE, since the archive must land before the
-      // claim is released.
-      const doc = await storeDocument(tx, { kind: "TRAVELER", orderId, loadNumber: loadNumber ?? null }, pdf);
+      // claim is released. `resolved.versionId` is the §5.2 stamp.
+      const doc = await storeDocument(tx,
+        { kind: "TRAVELER", orderId, loadNumber: loadNumber ?? null }, pdf, resolved.versionId);
       return { doc, orderNumber: data.orderNumber, pdf };
     }));
 

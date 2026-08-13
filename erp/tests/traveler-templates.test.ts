@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll, templateVersionId } from "./helpers/db";
-import { drawnText, parseObjects } from "./helpers/pdf";
+import { TINY_JPEG, drawnText, pageCount, parseObjects } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder } from "@/server/orders";
 import { storeDocument } from "@/server/documents";
+import { createTemplate, editDraft, openDraft, publishDraft, uploadLogo } from "@/server/templates";
+import { assignTemplate } from "@/server/template-assignments";
 import { barcodePng, pngDataUri, renderPdf } from "@/server/pdf/render";
 import {
-  buildTravelerDefinition, collectTravelerData, type TravelerData,
+  buildTravelerDefinition, collectTravelerData, printTraveler, type TravelerData,
 } from "@/server/traveler";
 import {
   TRAVELER_DEFAULT_CONFIG, validateConfig, type TemplateConfig,
@@ -390,5 +392,122 @@ describe("readTravelerData — processName", () => {
     await prisma.part.update({ where: { id: part.id }, data: { processName: "Austemper" } });
     const data = await asSystem(() => collectTravelerData(order.id));
     expect(data.processName).toBe("Austemper");
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// printTraveler — resolution on the claimed tx + the stamp (brief item 3)
+// ------------------------------------------------------------------------------------------------
+
+/** Image XObjects in the stored bytes — dict headers are plain text even when the pixel data is
+ *  compressed, so a logo shows up as a second image beside the per-sheet barcode. A PNG with an
+ *  alpha channel embeds as TWO objects (the image + its /SMask), so SMask children are excluded:
+ *  this counts PICTURES on the paper, not XObjects in the file. */
+const countImages = (pdf: Buffer): number => {
+  const objs = parseObjects(pdf);
+  const smasks = new Set<number>();
+  for (const o of objs.values()) {
+    for (const m of o.body.matchAll(/\/SMask\s+(\d+)\s+0\s+R/g)) smasks.add(Number(m[1]));
+  }
+  return [...objs.entries()]
+    .filter(([num, o]) => /\/Subtype\s*\/Image/.test(o.body) && !smasks.has(num)).length;
+};
+
+async function stampOf(documentId: string): Promise<string | null> {
+  const row = await prisma.storedDocument.findUnique({
+    where: { id: documentId }, select: { templateVersionId: true },
+  });
+  return row!.templateVersionId;
+}
+
+describe("printTraveler — template resolution and the version stamp", () => {
+  beforeEach(truncateAll);
+
+  /** Create → tweak the v1 draft → (optionally logo) → publish. Returns the published version. */
+  async function publishCustom(
+    tweak: (c: TemplateConfig) => void, logo?: { data: Buffer; mime: string },
+  ) {
+    const t = await asSystem(() => createTemplate("TRAVELER", "Custom"));
+    const c = cfg();
+    tweak(c);
+    await asSystem(() => editDraft(t.id, { config: c, updatedAt: t.draft.updatedAt }));
+    if (logo) await asSystem(() => uploadLogo(t.id, logo.data, logo.mime));
+    const { versionId } = await asSystem(() => publishDraft(t.id));
+    return { templateId: t.id, versionId };
+  }
+
+  it("no assignment resolves the seeded Standard default and stamps ITS version id", async () => {
+    const { order } = await miniOrder();
+    const { documentId, pdf } = await asSystem(() => printTraveler(order.id));
+    expect(pageCount(pdf)).toBe(1); // the single-load fixture
+    expect(drawnText(pdf)).toContain("Order Number");
+    expect(await stampOf(documentId)).toBe(templateVersionId("TRAVELER"));
+  });
+
+  it("a customer-assigned template's PUBLISHED config prints — not the default — and its version id lands on the row", async () => {
+    const { customer, order } = await miniOrder();
+    const { templateId, versionId } = await publishCustom((c) => {
+      fieldOf(c, "header", "order_number").label = "WO#";
+    });
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
+
+    const { documentId, pdf } = await asSystem(() => printTraveler(order.id));
+    const text = drawnText(pdf);
+    expect(text).toContain("WO#");
+    expect(text).not.toContain("Order Number");
+    expect(await stampOf(documentId)).toBe(versionId);
+  });
+
+  it("a draft on the assigned template does NOT affect the print — §5.1 immutability through the real path", async () => {
+    const { customer, order } = await miniOrder();
+    const { templateId, versionId } = await publishCustom((c) => {
+      fieldOf(c, "header", "order_number").label = "WO#";
+    });
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
+
+    // Open the next draft and change it — unpublished work must never reach paper.
+    const draft = await asSystem(() => openDraft(templateId));
+    const c = cfg();
+    fieldOf(c, "header", "order_number").label = "DRAFT-ONLY-MARKER";
+    await asSystem(() => editDraft(templateId, { config: c, updatedAt: draft.updatedAt }));
+
+    const { documentId, pdf } = await asSystem(() => printTraveler(order.id));
+    const text = drawnText(pdf);
+    expect(text).toContain("WO#");
+    expect(text).not.toContain("DRAFT-ONLY-MARKER");
+    expect(await stampOf(documentId)).toBe(versionId);
+  });
+
+  it("a placed PNG logo prints; the no-logo print carries the barcode alone", async () => {
+    const { customer, order } = await miniOrder();
+    const bare = await asSystem(() => printTraveler(order.id));
+    expect(countImages(bare.pdf)).toBe(1); // the barcode
+
+    const { templateId } = await publishCustom(
+      (c) => { c.logo = { placement: "header-center", width: 120 }; },
+      { data: await barcodePng("LOGO"), mime: "image/png" });
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
+    const withLogo = await asSystem(() => printTraveler(order.id));
+    expect(countImages(withLogo.pdf)).toBe(2);
+  });
+
+  it("a placed JPEG logo prints through the JPEG data-uri path", async () => {
+    const { customer, order } = await miniOrder();
+    const { templateId } = await publishCustom(
+      (c) => { c.logo = { placement: "header-right", width: 40 }; },
+      { data: TINY_JPEG, mime: "image/jpeg" });
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
+    const { pdf } = await asSystem(() => printTraveler(order.id));
+    expect(countImages(pdf)).toBe(2);
+    expect(pdf.toString("latin1")).toContain("DCTDecode"); // a JPEG embeds as DCT, never Flate
+  });
+
+  it("uploaded logo bytes with no config placement stay off the paper", async () => {
+    const { customer, order } = await miniOrder();
+    const { templateId } = await publishCustom(() => undefined,
+      { data: await barcodePng("LOGO"), mime: "image/png" });
+    await asSystem(() => assignTemplate(customer.id, "TRAVELER", templateId));
+    const { pdf } = await asSystem(() => printTraveler(order.id));
+    expect(countImages(pdf)).toBe(1);
   });
 });
