@@ -75,20 +75,31 @@ export async function assignTemplate(
       if (!customer) throw new HttpError(404, "Customer not found");
 
       // Never findUnique/upsert on the partial-unique pair (the house rule) — findFirst among
-      // live rows, then create or update.
+      // live rows, then create or update. Every branch selects exactly the declared return shape,
+      // so the PUT route serializes nothing beyond it (Task 5 review, carried).
+      const ASSIGNMENT_SELECT = {
+        id: true, customerId: true, docType: true, templateId: true,
+      } as const;
       const existing = await tx.customerTemplateAssignment.findFirst({
-        where: { customerId, docType, deletedAt: null },
+        where: { customerId, docType, deletedAt: null }, select: ASSIGNMENT_SELECT,
       });
       if (existing) {
         if (existing.templateId === templateId) return existing; // unchanged — no junk audit
+        // `deletedAt: null` rides in the UPDATE's own where (Task 5 review, carried): a
+        // concurrent claim-free `clearAssignment` committing between the findFirst above and
+        // this statement must fail the replace (P2025 → the entity's 404 via withDbErrors),
+        // never rewrite the DEAD row's templateId — clearAssignment takes no template claim,
+        // so this single-statement condition is the only guard (auditedSoftDelete's own
+        // updateMany rule, applied to the replace).
         return auditedUpdate("customerTemplateAssignment", existing.id, () =>
           tx.customerTemplateAssignment.update({
-            where: { id: existing.id }, data: { templateId },
+            where: { id: existing.id, deletedAt: null }, data: { templateId },
+            select: ASSIGNMENT_SELECT,
           }), { tx });
       }
       return auditedCreate("customerTemplateAssignment", { customerId, docType, templateId },
         () => tx.customerTemplateAssignment.create({
-          data: { customerId, docType, templateId },
+          data: { customerId, docType, templateId }, select: ASSIGNMENT_SELECT,
         }), { tx });
     }));
 }

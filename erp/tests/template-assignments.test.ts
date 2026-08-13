@@ -443,6 +443,51 @@ describe("concurrency (RED-verified — see task report)", () => {
       where: { templateId: tmpl, deletedAt: null },
     })).toBe(1);
   });
+
+  it("replace-vs-clear: a row cleared mid-flight refuses the stale replace → 404, dead row untouched", async () => {
+    const cust = await makeCustomer("AC1");
+    const a = await publishedTemplate("Old Style");
+    const b = await publishedTemplate("New Style");
+    const first = await as(() => assignTemplate(cust, "TRAVELER", a));
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((r) => { hasClaimed = r; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((r) => { mayRelease = r; });
+
+    // The holder: hand-scripted clearAssignment effect — the ASSIGNMENT row locked and
+    // soft-deleted, held uncommitted. clearAssignment takes no template claim, so no shared
+    // claim serializes the replace against it — the replace UPDATE's own `deletedAt: null`
+    // where is the only guard (the Task 5 review's carried fix).
+    const holder = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "CustomerTemplateAssignment" WHERE "id" = ${first.id} FOR UPDATE`;
+      await tx.customerTemplateAssignment.update({
+        where: { id: first.id }, data: { deletedAt: new Date() },
+      });
+      hasClaimed();
+      await release;
+    }, { timeout: 20000 });
+    await claimed;
+
+    // The competitor: the REAL assignTemplate. Its findFirst still sees the live row (the
+    // holder's delete is uncommitted), so it takes the REPLACE branch — and parks its UPDATE
+    // on the holder's row lock.
+    const competitor = as(() => assignTemplate(cust, "TRAVELER", b));
+    await provesBlocked(competitor);
+    mayRelease();
+    await holder;
+
+    // The guarded update wakes to the committed clear, matches no live row, and refuses — it
+    // must NOT rewrite the dead row's templateId (the audit-trail smudge the guard prevents).
+    await expect(competitor).rejects.toMatchObject({
+      status: 404, message: expect.stringMatching(/Template assignment not found/),
+    });
+    const dead = await prisma.customerTemplateAssignment.findUniqueOrThrow({
+      where: { id: first.id },
+    });
+    expect(dead.deletedAt).not.toBeNull();
+    expect(dead.templateId).toBe(a); // never rewritten
+  });
 });
 
 // ------------------------------------------------------------------------------------------------
@@ -494,6 +539,12 @@ describe("routes — /api/customers/[id]/template-assignments and /api/templates
     const anon = await listAssignmentsRoute(
       getReq(`http://t/api/customers/${cust}/template-assignments`), withParams({ id: cust }));
     expect(anon.status).toBe(401);
+  });
+
+  it("GET is 403 for a session without customers.view (the Task 5 review's missing case)", async () => {
+    const res = await listAssignmentsRoute(
+      getReq(`http://t/api/customers/${cust}/template-assignments`, bare), withParams({ id: cust }));
+    expect(res.status).toBe(403);
   });
 
   it("PUT assigns with customers.edit + edit_templates; 403 without either", async () => {
