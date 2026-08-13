@@ -26,6 +26,9 @@ import { AttachmentsSection } from "@/components/AttachmentsSection";
 export type Part = {
   id: string; customerId: string; customerCode: string; customerName: string;
   partNumber: string; name: string; description: string;
+  /** Presentation vocabulary for the traveler's Process: slot / the invoice snapshot
+   *  (spec §5.7 ruling 4) — surfaced for data entry in Task 15. */
+  processName: string;
   materialId: string | null; materialName: string | null;
   eachWeight: number | string;
   loadQty: number | string | null;
