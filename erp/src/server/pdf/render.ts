@@ -111,8 +111,18 @@ const TABLE_LAYOUTS = {
 export type PageFooterSpec = { kind: "pageNofM"; label?: string };
 
 /** Static JSON content (text/images — never functions) repeated by a renderer-side header
- *  callback on every page AFTER the first of the definition. */
-export type ContinuationHeaderSpec = { content: Content };
+ *  callback on every page AFTER the first of the definition.
+ *
+ *  `overflowTopMargin` (Task 8, #36's margin story): the header draws in the page's TOP MARGIN,
+ *  and pdfmake margins are per-document — a header taller than the definition's own top margin
+ *  (the traveler's identity band: text + a 44pt barcode against a 24pt margin) would overlap the
+ *  body on pages 2+, while unconditionally widening the margin would move page one of EVERY
+ *  print (the golden-compat killer). Setting this asks `renderPdf` for the two-pass render: a
+ *  definition that fits one page keeps its original margins untouched (the header never shows on
+ *  a one-page document anyway); an overflowing one re-renders with the top margin raised to at
+ *  least this reserve, so the header has its room on every continuation page. Absent = the
+ *  pre-Task-8 single-pass behavior: the header must fit the definition's own top margin. */
+export type ContinuationHeaderSpec = { content: Content; overflowTopMargin?: number };
 
 /**
  * A pdfmake document definition plus the two declarative keys `renderPdf` understands. The key
@@ -191,10 +201,9 @@ function assertFontsRegistered(def: RenderableDefinition): void {
   walk(def);
 }
 
-/** Renders a document definition to PDF bytes. */
-export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
-  assertFontsRegistered(def);
-  const doc = printer.createPdfKitDocument(toPdfmakeDefinition(def), { tableLayouts: TABLE_LAYOUTS });
+/** The single-pass pdfmake render — bytes out of a definition that is already pdfmake-shaped. */
+function renderBytes(def: TDocumentDefinitions): Promise<Buffer> {
+  const doc = printer.createPdfKitDocument(def, { tableLayouts: TABLE_LAYOUTS });
   const chunks: Buffer[] = [];
   return new Promise<Buffer>((resolve, reject) => {
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -205,6 +214,61 @@ export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
     doc.on("error", reject);
     doc.end();
   });
+}
+
+/** pdfmake margins, normalized to `[left, top, right, bottom]` (40pt is pdfmake's own default). */
+function normalizeMargins(
+  margins: TDocumentDefinitions["pageMargins"],
+): [number, number, number, number] {
+  if (margins === undefined) return [40, 40, 40, 40];
+  if (typeof margins === "number") return [margins, margins, margins, margins];
+  if (margins.length === 2) return [margins[0], margins[1], margins[0], margins[1]];
+  return [margins[0], margins[1], margins[2], margins[3]];
+}
+
+/**
+ * Renders a document definition to PDF bytes.
+ *
+ * A `continuationHeaderSpec` carrying `overflowTopMargin` takes the TWO-PASS path (the spec's own
+ * doc comment tells the why): pass one renders with the definition's original margins and no
+ * continuation header, and a probe header callback captures pdfmake's own page total. One page →
+ * those bytes ARE the result: original margins, no header, exactly as if the spec were absent —
+ * the golden path costs one render, same as ever. More → pass two re-renders with the header
+ * callback active and the top margin raised to at least the reserve.
+ *
+ * The probe renders a JSON DEEP CLONE, never the caller's nodes: pdfmake decorates content nodes
+ * during layout (positions, a `resetXY` function), so pass two must lay out pristine nodes. The
+ * clone is lossless because definitions are plain JSON by the house template-as-data contract
+ * (every builder's purity test) — and the loud refusal below keeps that honest: a function-valued
+ * definition key (a hand-written `footer`/`background` callback) would silently vanish from the
+ * clone and skew the probe, so it is refused by name. Use the declarative specs instead.
+ */
+export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
+  assertFontsRegistered(def);
+  const full = toPdfmakeDefinition(def); // validates the spec/key collisions for BOTH passes
+  const reserve = def.continuationHeaderSpec?.overflowTopMargin;
+  if (reserve === undefined) return renderBytes(full);
+
+  for (const [key, value] of Object.entries(def)) {
+    if (typeof value === "function") {
+      throw new Error(
+        `overflowTopMargin's two-pass render requires a plain-JSON definition — ` +
+        `"${key}" is a function (use the declarative specs instead)`);
+    }
+  }
+  const probe = toPdfmakeDefinition(
+    JSON.parse(JSON.stringify({ ...def, continuationHeaderSpec: undefined })) as RenderableDefinition);
+  let probedPages = 0;
+  probe.header = (_current: number, total: number): Content | null => {
+    probedPages = total;
+    return null; // draws nothing — the probe's bytes stay content-identical to a header-less render
+  };
+  const bytes = await renderBytes(probe);
+  if (probedPages <= 1) return bytes;
+
+  const [left, top, right, bottom] = normalizeMargins(def.pageMargins);
+  full.pageMargins = [left, Math.max(top, reserve), right, bottom];
+  return renderBytes(full);
 }
 
 /**

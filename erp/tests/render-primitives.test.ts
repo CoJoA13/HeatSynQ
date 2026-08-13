@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { jpegDataUri, renderPdf, renderSheetGroups } from "@/server/pdf/render";
 import type { RenderableDefinition } from "@/server/pdf/render";
-import { TINY_JPEG, drawnPages, drawnText, pageCount } from "./helpers/pdf";
+import { TINY_JPEG, drawnPages, drawnText, pageCount, parseObjects } from "./helpers/pdf";
 
 /**
  * Phase 7 Task 6 — the render runtime's declarative primitives (spec §6.1–§6.3): the page-footer
@@ -109,6 +109,84 @@ describe("continuationHeaderSpec — static content on every page after the firs
     await expect(renderPdf(twoPageDef({
       header: { text: "hand-written" }, continuationHeaderSpec: SPEC,
     }))).rejects.toThrow(/continuationHeaderSpec/);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// overflowTopMargin — header room reserved only when the sheet overflows (Task 8, #36's margin)
+// ------------------------------------------------------------------------------------------------
+
+describe("continuationHeaderSpec.overflowTopMargin — the two-pass render", () => {
+  // A traveler-sized identity band (text + a 44pt barcode) cannot fit a 24pt top margin, but
+  // pdfmake margins are per-document: reserving header room on pages 2+ means reserving it on
+  // EVERY page, and doing that unconditionally would move page one of every print — the
+  // golden-compat killer. The contract under test: a definition that fits one page renders with
+  // its ORIGINAL margins, content exactly as if the spec were absent; an overflowing one
+  // re-renders with the top margin raised to the reserve so the header has its room.
+
+  // A factory, not a shared const: pdfmake decorates content nodes it renders (a `resetXY`
+  // function lands on them), so a spec shared across tests would leak one render's mutations
+  // into the next test's fixture.
+  const spec = (overflowTopMargin = 64) =>
+    ({ content: { text: "CONTINUED-MARKER-ALPHA", fontSize: 8 }, overflowTopMargin });
+
+  /** First drawn text's flipped-space Tm y on the FIRST page — pdfkit writes page one's content
+   *  stream first, and a top-margin increase of Δ lowers this value by exactly Δ. */
+  const firstTextY = (pdf: Buffer): number => {
+    const streams = [...parseObjects(pdf).entries()].sort(([a], [b]) => a - b)
+      .map(([, o]) => o.stream?.toString("latin1") ?? "");
+    const content = streams.find((s) => s.includes("Tm"));
+    const m = content && /1 0 0 1 [\d.]+ ([\d.]+) Tm/.exec(content);
+    if (!m) throw new Error("No Tm operator found in any content stream");
+    return Number(m[1]);
+  };
+
+  it("a one-page definition keeps its original margins and shows no header", async () => {
+    // A factory for the same reason `spec` is one — the two renders must not share content nodes.
+    const body = (): RenderableDefinition =>
+      ({ pageMargins: [24, 24, 24, 24], content: [{ text: "lonely body" }] });
+    const bare = await renderPdf(body());
+    const pdf = await renderPdf({ ...body(), continuationHeaderSpec: spec() });
+    expect(pageCount(pdf)).toBe(1);
+    expect(drawnText(pdf)).toBe(drawnText(bare));
+    expect(firstTextY(pdf)).toBe(firstTextY(bare)); // the original 24pt top margin, untouched
+  });
+
+  it("an overflowing definition re-renders with the reserved top margin and the header on pages 2+", async () => {
+    const margins = [24, 24, 24, 24] as [number, number, number, number];
+    const bare = await renderPdf(twoPageDef({ pageMargins: margins }));
+    const pdf = await renderPdf(twoPageDef({ pageMargins: margins, continuationHeaderSpec: spec() }));
+    expect(pageCount(pdf)).toBe(2);
+    const pages = drawnPages(pdf);
+    expect(pages[0]).not.toContain("CONTINUED-MARKER-ALPHA");
+    expect(pages[1]).toContain("CONTINUED-MARKER-ALPHA");
+    // The top margin was raised 24 → 64: page one's first text sits exactly 40pt lower.
+    expect(firstTextY(bare) - firstTextY(pdf)).toBeCloseTo(40, 5);
+  });
+
+  it("a reserve at or below the definition's own top margin changes nothing", async () => {
+    const margins = [24, 60, 24, 24] as [number, number, number, number];
+    const bare = await renderPdf(twoPageDef({ pageMargins: margins }));
+    const pdf = await renderPdf(twoPageDef({
+      pageMargins: margins,
+      continuationHeaderSpec: spec(44),
+    }));
+    expect(firstTextY(pdf)).toBe(firstTextY(bare)); // Math.max keeps the larger own margin
+    expect(drawnPages(pdf)[1]).toContain("CONTINUED-MARKER-ALPHA");
+  });
+
+  it("refuses a function-carrying definition loudly — the probe clone would silently drop it", async () => {
+    await expect(renderPdf(twoPageDef({
+      footer: () => ({ text: "hand-written" }),
+      continuationHeaderSpec: spec(),
+    }))).rejects.toThrow(/plain-JSON/);
+  });
+
+  it("the spec key stays plain data — overflowTopMargin survives the JSON round trip", async () => {
+    const def = twoPageDef({ continuationHeaderSpec: spec() });
+    const roundTripped = JSON.parse(JSON.stringify(def)) as RenderableDefinition;
+    expect(roundTripped).toEqual(def);
+    expect(drawnText(await renderPdf(roundTripped))).toBe(drawnText(await renderPdf(def)));
   });
 });
 
