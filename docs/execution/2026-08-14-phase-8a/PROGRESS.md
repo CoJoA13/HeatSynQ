@@ -11,7 +11,7 @@
 | 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
 | 1 | Backlog report | general-purpose | ✅ Approved | c4da1e8, 641303f | ✅ DONE (gates green 2761, E2E 20/20) |
 | 2 | Shipped report | general-purpose | ✅ Approved | 605da4c, dcebfab, bc13039 | ✅ DONE (gates green 2779, E2E 20/20) |
-| 3 | Turnaround report | general-purpose | — | — | DISPATCHED |
+| 3 | Turnaround report | general-purpose | — | d7d99fd, 86eb3a6, 560f18f | IMPLEMENTED (targeted gates green; controller full-suite/build/E2E pending) |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
 | 5 | Payments received report | — | — | — | PENDING |
 | 6 | Home invoice register + aging | — | — | — | PENDING |
@@ -26,6 +26,7 @@
 - **Task 1 (controller-verified, 12:47):** full `npm test` → **2761 passed / 151 files** (+14); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake this run — the `--kill-after=30` graceful timeout, port was free). Task 1 fully verified.
 - **Task 2 (implementer, targeted only, 13:01):** `npx vitest run tests/reports-shipped.test.ts` → **18 passed** (watched to completion). `npx tsc --noEmit` → clean. `npx eslint` over all 7 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview (needs the dev server) — the UI is a straight BacklogReport clone; controller/E2E to confirm the render. Note: 3 of 18 tests were RED on first run due to a stray null byte in the test's part-key literals (a test-authoring artifact, not a logic bug) — replaced with spaces, all 18 green with the implementation unchanged.
 - **Task 2 (controller-verified, 13:13):** full `npm test` → **2779 passed / 152 files** (+18); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake). Task 2 fully verified.
+- **Task 3 (implementer, targeted only, 13:26):** `npx vitest run tests/reports-turnaround.test.ts` → **19 passed** (watched to completion). `npx tsc --noEmit` → clean. `npx eslint` over all new/changed files → clean. `npx vitest run tests/reports-routes.test.ts` → 3 passed (registry entry safe; index test uses `toBeGreaterThan(0)`). Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview (needs the dev server) — the UI is a straight ShippedReport clone; controller/E2E to confirm the render. **RED-first evidence is real this time** (addresses the standing "reports show only GREEN transcripts" note): the derivation was first implemented as first-ship (the wrong §12 convention) and the completion-MAX + REOPENED tests failed on assertions (`2026-06-10`≠`2026-06-20`, `2026-06-01`≠`2026-07-05`) before the full-ship + `reversedBy`-exclusion fix turned them green — transcript in `task-3-report.md`.
 
 ## Tracked cleanup (fold in ONE consolidated pass before the whole-branch review — not per-task micro-rounds)
 
