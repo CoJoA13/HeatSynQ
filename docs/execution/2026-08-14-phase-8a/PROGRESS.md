@@ -64,6 +64,19 @@ Minors from per-task reviews that are Nice-to-Have (no correctness/concurrency/d
 5. **Backlog test** — add the ordered-vs-remaining hardening test (seed a partial shipment; assert the report still shows ORDERED).
 6. **`§11` citation fix** — "reads never mutate" is main-spec **§12 (Data safety)**, not §11. Correct the phase-8 spec §8 bullet, `src/server/reports/README.md`, the 6 report-service headers, and the new CLAUDE.md paragraph.
 
+### Fix wave applied (2026-08-14) — all six, one pass
+
+Six commits (conventional, no attribution trailer), on `phase-8a-reports-scoreboard`:
+
+- `9d03078` **(1)** collision-free detail keys + deterministic `orderBy` — `backlog.ts`/`shipped.ts` carry the row's own line id (`orderLineId`/`shipperLineId`) through the pure core into the row type, and the detail React key is that id (was `${id}-${partNumber}`, which collided on a duplicate part). Detail `findMany` gains a deterministic `orderBy` (backlog: orderNumber→position; shipped: shipDate→shipperNumber→id); the pure-core sort is stable (ES2019+) so it preserves that for tied rows. Row types stay mirrored client-side (no `src/server` import); the three test fixtures that build the row types carry the new field.
+- `048a660` **(2)** Sales export "Type" column humanized — the detail sheet maps `INVOICE`/`CREDIT` through the screen's `KIND_LABEL` instead of emitting the raw enum.
+- `30cc458` **(3)** `toXlsx` JSDoc — caption cell A1 is rendered **italic**; the doc said "bold". One-word fix (code unchanged).
+- `bf4bf7f` **(4)** scoreboard export-route test now asserts **403** (a user lacking `reports.view`), mirroring the list-route test. (This file also carries the item-1 `shippedResult` fixture bump.)
+- `21bac61` **(5)** Backlog ordered-vs-remaining hardening test — seeds a PARTIALLY shipped order (`ShipperLine` qty 4 vs an order line ordered at qty 10 / weight 25) and asserts the report still shows the ORDERED 10 / 25.00, not the 6 / 15.00 remainder. (This file also carries the item-1 `buildBacklog` fixture bump.)
+- `d0ddc16` **(6)** reads-never-mutate citation → **main spec §12** (was §11, which is "Architecture and stack"; §12 is "Data safety and error handling"). Fixed in the phase-8 spec (the §8 house-rules bullet **and** the §4.2 report-shape statement), `reports/README.md`, all six report-service headers, and the CLAUDE.md paragraph. Left untouched: the phase-8 spec's own §11 ("Docs to update") heading and its cross-refs (owner sign-off, practice-DB / backup section refs). Note: the §4.2 statement was beyond the brief's literal enumeration but is the same wrong reads-never-mutate citation, so it was corrected for consistency.
+
+**Targeted gate (watched to completion):** `npx vitest run tests/reports-backlog.test.ts tests/reports-shipped.test.ts tests/reports-sales.test.ts tests/reports-scoreboard.test.ts` → **65 passed** (backlog 15 [+1 hardening], shipped 18, sales 17, scoreboard 15). `npx tsc --noEmit` clean; `npx eslint src tests` clean. Full `npm test`/`build`/E2E deferred to the controller's final gate chain per brief.
+
 ## Deferred (NOT pre-merge — issues/follow-ups)
 
 - **Unbounded `findMany` + JS aggregation** in every report wrapper (no `take`/limit) — LOW; fine at this shop's scale (thousands of rows), but a real scalability note if a table grows large or a user runs a report with no date filter. Candidate for a post-8A issue (DB-side aggregation) — not blocking.
