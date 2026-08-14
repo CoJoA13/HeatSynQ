@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LOGO_WIDTH,
+  STALE_DRAFT_MESSAGE,
   canMoveField,
   canMoveSection,
   clearLogoPlacement,
   lockIndex,
   moveField,
   moveSection,
+  resolveSaveError,
   setFieldLabel,
   setFieldWidth,
   setFonts,
@@ -18,6 +20,7 @@ import {
   tableBudgets,
   toggleFieldVisible,
   toggleSectionVisible,
+  widthBudgetError,
 } from "@/lib/template-editor";
 import {
   CERT_CONTRACT,
@@ -283,5 +286,46 @@ describe("defense in depth — the server refuses a hand-built bad config", () =
   it("the invoice contract has no format-knob drift — every default validates round-trip", () => {
     expect(() => validateConfig("INVOICE", invoice())).not.toThrow();
     expect(INVOICE_CONTRACT.formats.negativeStyle).toBeDefined();
+  });
+});
+
+describe("resolveSaveError — the save-conflict state machine (Task 18)", () => {
+  it("a 409 asks the caller to roll back to server truth THEN show the stale-draft banner", () => {
+    // The one status that earns the reload-vs-overwrite treatment. The action name encodes the
+    // HANDOFF §5.13 ordering: the caller reloads FIRST, then shows `message` (a reload after the
+    // banner is set would wipe it). The server's own 409 wording is ignored in favour of one that
+    // describes what the editor has already done (auto-reloaded) and offers re-apply.
+    const r = resolveSaveError(
+      409, "The draft changed since you loaded it — reload the editor and re-apply your changes");
+    expect(r.action).toBe("reload-then-conflict");
+    expect(r.message).toBe(STALE_DRAFT_MESSAGE);
+  });
+
+  it("every non-409 failure surfaces its own message with NO reload path", () => {
+    // A 400 from validateConfig, a 403, a 404, a 500, and a network error (null status) all take
+    // the plain-error branch — only the stale-precondition 409 reloads (brief §3).
+    for (const status of [400, 403, 404, 500, null]) {
+      const r = resolveSaveError(status, "the server's own message");
+      expect(r.action).toBe("error");
+      expect(r.message).toBe("the server's own message");
+    }
+  });
+});
+
+describe("widthBudgetError — early-disable Save on an over-budget config (Task 18 minor)", () => {
+  it("returns null for a within-budget working config (Save is not blocked)", () => {
+    expect(widthBudgetError(TRAVELER_CONTRACT, traveler())).toBeNull();
+  });
+
+  it("names the over-budget table — the SAME config the server's validateConfig refuses", () => {
+    // 300 + 78 (line_each_weight) + 300 = 678 > the 564 "lines" budget — every field width stays
+    // <=564, so this is the budget rule, not a per-field shape cap (mirrors the tableBudgets test).
+    const bad = setFieldWidth(
+      setFieldWidth(traveler(), "lines", "line_qty", 300), "lines", "line_weight", 300);
+    const reason = widthBudgetError(TRAVELER_CONTRACT, bad);
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("lines");
+    // Client early-disable and server backstop agree on the same config (spec §5.6 defense-in-depth).
+    expect(() => validateConfig("TRAVELER", bad)).toThrow(TemplateConfigError);
   });
 });

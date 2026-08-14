@@ -256,3 +256,54 @@ export function tableBudgets(contract: TemplateContract, config: TemplateConfig)
     return { table, total, budget, over: total > budget };
   });
 }
+
+/**
+ * The client-side reason the editor should disable Save BEFORE the round-trip, or null when the
+ * working config is savable (Task 18 minor). It mirrors the ONLY `validateConfig` failure the
+ * panels can actually produce — an over-budget table (`tableBudgets`): a locked element can't be
+ * hidden or reordered (those controls are disabled) and duplicate keys are structurally
+ * impossible, so neither ever reaches here. The server's `validateConfig` stays the authoritative
+ * backstop (spec §5.6 — the editor alone is not the enforcement); this just spares a round-trip
+ * that would only come back a 400 and names the table to fix in a Save-button tooltip.
+ */
+export function widthBudgetError(contract: TemplateContract, config: TemplateConfig): string | null {
+  const over = tableBudgets(contract, config).filter((b) => b.over);
+  if (over.length === 0) return null;
+  return "Over the column-width budget — " +
+    over.map((b) => `${b.table} totals ${b.total}pt of ${b.budget}pt`).join("; ") +
+    ". Narrow or hide a column before saving.";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Save-conflict resolution — the pure decision behind the editor's updatedAt-409 UX (Task 18)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The banner shown after a stale-`updatedAt` 409 conflict. By the time this shows, the editor has
+ * ALREADY rolled the working state back to server truth (HANDOFF §5.13 — roll back FIRST, then
+ * report why, so the reload can never wipe the message it is reporting). So it describes what
+ * happened and names the two ways forward: keep the reloaded draft, or re-apply the set-aside edits
+ * to save over the new version (the deliberate overwrite).
+ */
+export const STALE_DRAFT_MESSAGE =
+  "The draft changed since you loaded it (someone else saved, or the logo changed). The editor has " +
+  "reloaded the current draft and set your unsaved edits aside — re-apply them to save over the new " +
+  "version, or keep the reloaded draft.";
+
+export type SaveErrorResolution =
+  | { action: "reload-then-conflict"; message: string }
+  | { action: "error"; message: string };
+
+/**
+ * The editor's save-error state machine (Task 18), pure so the node-only harness can decide it
+ * without a DOM. A stale-precondition 409 (spec §5.1 / `editDraft`) is the ONLY status that earns
+ * the reload-vs-overwrite treatment: the caller must roll the editor back to server truth FIRST and
+ * only THEN show `message` — the `reload-then-conflict` action name is that ordering (HANDOFF §5.13:
+ * a reload that runs after the banner is set wipes it). Every other failure — a 400 from
+ * `validateConfig`, a 403, a 404, a 500, a network error (null status) — surfaces its own server
+ * message with no reload path.
+ */
+export function resolveSaveError(status: number | null, serverMessage: string): SaveErrorResolution {
+  if (status === 409) return { action: "reload-then-conflict", message: STALE_DRAFT_MESSAGE };
+  return { action: "error", message: serverMessage };
+}
