@@ -31,4 +31,8 @@ export const REPORTS: ReportEntry[] = [
     key: "shipped", label: "Shipped", href: "/reports/shipped", area: "reports",
     description: "Shipped quantity and weight by period.",
   },
+  {
+    key: "turnaround", label: "Turnaround", href: "/reports/turnaround", area: "reports",
+    description: "Average order-to-ship days.",
+  },
 ];
