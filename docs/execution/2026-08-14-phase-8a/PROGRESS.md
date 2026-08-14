@@ -8,8 +8,8 @@
 
 | # | Title | Implementer | Review verdict | Commit(s) | Status |
 |---|-------|-------------|----------------|-----------|--------|
-| 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | REVIEWED — gates green* (E2E re-confirming) |
-| 1 | Backlog report | — | — | — | BRIEFED (queued) |
+| 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
+| 1 | Backlog report | general-purpose | — | — | DISPATCHED |
 | 2 | Shipped report | — | — | — | PENDING |
 | 3 | Turnaround report | — | — | — | PENDING |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
@@ -21,7 +21,7 @@
 ## Gate snapshots (each written after watching the run)
 
 - **Task 0 (implementer, targeted only):** `npx vitest run tests/reports-routes.test.ts` → 3 passed. `npx tsc --noEmit` → clean. `npx eslint src tests` → clean. Both DBs at 36 migrations, `migrate status` up to date.
-- **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned server (see notes); **E2E full-pass re-confirming.** (`*` in the ledger = the E2E re-run.)
+- **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned `:3100` server; **re-run = 20/20 clean pass** (12:21). Task 0 fully verified.
 
 ## Notes / rulings during execution
 
