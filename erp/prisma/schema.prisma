@@ -1297,6 +1297,10 @@ model Invoice {
   @@index([customerId])
   @@index([status])
   @@index([invoiceDate])
+  // Phase 8A: the Sales report recognizes finalized invoices/credits by finalizedAt over a
+  // half-open month window (§4.2) — the same recognition basis as the 5C close roll-forward and the
+  // GL-export delta. This index backs that range scan.
+  @@index([finalizedAt])
   @@index([orderId])
 }
 
@@ -1444,6 +1448,9 @@ model Payment {
 
   @@index([batchId])
   @@index([customerId])
+  // Phase 8A: the Payments-received report groups posted payments by receivedDate over a chosen
+  // window (§4.2). This index backs that range scan.
+  @@index([receivedDate])
 }
 
 /// One reduction of one invoice's open balance (§4.1). `invoiceId` is always a finalized INVOICE;
