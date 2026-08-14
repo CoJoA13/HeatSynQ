@@ -47,16 +47,37 @@ export function parseObjects(pdf: Buffer): Map<number, PdfObj> {
       let dataStart = streamIdx + 6;
       if (pdf[dataStart] === 0x0d) dataStart++;
       if (pdf[dataStart] === 0x0a) dataStart++;
-      const endstreamIdx = s.indexOf("endstream", dataStart);
+      // The stream's byte length. PREFER the object's own DIRECT `/Length N` — the exact count a
+      // real PDF reader uses — over scanning for the `endstream` keyword. The keyword scan is a
+      // heuristic on BINARY data with two failure modes the byte-exact length sidesteps: a
+      // FlateDecode stream's final byte is arbitrary, so ~1 render in 128 ends in a CR/LF byte, and
+      // the old greedy trailing-EOL trim (`while … 0x0a || 0x0d`) ate that real data byte along
+      // with the spec's single separator EOL — truncating the stream by a byte so `inflateSync`
+      // threw, the whole page fell back to `Buffer.from(bytes)` garbage, and every text assertion
+      // decoded to "" (the `/Length`-honoring inflate of the SAME bytes succeeds). The scan also
+      // could (in theory) false-match on `endstream` bytes inside the compressed data. `/Length`
+      // avoids both. An indirect length (`/Length 5 0 R`, rejected by the lookahead) or an absent
+      // one falls back to the scan, now stripping only the SINGLE spec-mandated EOL, non-greedily.
+      const lengthMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(body);
+      const searchFrom = lengthMatch !== null ? dataStart + Number(lengthMatch[1]) : dataStart;
+      const endstreamIdx = s.indexOf("endstream", searchFrom);
       // The Task 6 review carry: a missing terminator must be a clear parse error, never a `-1`
       // silently fed into subarray/indexOf below.
       if (endstreamIdx === -1) {
         throw new Error(
           `PDF parse error: object ${m[1]} opens a stream at byte ${dataStart} with no endstream`);
       }
-      let e = endstreamIdx;
-      while (e > dataStart && (pdf[e - 1] === 0x0a || pdf[e - 1] === 0x0d)) e--;
-      const bytes = pdf.subarray(dataStart, e);
+      let bytes: Buffer;
+      if (lengthMatch !== null) {
+        bytes = pdf.subarray(dataStart, dataStart + Number(lengthMatch[1]));
+      } else {
+        let e = endstreamIdx;
+        // Strip exactly the one EOL (CRLF, LF or CR) the spec places before `endstream` — never
+        // greedily, so a data byte that is coincidentally CR/LF survives.
+        if (pdf[e - 1] === 0x0a) e--;
+        if (pdf[e - 1] === 0x0d) e--;
+        bytes = pdf.subarray(dataStart, Math.max(dataStart, e));
+      }
       let stream: Buffer;
       try { stream = zlib.inflateSync(bytes); } catch { stream = Buffer.from(bytes); }
       objs.set(Number(m[1]), { body, stream });

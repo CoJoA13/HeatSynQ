@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import zlib from "node:zlib";
+import { createHash } from "node:crypto";
 import { jpegDataUri, renderPdf, renderSheetGroups } from "@/server/pdf/render";
 import type { RenderableDefinition } from "@/server/pdf/render";
 import { TINY_JPEG, drawnPages, drawnText, pageCount, parseObjects } from "./helpers/pdf";
@@ -53,6 +55,47 @@ describe("the ToUnicode decoder — LIGATURES (tests/helpers/pdf.ts)", () => {
     const line = "Overflow office affix — the quick brown fox jumps over the lazy dog";
     const pdf = await renderPdf({ content: [{ text: line }] });
     expect(drawnText(pdf)).toContain(line);
+  });
+});
+
+describe("parseObjects — a stream is bounded by its declared /Length, not an endstream scan", () => {
+  // The production failure this pins (quote-templates.test.ts, the title-override print): a
+  // FlateDecode stream's final byte is arbitrary, so ~1 render in 128 ends in a CR/LF byte. The old
+  // boundary heuristic scanned for the `endstream` keyword and greedily stripped EVERY trailing
+  // CR/LF — eating that real data byte along with the spec's single separator EOL. The stream was
+  // truncated by a byte, `inflateSync` threw, the whole page fell back to raw-compressed garbage,
+  // and every text assertion decoded to "". Honoring the object's own `/Length` is byte-exact.
+  const obj7 = (head: string, data: Buffer): Buffer =>
+    Buffer.concat([Buffer.from(head, "latin1"), data, Buffer.from("\nendstream\nendobj\n", "latin1")]);
+
+  // (a) The boundary defect itself, deterministic: an UNCOMPRESSED stream whose OWN bytes end in the
+  // spec's separator characters. parseObjects can't inflate it, so it keeps the raw bytes — the same
+  // byte range the FlateDecode path feeds to inflateSync. The single EOL before `endstream` is the
+  // separator, never part of the data; the old greedy trim ate the data's matching final byte too.
+  it.each([["LF", "\n"], ["CR", "\r"]])(
+    "keeps a raw stream's final %s byte that the greedy endstream-trim consumed",
+    (_name, eol) => {
+      const data = Buffer.from(`payload whose last byte is a separator char${eol}`, "latin1");
+      const pdf = obj7(`%PDF-1.7\n7 0 obj\n<< /Length ${data.length} >>\nstream\n`, data);
+      expect(parseObjects(pdf).get(7)?.stream?.equals(data)).toBe(true);
+    });
+
+  // (b) The production symptom, faithful: a real FlateDecode stream whose COMPRESSED bytes end in a
+  // LF. The old trim truncated it by a byte and inflateSync threw; /Length inflates the exact bytes.
+  // sha256(i) gives deterministic high-entropy payloads, so a LF-terminated deflate is found in a
+  // few hundred tries — reproducible, never flaky.
+  it("inflates a FlateDecode stream whose compressed bytes end in a LF byte", () => {
+    let raw: Buffer | null = null;
+    let deflated: Buffer | null = null;
+    for (let i = 0; i < 100_000; i++) {
+      const candidate = createHash("sha256").update(String(i)).digest();
+      const d = zlib.deflateSync(candidate);
+      if (d[d.length - 1] === 0x0a) { raw = candidate; deflated = d; break; }
+    }
+    if (raw === null || deflated === null) throw new Error("no LF-terminated deflate found");
+    const pdf = obj7(
+      `%PDF-1.7\n7 0 obj\n<< /Length ${deflated.length} /Filter /FlateDecode >>\nstream\n`, deflated);
+    expect(parseObjects(pdf).get(7)?.stream?.equals(raw)).toBe(true);
   });
 });
 
