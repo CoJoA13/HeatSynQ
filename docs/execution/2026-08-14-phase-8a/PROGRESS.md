@@ -16,7 +16,7 @@
 | 5 | Payments received report | general-purpose | ✅ Approved | ed046c0, cc1b615 | ✅ DONE (gates green 2827; E2E 19/20 — close-month-end flake, isolated) |
 | 6 | Home invoice register + aging | general-purpose | ✅ Approved | a92ae9d | ✅ DONE (fast gates green 2829; E2E deferred to T7 — no flow touched) |
 | 7 | Comparison scoreboard | general-purpose | ✅ Approved | 49dad72, e482350 | ✅ DONE (gates green 2844, E2E 20/20) |
-| 8 | E2E flows + docs | general-purpose | — | 3b769db, 5f57edc | ✅ BUILT (reports flow PASS in isolation; docs drafted) — pending whole-branch review + controller full E2E |
+| 8 | E2E flows + docs | general-purpose | ✅ (whole-branch) | 3b769db, 5f57edc | ✅ DONE (reports flow green in full E2E 21/21; docs) |
 
 ## Gate snapshots (each written after watching the run)
 
@@ -51,6 +51,8 @@ Minors from per-task reviews that are Nice-to-Have (no correctness/concurrency/d
 - **INFRA / close-month-end E2E flake got worse** (watch for whole-branch/final): it hung 2× consecutively at Task 5's verification (vs green 5× in Tasks 0–4) on a genuinely clean, idle box. The **isolation approach works** (skip it → 19/19; it's toXlsx-independent). For the whole-branch review + final merge, plan to either land a lucky 20/20 or run it in isolation + document. If it keeps hanging, worth an infra issue (pre-existing Phase-5C code, not 8A) — but not blocking 8A. (Update: passed 20/20 at Task 7, so still intermittent — no infra issue filed yet.)
 - **Task 7 / scoreboard export test — coverage:** the export route test asserts 401 + 200 but not 403 (shares the identical `mustCan(...,"reports","view")` gate the list route already 403-tests). Add the 403 case for the house 401/403/200-per-handler rule. Trivial.
 
+- **8A FINAL (post-fix-wave, controller-verified, 18:08):** full `npm test` → **2845 passed / 156 files** (+1 from the fix-wave Backlog hardening test); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 21/21 clean** — `close-month-end` AND the new `reports` flow both passed in the SAME full run (no flake this time). 8A fully verified and merge-ready.
+
 ## Whole-branch review (2026-08-14) — 5 lenses, ALL APPROVE
 
 `phase8a-whole-branch-review` (wf_2e733517-719), diff `90b3bcd..0d2fa43`, 5 lenses on opus/high: **correctness, house-rules, cross-task consistency, concurrency-security, contract — every one APPROVE, every finding LOW (zero blocker/high/medium).** Confirmed branch-wide: all report services are pure reads (no claim/audit/Serializable — grep-verified), frozen-invoice snapshot honored, soft-delete discipline, client/server boundary clean, permission gating uniform, the toXlsx caption additive for all ~24 existing callers, Sales genuinely reconciles to GL, date-bases all correct (finalizedAt half-open vs @db.Date inclusive-lte). Contract lens: 0 findings. New LOW findings folded into the fix wave / follow-ups below.
@@ -80,7 +82,7 @@ Six commits (conventional, no attribution trailer), on `phase-8a-reports-scorebo
 ## Deferred (NOT pre-merge — issues/follow-ups)
 
 - **Unbounded `findMany` + JS aggregation** in every report wrapper (no `take`/limit) — LOW; fine at this shop's scale (thousands of rows), but a real scalability note if a table grows large or a user runs a report with no date filter. Candidate for a post-8A issue (DB-side aggregation) — not blocking.
-- **"How reports slice by part" — OWNER question** (Task 2 asymmetry + Task 3 over-attribution + Sales/scoreboard have no part filter). Present as ONE consolidated decision at the wrap-up/demo. Not a code blocker.
+- **"How reports slice by part" — OWNER RULED "ship as-is" (2026-08-14).** The consolidated question (Task 2 released-row asymmetry + Task 3 multi-part over-attribution + Sales/scoreboard being groupBy-only) was put to the owner with three options (ship as-is / groupBy-only everywhere / keep filters + fix quirks); owner chose **ship as-is** — each report does what fits its data, the edge quirks are rare and documented. No code change; the inconsistency is an accepted, documented design outcome.
 
 ## Notes / rulings during execution
 
