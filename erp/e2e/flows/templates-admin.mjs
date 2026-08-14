@@ -9,8 +9,14 @@
 // a LOCKED element (the traveler barcode / Process-steps section) renders locked and disabled with
 // its §5.6 reason; a free section toggles (and the draft goes dirty); a field label override is set;
 // a format knob is picked; and the fixture logo is uploaded through the Task 4 sniff/cap route with
-// a header placement chosen. The Save button + the updatedAt-409 conflict UX are Task 18, so this
-// flow does NOT save — it proves the panels produce the edited config in state.
+// a header placement chosen.
+//
+// Then Task 18's SAVE + updatedAt-409 CONFLICT UX (the load-bearing §5.13 proof): with those edits
+// unsaved, a COMPETING change lands on the same draft from another request (bumping its updatedAt),
+// so the editor's save precondition is stale. Saving surfaces the named 409 as a reload-vs-overwrite
+// choice: the editor rolls back to server truth FIRST, THEN shows a persistent conflict banner that
+// the reload does NOT wipe (§5.13), and the set-aside edits can be re-applied and saved over the new
+// version (a deliberate overwrite). This flow drives both — the safe reload AND the overwrite.
 //
 // Then, re-logged-in as the restricted VIEW-ONLY user (holds templates.view but NOT admin.view):
 // prove the nav decision + §5.16 — that user still sees the Templates entry and reaches the page
@@ -97,8 +103,7 @@ export async function run(page, shot, ctx) {
   await shot("template-published-then-redrafted-v2");
 
   // --- The structured editor (Task 17): open the v2 draft and exercise the contract-driven panels ---
-  // The panels are the whole point of Task 17; SAVE + the updatedAt-409 conflict UX is Task 18, so
-  // this flow drives the panels (and the logo route, a separate write) but does NOT click "Save draft".
+  // The panels are exercised first; Task 18's SAVE + updatedAt-409 conflict UX follows below.
   await page.getByRole("link", { name: "Edit draft" }).click();
   await page.waitForURL(new RegExp(`${ctx.baseURL}/admin/templates/[^/]+/edit`));
   await page.getByRole("heading", { name: DOC_TEMPLATE_NAME }).waitFor({ state: "visible" });
@@ -143,9 +148,47 @@ export async function run(page, shot, ctx) {
   await page.getByText(/Image on file \(image\/png\)/).waitFor({ state: "visible" });
   await page.getByRole("combobox", { name: "Logo placement" }).selectOption("header-left");
   await shot("editor-panels-exercised-logo-uploaded");
-  // The config edits stay UNSAVED — the Save button + the updatedAt-409 conflict UX are Task 18's;
-  // this flow proves the panels. The logo BYTES were written (a separate route), and the whole
-  // template is reaped by name in teardown, logo and all.
+
+  // --- Task 18: the updatedAt-409 conflict UX (reload-vs-overwrite, HANDOFF §5.13) ---
+  // The editor now holds several UNSAVED edits (the hidden Part-lines section, the "Work Order #"
+  // label, the flipped format knob, the header logo placement). Land a COMPETING change on the same
+  // draft from another request so the editor's save precondition goes stale.
+  const templateId = page.url().match(/\/admin\/templates\/([^/]+)\/edit/)[1];
+  assert.ok(templateId, "extracted the template id from the editor URL");
+
+  // Read the current server draft and PATCH it back with a real change (flip the page footer),
+  // matching its own updatedAt so this competing write succeeds and advances updatedAt past what the
+  // editor loaded. page.request shares the browser context's cookies, so it acts as this same admin.
+  const draftBefore = await (await page.request.get(`${ctx.baseURL}/api/templates/${templateId}`)).json();
+  const competing = { ...draftBefore.draft.config, pageFooter: !draftBefore.draft.config.pageFooter };
+  const competingRes = await page.request.patch(`${ctx.baseURL}/api/templates/${templateId}/draft`, {
+    data: { config: competing, updatedAt: draftBefore.draft.updatedAt },
+  });
+  assert.equal(competingRes.ok(), true, "the competing change saved, bumping the draft's updatedAt");
+
+  // Save the editor's stale edits → the named 409, surfaced as the conflict banner. The editor rolls
+  // back to server truth FIRST, THEN shows the banner — §5.13, so the reload never wipes it.
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const conflictBanner = page.getByText(/reloaded the current draft/i);
+  await conflictBanner.waitFor({ state: "visible" });
+  await shot("editor-save-conflict-banner");
+
+  // The reload DID roll back to server truth: the section the stale edit had hidden is visible again
+  // and the stale label override is gone — the editor shows the current draft, not the stale edits.
+  assert.equal(await partLines.isChecked(), true, "the reload restored the section the stale edit had hidden");
+  assert.equal(await labelInput.inputValue(), "", "the reload discarded the stale label override");
+  // ...and the banner SURVIVED that reload — the load-bearing §5.13 assertion.
+  assert.equal(await conflictBanner.isVisible(), true, "the conflict banner persists through the reload");
+
+  // The overwrite half of the choice: re-apply the set-aside edits onto the fresh precondition and
+  // save over the competing version. Acting on the conflict clears the banner and the save succeeds.
+  await page.getByRole("button", { name: "Re-apply my changes" }).click();
+  await conflictBanner.waitFor({ state: "hidden" }); // acting on the conflict dismissed the banner
+  assert.equal(await partLines.isChecked(), false, "re-apply put the stale edits back onto server truth");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await page.getByText("Saved", { exact: true }).waitFor({ state: "visible" });
+  await shot("editor-conflict-overwrite-saved");
+  // The template — logo bytes and the now-saved config — is reaped by name in teardown.
 
   // --- Re-logged-in as the restricted VIEW-ONLY user (templates.view, NOT admin.view) ---
   await login(page, ctx.baseURL, fixtures.restrictedUsername, fixtures.restrictedPassword);
