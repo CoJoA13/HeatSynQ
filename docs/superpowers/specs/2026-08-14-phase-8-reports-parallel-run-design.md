@@ -1,0 +1,202 @@
+# Phase 8 — Reports & Parallel-Run Tools: Design Specification
+
+**Date:** 2026-08-14
+**Status:** **APPROVED by owner 2026-08-14** — the owner took all §12 defaults **except** the scoreboard's invoiced-$ basis, which they set to **invoice date** (§4.3). §3 records every ruling from the design session (D1–D7). A **five-lens adversarial review** (house-rules / codebase-feasibility / contract-compliance / completeness / data-integrity) ran 2026-08-14 before approval; every substantive finding is incorporated (the safety and correctness fixes are in the body, not deferred). §12 records the resolved judgment calls and the remaining pure plan-time items.
+**Branches:** three sub-phases, each its own branch / review / merge (the 5A/B/C pattern, ruling D7): **`phase-8a-reports-scoreboard` · `phase-8b-practice-wizard` · `phase-8c-backup-polish`.**
+**Depends on:** every prior phase's read models. 8A on Phase 3 (orders, `receivedDate`), Phase 4 (shippers, `shipDate`, `ship-ledger.ts`, the per-line `lineComplete` flag), Phase 5A/B/C (invoices/`finalizedAt`, `aging.ts`, `ar-balances.ts`, `close-periods.ts`, the frozen-invoice snapshot, `gl-export.ts`). 8B on Phase 1 (auth/`Shell`/`app/layout.tsx`, settings, seed), Phase 5 (`readinessGaps` in `gl-mapping.ts`, `BillingConfig`), the whole master-data graph (the demo seed), Phase 6/7 (templates), and Phase 7 (`render.ts` + `pdf-lib`, for the practice watermark). 8C on Phase 1 (the backup container, `settings.ts`).
+**Build target:** the roadmap's testable outcome — **a weekly Visual-Shop comparison and one closeable acceptance month**. The parallel-run acceptance criterion (spec §13) is carried by the already-built A/R aging + QuickBooks summary export agreeing with the books; 8A adds the weekly scoreboard, 8B the training environment and clean-install onboarding, 8C the backup controls that make an unattended shop box trustworthy.
+
+---
+
+## 1. Goal
+
+Deliver roadmap Phase 8, the last build phase: **the report set, the parallel-run comparison scoreboard, the practice database, the first-run wizard, and backup polish.** Spec §7.8 is explicit that "reports are cheap to add; the platform matters more than the initial list" — so 8A builds a *reporting platform* (a `/reports` section, one reusable service+export+filter shape cloned from the existing A/R aging report) and seeds it with the owner's confirmed go-to reports. 8B makes the empty-start install (spec §3: "None — start empty") safe to learn on and safe to bring up correctly. 8C gives the nightly backup that already runs a face and a pulse.
+
+## 2. Scope
+
+**In (8A — Reports & Scoreboard):** a real `/reports` section behind the existing-but-unused `reports` permission area (its nav link is a live 404 today — §5.15 silent-dead-end); **five new reports** — Backlog, Shipped, Turnaround, Sales, Payments received (D1) — each an on-screen aggregate **numeric table** (no charts — §3's "dashboard graphs" stays a non-goal) **+ "Export to Excel"** via the shared `toXlsx` helper, filterable by date range + customer + part (as applicable), built on the `aging.ts` pure-core + Prisma-wrapper pattern and the shared per-area `query.ts` parse; **homing the two already-built reports** (invoice register = the invoicing list; A/R aging) under `/reports`; the **comparison scoreboard** (D2/D3) — one page, pick a period, showing HeatSynQ's orders entered / shipped (lbs + pcs) / invoiced $ for eyeball comparison against Visual Shop. 8A carries **two small index migrations** (§7) — it is not zero-migration.
+
+**In (8B — Practice DB & First-run wizard):** a **separate practice copy** of the app (own `erp_practice` database, own port; practice-vs-production determined by an **authoritative database-identity check**, not the env flag alone — §5.1) surfaced as a distinct **banner** rendered by the root layout so it survives the login and loading screens (D4); a **representative-slice demo seed** built through the service invariants that also restores the by-construction singletons; a **"Reset practice data"** control that exists only in the practice database and is double-guarded; a **PRACTICE/SAMPLE watermark** on every practice-copy PDF (a `pdf-lib` post-stamp in `render.ts`); the **first-run setup checklist** ordered by the real configuration dependency chain, driven by a new install-readiness rollup that reuses the `ReadinessGap {label, href}` pattern, dismissible, remembering completion (D6); a **hard gate blocking real order entry until company identity + chart of accounts are configured** (D7), enforced server-side at the single order-creation chokepoint; a **non-blocking reminder** to change the seeded `admin/admin` password (D6).
+
+**In (8C — Backup polish):** a **Backups admin page** — list of backups (date, size, integrity status), a **"Back up now"** button, and a prominent **"last successful backup: N ago" staleness indicator** that reads **red/overdue when the status is missing or stale** (never green on absence); the backup folder is a **deploy-time value both writers share** (§6.1), displayed on the page; the automatic nightly job stays; the app↔backup-container **bridge** those features require (§6.1). Restore stays a **documented command** (D5). Failure/staleness surfacing is **in-app only** (no email/SMTP) (D5). The Backups page is **production-only** — the practice copy does not share it or the backup folder (§6.3).
+
+**Out (deliberate — revisit only by owner ruling):**
+- **A free-form report painter** (spec §3, §8 boundary) and **any chart/graph widget** (§3 "dashboard graphs") — reports and the scoreboard are fixed, structured numeric tables; exotic one-offs become built-in reports, never a user-built query designer.
+- **Visual-Shop data entry / a variance engine** on the scoreboard (D2 — "our numbers, you eyeball").
+- **Shipped dollars** on the scoreboard (D3) — pounds & pieces only.
+- **Sales-by-operation** and a **quote conversion %** report (D1) — the owner's list is part-number-sliced sales and includes no quote report (the Phase 6 follow-up worklist covers the chase). Both remain easy later additions.
+- **CSV report output** — every report exports xlsx.
+- **An in-app restore button** (D5) and **email alerting** (D5).
+- **An in-app "practice mode toggle"** inside one running instance (D4) — practice is a *separate copy*, not a live switch.
+- **Forced admin password change** (D6) — recommended, not enforced.
+- **Profitability/margin reporting** — there is no cost data anywhere; every dollar figure is revenue/AR only.
+- Any change to the month-end close, GL export, aging, or invoicing recognition rules — 8A **reads** them and must agree with them; it never re-defines them.
+
+## 3. Owner decisions, 2026-08-14 (this design session)
+
+| # | Decision | Ruling |
+|---|---|---|
+| D1 | Report set | Build five new — **Backlog, Shipped, Turnaround, Sales, Payments received**. Home the two already-built (invoice register, A/R aging) under `/reports`. Sliceable **by customer, month, date range, part number** ("all of them"), with the data-driven exceptions §4.2 records (Sales by finalized date + part; Payments by customer/month/payment-type — a payment pays invoices, not parts). Quote follow-up/conversion and sales-by-operation intentionally **not** built |
+| D2 | Scoreboard nature | **Our-numbers-only, eyeballed** against Visual Shop's own reports. No VS data entry, no variance computation |
+| D3 | Scoreboard "shipped" | **Pounds & pieces only** — no shipped-dollar derivation |
+| D4 | Practice database | A **separate practice copy** (own DB, own port, distinct banner). **Representative-slice** demo data. A **reset-practice-data** control, practice-only. **Watermark every practice PDF** |
+| D5 | Backup polish | A **Backups page** (list + folder + back-up-now + red staleness + integrity); nightly job stays. **Restore = documented command only.** **Alerting = in-app warning only** |
+| D6 | First-run wizard | A **setup checklist**, dependency-ordered, live-readiness-driven, dismissible, remembers completion. **Block real order entry until essentials set.** **Password change recommended, not forced** |
+| D7 | Order gate + staging | Order entry gates on **company identity + chart of accounts** (starting document numbers stay a strong recommendation, not a blocker). **Three sub-phases**: 8A · 8B · 8C |
+
+**Resolved at approval (2026-08-14):** the owner approved the design and took all §12 defaults **except** the scoreboard's invoiced-$ basis, set to **invoice date** — matching how Visual Shop dates the number for the weekly eyeball (§4.3/§8), deliberately distinct from the Sales report's finalized-date basis.
+
+## 4. Sub-phase 8A — Reports & Scoreboard
+
+### 4.1 The `/reports` section
+
+`src/app/reports/` with an **index page** listing available reports (permission-filtered); every report route gates on `mustCan(requireUser(), "reports", "view")` — a single grant is the whole gate (there is no cost/margin data to wall off; D1). The dead nav link gets its page (§5.15). The two already-built reports are surfaced here: the **invoice register** links to (or relocates under `/reports`, reusing `listInvoices` verbatim — §12) the invoicing list, and **A/R aging** links to `/receivables/aging`. Their auth stays on their source areas; `/reports` is discovery, not re-authorization.
+
+### 4.2 The five new reports
+
+Every report follows the **`aging.ts` shape** — a pure aggregation core (no Prisma/IO) plus a thin Prisma wrapper reading a snapshot — and the **shared-`query.ts` parse** imported by both the JSON route and the `/export` route so the on-screen table and the Excel file can never disagree. All are **pure reads**: no row claim, no audit, no Serializable (spec §11 — reads never mutate). Money is integer cents; cells are humanized before `toXlsx`. Every `where` carries `deletedAt: null` and excludes voided rows unless an explicit include-voided toggle is set. There is **no `groupBy` in the codebase today** — the aggregation SQL is net-new per report (the reusable parts are the service/route/filter/export shapes, not an existing aggregator).
+
+**Backlog** — open orders not yet fully shipped. Rows: order, customer, part(s), qty + weight ordered, received date, days open. **Open-status set = `OPEN`, `PARTIAL_SHIPPED`, and `REOPENED`** (an order reversed back into un-shipped work is still live backlog — excluding it would undercount; confirm with owner, §12). Date range filters `receivedDate`; group/slice by customer · part · received-month. (This is not "boardWhere" — the board imposes no intrinsic status filter; Backlog defines its own.)
+
+**Shipped** — actual shipped volume. Rows: shipped qty + weight + shipment count. A **new `shipDate`-windowed aggregation** joining `ShipperLine → Shipper.shipDate`, applying `ship-ledger.ts`'s **live-filter discipline** (voided shipments contribute nothing; reversals are live negative-qty rows that net into their own `shipDate` window). **It does NOT reuse `shippedTotals`** (which is keyed on `orderLineId` with no date dimension and deliberately skips released rows). Released rows (`orderLineId` null — the order line was later deleted) represent **real material actually shipped**, so the Shipped report **includes them via their snapshot qty/weight** — a "how much did we ship" question, distinct from `shippedTotals`' ordered-vs-shipped invariant check. Date range on `shipDate`; group by customer · part · ship-month · day.
+
+**Turnaround** — average order-to-ship days. There is **no stored order-completion timestamp** (order status is a derived enum with no transition date), so the completion date is **derived from shipments, never the audit log**: for each order line, the earliest live `Shipper.shipDate` whose `ShipperLine` is `lineComplete`; the order's completion date = **MAX** of those per-line dates. Only orders **currently fully `SHIPPED`** are included (open work lives in Backlog); a `REOPENED`-then-re-completed order recomputes from its **current live shipments**, ignoring the prior cycle. Measure = completion date − `receivedDate`, averaged; date range on the completion date; group by customer · part · completion-month. First-ship-vs-full-ship convention confirmed with the owner (§12).
+
+**Sales** — invoiced **revenue, excluding sales tax**, net of credits. Reads the **frozen `Invoice`/`InvoiceLine` snapshot** (part number/name, price fields) — never live-joins Part/StepCode, so a later rename/reprice cannot rewrite a past month. `status = FINALIZED`, recognized by **`finalizedAt`** (owner ruling 8), range half-open `[from, nextDay)` (finalizedAt carries a time-of-day). Measure = Σ **all non-`TAX`** finalized invoice lines (OPERATION + **SURCHARGE** + FREIGHT + CHARGE + CERT; the zero-amount PART header line is harmless) − Σ non-`TAX` finalized credit lines (credits copy their source lines, carrying `partNumber`). **By-part slice**: part-bearing lines group by `partNumber`; the blank-`partNumber` kinds (`SURCHARGE`/`FREIGHT`/`CHARGE`/`CERT` — surcharge carries real revenue with no part identity) fall into an explicit **"(no part)"** bucket so the part-sliced total still equals the unsliced total (surcharge is not re-joined to the part it surcharges — that would violate the frozen-paper rule). **Reconciliation:** this total equals the GL export's **revenue-side accounts** for the month (= the close roll-forward net **minus** the sales-tax liability). It deliberately does **not** equal the A/R close roll-forward gross (which includes tax) — that tie-out belongs to the scoreboard's invoiced-$ (§4.3). §10 tests the correct identity, not the impossible one. Group by customer · part · finalized-month.
+
+**Payments received** — cash received. Rows by payment. Date range on `receivedDate`; group by customer · month · payment type (each FK'd to a GL account). **Default (taken at approval): POSTED-batch payments only** — matches deposits and the month-end close (the close counts POSTED, aging counts all; the two existing consumers already disagree, so this report picks the books-consistent basis). **The basis is printed on the report** so un-posted cash is never mistaken for missing money; a bookkeeper confirm before the live month stays a §12 note.
+
+### 4.3 The comparison scoreboard (D2/D3)
+
+`src/app/reports/scoreboard/` — one page, a **numeric table** (no charts), a date-range picker with **this-week** and **this-month** shortcuts. Three HeatSynQ figures for the period, **each with its basis printed on the page** so the owner knows exactly what to compare against Visual Shop:
+
+- **Orders entered** — count of orders by `receivedDate`, voided excluded (matches the board and how VS dates an order; `createdAt` alternative in §12).
+- **Shipped** — pounds & pieces (the §4.2 Shipped aggregation).
+- **Invoiced $** — `FINALIZED` invoices by **`invoiceDate`** (owner ruling, 2026-08-14 — matches how Visual Shop dates the number for the weekly eyeball; uses the existing `invoiceDate` index), gross `Invoice.total` (tax-inclusive), credits on their own line and a net. Because this uses `invoiceDate`, it is a **Visual-Shop-eyeball figure and does NOT tie to the finalized-date-based close/GL** — the books tie-out stays the already-built aging + QBO export (spec §13). The basis is printed on the page.
+
+No Visual-Shop figures are entered; no variance is computed (D2). Pure read; Excel-exportable.
+
+## 5. Sub-phase 8B — Practice DB & First-run wizard
+
+### 5.1 Practice database (D4)
+
+A **separate copy** of the same application image, pointed at a separate `erp_practice` database on its own port. Nobody is ever half-in.
+
+- **Authoritative practice determination.** Practice-vs-production is decided by the **database identity**, not the env flag alone: a small server helper (`practiceMode()`) resolves it from `SELECT current_database() = 'erp_practice'` (optionally corroborated by `PRACTICE_MODE`), so no single mis-set env var can un-watermark training paper, mispoint the reset, or drop the banner. Every practice-mode consumer (banner, watermark, reset guard) reads this one helper.
+- **Banner delivery — unauthenticated channel.** The distinct **banner** is rendered by the **root layout** (`app/layout.tsx`, a server component that can read the environment) and mounted **above** `Shell`'s `/login` and `me`-null early returns — so it shows on the login screen and during initial load, the two moments a trainer most needs it. It does **not** depend on `/api/auth/me` (which is auth-gated and cannot reach the login page); `/api/auth/me` may carry the flag as a secondary convenience for authed chrome only.
+- **Deploy shape.** `db-init` gains `erp_practice`; `docker-compose.yml` gains a practice `app` service (own profile + port, `DATABASE_URL → erp_practice`). No per-request DB switching is introduced. Migrations `migrate deploy` into `erp_practice` on the practice app's start, as they do for `erp`.
+- **Own login:** a separate database means its own users; the practice copy seeds its own `admin`/`admin` alongside the demo data.
+
+### 5.2 Demo data — the representative slice (D4)
+
+A dedicated **demo-seed module** (separate from the bootstrap `seed.ts`, guarded by an explicit `DATABASE_URL`/db-identity check) populates the practice DB with a **representative slice**: full reference data (a small **chart of accounts**, process step codes with GL, materials, terms, carriers, container types, payment types, inspection scales/codes, ending statements), **company identity** filled in, a set of **customers** (including a parent/division pair) and **parts** (recipes, pricing rows, specifications), a handful of **orders** in varied states (open, partially shipped, shipped, invoiced), and a couple of **shippers, invoices, and payments**. **No pre-closed month.** The seed goes **through the services / faithfully mimics their invariants** — soft-delete, partial-unique, audited-create, `allocateNumber` counters, the singletons — never a naive `createMany`. It creates **no `StoredDocument` rows from pre-baked bytes**; any document it stores is rendered through `render.ts` under practice mode so its bytes are watermarked (§5.4). Because the slice includes company identity + a chart of accounts, the practice copy **passes the order-entry gate** (§5.6) with no special exemption.
+
+### 5.3 Reset practice data (D4)
+
+A **"Reset practice data"** control, **double-guarded**: (1) authorized only in practice mode, and (2) — the load-bearing guard — the reset route re-checks `SELECT current_database() = 'erp_practice'` inside the request and **refuses outright otherwise**, so a mis-set `PRACTICE_MODE` on a production-pointed app can never truncate real data (the `db.ts`/`seed.ts` layered-guard ethos). It truncates and **re-seeds to a valid baseline** — it must restore the **by-construction singletons a bare truncate destroys**: the `BillingConfig` `singleton` row, the eight PUBLISHED "Standard" document templates + their `publishedVersionId` pointers, and the new `SetupState` row (§7) — **before** the demo business rows, or the practice DB would be left in the impossible state `truncateAll` exists to prevent (no billing config, no printable templates). It reuses no test-only tooling (`truncateAll` stays test-only) and has its own production-grade reset path. (A truncate/reseed writes no audit trail; it is a reset, not an acknowledged history — the design does not claim otherwise.)
+
+### 5.4 Practice PDF watermark (D4)
+
+Every practice-copy PDF (traveler, shipper, MOS, BOL, cert, invoice/credit, statement, quote) carries a visible **PRACTICE / SAMPLE** mark so a training document can never be mistaken for a real controlled one. Mechanism: a **`pdf-lib` post-stamp** (rotation + opacity — `pdf-lib` is already imported in `render.ts` and, unlike a pdfmake `background`, can render a diagonal mark and survives the two-pass path's refusal of function-valued definition keys) applied in **one shared step both entry points pass through** — `renderPdf` (bol/cert/invoice/statement/quote) **and** `renderSheetGroups` (traveler/shipping) — keyed off the single `practiceMode()` helper (§5.1), not the config (it must never be removable through the Phase 7 editor). Because a **reprint reissues stored bytes verbatim** (never re-renders), the watermark is correct only if every practice `StoredDocument` was produced under the flag — guaranteed by §5.2 (all practice generation runs under practice mode; the seed pre-bakes no bytes). Production renders stay byte-golden-identical (unwatermarked); §10 adds a practice-render test and a reprint-of-a-practice-stored-document test.
+
+### 5.5 First-run wizard — the setup checklist (D6)
+
+A **Setup checklist** (a first-run welcome, reachable from the shell until complete). It is **not** new mutation surface — every step drives an **existing** endpoint (`setSetting`, `setBillingConfig`, the reference/step-code/surcharge APIs, the customer/part paste importers). It presents the configuration in dependency order:
+
+1. *(recommended)* change the `admin` password
+2. **company identity** (name / address / phone)
+3. *(recommended)* starting document numbers — match the counters to the existing Visual-Shop paper sequences
+4. **chart of accounts** (GL accounts)
+5. step codes & surcharges
+6. billing / GL defaults (`BillingConfig`)
+7. the remaining reference tables (terms, carriers, containers, materials, …)
+8. customers & parts
+
+Progress is driven by a **new install-readiness rollup** that **reuses the `ReadinessGap {label, href}` shape** from `gl-mapping.ts` (a gap + a link to the fixing screen) but computes its **own** signals — it does not extend `readinessGaps`, whose logic is GL-export-period-scoped and shares nothing with install state. Most signals are **derived live** (company identity = the company fields non-blank; chart of accounts = GL accounts present and the `BillingConfig` A/R account set; customers/parts = row counts > 0). The only facts that cannot be derived — **"starting numbers confirmed"** (an unset counter is indistinguishable from a deliberate `1000`) and **"checklist dismissed"** — are the sole new persisted state (`SetupState`, §7).
+
+### 5.6 The order-entry gate (D7)
+
+Real order entry is **blocked until company identity AND a chart of accounts are configured.**
+
+- **Server-side (authoritative), single chokepoint:** `createOrder` is the only path that writes an `Order` (`order-drafts.ts` is scratch storage and creates no `Order`). The gate is evaluated as a **pre-transaction read** — alongside `createOrder`'s existing settings read, *before* the Serializable `saveNewOrder` transaction opens (matching the established pattern; putting the read inside Serializable would enlarge its predicate read-set and turn a concurrent config edit into an abort with no retry). It throws a clean `HttpError` with a link if it fails. TOCTOU between the read and the insert is benign — the gated facts are admin-only install config, and a one-order race either direction violates no invariant.
+- **UI:** the order-entry screen renders a blocking notice ("Finish setup before entering orders") linking to the checklist, instead of the form.
+
+**Predicate:** **company identity** = `company_name`, `company_address`, and `company_phone` all non-blank (all three are the letterhead fields whose `""` default is the true "unset" signal; this matches D7's recorded "name/address/phone" — the owner may relax to name+address at plan time, §12); **chart of accounts** = at least one live `GlAccount` exists **and** `BillingConfig.arGlAccountId` is set. Starting document numbers are **not** part of the gate (D7) — a strongly-worded recommended step only. The gate is a live predicate independent of the checklist's dismissed/ack state. The practice copy's seed satisfies it (§5.2).
+
+### 5.7 Password reminder (D6)
+
+The seeded `admin`/`admin` is surfaced as a **recommended, non-blocking** checklist item plus a dismissible reminder. Nothing is enforced (owner declined the forced change).
+
+## 6. Sub-phase 8C — Backup polish
+
+### 6.1 The app ↔ backup-container bridge
+
+Today's backup runs in a **separate `postgres` container** that never runs Next, never reads the `Setting` table, and shares no mount with the app — so the app cannot trigger a backup, list the folder, or know the last run. 8C's bridge:
+
+- **Shared backup folder — a deploy-time value, not a live setting.** The app container mounts the same host backup folder the backup container writes to, so the app can **list** archives and **write** on-demand ones. The folder is fixed at deploy (the compose bind-mount + an env both the container and the app read); it is **not** a runtime-editable `Setting` (the nightly container cannot honor a live change — a setting the writer ignores is a half-working feature). The Backups page **displays** the resolved folder; the only backup *setting* is `backup_stale_hours` (the app-side staleness threshold, which the app can honor — §7).
+- **On-demand backup, safely.** The app image gains `pg_dump`/`pg_restore`. **"Back up now"** runs `pg_dump` **spawned via argv, never a shell string**, into the shared folder, reusing the container script's **fail-loud temp-file-then-check** shape (an empty archive is never written — the Phase 1 review lesson). Archive names are **collision-proof** (a unique suffix beyond the second-resolution timestamp) or dumps **serialize under a lock**, so a manual click and the nightly run cannot clobber each other's temp/final files. The folder path is **validated** (absolute, confined to an allowed root, no shell metacharacters/`..`) even though it is deploy-set. Each written archive is **integrity-checked** (`gzip -t`).
+- **Status the app can read.** The nightly script writes a small **status file** (last-run timestamp + success/failure) into the shared folder; the app reads it for the staleness indicator. The automatic nightly job stays as the container (no scheduler in Next); the container image stays version-locked to the db image; retention stays the script's `-mtime` prune (a deploy value, not a live setting).
+
+### 6.2 The Backups admin page
+
+`src/app/admin/backups/` (gated by a **new `manage_backups` special action** — a *proposal* that widens spec §9's dangerous-action list, flagged for owner sign-off, §11), showing: the **list** of archives (name, timestamp, size, integrity status); the resolved **backup folder** (read-only); a **"Back up now"** button; and a prominent **"last successful backup: N ago"** indicator. **Absence is failure:** a **missing or unparseable status file reads as OVERDUE/red, never green** (the documented trap on this machine is Docker disabled at boot — the container never starts and writes no status, the exact silent failure this feature exists to surface); the threshold is measured from `now()` against `backup_stale_hours`, so a never-run backup is immediately red.
+
+### 6.3 Restore, and practice isolation (D5)
+
+Restore stays a **documented, deliberate terminal command** — no in-app restore button; 8C ships an expanded, tested restore runbook. The **Backups page and back-up-now are production-only**: the practice copy (same image) must **not** share the production backup folder or status file — its data is disposable (reset re-seeds it), so it has no backup responsibility, and a trainer's "Back up now" must never pollute production's archive list or staleness signal. Status/list are resolved **per database**, never from a folder shared between environments (enforced via the `practiceMode()` helper — the page is hidden and the route refused in practice mode).
+
+## 7. Data model (all three sub-phases)
+
+| Model | Change | Sub-phase |
+|---|---|---|
+| **Indexes** | **8A adds two required indexes** (the reconciliation-critical and range-sorted reads): **`Invoice.finalizedAt`** (Sales + scoreboard invoiced-$) and **`Payment.receivedDate`** (Payments received). `Order.receivedDate` and `Shipper.shipDate` indexes already exist. So 8A carries a migration, made via the §9 TTY-less two-DB workflow. No new tables/columns for the reports themselves — they are pure reads | 8A |
+| **`SetupState`** (new) | A **one-row singleton** (`id = 'singleton'` CHECK, the `BillingConfig` precedent), holding only the non-derivable checklist facts: `numbersConfirmedAt DateTime?`, `checklistDismissedAt DateTime?`, timestamps. Seeded by its migration; a plain `findFirst`, never a lazy create; re-seeded by `truncateAll` (tests) **and by the practice reset** (§5.3) like `BillingConfig`. All other readiness is derived live | 8B |
+| `AuditableModel` / `SNAPSHOT_INCLUDE` | **`SetupState` is added to the `AuditableModel` union AND gets a `SNAPSHOT_INCLUDE` entry of `undefined`** (no relations — the `billingConfig` precedent), audited via `auditedUpdate`. Both edits are required (the `Record` is exhaustive; a missing key fails `tsc`) — named here so the obligation isn't missed | 8B |
+| *(practice mode)* | **No schema change** — env + db-identity driven (`practiceMode()`), surfaced by the root layout; the demo seed writes ordinary rows | 8B |
+| `Settings` registry | **8B:** none. **8C:** add **`backup_stale_hours`** (typed int, validated) — the app-side staleness threshold. The backup **folder/schedule/retention are deploy config**, not settings (§6.1). `getSetting` stays typed to `SettingKey` | 8C |
+
+## 8. Permissions, audit, house rules
+
+- **`reports` area** (existing) goes live: every 8A route calls `mustCan(requireUser(), "reports", "view")`. A single `reports.view` grant is the gate. The `/reports` index is discovery; existing exports keep gating on their source area.
+- **`manage_backups`** — a **proposed new named special action** for the Backups page + back-up-now. It widens spec §9's "granted separately" list, so it is **flagged for owner sign-off at approval** (§11), not presented as already-ruled. Added to `SPECIAL_ACTIONS`, the roles UI, and the permission tests if approved.
+- **The setup checklist / order-gate** run under **admin** authority (GL-account entry is admin-only). The order-entry gate is not a permission — it is a readiness predicate on the order-create path, refusing everyone equally until setup is done.
+- **Reads never mutate** (spec §11) — every report/scoreboard service is a plain read: no `auditedCreate/Update`, no row claim, no Serializable. A report that took a claim would be a regression.
+- **Frozen paper** — the Sales report reads `Invoice`/`InvoiceLine` snapshot columns unconditionally, never live-joining the source part/step-code.
+- **Recognition basis** — the **Sales report** recognizes on **`finalizedAt`** (owner ruling 8), half-open at the range edge, and its ex-tax total ties to the GL export's revenue accounts. The **scoreboard's invoiced-$** recognizes on **`invoiceDate`** (owner ruling, 2026-08-14) — a deliberate Visual-Shop-eyeball basis that does not tie to the finalized-date close/GL. The two are intentionally different bases for their two different purposes, and each prints its basis; the books tie-out (finalizedAt) remains aging + QBO. A books report keyed on `invoiceDate` or on live `deletedAt`-vs-cutoff would silently disagree with the closed books — which is exactly why the Sales report (the books-aligned one) stays on `finalizedAt`.
+- **Soft-delete discipline** — every report `where` carries `deletedAt: null`; no `findUnique` on a soft-deletable model.
+- **Client/server boundary** — report pages are client components against guarded APIs; the practice flag is resolved server-side (`practiceMode()` / the root layout), never read in a client component; the render-time env read is centralized in the one helper, not scattered across `render.ts`.
+
+## 9. Migrations (the settled TTY-less shape, applied to BOTH databases)
+
+`prisma migrate dev` refuses without a TTY, so each migration is hand-written from `migrate diff --from-config-datasource --to-schema=... --script`, reviewed in full, applied to dev **and** `erp_test` via two `migrate deploy` calls, then `prisma generate`. Phase 8's migrations: **8A** — add the `Invoice.finalizedAt` and `Payment.receivedDate` indexes. **8B** — create `SetupState` (singleton CHECK + seeded row). **8C** — none (the `backup_stale_hours` setting lives in the typed registry, no table). The **`erp_practice`** database is provisioned by `db-init` at container init (the `erp_test` precedent); migrations `migrate deploy` into it on the practice app's start.
+
+## 10. Testing
+
+- **8A:** vitest per report — the aggregation math (pure core, `bucketAging`-style); the date-basis edges (finalizedAt half-open boundary; reversals netting into their own window; released rows counted in Shipped; REOPENED in Backlog; the turnaround completion-date derivation and the REOPENED-recompute; voided/soft-deleted exclusion; frozen-snapshot-not-live-join for Sales). The **reconciliation test** asserts the **Sales grand total (Σ non-tax lines − credits) equals the GL export's revenue accounts** for the month (the finalized-date books identity). The scoreboard's invoiced-$ uses `invoiceDate` (owner ruling) and is deliberately a Visual-Shop-eyeball figure, not a books tie-out, so no roll-forward identity is asserted on it — a test instead pins its definition (Σ `Invoice.total` for `FINALIZED` invoices by `invoiceDate`, credits netted). Export mirrors the on-screen filter.
+- **8B:** the readiness rollup and the order-entry gate (blocked when company identity or chart of accounts missing; unblocked when both set; the pre-transaction placement); the `SetupState` singleton + audit; the demo seed runs green through the services and yields a **gate-passing, singleton-complete** install; the practice reset **restores the singletons** and is **refused when `current_database()` is not `erp_practice`** (the safety guard, RED-verified); the practice watermark renders and **a reprint of a practice-seeded stored document carries it**; the production render path stays byte-golden-identical; the banner shows on the login and me-null screens.
+- **8C:** the fail-loud guard (never an empty archive); the integrity check; the staleness computation **including the missing-status-file = red case**; the argv-spawn / path-validation / collision-proof-naming of back-up-now; the `manage_backups` gate; the practice copy has no Backups page/route.
+- **E2E (Playwright):** run on **every** UI/flow-touching change (dev server + DEV db `erp`). New flows: open a report, filter, export; the scoreboard; the setup checklist blocking then unblocking order entry; the backups page + back-up-now.
+
+## 11. Docs to update on approval
+
+Per CLAUDE.md's "updating the docs is part of the work" rule, approval updates **spec §15, HANDOFF (§4/§6/§9), the roadmap Phase 8 row, AND CLAUDE.md** in the same breath (curated lines, no counts):
+
+- **CLAUDE.md** gains curated guidance for the new standing architecture: the **`practiceMode()` db-identity helper** as the single source of practice-vs-production (banner + watermark + reset guard), the **`render.ts` practice-watermark seam**, the **`SetupState` singleton**, and the **order-entry readiness gate** (pre-transaction, single chokepoint).
+- **Spec §15** — an "Amendments for Phase 8" block: the §7.8 report set fixed to Backlog/Shipped/Turnaround/Sales(ex-tax, finalized-date)/Payments received + the homed invoice register & aging (sales-by-operation and a quote report deferred); **statements remain the Phase 5 per-customer printed document, not cut from §7.8** (no report duplicate built); §13 scoreboard is our-numbers-only, shipped = lbs & pcs; §11 practice DB = separate copy, representative-slice, watermarked, db-identity-guarded reset; §10/§11/§12 backup gains the in-app Backups page (restore stays a command; in-app alerting only); the new setup checklist + order gate; **`manage_backups` (if the owner approves it)**.
+
+## 12. Open items — plan-time confirmations & the judgment calls surfaced to the owner
+
+**Owner judgment calls — RESOLVED at approval (2026-08-14):**
+1. **Scoreboard invoiced-$ basis** → **invoice date** (owner steer; §4.3/§8/§10 updated — the scoreboard is a VS eyeball, not a books tie-out).
+2. **Payments received** → **default taken: POSTED-batch only** (matches deposits/the close; the report prints its basis; a quick bookkeeper confirm before the live month is still worth it — the one item worth revisiting).
+3. **Turnaround convention** → **default taken: full-`SHIPPED` completion** (the date-source is pinned in §4.2).
+4. **Backlog** includes **`REOPENED`** → **default taken: yes** (open work not fully shipped).
+5. **Order-gate company fields** → **default taken: all three** (name + address + phone, per D7).
+6. **`manage_backups`** new named action → **default taken: approved** (added to §9's dangerous-action list; the `SPECIAL_ACTIONS` addition proceeds).
+
+**Plan-time (no owner decision needed):**
+7. **Invoice register under `/reports`** — relocate the page vs link to the existing invoicing list. Default: link.
+8. **Sales "revenue" line kinds** — the ex-tax measure sums **all non-`TAX`** lines = OPERATION + **SURCHARGE** + FREIGHT + CHARGE + CERT (surcharge carries real revenue with a blank `partNumber`); the by-part cut buckets every blank-`partNumber` kind (SURCHARGE included) under "(no part)". Pinned in §4.2 + plan Task 4.
+9. **Demo-slice contents** — the exact customers/parts/orders in the representative slice (a fixture-design task; the owner may want specific realistic examples).
+10. **Practice deploy** — the practice app's port and whether it ships in the default compose profile or a `practice` profile started deliberately.
+11. **Backup deploy values** — the fixed backup folder path, nightly cadence, and retention window (deploy config, §6.1), plus the `backup_stale_hours` default.

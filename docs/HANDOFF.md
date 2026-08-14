@@ -60,14 +60,26 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-### No phase in flight
+### Phase 8 (Reports & parallel-run) — design APPROVED 2026-08-14, 8A starting
+
+**Phase 8 (Reports & parallel-run tools) is the active work.** The owner picked it as the next track
+and **approved its design spec 2026-08-14** —
+`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md` (a five-lens adversarial
+review ran before approval; every substantive finding incorporated). It builds as **three
+sub-phases, each its own branch/review/merge** (the 5A/B/C pattern): **8A Reports + Scoreboard · 8B
+Practice DB + First-run wizard · 8C Backup polish.** The 8A build plan is being written now.
+Owner rulings D1–D7 and the approval steers are in the design spec §3/§12 — the one non-default
+steer: the **scoreboard's invoiced-$ uses `invoiceDate`** (VS eyeball); all other §12 defaults taken
+(Payments = POSTED-only, Turnaround = full-shipped completion, Backlog includes REOPENED, order gate
+= company name+address+phone + chart of accounts, `manage_backups` action approved). The main spec's
+§15 carries the amendment block. **Docker is disabled at boot on this machine — start it before any
+8A execution** (`systemctl start docker`, interactive; then `cd erp && docker compose up -d --wait db`
+and `npx prisma generate`).
 
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
 completing roadmap Phase 7.** Its full narrative is in
 `docs/history/2026-08-14-phase-7-template-designer.md`; the one-paragraph entry is below under
-"Merged, in build order". **No phase is in flight — §9 is the open next-track decision (owner's
-choice).** Roadmap Phase 8 (Reports & parallel-run tools) is the only remaining build phase;
-parallel-run/acceptance-month prep and the A/R + follow-up backlog are the standing alternatives.
+"Merged, in build order".
 
 **Phase 5 (Invoicing & A/R + QBO)** completed with the Phase 5C merge (`c069b09`, PR #92,
 2026-08-10) — full record `docs/history/2026-08-10-phase-5c-close-qbo-export.md`. Its completion
@@ -547,9 +559,11 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**No phase is in flight (Phase 7 merged `56c9722`, PR #104, 2026-08-14). The next track is the
-owner's choice — a fresh session should read CLAUDE.md and this file's §4 + §6, then ask the owner
-to pick; do not pick for them.** The candidates, none blocking any other:
+**Phase 8 (Reports & parallel-run tools) is the active track — design APPROVED 2026-08-14** (spec
+`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`), building as three
+sub-phases 8A/8B/8C; see §4. A fresh session should read CLAUDE.md, §4, and the Phase 8 design spec,
+then continue the 8A plan/execution (start Docker first — §4). The original next-track candidates
+(now decided in favour of Phase 8), kept for context:
 
 1. **Roadmap Phase 8 — Reports & parallel-run tools** (report set, comparison scoreboard, practice
    database, first-run wizard, backup polish) — the last remaining build phase; spec §13's
