@@ -25,3 +25,7 @@ Four unit gates + full E2E **detached, per-task sentinel `e2e-task18.done`**, `b
 ## Report
 
 `docs/execution/2026-08-12-phase-7-template-designer/task-18-report.md`: the conflict-UX design (reload-vs-overwrite, the §5.13 ordering), the same-ms ABA decision + justification, RED evidence (esp. the conflict-flow), all five gates watched, deviations, notes for Task 19 (preview — the side-effect-free render POST + the per-type pickers). Final message: 5-line summary + report path. Update your ledger row.
+
+## Two folded-in minors from Task 17's review (do while you're in the editor)
+- **Early-disable Save on an over-budget/invalid working config** — the width-budget check already runs client-side (`tableBudgets` in `template-editor.ts`); disable Save (with a tooltip) when the working config would fail `validateConfig`, sparing the server round-trip. Keep the server as the backstop.
+- **Clamp the logo-width input to its `max` (564)** in `LogoPanel.tsx`'s `onChange` (today a typed over-max value relies on the server refusal). Minor; do it if you touch that panel.
