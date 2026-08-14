@@ -10,6 +10,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { SurchargeOverridesSection } from "./SurchargeOverridesSection";
+import { TemplateAssignmentsSection } from "./TemplateAssignmentsSection";
 import { ReceivablesSection } from "./ReceivablesSection";
 
 type Customer = {
@@ -630,6 +631,8 @@ function CustomerDetail({ id }: { id: string }) {
       </section>
 
       <SurchargeOverridesSection customerId={id} perms={perms} onError={setError} onOptionsError={addOptionsError} />
+
+      <TemplateAssignmentsSection customerId={id} perms={perms} onError={setError} onOptionsError={addOptionsError} />
 
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">Standing notes</h2>
