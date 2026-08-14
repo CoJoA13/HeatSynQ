@@ -37,7 +37,7 @@ async function sheetOf(res: Response): Promise<ExcelJS.Worksheet> {
 function line(over: Partial<OpenLine> = {}): OpenLine {
   seq += 1;
   return {
-    orderId: `ord-${seq}`, orderNumber: 1000 + seq,
+    orderId: `ord-${seq}`, orderLineId: `ol-${seq}`, orderNumber: 1000 + seq,
     customerId: "c1", customerCode: "C1", customerName: "Customer One",
     partId: "p1", partNumber: "PN-1", partName: "Widget",
     qty: 10, weight: 25, receivedDate: "2026-08-01", ...over,
@@ -191,6 +191,46 @@ describe("reportBacklog — population", () => {
     const rows = (await reportBacklog({})).rows as BacklogDetailRow[];
     expect(rows).toHaveLength(1);
     expect(rows[0].daysOpen).toBe(12);
+  });
+});
+
+describe("reportBacklog — reports ORDERED amounts, not the un-shipped remainder", () => {
+  it("a partially-shipped order still shows its ORDERED qty/weight (a ShipperLine does not net it down)", async () => {
+    const cust = await makeCustomer();
+    const part = await makePart(cust.id);
+    // An order line ordered at qty 10 / weight 25.00, its order already PARTIAL_SHIPPED…
+    const order = await makeOrder({
+      customerId: cust.id, status: "PARTIAL_SHIPPED",
+      lines: [{ partId: part.id, qty: 10, weight: 25 }],
+    });
+    const orderLine = await prisma.orderLine.findFirstOrThrow({ where: { orderId: order.id } });
+
+    // …with 4 of the 10 already shipped on a live shipper. Remaining-to-ship would be 6 / 15.00 —
+    // the Backlog report must NOT show that; it reports the ORDERED amount (spec §4.2, pinned in
+    // backlog.ts: computing a remainder would pull in the ship-ledger, a different measure).
+    seq += 1;
+    await prisma.shipper.create({
+      data: {
+        shipperNumber: 500000 + seq, customerId: cust.id, shipDate: parseDateOnly("2026-08-05"),
+        orders: {
+          create: {
+            orderId: order.id, sequence: seq, position: 1,
+            lines: {
+              create: [{
+                orderLineId: orderLine.id, position: 1, qty: 4, weight: "10.00",
+                partNumber: part.partNumber, partName: "",
+                orderedQty: 10, orderedWeight: "25.00",
+              }],
+            },
+          },
+        },
+      },
+    });
+
+    const rows = (await reportBacklog({})).rows as BacklogDetailRow[];
+    const row = rows.find((r) => r.orderNumber === order.orderNumber)!;
+    expect(row.qty).toBe(10); // ORDERED, not the 6 un-shipped remainder
+    expect(row.weight).toBe(25); // ORDERED, not the 15.00 un-shipped remainder
   });
 });
 
