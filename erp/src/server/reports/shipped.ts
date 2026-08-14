@@ -39,6 +39,7 @@ const GROUP_BYS: readonly ShippedGroupBy[] = ["none", "customer", "part", "month
  *  snapshot as fallback (the wrapper does that); the core never re-joins. */
 export type ShippedLine = {
   shipperId: string;
+  shipperLineId: string;
   shipperNumber: number;
   shipDate: string; // yyyy-mm-dd
   customerId: string;
@@ -53,6 +54,7 @@ export type ShippedLine = {
 /** One detail row — a single shipper line, identity + amounts. */
 export type ShippedDetailRow = {
   shipperId: string;
+  shipperLineId: string;
   shipperNumber: number;
   shipDate: string;
   customerCode: string;
@@ -106,7 +108,7 @@ export function buildShipped(lines: ShippedLine[], opts: { groupBy: ShippedGroup
   if (opts.groupBy === "none") {
     const rows: ShippedDetailRow[] = lines
       .map((l) => ({
-        shipperId: l.shipperId, shipperNumber: l.shipperNumber, shipDate: l.shipDate,
+        shipperId: l.shipperId, shipperLineId: l.shipperLineId, shipperNumber: l.shipperNumber, shipDate: l.shipDate,
         customerCode: l.customerCode, customerName: l.customerName,
         partNumber: l.partNumber, partName: l.partName,
         qty: l.qty, weight: l.weight,
@@ -207,8 +209,17 @@ export async function reportShipped(filter: ShippedFilter = {}): Promise<Shipped
       },
       ...(filter.partId ? { orderLine: { partId: filter.partId } } : {}),
     },
+    // Deterministic order so within-group detail rows are stable across runs: shipDate then shipper
+    // number mirror the pure-core primary sort, and the row `id` is the guaranteed-unique final
+    // tiebreak. The pure-core sort is stable (ES2019+), so it preserves this order for rows tied
+    // under its own comparator (same shipper + same part number — two lines on the SAME part).
+    orderBy: [
+      { shipperOrder: { shipper: { shipDate: "asc" } } },
+      { shipperOrder: { shipper: { shipperNumber: "asc" } } },
+      { id: "asc" },
+    ],
     select: {
-      qty: true, weight: true,
+      id: true, qty: true, weight: true,
       partNumber: true, partName: true, // snapshot fallback (released rows)
       orderLine: { select: { part: { select: { partNumber: true, name: true } } } }, // live-join-first
       shipperOrder: {
@@ -231,6 +242,7 @@ export async function reportShipped(filter: ShippedFilter = {}): Promise<Shipped
     // deliberately-blank live name stays blank rather than borrowing the snapshot.
     return {
       shipperId: shipper.id,
+      shipperLineId: r.id,
       shipperNumber: shipper.shipperNumber,
       shipDate: formatDateOnly(shipper.shipDate),
       customerId: shipper.customerId,

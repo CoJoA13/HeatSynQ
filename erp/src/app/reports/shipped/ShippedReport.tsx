@@ -16,7 +16,7 @@ import { useLatest } from "@/lib/use-latest";
 // node:async_hooks and Prisma into the browser bundle).
 type GroupBy = "none" | "customer" | "part" | "month" | "day";
 type DetailRow = {
-  shipperId: string; shipperNumber: number; shipDate: string;
+  shipperId: string; shipperLineId: string; shipperNumber: number; shipDate: string;
   customerCode: string; customerName: string;
   partNumber: string; partName: string; qty: number; weight: number;
 };
@@ -209,7 +209,7 @@ export function ShippedReport() {
           </thead>
           <tbody>
             {result.groupBy === "none" && result.rows.map((r) => (
-              <tr key={`${r.shipperId}-${r.partNumber}`} className="border-t">
+              <tr key={r.shipperLineId} className="border-t">
                 <td className="p-2">{r.shipperNumber}</td>
                 <td className="p-2">{r.shipDate}</td>
                 <td className="p-2">{r.customerCode} · {r.customerName}</td>

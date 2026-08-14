@@ -36,6 +36,7 @@ const GROUP_BYS: readonly BacklogGroupBy[] = ["none", "customer", "part", "month
  *  today − receivedDate in whole days. */
 export type BacklogDetailRow = {
   orderId: string;
+  orderLineId: string;
   orderNumber: number;
   customerCode: string;
   customerName: string;
@@ -67,6 +68,7 @@ export type BacklogResult =
  *  Prisma, no Decimal — the wrapper below maps the DB rows into this. */
 export type OpenLine = {
   orderId: string;
+  orderLineId: string;
   orderNumber: number;
   customerId: string;
   customerCode: string;
@@ -104,7 +106,7 @@ export function buildBacklog(lines: OpenLine[], opts: { today: string; groupBy: 
   if (opts.groupBy === "none") {
     const rows: BacklogDetailRow[] = lines
       .map((l) => ({
-        orderId: l.orderId, orderNumber: l.orderNumber,
+        orderId: l.orderId, orderLineId: l.orderLineId, orderNumber: l.orderNumber,
         customerCode: l.customerCode, customerName: l.customerName,
         partNumber: l.partNumber, partName: l.partName,
         qty: l.qty, weight: l.weight, receivedDate: l.receivedDate,
@@ -197,8 +199,13 @@ export async function reportBacklog(filter: BacklogFilter = {}): Promise<Backlog
       },
       ...(filter.partId ? { partId: filter.partId } : {}),
     },
+    // Deterministic order so within-group detail rows are stable across runs: orderNumber is unique
+    // and [orderId, position] is unique, so the pair totally orders the rows. The pure-core sort is
+    // stable (ES2019+), so it preserves this order for rows tied under its own comparator (same
+    // order + same part number — two lines on the SAME part).
+    orderBy: [{ order: { orderNumber: "asc" } }, { position: "asc" }],
     select: {
-      qty: true, weight: true, partId: true,
+      id: true, qty: true, weight: true, partId: true,
       part: { select: { partNumber: true, name: true } },
       order: {
         select: {
@@ -212,6 +219,7 @@ export async function reportBacklog(filter: BacklogFilter = {}): Promise<Backlog
   const today = formatDateOnly(todayDateOnly());
   const lines: OpenLine[] = lineRows.map((l) => ({
     orderId: l.order.id,
+    orderLineId: l.id,
     orderNumber: l.order.orderNumber,
     customerId: l.order.customerId,
     customerCode: l.order.customer.code,

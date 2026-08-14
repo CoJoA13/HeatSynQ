@@ -37,7 +37,7 @@ function getReq(url: string, cookie?: string): Request {
 function line(over: Partial<ShippedLine> = {}): ShippedLine {
   seq += 1;
   return {
-    shipperId: `s-${seq}`, shipperNumber: 8000 + seq, shipDate: "2026-08-01",
+    shipperId: `s-${seq}`, shipperLineId: `sl-${seq}`, shipperNumber: 8000 + seq, shipDate: "2026-08-01",
     customerId: "c1", customerCode: "C1", customerName: "Customer One",
     partNumber: "PN-1", partName: "Widget",
     qty: 10, weight: 25, ...over,

@@ -17,7 +17,7 @@ import { useLatest } from "@/lib/use-latest";
 // node:async_hooks and Prisma into the browser bundle).
 type GroupBy = "none" | "customer" | "part" | "month";
 type DetailRow = {
-  orderId: string; orderNumber: number;
+  orderId: string; orderLineId: string; orderNumber: number;
   customerCode: string; customerName: string;
   partNumber: string; partName: string;
   qty: number; weight: number; receivedDate: string; daysOpen: number;
@@ -212,7 +212,7 @@ export function BacklogReport() {
           </thead>
           <tbody>
             {result.groupBy === "none" && result.rows.map((r) => (
-              <tr key={`${r.orderId}-${r.partNumber}`} className="border-t">
+              <tr key={r.orderLineId} className="border-t">
                 <td className="p-2">{r.orderNumber}</td>
                 <td className="p-2">{r.customerCode} · {r.customerName}</td>
                 <td className="p-2">{r.partNumber}{r.partName ? ` · ${r.partName}` : ""}</td>
