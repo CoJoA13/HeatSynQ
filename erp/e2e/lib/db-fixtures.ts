@@ -427,9 +427,14 @@ async function deleteTemplatesAndSteps(templateIds: string[]): Promise<void> {
  * the template row goes, matching this file's children-before-parents discipline everywhere else.
  * Both entities are audited by templates.ts (documentTemplate + documentTemplateVersion), so both
  * audit-row sets are swept. `StoredDocument.templateVersionId` is `ON DELETE SET NULL` (the flow
- * prints nothing anyway), and the flow creates NO `CustomerTemplateAssignment` — the one RESTRICT FK
- * into DocumentTemplate — so nothing blocks. Idempotent and independent (no fixture-customer scope),
- * so it is called unconditionally, outside reapLeftovers' `total === 0` gate.
+ * prints nothing anyway). Task 20: the flow now assigns this template to a customer through the
+ * customer-page picker (and clears it again) — a `CustomerTemplateAssignment`, which is a RESTRICT
+ * FK into DocumentTemplate AND into Customer, so it would block BOTH this reap and
+ * deletePartsAndCustomers. It is swept FIRST here (children-before-parents), scoped by the fixture
+ * template ids and INCLUDING soft-deleted rows (clear only sets `deletedAt`; the row and its FK
+ * remain) — so a run that assigned-then-cleared, or crashed mid-assign, both come out clean.
+ * Idempotent and independent (no fixture-customer scope), so it is called unconditionally, outside
+ * reapLeftovers' `total === 0` gate — and before deletePartsAndCustomers in both callers.
  */
 async function deleteDocumentTemplatesByName(): Promise<void> {
   const templates = await prisma.documentTemplate.findMany({
@@ -437,6 +442,14 @@ async function deleteDocumentTemplatesByName(): Promise<void> {
   });
   const ids = templates.map((t) => t.id);
   if (ids.length === 0) return;
+  const assignments = await prisma.customerTemplateAssignment.findMany({
+    where: { templateId: { in: ids } }, select: { id: true },
+  });
+  const assignmentIds = assignments.map((a) => a.id);
+  if (assignmentIds.length > 0) {
+    await prisma.auditLog.deleteMany({ where: { entity: "customerTemplateAssignment", entityId: { in: assignmentIds } } });
+    await prisma.customerTemplateAssignment.deleteMany({ where: { id: { in: assignmentIds } } });
+  }
   const versions = await prisma.documentTemplateVersion.findMany({
     where: { templateId: { in: ids } }, select: { id: true },
   });

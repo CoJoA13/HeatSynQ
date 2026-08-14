@@ -233,6 +233,35 @@ export async function run(page, shot, ctx) {
   await page.getByTitle("Template preview").waitFor({ state: "visible" });
   await shot("editor-preview-reflects-edit");
 
+  // --- Task 20: the customer-page template-assignment picker (§5.2, §5.15, §5.16) ---
+  // Still as admin. Assign the just-published "E2E Doc Template" (a Traveler template) to a real
+  // customer through the picker, watch the resolved state reflect it, then clear back to the type's
+  // default. page.request shares the browser cookies, so it reads /api/customers as this admin.
+  const customers = await (await page.request.get(`${ctx.baseURL}/api/customers`)).json();
+  assert.ok(Array.isArray(customers) && customers.length > 0, "at least one customer exists to assign a template to");
+  await page.goto(`${ctx.baseURL}/customers/${customers[0].id}`);
+
+  // The picker is its own section; its two reads (the requireUser-only names + the customers.view
+  // resolved state) are async and compiled by `next dev` on first hit, so wait for the Traveler
+  // select to render rather than the loading line.
+  const travelerPicker = page.getByRole("combobox", { name: "Template for Traveler" });
+  await travelerPicker.waitFor({ state: "visible" });
+  // No customer carries a TRAVELER assignment before this flow, so the select starts on the
+  // use-default/inherit option (§5.15 shows the resolved state beside it, never blank).
+  assert.equal(await travelerPicker.inputValue(), "", "the Traveler picker starts on use-default/inherit");
+
+  // Assign the published template — the PUT lands and the resolved state reloads to show it OWNED.
+  await travelerPicker.selectOption({ label: DOC_TEMPLATE_NAME });
+  await page.getByText(`Assigned: ${DOC_TEMPLATE_NAME}`).waitFor({ state: "visible" });
+  assert.notEqual(await travelerPicker.inputValue(), "", "the picker now holds the assigned template id");
+  await shot("customer-template-assigned");
+
+  // Clear back to the default — the DELETE lands and future paper falls back down the §5.2 chain.
+  await travelerPicker.selectOption({ label: "Use default / inherit" });
+  await page.getByText(`Assigned: ${DOC_TEMPLATE_NAME}`).waitFor({ state: "hidden" });
+  assert.equal(await travelerPicker.inputValue(), "", "the picker is back on use-default/inherit");
+  await shot("customer-template-cleared-to-default");
+
   // --- Re-logged-in as the restricted VIEW-ONLY user (templates.view, NOT admin.view) ---
   await login(page, ctx.baseURL, fixtures.restrictedUsername, fixtures.restrictedPassword);
 
