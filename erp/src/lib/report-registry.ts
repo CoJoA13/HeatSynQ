@@ -21,7 +21,10 @@ export type ReportEntry = {
 };
 
 // Tasks 1–6 register their report here. Each report task also builds src/app/reports/<name>/ and
-// src/app/api/reports/<name>/ (the five-part shape in src/server/reports/README.md), e.g.:
-//   { key: "backlog", label: "Backlog", href: "/reports/backlog", area: "reports",
-//     description: "Open orders not yet fully shipped." },
-export const REPORTS: ReportEntry[] = [];
+// src/app/api/reports/<name>/ (the five-part shape in src/server/reports/README.md).
+export const REPORTS: ReportEntry[] = [
+  {
+    key: "backlog", label: "Backlog", href: "/reports/backlog", area: "reports",
+    description: "Open orders not yet fully shipped.",
+  },
+];
