@@ -60,13 +60,23 @@ export default function TemplatesPage() {
   const loadDetail = useCallback(async (id: string) => {
     setDetail(await api<Detail>(`/api/templates/${id}`));
   }, []);
+  // §5.13 stale-gate (the QuoteDetail precedent): selecting A then B before A's detail lands must
+  // not let A's response overwrite B — every lifecycle/rename/delete handler acts on `detail.id`,
+  // so a stale adopt would aim publish/rename/DELETE at the wrong template. Only the latest
+  // selection's response is adopted; an abandoned effect instance's response and error are ignored,
+  // and success never clears the error banner (§5.13 — a reload must not erase a live failure). The
+  // post-mutation refresh path keeps using `loadDetail` (it always targets the open detail's id).
   useEffect(() => {
     setBlocked(null);
     setRenaming("");
     if (selected === null) { setDetail(null); return; }
     setDetail(null);
-    loadDetail(selected).catch((e) => setError((e as Error).message));
-  }, [selected, loadDetail]);
+    let stale = false;
+    api<Detail>(`/api/templates/${selected}`)
+      .then((d) => { if (!stale) setDetail(d); })
+      .catch((e) => { if (!stale) setError((e as Error).message); });
+    return () => { stale = true; };
+  }, [selected]);
 
   // Every mutation reloads BOTH the list (badges/counts) and the open detail (lifecycle state),
   // then reports on failure — rolling back to server truth first is unnecessary here because
