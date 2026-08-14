@@ -95,6 +95,14 @@ const FLOWS = [
   // runs last for the usual nothing-after-needs-its-state reason and is safe after the CLOSED
   // month close-month-end leaves behind (it touches no invoicing/period state).
   { name: "templates-admin", as: "admin", module: "./flows/templates-admin.mjs" },
+  // Task 8 (Phase 8A) adds the 21st and now-last flow, `reports`, as admin — the read-only proof of
+  // the reports platform: reach /reports via the nav, confirm the catalog (six native reports + the
+  // two homed cross-area entries), open the Backlog report and filter + Excel-export it (the export
+  // path shared by every report), then drive the Comparison scoreboard's figures and its This-week /
+  // This-month presets. It creates NOTHING — no order/invoice/fixture, no seeded/shared mutation — so
+  // it needs no db-fixtures reap entry and runs last for the usual nothing-after-needs-its-state
+  // reason; being purely a read, it is safe after whatever period/close state the tail leaves behind.
+  { name: "reports", as: "admin", module: "./flows/reports.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
