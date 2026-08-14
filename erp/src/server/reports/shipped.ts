@@ -7,7 +7,7 @@ import { parseDateOnly, formatDateOnly } from "../../lib/business-days";
 // Phase 8A Task 2 (spec §4.2): the Shipped report — actual shipped volume by period. `buildShipped`
 // is the PURE core (the `bucketAging`/`buildBacklog` shape — no Prisma, no I/O), and `reportShipped`
 // is the thin Prisma-reading wrapper. A report is a pure READ: no row claim, no audit, no
-// Serializable (spec §11, reports/README.md).
+// Serializable (main spec §12, reports/README.md).
 //
 // The measure, pinned (this one has two traps — do NOT let it drift back to `shippedTotals`):
 //   • A NEW shipDate-WINDOWED aggregation. We join ShipperLine → ShipperOrder → Shipper and bucket

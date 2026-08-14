@@ -7,7 +7,7 @@ import { parseDateOnly, formatDateOnly } from "../../lib/business-days";
 // Phase 8A Task 5 (spec §4.2): the Payments-received report — cash received by period, sliceable
 // by customer / month (of receivedDate) / payment type. `buildPayments` is the PURE core (the
 // `buildSales`/`bucketAging` shape — no Prisma, no I/O), `reportPayments` the thin Prisma-reading
-// wrapper. A report is a pure READ: no row claim, no audit, no Serializable (spec §11,
+// wrapper. A report is a pure READ: no row claim, no audit, no Serializable (main spec §12,
 // reports/README.md).
 //
 // The measure, pinned (do not guess it back into ambiguity):

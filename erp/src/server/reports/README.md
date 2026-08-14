@@ -3,7 +3,7 @@
 8A is a **reporting platform**, not five bespoke pages. Every report is the same five parts,
 cloned from the canonical live example, **A/R aging** (`src/server/aging.ts` +
 `src/app/api/receivables/aging/*` + `src/app/receivables/aging/*`). A report is a **pure read**:
-no row claim, no audit, no Serializable (spec §11). Money stays in integer cents inside the core
+no row claim, no audit, no Serializable (main spec §12). Money stays in integer cents inside the core
 and is humanized (dates via `formatDateOnly`, enums to labels) before the rows leave the service.
 Every `where` carries `deletedAt: null` and excludes voided/discarded rows — the safe default.
 (The `includeVoided` toggle is intentionally **deferred** for 8A: default-exclude only, no param, no

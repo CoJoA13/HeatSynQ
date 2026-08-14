@@ -10,7 +10,7 @@ import type { InvoiceKindValue, InvoiceLineKindValue } from "../../lib/invoice-c
 // net of credits, sliceable by customer / part / finalized-month and reconciling to the GL
 // export's revenue accounts. `buildSales` is the PURE core (the `bucketAging`/`buildShipped`
 // shape — no Prisma, no I/O), `reportSales` the thin Prisma-reading wrapper. A report is a pure
-// READ: no row claim, no audit, no Serializable (spec §11, reports/README.md).
+// READ: no row claim, no audit, no Serializable (main spec §12, reports/README.md).
 //
 // The measure, pinned (this is "the careful one" — two things MUST be exactly right):
 //   • Recognition — `Invoice.status = FINALIZED`, `deletedAt: null`, recognized by `finalizedAt`

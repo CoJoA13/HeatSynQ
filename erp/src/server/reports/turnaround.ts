@@ -6,7 +6,7 @@ import { parseDateOnly, formatDateOnly } from "../../lib/business-days";
 // Phase 8A Task 3 (spec §4.2 / §12): the Turnaround report — average order-to-ship days.
 // `buildTurnaround` is the PURE core (the `bucketAging`/`buildBacklog`/`buildShipped` shape — no
 // Prisma, no I/O), and `reportTurnaround` is the thin Prisma-reading wrapper. A report is a pure
-// READ: no row claim, no audit, no Serializable (spec §11, reports/README.md).
+// READ: no row claim, no audit, no Serializable (main spec §12, reports/README.md).
 //
 // The measure, pinned (the hard part — the completion date is DERIVED; there is NO stored
 // order-completion timestamp; do NOT reconstruct it from the audit log):

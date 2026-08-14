@@ -7,7 +7,7 @@ import { parseDateOnly, formatDateOnly, todayDateOnly } from "../../lib/business
 // Phase 8A Task 1 (spec §4.2): the Backlog report — open order lines of orders not yet fully
 // shipped. `buildBacklog` is the PURE core (the `bucketAging` shape — no Prisma, no I/O), and
 // `reportBacklog` is the thin Prisma-reading wrapper. A report is a pure READ: no row claim, no
-// audit, no Serializable (spec §11, reports/README.md).
+// audit, no Serializable (main spec §12, reports/README.md).
 //
 // The measure, pinned (do not guess it back into ambiguity):
 //   • Population — order lines of orders whose status ∈ {OPEN, PARTIAL_SHIPPED, REOPENED} and

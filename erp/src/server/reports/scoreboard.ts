@@ -9,7 +9,7 @@ import { reportShipped, type ShippedResult } from "./shipped";
 // Phase 8A Task 7 (spec §4.3): the Comparison scoreboard — the weekly parallel-run eyeball page.
 // THREE HeatSynQ figures for ONE {from,to} window, to eyeball against Visual Shop's own reports.
 // This is a VS eyeball, NOT a books tie-out — hence the deliberate basis choices below. A report is
-// a pure READ: no row claim, no audit, no Serializable (spec §11, reports/README.md).
+// a pure READ: no row claim, no audit, no Serializable (main spec §12, reports/README.md).
 //
 // The three figures, each pinned:
 //   • Orders entered — COUNT of orders by `Order.receivedDate` in the window, voided excluded
