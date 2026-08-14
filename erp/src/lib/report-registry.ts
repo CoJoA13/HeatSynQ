@@ -39,4 +39,8 @@ export const REPORTS: ReportEntry[] = [
     key: "sales", label: "Sales", href: "/reports/sales", area: "reports",
     description: "Invoiced revenue (ex-tax), by customer/part/month.",
   },
+  {
+    key: "payments", label: "Payments received", href: "/reports/payments", area: "reports",
+    description: "Cash received (posted), by customer/month/payment type.",
+  },
 ];
