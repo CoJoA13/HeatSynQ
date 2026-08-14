@@ -30,6 +30,7 @@ import {
   FontsPanel, FormatsPanel, PageFooterPanel, SectionsPanel, TextBlocksPanel, WidthsPanel,
 } from "./panels";
 import { LogoPanel } from "./LogoPanel";
+import { PreviewPane } from "./PreviewPane";
 
 // Local mirror of the server read type (a "use client" file must not import src/server/**; the
 // templates-admin page precedent). Dates arrive as ISO strings over JSON.
@@ -236,6 +237,7 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
         <PageFooterPanel {...panelProps} />
         <LogoPanel templateId={templateId} logoMimeType={logoMimeType} config={config} apply={apply}
                    disabled={canEdit.disabled} editTitle={canEdit.title} onLogoChanged={refreshDraftMeta} />
+        <PreviewPane templateId={templateId} docType={detail.docType} config={config} />
       </div>
     </div>
   );

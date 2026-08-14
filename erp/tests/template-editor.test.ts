@@ -8,6 +8,7 @@ import {
   lockIndex,
   moveField,
   moveSection,
+  previewRecordSpec,
   resolveSaveError,
   setFieldLabel,
   setFieldWidth,
@@ -27,6 +28,7 @@ import {
   CERT_DEFAULT_CONFIG,
   INVOICE_CONTRACT,
   INVOICE_DEFAULT_CONFIG,
+  TEMPLATE_DOC_TYPES,
   TRAVELER_CONTRACT,
   TRAVELER_DEFAULT_CONFIG,
   TemplateConfigError,
@@ -327,5 +329,37 @@ describe("widthBudgetError — early-disable Save on an over-budget config (Task
     expect(reason).toContain("lines");
     // Client early-disable and server backstop agree on the same config (spec §5.6 defense-in-depth).
     expect(() => validateConfig("TRAVELER", bad)).toThrow(TemplateConfigError);
+  });
+});
+
+describe("previewRecordSpec — the picker's docType → record-type mapping (Task 19)", () => {
+  it("covers every docType with a list endpoint and a list permission", () => {
+    for (const docType of TEMPLATE_DOC_TYPES) {
+      const spec = previewRecordSpec(docType);
+      expect(spec.listPath).toMatch(/^\/api\//);
+      expect(spec.listPermission).toMatch(/\.view$/);
+      expect(spec.noun.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("maps each type to the right record and list route", () => {
+    expect(previewRecordSpec("TRAVELER")).toMatchObject({ kind: "order", listPath: "/api/orders", listPermission: "orders.view" });
+    expect(previewRecordSpec("BOL")).toMatchObject({ kind: "shipment", listPath: "/api/shippers", listPermission: "shipping.view" });
+    expect(previewRecordSpec("CERT")).toMatchObject({ kind: "cert", listPath: "/api/certs", listPermission: "certs.view" });
+    expect(previewRecordSpec("INVOICE")).toMatchObject({ kind: "invoice", listPath: "/api/invoices", listPermission: "invoicing.view" });
+    expect(previewRecordSpec("QUOTE")).toMatchObject({ kind: "quote", listPath: "/api/quotes", listPermission: "quotes.view" });
+  });
+
+  it("splits shipments by order count — SHIPPER single, MOS_SHIPPER multi — both on /api/shippers", () => {
+    const single = previewRecordSpec("SHIPPER");
+    const multi = previewRecordSpec("MOS_SHIPPER");
+    expect(single).toMatchObject({ kind: "shipment-single", orderCount: "single", listPermission: "shipping.view" });
+    expect(multi).toMatchObject({ kind: "shipment-multi", orderCount: "multi", listPermission: "shipping.view" });
+  });
+
+  it("statement's record is a CUSTOMER, listed via /api/customers (customers.view) — distinct from the preview's receivables gate", () => {
+    expect(previewRecordSpec("STATEMENT")).toMatchObject({
+      kind: "customer", listPath: "/api/customers", listPermission: "customers.view",
+    });
   });
 });

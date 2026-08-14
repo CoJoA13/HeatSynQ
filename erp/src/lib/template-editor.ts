@@ -29,6 +29,7 @@ import {
   type SectionConfig,
   type TemplateConfig,
   type TemplateContract,
+  type TemplateDocTypeString,
 } from "./template-contracts/types";
 import { swapAt } from "./reorder";
 
@@ -306,4 +307,51 @@ export type SaveErrorResolution =
 export function resolveSaveError(status: number | null, serverMessage: string): SaveErrorResolution {
   if (status === 409) return { action: "reload-then-conflict", message: STALE_DRAFT_MESSAGE };
   return { action: "error", message: serverMessage };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Preview record picker (Task 19, spec §5.5) — docType → which real record the live preview
+// renders against, and how the pane fetches the choices. Pure and client-safe so the picker's
+// mapping is unit-tested here and the pane stays a thin wrapper.
+// ---------------------------------------------------------------------------------------------
+
+export type PreviewRecordKind =
+  | "order" | "shipment-single" | "shipment-multi" | "shipment" | "cert" | "invoice" | "customer" | "quote";
+
+export type PreviewRecordSpec = {
+  kind: PreviewRecordKind;
+  /** GET endpoint returning the array of pickable records. */
+  listPath: string;
+  /** The permission the picker's LIST fetch needs — the record's own list-route gate, so the
+   *  picker only offers records the user can view (§5.16, no silent-empty dropdown). For STATEMENT
+   *  this is `customers.view` (the record IS a customer, listed via `/api/customers` — the
+   *  Statements screen precedent), which is DISTINCT from the preview POST's own `receivables.view`
+   *  gate: a user can list customers yet still be refused the statement preview, surfaced in the pane. */
+  listPermission: string;
+  /** Shipment kinds only: which shipments to offer (SHIPPER = single-order, MOS_SHIPPER = multi;
+   *  BOL = any). Absent for non-shipment kinds. */
+  orderCount?: "single" | "multi";
+  /** A short human noun for the picker's empty/placeholder copy. */
+  noun: string;
+};
+
+export function previewRecordSpec(docType: TemplateDocTypeString): PreviewRecordSpec {
+  switch (docType) {
+    case "TRAVELER":
+      return { kind: "order", listPath: "/api/orders", listPermission: "orders.view", noun: "order" };
+    case "SHIPPER":
+      return { kind: "shipment-single", listPath: "/api/shippers", listPermission: "shipping.view", orderCount: "single", noun: "single-order shipment" };
+    case "MOS_SHIPPER":
+      return { kind: "shipment-multi", listPath: "/api/shippers", listPermission: "shipping.view", orderCount: "multi", noun: "multi-order shipment" };
+    case "BOL":
+      return { kind: "shipment", listPath: "/api/shippers", listPermission: "shipping.view", noun: "shipment" };
+    case "CERT":
+      return { kind: "cert", listPath: "/api/certs", listPermission: "certs.view", noun: "certification" };
+    case "INVOICE":
+      return { kind: "invoice", listPath: "/api/invoices", listPermission: "invoicing.view", noun: "invoice or credit" };
+    case "STATEMENT":
+      return { kind: "customer", listPath: "/api/customers", listPermission: "customers.view", noun: "customer" };
+    case "QUOTE":
+      return { kind: "quote", listPath: "/api/quotes", listPermission: "quotes.view", noun: "quote" };
+  }
 }
