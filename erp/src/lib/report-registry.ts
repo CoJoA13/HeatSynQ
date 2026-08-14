@@ -27,4 +27,8 @@ export const REPORTS: ReportEntry[] = [
     key: "backlog", label: "Backlog", href: "/reports/backlog", area: "reports",
     description: "Open orders not yet fully shipped.",
   },
+  {
+    key: "shipped", label: "Shipped", href: "/reports/shipped", area: "reports",
+    description: "Shipped quantity and weight by period.",
+  },
 ];
