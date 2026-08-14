@@ -10,8 +10,8 @@
 |---|-------|-------------|----------------|-----------|--------|
 | 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
 | 1 | Backlog report | general-purpose | ✅ Approved | c4da1e8, 641303f | ✅ DONE (gates green 2761, E2E 20/20) |
-| 2 | Shipped report | general-purpose | — | 605da4c, dcebfab, bc13039 | IMPLEMENTED (targeted green, awaiting review + controller gates) |
-| 3 | Turnaround report | — | — | — | PENDING |
+| 2 | Shipped report | general-purpose | ✅ Approved | 605da4c, dcebfab, bc13039 | ✅ DONE (gates green 2779, E2E 20/20) |
+| 3 | Turnaround report | general-purpose | — | — | DISPATCHED |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
 | 5 | Payments received report | — | — | — | PENDING |
 | 6 | Home invoice register + aging | — | — | — | PENDING |
@@ -25,6 +25,7 @@
 - **Task 1 (implementer, targeted only):** `npx vitest run tests/reports-backlog.test.ts` → **14 passed** (watched to completion, 12:33). `npx tsc --noEmit` → clean. `npx eslint` over all 8 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview run (would need the dev server) — the UI is a straight AgingReport clone; controller/E2E to confirm the render.
 - **Task 1 (controller-verified, 12:47):** full `npm test` → **2761 passed / 151 files** (+14); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake this run — the `--kill-after=30` graceful timeout, port was free). Task 1 fully verified.
 - **Task 2 (implementer, targeted only, 13:01):** `npx vitest run tests/reports-shipped.test.ts` → **18 passed** (watched to completion). `npx tsc --noEmit` → clean. `npx eslint` over all 7 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview (needs the dev server) — the UI is a straight BacklogReport clone; controller/E2E to confirm the render. Note: 3 of 18 tests were RED on first run due to a stray null byte in the test's part-key literals (a test-authoring artifact, not a logic bug) — replaced with spaces, all 18 green with the implementation unchanged.
+- **Task 2 (controller-verified, 13:13):** full `npm test` → **2779 passed / 152 files** (+18); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake). Task 2 fully verified.
 
 ## Tracked cleanup (fold in ONE consolidated pass before the whole-branch review — not per-task micro-rounds)
 
@@ -32,6 +33,7 @@ Minors from per-task reviews that are Nice-to-Have (no correctness/concurrency/d
 - **Task 1 / `BacklogReport.tsx`:** detail-row React key `${orderId}-${partNumber}` can collide when one order has two lines on the SAME part (`OrderLine` unique is `[orderId, position]`, so duplicate `partId` is allowed); and the `findMany` has no `orderBy`, so within-order row order is DB-arbitrary. Fix: carry the line id/position into the detail row for a stable key + add a deterministic `orderBy`. Low impact (UI-only; export/data correct).
 - **Task 1 / test:** the ordered-vs-remaining choice isn't RED-verified against an actual partial-shipment scenario (no `ShipperLine` seeded). Add a test seeding a partial shipment that asserts the report still shows ORDERED, not remaining.
 - **General / reports:** implementer reports say "RED-first" but show only GREEN transcripts — a report-writing gap (tests ARE genuinely RED-structured). Tighten the report template's RED evidence going forward.
+- **Task 2 / Shipped — partId-filter vs group-by-part asymmetry** (owner-facing, spec §4.3 silent): a released row (order line deleted after shipping) is counted in the unfiltered by-part grouping under its snapshot `partNumber`, but the `partId` FILTER matches only the live `orderLine.partId`, so filtering to that part HIDES it ("part X = 16 grouped, 10 filtered"). Documented + defensible, but surprising. Candidate fix: make the part filter also match snapshot `partNumber` within the customer (so filtered == grouped). **Flagged to owner** as an FYI; low stakes.
 
 ## Notes / rulings during execution
 
