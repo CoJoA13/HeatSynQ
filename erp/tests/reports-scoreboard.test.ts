@@ -40,7 +40,7 @@ function shippedResult(rows: { qty: number; weight: number }[]): ShippedResult {
   return {
     groupBy: "none",
     rows: rows.map((r, i) => ({
-      shipperId: `s-${i}`, shipperNumber: 1000 + i, shipDate: "2026-08-01",
+      shipperId: `s-${i}`, shipperLineId: `sl-${i}`, shipperNumber: 1000 + i, shipDate: "2026-08-01",
       customerCode: "C", customerName: "Cust", partNumber: "P", partName: "Part",
       qty: r.qty, weight: r.weight,
     })),
@@ -326,8 +326,11 @@ describe("GET /api/reports/scoreboard", () => {
 });
 
 describe("GET /api/reports/scoreboard/export", () => {
-  it("requires reports.view and returns an xlsx attachment", async () => {
+  it("401s without a session, 403s without reports.view, and returns an xlsx attachment with it", async () => {
     expect((await scoreboardExportRoute(getReq("http://t/api/reports/scoreboard/export"), withParams())).status).toBe(401);
+
+    const wrong = await signInWith(["orders.view"], "scoreboard-export-wrong");
+    expect((await scoreboardExportRoute(getReq("http://t/api/reports/scoreboard/export", wrong), withParams())).status).toBe(403);
 
     const viewer = await signInWith(["reports.view"], "scoreboard-export-viewer");
     const res = await scoreboardExportRoute(getReq("http://t/api/reports/scoreboard/export", viewer), withParams());
