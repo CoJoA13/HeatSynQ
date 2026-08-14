@@ -8,8 +8,10 @@ export const GET = handle(async () => {
   // precedent): the CUSTOMER page's assignment picker needs template names, and a user holding
   // customers.edit without templates.view must not get a silently empty dropdown — an area gate
   // here would relocate that failure to a role misconfiguration instead of removing it. The
-  // projection is the narrowest possible (id/name/docType of live templates — no configs, no
-  // counts); managing templates stays behind the `templates` area. Bound to a variable (not a
+  // projection is the narrowest possible (id/name/docType of live templates + a derived `published`
+  // boolean — no configs, no counts; Task 20 pre-step: `published` lets the picker disable a
+  // never-published template with its §5.16 tooltip instead of surfacing the assign-time 400);
+  // managing templates stays behind the `templates` area. Bound to a variable (not a
   // bare `requireUser();`) because tests/permissions-sweep.test.ts requires the call to feed
   // mustCan/mustDo or be assigned — a discarded bare call is indistinguishable from an unused
   // import.

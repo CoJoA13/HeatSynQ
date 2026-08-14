@@ -7,13 +7,15 @@ import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 import {
   assignTemplate, clearAssignment, listAssignments, resolveTemplateForPrint,
+  resolveAssignmentsForCustomer,
 } from "@/server/template-assignments";
 import { createTemplate, publishDraft, deleteTemplate, uploadLogo } from "@/server/templates";
 import { deleteCustomer } from "@/server/customers";
-import { defaultConfigFor } from "@/lib/template-contracts/index";
+import { defaultConfigFor, TEMPLATE_DOC_TYPES } from "@/lib/template-contracts/index";
 import {
   GET as listAssignmentsRoute, PUT as assignRoute, DELETE as clearRoute,
 } from "@/app/api/customers/[id]/template-assignments/route";
+import { GET as resolvedRoute } from "@/app/api/customers/[id]/template-assignments/resolved/route";
 import { GET as namesRoute } from "@/app/api/templates/names/route";
 
 /**
@@ -339,6 +341,61 @@ describe("resolveTemplateForPrint — the §5.2 walk-to-root chain", () => {
   });
 });
 
+describe("resolveAssignmentsForCustomer — the customer-page display resolution (Task 20)", () => {
+  it("returns one row per docType (all 8), each never blank, defaulting when nothing is assigned", async () => {
+    const cust = await makeCustomer("AC1");
+    const rows = await resolveAssignmentsForCustomer(cust);
+    expect(rows.map((r) => r.docType).sort()).toEqual([...TEMPLATE_DOC_TYPES].sort());
+    for (const r of rows) {
+      expect(r.source).toBe("default");           // nothing assigned anywhere
+      expect(r.resolvedTemplateName).toBe("Standard"); // the seeded default
+      expect(r.ownTemplateId).toBeNull();
+      expect(r.inheritedFromCode).toBeNull();
+    }
+  });
+
+  it("reports OWN when the customer has its own assignment (carries the own template id)", async () => {
+    const cust = await makeCustomer("AC1");
+    const t = await publishedTemplate("Fancy Traveler");
+    await as(() => assignTemplate(cust, "TRAVELER", t));
+    const trav = (await resolveAssignmentsForCustomer(cust)).find((r) => r.docType === "TRAVELER")!;
+    expect(trav.source).toBe("own");
+    expect(trav.ownTemplateId).toBe(t);
+    expect(trav.resolvedTemplateName).toBe("Fancy Traveler");
+    expect(trav.inheritedFromCode).toBeNull();
+  });
+
+  it("reports INHERITED from the nearest ancestor, naming it — and carries NO own template id", async () => {
+    const root = await makeCustomer("ROOT");
+    const mid = await makeCustomer("MID", root);
+    const leaf = await makeCustomer("LEAF", mid);
+    const forRoot = await publishedTemplate("Root Style");
+    const forMid = await publishedTemplate("Mid Style");
+    await as(() => assignTemplate(root, "TRAVELER", forRoot));
+    await as(() => assignTemplate(mid, "TRAVELER", forMid));
+    const trav = (await resolveAssignmentsForCustomer(leaf)).find((r) => r.docType === "TRAVELER")!;
+    expect(trav.source).toBe("inherited");
+    expect(trav.ownTemplateId).toBeNull();          // the leaf owns nothing — the select falls to "use default"
+    expect(trav.resolvedTemplateName).toBe("Mid Style"); // the NEARER ancestor wins (matches the print walk)
+    expect(trav.inheritedFromCode).toBe("MID");
+    expect(trav.inheritedFromName).toBe("MID Incorporated");
+  });
+
+  it("matches resolveTemplateForPrint's own→ancestor→default order (shared walk, not reimplemented)", async () => {
+    // The display resolver and the print resolver are driven by the SAME `resolveAssignment` walk,
+    // so the displayed resolved template must be the one the print would actually use.
+    const parent = await makeCustomer("PAR");
+    const child = await makeCustomer("CHI", parent);
+    const forParent = await publishedTemplate("Parent Style");
+    await as(() => assignTemplate(parent, "TRAVELER", forParent));
+    const display = (await resolveAssignmentsForCustomer(child)).find((r) => r.docType === "TRAVELER")!;
+    const printed = await resolve("TRAVELER", child);
+    expect(display.source).toBe("inherited");
+    expect(display.resolvedTemplateName).toBe("Parent Style");
+    expect(printed.templateId).toBe(forParent); // same template the print resolves
+  });
+});
+
 describe("deleteCustomer cascades template assignments", () => {
   it("soft-deletes each live assignment, audited per row; the cascaded row no longer resolves", async () => {
     const cust = await makeCustomer("AC1");
@@ -594,15 +651,49 @@ describe("routes — /api/customers/[id]/template-assignments and /api/templates
     expect(await assignmentRow(cust, "TRAVELER")).toBeNull();
   });
 
+  it("GET .../template-assignments/resolved lists for customers.view; 403 without it; 401 anonymous", async () => {
+    await as(() => assignTemplate(cust, "TRAVELER", tmpl));
+    const res = await resolvedRoute(
+      getReq(`http://t/api/customers/${cust}/template-assignments/resolved`, viewer),
+      withParams({ id: cust }));
+    expect(res.status).toBe(200);
+    const rows = await res.json() as { docType: string; source: string; ownTemplateId: string | null }[];
+    expect(rows).toHaveLength(TEMPLATE_DOC_TYPES.length); // one per docType, never blank (§5.15)
+    const trav = rows.find((r) => r.docType === "TRAVELER")!;
+    expect(trav).toMatchObject({ source: "own", ownTemplateId: tmpl, resolvedTemplateName: "Route Style" });
+
+    const forbidden = await resolvedRoute(
+      getReq(`http://t/api/customers/${cust}/template-assignments/resolved`, bare),
+      withParams({ id: cust }));
+    expect(forbidden.status).toBe(403);
+    const anon = await resolvedRoute(
+      getReq(`http://t/api/customers/${cust}/template-assignments/resolved`),
+      withParams({ id: cust }));
+    expect(anon.status).toBe(401);
+  });
+
   it("GET /api/templates/names is 200 for a BARE session (§5.15 — no area gate), 401 anonymous", async () => {
     const res = await namesRoute(getReq("http://t/api/templates/names", bare), withParams({}));
     expect(res.status).toBe(200);
     const rows = await res.json() as Record<string, unknown>[];
     expect(rows.length).toBe(9); // 8 seeded Standards + "Route Style"
-    // The projection is EXACTLY {id, name, docType} — no configs, no counts, nothing else.
-    for (const row of rows) expect(Object.keys(row).sort()).toEqual(["docType", "id", "name"]);
+    // The projection is EXACTLY {id, name, docType, published} — no configs, no counts, nothing else.
+    // `published` (Task 20 pre-step) lets the picker disable a never-published template with its
+    // §5.16 tooltip instead of surfacing the assign-time 400 — still the narrowest read.
+    for (const row of rows) expect(Object.keys(row).sort()).toEqual(["docType", "id", "name", "published"]);
+    for (const row of rows) expect(typeof row.published).toBe("boolean");
     const anon = await namesRoute(getReq("http://t/api/templates/names"), withParams({}));
     expect(anon.status).toBe(401);
+  });
+
+  it("GET /api/templates/names carries published=false for a never-published template", async () => {
+    // A fresh template with an open draft but no published version — assign refuses it, so the
+    // picker must be able to disable it before the user tries (published:false).
+    const { id: unpub } = await as(() => createTemplate("TRAVELER", "Never Published"));
+    const res = await namesRoute(getReq("http://t/api/templates/names", bare), withParams({}));
+    const rows = await res.json() as { id: string; published: boolean }[];
+    expect(rows.find((r) => r.id === unpub)?.published).toBe(false);
+    expect(rows.find((r) => r.id === tmpl)?.published).toBe(true); // "Route Style" is published
   });
 
   it("GET /api/templates/names serves LIVE templates only", async () => {

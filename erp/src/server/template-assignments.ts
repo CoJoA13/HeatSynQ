@@ -5,8 +5,10 @@ import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { claimTemplate } from "./templates";
 import {
-  validateConfig, type TemplateConfig, type TemplateDocTypeString,
+  validateConfig, TEMPLATE_DOC_TYPES,
+  type TemplateConfig, type TemplateDocTypeString,
 } from "../lib/template-contracts/index";
+import type { AssignmentDisplay } from "../lib/template-assignment-picker";
 
 /**
  * The customer template-assignment service (Phase 7 spec §4.1, §5.2, §7): the per-(customer,
@@ -33,7 +35,12 @@ export type AssignmentRow = {
   id: string; docType: TemplateDocType; templateId: string; templateName: string;
 };
 
-export type TemplateName = { id: string; name: string; docType: TemplateDocType };
+export type TemplateName = {
+  id: string; name: string; docType: TemplateDocType;
+  /** `publishedVersionId !== null` (Task 20 pre-step): the picker disables a never-published
+   *  template with a §5.16 tooltip rather than letting the assign-time 400 surface. */
+  published: boolean;
+};
 
 export type ResolvedTemplate = {
   templateId: string;
@@ -134,39 +141,47 @@ export async function listAssignments(customerId: string): Promise<AssignmentRow
   }));
 }
 
-/** Live templates' id/name/docType and NOTHING else — the `requireUser`-only names read's
- *  projection (§5.15; served by /api/templates/names for the customer page's picker). */
+/** Live templates' id/name/docType + a `published` flag and NOTHING else — the `requireUser`-only
+ *  names read's projection (§5.15; served by /api/templates/names for the customer page's picker).
+ *  `published` is derived from `publishedVersionId` and NOT exposed raw (the id is internal). */
 export async function listTemplateNames(): Promise<TemplateName[]> {
-  return prisma.documentTemplate.findMany({
+  const rows = await prisma.documentTemplate.findMany({
     where: { deletedAt: null },
-    select: { id: true, name: true, docType: true },
+    select: { id: true, name: true, docType: true, publishedVersionId: true },
     orderBy: [{ docType: "asc" }, { name: "asc" }],
   });
+  return rows.map(({ publishedVersionId, ...rest }) => ({
+    ...rest, published: publishedVersionId !== null,
+  }));
 }
 
-/**
- * Print-time resolution (spec §5.2, ruling 7), on the CALLER's transaction — every print passes
- * its own claimed `tx`, and this function opens none of its own. The chain: starting at the
- * document's customer, walk `parentId` toward the root; the nearest live assignment for
- * `docType` WHOSE TEMPLATE IS ITSELF LIVE wins (both `deletedAt`s filtered — `deleteTemplate`
- * refuses only on LIVE assignments, so a soft-deleted assignment row can still name a deleted
- * template; belt-and-braces, the walk must fall onward, never resolve a template no screen can
- * show); else the docType's live default.
+/** The §5.2 chain's single source of truth (spec §5.2, ruling 7). Starting at the document's
+ *  customer, walk `parentId` toward the root; the nearest live assignment for `docType` WHOSE
+ *  TEMPLATE IS ITSELF LIVE wins (both `deletedAt`s filtered — `deleteTemplate` refuses only on LIVE
+ *  assignments, so a soft-deleted assignment row can still name a deleted template; belt-and-braces,
+ *  the walk must fall onward, never resolve a template no screen can show); else the docType's live
+ *  default. `source` distinguishes the STARTING customer's own row (`own`) from an ancestor's
+ *  (`inherited`) from the default — that is what the customer-page picker needs to display, and it
+ *  is computed HERE so print and picker can never diverge (the picker never reimplements the walk).
  *
- * The walk SELF-BOUNDS on visited ids: `assertNoCycle` (customers.ts) guards the parentId WRITE
- * path, but a read that spins on corrupt data would take every print down with it — stop on
- * repeat or null, then fall to the default.
+ *  SELF-BOUNDS on visited ids: `assertNoCycle` (customers.ts) guards the parentId WRITE path, but a
+ *  read that spins on corrupt data would take every print down with it — stop on repeat or null.
  *
- * NEVER null: the seed migration and `truncateAll()` both guarantee every docType a live default
- * with a PUBLISHED v1, and §4.1 keeps never-published templates out of assignments and the
- * default seat — so a missing default or a null published pointer here is a broken DB invariant:
- * a plain Error (a bug for `handle` to 500 on), not an HttpError.
- */
-export async function resolveTemplateForPrint(
-  tx: Db, docType: TemplateDocType, customerId: string,
-): Promise<ResolvedTemplate> {
-  const TEMPLATE_SELECT = { id: true, publishedVersionId: true } as const;
+ *  NEVER null: the seed migration and `truncateAll()` guarantee every docType a live default with a
+ *  PUBLISHED v1, so a missing default is a broken DB invariant — a plain Error (a bug for `handle`
+ *  to 500 on), not an HttpError. */
+type ResolutionHit = {
+  source: "own" | "inherited" | "default";
+  /** The ancestor whose assignment matched; null for the default fallback. */
+  matchedCustomerId: string | null;
+  template: { id: string; publishedVersionId: string | null; name: string };
+};
 
+const TEMPLATE_SELECT = { id: true, publishedVersionId: true, name: true } as const;
+
+async function resolveAssignment(
+  tx: Db, docType: TemplateDocType, customerId: string,
+): Promise<ResolutionHit> {
   const visited = new Set<string>();
   let current: string | null = customerId;
   while (current !== null && !visited.has(current)) {
@@ -175,7 +190,13 @@ export async function resolveTemplateForPrint(
       where: { customerId: current, docType, deletedAt: null, template: { deletedAt: null } },
       select: { template: { select: TEMPLATE_SELECT } },
     });
-    if (assignment !== null) return dereference(tx, docType, assignment.template);
+    if (assignment !== null) {
+      return {
+        source: current === customerId ? "own" : "inherited",
+        matchedCustomerId: current,
+        template: assignment.template,
+      };
+    }
     // Annotated to break a TS7022 circularity: the generic findFirst return would otherwise be
     // inferred from `current`, whose control-flow narrowing depends on this very assignment.
     const customer: { parentId: string | null } | null = await tx.customer.findFirst({
@@ -191,7 +212,54 @@ export async function resolveTemplateForPrint(
     throw new Error(
       `No live default ${docType} template exists — the seed invariant (Phase 7 spec §9) is broken`);
   }
-  return dereference(tx, docType, dflt);
+  return { source: "default", matchedCustomerId: null, template: dflt };
+}
+
+/**
+ * Print-time resolution, on the CALLER's transaction — every print passes its own claimed `tx`,
+ * and this function opens none of its own. Delegates the §5.2 walk to `resolveAssignment` (above),
+ * then dereferences the winning template's published pointer to the backfilled config + logo.
+ */
+export async function resolveTemplateForPrint(
+  tx: Db, docType: TemplateDocType, customerId: string,
+): Promise<ResolvedTemplate> {
+  const hit = await resolveAssignment(tx, docType, customerId);
+  return dereference(tx, docType, hit.template);
+}
+
+/**
+ * The customer-page picker's DISPLAY resolution (spec §5.2, §5.15): one row per docType (all 8),
+ * each never blank, computed by the SAME `resolveAssignment` walk the print resolver uses — so the
+ * picker shows exactly what the print would produce, and resolution is never reimplemented (Task 20
+ * brief). Runs read-only in ONE RepeatableRead snapshot (the `getTemplate` precedent) so a
+ * concurrent assign mid-walk cannot tear the chain across docTypes; no claim — a slightly stale
+ * DISPLAY is harmless (§5.1's immutability argument, one step removed).
+ */
+export async function resolveAssignmentsForCustomer(customerId: string): Promise<AssignmentDisplay[]> {
+  return prisma.$transaction(async (tx) => {
+    const out: AssignmentDisplay[] = [];
+    for (const docType of TEMPLATE_DOC_TYPES) {
+      const hit = await resolveAssignment(tx, docType, customerId);
+      let inheritedFromCode: string | null = null;
+      let inheritedFromName: string | null = null;
+      if (hit.source === "inherited" && hit.matchedCustomerId !== null) {
+        const anc = await tx.customer.findFirst({
+          where: { id: hit.matchedCustomerId }, select: { code: true, name: true },
+        });
+        inheritedFromCode = anc?.code ?? null;
+        inheritedFromName = anc?.name ?? null;
+      }
+      out.push({
+        docType,
+        source: hit.source,
+        resolvedTemplateName: hit.template.name,
+        ownTemplateId: hit.source === "own" ? hit.template.id : null,
+        inheritedFromCode,
+        inheritedFromName,
+      });
+    }
+    return out;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 /** Published pointer → version row → the backfilled config + logo. A null pointer or a missing
