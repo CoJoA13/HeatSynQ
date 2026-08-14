@@ -16,17 +16,35 @@ import type { AssignmentDisplay } from "../lib/template-assignment-picker";
  *
  * CONCURRENCY — `assignTemplate` claims the TEMPLATE row FIRST, through the exported
  * `claimTemplate` (templates.ts — the one claim path, never a second differently-shaped one).
- * That shared claim is what closes the assign-vs-delete race at the services' default (Read
- * Committed) isolation: `deleteTemplate` claims the same row before reading its §5.14 blocker
- * set, so whichever side commits first, the loser wakes to the winner's state — an assign after
- * a delete 404s off the claim's own liveness read; a delete after an assign finds the committed
- * assignment and refuses, named. Nothing here relies on SSI; the row lock is the guard
- * (CLAUDE.md's standing rule; RED-verified race tests in tests/template-assignments.test.ts).
+ * That shared claim ORDERS assign against `deleteTemplate` (which claims the same row before
+ * reading its §5.14 blocker set): whichever side commits first, the loser wakes to the winner's
+ * state. Because `assignTemplate` now runs Serializable (the customer pairing below), the exact
+ * SURFACE of the assign-vs-delete-TEMPLATE loser shifted: an assign that loses to a committed
+ * template delete no longer 404s off the claim's liveness read — its claimed row was modified and
+ * committed after the assign's Serializable snapshot, so the FOR UPDATE re-check raises a
+ * serialization abort (P2034 → 409 "retry" via withDbErrors), and the 404 arrives on the retry.
+ * The invariant is identical either way — no assignment is ever written against a deleted template.
+ * The other direction is unchanged: `deleteTemplate` stays Read Committed, so a delete that loses
+ * to a committed assign finds the assignment through its own EPQ-following claim and refuses, named.
+ * The row lock is still the ORDERING guard here, not SSI (CLAUDE.md's standing rule; RED-verified
+ * race tests in tests/template-assignments.test.ts).
  *
  * Two concurrent assigns for the SAME (customer, docType) naming DIFFERENT templates claim
  * different template rows and do not serialize on them — the partial-unique index on the pair is
  * the backstop (one loses as a P2002, translated by `withDbErrors`), and losing that race is a
  * "try again", not an invariant breach.
+ *
+ * The template-row claim above closes the assign-vs-delete-TEMPLATE race; a SECOND race —
+ * assign-vs-delete-CUSTOMER — has no shared row to claim (the customer row is never locked here),
+ * so `assignTemplate` runs Serializable and reads the customer live INSIDE that transaction,
+ * SSI-pairing with `deleteCustomer` (customers.ts, itself Serializable — its cascade reads and
+ * soft-deletes this customer's live assignments). This is the exact createPart↔deleteCustomer
+ * precedent (parts.ts:172-177): without both halves Serializable, an assign and a delete each pass
+ * their own pre-check before either commits, orphaning a LIVE assignment on a soft-deleted customer
+ * — invisible on the customer page yet blocking that template's §5.14 deletion forever. SSI aborts
+ * whichever side no serial ordering allows (P2034 → 409 "retry" via withDbErrors). `clearAssignment`
+ * needs no such pairing: a clear-vs-delete-customer race has both sides soft-deleting assignment
+ * rows, so either interleaving lands on the same end state (no live row) — benign.
  */
 
 type Db = Prisma.TransactionClient;
@@ -68,6 +86,7 @@ export async function assignTemplate(
     prisma.$transaction(async (tx) => {
       // The claim FIRST (missing and soft-deleted both 404 inside it) — see the header comment.
       const template = await claimTemplate(tx, templateId);
+      // Serializable + in-tx customer read below is the SSI pair with deleteCustomer (header note).
       if (template.publishedVersionId === null) {
         throw new HttpError(400,
           "This template has never been published — publish a version before assigning it to a customer");
@@ -76,6 +95,9 @@ export async function assignTemplate(
         throw new HttpError(400,
           `"${template.name}" is a ${template.docType} template — it cannot be the customer's ${docType} template`);
       }
+      // This live-customer read is the SSI-conflicting half: deleteCustomer writes this row
+      // (soft delete) while its findMany over this customer's assignments conflicts with the
+      // create/update below — a two-antidependency cycle Postgres aborts under Serializable.
       const customer = await tx.customer.findFirst({
         where: { id: customerId, deletedAt: null }, select: { id: true },
       });
@@ -94,10 +116,11 @@ export async function assignTemplate(
         if (existing.templateId === templateId) return existing; // unchanged — no junk audit
         // `deletedAt: null` rides in the UPDATE's own where (Task 5 review, carried): a
         // concurrent claim-free `clearAssignment` committing between the findFirst above and
-        // this statement must fail the replace (P2025 → the entity's 404 via withDbErrors),
-        // never rewrite the DEAD row's templateId — clearAssignment takes no template claim,
-        // so this single-statement condition is the only guard (auditedSoftDelete's own
-        // updateMany rule, applied to the replace).
+        // this statement must never rewrite the DEAD row's templateId — clearAssignment takes no
+        // template claim, so this condition is the guard. Under Serializable (added for the
+        // customer pairing), a clear that commits after this tx's snapshot makes the UPDATE a
+        // write-write conflict → serialization abort (P2034 → 409 "retry" via withDbErrors) rather
+        // than the old P2025 → 404; either way the dead row's templateId is never rewritten.
         return auditedUpdate("customerTemplateAssignment", existing.id, () =>
           tx.customerTemplateAssignment.update({
             where: { id: existing.id, deletedAt: null }, data: { templateId },
@@ -108,7 +131,7 @@ export async function assignTemplate(
         () => tx.customerTemplateAssignment.create({
           data: { customerId, docType, templateId }, select: ASSIGNMENT_SELECT,
         }), { tx });
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
 
 /**

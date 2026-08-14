@@ -429,7 +429,7 @@ async function provesBlocked(competitor: Promise<unknown>): Promise<void> {
 }
 
 describe("concurrency (RED-verified — see task report)", () => {
-  it("assign-after-delete: parked on the claim, the assign wakes to the committed delete → 404, no row", async () => {
+  it("assign-after-delete: parked on the claim, the assign wakes to the committed delete → 409 abort (Serializable), no row", async () => {
     const cust = await makeCustomer("AC1");
     const tmpl = await publishedTemplate("Doomed");
 
@@ -448,18 +448,19 @@ describe("concurrency (RED-verified — see task report)", () => {
     }, { timeout: 20000 });
     await claimed;
 
-    // The competitor: the REAL assignTemplate on its own Read Committed transaction — the claim
-    // is the only thing that can serialize it against the holder.
+    // The competitor: the REAL assignTemplate. It is now Serializable (the customer pairing), so
+    // its claimTemplate FOR UPDATE fixes the snapshot and blocks on the holder's lock.
     const competitor = as(() => assignTemplate(cust, "TRAVELER", tmpl));
     await provesBlocked(competitor);
     mayRelease();
     await holder;
 
-    // The loser sees the winner's state: the deleted template 404s, and no assignment row —
-    // live or dead — was ever written against it.
-    await expect(competitor).rejects.toMatchObject({
-      status: 404, message: expect.stringMatching(/Template not found/),
-    });
+    // The loser sees the winner's state. Under Serializable the claimed template row was
+    // soft-deleted AND committed after the assign's snapshot, so the FOR UPDATE re-check raises a
+    // serialization abort (P2034 → 409 "retry") rather than the old Read-Committed 404 — the 404
+    // would arrive on the retry. The invariant is identical: no assignment row, live or dead, was
+    // ever written against the deleted template.
+    await expect(competitor).rejects.toMatchObject({ status: 409 });
     expect(await prisma.customerTemplateAssignment.count({ where: { templateId: tmpl } })).toBe(0);
   });
 
@@ -501,7 +502,7 @@ describe("concurrency (RED-verified — see task report)", () => {
     })).toBe(1);
   });
 
-  it("replace-vs-clear: a row cleared mid-flight refuses the stale replace → 404, dead row untouched", async () => {
+  it("replace-vs-clear: a row cleared mid-flight refuses the stale replace → 409 abort (Serializable), dead row untouched", async () => {
     const cust = await makeCustomer("AC1");
     const a = await publishedTemplate("Old Style");
     const b = await publishedTemplate("New Style");
@@ -515,7 +516,7 @@ describe("concurrency (RED-verified — see task report)", () => {
     // The holder: hand-scripted clearAssignment effect — the ASSIGNMENT row locked and
     // soft-deleted, held uncommitted. clearAssignment takes no template claim, so no shared
     // claim serializes the replace against it — the replace UPDATE's own `deletedAt: null`
-    // where is the only guard (the Task 5 review's carried fix).
+    // where AND the Serializable snapshot (added for the customer pairing) are the guards.
     const holder = prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "CustomerTemplateAssignment" WHERE "id" = ${first.id} FOR UPDATE`;
       await tx.customerTemplateAssignment.update({
@@ -534,16 +535,79 @@ describe("concurrency (RED-verified — see task report)", () => {
     mayRelease();
     await holder;
 
-    // The guarded update wakes to the committed clear, matches no live row, and refuses — it
-    // must NOT rewrite the dead row's templateId (the audit-trail smudge the guard prevents).
-    await expect(competitor).rejects.toMatchObject({
-      status: 404, message: expect.stringMatching(/Template assignment not found/),
-    });
+    // The guarded update wakes to a write-write conflict: the assignment row was soft-deleted AND
+    // committed after this Serializable tx's snapshot, so Postgres aborts the replace (P2034 → 409
+    // "retry") instead of the old Read-Committed P2025 → 404. Either way it must NOT rewrite the
+    // dead row's templateId (the audit-trail smudge the guard prevents).
+    await expect(competitor).rejects.toMatchObject({ status: 409 });
     const dead = await prisma.customerTemplateAssignment.findUniqueOrThrow({
       where: { id: first.id },
     });
     expect(dead.deletedAt).not.toBeNull();
     expect(dead.templateId).toBe(a); // never rewritten
+  });
+
+  it("DANGEROUS direction: an assign whose snapshot predates a committed deleteCustomer is aborted — no LIVE assignment orphaned on the soft-deleted customer", async () => {
+    // The Codex PR #104 finding this proves: `assignTemplate` claims the TEMPLATE row and reads the
+    // customer live, but nothing LOCKS the customer row — so a concurrent `deleteCustomer` (which
+    // soft-deletes the customer and cascades its assignments) can commit BETWEEN the assign's stale
+    // customer read and its assignment write, orphaning a LIVE assignment on a soft-deleted customer:
+    // invisible on the customer page, yet blocking that template's §5.14 deletion forever. The fix is
+    // the createPart↔deleteCustomer edge, one writer over (parts.ts:172-177): BOTH sides Serializable
+    // — `assignTemplate` now Serializable with its customer read in-tx, `deleteCustomer` already so —
+    // and Postgres SSI aborts the assign at commit (P2034 → 409 via withDbErrors).
+    //
+    // Determinism (the close-periods precedent): a Read-Committed GATE holds the TEMPLATE row FOR
+    // UPDATE, so the REAL `assignTemplate` fixes its Serializable snapshot at `claimTemplate` and then
+    // BLOCKS there — before its customer read. We run the REAL `deleteCustomer` to completion (it
+    // commits the soft-delete; its assignment cascade finds none yet), release the gate, and let the
+    // assign proceed on its now-stale snapshot: the customer read still sees the customer LIVE, so the
+    // liveness 404 does NOT fire — only SSI stops the write, at commit.
+    //
+    // RED-verified by PINNING THE COMPETITOR — drop `deleteCustomer`'s `isolationLevel` to Read
+    // Committed (customers.ts): the soft-delete leaves SSI's view, nothing aborts the still-Serializable
+    // assign, and it commits a LIVE assignment onto the soft-deleted customer (`outcome` → "resolved",
+    // the live count → 1). Transcript in the task report.
+    const cust = await makeCustomer("AC1");
+    const tmpl = await publishedTemplate("Contested");
+
+    let hasClaimed!: () => void;
+    const claimed = new Promise<void>((r) => { hasClaimed = r; });
+    let mayRelease!: () => void;
+    const release = new Promise<void>((r) => { mayRelease = r; });
+
+    // GATE: Read Committed, holds ONLY the template row's FOR UPDATE — it forms no SSI edge, so the
+    // sole dangerous structure is assign(read customer LIVE) ↔ delete(soft-delete customer).
+    const gate = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "DocumentTemplate" WHERE "id" = ${tmpl} FOR UPDATE`;
+      hasClaimed();
+      await release;
+    }, { timeout: 20000 });
+    await claimed;
+
+    // The REAL assignTemplate: fixes its Serializable snapshot at claimTemplate's FOR UPDATE, then
+    // blocks on the gated template row (before its customer read).
+    const assignProm = as(() => assignTemplate(cust, "TRAVELER", tmpl)).then(
+      () => "resolved" as const, (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 200)); // let the assign fix its snapshot + block on the template
+
+    // Delete the customer NOW — commits the soft-delete while the assign is paused on an older snapshot.
+    await as(() => deleteCustomer(cust, "closed shop"));
+
+    mayRelease();
+    await gate;
+
+    const outcome = await assignProm;
+    expect(outcome).not.toBe("resolved"); // it must NOT have written an assignment onto the dead customer
+    expect(outcome).toBeInstanceOf(HttpError);
+    expect((outcome as HttpError).status).toBe(409); // SSI serialization-abort
+
+    // PROOF: the customer is soft-deleted and NO live assignment survives on it.
+    const dead = await prisma.customer.findFirst({ where: { id: cust } });
+    expect(dead?.deletedAt).not.toBeNull();
+    expect(await prisma.customerTemplateAssignment.count({
+      where: { customerId: cust, deletedAt: null },
+    })).toBe(0);
   });
 });
 
