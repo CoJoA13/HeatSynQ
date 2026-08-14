@@ -15,6 +15,10 @@ const GROUP_HEADER: Record<"customer" | "part" | "month", string> = {
   customer: "Customer", part: "Part", month: "Finalized Month",
 };
 
+// Humanize the document kind the same way the screen does (SalesReport.tsx's KIND_LABEL) so the
+// raw INVOICE/CREDIT enum never reaches the file — the sheet reads what the table shows.
+const KIND_LABEL: Record<"INVOICE" | "CREDIT", string> = { INVOICE: "Invoice", CREDIT: "Credit" };
+
 const DETAIL_COLUMNS = [
   { key: "documentNumber", header: "Document" },
   { key: "kind", header: "Type" },
@@ -36,7 +40,11 @@ export const GET = handle(async (req) => {
         { key: "revenue", header: "Revenue (ex-tax)" },
       ];
 
-  const buf = await toXlsx("Sales", columns, result.rows as unknown as Record<string, unknown>[]);
+  const rows: Record<string, unknown>[] = result.groupBy === "none"
+    ? result.rows.map((r) => ({ ...r, kind: KIND_LABEL[r.kind] }))
+    : (result.rows as unknown as Record<string, unknown>[]);
+
+  const buf = await toXlsx("Sales", columns, rows);
   return new NextResponse(new Uint8Array(buf), {
     status: 200,
     headers: {
