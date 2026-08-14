@@ -110,3 +110,14 @@ preview picker's unverified non-order label fields) PLUS the new E2E-infra flake
 `close-month-end` flow intermittently hangs under full-suite E2E load (twice now, Tasks 19 & 21, in
 untouched code — the close completes but the flow strands its ClosePeriod+GL debris; kill, clean in FK
 order, reap fixtures, re-run → 20/20). None is a Phase 7 correctness defect.
+
+## Whole-branch review (2026-08-14, `c3ca8b9`) — 5 dimensions, each finding adversarially verified
+
+Dispatched as a multi-perspective workflow over the full branch diff (`c5c1f62..c3ca8b9`, 172 files / ~25.8k insertions): **concurrency & data-integrity, golden-compat & the decoder oracle, client/server boundary & permissions, cross-task consistency & spec completeness, fresh-eyes** — then each surfaced finding verified adversarially (try-to-refute). Result:
+
+- **concurrency & data-integrity: CLEAN (0 findings)** — the load-bearing dimension; the template claims, publish-by-immutability, the shared `resolveAssignment` walk, cascades, and 3 migrations all held.
+- **4 raw findings total across the other four dimensions; ZERO BLOCKER/MAJOR.**
+- **1 CONFIRMED (MINOR):** the settings admin page's `textarea` branch is dead since Task 14 emptied `TEXTAREA_KEYS`, and `page.tsx`'s comment still named the retired keys. **FIXED in the one-fix-wave** (comment corrected to note the dormant-but-retained mechanism; `settings-ui.ts`'s own comment was already accurate; the branch is deliberately kept for a future long-text setting). tsc/eslint re-confirmed clean.
+- **3 verified NON-ISSUE** (adversarial verification refuted each): (a) the decoder's ligature self-proof covers only Roboto — but `parseCmap` is font-agnostic (the CMap byte format is emitted by the shared pdfmake/pdfkit generator, not the family) and it's a test-helper, no product defect; (b) the permission-sweep's gate-check doesn't scan `api/templates` — but that sweep is targeted-by-design (only admin + money-adjacent trees; ~15 business trees are equally uncovered), all 11 template routes DO gate, and the universal `requireUser` sweep covers them; (c) validateConfig-at-print could 500 an old immutable config on a FUTURE rule-tightening — not reachable on this branch (all 8 contracts new), **filed as forward-hazard issue #103**.
+
+**Per the triage rule** (fix only correctness/concurrency/data-integrity in the wave), there were none — the sole confirmed item was a MINOR stale comment, fixed anyway since it precedes the PR. The carried whole-branch notes (#102, the decoder's dormant fallback + two-bugs history, the quote continuation band, the locked-field-in-hideable-section convention, the preview label-field cosmetics, the resolveAssignment parity guard) were all re-confirmed correctly characterized. **Phase 7 is ready for PR.**
