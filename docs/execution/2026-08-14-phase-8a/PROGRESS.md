@@ -9,7 +9,7 @@
 | # | Title | Implementer | Review verdict | Commit(s) | Status |
 |---|-------|-------------|----------------|-----------|--------|
 | 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
-| 1 | Backlog report | general-purpose | — | — | DISPATCHED |
+| 1 | Backlog report | general-purpose | — | c4da1e8, 641303f | IMPLEMENTED (targeted green; awaiting review + controller full chain) |
 | 2 | Shipped report | — | — | — | PENDING |
 | 3 | Turnaround report | — | — | — | PENDING |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
@@ -22,6 +22,7 @@
 
 - **Task 0 (implementer, targeted only):** `npx vitest run tests/reports-routes.test.ts` → 3 passed. `npx tsc --noEmit` → clean. `npx eslint src tests` → clean. Both DBs at 36 migrations, `migrate status` up to date.
 - **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned `:3100` server; **re-run = 20/20 clean pass** (12:21). Task 0 fully verified.
+- **Task 1 (implementer, targeted only):** `npx vitest run tests/reports-backlog.test.ts` → **14 passed** (watched to completion, 12:33). `npx tsc --noEmit` → clean. `npx eslint` over all 8 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview run (would need the dev server) — the UI is a straight AgingReport clone; controller/E2E to confirm the render.
 
 ## Notes / rulings during execution
 
