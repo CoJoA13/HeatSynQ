@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 
 /** Build a single-sheet workbook. `columns` sets the header row and the row keys; `rows` are keyed
- *  by those column keys. `caption`, when given, is written as a bold cell A1 ABOVE the header (the
+ *  by those column keys. `caption`, when given, is written as an italic cell A1 ABOVE the header (the
  *  header then sits on row 2) — a report uses it to stamp its measure basis into the file itself
  *  (the Payments report's "Posted payments only", spec §4.2). Callers that omit it are unchanged:
  *  the header stays on row 1. */
