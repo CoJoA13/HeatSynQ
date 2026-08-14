@@ -125,3 +125,12 @@ Dispatched as a multi-perspective workflow over the full branch diff (`c5c1f62..
 ## PR opened — #104 (2026-08-14)
 
 `phase-7-template-designer` @ `e4e3e77` → `main`. https://github.com/CoJoA13/HeatSynQ/pull/104 — body carries the attribution (never a commit trailer) and `Fixes #36 #43 #87 #97 #98`. Awaiting the owner's squash-merge + the Phase 7 demo. Deferred → #102, #103.
+
+## PR #104 Codex review round (2026-08-14) — 3 findings, all FIXED on-branch
+
+Codex's automated PR review surfaced three real correctness findings (full detail: `pr-104-codex-fixes-report.md`); all fixed, tested, controller-confirmed, threads replied + resolved:
+- **P1 (concurrency/data-integrity) — `f70d1c8`:** `assignTemplate` ran Read Committed with an unpaired customer-liveness read → concurrent with `deleteCustomer` it could strand a LIVE assignment on a soft-deleted customer (invisible on the customer page, blocking §5.14 template deletion forever). Fixed by making it Serializable with the customer read inside the tx — the exact `createPart↔deleteCustomer` SSI precedent; RED-verified (competitor pinned to RC → orphan committed → restored → green). **The whole-branch review's concurrency dimension MISSED this** (it checked the delete-vs-assign race on the TEMPLATE side, not the assign-vs-delete-CUSTOMER side) — Codex's independent pass caught it. Side effect: two template-row race tests now assert 409 (serialization abort) vs 404, invariant unchanged.
+- **P2 (§5.12) — `6419dcb`:** the editor wasn't keyed by route id → edit-A→edit-B reused A's stale config + concurrency token; keyed `<TemplateEditor key={id}>`.
+- **P2 (§5.13) — `2f96191`:** the template-detail fetch wasn't stale-gated → out-of-order responses could leave you publishing/renaming/DELETING the wrong template; applied the QuoteDetail stale-gate idiom (same class as this phase's earlier quotes fix — the sibling-page-sweep chip's territory).
+
+Controller-confirmed suite after: **2744/2744, 149 files**; tsc/eslint/build clean; E2E 20/20. Pushed `b10c788`. PR #104 remains open for the owner's merge.
