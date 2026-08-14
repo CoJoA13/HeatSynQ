@@ -10,7 +10,7 @@
 |---|-------|-------------|----------------|-----------|--------|
 | 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
 | 1 | Backlog report | general-purpose | ✅ Approved | c4da1e8, 641303f | ✅ DONE (gates green 2761, E2E 20/20) |
-| 2 | Shipped report | general-purpose | — | — | DISPATCHED |
+| 2 | Shipped report | general-purpose | — | 605da4c, dcebfab, bc13039 | IMPLEMENTED (targeted green, awaiting review + controller gates) |
 | 3 | Turnaround report | — | — | — | PENDING |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
 | 5 | Payments received report | — | — | — | PENDING |
@@ -24,6 +24,7 @@
 - **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned `:3100` server; **re-run = 20/20 clean pass** (12:21). Task 0 fully verified.
 - **Task 1 (implementer, targeted only):** `npx vitest run tests/reports-backlog.test.ts` → **14 passed** (watched to completion, 12:33). `npx tsc --noEmit` → clean. `npx eslint` over all 8 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview run (would need the dev server) — the UI is a straight AgingReport clone; controller/E2E to confirm the render.
 - **Task 1 (controller-verified, 12:47):** full `npm test` → **2761 passed / 151 files** (+14); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake this run — the `--kill-after=30` graceful timeout, port was free). Task 1 fully verified.
+- **Task 2 (implementer, targeted only, 13:01):** `npx vitest run tests/reports-shipped.test.ts` → **18 passed** (watched to completion). `npx tsc --noEmit` → clean. `npx eslint` over all 7 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview (needs the dev server) — the UI is a straight BacklogReport clone; controller/E2E to confirm the render. Note: 3 of 18 tests were RED on first run due to a stray null byte in the test's part-key literals (a test-authoring artifact, not a logic bug) — replaced with spaces, all 18 green with the implementation unchanged.
 
 ## Tracked cleanup (fold in ONE consolidated pass before the whole-branch review — not per-task micro-rounds)
 
