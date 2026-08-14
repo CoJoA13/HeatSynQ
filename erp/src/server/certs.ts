@@ -17,9 +17,11 @@ import { claimOrder, claimCertsOrder } from "./order-locks";
 // `claimCertsOrder`, above) — the identical bidirectional-cycle shape, found and broken in the
 // same Task 7 review. It now lives in cert-results.ts itself, so this import is one-directional.
 import { seedRequirements, readCertDetail } from "./cert-results";
-import { renderPdf } from "./pdf/render";
+import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildCertDefinition, type CertPdfData, type CertPartRow, type CertSerialBlock } from "./pdf/cert";
 import { storeDocument, assertPrintable } from "./documents";
+import { resolveTemplateForPrint } from "./template-assignments";
+import { CERT_DEFAULT_CONFIG } from "../lib/template-contracts/index";
 import { listAddresses } from "./customer-addresses";
 import { formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
@@ -452,13 +454,15 @@ export type CertPrintSettings = {
 };
 
 export async function certPrintSettings(): Promise<CertPrintSettings> {
-  const [name, address, phone, statement] = await Promise.all([
+  const [name, address, phone] = await Promise.all([
     getSetting("company_name"),
     getSetting("company_address"),
     getSetting("company_phone"),
-    getSetting("cert_statement"),
   ]);
-  return { company: { name, address, phone }, statement };
+  // `statement` defaults to the CERT contract's own text block; `printCert` REPLACES it at the data
+  // seam with the resolved template's `cert_statement` (spec §8). The `cert_statement` Setting was
+  // retired in Task 14 — a direct `readCertPdfData` call (a preview/test) gets the contract default.
+  return { company: { name, address, phone }, statement: CERT_DEFAULT_CONFIG.textBlocks.cert_statement };
 }
 
 /** The signer columns `printCert` reads off the User row under its own transaction —
@@ -671,6 +675,12 @@ export async function readCertPdfData(
  * `edit_cert_results_after_print` once set), so it must commit with the archived document, not
  * before or after it. A voided cert refuses a NEW print with the shared 400 while every stored
  * print stays reprintable forever (spec §5.6).
+ *
+ * Phase 7 (spec §5.2): the paper renders from the template `resolveTemplateForPrint` resolves for
+ * docType `CERT` on the owning order's customer (a cert is one per scope instance — no count split,
+ * the registry has no MOS_CERT), and `storeDocument` stamps `resolved.versionId` on the row. The
+ * `cert_statement` block binds from the resolved config at the DATA SEAM (replacing the setting
+ * value passed to `readCertPdfData`), so the template designer owns the certification statement.
  */
 export async function printCert(
   certId: string, signerUserId: string,
@@ -685,9 +695,12 @@ export async function printCert(
     assertPrintable(cert);
     // The OWNING ORDER's void refuses new paper too (spec §5.6): `voidOrder` leaves ORDER/LOAD
     // certs live, so the cert's own `deletedAt` alone cannot carry the rule. Read fresh under
-    // the claim just taken — the house rule's whole point.
-    const owner = await tx.order.findFirst({ where: { id: orderId }, select: { deletedAt: true } });
+    // the claim just taken — the house rule's whole point. `customerId` also drives the §5.2
+    // template resolution below (a cert is ONE per scope instance — no docType count split, unlike
+    // the ticket's SHIPPER/MOS_SHIPPER; the registry has no MOS_CERT).
+    const owner = await tx.order.findFirst({ where: { id: orderId }, select: { deletedAt: true, customerId: true } });
     assertPrintable(owner ?? { deletedAt: new Date(0) });
+    if (!owner) throw new HttpError(404, "Order not found");
 
     const signer = await tx.user.findFirst({
       where: { id: signerUserId },
@@ -695,15 +708,34 @@ export async function printCert(
     });
     if (!signer) throw new HttpError(404, "User not found");
 
-    const { data, orderNumber } = await readCertPdfData(tx, certId, settings, signer, printDate);
-    const pdf = await renderPdf(buildCertDefinition(data));
+    // §5.2 resolution on THIS claimed transaction at its isolation — correct by §5.1 immutability,
+    // not by locking (the printBol comment); no template row is claimed and none is needed.
+    const resolved = await resolveTemplateForPrint(tx, "CERT", owner.customerId);
+    // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only when
+    // the config also places it, so an unplaced upload converts nothing.
+    const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+      ? (resolved.logoMimeType === "image/jpeg"
+          ? jpegDataUri(Buffer.from(resolved.logoImage))
+          : pngDataUri(Buffer.from(resolved.logoImage)))
+      : undefined;
+
+    // `cert_statement` binds at the DATA SEAM (the ticket's liability-text shape, not the BOL's
+    // config-literal shape): the setting-backed `settings.statement` is REPLACED by the resolved
+    // config's text block, so the template designer edits the certification statement (spec §8)
+    // and the Setting no longer reaches paper. settings.ts stays untouched until Task 14 retires
+    // the key. The builder still reads `input.statement` — one source for the fact, the pure-builder
+    // golden test intact.
+    const { data, orderNumber } = await readCertPdfData(
+      tx, certId, { ...settings, statement: resolved.config.textBlocks.cert_statement }, signer, printDate);
+    const pdf = await renderPdf(buildCertDefinition(data, resolved.config, logoDataUri));
 
     if (cert.printedAt === null) {
       await auditedUpdate("cert", certId,
         () => tx.cert.update({ where: { id: certId }, data: { printedAt: new Date() } }), { tx });
     }
 
-    const doc = await storeDocument(tx, { kind: "CERT", certId }, pdf);
+    // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    const doc = await storeDocument(tx, { kind: "CERT", certId }, pdf, resolved.versionId);
     return { documentId: doc.id, orderNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

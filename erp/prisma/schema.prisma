@@ -15,34 +15,35 @@ datasource db {
 }
 
 model User {
-  id                String                   @id @default(cuid())
-  username          String                   @unique
-  passwordHash      String
-  displayName       String
-  roleId            String?
-  role              Role?                    @relation(fields: [roleId], references: [id])
-  signatureImage    Bytes?
+  id                        String                    @id @default(cuid())
+  username                  String                    @unique
+  passwordHash              String
+  displayName               String
+  roleId                    String?
+  role                      Role?                     @relation(fields: [roleId], references: [id])
+  signatureImage            Bytes?
   // Persisted alongside signatureImage so GET can stream it back with its real Content-Type —
   // the upload is constrained to SIGNATURE_MIME (users.ts), never inferred or defaulted.
-  signatureMimeType String?
+  signatureMimeType         String?
   /// Prints on the quote and certification signature blocks beside the display name (Phase 6
   /// ruling 14 — also closes Phase 4 ping #4). Blank prints nothing.
-  title             String                   @default("")
-  active            Boolean                  @default(true)
-  deletedAt         DateTime?
-  createdAt         DateTime                 @default(now())
-  updatedAt         DateTime                 @updatedAt
-  sessions          Session[]
-  overrides         UserPermissionOverride[]
-  orderDraft        OrderDraft?
-  savedViews        SavedView[]
-  finalizedInvoices Invoice[]
-  closedPeriods     ClosePeriod[]
-  glExports         GlExportBatch[]
+  title                     String                    @default("")
+  active                    Boolean                   @default(true)
+  deletedAt                 DateTime?
+  createdAt                 DateTime                  @default(now())
+  updatedAt                 DateTime                  @updatedAt
+  sessions                  Session[]
+  overrides                 UserPermissionOverride[]
+  orderDraft                OrderDraft?
+  savedViews                SavedView[]
+  finalizedInvoices         Invoice[]
+  closedPeriods             ClosePeriod[]
+  glExports                 GlExportBatch[]
   // Two FKs from Quote to this one model, so each needs a NAME (the BillingConfig/GlAccount
   // precedent above).
-  quotedQuotes      Quote[]                  @relation("QuoteQuotedBy")
-  closedQuotes      Quote[]                  @relation("QuoteClosedBy")
+  quotedQuotes              Quote[]                   @relation("QuoteQuotedBy")
+  closedQuotes              Quote[]                   @relation("QuoteClosedBy")
+  publishedTemplateVersions DocumentTemplateVersion[]
 }
 
 model Session {
@@ -303,30 +304,30 @@ model Specification {
 }
 
 model Customer {
-  id                   String              @id @default(cuid())
+  id                   String                       @id @default(cuid())
   code                 String
   name                 String
   parentId             String?
-  parent               Customer?           @relation("CustomerHierarchy", fields: [parentId], references: [id])
-  children             Customer[]          @relation("CustomerHierarchy")
+  parent               Customer?                    @relation("CustomerHierarchy", fields: [parentId], references: [id])
+  children             Customer[]                   @relation("CustomerHierarchy")
   termsId              String?
-  terms                Terms?              @relation(fields: [termsId], references: [id])
+  terms                Terms?                       @relation(fields: [termsId], references: [id])
   // Decimal(12, 2): 10 integer digits, 2 fractional (max 9999999999.99). Validated to this exact
   // precision/scale by decimalField(12, 2) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  creditLimit          Decimal?            @db.Decimal(12, 2)
-  creditHold           Boolean             @default(false)
-  cod                  Boolean             @default(false)
-  taxable              Boolean             @default(true)
-  defaultPo            String              @default("")
-  orderNotes           String              @default("")
-  shippingNotes        String              @default("")
-  invoiceNotes         String              @default("")
-  surchargeOptOut      Boolean             @default(false)
+  creditLimit          Decimal?                     @db.Decimal(12, 2)
+  creditHold           Boolean                      @default(false)
+  cod                  Boolean                      @default(false)
+  taxable              Boolean                      @default(true)
+  defaultPo            String                       @default("")
+  orderNotes           String                       @default("")
+  shippingNotes        String                       @default("")
+  invoiceNotes         String                       @default("")
+  surchargeOptOut      Boolean                      @default(false)
   // Decimal(6, 4): 2 integer digits, 4 fractional (max 99.9999). Validated to this exact
   // precision/scale by decimalField(6, 4) in src/server/customers.ts, BEFORE the value ever
   // reaches Prisma — keep the two in sync if this column's precision or scale ever changes.
-  financeChargeRate    Decimal?            @db.Decimal(6, 4)
+  financeChargeRate    Decimal?                     @db.Decimal(6, 4)
   requestDaysOverride  Int? // business days added to receivedDate; most-specific-wins chain (spec §7.1)
   // Certification chain, most-specific-wins (spec §4.4): null = inherit the plant setting
   // (cert_required_default / cert_scope_default). Part overrides customer, order freezes the
@@ -336,14 +337,14 @@ model Customer {
   /// Overrides BillingConfig.salesTaxRate for this customer (P5A §4.4); null = inherit the plant
   /// rate. Only ever applied when `taxable` is true — the flag decides IF tax is billed, this
   /// decides at what rate.
-  salesTaxRate         Decimal?            @db.Decimal(9, 6)
+  salesTaxRate         Decimal?                     @db.Decimal(9, 6)
   /// Suppresses the certification charge for this customer regardless of the part/plant
   /// "bill for cert" chain (P5A §4.4) — a blanket opt-out, the surchargeOptOut shape.
-  certChargeSuppressed Boolean             @default(false)
-  active               Boolean             @default(true)
+  certChargeSuppressed Boolean                      @default(false)
+  active               Boolean                      @default(true)
   deletedAt            DateTime?
-  createdAt            DateTime            @default(now())
-  updatedAt            DateTime            @updatedAt
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
   addresses            CustomerAddress[]
   contacts             CustomerContact[]
   parts                Part[]
@@ -354,6 +355,7 @@ model Customer {
   payments             Payment[]
   documents            StoredDocument[]
   quotes               Quote[]
+  templateAssignments  CustomerTemplateAssignment[]
 
   @@unique([code], where: raw("\"deletedAt\" IS NULL"))
   @@index([name])
@@ -427,6 +429,12 @@ model Part {
   partNumber            String
   name                  String                @default("")
   description           String                @default("")
+  /// Presentation vocabulary, not process identity (Phase 7 ruling 4) — prints on the traveler's
+  /// Process: slot (bound live at render; blank prints nothing, exactly today) and folds into the
+  /// invoice's create-time processNames snapshot when non-blank (frozen-paper rule: prints keep
+  /// reading the snapshot, so a later edit never rewrites raised paper). Nothing resolves or
+  /// validates against it.
+  processName           String                @default("")
   materialId            String?
   material              Material?             @relation(fields: [materialId], references: [id])
   eachWeight            Decimal               @db.Decimal(10, 4) // lbs; required, > 0
@@ -826,23 +834,30 @@ enum DocumentKind {
 }
 
 model StoredDocument {
-  id         String       @id @default(cuid())
-  orderId    String? // TRAVELER: owner. SHIPPER: which order's ticket (null = the whole set)
-  order      Order?       @relation(fields: [orderId], references: [id])
-  shipperId  String? // SHIPPER, BOL: owner
-  shipper    Shipper?     @relation(fields: [shipperId], references: [id])
-  certId     String? // CERT: owner
-  cert       Cert?        @relation(fields: [certId], references: [id])
-  invoiceId  String? // INVOICE, CREDIT: owner
-  invoice    Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  customerId String? // STATEMENT: owner (Phase 5B §8)
-  customer   Customer?    @relation(fields: [customerId], references: [id])
-  quoteId    String? // QUOTE: owner (Phase 6 §4.2)
-  quote      Quote?       @relation(fields: [quoteId], references: [id])
-  kind       DocumentKind
-  loadNumber Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
-  fileData   Bytes
-  createdAt  DateTime     @default(now())
+  id                String                   @id @default(cuid())
+  orderId           String? // TRAVELER: owner. SHIPPER: which order's ticket (null = the whole set)
+  order             Order?                   @relation(fields: [orderId], references: [id])
+  shipperId         String? // SHIPPER, BOL: owner
+  shipper           Shipper?                 @relation(fields: [shipperId], references: [id])
+  certId            String? // CERT: owner
+  cert              Cert?                    @relation(fields: [certId], references: [id])
+  invoiceId         String? // INVOICE, CREDIT: owner
+  invoice           Invoice?                 @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  customerId        String? // STATEMENT: owner (Phase 5B §8)
+  customer          Customer?                @relation(fields: [customerId], references: [id])
+  quoteId           String? // QUOTE: owner (Phase 6 §4.2)
+  quote             Quote?                   @relation(fields: [quoteId], references: [id])
+  kind              DocumentKind
+  loadNumber        Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
+  // Phase 7 (spec §4.2): the exact PUBLISHED template version that produced this print — render
+  // metadata stamped by every post-Phase-7 print; pre-existing rows stay null. NOT an owner
+  // column: the kind→owner CHECK below is deliberately untouched by Phase 7 — its arms govern
+  // the six owner FKs (which single column identifies the document), while this column is
+  // present on every kind and identifies nothing.
+  templateVersionId String?
+  templateVersion   DocumentTemplateVersion? @relation(fields: [templateVersionId], references: [id])
+  fileData          Bytes
+  createdAt         DateTime                 @default(now())
 
   // Fix-wave R3 finding 4: every order detail read checks document existence by orderId
   // (orders.ts's DETAIL_INCLUDE.documents), and the archive endpoint filters and orders by
@@ -865,6 +880,7 @@ model StoredDocument {
   @@index([invoiceId])
   @@index([customerId])
   @@index([quoteId])
+  @@index([templateVersionId])
 }
 
 enum CertScope {
@@ -1319,19 +1335,19 @@ model InvoiceLine {
   eachWeight      Decimal? @db.Decimal(10, 4)
 
   // Pricing inputs, snapshotted so the line can explain itself forever
-  pricePer       PricePer?
-  unitPrice      Decimal?     @db.Decimal(12, 4)
-  setupCharge    Decimal?     @db.Decimal(12, 2)
-  minimumCharge  Decimal?     @db.Decimal(12, 2)
-  breakThreshold Decimal?     @db.Decimal(12, 2) // the break that won, null if none
-  minimumApplied Boolean      @default(false)
-  rate           Decimal?     @db.Decimal(9, 6) // SURCHARGE percent or TAX rate
-  priceSource    PriceSource?
+  pricePer          PricePer?
+  unitPrice         Decimal?     @db.Decimal(12, 4)
+  setupCharge       Decimal?     @db.Decimal(12, 2)
+  minimumCharge     Decimal?     @db.Decimal(12, 2)
+  breakThreshold    Decimal?     @db.Decimal(12, 2) // the break that won, null if none
+  minimumApplied    Boolean      @default(false)
+  rate              Decimal?     @db.Decimal(9, 6) // SURCHARGE percent or TAX rate
+  priceSource       PriceSource?
   /// Frozen snapshot, written when priceSource = QUOTE and read UNCONDITIONALLY (the
   /// invoice-is-frozen-paper rule, §5.4): every line names its source (§7.5), and a later quote
   /// delete must never blank sent paper. Deliberately the NUMBER, not a QuoteLine FK.
   sourceQuoteNumber Int?
-  needsPrice     Boolean      @default(false)
+  needsPrice        Boolean      @default(false)
 
   amount Decimal @default(0) @db.Decimal(12, 2)
 
@@ -1675,4 +1691,106 @@ model EndingStatement {
   quotes    Quote[]
 
   @@unique([name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+// ------------------------------------------------------------------------------------------------
+// Phase 7 — document templates (design spec §4.1). One TemplateDocType per §8 document: INVOICE
+// covers credits (one contract, the title is data), and MOS_SHIPPER is its own type even though
+// one builder serves both ticket shapes today — a multi-order shipment's paper resolves
+// MOS_SHIPPER, a single-order shipment's resolves SHIPPER (§5.2), both seeded from the same
+// current layout and free to diverge.
+// ------------------------------------------------------------------------------------------------
+
+enum TemplateDocType {
+  TRAVELER
+  SHIPPER
+  MOS_SHIPPER
+  BOL
+  CERT
+  INVOICE
+  STATEMENT
+  QUOTE
+}
+
+model DocumentTemplate {
+  id                 String                       @id @default(cuid())
+  docType            TemplateDocType
+  name               String
+  // Exactly one live default per docType, always — service-normalized (spec §4.1): the seeded
+  // "Standard" starts as it, setting a new default clears the old inside one transaction, and
+  // deleting the current default is refused until another is set.
+  isDefault          Boolean                      @default(false)
+  // The pointer prints resolve. Null ONLY between create and first publish — a template with no
+  // published version can be neither the default nor assigned to a customer (service-enforced
+  // under the template row's FOR UPDATE claim, Task 4), so the print-resolution chain never
+  // dereferences null; the seeded templates are born published.
+  publishedVersionId String?
+  publishedVersion   DocumentTemplateVersion?     @relation("TemplatePublishedVersion", fields: [publishedVersionId], references: [id])
+  deletedAt          DateTime?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+  versions           DocumentTemplateVersion[]    @relation("TemplateVersions")
+  assignments        CustomerTemplateAssignment[]
+
+  @@unique([docType, name], where: raw("\"deletedAt\" IS NULL"))
+}
+
+model DocumentTemplateVersion {
+  id            String             @id @default(cuid())
+  templateId    String
+  // Owned child (the SurchargeStepCode.surchargeId shape): a version lives and dies with its
+  // template. The template itself only ever soft-deletes, so the cascade fires only on test
+  // hard-deletes — the annotation is what marks this FK as ownership, not usage, for the
+  // reference-links sweep.
+  template      DocumentTemplate   @relation("TemplateVersions", fields: [templateId], references: [id], onDelete: Cascade)
+  // Allocated when the draft OPENS, under the template row's FOR UPDATE claim (spec §4.1). A
+  // discarded draft's number is never reused, so the history may carry gaps — deliberate.
+  versionNumber Int
+  // DRAFT → PUBLISHED | DISCARDED. Published rows are IMMUTABLE (service-enforced — no update
+  // path exists), and discard is a status flip, NOT a delete: the row, its config, and its logo
+  // stay as append-only history, honoring §9's soft-deletes-only rule. There is deliberately no
+  // deletedAt and no delete path at all. At most one DRAFT row per template, service-enforced
+  // under the template claim (a partial unique cannot express it across the status values a
+  // draft moves through).
+  status        String             @default("DRAFT")
+  // The typed per-type template config — zod-validated .strict() against the type's contract
+  // (src/lib/template-contracts/) on every write.
+  config        Json
+  // PNG/JPEG only, magic-byte sniffed (the #49 lesson), 512KB cap. Carried per VERSION so
+  // archived versions rerender faithfully and drafts can trial a logo; copied forward when a
+  // new draft opens — fidelity of history over deduplication (spec §4.1). Excluded from audit
+  // snapshots via SNAPSHOT_SELECT and scrubbed by redact() (the signatureImage precedent).
+  logoImage     Bytes?
+  logoMimeType  String?
+  publishedAt   DateTime?
+  publishedById String?
+  publishedBy   User?              @relation(fields: [publishedById], references: [id])
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  // Back-relation for DocumentTemplate.publishedVersion (a list only because the FK sits on the
+  // template side); StoredDocument.templateVersionId stamps which version produced each print.
+  publishedFor  DocumentTemplate[] @relation("TemplatePublishedVersion")
+  documents     StoredDocument[]
+
+  @@unique([templateId, versionNumber])
+}
+
+model CustomerTemplateAssignment {
+  id         String           @id @default(cuid())
+  customerId String
+  // No DB cascade: customers only soft-delete. deleteCustomer cascades these rows in the
+  // SERVICE (Task 5) — an assignment is a pure preference, nothing else points at it (§4.1).
+  customer   Customer         @relation(fields: [customerId], references: [id])
+  docType    TemplateDocType
+  templateId String
+  // §5.14 the other way around: deleting a TEMPLATE with live assignments is refused-and-named
+  // (reference-links.ts registry entry; the guarded delete arrives in Task 4).
+  template   DocumentTemplate @relation(fields: [templateId], references: [id])
+  deletedAt  DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@unique([customerId, docType], where: raw("\"deletedAt\" IS NULL"))
+  @@index([customerId])
+  @@index([templateId])
 }

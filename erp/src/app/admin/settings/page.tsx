@@ -50,8 +50,11 @@ export default function SettingsPage() {
                 <span>{r.label}{saved === r.key && <em className="ml-2 text-green-700">saved</em>}</span>
               );
 
-              // Long, multi-paragraph legal text (cert_statement / shipper_liability_text) —
-              // stacked layout, full-width textarea; a single-line input makes these uneditable.
+              // Long, multi-paragraph legal text — stacked layout, full-width textarea; a
+              // single-line input makes such a setting uneditable. Currently dormant:
+              // `TEXTAREA_KEYS` is empty since Phase 7 Task 14 (the cert/shipper/quote standing
+              // texts retired into template text blocks — see settings-ui.ts). The branch stays
+              // for any future long-text setting.
               if (kind === "textarea") {
                 return (
                   <div key={r.key} className="border-b p-2 text-sm last:border-0">

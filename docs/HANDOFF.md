@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-12 (later the same day) — **Phase 7 (Template designer) is IN FLIGHT: the owner chose it as the next track and approved its design spec** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md` — seven rulings in its §3, approved including the `pdf-lib` dependency; §15 amendments recorded). §4 carries the current-phase state; §9 is now the Phase 7 kickoff. Earlier the same day: **Phase 6 (Quoting) MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
+**Updated:** 2026-08-14 — **Phase 7 (Template designer) BUILD COMPLETE — all 21 tasks approved (every one on review round 1), whole-branch review passed, PR #104 opened (awaiting owner merge + demo).** All eight document types are now data-driven templates (multiple per type, one default, per-customer assignment, draft→publish versioning, the structured editor + logo + preview); the roadmap's testable outcome is proven (`traveler-restyle.test.ts` — restyle → publish → print → the archived paper carries it). Final gates at `c3ca8b9`/`e4e3e77`: **2743 tests / 149 files**, `tsc`/`eslint`/`build` clean, E2E **20/20**, **35 migrations on both DBs**. The whole-branch review (5 dimensions, each finding adversarially verified) came back CLEAN on concurrency/data-integrity with **zero BLOCKER/MAJOR**; one MINOR (a stale settings comment) fixed; then Codex's PR review found 3 real correctness findings (a P1 assign-vs-deleteCustomer SSI race the whole-branch pass missed, + two §5.12/§5.13 UI stale-state bugs) — all fixed on-branch (2744/2744); deferred Phase 7 findings → issues **#102** (render two-pass blank-page artifact) and **#103** (contract-tightening print-500 forward hazard). Fold-ins **#36/#43/#87/#97/#98** close via the PR body at merge. Full record: `docs/execution/2026-08-12-phase-7-template-designer/`. Earlier 2026-08-12: **Phase 7 kickoff — the owner approved the design spec** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md`, seven §3 rulings incl. `pdf-lib`; §15 amendments recorded). Earlier the same day: **Phase 6 (Quoting) MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -81,9 +81,34 @@ adversarially reviewed on four lenses before approval (all APPROVE-WITH-FIXES, f
 incorporated — among them the never-published-template resolution hole, the honest
 immutability-not-locking publish-vs-print argument, discard-as-status-flip instead of a
 hard delete, config diffs kept in audit, and the `pdf-lib` dependency surfaced for explicit
-sign-off — **approved**). Branch: `phase-7-template-designer` (created at plan approval). Next
-step: the implementation plan, then subagent-driven execution with the record in
-`docs/execution/2026-08-12-phase-7-template-designer/`, committed on the first task.
+sign-off — **approved**). Branch: `phase-7-template-designer`; the record is in
+`docs/execution/2026-08-12-phase-7-template-designer/` (committed on the first task).
+**ALL 21 TASKS BUILD-COMPLETE and task-approved (2026-08-14) — Phase 7's build is done; the
+whole-branch review, one fix wave, and the PR remain.** The document-conversion track (Tasks 1–14)
+made all eight builders (traveler, shipper/MOS, BOL, cert, invoice/credit, statement, quote)
+config-consumers over a validated `TemplateConfig`, each golden gate met the strong way (the
+builder's own pdf test unedited); Task 14 (quote, last) also retired the four standing-text Settings
+— `cert_statement` / `shipper_liability_text` / `quote_intro_text` / `quote_liability_text` are
+template text blocks now (migration `20260813120000_retire_standing_text_settings` deletes the
+orphaned rows; the values were COALESCE-copied into the seeded configs at Task 3, nothing stranded).
+The UI stretch (Tasks 15–20) delivered the `Part.processName` field, the templates admin list + nav
+(Option B — an admin-group entry gated on `templates.view` specifically), the contract-driven editor
+with logo upload, the §5.13 save/conflict UX, the side-effect-free preview pane, and the
+customer-page assignment picker. Task 21 proved the roadmap's testable outcome — **owner restyles
+the traveler/logo, publishes, assigns, prints, and the STORED paper shows it** (the renamed-label
+marker + the placed logo decoded from the archived `StoredDocument` bytes, `templateVersionId`
+stamped with the published version) as a real-services integration test
+(`tests/traveler-restyle.test.ts`); the editor→logo-upload→publish→assign→preview UI loop is covered
+by the `templates-admin` E2E flow. Fold-ins **#36, #43, #97, #98, #87** all landed on the branch
+(they close via the PR body's `Fixes #NN` at merge). **Final branch baseline (2026-08-14, watched on
+the final HEAD): 2743 tests / 149 files, tsc / eslint / build clean, E2E 20/20, 35 migrations on
+both DBs, `migrate status` clean.** Per-task detail lives in the execution ledger
+`docs/execution/2026-08-12-phase-7-template-designer/progress.md`. Deferred findings → issue #102
+(the render two-pass blank-trailing-page artifact); the whole-branch review also carries the ledger
+notes (the `tests/helpers/pdf.ts` decoder's two prior bugs + its now-dormant EOL-strip fallback, the
+quote's net-new continuation band, the locked-field-in-hideable-section contract-authoring
+convention, and the preview picker's unverified non-order label fields). Remaining: the whole-branch
+review on the strongest model, one fix wave, and the PR.
 
 **Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12).** The full Phase 6 narrative — the
 fourteen-ruling design session, the twelve tasks and their reviews, the whole-branch review's F1

@@ -1,0 +1,23 @@
+# Task 9 brief — Shipping ticket + MOS conversion, tear-off reflow
+
+**Branch:** `phase-7-template-designer` (Tasks 1–8 APPROVED; the traveler shows the full conversion shape; suite at 2411; E2E 19/19).
+**Read first:** the spec **§5.4 + §5.6 + §5.2 (resolution: SHIPMENT'S ORDER COUNT decides the docType — a multi-order shipment's per-order ticket also resolves `MOS_SHIPPER`; all paper from one shipment styles alike)**; the plan Task 9; **Task 7's report** (the conversion pattern) and **Task 8's report** (its Task 9 notes: copy the two-line `completeSections` adoption; reuse the `prepareSheets` + `build<X>Definitions` + `renderSheetGroups` shape; **the ledger's two-date-styles trap is BINDING — the ticket prints header `shortDate` M/D/YYYY and tear-off `paddedDate` MM/DD/YYYY against ONE date knob: map the knob to the HEADER only; the tear-off keeps its own style unconditionally** — a knob change must never alter the tear-off at the golden gate). Then `erp/src/server/pdf/shipping-ticket.ts` in full and `erp/src/server/shippers.ts`'s `readShippingTicketData`/`printShippingTickets` (~lines 1774–1935), plus both contracts (`shipper.ts`, `mos-shipper.ts`).
+
+## Deliverable
+
+1. **`buildShippingTicketDefinition(s)` become config-consumers** — ONE builder, fed either contract's config (the SHIPPER and MOS_SHIPPER configs are structurally identical today; the builder takes the backfilled config + `completeSections`): sections/fields/labels/widths/fonts/formats per the traveler pattern, §5.6 belt included (both halves — flag AND omission via the helper). The date knob maps to the header `shortDate` slots ONLY (the trap above). `shipper_liability_text` renders from the config's text block (the `Setting` keeps its other readers until Task 14 — do not touch `settings.ts`).
+2. **Tear-off goes flow-based.** Replace `absolutePosition: { x: 24, y: 648 }` with flow layout so width overrides and long part tables reflow instead of overlapping — the >8-multi-line-part-rows regression test (the HANDOFF §7 item 5.3 ping this closes). Tear-off content unchanged; the golden content assertions must hold. If exact visual anchoring needs a bottom-pinning technique, prefer a flow-safe one (e.g. a stretching spacer table or the two-pass measurement precedent in `render.ts`) over any absolute position; document the choice.
+3. **Resolution + stamp** (`printShippingTickets` in `shippers.ts`): inside the existing Serializable transaction after the claims — docType = `shipperOrderCount > 1 ? "MOS_SHIPPER" : "SHIPPER"` (count the shipment's ORDERS, not the tickets being printed; the per-order print of a multi-order shipment resolves MOS — test it explicitly); `resolveTemplateForPrint(tx, docType, shipper.customerId)`; logo per the traveler pattern; stamp `templateVersionId` on the stored row.
+4. **Per-ticket sheet groups**: the whole-set print renders one definition per order's ticket and merges via `renderSheetGroups`; when a template enables `pageFooter`, "Page N of M" numbers per ticket (per-group restart test through the real print path); default OFF — golden. Continuation headers: give each ticket's definition a `continuationHeaderSpec` with its order identity (the traveler precedent; a long ticket overflowing LETTER repeats its order number).
+
+## Tests (TDD; RED evidence REQUIRED)
+
+Golden: the full existing shipping-ticket suite green, untouched. Config-driven: label/width/font/format overrides through both docTypes; the date knob moves the header date and provably NOT the tear-off date (one test, both assertions); §5.6 both halves; the >8-row tear-off reflow regression (decode: no overlap — assert the tear-off content appears after the table content in reading order, or equivalent); resolution: single-order → SHIPPER, multi-order whole-set → MOS_SHIPPER, multi-order per-order ticket → MOS_SHIPPER (all three through the real print path with fixture templates + assignments); stamp on every stored row; per-group footer restart; snapshot/released-row rendering unchanged (the Phase 4 snapshot-fallback paths must survive conversion — run those existing tests).
+
+## Gates — E2E REQUIRED
+
+Four unit gates + full E2E **detached from the start** (the standing discipline: setsid + sentinel under the scratchpad, row from the run's own log or PENDING). Dev-DB fixtures cleared.
+
+## Report
+
+`docs/execution/2026-08-12-phase-7-template-designer/task-09-report.md`: the tear-off technique chosen, the docType-resolution wiring, RED evidence, all five gates watched, deviations, notes for Task 10 (BOL — same shipment paper, one order-count rule already decided). Final message: 5-line summary + report path. Update your ledger row.

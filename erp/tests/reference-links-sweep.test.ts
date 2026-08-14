@@ -62,6 +62,11 @@ export function schemaLinks(schemaText: string): Map<string, string> {
   kinds.add("surcharge");
   // "endingStatement" needs no add here since Phase 6 Task 2: it is a genuine ReferenceKind
   // (ruling 13), so REFERENCE_KINDS already carries it into `kinds` above.
+  // "documentTemplate" (Phase 7 Task 3) is also a BlockerTarget, not a ReferenceKind — a
+  // template is a maintained row with a guarded delete (Task 4's service; spec §4.1: deleting a
+  // template with live customer assignments is refused-and-named), so an unregistered FK aimed
+  // at it (customerTemplateAssignment.templateId) must fail the sweep too.
+  kinds.add("documentTemplate");
   const out = new Map<string, string>();
 
   for (const [modelName, body] of models(schemaText)) {
@@ -70,10 +75,15 @@ export function schemaLinks(schemaText: string): Map<string, string> {
       if (isList) continue;                                       // back-relation, holds no FK
       const fields = /fields:\s*\[([^\]]+)\]/.exec(args);          // order-independent
       if (!fields || !kinds.has(toKind(targetModel))) continue;    // no FK here, or not a reference table
-      // Owned-child exemption, scoped to processStepCode and surcharge only (see the doc comment
-      // above) — a cascade relation targeting any OTHER kind in `kinds` is a real usage FK and
-      // must still be reported as unregistered.
-      const ownedChildTarget = toKind(targetModel) === "processStepCode" || toKind(targetModel) === "surcharge";
+      // Owned-child exemption, scoped to processStepCode, surcharge, and documentTemplate only
+      // (see the doc comment above) — a cascade relation targeting any OTHER kind in `kinds` is
+      // a real usage FK and must still be reported as unregistered. documentTemplate joined in
+      // Phase 7: DocumentTemplateVersion.templateId is the owned-child real example (a version
+      // lives and dies with its template — spec §4.1's append-only history; registering it would
+      // instead make every template's own versions block its deletion, a self-referential dead
+      // end, the SurchargeStepCode shape one target over).
+      const ownedChildTarget = toKind(targetModel) === "processStepCode" || toKind(targetModel) === "surcharge"
+        || toKind(targetModel) === "documentTemplate";
       if (ownedChildTarget && /onDelete:\s*Cascade/.test(args)) continue;
       const column = fields[1].split(",")[0].trim();
       out.set(`${toKind(modelName)}.${column}`, toKind(targetModel));
@@ -132,7 +142,12 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
       "customer.termsId -> terms",
       // `surcharge` is a BlockerTarget (Task 6, kinds.add above) — this FK is now visible too.
       "customerSurcharge.surchargeId -> surcharge",
-      "glPosting.glAccountId -> glAccount",              // after customerSurcharge.*, before invoiceLine.*
+      // Phase 7: `documentTemplate` is a BlockerTarget (kinds.add above) — the assignment's
+      // template FK is the one new usage reference. DocumentTemplateVersion.templateId is an
+      // owned-child cascade (exempt, see schemaLinks); the other Phase 7 FKs
+      // (publishedVersionId, templateVersionId, publishedById, customerId) target non-kinds.
+      "customerTemplateAssignment.templateId -> documentTemplate",
+      "glPosting.glAccountId -> glAccount",              // after customerSurcharge.*/customerTemplateAssignment.*, before invoiceLine.*
       "inspectionCode.defaultScaleId -> inspectionScale",
       // onDelete: SetNull, not Cascade — the exemption in schemaLinks covers cascades only, so
       // these three stay visible to the sweep, which is what forces them into REFERENCE_LINKS.
@@ -171,7 +186,7 @@ name resolution — both fail silently. Add an entry per offender.`).toEqual([])
   // Local, not the shared `kinds` inside schemaLinks: a BlockerTarget, not just a ReferenceKind
   // — REFERENCE_LINKS now carries the two processStepCode entries from §7 of the design spec.
   it("every registered link targets a real reference kind", () => {
-    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode", "surcharge"]);
+    const kinds = new Set<string>([...REFERENCE_KINDS, "processStepCode", "surcharge", "documentTemplate"]);
     expect(REFERENCE_LINKS.filter((l) => !kinds.has(l.targetKind)).map((l) => l.targetKind)).toEqual([]);
   });
 
@@ -298,6 +313,46 @@ model SurchargeStepCode {
 }
 `;
     expect(unregisteredLinks(fixture, new Set())).toEqual([]);
+  });
+
+  // Phase 7's own real example: DocumentTemplateVersion.templateId is an owned-child FK (a
+  // version lives and dies with its template, spec §4.1) guarded by the template service, not
+  // this registry — the ProcessStepFieldDef.codeId / SurchargeStepCode.surchargeId shape one
+  // target over. It must NOT be reported.
+  it("does not name a cascade FK that targets DocumentTemplate (bite-proof fixture)", () => {
+    const fixture = `
+model DocumentTemplate {
+  id   String @id
+}
+
+model DocumentTemplateVersion {
+  id         String           @id
+  templateId String
+  template   DocumentTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual([]);
+  });
+
+  // And the reverse for the same target: a non-cascade FK targeting DocumentTemplate
+  // (customerTemplateAssignment.templateId in the real schema) is a genuine usage reference and
+  // must still be reported — the exemption is keyed off the Cascade annotation, not the kind.
+  it("still names an unregistered non-cascade foreign key targeting DocumentTemplate (bite-proof fixture)", () => {
+    const fixture = `
+model DocumentTemplate {
+  id   String @id
+}
+
+model CustomerTemplateAssignment {
+  id         String           @id
+  deletedAt  DateTime?
+  templateId String
+  template   DocumentTemplate @relation(fields: [templateId], references: [id])
+}
+`;
+    expect(unregisteredLinks(fixture, new Set())).toEqual([
+      "customerTemplateAssignment.templateId -> documentTemplate",
+    ]);
   });
 
   // The reverse: a non-cascade FK targeting Surcharge (customerSurcharge.surchargeId,

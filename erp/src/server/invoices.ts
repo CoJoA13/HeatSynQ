@@ -28,9 +28,10 @@ import {
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
-import { renderPdf } from "./pdf/render";
+import { renderPdf, jpegDataUri, pngDataUri } from "./pdf/render";
 import { buildInvoiceDefinition, type InvoicePdfData, type InvoiceAmountRow } from "./pdf/invoice";
 import { storeDocument, assertPrintable } from "./documents";
+import { resolveTemplateForPrint } from "./template-assignments";
 
 // -------------------------------------------------------------------------------------------
 // Task 11 (P5A §5.4/§5.7/§10): where pricing becomes a customer-facing invoice. `listInvoice
@@ -343,6 +344,7 @@ function renderAddress(addr: AddressRow | null, fallbackName: string): string {
 
 type LeadPart = {
   partNumber: string; name: string; description: string; eachWeight: Prisma.Decimal;
+  processName: string;
   billForCert: boolean | null; certCharge: Prisma.Decimal | null; material: { name: string } | null;
 };
 type OrderLineRow = { id: string; position: number; partId: string; quoteLineId: string | null; part: LeadPart };
@@ -354,7 +356,7 @@ const ORDER_LINE_SELECT = {
   id: true, position: true, partId: true, quoteLineId: true,
   part: {
     select: {
-      partNumber: true, name: true, description: true, eachWeight: true,
+      partNumber: true, name: true, description: true, eachWeight: true, processName: true,
       billForCert: true, certCharge: true, material: { select: { name: true } },
     },
   },
@@ -746,7 +748,16 @@ async function createInvoiceInTx(
     : lead.quoteLineId !== null
       ? await quotePriceRowInputs(tx, { id: lead.id, partId: lead.partId, quoteLineId: lead.quoteLineId })
       : await listPartPrices(lead.partId);
-  const processNames = leadPrices.map((p) => p.stepName).join(", ");
+  // Ruling 4's invoice half (spec §5.7): the header's Process: snapshot is the lead part's
+  // `processName` (presentation vocabulary) when it is non-blank, else today's priced-operation
+  // comma-join. CREATE-TIME only — this is the ONLY behavioral change to invoice data, and prints
+  // keep reading `Invoice.processNames` UNCONDITIONALLY (frozen paper), so a later processName edit
+  // never rewrites raised paper. Pre-existing invoices are untouched (their snapshot already holds
+  // the join); a credit copies its source invoice's snapshot as today.
+  const leadProcessName = lead?.part.processName ?? "";
+  const processNames = leadProcessName.trim() !== ""
+    ? leadProcessName
+    : leadPrices.map((p) => p.stepName).join(", ");
   const materialName = orderLines[0]?.part.material?.name ?? "";
 
   const invoiceDate = data.invoiceDate ? parseDate(data.invoiceDate, "Invoice date") : deps.today;
@@ -1010,7 +1021,15 @@ const LINE_INPUT = z.object({
   sourceQuoteNumber: z.number().int().nullable().optional(),
   needsPrice: z.boolean().optional(),
   amount: decimalField(12, 2, { required: true }),
-}).strict();
+}).strict().refine(
+  // #98 (whole-branch review F5): the manual-lines save is a trusted, permission-gated, audited
+  // surface — but `sourceQuoteNumber` is the frozen tier-1 stamp that prints "Quote #N", and it must
+  // not ride a MANUAL (or null-source) line, which would print an agreement number the line never
+  // had. This is shape-tightening, not authenticity verification — a live-quote check is a
+  // deliberate frozen-paper non-goal (§7.5). The echo-back for genuine QUOTE lines is untouched.
+  (l) => l.sourceQuoteNumber === null || l.sourceQuoteNumber === undefined || l.priceSource === "QUOTE",
+  { message: "sourceQuoteNumber is only allowed when priceSource is QUOTE", path: ["sourceQuoteNumber"] },
+);
 
 type LineInput = z.infer<typeof LINE_INPUT>;
 const REPLACE_LINES = z.array(LINE_INPUT);
@@ -1626,15 +1645,29 @@ async function printInvoiceInTx(
   assertPrintable(order);
   assertPrintable(invoice);
 
+  // §5.2 resolution on THIS claimed transaction at its isolation — correct by §5.1 immutability,
+  // not by locking (the printCert/printBol precedent); no template row is claimed and none is
+  // needed. BOTH an invoice AND a credit resolve the INVOICE docType (spec §4.1: one contract
+  // covers credits — the title/signs are data), on the invoice row's OWN frozen customer id.
+  const resolved = await resolveTemplateForPrint(tx, "INVOICE", invoice.customerId);
+  // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only when the
+  // config also places it, so an unplaced upload converts nothing.
+  const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+    ? (resolved.logoMimeType === "image/jpeg"
+        ? jpegDataUri(Buffer.from(resolved.logoImage))
+        : pngDataUri(Buffer.from(resolved.logoImage)))
+    : undefined;
+
   const data = await readInvoicePdfData(tx, id, settings);
-  const pdf = await renderPdf(buildInvoiceDefinition(data));
+  const pdf = await renderPdf(buildInvoiceDefinition(data, resolved.config, logoDataUri));
 
   // The kind follows the invoice ROW's own kind — a credit archives as CREDIT, an invoice as
   // INVOICE, both owning `invoiceId` alone (the kind→owner CHECK). This insert is the ONE mutation
   // here, through the sanctioned `storeDocument` path, on `tx`, UNDER the claim above — so the
   // archive cannot commit against a state (a concurrent discard) that changed out from under it.
+  // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
   const doc = await storeDocument(
-    tx, { kind: invoice.kind === "CREDIT" ? "CREDIT" : "INVOICE", invoiceId: id }, pdf);
+    tx, { kind: invoice.kind === "CREDIT" ? "CREDIT" : "INVOICE", invoiceId: id }, pdf, resolved.versionId);
   return { documentId: doc.id, documentNumber: data.documentNumber, pdf };
 }
 

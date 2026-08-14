@@ -15,27 +15,13 @@ const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min
 const INT4_MAX = 2_147_483_647;
 const numberSeed = int(1, INT4_MAX);
 
-// Transcribed verbatim from the owner's printed sample (docs/samples/Certification Sample.pdf) —
-// this is the contract text customers see on every certification, not decorative boilerplate.
-const CERT_STATEMENT_DEFAULT =
-  "We certify that the listed Parts / Materials were heat treated in accordance with " +
-  "American Heat Treating - Alabama, LLC. Quality Assurance Manual 08/01/22 and customer " +
-  "requirements as follows:";
-
-// Transcribed verbatim from the owner's printed sample (docs/samples/Shipping Ticket Sample.pdf),
-// including its "AMERICAN HEAT TREAT - ALABAMA" (missing "ING") wording in the middle paragraph —
-// that is how it prints on the source document, not a transcription error to silently "fix".
-const SHIPPER_LIABILITY_DEFAULT =
-  "Above pricing is based on American Heat Treating - Alabama STATEMENT OF LIMITED LIABILITY " +
-  "which is sent with our quotation. If quoted pricing is accepted by the customer these terms " +
-  "are in effect. IMPORTANT NOTICE: PURCHASE ORDERS ARE SUBJECT TO THE AMERICAN HEAT TREAT - " +
-  "ALABAMA TERMS AND CONDITIONS AS GENERALLY ADOPTED BY THE METAL TREATING INSTITUTE. A COPY OF " +
-  "THESE TERMS AND CONDITIONS IS ON THE LEAD SHEET OF THIS FAX. IF ADDITIONAL LIABILITY (IN " +
-  "EXCESS OF OUR LIMITS) IS REQUESTED, WE MUST KNOW THE VALUE OF YOUR PARTS PRIOR TO PROCESSING. " +
-  "AN ADDITIONAL CHARGE MAY BE ASSESSED TO COMPENSATE FOR THE INCREASED EXPOSURE.\n\n" +
-  "NO ADDITIONAL LIABILITY WILL BE IMPOSED UPON AMERICAN HEAT TREATING - ALABAMA, IN THE " +
-  "ABSENCE OF A WRITTEN AGREEMENT SPECIFICALLY COVERING SAME SIGNED BY A PRINCIPAL OWNER OF " +
-  "AMERICAN HEAT TREATING - ALABAMA.";
+// The four standing-text settings (cert_statement / shipper_liability_text / quote_intro_text /
+// quote_liability_text) were RETIRED in Phase 7 Task 14: every document builder is now a
+// config-consumer, and each standing text lives in its template's own text block (spec §8). Their
+// values were COALESCE-copied into the seeded template configs in the Task 3 seed migration; the
+// Setting rows are deleted by the 20260813120000_retire_standing_text_settings migration. The
+// transcribed code defaults now live in the contract modules (src/lib/template-contracts/), which
+// are the canonical copy.
 
 export const SETTINGS = {
   company_name: { schema: z.string(), default: "", label: "Company name", group: "Company" },
@@ -66,24 +52,8 @@ export const SETTINGS = {
   cert_scope_default: {
     schema: z.enum(CERT_SCOPES), default: "ORDER", label: "Default certification scope", group: "Certifications",
   },
-  cert_statement: {
-    schema: z.string(), default: CERT_STATEMENT_DEFAULT, label: "Certification statement", group: "Certifications",
-  },
-  shipper_liability_text: {
-    schema: z.string(), default: SHIPPER_LIABILITY_DEFAULT,
-    label: "Shipping ticket liability text", group: "Shipping",
-  },
-  // Phase 6 document text blocks (spec §6) — the cert_statement/shipper_liability_text shape, in
-  // their own per-document group. The intro default is the owner sample's own wording
-  // (docs/samples/Quote_Sample_Form.jpeg); the liability block ships empty — the owner keys the
-  // shop's limited-liability wording.
-  quote_intro_text: {
-    schema: z.string(), default: "We are pleased to provide you with the following quotation:",
-    label: "Quote intro line", group: "Quoting",
-  },
-  quote_liability_text: {
-    schema: z.string(), default: "", label: "Quote liability text", group: "Quoting",
-  },
+  // (cert_statement / shipper_liability_text / quote_intro_text / quote_liability_text retired in
+  // Phase 7 Task 14 — they are template text blocks now, see the note above the constants.)
   // Capped to match addBusinessDays' own guard (src/lib/business-days.ts, fix-wave finding 5) —
   // this value feeds straight into its day-at-a-time loop as the plant-wide default.
   request_days_default: { schema: int(0, 3650), default: 5, label: "Default request days", group: "Dates" },

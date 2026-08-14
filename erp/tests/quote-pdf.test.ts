@@ -9,7 +9,6 @@ import {
 import { buildQuoteDefinition, type QuotePdfData } from "@/server/pdf/quote";
 import { renderPdf } from "@/server/pdf/render";
 import { getDocument, VOIDED_PRINT } from "@/server/documents";
-import type { Content } from "pdfmake/interfaces";
 import type { Customer, User } from "../prisma/generated/prisma/client";
 
 import { POST as printRoute } from "@/app/api/quotes/[id]/print/route";
@@ -28,8 +27,8 @@ const getReq = (url: string, cookie?: string) =>
  *  DEFINITION, never on rendered bytes (pdfkit writes TTF-subset glyph ids, so a rendered PDF
  *  carries no character text to grep for; the rendered file is pinned STRUCTURALLY instead).
  *  Copied from tests/invoice-pdf.test.ts (copying across test files is this repo's convention).
- *  Functions (the quote's footer page callback — spec §6 sanctions the code-rendered layout) are
- *  simply not traversed; the callback's own output is pinned separately below. */
+ *  Functions are simply not traversed (belt-and-braces — the builder is now plain JSON, its footer
+ *  retired to the declarative `pageFooterSpec`, so there are none). */
 function allText(node: unknown, out: string[] = []): string[] {
   if (node === null || node === undefined) return out;
   if (typeof node === "string" || typeof node === "number") { out.push(String(node)); return out; }
@@ -162,12 +161,19 @@ function sampleData(overrides: Partial<QuotePdfData> = {}): QuotePdfData {
 }
 
 // -------------------------------------------------------------------------------------------
-// The builder — pure (data in, definition out), built to docs/samples/Quote_Sample_Form.jpeg
-// (spec §6). NOT plain JSON: the footer page callback is spec-sanctioned ("the quote render is
-// code, not a Phase 7 JSON template"), so there is no JSON-round-trip purity test here.
+// The builder — pure (data + config in, plain-JSON definition out), built to
+// docs/samples/Quote_Sample_Form.jpeg (spec §6). Since Task 14 it is a config-consumer and JOINS
+// the JSON-round-trip purity test its siblings had: the Phase 6 footer callback retired to the
+// declarative `pageFooterSpec { kind: "pageNofM", label: "Page:" }`. Config-driven assertions live
+// in tests/quote-templates.test.ts; these pin the DEFAULT config reproduces today's paper exactly.
 // -------------------------------------------------------------------------------------------
 
 describe("buildQuoteDefinition", () => {
+  it("is a pure builder — the definition survives a JSON round trip", () => {
+    const def = buildQuoteDefinition(sampleData());
+    expect(JSON.parse(JSON.stringify(def))).toEqual(def);
+  });
+
   it("prints the sample's header, right block, Attn block and intro line", () => {
     const text = allText(buildQuoteDefinition(sampleData())).join(" ");
     expect(text).toContain("Quotation");
@@ -239,11 +245,13 @@ describe("buildQuoteDefinition", () => {
     expect(text).toContain("V.P. Sales");
   });
 
-  it("renders 'Page: N of M' through the footer page callback (spec §6 — code-rendered layout)", () => {
+  it("declares 'Page: N of M' via pageFooterSpec (label 'Page:'), the retired footer callback gone", () => {
     const def = buildQuoteDefinition(sampleData());
-    const footer = def.footer as (current: number, total: number) => Content;
-    expect(typeof footer).toBe("function");
-    expect(allText(footer(2, 5)).join(" ")).toContain("Page: 2 of 5");
+    // The Phase 6 hand-written footer callback is retired; render.ts's pageNofM callback reproduces
+    // the exact "Page: N of M" line from this spec (label "Page:"). The multi-page render proof —
+    // the printed line stays byte-identical — is in tests/quote-templates.test.ts.
+    expect(def.footer).toBeUndefined();
+    expect(def.pageFooterSpec).toEqual({ kind: "pageNofM", label: "Page:" });
   });
 
   it("prints 'Unlimited' for an unlimited line and omits its amounts", () => {

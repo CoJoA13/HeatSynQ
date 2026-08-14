@@ -4,6 +4,7 @@ import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
 import { auditedCreate, auditedSoftDelete } from "./audit";
 import { claimOrder } from "./order-locks";
+import { contentDispositionValue } from "./content-disposition";
 
 export type AttachmentOwner = "part" | "order";
 export type AttachmentMeta = { id: string; filename: string; mimeType: string; size: number; createdAt: Date };
@@ -21,61 +22,20 @@ const ALLOWED_TYPES = new Set<string>([
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
 ]);
 
-/** Strips control characters (CR/LF header-injection defense) — shared by both the quoted-string
- *  and RFC 5987 forms below, neither of which is safe to build from a raw, unfiltered upload
- *  name. `filename` is whatever the browser sent as the original upload name. */
-function stripControlChars(name: string): string {
-  return name.replace(/[\x00-\x1f\x7f]/g, "");
-}
-
-/** Escapes backslash/quote for the quoted-string form (RFC 6266 / RFC 2616 §2.2). */
-function escapeQuoted(name: string): string {
-  return name.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-}
-
-/**
- * ASCII-only approximation of `name` for the legacy `filename=` parameter: every codepoint
- * outside printable ASCII (0x20-0x7e) becomes "_". Fix-wave finding 7: a raw non-ASCII codepoint
- * here is not a quoting problem `escapeQuoted` can fix — `Headers`/`NextResponse` require header
- * values to be Latin1/ByteString, and constructing the response for an attachment named e.g.
- * "測定.pdf" threw outright, so the file could be uploaded but never downloaded again.
- * `rfc5987Encode` below carries the real name for every current browser, which all read it in
- * preference to this one; this is only the fallback for a client that understands neither.
- */
-function asciiFallback(name: string): string {
-  return name.replace(/[^\x20-\x7e]/g, "_");
-}
-
-/**
- * RFC 5987 `ext-value` percent-encoding for the `filename*=UTF-8''...` parameter.
- * `encodeURIComponent` already escapes everything the grammar's `attr-char` set excludes except
- * `* ' ( )` (which it deliberately leaves literal, since all four are legal inside a URI
- * component) — those four are escaped by hand on top so the result is valid `attr-char`-only
- * percent-encoding. Also collapses any CR/LF that survived as raw bytes into their own %-encoded
- * form, so this half of the header is immune to header injection independent of the stripping
- * `contentDisposition` already does up front.
- */
-function rfc5987Encode(name: string): string {
-  return encodeURIComponent(name).replace(/[*'()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
 /**
  * `Content-Disposition` value for a GET-bytes response: `inline` for anything a browser tab can
  * render on its own (images, PDF), `attachment` (forces a download) for everything else on the
- * allowlist (csv/plain text/office docs) — shared by both owners' byte-serving routes so the
- * inline/attachment split and the filename encoding live in exactly one place. Carries BOTH an
- * ASCII-sanitized `filename=` fallback and the faithful RFC 5987 `filename*=UTF-8''...` form
- * (RFC 6266 §4.3's own recommendation, sent unconditionally rather than only when the name
- * happens to need it — one code path, not an ASCII/non-ASCII fork) — every current browser reads
- * the latter, so an attachment named e.g. "測定.pdf" still downloads under its real name; only a
- * client that understands neither parameter would ever see the sanitized fallback.
+ * allowlist (csv/plain text/office docs). The inline/attachment split lives here (it is
+ * attachment-domain vocabulary — the `INLINE_TYPES` allowlist); the sanitizing/encoding of the
+ * filename into the header value is `contentDispositionValue` (the `content-disposition.ts` leaf,
+ * shared with the document-download routes since issue #87). `alwaysExtended: true` keeps this
+ * surface's long-standing behavior of carrying the faithful RFC 5987 `filename*=UTF-8''...` form
+ * alongside `filename=` even for a plain-ASCII name (RFC 6266 §4.3's recommendation) — so an
+ * attachment named e.g. "測定.pdf" still downloads under its real name.
  */
 export function contentDisposition(mimeType: string, filename: string): string {
   const kind = INLINE_TYPES.has(mimeType) ? "inline" : "attachment";
-  const stripped = stripControlChars(filename);
-  const quoted = escapeQuoted(asciiFallback(stripped));
-  const encoded = rfc5987Encode(stripped);
-  return `${kind}; filename="${quoted}"; filename*=UTF-8''${encoded}`;
+  return contentDispositionValue(kind, filename, { alwaysExtended: true });
 }
 
 /**

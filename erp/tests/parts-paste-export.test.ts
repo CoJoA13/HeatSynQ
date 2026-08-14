@@ -135,14 +135,43 @@ describe("parts paste and export", () => {
     const sheet = wb.getWorksheet("Parts")!;
     expect(sheet.getRow(1).values).toEqual([
       undefined,
-      "Customer code", "Customer name", "Part number", "Name", "Description", "Material",
-      "Each wt", "Load qty", "Load wt", "Request days override", "Serialization", "Active",
+      "Customer code", "Customer name", "Part number", "Name", "Description", "Process name",
+      "Material", "Each wt", "Load qty", "Load wt", "Request days override", "Serialization", "Active",
     ]);
     const dataRow = sheet.getRow(2).values as ExcelJS.CellValue[];
     expect(dataRow).toContain("Ductile iron");
     expect(dataRow).not.toContain(customer.id);
     expect(dataRow).not.toContain(material.id);
     expect(dataRow).toContain("yes"); // Active
+  });
+
+  // Phase 7 Task 15: processName (spec §5.7 ruling 4) joins BOTH the paste-accepted columns and
+  // the export columns, in the same relative position (after Description) — so a part pasted with
+  // a process name survives export → edit → paste back. Do not let export emit a column paste
+  // rejects (the HANDOFF "Export/paste round-trip" contract).
+  it("paste accepts processName, and it round-trips out through export", async () => {
+    await acme();
+    expect(PART_PASTE_COLUMNS).toContain("processName");
+
+    const result = await pasteParts(tsvRow({
+      customerCode: "ACME", partNumber: "P1", eachWeight: "1", processName: "Austemper",
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.created).toBe(1);
+
+    const rows = await listParts();
+    expect(rows.find((r) => r.partNumber === "P1")!.processName).toBe("Austemper");
+
+    const cookie = await signInWith(["parts.view"], "pn-export");
+    const res = await exportRoute(new Request("http://t/api/parts/export", { headers: { cookie } }), noParams);
+    expect(res.status).toBe(200);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await res.arrayBuffer()) as unknown as ArrayBuffer);
+    const sheet = wb.getWorksheet("Parts")!;
+    // "Process name" is column 6 (1-based, after Description); ExcelJS row.values is 1-based with
+    // a leading undefined, so the header sits at index 6 and the value at the same index.
+    expect((sheet.getRow(1).values as ExcelJS.CellValue[])[6]).toBe("Process name");
+    expect((sheet.getRow(2).values as ExcelJS.CellValue[])[6]).toBe("Austemper");
   });
 
   // Phase 5A removed pricing from the paste contract entirely (design spec §4.1) — price rows

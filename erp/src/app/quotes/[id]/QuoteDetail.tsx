@@ -159,8 +159,25 @@ export function QuoteDetail({ id }: { id: string }) {
     adopt(await api<QuoteDetailData>(`/api/quotes/${id}`));
   }, [id, adopt]);
   useEffect(() => {
-    load().then(() => setError(null)).catch((e) => setError((e as Error).message));
-  }, [load]);
+    // The stale gate matters: StrictMode (dev) mounts this effect twice, dispatching TWO detail
+    // GETs, and only the second mount's cleanup is still pending — without the gate the
+    // abandoned first fetch's response can resolve AFTER the user has started editing, and its
+    // adopt() silently resets the whole form (header + line tree) to pre-edit server truth,
+    // discarding the draft mid-keystroke (the quotes E2E detach flake, 2026-08-13: the wipe
+    // detached the very nodes Playwright was acting on). Responses belonging to a cleaned-up
+    // effect instance are ignored wholesale — adopt AND the error/clear-error pair alike.
+    let stale = false;
+    api<QuoteDetailData>(`/api/quotes/${id}`)
+      .then((d) => {
+        if (stale) return;
+        adopt(d);
+        setError(null);
+      })
+      .catch((e) => {
+        if (!stale) setError((e as Error).message);
+      });
+    return () => { stale = true; };
+  }, [id, adopt]);
 
   // ---- Dirty tracking: the loaded detail IS the baseline; both diffs derive from it. ----
   const baseHeader = detail === null ? null : headerFormFrom(detail);

@@ -94,6 +94,20 @@ export function IdentitySection({
                     onBlur={(e) => onBlurSave(e, {}, (description) => void save({ description }))}
                     className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
         </label>
+        {/* Phase 7 Task 15: presentation vocabulary (spec §5.7 ruling 4) — names the part's process
+            for the traveler's Process: slot, bound live at print, blank prints nothing. A plain
+            optional text field; controlled off `part.processName` (which the id-keyed PartDetail
+            reloads fresh per record, §5.12), read-only without parts.edit (§5.16). */}
+        <label className="col-span-2 block text-sm">
+          Process name
+          <input value={part.processName} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
+                 onChange={(e) => patchDraft({ processName: e.target.value })}
+                 onBlur={(e) => onBlurSave(e, { trim: true }, (processName) => void save({ processName }))}
+                 className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
+          <span className="mt-1 block text-xs text-slate-500">
+            Prints on the traveler&apos;s Process: line (e.g. Austemper). Blank prints nothing.
+          </span>
+        </label>
         <label className="block text-sm">
           Material
           <select value={part.materialId ?? ""} disabled={!canEdit.allowed || !materialsReady}

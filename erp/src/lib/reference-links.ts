@@ -9,14 +9,14 @@ import type { ReferenceKind } from "./reference-constants";
  *  it is now a genuine `ReferenceKind` (ruling 13), so the registry reaches it through that
  *  union — enforcement is unchanged (same sweep, same delete guard, now plus the generic
  *  reference kind's own guarded delete path). */
-export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge";
+export type BlockerTarget = ReferenceKind | "processStepCode" | "surcharge" | "documentTemplate";
 
 /** Display label for a `BlockerTarget` that is NOT a `ReferenceKind` — those keep using
  *  `REFERENCE_LABELS`. Kept separate rather than folded into `REFERENCE_LABELS` because that
  *  table is typed `Record<ReferenceKind, ...>` and widening it would let a reference kind be
  *  looked up here by mistake. */
-export const TARGET_LABELS: Record<"processStepCode" | "surcharge", string> =
-  { processStepCode: "process step code", surcharge: "surcharge" };
+export const TARGET_LABELS: Record<"processStepCode" | "surcharge" | "documentTemplate", string> =
+  { processStepCode: "process step code", surcharge: "surcharge", documentTemplate: "document template" };
 
 /** Models that hold a foreign key pointing at a reference table. */
 export type ReferenceLinkModel =
@@ -26,7 +26,7 @@ export type ReferenceLinkModel =
   | "shipper" | "certRequirement"
   | "partPrice" | "surcharge" | "surchargeStepCode" | "customerSurcharge"
   | "invoiceLine" | "billingConfig" | "payment" | "glPosting"
-  | "quote" | "quotePrice";
+  | "quote" | "quotePrice" | "customerTemplateAssignment";
 
 export type ReferenceLink = {
   /** Prisma model holding the foreign key. */
@@ -285,6 +285,25 @@ export const REFERENCE_LINKS: ReferenceLink[] = [
   { model: "quote", column: "endingStatementId", targetKind: "endingStatement",
     label: "Ending statement", entityLabel: "Quote", detailPath: (id) => `/quotes/${id}`,
     displayName: (r) => `Quote · #${r.quoteNumber}` },
+  // Phase 7 (spec §4.1): registered in Task 3 with the schema, the Phase 6 precedent — the
+  // registry entry is what lets Task 4's guarded template delete refuse-and-name (with the
+  // Excel export) every customer whose live assignment points at the template. The blocker a
+  // person can act on is the CUSTOMER (the customerSurcharge shape): clear the assignment on
+  // the customer page, then the template deletes. `liveWhere` stays the default
+  // `{ deletedAt: null }` — the assignment soft-deletes with its own column, and a cleared
+  // assignment does not block from the grave. DocumentTemplateVersion.templateId is deliberately
+  // NOT here: an owned-child cascade (a version lives and dies with its template, §4.1's
+  // append-only history), exempted by the sweep — registering it would make every template's
+  // own versions block its deletion.
+  { model: "customerTemplateAssignment", column: "templateId", targetKind: "documentTemplate",
+    label: "Template", entityLabel: "Customer",
+    detailPath: (id) => `/customers/${id}`,
+    include: { customer: { select: { id: true, code: true, name: true } } },
+    blockerId: (r) => String((r.customer as { id: string }).id),
+    displayName: (r) => {
+      const c = r.customer as { code: string; name: string };
+      return `${c.code} · ${c.name}`;
+    } },
 ];
 
 /** Everything pointing AT this target — the delete guard's direction. */

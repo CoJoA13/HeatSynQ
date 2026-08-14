@@ -369,6 +369,56 @@ describe("parts core", () => {
     });
   });
 
+  // Phase 7 Task 15: processName is presentation vocabulary (spec §5.7 ruling 4) — the traveler
+  // prints it live and the invoice snapshots it at create; both already built. This surfaces it
+  // for data entry, so the service must accept it as optional display text (the parts convention:
+  // required identifiers use .trim().min(1), optional display text uses .max(n) defaulting "").
+  describe("processName", () => {
+    it("round-trips through create and update, defaults to \"\" when omitted, and audits a real diff", async () => {
+      const { acme } = await twoCustomers();
+
+      // Omitted on create → the DB default "", not null (the optional/empty-default shape).
+      const { id } = await asSystem(() =>
+        createPart({ customerId: acme.id, partNumber: "PN1", eachWeight: 1 }));
+      expect((await getPart(id)).processName).toBe("");
+
+      // Provided on create → persists verbatim.
+      const { id: seeded } = await asSystem(() => createPart({
+        customerId: acme.id, partNumber: "PN0", eachWeight: 1, processName: "Nitride",
+      }));
+      expect((await getPart(seeded)).processName).toBe("Nitride");
+
+      // First update sets it: the "" → "Austemper" diff must show in the audit history.
+      await asSystem(() => updatePart(id, { processName: "Austemper" }));
+      expect((await getPart(id)).processName).toBe("Austemper");
+
+      await asSystem(() => updatePart(id, { processName: "Carburize" }));
+      expect((await getPart(id)).processName).toBe("Carburize");
+
+      // Cleared back to "" (blank stays "", never null).
+      await asSystem(() => updatePart(id, { processName: "" }));
+      expect((await getPart(id)).processName).toBe("");
+
+      const entry = await prisma.auditLog.findFirst({
+        where: { entity: "part", entityId: id, action: "update" }, orderBy: { at: "asc" },
+      });
+      const before = entry!.before as { processName: string };
+      const after = entry!.after as { processName: string };
+      expect(before.processName).toBe("");
+      expect(after.processName).toBe("Austemper");
+    });
+
+    it("rejects a too-long value, field-anchored to processName", async () => {
+      const { acme } = await twoCustomers();
+      const tooLong = "x".repeat(201);
+      const err = await asSystem(() => createPart({
+        customerId: acme.id, partNumber: "PN2", eachWeight: 1, processName: tooLong,
+      })).catch((e) => e);
+      expect(err).toBeInstanceOf(ZodError);
+      expect((err as ZodError).issues[0].path).toEqual(["processName"]);
+    });
+  });
+
   // Task 4 wiring: the update schema accepts certRequired/certScope, and null (inherit) stays
   // distinct from an explicit false (the part's own "no cert") end to end — resolveCertSettings
   // (certs.ts, tests/cert-resolution.test.ts) is what actually WALKS this chain; this only pins

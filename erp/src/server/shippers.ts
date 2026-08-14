@@ -10,8 +10,10 @@ import { allocateNumber, getSetting } from "./settings";
 import { claimOrdersInOrder } from "./order-locks";
 import { finalizedInvoicesFor, invoiceBlockMessage } from "./invoice-guards";
 import { listAddresses } from "./customer-addresses";
-import { renderPdf } from "./pdf/render";
-import { buildShippingTicketDefinition, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { renderPdf, renderSheetGroups, jpegDataUri, pngDataUri } from "./pdf/render";
+import { buildShippingTicketDefinitions, type TicketData, type TicketParty } from "./pdf/shipping-ticket";
+import { resolveTemplateForPrint } from "./template-assignments";
+import { SHIPPER_DEFAULT_CONFIG } from "../lib/template-contracts/index";
 import { buildBolDefinition, type BolData, type BolParty } from "./pdf/bol";
 import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
@@ -1742,13 +1744,16 @@ export type TicketSettings = {
 };
 
 export async function ticketSettings(): Promise<TicketSettings> {
-  const [name, address, phone, liabilityText] = await Promise.all([
+  const [name, address, phone] = await Promise.all([
     getSetting("company_name"),
     getSetting("company_address"),
     getSetting("company_phone"),
-    getSetting("shipper_liability_text"),
   ]);
-  return { company: { name, address, phone }, liabilityText };
+  // `liabilityText` defaults to the SHIPPER contract's own text block; `printShippingTickets`
+  // REPLACES it at the data seam with the resolved template's `shipper_liability_text` (spec §8).
+  // The `shipper_liability_text` Setting was retired in Task 14 — a direct `readShippingTicketData`
+  // call (a preview/test) gets the contract default (SHIPPER and MOS_SHIPPER share this text block).
+  return { company: { name, address, phone }, liabilityText: SHIPPER_DEFAULT_CONFIG.textBlocks.shipper_liability_text };
 }
 
 /**
@@ -1878,21 +1883,54 @@ export async function printShippingTickets(
     // acted on below is re-read under the claim.
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
-    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    const shipmentOrderIds = await shipperOrderIds(tx, shipperId);
+    await claimOrdersInOrder(tx, shipmentOrderIds);
     await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
     if (!shipper) throw new HttpError(404, "Shipment not found");
     assertPrintable(shipper);
 
+    // Resolution by the SHIPMENT'S order count (P7 spec §5.2): a multi-order shipment's tickets
+    // — INCLUDING the per-order print of one of its orders — resolve MOS_SHIPPER; a single-order
+    // shipment's resolve SHIPPER. All paper from one shipment styles alike, so the count is the
+    // shipment's, never the count of tickets being printed. `shipmentOrderIds` was read BEFORE
+    // the lock statements — what keeps the count honest is this transaction's Serializable
+    // snapshot, fixed at the stub read: the count and every read the render uses come from that
+    // one snapshot, so a concurrent add/remove can never make the type disagree with the paper
+    // (it either misses the snapshot entirely or SSI aborts one side). Resolution runs on THIS
+    // claimed transaction at its isolation — correct by §5.1 immutability, not by locking (the
+    // printTraveler comment); no template row is claimed and none is needed.
+    const docType = shipmentOrderIds.length > 1 ? ("MOS_SHIPPER" as const) : ("SHIPPER" as const);
+    const resolved = await resolveTemplateForPrint(tx, docType, shipper.customerId);
+    // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only
+    // when the config also places it, so an unplaced upload converts nothing.
+    const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+      ? (resolved.logoMimeType === "image/jpeg"
+          ? jpegDataUri(Buffer.from(resolved.logoImage))
+          : pngDataUri(Buffer.from(resolved.logoImage)))
+      : undefined;
+
     const { certs, warnings } = opts.withCerts
       ? await resolveShipmentCerts(tx, shipperId, orderId)
       : { certs: [], warnings: [] };
 
-    const data = await readShippingTicketData(tx, shipperId, settings, orderId);
-    const pdf = await renderPdf(buildShippingTicketDefinition(data));
+    // The liability text is the resolved CONFIG'S text block now (P7 spec §8: the template owns
+    // the standing text; the `Setting` keeps its other readers until Task 14) — injected at the
+    // data seam so the builder keeps one source per fact (its own doc comment tells the why).
+    const data = await readShippingTicketData(tx, shipperId,
+      { ...settings, liabilityText: resolved.config.textBlocks.shipper_liability_text }, orderId);
+    // One definition per ticket, merged (P7 spec §6.1): each order's continuation band and — when
+    // the template turns the knob on — page numbering scope to ITS OWN sheet group. The render
+    // this claim spans is bounded by the shipment's own order count (the very claims above lock
+    // one row per order, so the group count can never exceed what this transaction already
+    // holds), each group page-bounded by its ticket's content — the #43-comment discipline.
+    const pdf = await renderSheetGroups(
+      buildShippingTicketDefinitions(data, docType, resolved.config, logoDataUri));
 
-    const doc = await storeDocument(tx, { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf);
+    // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    const doc = await storeDocument(tx,
+      { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf, resolved.versionId);
     return {
       documentId: doc.id, shipperNumber: shipper.shipperNumber,
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
@@ -2017,10 +2055,29 @@ export async function printBol(
         () => tx.shipper.update({ where: { id: shipperId }, data: { bolNumber: allocated } }), { tx });
     }
 
-    const data = await readBolData(tx, shipperId, bolNumber, settings);
-    const pdf = await renderPdf(buildBolDefinition(data));
+    // Resolution is docType "BOL" REGARDLESS of the shipment's order count (P7 spec §5.2's other
+    // half: the ticket splits SHIPPER/MOS_SHIPPER by count; the BOL is one per shipment and the
+    // registry has no MOS_BOL — count-independence pinned in tests/bol-templates.test.ts).
+    // Resolution runs on THIS claimed transaction at its isolation — correct by §5.1
+    // immutability, not by locking (the printShippingTickets comment); no template row is
+    // claimed and none is needed.
+    const resolved = await resolveTemplateForPrint(tx, "BOL", shipper.customerId);
+    // Logo bytes → data URI by the STORED mime type (spec §6.3); the builder renders it only
+    // when the config also places it, so an unplaced upload converts nothing.
+    const logoDataUri = resolved.logoImage !== null && resolved.config.logo !== null
+      ? (resolved.logoMimeType === "image/jpeg"
+          ? jpegDataUri(Buffer.from(resolved.logoImage))
+          : pngDataUri(Buffer.from(resolved.logoImage)))
+      : undefined;
 
-    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf);
+    const data = await readBolData(tx, shipperId, bolNumber, settings);
+    // ONE definition — the BOL is single-document paper, so `renderPdf` consumes it directly
+    // (no sheet groups); its continuation band and the config's pageFooter knob ride on the
+    // RenderableDefinition itself (buildBolDefinition's doc comment).
+    const pdf = await renderPdf(buildBolDefinition(data, resolved.config, logoDataUri));
+
+    // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf, resolved.versionId);
     return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

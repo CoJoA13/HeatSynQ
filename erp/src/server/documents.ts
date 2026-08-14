@@ -135,11 +135,18 @@ export function assertPrintable(owner: { deletedAt: Date | null }): void {
  * for a traveler, and the shipper/cert equivalents later tasks add — for the same reason
  * `printTraveler` always did: the render has to describe a state that cannot change out from
  * under it between the read and the archive.
+ *
+ * `templateVersionId` (Phase 7 spec §5.2) stamps WHICH published template version produced the
+ * paper onto the row — the print path passes the id `resolveTemplateForPrint` returned on its
+ * own claimed transaction. OPTIONAL only because the eight print paths convert one task at a
+ * time (Tasks 7–14); an unconverted caller's omission stores `null`, exactly the pre-Phase-7
+ * row shape. The stamp is metadata, so it rides in the audit payload alongside the owner
+ * columns — the bytes still never reach the audit layer.
  */
 export async function storeDocument(
-  tx: Prisma.TransactionClient, owner: DocumentOwner, pdf: Buffer,
+  tx: Prisma.TransactionClient, owner: DocumentOwner, pdf: Buffer, templateVersionId?: string,
 ): Promise<DocumentMeta> {
-  const data = ownerColumns(owner);
+  const data = { ...ownerColumns(owner), templateVersionId: templateVersionId ?? null };
   return auditedCreate("storedDocument", data,
     () => tx.storedDocument.create({ data: { ...data, fileData: new Uint8Array(pdf) }, select: DOCUMENT_SELECT }),
     { tx });

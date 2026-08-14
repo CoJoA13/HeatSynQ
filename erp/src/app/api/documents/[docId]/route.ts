@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { handle, requireUser } from "@/server/http";
 import { mustCan } from "@/server/permissions";
 import { getDocument, resolveDocumentFilename, AREA_FOR_KIND } from "@/server/documents";
+import { contentDispositionValue } from "@/server/content-disposition";
 
 /**
  * Streams a stored document's bytes EXACTLY as they were archived (spec §8/§10) — a reprint is a
@@ -35,7 +36,10 @@ export const GET = handle(async (_req, { params }) => {
     status: 200,
     headers: {
       "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${await resolveDocumentFilename(doc)}"`,
+      // Sanitized through the shared leaf (issue #87): a friendly name carrying a hostile customer
+      // code (a STATEMENT download) can never crash the response or inject a header. A plain-ASCII
+      // name's value is byte-for-byte `inline; filename="..."`, exactly what the download tests pin.
+      "content-disposition": contentDispositionValue("inline", await resolveDocumentFilename(doc)),
     },
   });
 });

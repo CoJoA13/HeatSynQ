@@ -17,6 +17,9 @@ export const GET = handle(async (req) => {
     { key: "partNumber", header: "Part number" },
     { key: "name", header: "Name" },
     { key: "description", header: "Description" },
+    // Phase 7 Task 15: mirrors PART_PASTE_COLUMNS' position (after description) so paste stays a
+    // positional subsequence of export — a part survives export → edit → paste back.
+    { key: "processName", header: "Process name" },
     { key: "materialName", header: "Material" },
     { key: "eachWeight", header: "Each wt" },
     { key: "loadQty", header: "Load qty" },

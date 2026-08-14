@@ -338,10 +338,7 @@ describe("readShippingTicketData", () => {
   beforeEach(truncateAll);
 
   it("assembles the sample's blocks: parties, field strip, lines, containers, printable serials", async () => {
-    await asSystem(async () => {
-      await setSetting("company_name", "American Heat Treating - Alabama,");
-      await setSetting("shipper_liability_text", "LIABILITY TEXT UNDER TEST");
-    });
+    await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama,"));
     const customer = await makeCustomer();
     const shipTo = await makeAddresses(customer.id);
     const order = await orderFor(customer);
@@ -370,7 +367,9 @@ describe("readShippingTicketData", () => {
       }],
     }, { canOverrideCreditHold: false }));
 
-    const settings = await ticketSettings();
+    // The liability text binds at the DATA SEAM (shipper_liability_text retired in Task 14): the
+    // collector puts settings.liabilityText onto the ticket, so a seam override proves the wiring.
+    const settings = { ...(await ticketSettings()), liabilityText: "LIABILITY TEXT UNDER TEST" };
     const [ticket] = await readShippingTicketData(prisma, shipper.id, settings);
 
     expect(ticket.company.name).toBe("American Heat Treating - Alabama,");

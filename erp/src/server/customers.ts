@@ -388,12 +388,17 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     // cascade is still the correct outcome: a deleted customer's addresses and contacts should
     // not remain live and undeleted (this was Fix 2 in the final review, back when a reused code
     // did reuse the row).
-    const [addresses, contacts] = await Promise.all([
+    const [addresses, contacts, templateAssignments] = await Promise.all([
       tx.customerAddress.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
       tx.customerContact.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
+      // Phase 7 (spec §4.1): template assignments are pure preferences — nothing else points at
+      // them — so they cascade with the customer exactly like its addresses and contacts, and a
+      // cascaded-away assignment stops answering the §5.2 resolution walk.
+      tx.customerTemplateAssignment.findMany({ where: { customerId: id, deletedAt: null }, select: { id: true } }),
     ]);
     for (const a of addresses) await auditedSoftDelete("customerAddress", a.id, "parent customer deleted", tx);
     for (const c of contacts) await auditedSoftDelete("customerContact", c.id, "parent customer deleted", tx);
+    for (const t of templateAssignments) await auditedSoftDelete("customerTemplateAssignment", t.id, "parent customer deleted", tx);
     await auditedSoftDelete("customer", id, why, tx);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
