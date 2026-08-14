@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { GET as reportsIndexRoute } from "@/app/api/reports/route";
@@ -46,5 +48,42 @@ describe("GET /api/reports", () => {
     const res = await reportsIndexRoute(getReq("http://t/api/reports", viewer), withParams());
     expect(res.status).toBe(200);
     expect(Array.isArray(await res.json())).toBe(true);
+  });
+});
+
+// The per-entry area filter (Task 6, spec §4.1) — the invoice register and A/R aging are homed under
+// /reports but LIVE in the invoicing / receivables areas, so `GET /api/reports` gates each on its own
+// `<area>.view`, not on `reports.view`. A `reports.view`-only user reaches the index but must NOT see
+// an entry whose source area it lacks. This is the behavioral filter test Task 0 could not write
+// (REPORTS was empty then); Task 6 adds the first cross-area entries, so it is written here now.
+describe("GET /api/reports — per-entry area filter (Task 6 cross-area homing)", () => {
+  it("hides the invoice register and A/R aging from a reports.view user without the source area", async () => {
+    const cookie = await signInWith(["reports.view"], "reports-noarea");
+    const res = await reportsIndexRoute(getReq("http://t/api/reports", cookie), withParams());
+    expect(res.status).toBe(200);
+    const keys = ((await res.json()) as { key: string }[]).map((r) => r.key);
+    // same-area report entries stay visible for a reports.view holder...
+    expect(keys).toContain("backlog");
+    // ...but the homed cross-area entries are gated on THEIR area, which this user lacks.
+    expect(keys).not.toContain("invoice-register");
+    expect(keys).not.toContain("aging");
+  });
+
+  it("shows both homed entries — at their real routes — to a user who also holds the source areas", async () => {
+    const cookie = await signInWith(
+      ["reports.view", "invoicing.view", "receivables.view"], "reports-witharea");
+    const res = await reportsIndexRoute(getReq("http://t/api/reports", cookie), withParams());
+    expect(res.status).toBe(200);
+    const entries = (await res.json()) as { key: string; href: string; area: string }[];
+    expect(entries.find((e) => e.key === "invoice-register"))
+      .toMatchObject({ href: "/invoicing", area: "invoicing" });
+    expect(entries.find((e) => e.key === "aging"))
+      .toMatchObject({ href: "/receivables/aging", area: "receivables" });
+
+    // Light assertion: each homed href resolves to a real App Router page (the pages are
+    // already tested elsewhere; this only pins that the registry links somewhere real).
+    for (const href of ["/invoicing", "/receivables/aging"]) {
+      expect(existsSync(join(process.cwd(), "src", "app", href, "page.tsx"))).toBe(true);
+    }
   });
 });

@@ -43,4 +43,16 @@ export const REPORTS: ReportEntry[] = [
     key: "payments", label: "Payments received", href: "/reports/payments", area: "reports",
     description: "Cash received (posted), by customer/month/payment type.",
   },
+  // Task 6 (§4.1 / §12 item 7) homes two already-built reports under /reports by LINK, not relocate:
+  // the entry points at the existing page and carries that page's OWN area, so GET /api/reports gates
+  // each on invoicing.view / receivables.view (verified: /api/invoices and /api/receivables/aging
+  // `mustCan` those areas), not on reports.view.
+  {
+    key: "invoice-register", label: "Invoice register", href: "/invoicing", area: "invoicing",
+    description: "Finalized invoices/credits by date.",
+  },
+  {
+    key: "aging", label: "A/R aging", href: "/receivables/aging", area: "receivables",
+    description: "Open A/R balances as of a date.",
+  },
 ];
