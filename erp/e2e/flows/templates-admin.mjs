@@ -190,6 +190,49 @@ export async function run(page, shot, ctx) {
   await shot("editor-conflict-overwrite-saved");
   // The template — logo bytes and the now-saved config — is reaped by name in teardown.
 
+  // --- Task 19: the live PREVIEW pane (side-effect-free render of the WORKING config) ---
+  // Pick a real order (this flow runs last, so earlier flows have left live orders in the dev DB)
+  // and render a preview. The preview POSTs the editor's WORKING config to
+  // /api/templates/<id>/preview and streams a PDF — nothing is saved, printed, or archived.
+  const recordSelect = page.getByRole("combobox", { name: "Preview record" });
+  await recordSelect.waitFor({ state: "visible" });
+  // The picker only offers records the user can view; index 0 is the "— pick a … —" placeholder.
+  const firstRecord = await recordSelect.locator("option").nth(1).getAttribute("value");
+  assert.ok(firstRecord, "at least one order is available in the preview picker");
+  await recordSelect.selectOption(firstRecord);
+
+  // `bodyLabel` reads a field's label override out of a submitted config — the preview's proof is
+  // that the config the pane POSTs is the WORKING one, edits and all.
+  const bodyLabel = (config, section, field) =>
+    config.sections.find((s) => s.key === section)?.fields.find((f) => f.key === field)?.label ?? null;
+
+  // Preview 1: the working config already carries the re-applied "Work Order #" override, so it
+  // must ride in the POST body — and the rendered PDF appears in the iframe.
+  const [previewReq1] = await Promise.all([
+    page.waitForRequest((r) => r.url().includes(`/api/templates/${templateId}/preview`) && r.method() === "POST"),
+    page.getByRole("button", { name: "Run preview" }).click(),
+  ]);
+  assert.equal(
+    bodyLabel(previewReq1.postDataJSON().config, "header", "order_number"), "Work Order #",
+    "the preview POSTs the WORKING config (the saved 'Work Order #' override rides in the body)",
+  );
+  await page.getByTitle("Template preview").waitFor({ state: "visible" });
+  await shot("editor-preview-rendered");
+
+  // Edit the label again and RE-preview — the second POST must carry the just-made edit, proving
+  // the preview reflects the working config live (the unit suite proves the byte shows up).
+  await labelInput.fill("PREVIEW-EDIT-Order");
+  const [previewReq2] = await Promise.all([
+    page.waitForRequest((r) => r.url().includes(`/api/templates/${templateId}/preview`) && r.method() === "POST"),
+    page.getByRole("button", { name: "Run preview" }).click(),
+  ]);
+  assert.equal(
+    bodyLabel(previewReq2.postDataJSON().config, "header", "order_number"), "PREVIEW-EDIT-Order",
+    "the re-preview reflects the just-made label edit — the WORKING config, not the saved one",
+  );
+  await page.getByTitle("Template preview").waitFor({ state: "visible" });
+  await shot("editor-preview-reflects-edit");
+
   // --- Re-logged-in as the restricted VIEW-ONLY user (templates.view, NOT admin.view) ---
   await login(page, ctx.baseURL, fixtures.restrictedUsername, fixtures.restrictedPassword);
 

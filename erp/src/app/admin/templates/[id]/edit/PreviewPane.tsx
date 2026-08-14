@@ -24,7 +24,10 @@ const str = (v: unknown) => (v === null || v === undefined ? "" : String(v));
 /** Turn a list-endpoint's rows into pickable options — the shipment kinds filter by order count
  *  (SHIPPER = single, MOS_SHIPPER = multi; BOL = any), and voided/soft-deleted rows drop out. */
 function optionsFor(kind: PreviewRecordKind, rows: RawRow[]): Option[] {
-  const live = rows.filter((r) => !r.deletedAt);
+  // Drop soft-deleted rows (shipments/certs/invoices carry `deletedAt`) AND voided orders (the
+  // board row carries `voided`, not `deletedAt`) — a preview against a dead record is confusing;
+  // `!undefined` leaves the other kinds untouched.
+  const live = rows.filter((r) => !r.deletedAt && !r.voided);
   switch (kind) {
     case "order":
       return live.map((r) => ({ id: str(r.id), label: `#${str(r.orderNumber)} — ${str(r.customerCode)} — ${str(r.leadPartNumber)}` }));
@@ -154,7 +157,8 @@ export function PreviewPane({
             </>
           )}
 
-          <button type="button" onClick={() => void runPreview()} disabled={!recordId || rendering}
+          <button type="button" aria-label="Run preview" onClick={() => void runPreview()}
+                  disabled={!recordId || rendering}
                   className="rounded bg-slate-700 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
             {rendering ? "Rendering…" : previewUrl ? "Refresh preview" : "Preview"}
           </button>
