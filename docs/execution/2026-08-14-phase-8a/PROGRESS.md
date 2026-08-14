@@ -8,8 +8,8 @@
 
 | # | Title | Implementer | Review verdict | Commit(s) | Status |
 |---|-------|-------------|----------------|-----------|--------|
-| 0 | Report platform scaffold + 2 indexes | general-purpose | pending | 5a6a9c3, bf503fe | IMPLEMENTED — awaiting review |
-| 1 | Backlog report | — | — | — | PENDING |
+| 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | REVIEWED — gates green* (E2E re-confirming) |
+| 1 | Backlog report | — | — | — | BRIEFED (queued) |
 | 2 | Shipped report | — | — | — | PENDING |
 | 3 | Turnaround report | — | — | — | PENDING |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
@@ -20,9 +20,12 @@
 
 ## Gate snapshots (each written after watching the run)
 
-- **Task 0 (implementer, targeted only):** `npx vitest run tests/reports-routes.test.ts` → 3 passed. `npx tsc --noEmit` → clean. `npx eslint src tests` → clean. Both DBs at 36 migrations, `migrate status` up to date. **PENDING controller verification:** full `npm test`, `npm run build`, `npm run test:e2e` (not run by the implementer per the split — long runs kill subagent turns).
+- **Task 0 (implementer, targeted only):** `npx vitest run tests/reports-routes.test.ts` → 3 passed. `npx tsc --noEmit` → clean. `npx eslint src tests` → clean. Both DBs at 36 migrations, `migrate status` up to date.
+- **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned server (see notes); **E2E full-pass re-confirming.** (`*` in the ledger = the E2E re-run.)
 
 ## Notes / rulings during execution
 
 - 2026-08-14: kickoff. Design approved (5-lens review folded); 8A plan approved (2-lens review folded — SURCHARGE in Sales, scoreboard export, reconciliation fixture, include-voided deferred). Env verified: Docker up, both DBs at 35 migrations, client generated.
+- 2026-08-14 Task 0 review: `task-reviewer` → **✅ Spec Compliant + Approved** (no critical/important; minors: a per-entry-filter test deferred to Task 6, and a faithfully-copied `AgingReport` error-branch — not new damage). Verdict in `task-0-review.md`.
+- 2026-08-14 E2E flake episode (Task 0 verification): `close-month-end` hung under full-suite load (documented Phase-5C flake, unrelated to Task 0). Remediation: (a) delete ClosePeriod→GlExportBatch→GlPosting for the closed month in FK order; **(b) also kill the orphaned dev server on `:3100`** — a `timeout --signal=KILL` E2E leaves `next-server` orphaned (SIGKILL can't self-clean) and the harness refuses to start on a busy port. Prefer `timeout --kill-after=30 600` (TERM first, KILL backstop) so the harness self-cleans.
 - 2026-08-14 Task 0 done: migration `20260814115050_reports_indexes` (both indexes, both DBs, 36 total). Scaffold: `GET /api/reports` gated `reports.view` returns the per-entry area-filtered registry; `/reports` client index page (Phase 1 requireUser-sidestep); `src/lib/report-registry.ts` client-safe catalog (empty — Tasks 1–6 append); `src/server/reports/README.md` documents the five-part shape. Design call: the brief's "placeholder report route" is realized as the permanent **index API** (`/api/reports`), not a throwaway fake report — it is the gated report-area route the ladder test targets, and the client page consumes it (no dead code). `REPORTS` is intentionally empty at Task 0.
