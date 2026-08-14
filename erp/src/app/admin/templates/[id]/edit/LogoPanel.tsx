@@ -15,7 +15,7 @@
 // (the `UserSignatureControl` / `AttachmentsSection` precedent).
 import { useRef, useState } from "react";
 import { ApiError } from "@/lib/fetcher";
-import { LOGO_PLACEMENTS, type LogoPlacement, type TemplateConfig } from "@/lib/template-contracts";
+import { CONTENT_WIDTH, LOGO_PLACEMENTS, type LogoPlacement, type TemplateConfig } from "@/lib/template-contracts";
 import { clearLogoPlacement, setLogoPlacement, setLogoWidth } from "@/lib/template-editor";
 
 const PLACEMENT_LABELS: Record<LogoPlacement, string> = {
@@ -118,13 +118,15 @@ export function LogoPanel({ templateId, logoMimeType, config, apply, disabled, e
         </label>
         <label className="flex items-center gap-2 text-sm">
           <span className="text-slate-600">Width (pt)</span>
-          <input type="number" min={1} max={564} value={logo?.width ?? ""}
+          <input type="number" min={1} max={CONTENT_WIDTH} value={logo?.width ?? ""}
                  disabled={disabled || logo === null}
                  title={logo === null ? "Choose a placement first" : editTitle}
                  aria-label="Logo width"
                  onChange={(e) => {
                    const n = Number(e.target.value);
-                   if (!Number.isNaN(n)) apply((c) => setLogoWidth(c, n));
+                   // Clamp to the input's max (Task 18 minor) so a typed over-max value doesn't rely
+                   // on the server refusal; the config schema caps logo width at CONTENT_WIDTH.
+                   if (!Number.isNaN(n)) apply((c) => setLogoWidth(c, Math.min(CONTENT_WIDTH, n)));
                  }}
                  className="w-24 rounded border px-2 py-1 text-sm disabled:bg-slate-100" />
         </label>
