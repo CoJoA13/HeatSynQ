@@ -76,6 +76,17 @@ steer: the **scoreboard's invoiced-$ uses `invoiceDate`** (VS eyeball); all othe
 8A execution** (`systemctl start docker`, interactive; then `cd erp && docker compose up -d --wait db`
 and `npx prisma generate`).
 
+**[8A DRAFT — controller finalizes the merge-state paragraph + §4/§15 at merge.] Phase 8A (Reports +
+Scoreboard) is BUILT on branch `phase-8a-reports-scoreboard` (Tasks 0–8):** the `/reports` platform
+and `reports` area; the native reports (backlog, shipped, turnaround, sales, payments, comparison
+scoreboard) each in the five-part shape cloned from A/R aging; the two homed cross-area entries
+(invoice register, A/R aging); and the read-only `reports` E2E flow (index catalog → backlog
+filter + Excel export → scoreboard figures/presets), registered last in `FLOWS`. Still open: the
+whole-branch review, the PR/merge, and the controller's full-suite gate run (the `close-month-end`
+E2E flake is the known landmine — isolate it if it hangs). At merge, collapse this to the
+one-paragraph §4 "Merged" entry, move the full narrative to `docs/history/`, and record any §15
+amendment.
+
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
 completing roadmap Phase 7.** Its full narrative is in
 `docs/history/2026-08-14-phase-7-template-designer.md`; the one-paragraph entry is below under
