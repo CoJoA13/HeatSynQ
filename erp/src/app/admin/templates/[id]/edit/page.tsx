@@ -8,5 +8,9 @@ import { TemplateEditor } from "./TemplateEditor";
 
 export default function TemplateEditPage() {
   const { id } = useParams<{ id: string }>();
-  return <TemplateEditor templateId={id} />;
+  // §5.12 remount idiom (every detail page's `key={id}`): keying the editor by the route id forces
+  // a fresh instance on /edit/[A]→/edit/[B], so B never inherits A's stale config/dirty/conflict
+  // state or its updatedAt save token — a Save after navigation would otherwise target B with A's
+  // token and config. All editor state lives inside TemplateEditor, so the key is the whole fix.
+  return <TemplateEditor key={id} templateId={id} />;
 }
