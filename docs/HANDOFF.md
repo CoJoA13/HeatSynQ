@@ -83,23 +83,32 @@ immutability-not-locking publish-vs-print argument, discard-as-status-flip inste
 hard delete, config diffs kept in audit, and the `pdf-lib` dependency surfaced for explicit
 sign-off — **approved**). Branch: `phase-7-template-designer`; the record is in
 `docs/execution/2026-08-12-phase-7-template-designer/` (committed on the first task).
-**Tasks 1–14 are APPROVED (2026-08-13) — the entire document-conversion track is complete: all
-eight document builders (traveler, shipper/MOS, BOL, cert, invoice/credit, statement, quote) are
-now config-consumers over a validated `TemplateConfig`, each golden gate met the strong way (the
-builder's own pdf test unedited). Task 14 (quote, the last) also retired the four standing-text
-Settings — `cert_statement` / `shipper_liability_text` / `quote_intro_text` /
-`quote_liability_text` are template text blocks now (migration
-`20260813120000_retire_standing_text_settings` deletes the orphaned rows; the values were
-COALESCE-copied into the seeded configs at Task 3, so nothing is stranded) — and folded in #97
-(the indicative-amounts index-map guard). The UI stretch is under way: **Task 15
-(`Part.processName` field) and Task 16 (templates admin + nav — the first designer screen, nav
-decision Option B: an admin-group entry gated on `templates.view` specifically) are both APPROVED.**
-Branch state after Task 16: **2675 tests / 145 files, tsc/eslint/build clean, E2E 20/20 (the new
-`templates-admin` flow joined), 35 migrations.** Per-task detail lives in the execution ledger
-`docs/execution/2026-08-12-phase-7-template-designer/progress.md`. Remaining: Tasks 17–21 (editor
-panels + logo, save/conflict UX, preview, customer-page assignment picker, restyle E2E + docs +
-final gates), then the whole-branch review, one fix wave, and the PR. Deferred findings so far →
-issue #102 (the render two-pass blank-trailing-page artifact).
+**ALL 21 TASKS BUILD-COMPLETE and task-approved (2026-08-14) — Phase 7's build is done; the
+whole-branch review, one fix wave, and the PR remain.** The document-conversion track (Tasks 1–14)
+made all eight builders (traveler, shipper/MOS, BOL, cert, invoice/credit, statement, quote)
+config-consumers over a validated `TemplateConfig`, each golden gate met the strong way (the
+builder's own pdf test unedited); Task 14 (quote, last) also retired the four standing-text Settings
+— `cert_statement` / `shipper_liability_text` / `quote_intro_text` / `quote_liability_text` are
+template text blocks now (migration `20260813120000_retire_standing_text_settings` deletes the
+orphaned rows; the values were COALESCE-copied into the seeded configs at Task 3, nothing stranded).
+The UI stretch (Tasks 15–20) delivered the `Part.processName` field, the templates admin list + nav
+(Option B — an admin-group entry gated on `templates.view` specifically), the contract-driven editor
+with logo upload, the §5.13 save/conflict UX, the side-effect-free preview pane, and the
+customer-page assignment picker. Task 21 proved the roadmap's testable outcome — **owner restyles
+the traveler/logo, publishes, assigns, prints, and the STORED paper shows it** (the renamed-label
+marker + the placed logo decoded from the archived `StoredDocument` bytes, `templateVersionId`
+stamped with the published version) as a real-services integration test
+(`tests/traveler-restyle.test.ts`); the editor→logo-upload→publish→assign→preview UI loop is covered
+by the `templates-admin` E2E flow. Fold-ins **#36, #43, #97, #98, #87** all landed on the branch
+(they close via the PR body's `Fixes #NN` at merge). **Final branch baseline (2026-08-14, watched on
+the final HEAD): 2743 tests / 149 files, tsc / eslint / build clean, E2E 20/20, 35 migrations on
+both DBs, `migrate status` clean.** Per-task detail lives in the execution ledger
+`docs/execution/2026-08-12-phase-7-template-designer/progress.md`. Deferred findings → issue #102
+(the render two-pass blank-trailing-page artifact); the whole-branch review also carries the ledger
+notes (the `tests/helpers/pdf.ts` decoder's two prior bugs + its now-dormant EOL-strip fallback, the
+quote's net-new continuation band, the locked-field-in-hideable-section contract-authoring
+convention, and the preview picker's unverified non-order label fields). Remaining: the whole-branch
+review on the strongest model, one fix wave, and the PR.
 
 **Phase 6 (Quoting) is MERGED (`e2c91e8`, PR #94, 2026-08-12).** The full Phase 6 narrative — the
 fourteen-ruling design session, the twelve tasks and their reviews, the whole-branch review's F1
