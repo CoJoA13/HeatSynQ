@@ -9,8 +9,8 @@
 | # | Title | Implementer | Review verdict | Commit(s) | Status |
 |---|-------|-------------|----------------|-----------|--------|
 | 0 | Report platform scaffold + 2 indexes | general-purpose | ✅ Approved | 5a6a9c3, bf503fe | ✅ DONE (gates green, E2E 20/20) |
-| 1 | Backlog report | general-purpose | — | c4da1e8, 641303f | IMPLEMENTED (targeted green; awaiting review + controller full chain) |
-| 2 | Shipped report | — | — | — | PENDING |
+| 1 | Backlog report | general-purpose | ✅ Approved | c4da1e8, 641303f | ✅ DONE (gates green 2761, E2E 20/20) |
+| 2 | Shipped report | general-purpose | — | — | DISPATCHED |
 | 3 | Turnaround report | — | — | — | PENDING |
 | 4 | Sales report (careful one) | — | — | — | PENDING |
 | 5 | Payments received report | — | — | — | PENDING |
@@ -23,6 +23,14 @@
 - **Task 0 (implementer, targeted only):** `npx vitest run tests/reports-routes.test.ts` → 3 passed. `npx tsc --noEmit` → clean. `npx eslint src tests` → clean. Both DBs at 36 migrations, `migrate status` up to date.
 - **Task 0 (controller-verified):** full `npm test` → **2747 passed / 150 files** (+3 from Task 0); `tsc` clean; `eslint` clean; `npm run build` clean — all watched to completion. **E2E:** first full run 17 flows PASS then `close-month-end` **hung** (documented Phase-5C flake) → KILL'd at 600s; cleared the strand + orphaned `:3100` server; **re-run = 20/20 clean pass** (12:21). Task 0 fully verified.
 - **Task 1 (implementer, targeted only):** `npx vitest run tests/reports-backlog.test.ts` → **14 passed** (watched to completion, 12:33). `npx tsc --noEmit` → clean. `npx eslint` over all 8 new/changed files → clean. Full `npm test`/`build`/E2E deferred to the controller per brief (no dev-server startup by the implementer). No browser preview run (would need the dev server) — the UI is a straight AgingReport clone; controller/E2E to confirm the render.
+- **Task 1 (controller-verified, 12:47):** full `npm test` → **2761 passed / 151 files** (+14); `tsc` clean; `eslint` clean; `npm run build` clean; **E2E 20/20 clean** (no flake this run — the `--kill-after=30` graceful timeout, port was free). Task 1 fully verified.
+
+## Tracked cleanup (fold in ONE consolidated pass before the whole-branch review — not per-task micro-rounds)
+
+Minors from per-task reviews that are Nice-to-Have (no correctness/concurrency/data-integrity blockers). Reviews return APPROVED with these deferred:
+- **Task 1 / `BacklogReport.tsx`:** detail-row React key `${orderId}-${partNumber}` can collide when one order has two lines on the SAME part (`OrderLine` unique is `[orderId, position]`, so duplicate `partId` is allowed); and the `findMany` has no `orderBy`, so within-order row order is DB-arbitrary. Fix: carry the line id/position into the detail row for a stable key + add a deterministic `orderBy`. Low impact (UI-only; export/data correct).
+- **Task 1 / test:** the ordered-vs-remaining choice isn't RED-verified against an actual partial-shipment scenario (no `ShipperLine` seeded). Add a test seeding a partial shipment that asserts the report still shows ORDERED, not remaining.
+- **General / reports:** implementer reports say "RED-first" but show only GREEN transcripts — a report-writing gap (tests ARE genuinely RED-structured). Tighten the report template's RED evidence going forward.
 
 ## Notes / rulings during execution
 
