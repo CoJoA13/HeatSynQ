@@ -97,10 +97,12 @@ export function PaymentsReport() {
   useEffect(() => { void load(); }, [load]);
 
   // Filter-dropdown options — fetched only once the caller holds customers.view (§5.16: a blocked
-  // control says why, never a silent-empty `.catch(() => {})`).
+  // control says why, never a silent-empty `.catch(() => {})`). Codex fix 4: `includeInactive=1` — the
+  // list service defaults to `active: true`, so an inactive-but-LIVE customer whose historical
+  // payments still appear in the report would otherwise be un-selectable. Still `deletedAt: null`.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
   }, [customersGate.allowed]);
 
   // §5.16 + Codex fix 2: distinguish a permissions-fetch FAILURE (retryable banner) from the initial

@@ -101,14 +101,17 @@ export function BacklogReport() {
   useEffect(() => { void load(); }, [load]);
 
   // Filter-dropdown options — fetched only once the caller holds the source area's view (§5.16: a
-  // blocked control says why, never a silent-empty `.catch(() => {})`).
+  // blocked control says why, never a silent-empty `.catch(() => {})`). Codex fix 4: `includeInactive=1`
+  // — the list services default to `active: true`, so an inactive-but-LIVE customer/part whose
+  // historical rows still appear in the report would otherwise be un-selectable in the filter. Still
+  // `deletedAt: null` (live only); the customer/part admin pages pass the same flag.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
   }, [customersGate.allowed]);
   useEffect(() => {
     if (!partsGate.allowed) return;
-    api<PartOption[]>("/api/parts").then(setParts).catch((e) => setOptionsError((e as Error).message));
+    api<PartOption[]>("/api/parts?includeInactive=1").then(setParts).catch((e) => setOptionsError((e as Error).message));
   }, [partsGate.allowed]);
 
   // Parts are customer-scoped: when a customer is chosen, offer only its parts, and clear a part
