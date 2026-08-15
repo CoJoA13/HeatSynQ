@@ -11,7 +11,7 @@ import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
-import { GateNotice } from "@/lib/report-ui";
+import { GateNotice, ExportLink } from "@/lib/report-ui";
 
 // Local mirrors of src/server/reports/backlog.ts's row types — NOT imported from src/server/**
 // (CLAUDE.md "Constraints that will bite you": a client component pulling from there drags
@@ -67,6 +67,10 @@ export function BacklogReport() {
   // on success must not erase a customer/part options failure — that would leave a silently
   // truncated dropdown (only "All …") with no explanation. The banner shows either.
   const [optionsError, setOptionsError] = useState<string | null>(null);
+  // Codex fix 5: the query string of the CURRENTLY-DISPLAYED result. The Export link is built from
+  // THIS, never the live filter state — so while a filter change is loading (or failed) the table
+  // shows old data and the export stays pinned to that same old data (screen==export holds).
+  const [appliedQuery, setAppliedQuery] = useState("");
 
   const allowed = viewGate.allowed;
 
@@ -95,6 +99,7 @@ export function BacklogReport() {
     }
     if (!latest.isCurrent(t)) return;
     setResult(data);
+    setAppliedQuery(query);
     setError(null);
     setLoaded(true);
   }, [query, allowed, latest]);
@@ -142,6 +147,8 @@ export function BacklogReport() {
   const totalWeight = result.rows.reduce((s, r) => s + r.weight, 0);
   const isDetail = result.groupBy === "none";
   const colCount = isDetail ? 7 : 5;
+  // The displayed result matches the current filters — Export is live and the table is not stale.
+  const upToDate = loaded && appliedQuery === query;
 
   return (
     <div className="p-6">
@@ -194,12 +201,11 @@ export function BacklogReport() {
             ))}
           </select>
         </label>
-        <a href={`/api/reports/backlog/export${query ? `?${query}` : ""}`} className="text-blue-700 underline">
-          Export to Excel
-        </a>
+        <ExportLink base="/api/reports/backlog/export" query={appliedQuery} ready={upToDate} />
+        {!upToDate && loaded && <span className="text-xs text-slate-400">Updating…</span>}
       </div>
 
-      <div className="overflow-x-auto">
+      <div className={`overflow-x-auto ${upToDate ? "" : "opacity-60"}`}>
         <table className="w-full rounded border bg-white text-sm">
           <thead>
             <tr className="border-b text-left">
