@@ -33,5 +33,23 @@
 ## Per-task record
 
 ### T1 — SetupState singleton migration + schema
-- **Brief:** `briefs/T1.md`
-- **Status:** in progress (controller-run — foundational migration via the TTY-less two-DB workflow).
+- **Commits:** `2097912` (plan + exec record), `b39516d` (code). Full suite green (2852/158). Review (wave-1): **pass, approved, no findings.**
+
+### T2 — practiceMode() db-identity leaf
+- **Commit:** `d222daa`; fix commit pending. Review (wave-1): **pass, needs-fixes** — (IMPORTANT) memoized `??=` cached a *rejected* promise permanently → a transient first-call DB failure would poison every later layout render until process restart; fixed with `.catch(clear-cache-and-rethrow)`. (MINOR) memoization test strengthened to assert promise identity. Both applied.
+
+### T3 — order-entry readiness predicate leaf
+- **Commit:** `410b279`. Review (wave-1): **pass, approved.** One minor consideration (should GL-account count also require `active:true`?) resolved by the reviewer itself: `deletedAt:null` is the spec-faithful "live" per house rules (`active` is a hiding flag); the real teeth is `arGlAccountId` set.
+
+### T4 — SetupState service + audit wiring
+- **Commit:** `cf34e59`. DEFAULT isolation (no FKs); AuditableModel union + SNAPSHOT_INCLUDE both extended; audited via `auditedUpdate`. Checkpoint full suite running.
+
+### T5 — practice banner in root layout
+- **Commits:** `51e2cdb` (T2 fix), `dca088d`. Node-env element-tree test (repo has no DOM test env); mocked `@/app/globals.css` to bypass the Tailwind-v4 PostCSS pipeline in vitest. Checkpoint suite 161→green.
+
+### T6 — PRACTICE watermark post-stamp in render.ts
+- **Commit:** `c87281a`. Full suite green (163/2871). Split renderPdf→renderPdfCore; stampPractice short-circuits in prod (byte-golden), stamps merged bytes once in renderSheetGroups (no double-stamp). Test detects the stamp via inflated content-stream hex of "PRACTICE" (pdf-lib hex-encodes drawText) — count = pages stamped, so it catches a double-stamp.
+
+### T7 — order-entry gate at createOrder + opt-in harness
+- **Status:** gate landed in orders.ts (pre-transaction read between trafficSettings and the tx); `seedOrderGatePrereqs()` added to tests/helpers/db.ts (raw prisma, no audit, OPT-IN — not in truncateAll, to keep pristine suites + reseedSingletons clean); order-gate.test.ts green (3/3). **In progress:** the opt-in sweep of every order-creating test file (blast radius captured empirically from a full-suite run, not guessed).
+- **Task-boundary note:** the E2E-fixture prereq seeding (e2e/lib/db-fixtures.ts — company identity) **moves to T15**, where E2E actually runs and the change is verifiable; editing it blind in T7 could not be checked. Recorded here so it is not lost.
