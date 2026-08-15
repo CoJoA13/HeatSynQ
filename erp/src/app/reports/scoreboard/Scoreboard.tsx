@@ -15,6 +15,7 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { GateNotice, ExportLink } from "@/lib/report-ui";
+import { exportState } from "@/lib/report-export-state";
 import { thisWeekWindow, thisMonthWindow } from "@/lib/scoreboard-presets";
 
 // Local mirror of src/server/reports/scoreboard.ts's ScoreboardFigures — NOT imported from
@@ -46,10 +47,11 @@ export function Scoreboard() {
   // as a genuinely empty, healthy report.
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Codex fix 5: the query string of the CURRENTLY-DISPLAYED figures. The Export link is built from
-  // THIS, never the live filter state — so while a window change is loading (or failed) the table
-  // shows old figures and the export stays pinned to that same window (screen==export holds).
-  const [appliedQuery, setAppliedQuery] = useState("");
+  // Codex fixes 5 & 6: the query string of the CURRENTLY-DISPLAYED figures, or `null` until the FIRST
+  // successful load (a failed load must NOT enable Export — a "" init would collide with the default
+  // empty query). Set to `query` only on success (never on failure); the Export link is built from
+  // THIS, never the live filter state, so a stale/failed reload keeps it pinned to the shown window.
+  const [appliedQuery, setAppliedQuery] = useState<string | null>(null);
 
   const allowed = viewGate.allowed;
 
@@ -103,8 +105,9 @@ export function Scoreboard() {
     );
   }
 
-  // The displayed figures match the current window — Export is live and the table is not stale.
-  const upToDate = loaded && appliedQuery === query;
+  // Export is live only once a load has SUCCEEDED (appliedQuery non-null); the table shows stale
+  // figures while a reload is behind the current window. See report-export-state.ts (Codex fixes 5 & 6).
+  const { exportable, showingStale } = exportState(appliedQuery, query);
 
   const rows: { metric: string; basis: string; value: string; strong?: boolean }[] = [
     { metric: "Orders entered", basis: "by received date", value: String(figures.ordersEntered) },
@@ -145,8 +148,8 @@ export function Scoreboard() {
                 className="rounded border px-3 py-1 hover:bg-slate-50">
           This month
         </button>
-        <ExportLink base="/api/reports/scoreboard/export" query={appliedQuery} ready={upToDate} />
-        {!upToDate && loaded && <span className="text-xs text-slate-400">Updating…</span>}
+        <ExportLink base="/api/reports/scoreboard/export" query={appliedQuery} ready={exportable} />
+        {showingStale && <span className="text-xs text-slate-400">Updating…</span>}
       </div>
 
       <p className="mb-2 text-sm text-slate-600">
@@ -155,7 +158,7 @@ export function Scoreboard() {
           : "All dates (pick a window or a preset above)"}
       </p>
 
-      <div className={`overflow-x-auto ${upToDate ? "" : "opacity-60"}`}>
+      <div className={`overflow-x-auto ${showingStale ? "opacity-60" : ""}`}>
         <table className="w-full max-w-xl rounded border bg-white text-sm">
           <thead>
             <tr className="border-b text-left">

@@ -98,6 +98,30 @@ and the error banner shows — export and table never disagree.
   stale window, which Playwright auto-waits through.
 - Commit: `cf93e74`.
 
+## Finding 6 — Require a SUCCESSFUL load before enabling Export (regression in fix 5)
+Codex `comment_id`: **3788330346** — `BacklogReport.tsx:151` + every report screen (re-review of pushed commit `1d6ee76`)
+
+**Fix.** Fix 5 initialized `appliedQuery` to `""`, which equals the default empty `query`, and a
+FAILED initial request still sets `loaded=true` — so `upToDate = loaded && appliedQuery === query`
+went true after a failed first load, enabling Export on an empty result that never loaded. Introduced
+a pure, client-safe, unit-tested helper `erp/src/lib/report-export-state.ts` — `exportState(appliedQuery,
+currentQuery)` → `{ exportable, showingStale }` — and initialized `appliedQuery` to the distinct
+sentinel `null` (set to `query` ONLY on a successful load, never on failure). `exportable` is
+`appliedQuery !== null` (never true until the first success), and `showingStale` is
+`exportable && appliedQuery !== currentQuery`. Every screen now derives its Export-readiness and
+stale flags from this one helper instead of the inline `upToDate`; `ExportLink`'s `query` prop widened
+to `string | null` and it renders inert when `query === null`. Behavior: Export stays inert until the
+first successful load; a failed/slow reload keeps it pinned to the last successfully-loaded query
+(table dimmed) — screen==export still holds; a never-succeeded screen is inert.
+
+- Files: `erp/src/lib/report-export-state.ts` (new), `erp/src/lib/report-ui.tsx` (`ExportLink`), all
+  six export-bearing screens (backlog, shipped, turnaround, sales, payments, scoreboard). ReportsIndex
+  has no export — unaffected.
+- Test added: `erp/tests/reports-export-state.test.ts` — 3 cases, incl. the **failed-initial-load**
+  case (`exportState(null, …)` → `exportable: false`), the matched-success case, and the
+  stale-reload-stays-exportable case.
+- Commit: _see below._
+
 ---
 
 ## Docs

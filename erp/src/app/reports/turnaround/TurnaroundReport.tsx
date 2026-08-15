@@ -12,6 +12,7 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { GateNotice, ExportLink } from "@/lib/report-ui";
+import { exportState } from "@/lib/report-export-state";
 
 // Local mirrors of src/server/reports/turnaround.ts's row types — NOT imported from src/server/**
 // (CLAUDE.md "Constraints that will bite you": a client component pulling from there drags
@@ -68,10 +69,11 @@ export function TurnaroundReport() {
   // on success must not erase a customer/part options failure — that would leave a silently
   // truncated dropdown (only "All …") with no explanation. The banner shows either.
   const [optionsError, setOptionsError] = useState<string | null>(null);
-  // Codex fix 5: the query string of the CURRENTLY-DISPLAYED result. The Export link is built from
-  // THIS, never the live filter state — so while a filter change is loading (or failed) the table
-  // shows old data and the export stays pinned to that same old data (screen==export holds).
-  const [appliedQuery, setAppliedQuery] = useState("");
+  // Codex fixes 5 & 6: the query string of the CURRENTLY-DISPLAYED result, or `null` until the FIRST
+  // successful load (a failed load must NOT enable Export — a "" init would collide with the default
+  // empty query). Set to `query` only on success (never on failure); the Export link is built from
+  // THIS, never the live filter state, so a stale/failed reload keeps it pinned to the shown data.
+  const [appliedQuery, setAppliedQuery] = useState<string | null>(null);
 
   const allowed = viewGate.allowed;
 
@@ -146,8 +148,9 @@ export function TurnaroundReport() {
 
   const isDetail = result.groupBy === "none";
   const colCount = 5; // detail and grouped views both render 5 columns
-  // The displayed result matches the current filters — Export is live and the table is not stale.
-  const upToDate = loaded && appliedQuery === query;
+  // Export is live only once a load has SUCCEEDED (appliedQuery non-null); the table shows stale data
+  // while a reload is behind the current filters. See report-export-state.ts (Codex fixes 5 & 6).
+  const { exportable, showingStale } = exportState(appliedQuery, query);
 
   return (
     <div className="p-6">
@@ -200,8 +203,8 @@ export function TurnaroundReport() {
             ))}
           </select>
         </label>
-        <ExportLink base="/api/reports/turnaround/export" query={appliedQuery} ready={upToDate} />
-        {!upToDate && loaded && <span className="text-xs text-slate-400">Updating…</span>}
+        <ExportLink base="/api/reports/turnaround/export" query={appliedQuery} ready={exportable} />
+        {showingStale && <span className="text-xs text-slate-400">Updating…</span>}
       </div>
 
       {loaded && !error && (
@@ -212,7 +215,7 @@ export function TurnaroundReport() {
         </p>
       )}
 
-      <div className={`overflow-x-auto ${upToDate ? "" : "opacity-60"}`}>
+      <div className={`overflow-x-auto ${showingStale ? "opacity-60" : ""}`}>
         <table className="w-full rounded border bg-white text-sm">
           <thead>
             <tr className="border-b text-left">

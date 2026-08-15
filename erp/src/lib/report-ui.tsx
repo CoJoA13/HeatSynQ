@@ -37,17 +37,18 @@ export function GateNotice({ header, permsError, loading, deniedMessage }: {
 
 /**
  * The "Export to Excel" link, built from `query` — which every screen passes as the query of the
- * CURRENTLY-DISPLAYED result, never the live filter state (Codex fix 5). While `ready` is false (the
- * table shows older data than the current filters — a slow or failed reload — or nothing has loaded
- * yet) the control is inert, not a link: exporting then would hand back a file for filters the
- * on-screen table does not show, breaking the screen==export guarantee.
+ * CURRENTLY-DISPLAYED result (`appliedQuery`), never the live filter state (Codex fix 5). It is a
+ * live link only when `ready` AND `query` is non-null: `query === null` is the "no successful load
+ * yet" sentinel (Codex fix 6), and `ready` is false is unreachable-but-defended. Inert otherwise —
+ * exporting a never-loaded or filter-mismatched view would hand back a file the on-screen table does
+ * not show, breaking the screen==export guarantee.
  */
 export function ExportLink({ base, query, ready }: {
   base: string;
-  query: string;
+  query: string | null;
   ready: boolean;
 }): ReactNode {
-  if (!ready) {
+  if (!ready || query === null) {
     return (
       <span aria-disabled="true" title="Loading the current view…"
             className="cursor-not-allowed text-slate-400 underline">
