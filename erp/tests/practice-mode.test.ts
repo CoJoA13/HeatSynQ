@@ -15,11 +15,11 @@ describe("practiceMode / assertPracticeDatabase (Phase 8B §5.1/§5.3)", () => {
     await expect(practiceMode()).resolves.toBe(false);
   });
 
-  it("memoizes — repeated calls return the same resolved value", async () => {
-    const a = await practiceMode();
-    const b = await practiceMode();
-    expect(a).toBe(false);
-    expect(b).toBe(false);
+  it("memoizes — repeated calls share one cached promise (computed once, no per-call round-trip)", async () => {
+    const p1 = practiceMode();
+    const p2 = practiceMode();
+    expect(p1).toBe(p2); // same promise reference — resolved once, not re-queried per call
+    expect(await p1).toBe(false);
   });
 
   it("assertPracticeDatabase refuses with a 403 when the DB is not erp_practice", async () => {

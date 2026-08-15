@@ -24,7 +24,15 @@ async function currentDatabase(db: Db): Promise<string> {
 let cached: Promise<boolean> | undefined;
 
 export function practiceMode(): Promise<boolean> {
-  return (cached ??= resolvePracticeMode());
+  // Cache the resolved boolean (constant per process) but NOT a rejection: a transient failure of
+  // the first current_database() query (DB briefly unreachable at deploy/failover) must not poison
+  // the layout render for the whole process lifetime — clear the cache on rejection so the next
+  // render retries. The intentional loud throw (PRACTICE_MODE mismatch) simply re-throws on every
+  // render while the misconfiguration persists, which is the desired fail-closed behaviour.
+  return (cached ??= resolvePracticeMode().catch((err) => {
+    cached = undefined;
+    throw err;
+  }));
 }
 
 async function resolvePracticeMode(): Promise<boolean> {
