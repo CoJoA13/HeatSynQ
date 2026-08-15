@@ -1,4 +1,4 @@
-import type { Prisma } from "../../../prisma/generated/prisma/client";
+import { Prisma } from "../../../prisma/generated/prisma/client";
 import { prisma } from "../db";
 import { HttpError } from "../errors";
 import { parseDateOnly } from "../../lib/business-days";
@@ -83,8 +83,12 @@ export function buildScoreboard(input: {
 }
 
 // -------------------------------------------------------------------------------------------
-// reportScoreboard — the Prisma-reading wrapper. Read-only: no claim, no transaction, no audit.
-// One window drives all three reads; the shipped read is delegated to `reportShipped` (reuse).
+// reportScoreboard — the Prisma-reading wrapper. One window drives all three reads; the shipped read
+// is delegated to `reportShipped` (reuse). All three run inside ONE read-only RepeatableRead
+// transaction (Codex fix 1, the aging.ts `agingReport` precedent): issued as separate autocommit
+// reads, a commit landing between them could mix DB states — e.g. count an order but miss its
+// matching shipment/invoice — transiently mis-stating one figure against another. Still a pure READ:
+// no row claim, no audit, and NOT Serializable (main spec §12, reports/README.md).
 // -------------------------------------------------------------------------------------------
 
 export type ScoreboardFilter = {
@@ -116,34 +120,42 @@ function dateRange(from?: string, to?: string): Prisma.DateTimeFilter | undefine
 
 export async function reportScoreboard(filter: ScoreboardFilter = {}): Promise<ScoreboardFigures> {
   const { from, to } = filter;
-  const window = dateRange(from, to); // parses both bounds up front — a malformed date 400s here
+  const window = dateRange(from, to); // parses both bounds up front — a malformed date 400s here, before the tx
 
-  // Orders entered — a live-order COUNT by receivedDate (voided excluded).
-  const ordersEntered = await prisma.order.count({
-    where: {
-      deletedAt: null,
-      ...(window ? { receivedDate: window } : {}),
+  // ONE consistent DB view across all three reads (see the header note). RepeatableRead pins a
+  // single snapshot across the callback; read-only, so no writes and no claim.
+  return prisma.$transaction(
+    async (tx) => {
+      // Orders entered — a live-order COUNT by receivedDate (voided excluded).
+      const ordersEntered = await tx.order.count({
+        where: {
+          deletedAt: null,
+          ...(window ? { receivedDate: window } : {}),
+        },
+      });
+
+      // Shipped — REUSE the Shipped report for the same window (default groupBy: "none"), threading
+      // THIS tx so it reads the same snapshot, then sum its rows. `reportShipped` re-parses the same
+      // strings, so a malformed date would 400 identically (already caught above, before the tx).
+      const shipped = await reportShipped({ from, to }, tx);
+
+      // Invoiced $ — FINALIZED, non-discarded docs by invoiceDate; gross `total` (CREDIT total negative).
+      const invoiceRows = await tx.invoice.findMany({
+        where: {
+          status: "FINALIZED",
+          deletedAt: null,
+          ...(window ? { invoiceDate: window } : {}),
+        },
+        select: { kind: true, total: true },
+      });
+
+      return buildScoreboard({
+        window: { from: from ?? null, to: to ?? null },
+        ordersEntered,
+        shipped,
+        invoices: invoiceRows.map((i) => ({ kind: i.kind, total: i.total.toNumber() })),
+      });
     },
-  });
-
-  // Shipped — REUSE the Shipped report for the same window (default groupBy: "none"), then sum its
-  // rows. `reportShipped` re-parses the same strings, so a malformed date would 400 identically.
-  const shipped = await reportShipped({ from, to });
-
-  // Invoiced $ — FINALIZED, non-discarded docs by invoiceDate; gross `total` (CREDIT total negative).
-  const invoiceRows = await prisma.invoice.findMany({
-    where: {
-      status: "FINALIZED",
-      deletedAt: null,
-      ...(window ? { invoiceDate: window } : {}),
-    },
-    select: { kind: true, total: true },
-  });
-
-  return buildScoreboard({
-    window: { from: from ?? null, to: to ?? null },
-    ordersEntered,
-    shipped,
-    invoices: invoiceRows.map((i) => ({ kind: i.kind, total: i.total.toNumber() })),
-  });
+    { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+  );
 }

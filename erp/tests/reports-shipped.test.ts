@@ -301,6 +301,26 @@ describe("reportShipped — population and voids", () => {
   });
 });
 
+describe("reportShipped — injected transaction client (Codex fix 1: scoreboard reads one snapshot)", () => {
+  it("reads through a passed tx client and returns the SAME result as the autocommit read", async () => {
+    const cust = await makeCustomer();
+    const part = await makePart(cust.id);
+    const order = await makeOrderWithLines(cust.id, [{ partId: part.id, qty: 10, weight: 5 }]);
+    await makeShipment({
+      customerId: cust.id, shipDate: "2026-08-01", order,
+      lines: [{ orderLineId: order.lineIds[0], qty: 10, weight: 5, partNumber: part.partNumber }],
+    });
+
+    const filter = { from: "2026-08-01", to: "2026-08-31" };
+    const autocommit = await reportShipped(filter);
+    // The scoreboard drives this exact path — reportShipped joins the caller's RepeatableRead
+    // snapshot rather than its own autocommit read, so the three scoreboard figures agree.
+    const inTx = await prisma.$transaction((tx) => reportShipped(filter, tx));
+    expect(inTx).toEqual(autocommit);
+    expect((inTx.rows as ShippedDetailRow[])[0].qty).toBe(10);
+  });
+});
+
 describe("reportShipped — grouping over the DB", () => {
   async function seedTwoCustomers() {
     const custA = await makeCustomer("SGA");

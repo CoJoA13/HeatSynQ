@@ -185,7 +185,14 @@ function normalizeGroupBy(value: string | undefined): ShippedGroupBy {
   throw new HttpError(400, `Cannot group shipped by "${value}"`);
 }
 
-export async function reportShipped(filter: ShippedFilter = {}): Promise<ShippedResult> {
+// `db` defaults to the autocommit client — the standalone Shipped report needs nothing more. The
+// scoreboard passes its OWN RepeatableRead transaction client so this read joins the same snapshot
+// as its sibling order-count and invoice reads (Codex fix 1; the aging.ts `readSnapshotIn(tx, …)`
+// shape). PrismaClient is assignable to `TransactionClient`, so both callers type-check.
+export async function reportShipped(
+  filter: ShippedFilter = {},
+  db: Prisma.TransactionClient = prisma,
+): Promise<ShippedResult> {
   const groupBy = normalizeGroupBy(filter.groupBy);
   const shipDate = shipDateRange(filter.from, filter.to);
 
@@ -198,7 +205,7 @@ export async function reportShipped(filter: ShippedFilter = {}): Promise<Shipped
   // rows: a released row has no partId (only a snapshot number) and so cannot be positively matched
   // to a chosen part. The default view (no part filter) still counts released material via the
   // snapshot; drilling into one specific part restricts to lines whose part linkage is intact.
-  const lineRows = await prisma.shipperLine.findMany({
+  const lineRows = await db.shipperLine.findMany({
     where: {
       shipperOrder: {
         shipper: {
