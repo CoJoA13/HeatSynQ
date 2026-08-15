@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { GateNotice } from "@/lib/report-ui";
 import type { ReportEntry } from "@/lib/report-registry";
 
 export function ReportsIndex() {
@@ -27,21 +28,25 @@ export function ReportsIndex() {
       .catch((e) => { setError((e as Error).message); setLoaded(true); });
   }, [allowed]);
 
-  // §5.16: a caller without reports.view sees the page saying why, never a silently empty one.
-  if (!viewGate.allowed) {
+  // §5.16 + Codex fix 2: distinguish a permissions-fetch FAILURE (retryable banner) from the initial
+  // LOADING state from a genuine denial — a failed /api/auth/me must never read as "Requires
+  // reports.view", which also hid the retryable banner behind this early return.
+  if (permsError || perms === undefined || !viewGate.allowed) {
     return (
-      <div className="p-6">
-        <h1 className="mb-4 text-2xl font-semibold">Reports</h1>
-        <p className="text-sm text-slate-500">{viewGate.title ?? "You do not have permission to view reports."}</p>
-      </div>
+      <GateNotice
+        header={<h1 className="mb-4 text-2xl font-semibold">Reports</h1>}
+        permsError={permsError}
+        loading={perms === undefined}
+        deniedMessage={viewGate.title ?? "You do not have permission to view reports."}
+      />
     );
   }
 
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Reports</h1>
-      {(error ?? permsError) && (
-        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      {error && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>
       )}
       {reports.length === 0 && loaded && !error ? (
         <p className="text-sm text-slate-500">No reports are available to you yet.</p>

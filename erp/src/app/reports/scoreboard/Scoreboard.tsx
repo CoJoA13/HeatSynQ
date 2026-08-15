@@ -14,6 +14,7 @@ import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
+import { GateNotice } from "@/lib/report-ui";
 import { thisWeekWindow, thisMonthWindow } from "@/lib/scoreboard-presets";
 
 // Local mirror of src/server/reports/scoreboard.ts's ScoreboardFigures — NOT imported from
@@ -80,14 +81,20 @@ export function Scoreboard() {
     setTo(window.to);
   };
 
-  // §5.16: a caller without reports.view sees the page saying why, never a silently empty one.
-  if (!viewGate.allowed) {
+  // §5.16 + Codex fix 2: distinguish a permissions-fetch FAILURE (retryable banner) from the initial
+  // LOADING state from a genuine denial — a failed /api/auth/me must never read as "Requires
+  // reports.view", which also hid the retryable banner behind this early return.
+  if (permsError || perms === undefined || !viewGate.allowed) {
     return (
-      <div className="p-6">
-        <a href="/reports" className="text-sm text-blue-700 underline">← All reports</a>
-        <h1 className="mb-4 mt-2 text-2xl font-semibold">Comparison scoreboard</h1>
-        <p className="text-sm text-slate-500">{viewGate.title ?? "You do not have permission to view reports."}</p>
-      </div>
+      <GateNotice
+        header={<>
+          <a href="/reports" className="text-sm text-blue-700 underline">← All reports</a>
+          <h1 className="mb-4 mt-2 text-2xl font-semibold">Comparison scoreboard</h1>
+        </>}
+        permsError={permsError}
+        loading={perms === undefined}
+        deniedMessage={viewGate.title ?? "You do not have permission to view reports."}
+      />
     );
   }
 
@@ -107,8 +114,8 @@ export function Scoreboard() {
       <p className="mb-3 text-sm text-slate-500">
         Weekly parallel-run comparison vs Visual Shop — our numbers only.
       </p>
-      {(error ?? permsError) && (
-        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      {error && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>
       )}
 
       <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
