@@ -63,6 +63,10 @@ export function BacklogReport() {
   // never render as a genuinely empty, healthy report.
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Codex fix 3: option-fetch failures live in their OWN state. The report load()'s setError(null)
+  // on success must not erase a customer/part options failure — that would leave a silently
+  // truncated dropdown (only "All …") with no explanation. The banner shows either.
+  const [optionsError, setOptionsError] = useState<string | null>(null);
 
   const allowed = viewGate.allowed;
 
@@ -100,11 +104,11 @@ export function BacklogReport() {
   // blocked control says why, never a silent-empty `.catch(() => {})`).
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
   }, [customersGate.allowed]);
   useEffect(() => {
     if (!partsGate.allowed) return;
-    api<PartOption[]>("/api/parts").then(setParts).catch((e) => setError((e as Error).message));
+    api<PartOption[]>("/api/parts").then(setParts).catch((e) => setOptionsError((e as Error).message));
   }, [partsGate.allowed]);
 
   // Parts are customer-scoped: when a customer is chosen, offer only its parts, and clear a part
@@ -141,8 +145,8 @@ export function BacklogReport() {
       <a href="/reports" className="text-sm text-blue-700 underline">← All reports</a>
       <h1 className="mb-4 mt-2 text-2xl font-semibold">Backlog</h1>
       <p className="mb-3 text-sm text-slate-500">Open orders not yet fully shipped.</p>
-      {error && (
-        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>
+      {(error ?? optionsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? optionsError}</p>
       )}
 
       <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">

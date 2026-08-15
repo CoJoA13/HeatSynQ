@@ -63,6 +63,10 @@ export function SalesReport() {
   // never render as a genuinely empty, healthy report.
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Codex fix 3: option-fetch failures live in their OWN state. The report load()'s setError(null)
+  // on success must not erase a customer options failure — that would leave a silently truncated
+  // dropdown (only "All customers") with no explanation. The banner shows either.
+  const [optionsError, setOptionsError] = useState<string | null>(null);
 
   const allowed = viewGate.allowed;
 
@@ -99,7 +103,7 @@ export function SalesReport() {
   // control says why, never a silent-empty `.catch(() => {})`).
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setOptionsError((e as Error).message));
   }, [customersGate.allowed]);
 
   // §5.16 + Codex fix 2: distinguish a permissions-fetch FAILURE (retryable banner) from the initial
@@ -126,8 +130,8 @@ export function SalesReport() {
       <a href="/reports" className="text-sm text-blue-700 underline">← All reports</a>
       <h1 className="mb-4 mt-2 text-2xl font-semibold">Sales</h1>
       <p className="mb-3 text-sm text-slate-500">Invoiced revenue (ex-tax), by customer/part/month.</p>
-      {error && (
-        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>
+      {(error ?? optionsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? optionsError}</p>
       )}
 
       <div className="mb-3 flex flex-wrap items-end gap-3 text-sm">
