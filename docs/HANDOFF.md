@@ -60,32 +60,31 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-### Phase 8 (Reports & parallel-run) — design APPROVED 2026-08-14, 8A starting
+### Phase 8A (Reports & Scoreboard) MERGED 2026-08-14 — 8B/8C remaining
 
-**Phase 8 (Reports & parallel-run tools) is the active work.** The owner picked it as the next track
-and **approved its design spec 2026-08-14** —
-`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md` (a five-lens adversarial
-review ran before approval; every substantive finding incorporated). It builds as **three
-sub-phases, each its own branch/review/merge** (the 5A/B/C pattern): **8A Reports + Scoreboard · 8B
-Practice DB + First-run wizard · 8C Backup polish.** The 8A build plan is being written now.
-Owner rulings D1–D7 and the approval steers are in the design spec §3/§12 — the one non-default
-steer: the **scoreboard's invoiced-$ uses `invoiceDate`** (VS eyeball); all other §12 defaults taken
-(Payments = POSTED-only, Turnaround = full-shipped completion, Backlog includes REOPENED, order gate
-= company name+address+phone + chart of accounts, `manage_backups` action approved). The main spec's
-§15 carries the amendment block. **Docker is disabled at boot on this machine — start it before any
-8A execution** (`systemctl start docker`, interactive; then `cd erp && docker compose up -d --wait db`
-and `npx prisma generate`).
+**Phase 8A MERGED to `main` as `7d3ebb1` (PR #106, squash, 2026-08-14)** — first sub-phase of roadmap
+Phase 8. Full narrative: `docs/history/2026-08-14-phase-8a-reports-scoreboard.md`. It shipped the
+`/reports` platform (the `reports` area went live; a reusable five-part report shape cloned from A/R
+aging), five native reports (backlog, shipped, turnaround, sales, payments), the homed invoice
+register + A/R aging, the comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball),
+two indexes, a shared `report-ui.tsx`/`report-export-state.ts`, and a reports E2E flow. Reviews: all
+per-task Approved, a clean 5-lens whole-branch review, a fix wave, and **two rounds of the Codex
+GitHub bot (6 P2s, all fixed on-branch)**. Final gates: 2849 tests / 156 files, tsc/eslint/build
+clean, E2E 21/21, CI green.
 
-**[8A DRAFT — controller finalizes the merge-state paragraph + §4/§15 at merge.] Phase 8A (Reports +
-Scoreboard) is BUILT on branch `phase-8a-reports-scoreboard` (Tasks 0–8):** the `/reports` platform
-and `reports` area; the native reports (backlog, shipped, turnaround, sales, payments, comparison
-scoreboard) each in the five-part shape cloned from A/R aging; the two homed cross-area entries
-(invoice register, A/R aging); and the read-only `reports` E2E flow (index catalog → backlog
-filter + Excel export → scoreboard figures/presets), registered last in `FLOWS`. Still open: the
-whole-branch review, the PR/merge, and the controller's full-suite gate run (the `close-month-end`
-E2E flake is the known landmine — isolate it if it hangs). At merge, collapse this to the
-one-paragraph §4 "Merged" entry, move the full narrative to `docs/history/`, and record any §15
-amendment.
+**Phase 8 is the active track; 8B and 8C remain.** The approved design spec
+(`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded)
+covers all three sub-phases, each its own branch/review/merge (the 5A/B/C pattern): **8B Practice DB +
+First-run wizard · 8C Backup polish.** 8B rulings (D4/D6/D7): a separate practice copy with a
+**db-identity-guarded** reset + watermarked PDFs + representative-slice demo seed; a first-run setup
+checklist that **gates real order entry on company identity + chart of accounts** (password change
+recommended, not forced). 8C (D5): an in-app **Backups page** (list + folder + back-up-now + red
+staleness + integrity), restore stays a documented command, in-app alerting only; the app↔container
+**bridge** is the real design work there. **8A deferred a follow-up (issue filed):** the report
+wrappers use unbounded `findMany` + JS aggregation — fine at shop scale; DB-side aggregation is a
+future optimization. **Env note: Docker is disabled at boot; a fix wave ran against a stand-in
+rootless-Podman Postgres — restore the Docker stack (`sudo systemctl start docker`; `podman rm -f
+erp-db`) for the normal workflow.**
 
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
 completing roadmap Phase 7.** Its full narrative is in
