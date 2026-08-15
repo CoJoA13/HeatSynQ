@@ -1390,6 +1390,20 @@ model BillingConfig {
   updatedAt              DateTime         @updatedAt
 }
 
+/// Phase 8B (§5.5, §7): the first-run setup checklist's ONLY persisted state — a one-row
+/// singleton (id = 'singleton' CHECK, the BillingConfig precedent), holding just the two facts
+/// that cannot be derived live: whether starting document numbers were deliberately confirmed
+/// (an unset counter is indistinguishable from a chosen 1000), and whether the checklist was
+/// dismissed. Everything else (company identity, chart of accounts, customers/parts counts, the
+/// admin-password-still-default reminder) is a live signal. Seeded by its migration; a plain
+/// findFirst, never a lazy create; re-seeded by truncateAll (tests) and the practice reset (§5.3).
+model SetupState {
+  id                   String    @id @default("singleton")
+  numbersConfirmedAt   DateTime?
+  checklistDismissedAt DateTime?
+  updatedAt            DateTime  @updatedAt
+}
+
 // ─── Phase 5B: accounts receivable (design spec §4.1–§4.3) ──────────────────────────────────
 //
 // The receipts ledger: a ReceiptBatch is a deposit session holding many Payments; each Payment is

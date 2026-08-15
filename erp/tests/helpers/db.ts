@@ -29,6 +29,8 @@ export function templateVersionId(docType: TemplateDocTypeString): string {
  * bare TRUNCATE deletes it, which would make every test run against a database in a state the
  * production schema cannot be in, and would push the first service that reads it toward exactly
  * the lazy create the spec rules out. Re-seeding it here keeps the invariant true everywhere.
+ * `SetupState` (Phase 8B §7) is the same by-construction singleton once more — re-seeded here for
+ * the same reason, so `getSetupState` stays a plain `findFirst`.
  *
  * The eight "Standard" document templates (Phase 7 spec §9) are the same invariant one phase
  * over: the seed migration guarantees every docType a live default template with a PUBLISHED v1,
@@ -50,6 +52,10 @@ export async function truncateAll(): Promise<void> {
   await prisma.$executeRaw`
     INSERT INTO "BillingConfig" ("id", "billForCertDefault", "updatedAt")
     VALUES ('singleton', false, now())
+    ON CONFLICT ("id") DO NOTHING`;
+  await prisma.$executeRaw`
+    INSERT INTO "SetupState" ("id", "updatedAt")
+    VALUES ('singleton', now())
     ON CONFLICT ("id") DO NOTHING`;
 
   const now = new Date();
