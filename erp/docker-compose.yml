@@ -31,6 +31,24 @@ services:
       db: { condition: service_healthy }
     profiles: ["prod"]
 
+  # Phase 8B §5.1: a separate PRACTICE copy of the same image, pointed at erp_practice on its own
+  # port. Its own `practice` profile (NOT `prod`), so `docker compose --profile prod up` never starts
+  # it and the prod-only backup (§6.3) never adopts it. Practice-vs-production is decided
+  # authoritatively by database identity (practiceMode()); PRACTICE_MODE only corroborates. The
+  # shared CMD runs `prisma migrate deploy` against DATABASE_URL on start, migrating erp_practice.
+  # First-population of the demo slice is a documented one-time command (npm run db:seed:demo).
+  app-practice:
+    build: .
+    restart: unless-stopped
+    ports: ["8080:3000"]
+    environment:
+      DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp_practice
+      PRACTICE_MODE: "true"
+      SESSION_SECRET: ${SESSION_SECRET:?set in .env}
+    depends_on:
+      db: { condition: service_healthy }
+    profiles: ["practice"]
+
   backup:
     image: postgres:18
     restart: unless-stopped
