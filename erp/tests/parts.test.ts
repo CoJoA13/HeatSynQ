@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
   createPart, updatePart, deletePart, getPart, listParts, partOrderBlockers, partQuoteBlockers,
@@ -32,7 +32,7 @@ async function giveSteps(partId: string) {
 }
 
 describe("parts core", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("creates with required fields and lists with customer + material names resolved", async () => {
     const { acme } = await twoCustomers();

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 
 import { GET as listParts, POST as createPartRoute } from "@/app/api/parts/route";
@@ -59,7 +59,7 @@ async function partFixture() {
 }
 
 describe("parts routes", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("GET /api/parts requires parts.view; POST requires parts.create", async () => {
     const { customer } = await partFixture();

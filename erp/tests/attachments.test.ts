@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Prisma } from "../prisma/generated/prisma/client";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createPart, deletePart } from "@/server/parts";
@@ -83,7 +83,7 @@ async function orderOwnerFixture(suffix = ""): Promise<string> {
 }
 
 describe("attachments service — one implementation, two owners", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("round-trips add/list/get/delete for both owners through one loop", async () => {
     for (const owner of ["part", "order"] as const) {
@@ -514,7 +514,7 @@ const CONFIGS: RouteCfg[] = [
 ];
 
 describe.each(CONFIGS)("$owner attachment routes", (cfg) => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("gate on view/edit and round-trip one file end to end", async () => {
     const ownerId = await cfg.fixture();

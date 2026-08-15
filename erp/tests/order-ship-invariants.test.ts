@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
   createOrder, addLine, removeLine, updateLine, voidOrder, replaceContainers, replaceSerials,
@@ -94,7 +94,7 @@ async function shipmentOfOneLine(opts: { ordered?: number; shipped?: number } = 
 }
 
 describe("order edit invariants after a shipment (spec §5.5)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("refuses removing a line that has shipments, naming the shipment", async () => {
     const { order, line, shipper } = await shipmentOfOneLine();
@@ -205,7 +205,7 @@ describe("order edit invariants after a shipment (spec §5.5)", () => {
 // the order stays correctable through the same APIs it always had.
 // -------------------------------------------------------------------------------------------
 describe("snapshot + release: order corrections after shipment references", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("removeLine succeeds once every referencing shipment is voided, and the voided shipment still names the part", async () => {
     const { line, shipper } = await shipmentOfOneLine();

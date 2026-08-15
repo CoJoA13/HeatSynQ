@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, voidOrder, removeLine, addLine, type OrderDetail } from "@/server/orders";
@@ -263,7 +263,7 @@ describe("buildCertDefinition", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("printCert", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("prints readings but never min, max, scale column or pass/fail (§3.21)", async () => {
     const { cert, user } = await certWithReadings({ min: 28, max: 32, readings: [30.0, 25.6] });
@@ -584,7 +584,7 @@ describe("printCert", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("POST /api/certs/[id]/print", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("401s without a session", async () => {
     const { cert } = await certWithReadings({});
@@ -623,7 +623,7 @@ describe("POST /api/certs/[id]/print", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   async function shipmentScopeShipment() {
     const customer = await makeCustomer();

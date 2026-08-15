@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, replaceSerials, type OrderDetail } from "@/server/orders";
@@ -92,7 +92,7 @@ function oneOrderInput(order: OrderDetail, qty?: number) {
 }
 
 describe("shipper routes", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   // ---------------------------------------------------------------------------------------
   // GET /api/shippers, POST /api/shippers

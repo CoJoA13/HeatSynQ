@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { HttpError } from "@/server/errors";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
@@ -184,6 +184,7 @@ const opLines = (invoice: InvoiceDetail): InvoiceLineDetail[] =>
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
   customerSeq = 0;
   partSeq = 0;
   quoteStepSeq = 0;

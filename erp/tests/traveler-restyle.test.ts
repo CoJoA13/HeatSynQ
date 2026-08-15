@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { prisma, truncateAll, templateVersionId, seedOrderGatePrereqs } from "./helpers/db";
 import { drawnText, paintedImageCounts } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder } from "@/server/orders";
@@ -86,7 +86,7 @@ async function storedStamp(documentId: string): Promise<string | null> {
 }
 
 describe("Phase 7 roadmap outcome — owner restyles the traveler/logo, publishes, prints, the paper shows it", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("upload logo + rename a label → preview → publish → assign → print: the STORED pdf carries the restyle and the version stamp", async () => {
     const { customer, order } = await miniOrder();

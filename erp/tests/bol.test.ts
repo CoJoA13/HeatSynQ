@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
@@ -219,7 +219,7 @@ describe("buildBolDefinition", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("printBol", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("allocates the BOL number on first print and reuses it on reprint", async () => {
     const { shipper } = await twoOrderShipment();
@@ -344,7 +344,7 @@ describe("printBol", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("POST /api/shippers/[id]/print?doc=bol", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("401s without a session", async () => {
     const { shipper } = await oneOrderShipment();

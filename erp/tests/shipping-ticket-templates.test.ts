@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { prisma, truncateAll, templateVersionId, seedOrderGatePrereqs } from "./helpers/db";
 import { drawnPages, drawnText, pageCount, paintedImageCounts, textRunsWithY } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
@@ -606,7 +606,7 @@ async function stampOf(documentId: string): Promise<string | null> {
 }
 
 describe("printShippingTickets — resolution by the SHIPMENT'S order count + the stamp", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("no assignment: a single-order shipment resolves the seeded Standard SHIPPER and stamps ITS version id", async () => {
     const { shipper } = await oneOrderShipment();
@@ -663,7 +663,7 @@ describe("printShippingTickets — resolution by the SHIPMENT'S order count + th
 });
 
 describe("printShippingTickets — the liability text comes from the CONFIG, not the Setting", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("the seeded Standard's text block prints (the Setting is retired in Task 14)", async () => {
     const { shipper } = await oneOrderShipment();
@@ -687,7 +687,7 @@ describe("printShippingTickets — the liability text comes from the CONFIG, not
 });
 
 describe("printShippingTickets — per-ticket sheet groups through the real path", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("the pageFooter knob restarts numbering per ticket group; the default prints none", async () => {
     const customer = await makeCustomer();

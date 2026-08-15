@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, replaceCharges, voidOrder, type OrderDetail } from "@/server/orders";
 import {
@@ -104,6 +104,7 @@ const lookup = (orderId: string) => prisma.$transaction((tx) => finalizedInvoice
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
 });
 
 // ---------------------------------------------------------------------------------------------

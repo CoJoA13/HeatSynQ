@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, getOrder, voidOrder, type OrderDetail } from "@/server/orders";
@@ -162,6 +162,7 @@ async function completeShipmentOf(): Promise<{
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
   claimOrdersInOrderMock.mockClear();
   claimOrderMock.mockClear();
 });
@@ -655,7 +656,7 @@ describe("composition: claim discipline (module-boundary mock)", () => {
 // override_credit_hold + a reason (recorded in the audit entry) proceeds.
 // -------------------------------------------------------------------------------------------
 describe("credit hold gates shipment extension", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   async function heldShipmentPlusSpare() {
     const { shipper, orderB } = await shipmentPlusSpareOrder();

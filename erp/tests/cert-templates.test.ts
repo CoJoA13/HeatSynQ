@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { prisma, truncateAll, templateVersionId, seedOrderGatePrereqs } from "./helpers/db";
 import { drawnPages, drawnText, pageCount, paintedImageCounts } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
@@ -611,7 +611,7 @@ async function stampOf(documentId: string): Promise<string | null> {
 }
 
 describe("printCert — resolution stamps the version and binds cert_statement from config", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("no assignment: resolves the seeded Standard cert and stamps ITS version id", async () => {
     const customer = await makeCustomer();

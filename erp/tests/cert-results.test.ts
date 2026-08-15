@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, addLine, type OrderDetail } from "@/server/orders";
@@ -100,7 +100,7 @@ async function seededCert(
 }
 
 describe("seedRequirements (via createCert)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("seeds one requirement per part inspection, in print order", async () => {
     const { order } = await twoLineOrder();
@@ -168,7 +168,7 @@ describe("seedRequirements (via createCert)", () => {
 });
 
 describe("addLine seeds rider requirements into live certs (ruling 28, #56)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("seeds the rider's frozen requirements and keeps typed readings intact", async () => {
     const { cert, order } = await seededCert({ min: 28, max: 32 });
@@ -209,7 +209,7 @@ describe("addLine seeds rider requirements into live certs (ruling 28, #56)", ()
 });
 
 describe("replaceReadings", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("computes pass/fail per reading and records an override", async () => {
     const { cert } = await seededCert({ min: 28, max: 32 });

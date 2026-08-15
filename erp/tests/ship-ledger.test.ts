@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, addLine, getOrder, voidOrder, type OrderDetail } from "@/server/orders";
 import { claimOrdersInOrder, sortedClaimIds } from "@/server/order-locks";
@@ -149,7 +149,7 @@ async function twoShipmentsOf(qtyA: number, qtyB: number): Promise<{
 }
 
 describe("shippedTotals", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("excludes voided shipments from shipped-to-date", async () => {
     const { orderLine, shipperA } = await twoShipmentsOf(300, 200);
@@ -173,7 +173,7 @@ describe("shippedTotals", () => {
 });
 
 describe("recomputeOrderStatus (via getOrder)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("derives status from ship-line-complete, never from quantity", async () => {
     const { order, line } = await oneLineOrder({ qty: 1000 });
@@ -235,7 +235,7 @@ describe("recomputeOrderStatus (via getOrder)", () => {
 });
 
 describe("recomputeOrderStatus — invoice-owned states (Task 13)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("leaves an INVOICED order alone", async () => {
     const { order } = await shippedOrder();
@@ -262,7 +262,7 @@ describe("recomputeOrderStatus — invoice-owned states (Task 13)", () => {
 });
 
 describe("nextShipmentSequence", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("never reissues a shipment sequence after a void", async () => {
     const { order } = await savedOrder();
@@ -292,7 +292,7 @@ describe("sortedClaimIds", () => {
 });
 
 describe("claimOrdersInOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns every requested order sorted ascending by id, regardless of caller order", async () => {
     const [a, b, c] = await savedOrderIds(3);

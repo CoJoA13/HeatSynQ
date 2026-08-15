@@ -77,4 +77,29 @@ export async function truncateAll(): Promise<void> {
     WHERE v."templateId" = t."id" AND v."versionNumber" = 1`;
 }
 
+/**
+ * Seeds the minimum config the Phase 8B order-entry gate (order-entry-readiness.ts) requires so
+ * order-creating suites can call `createOrder`: company identity + one live GL account +
+ * `BillingConfig.arGlAccountId`. OPT-IN — called in the `beforeEach` of order-creating suites ONLY,
+ * never inside `truncateAll`. Seeding it globally would (a) red the pristine-default suites that
+ * assert the empty baseline (billing-config's `arGlAccountId: null`, settings' `company_name === ""`,
+ * reference-gl's GL-account counts) and (b) via T11's `reseedSingletons` lift, contaminate the
+ * production practice reset with non-singleton demo rows. Raw prisma writes (no audit) — this is
+ * harness setup, not a service call, so it adds no audit rows to the baseline.
+ */
+export async function seedOrderGatePrereqs(): Promise<void> {
+  await prisma.setting.createMany({
+    data: [
+      { key: "company_name", value: "Test Heat Treat Co." },
+      { key: "company_address", value: "1 Test Way, Testville" },
+      { key: "company_phone", value: "555-0000" },
+    ],
+    skipDuplicates: true,
+  });
+  const gl = await prisma.glAccount.create({
+    data: { name: "0000-GATE-AR", description: "A/R (order-gate prereq)" },
+  });
+  await prisma.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId: gl.id } });
+}
+
 export { prisma };

@@ -8,7 +8,7 @@
 // than one requirement on a cert. The page itself has no vitest coverage of its own; it is
 // exercised visually here (this task) and end-to-end by Task 20.
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
 import { addPartInspection } from "@/server/part-inspections";
@@ -72,7 +72,7 @@ function byId(rows: CertRow[]): Map<string, CertRow> {
 }
 
 describe("listCerts — the certifications worklist's own filter and column contract", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("narrows by customer, scope, printed and search — combined in one query, the way the filter bar sends them", async () => {
     const a = await savedOrder({ poNumber: "CL-PO-1" });

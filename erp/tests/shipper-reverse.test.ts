@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper, reverseShipper, type ShipperDetail } from "@/server/shippers";
@@ -116,6 +116,7 @@ function shipInput(order: OrderDetail, qty: number, weight: string, lineComplete
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
   recomputeMock.mockClear();
 });
 

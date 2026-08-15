@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { setSetting } from "@/server/settings";
 import { resolveCertSettings } from "@/server/certs";
@@ -66,7 +66,7 @@ async function savedOrder(opts: {
 }
 
 describe("resolveCertSettings", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("lets the part beat the customer beat the plant", async () => {
     await setSetting("cert_required_default", false);
@@ -123,7 +123,7 @@ describe("resolveCertSettings", () => {
 // order columns AND the §6.2 order-scope cert creation both following the EFFECTIVE values, not
 // the chain's own answer.
 describe("createOrder cert override (spec §6.1 'overridable at entry')", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   async function orderableFixture(opts: {
     partCertRequired?: boolean | null; partCertScope?: "ORDER" | "LOAD" | "SHIPMENT" | null;

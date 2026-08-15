@@ -3,6 +3,7 @@ import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
 import { withDbErrors } from "./db-errors";
+import { orderEntryReadiness } from "./order-entry-readiness";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -674,6 +675,22 @@ export async function createOrder(
   // itself (allocateNumber) — the shape a deadlock gets introduced through later.
   const defaultRequestDays = await getSetting("request_days_default");
   const traffic = await trafficSettings();
+
+  // Order-entry gate (Phase 8B §5.6): real order entry is blocked until company identity AND a
+  // chart of accounts are configured. Evaluated here as a PRE-transaction read (alongside the
+  // settings reads above), BEFORE saveNewOrder's Serializable transaction — inside Serializable it
+  // would enlarge the predicate read-set and turn a concurrent config edit into a no-retry abort.
+  // TOCTOU is benign: the gated facts are admin-only install config and a one-order race either
+  // way violates no invariant. (order-drafts.ts is scratch storage and writes no Order, so this is
+  // the single chokepoint.)
+  const readiness = await orderEntryReadiness();
+  if (!readiness.ready) {
+    throw new HttpError(
+      400,
+      `Finish setup before entering orders — ${readiness.gaps.map((g) => g.label).join("; ")}. ` +
+        `Complete setup on the Setup page (/setup).`,
+    );
+  }
 
   return withDbErrors({ entity: "Order", conflictField: "order number" }, async () => {
     try {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, replaceCharges, type OrderDetail } from "@/server/orders";
 import { createShipper } from "@/server/shippers";
@@ -136,6 +136,7 @@ async function pricedShippedOrder(opts: {
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
 });
 
 describe("listInvoiceCandidates", () => {

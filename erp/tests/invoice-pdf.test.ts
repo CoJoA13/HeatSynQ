@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
@@ -222,7 +222,7 @@ describe("buildInvoiceDefinition", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("printInvoice", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("builds the print payload off the frozen invoice detail (parts, price grid, surcharge, total)", async () => {
     await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama, LLC"));
@@ -372,7 +372,7 @@ describe("printInvoice", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("POST /api/invoices/[id]/print", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("401s without a session", async () => {
     const { invoice } = await draftFixture();
@@ -417,7 +417,7 @@ describe("POST /api/invoices/[id]/print", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("GET /api/invoices/[id]/documents", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("401s without a session", async () => {
     const { invoice } = await draftFixture();
