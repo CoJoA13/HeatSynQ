@@ -284,6 +284,9 @@ export default function NewOrderPage() {
   // warnings still navigates immediately (below); this state exists only for the other case.
   const [savedOrder, setSavedOrder] =
     useState<{ id: string; orderNumber: number; warnings: string[]; print: boolean } | null>(null);
+  // Phase 8B §5.6: null until the gate predicate is fetched; `ready:false` shows the blocking notice.
+  const [readiness, setReadiness] =
+    useState<{ ready: boolean; gaps: { label: string; href: string }[] } | null>(null);
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
@@ -324,6 +327,15 @@ export default function NewOrderPage() {
     api<ContainerTypeOption[]>("/api/picklists/containerType").then(setContainerTypes)
       .catch((e) => addLoadError((e as Error).message));
   }, [addLoadError]);
+
+  useEffect(() => {
+    // The Phase 8B order-entry gate: if company identity + a chart of accounts are not configured,
+    // createOrder is blocked server-side, so show the blocking notice instead of the form. This is
+    // the SAME predicate the gate enforces (order-entry-readiness.ts), so the two cannot disagree.
+    if (!saveGate.allowed) return;
+    api<{ ready: boolean; gaps: { label: string; href: string }[] }>("/api/orders/entry-readiness")
+      .then(setReadiness).catch((e) => addLoadError((e as Error).message));
+  }, [saveGate.allowed, addLoadError]);
 
   // ---- entry-defaults (request date) — refetched whenever the customer, the LEAD part, or the
   // operator's own received-date override changes (fix-wave finding 1: the untouched preview
@@ -674,7 +686,19 @@ export default function NewOrderPage() {
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{loadError ?? autosaveError}</p>
       )}
 
-      {savedOrder ? (
+      {readiness && !readiness.ready ? (
+        // Phase 8B §5.6: real order entry is blocked until company identity + a chart of accounts
+        // are configured. The form is replaced (not merely disabled) by a notice linking to /setup.
+        <div className="rounded border border-amber-300 bg-amber-50 p-4">
+          <p className="mb-2 font-medium text-amber-900">Finish setup before entering orders</p>
+          <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-amber-800">
+            {readiness.gaps.map((g, i) => <li key={i}>{g.label}</li>)}
+          </ul>
+          <Link href="/setup" className="inline-block rounded bg-slate-800 px-4 py-2 text-sm text-white">
+            Go to setup
+          </Link>
+        </div>
+      ) : savedOrder ? (
         // Owner ruling, applied (HANDOFF issue #4 heritage — a degraded/flagged outcome is named
         // visibly, never silently): a save that succeeded WITH warnings stops here instead of
         // navigating straight past them. The form is gone (not merely disabled) — draft state is
