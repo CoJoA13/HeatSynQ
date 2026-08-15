@@ -84,6 +84,16 @@ Six commits (conventional, no attribution trailer), on `phase-8a-reports-scorebo
 - **Unbounded `findMany` + JS aggregation** in every report wrapper (no `take`/limit) — LOW; fine at this shop's scale (thousands of rows), but a real scalability note if a table grows large or a user runs a report with no date filter. Candidate for a post-8A issue (DB-side aggregation) — not blocking.
 - **"How reports slice by part" — OWNER RULED "ship as-is" (2026-08-14).** The consolidated question (Task 2 released-row asymmetry + Task 3 multi-part over-attribution + Sales/scoreboard being groupBy-only) was put to the owner with three options (ship as-is / groupBy-only everywhere / keep filters + fix quirks); owner chose **ship as-is** — each report does what fits its data, the edge quirks are rare and documented. No code change; the inconsistency is an accepted, documented design outcome.
 
+## Codex automated PR review (PR #106) — the 3rd review layer earned its keep
+
+The GitHub-integrated Codex bot (`chatgpt-codex-connector`) auto-reviewed PR #106 and posted **5 P2 findings** the per-task + whole-branch reviews had missed — cross-cutting error-handling / stale-state / consistency issues cloned across the report screens:
+1. Scoreboard's 3 reads could observe different DB snapshots → wrapped in ONE read-only **RepeatableRead** tx (aging precedent); `reportShipped` threads the tx.
+2. A failed `/api/auth/me` was misreported as "requires reports.view" → shared `GateNotice` orders permsError→loading→denied across all 7 screens.
+3. Report-success erased an options-fetch error (shared state) → distinct `optionsError`.
+4. Filter dropdowns omitted inactive-but-live master data → `?includeInactive=1` on the option fetches.
+5. Export link updated before the table (§5.13 stale-state class) → shared `ExportLink` built from `appliedQuery`, inert while stale.
+Both cross-cutting fixes extracted into ONE client-safe `src/lib/report-ui.tsx` (kills the clones). **6 commits** `77af36f..d006f9e`. **Fix-review: ✅ Approved** (all 5 genuinely fixed, not relocated; no critical/important). **CI: passed.** **Post-fix gates (18:08/21:56, run on the stand-in Podman db while Docker was down): 2846 tests / 156 files, tsc/eslint/build clean, E2E 21/21 clean.** Reply-on-thread + resolve + merge = controller's next steps. (Lesson: the §5.13 sibling-page stale-load sweep the handoff flagged was real — the new report pages inherited it; Codex caught it.)
+
 ## Notes / rulings during execution
 
 - 2026-08-14: kickoff. Design approved (5-lens review folded); 8A plan approved (2-lens review folded — SURCHARGE in Sales, scoreboard export, reconciliation fixture, include-voided deferred). Env verified: Docker up, both DBs at 35 migrations, client generated.
