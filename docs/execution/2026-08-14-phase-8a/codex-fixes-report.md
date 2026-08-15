@@ -120,7 +120,7 @@ first successful load; a failed/slow reload keeps it pinned to the last successf
 - Test added: `erp/tests/reports-export-state.test.ts` — 3 cases, incl. the **failed-initial-load**
   case (`exportState(null, …)` → `exportable: false`), the matched-success case, and the
   stale-reload-stays-exportable case.
-- Commit: _see below._
+- Commit: `fe7f94d`.
 
 ---
 
