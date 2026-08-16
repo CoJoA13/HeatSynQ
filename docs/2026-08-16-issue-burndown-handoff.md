@@ -179,23 +179,43 @@ match condition, so the next guard added cannot degrade silently. RED-verified.
 
 ---
 
-### Group C — Order & shipment guards  ·  **#126**, **#125**
+### Group C — Order & shipment guards  ·  **#126**, **#125** · **DONE**
 
-**Branch:** `fix-order-guards` · Both are "a guard or warning that names its cause."
+**Branch:** `fix-order-guards` · #126 = `de9ed88`, #125 = `d4335c1`.
 
-**#126 (ruled)** — freeze `addLine`/`updateLine` once a finalized invoice covers the order, so §5.7 means
-one thing. One guard mirroring `replaceCharges`: read `finalizedInvoiceFor` **on the caller's own claimed
-`tx`** and raise the caller's own `HttpError` with `invoiceBlockMessage`. **Read it under the order claim,
-not before it** (CLAUDE.md: the guarded state must live on, or be locked with, the claimed row). Check it
-doesn't contradict `removeLine`'s existing shipped-line message. Then test that unlock → edit →
-recalculate → finalize still works — after this, that is the *only* correction route.
+**#126 — order lines freeze.** One guard mirroring `replaceCharges`: `finalizedInvoiceFor` on the
+caller's own claimed `tx`, the caller's own `HttpError`, `invoiceBlockMessage` naming the invoice and
+linking to it. In `updateLine` the guard sits **before** the line read, deliberately — the freeze is
+a property of the ORDER, so an invoiced order refuses identically whether or not the line exists,
+rather than the refusal depending on which settled fact is checked first.
 
-**#125 (ruled)** — warn (don't block) when an already-shipped serial is re-selected. The warning must name
-**which shipper and when**. Check first whether the shipped fact can be derived from live `ShipperSerial`
-rows joined to non-voided shippers before adding a column (the `orderLineIdAtSave` precedent solved a
-similar "released rows still need to credit a fact" problem). Voided shipments must not count.
-**Fold it into `shipmentWarnings`** so it reaches BOTH the idempotent replay and every edit response via
-`shipperResponse` — the #50/#54 lesson: a warning computed in one path only is half-built.
+The correction route the ruling asked to be proven is tested end to end: **unlock → edit →
+re-finalize still works**, and re-freezing closes it again. After this guard that is the only route,
+so a break there would lock the shop out of its own paper.
+
+**Scope note worth carrying:** `removeLine` keeps only its shipped-line guard, per the ruling. A test
+records what that leaves reachable rather than assuming it — **an UNSHIPPED line on an invoiced order
+can still be removed.** The two guards never contradict each other, but §5.7 is therefore "one thing"
+for add/update and not quite for remove. Flagged rather than silently extended.
+
+**#125 — re-shipped serial warns.** **Derived, not stored** — the ruling asked whether live
+`ShipperSerial` rows joined to non-voided shippers already carry the fact, and they do, so the schema
+is untouched. Keyed on **`orderSerialId`** (the physical part instance within its order), never on
+the `serial` TEXT, which is unique only per line and would fire falsely across customers reusing a
+numbering scheme. Two wanted consequences: a RELEASED row is excluded (it no longer names anything
+re-selectable), and the current shipment is excluded by id, so re-reading a shipment never accuses it
+of duplicating its own selection. Voided shipments don't count. §5.14: the sentence names the serial,
+the packing list, the date, and links to it.
+
+**A finding about the #50/#54 surface, since the ruling invoked it.** That lesson is usually read as
+"warnings live in `shipmentWarnings`" — but `createShipper` still builds its list **inline**, and
+deliberately so: its messages name the input just sent ("shipping 5 / 5.00 lbs exceeds the
+remaining …") where a later read can only speak of shipped-to-date. The two lists are not one
+function and should not be. What the lesson actually requires is that the **rule** behind any single
+warning live in one place — so creation calls the SAME `priorShipmentsOf` + `reshippedSerialWarnings`
+helpers `shipmentWarnings` does, rather than carrying a second copy. Edits and the idempotent replay
+both arrive through `shipmentWarnings` via `shipperResponse`, so all three paths share one rule.
+Tested on creation, on an edit, and on all three silent cases.
 
 ---
 
