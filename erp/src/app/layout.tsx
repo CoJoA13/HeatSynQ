@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Shell } from "@/components/Shell";
 import { PracticeBanner } from "@/components/PracticeBanner";
+import { SetupBanner } from "@/components/SetupBanner";
 import { practiceMode } from "@/server/practice-mode";
 
 export const metadata: Metadata = { title: "Shop ERP" };
@@ -15,6 +16,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body className="antialiased">
         {isPractice && <PracticeBanner />}
+        <SetupBanner />
         <Shell>{children}</Shell>
       </body>
     </html>

@@ -29,6 +29,7 @@ describe("GET /api/orders/entry-readiness (Phase 8B §5.6)", () => {
     await seedOrderGatePrereqs();
     const cookie = await signInWith(["orders.create"], "creator-b");
     const res = await GET(getReq(cookie), noParams);
+    expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ready).toBe(true);
     expect(body.gaps).toEqual([]);
