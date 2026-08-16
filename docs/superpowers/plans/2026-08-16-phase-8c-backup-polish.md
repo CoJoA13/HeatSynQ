@@ -1545,6 +1545,7 @@ reload that clears the banner after setting it.**
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gateDo } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 import type { ArchiveInfo, BackupsView } from "@/lib/backup-constants";
 
 const fmtBytes = (n: number) =>
@@ -1558,7 +1559,13 @@ export default function BackupsPage() {
   const [view, setView] = useState<BackupsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [perms, setPerms] = useState<string[] | undefined>(undefined);
+  // The SHARED hook, never a hand-rolled /api/auth/me effect. Its own header names "reimplemented
+  // rather than shared" as this repo's recurring defect shape, and it gets two things right that a
+  // local copy reliably gets wrong: `permissions` stays `undefined` while in flight (so gateDo
+  // keeps controls DISABLED rather than flashing them open and then locking), and a failed fetch
+  // surfaces as `error` instead of being swallowed into `[]`, which is indistinguishable from a
+  // real "no grants" account and would permanently disable every control with no explanation.
+  const { permissions, error: permError } = usePermissions();
 
   const load = useCallback(async () => {
     const v = await api<BackupsView>("/api/admin/backups");
@@ -1567,11 +1574,10 @@ export default function BackupsPage() {
   }, []);
 
   useEffect(() => {
-    api<{ permissions: string[] }>("/api/auth/me").then((me) => setPerms(me.permissions)).catch(() => setPerms([]));
     load().catch((e) => setError(e instanceof ApiError ? e.message : "Could not read the backup folder."));
   }, [load]);
 
-  const gate = gateDo(perms, "manage_backups");
+  const gate = gateDo(permissions, "manage_backups");
 
   async function backUpNow() {
     setRunning(true);
@@ -1596,9 +1602,11 @@ export default function BackupsPage() {
     <div className="p-6">
       <h1 className="mb-4 text-xl font-semibold">Backups</h1>
 
-      {error && (
+      {/* The permissions failure folds in beside the page's own — a swallowed one would leave every
+          control disabled with nothing on screen explaining why (usePermissions' documented rule). */}
+      {(error ?? permError) && (
         <div className="mb-4 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
-          {error}
+          {error ?? permError}
         </div>
       )}
 
