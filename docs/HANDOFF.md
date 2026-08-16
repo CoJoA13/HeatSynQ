@@ -83,7 +83,7 @@ the direction is `retryOnSerializationConflict` around the six allocating caller
 cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
 concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
 
-### Phase 8 — all three sub-phases (8A/8B/8C) now built; 8C awaiting merge
+### Phase 8 — all three sub-phases (8A/8B/8C) built; 8C reviewed and open as PR #117
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
 Phase 8. Full narrative: `docs/history/2026-08-15-phase-8b-practice-wizard.md`. It shipped the separate
@@ -106,9 +106,13 @@ comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball), two 
 E2E flow. **8A deferred a follow-up (issue filed):** the report wrappers use unbounded `findMany` + JS
 aggregation — fine at shop scale; DB-side aggregation is a future optimization.
 
-**Phase 8C (Backup polish) is CODE-COMPLETE on branch `phase-8c-backup-polish` (all 9 tasks landed,
-2026-08-16) — pending the standing whole-branch review, PR, and merge every prior phase went through
-before touching `main`.** It closes the approved design spec's D5
+**Phase 8C (Backup polish) is REVIEWED and OPEN AS [PR #117](https://github.com/CoJoA13/HeatSynQ/pull/117)
+from branch `phase-8c-backup-polish` (all 9 tasks landed 2026-08-16; awaiting merge).** Reviews are
+complete: nine per-task reviews (**seven approved on round 1**; Task 4 one fix round, Task 8 two), a
+five-lens whole-branch review that returned **ZERO Critical and nothing blocking**, and one fix wave
+(`90f128a`) closing four *silences*, whose scoped re-review verdicted "ready to become a PR". Final
+gates, each watched to completion: **2986 tests / 179 files · tsc · eslint · build clean · E2E 23/23 ·
+39 migrations** (baseline was 2898/171 and 22 flows). It closes the approved design spec's D5
 (`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded):
 a pure `backup-paths.ts` leaf (archive-name-gated path confinement, no fs/db) and client-safe
 constants; the `manage_backups` action + `backup_stale_hours` setting behind **two** migrations — the
@@ -635,7 +639,7 @@ Fedora-specific notes:
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
 **Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases (8A/8B/8C) are built.** 8A
-and 8B are MERGED (PR #106, #109); 8C (Backup polish) is code-complete on branch
+and 8B are MERGED (PR #106, #109); 8C (Backup polish) is reviewed and open as PR #117 from branch
 `phase-8c-backup-polish` (§4) and awaits the standing whole-branch review, PR, and merge. **That
 completes every build phase in the 8-phase roadmap**
 (`docs/superpowers/plans/2026-07-29-roadmap.md`) — there is no ninth phase. The open work now is
