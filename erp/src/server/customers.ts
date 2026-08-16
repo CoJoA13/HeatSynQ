@@ -317,6 +317,38 @@ export async function customerQuoteBlockers(customerId: string): Promise<Blocker
 }
 
 /**
+ * Every LIVE payment whose `customerId` is this customer — the fourth category, and the one whose
+ * absence STRANDED MONEY (issue #84). Phase 5B gave `Payment` its own `customerId`, so a customer
+ * can hold receipt cash with no order behind it at all; `deleteCustomer` checked children, parts,
+ * orders and quotes but not this, so a customer with an unapplied payment and no live order could be
+ * soft-deleted — after which `applyPayment` can never use that cash, because `familyCustomerIds`
+ * requires a live payer. No later request undoes it.
+ *
+ * A Payment has no detail page of its own, so the link goes to the BATCH that holds it — which is
+ * both where it is displayed and where it can be voided, so the §5.14 promise ("name the blocker AND
+ * give a route to resolving it") is actually kept rather than half-kept. Ordered by batch number so
+ * a payer spread across several deposits reads in the order the operator will work through them.
+ *
+ * Deliberately the only new category: a live INVOICE hangs off an order and live orders already
+ * block, and a live APPLICATION needs both an invoice (→ order → blocked) and a payment (→ blocked
+ * here), so both are covered transitively. Payments are the one A/R row that can exist with no order
+ * behind it — which is exactly why this was the hole.
+ */
+export async function customerPaymentBlockers(customerId: string): Promise<Blocker[]> {
+  const payments = await prisma.payment.findMany({
+    where: { customerId, deletedAt: null },
+    select: { id: true, amount: true, batchId: true, batch: { select: { batchNumber: true } } },
+    orderBy: [{ batch: { batchNumber: "asc" } }, { amount: "asc" }],
+  });
+  return payments.map((p) => ({
+    entityLabel: "Payment",
+    name: `Batch #${p.batch.batchNumber} · ${p.amount.toNumber().toFixed(2)}`,
+    id: p.id,
+    href: `/receivables/batches/${p.batchId}`,
+  }));
+}
+
+/**
  * `reason` is required, not optional — spec §9: "destructive-ish actions require a reason". This
  * one qualifies on three counts: it soft-deletes every address and contact along with the row,
  * it frees the `code` for reuse by a future customer that will be unrelated to this one, and it
@@ -377,6 +409,17 @@ export async function deleteCustomer(id: string, reason: string): Promise<void> 
     // pairing above, one writer over.
     const quotes = await tx.quote.count({ where: { customerId: id, deletedAt: null } });
     if (quotes > 0) throw new HttpError(400, `That customer still has ${quotes} live quote(s)`);
+
+    // Issue #84: live receipt cash blocks too, and this is the guard whose absence STRANDED MONEY
+    // rather than merely orphaning a row. A customer holding an unapplied payment and no live order
+    // passed every check above and was deleted; afterwards `applyPayment` could not use that cash
+    // (`familyCustomerIds` requires a live payer) and nothing short of a hand-written UPDATE got it
+    // back. In-tx under this same Serializable transaction, SSI-pairing with `addPayment`
+    // (receipts.ts), which runs Serializable and reads the customer live via `assertRefExists`
+    // before writing — the createPart/createQuote pairing above, one writer further on. Voided
+    // payments never count, matching every other "voided blocks nothing" rule here.
+    const payments = await tx.payment.count({ where: { customerId: id, deletedAt: null } });
+    if (payments > 0) throw new HttpError(400, `That customer still has ${payments} live payment(s)`);
 
     // Addresses and contacts have no meaning without their parent, so they are soft-deleted
     // alongside it, in the same transaction and through the same audited* helpers as every other

@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
-  customerPartBlockers, customerOrderBlockers, customerQuoteBlockers,
+  customerPartBlockers, customerOrderBlockers, customerQuoteBlockers, customerPaymentBlockers,
 } from "@/server/customers";
 import { addAddress, listAddresses } from "@/server/customer-addresses";
 import { addContact, listContacts } from "@/server/customer-contacts";
@@ -13,6 +13,9 @@ import { readAudit } from "@/server/audit";
 import { HttpError } from "@/server/errors";
 import { setSetting } from "@/server/settings";
 import { runWithContext } from "@/server/context";
+import { parseDateOnly } from "@/lib/business-days";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Task 8: the surcharges.test.ts precedent — an explicit system actor rather than relying on
 // context.ts's `{ id: null, name: "system" }` fallback for an unwrapped call, so these tests read
@@ -487,6 +490,106 @@ describe("customers service", () => {
       await deleteCustomer(id, "test cleanup");
       expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
     });
+  });
+
+  /**
+   * Issue #84 (P1) — the guard that STRANDS MONEY when it is missing.
+   *
+   * Phase 5B added `Payment.customerId`, so a customer can own live receipt cash, but
+   * `deleteCustomer` still checked only children, parts, orders and quotes. A customer holding an
+   * unapplied payment and NO live order could therefore be soft-deleted — and afterwards
+   * `applyPayment` cannot use that cash, because `familyCustomerIds` requires a live payer. The
+   * money is stranded with no path back short of a hand-written UPDATE.
+   *
+   * Note what this does NOT need to check separately. A live INVOICE hangs off an order, and live
+   * orders already block; a live APPLICATION needs both an invoice (→ order → blocked) and a
+   * payment (→ blocked here), so both are covered transitively rather than by their own guard.
+   * Payments are the one A/R row that can exist with no order behind it, which is exactly why this
+   * was the gap.
+   */
+  describe("deleteCustomer is guarded by live payments (#84)", () => {
+    async function paymentFor(customerId: string, amount: number, batchNumber: number,
+                              extra: Record<string, unknown> = {}) {
+      const paymentType = await prisma.paymentType.findFirst({ where: { name: "Check" } })
+        ?? await prisma.paymentType.create({ data: { name: "Check" } });
+      const batch = await prisma.receiptBatch.create({
+        data: { batchNumber, depositDate: parseDateOnly("2026-08-08") },
+      });
+      return prisma.payment.create({
+        data: {
+          batchId: batch.id, customerId, paymentTypeId: paymentType.id,
+          amount, reference: "1234", receivedDate: parseDateOnly("2026-08-08"),
+          ...extra,
+        },
+      });
+    }
+
+    it("refuses a customer holding unapplied cash, and names the payment so it can be found", async () => {
+      const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+      const pay = await paymentFor(id, 300, 1000);
+
+      await expect(deleteCustomer(id, "test cleanup"))
+        .rejects.toThrow("That customer still has 1 live payment(s)");
+
+      // §5.14: a block names its blockers and links to where they live. A Payment has no detail
+      // page of its own, so it links to the batch that holds it — where it can actually be voided.
+      expect(await customerPaymentBlockers(id)).toEqual([{
+        entityLabel: "Payment", name: "Batch #1000 · 300.00",
+        id: pay.id, href: `/receivables/batches/${pay.batchId}`,
+      }]);
+
+      // Refused, not allowed-and-stranded — the customer survives and still owns its cash.
+      expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).toBeNull();
+    });
+
+    it("a customer with only VOIDED payments deletes cleanly — voided cash blocks nothing", async () => {
+      const { id } = await createCustomer({ code: "BETA", name: "Beta" });
+      await paymentFor(id, 300, 1001, { deletedAt: new Date() });
+      expect(await customerPaymentBlockers(id)).toEqual([]);
+      await deleteCustomer(id, "test cleanup");
+      expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
+    });
+
+    it("names every live payment, ordered, so a multi-batch payer is fully discoverable", async () => {
+      const { id } = await createCustomer({ code: "GAMMA", name: "Gamma" });
+      await paymentFor(id, 300, 1003);
+      await paymentFor(id, 125.5, 1002);
+
+      await expect(deleteCustomer(id, "test cleanup"))
+        .rejects.toThrow("That customer still has 2 live payment(s)");
+      const blockers = await customerPaymentBlockers(id);
+      expect(blockers.map((b) => b.name)).toEqual(["Batch #1002 · 125.50", "Batch #1003 · 300.00"]);
+    });
+  });
+
+  /**
+   * SWEEP — the delete-blocker panel's trigger must know every guard the service has (#84).
+   *
+   * `customers/[id]/page.tsx` decides whether to fetch and show the §5.14 blocker list by
+   * PATTERN-MATCHING the refusal text. That coupling degrades silently: add a guard to
+   * `deleteCustomer` and forget the UI, and its refusal renders as a bare error banner with no
+   * blocker list and no export — a block that names nothing and offers no route out, which is
+   * exactly the Visual Shop dead end §5.14 was written to escape. #84 nearly shipped that way.
+   *
+   * So the coupling is swept rather than commented: every templated "That customer still has …"
+   * message in the service must appear in the page's match condition. The plain
+   * "still has child customers" refusal is deliberately exempt — there is no blockers route for
+   * children (the customer list itself shows them), and the page's comment says so.
+   */
+  it("every deleteCustomer blocker message is matched by the page's blocker-panel trigger", () => {
+    const service = readFileSync(join(process.cwd(), "src/server/customers.ts"), "utf8");
+    const page = readFileSync(join(process.cwd(), "src/app/customers/[id]/page.tsx"), "utf8");
+
+    const phrases = [...service.matchAll(/That customer still has \$\{\w+\} ([^`]+)`/g)]
+      .map((m) => m[1]);
+
+    // Bite-proof: if the extraction stops finding the guards (a reworded message, a refactor), the
+    // sweep would pass vacuously against an empty list.
+    expect(phrases).toEqual(
+      expect.arrayContaining(["part(s)", "live order(s)", "live quote(s)", "live payment(s)"]));
+
+    const unmatched = phrases.filter((p) => !page.includes(`message.includes("${p}")`));
+    expect(unmatched).toEqual([]);
   });
 
   describe("requestDaysOverride", () => {

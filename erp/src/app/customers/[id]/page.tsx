@@ -353,17 +353,22 @@ function CustomerDetail({ id }: { id: string }) {
       // H4: a refusal naming live parts is not a dead end (part-fields/page.tsx's blocked-delete
       // handler precedent) — fetch the list this message's count refers to and make it
       // exportable, rather than leaving the admin with only a number. Matched on "still has" plus
-      // "part(s)", "live order(s)" (Task 15's own direct-orders guard, customers.ts) or "live
-      // quote(s)" (Task 7's quotes guard) so the unrelated "still has child customers" refusal
-      // (no blockers route exists for that one) still falls straight through to the plain error
-      // banner below. The blockers route itself always returns the UNION of live parts, orders
-      // and quotes (route comment, src/app/api/customers/[id]/blockers/route.ts), so whichever
-      // guard fired first, the panel still shows everything blocking the delete — never just the
-      // category that happened to throw.
+      // "part(s)", "live order(s)" (Task 15's own direct-orders guard, customers.ts), "live
+      // quote(s)" (Task 7's quotes guard) or "live payment(s)" (#84's cash guard) so the unrelated
+      // "still has child customers" refusal (no blockers route exists for that one) still falls
+      // straight through to the plain error banner below. The blockers route itself always returns
+      // the UNION of live parts, orders, quotes and payments (route comment,
+      // src/app/api/customers/[id]/blockers/route.ts), so whichever guard fired first, the panel
+      // still shows everything blocking the delete — never just the category that happened to throw.
+      //
+      // ⚠️ THIS LIST MUST GROW WITH THE SERVICE'S GUARDS. It is a message-text match, so a new guard
+      // whose wording is not added here degrades silently to a bare error banner with no blocker
+      // list and no export — a refusal with no route out, which is precisely the dead end §5.14
+      // exists to prevent. #84 added the fourth guard and this line with it.
       const message = (e as Error).message;
       if (e instanceof ApiError && e.status === 400 && message.includes("still has")
         && (message.includes("part(s)") || message.includes("live order(s)")
-          || message.includes("live quote(s)"))) {
+          || message.includes("live quote(s)") || message.includes("live payment(s)"))) {
         try {
           const list = await api<Blocker[]>(`/api/customers/${id}/blockers`);
           if (list.length) { setBlocked({ list }); setError(null); return; }
