@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-14 — **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14), completing roadmap Phase 7. No phase is in flight — §9 is the open next-track decision (owner's choice).** All eight document types are now data-driven templates (multiple per type, one default, per-customer assignment, draft→publish versioning, the structured editor + logo + preview); the roadmap's testable outcome is proven (`tests/traveler-restyle.test.ts`). Full narrative moved to `docs/history/2026-08-14-phase-7-template-designer.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2744 tests / 149 files**, `tsc`/`eslint`/`build` clean, E2E **20/20**, **35 migrations**. All 21 tasks approved on review round 1; the 5-dimension whole-branch review was CLEAN on concurrency/data-integrity, then Codex's PR review caught a **P1** it missed (an `assignTemplate`↔`deleteCustomer` SSI race) + two §5.12/§5.13 UI bugs — all fixed pre-merge. Fold-ins **#36/#43/#87/#97/#98** CLOSED by the PR; deferred → **#102**, **#103**. Earlier 2026-08-12: **Phase 7 kickoff — owner approved the design spec** (`docs/superpowers/specs/2026-08-12-phase-7-template-designer-design.md`, seven §3 rulings incl. `pdf-lib`; §15 amendments recorded). Earlier the same day: **Phase 6 (Quoting) MERGED to `main` as `e2c91e8` (PR #94, squash, 2026-08-12).** Its full narrative moved to `docs/history/2026-08-12-phase-6-quoting.md`; §4 keeps the one-paragraph entry. Final Phase 6 gates: **2133 tests / 130 files**, `tsc`/`eslint`/`build` clean, E2E **19/19**; **32 migrations on `main`**. Deferred findings → issues **#95–#100**. **The Phase 6 demo ran 2026-08-12 and all 8 ratification items are RULED** (`docs/2026-08-12-phase-6-demo.md` — six as-built, two small follow-ups → #101 and a #100 addition). Earlier: **Phase 5C (Month-End Close & QuickBooks Online Summary Export) MERGED to `main` as `c069b09` (PR #92, 2026-08-10), completing roadmap Phase 5.** Its full narrative is in `docs/history/2026-08-10-phase-5c-close-qbo-export.md`; the deferred owner-homework and A/R backlog stay non-blocking. Earlier: Phase 5B merged `b55da3b` (PR #74, findings → #68–#87); Phase 5A `359c707` (PR #58, → #59–#65); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, and now #95–#100, plus the older triaged issues (§6).
+**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, #95–#100, #102–#103, **#115 (highest — P1)**, and now **#118–#122** (§6).
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -83,7 +83,7 @@ the direction is `retryOnSerializationConflict` around the six allocating caller
 cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
 concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
 
-### Phase 8 — all three sub-phases (8A/8B/8C) built; 8C reviewed and open as PR #117
+### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
 Phase 8. Full narrative: `docs/history/2026-08-15-phase-8b-practice-wizard.md`. It shipped the separate
@@ -106,35 +106,27 @@ comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball), two 
 E2E flow. **8A deferred a follow-up (issue filed):** the report wrappers use unbounded `findMany` + JS
 aggregation — fine at shop scale; DB-side aggregation is a future optimization.
 
-**Phase 8C (Backup polish) is REVIEWED and OPEN AS [PR #117](https://github.com/CoJoA13/HeatSynQ/pull/117)
-from branch `phase-8c-backup-polish` (all 9 tasks landed 2026-08-16; awaiting merge).** Reviews are
-complete: nine per-task reviews (**seven approved on round 1**; Task 4 one fix round, Task 8 two), a
-five-lens whole-branch review that returned **ZERO Critical and nothing blocking**, and one fix wave
-(`90f128a`) closing four *silences*, whose scoped re-review verdicted "ready to become a PR". Final
-gates, each watched to completion: **2986 tests / 179 files · tsc · eslint · build clean · E2E 23/23 ·
-39 migrations** (baseline was 2898/171 and 22 flows). It closes the approved design spec's D5
-(`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded):
-a pure `backup-paths.ts` leaf (archive-name-gated path confinement, no fs/db) and client-safe
-constants; the `manage_backups` action + `backup_stale_hours` setting behind **two** migrations — the
-second backfills `manage_backups` onto any LIVE role holding `admin.view` **and**
-`action.manage_users`, because the first (full-role) migration would have been a silent no-op on a
-real upgraded install, where `SPECIAL_ACTIONS` has grown three times since Phase 1 and only the seed
-backfills existing roles; `evaluateHealth`/`listArchives`/`backupHealth`/`backupsView`/`runBackupNow`
-(argv-spawned `pg_dump`, fail-loud on an empty dump, gzip-verified before being declared good, a
-30-minute stall ceiling); three `manage_backups`-gated routes; the `/admin/backups` page (list +
-folder + Back up now + red staleness + integrity) and the shell `BackupBanner` (throttled,
-session-latched, a hook-free presentational split for a repo with no DOM test environment); the deploy
-wiring (Dockerfile gains `postgresql18-client`, compose wires `BACKUP_DIR` + the `./backups` mount onto
-`app`/`backup` but pointedly **not** `app-practice`, the hardened `scripts/backup.sh`); and the
-expanded restore runbook (`erp/README.md`) plus the `backups` E2E flow — the one place the real host
-`pg_dump` (major-matched 18.4 to the `postgres:18` server) is exercised; vitest injects a fake dump
-command everywhere else. **Upgrading an existing install now grants `manage_backups` automatically on
-`migrate deploy` — no manual `npm run db:seed` step.** Final gates on the branch: **2984 tests / 179
-files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**. **This completes roadmap Phase
-8 (8A + 8B + 8C) and, with it, every build phase in the 8-phase roadmap**
-(`docs/superpowers/plans/2026-07-29-roadmap.md`) — what remains is the whole-branch review, PR, and
-merge (§9). **Env note: Docker is disabled at boot** — check `systemctl is-active docker` before
-diagnosing ECONNREFUSED (§8, and the session-memory index).
+**Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16) — completing
+roadmap Phase 8 and, with it, EVERY BUILD PHASE in the 8-phase roadmap**
+(`docs/superpowers/plans/2026-07-29-roadmap.md`). Full narrative:
+`docs/history/2026-08-16-phase-8c-backup-polish.md`. It gave the already-running nightly backup a face
+and a pulse: a pure `backup-paths.ts` leaf (filename-shaped path confinement, no fs/db), the
+`manage_backups` action + `backup_stale_hours` setting, the backup service (argv-spawned `pg_dump`,
+fail-loud on an empty dump, `gzip -t`-verified before being declared good, a 30-minute stall ceiling
+with SIGTERM→SIGKILL escalation), three gated routes, the `/admin/backups` page, a
+`manage_backups`-only shell staleness bar, the deploy wiring (`postgresql18-client`, `BACKUP_DIR` +
+the `./backups` mount on `app`/`backup` but pointedly **not** `app-practice`), **two**
+permission-backfill migrations, and an expanded restore runbook. **`lastSuccessAt` is DERIVED from the
+newest integrity-passing archive, never stored** — the archive is the evidence, which is what lets the
+status file be a single un-merged overwrite a `sh` script can write. **Upgrading an existing install
+now grants `manage_backups` automatically on `migrate deploy`** — no manual `npm run db:seed` step.
+Reviews: nine per-task (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**,
+one fix wave, then **Codex's 3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior
+reviews had passed because they verified the commands **run** without checking what the shell
+**semantics meant**. Final gates: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E
+**23/23**, **39 migrations**, CI green. Deferred → issues **#118–#122**. **Env note: Docker is disabled
+at boot** — check `systemctl is-active docker` before diagnosing ECONNREFUSED (§8, and the
+session-memory index).
 
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
 completing roadmap Phase 7.** Its full narrative is in
@@ -320,9 +312,23 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 **Highest open item: #115 (P1, 2026-08-16) — concurrent `allocateNumber` aborts with 40001 under
 Serializable, with no retry on any caller.** Pre-existing; found by probing Codex's review of PR #114.
-It does not block 8C, but it breaks concurrent creation of every numbered entity (order, shipper,
-BOL, credit, receipt batch, quote, GL export) and the vitest suite structurally cannot see it —
-vitest runs Read Committed. Detail in the §4 entry; full evidence in the issue.
+It blocks nothing already built, but it breaks concurrent creation of every numbered entity (order,
+shipper, BOL, credit, receipt batch, quote, GL export) and the vitest suite structurally cannot see it —
+vitest runs Read Committed, so a green `allocate-number.test.ts` is not evidence. **Schedule it before
+the parallel-run acceptance month, not during** (§9 item 2); full evidence in the issue.
+
+**Phase 8C (Backup polish) follow-ups — GitHub issues #118–#122 (2026-08-16), all deferred by the
+whole-branch triage rule, none correctness/concurrency/data-integrity.** #118 unbounded concurrent
+`gzip -t` per Backups-page load (and an uncached decompression per `/health` poll, which the shell bar
+makes from every page); #119 preflight failures of a manual backup (missing/unwritable `BACKUP_DIR`,
+unset `DATABASE_URL`) produce no audit row despite the stated rule that failed attempts are access
+events; #120 a failing retention `find` leaves the status green while retention is silently broken;
+#121 the error bar reaches non-`manage_backups` users during a total DB outage, because the silencing
+403 itself needs a DB read. **#122 is pre-existing from 8B and worth doing early because it is cheap
+and it distorts measurement:** `vitest.config.ts` sets no `include`/`exclude`, so after a build vitest
+also collects `.next/standalone/**/tests` — gate ORDER silently matters (`npm test` must precede
+`npm run build`, or `.next` must be cleared), and **any test count reported after a build is
+inflated**.
 
 **Five issues are absorbed into Phase 7's scope by owner ruling 6 (2026-08-12, P7 spec §5.8):
 #36 (traveler continuation-page header), #43 (bounded all-loads traveler render), #97
@@ -638,30 +644,33 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases (8A/8B/8C) are built.** 8A
-and 8B are MERGED (PR #106, #109); 8C (Backup polish) is reviewed and open as PR #117 from branch
-`phase-8c-backup-polish` (§4) and awaits the standing whole-branch review, PR, and merge. **That
-completes every build phase in the 8-phase roadmap**
-(`docs/superpowers/plans/2026-07-29-roadmap.md`) — there is no ninth phase. The open work now is
-acceptance and backlog, not new build. A fresh session should read CLAUDE.md and §4, then pick among:
+**Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases MERGED** (8A PR #106, 8B
+PR #109, 8C PR #117 / `941ceab`, §4). **That completes every build phase in the 8-phase roadmap**
+(`docs/superpowers/plans/2026-07-29-roadmap.md`) — there is no ninth phase, and nothing is in flight.
+**The open work is now acceptance and backlog, not new build.** A fresh session should read CLAUDE.md
+and §4, then pick among:
 
-1. **The parallel-run acceptance month** (spec §13) — Phase 5 unlocked it and Phase 8's comparison
-   scoreboard delivered the tooling it needs; still gated on the owner-owed GL-account list and the
-   bookkeeper's QBO import method (§7) before a *real* export month can start.
-2. **Issue #115 (P1)** — every caller of `allocateNumber` allocates inside a Serializable
-   transaction that aborts with `40001` on **any** concurrent allocation, with no retry anywhere but
-   `close-periods.ts` (detail in §4/§6). It does not block anything already built, but it breaks
-   concurrent creation of every numbered entity — exactly what an acceptance month run by more than
-   one person at a time would exercise. Worth scheduling deliberately before that starts.
+1. **The parallel-run acceptance month** (spec §13) — the headline remaining goal. Phase 5 unlocked it,
+   Phase 8's comparison scoreboard delivered the weekly tooling, and 8C made the box trustworthy to
+   leave running. Still gated on the owner-owed GL-account list and the bookkeeper's QBO import method
+   (§7) before a *real* export month can start.
+2. **Issue #115 (P1) — schedule this BEFORE the acceptance month, not during it.** Every caller of
+   `allocateNumber` allocates inside a Serializable transaction that aborts with `40001` on **any**
+   concurrent allocation, with no retry anywhere but `close-periods.ts` (detail in §4/§6). It breaks
+   concurrent creation of every numbered entity — order, shipper, BOL, credit, receipt batch, quote,
+   GL export — which is exactly what an acceptance month run by more than one person exercises. **The
+   vitest suite structurally cannot see it: vitest runs Read Committed, so a green
+   `allocate-number.test.ts` is not evidence.** Any regression test must set Serializable explicitly.
 3. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
    (delete-customer-with-live-payment); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
-   #102 (render two-pass blank-page) and #103 (contract-tightening print-500); the per-worker-test-DB
-   infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look:
-   the sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes
-   addressed on two pages — customers/parts/orders/certs detail pages likely share the hole).
-
-Whichever is picked next, 8C's own review/PR/merge (the immediate next step, §4) comes first — it is
-the last piece of build still sitting on a branch.
+   #102/#103; **Phase 8C's #118–#122** (of which **#122** is worth doing early and cheaply — a
+   post-build `npm test` collects a stale copy under `.next/standalone/**/tests`, so gate ORDER
+   silently matters and any test count reported after a build is inflated); the per-worker-test-DB
+   infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
+   sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
+   on two pages — customers/parts/orders/certs detail pages likely share the hole).
+4. **A Phase 8 demo** — the owner has not yet walked the reports, the practice copy, or the Backups
+   page end to end. 8A/8B/8C all shipped without one; earlier phases' demos each produced real rulings.
 
 Whichever track is chosen: brainstorm → spec → plan → subagent-driven execution on a fresh branch,
 per-task reviews, whole-branch review on the strongest model, one fix wave, PR with attribution in
