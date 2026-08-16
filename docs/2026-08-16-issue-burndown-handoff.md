@@ -54,39 +54,66 @@ hunt" describes, found in the burn-down's own first fifteen minutes.
 
 ---
 
-### Group A — Allocation & posting concurrency  ·  **#115** then **#68**
+### Group A — Allocation & posting concurrency  ·  **#115**, **#68** · **DONE**
 
-**Branch:** `fix-allocation-retry` · **Do #115 first — it establishes the pattern #68 then follows.**
+**Branch:** `fix-allocation-retry` · #115 = `fc7eb54`, #68 = `20ed463`.
 
-**#115 (P1)** — `allocateNumber` claims its counter with `SELECT … FOR UPDATE`, but every caller runs
-**Serializable** and reads before allocating, so a snapshot fixed before the claim aborts with **40001**
-the moment another allocation commits. Nothing retries. One of two concurrent order saves just fails.
+**#115 (P1) — fixed at eight sites, not six.** `shippers.ts` had three allocating entry points
+(`saveNewShipper`, `reverseShipperInTx`, `printBol`), not one. Full set: `saveNewOrder`,
+`saveNewShipper`, `reverseShipperInTx`, `printBol`, `createCredit`, `createBatch`, `createQuote`,
+`exportClose`. All wrap in `retryAllocation` (`db-errors.ts`), INSIDE `withDbErrors` and OUTSIDE
+`$transaction`. `reverseShipper`'s injected-`tx` path deliberately takes no retry — a caller's
+aborted transaction cannot be re-run from inside it.
 
-Six callers, each needing its own retry-safety pass before being wrapped in `retryOnSerializationConflict`
-(the pattern `close-periods.ts` already uses):
+**Measurement corrected the issue's own analysis twice**, and both corrections matter:
 
-| File | Entry point | Watch for |
+| concurrent | before | after |
 |---|---|---|
-| `orders.ts` | `saveNewOrder` | **`clientRequestId` idempotency** — what a retry does to the key is the one genuinely subtle question here |
-| `shippers.ts` | `createShipper` | multi-order claims via `claimOrdersInOrder` |
-| `invoices.ts` | `createCredit` | period lock (posting mutation) |
-| `receipts.ts` | `createReceiptBatch` | period lock; also touched by #68 |
-| `quotes.ts` | `createQuote` | §5.14 quote-link SSI pairing |
-| `gl-export.ts` | `exportClose` | Σdebit = Σcredit assertion must still run per attempt |
+| 2 | 1 ok, **1 fail** | 2 ok |
+| 5 | 1 ok, **4 fail** | 5 ok |
+| 8 | 1 ok, **7 fail** | 8 ok |
 
-**The test trap that hid this for five phases:** vitest runs **Read Committed**, so a regression test at
-the default isolation **passes while production fails**. Every test for this must set Serializable
-explicitly. A green `allocate-number.test.ts` is not evidence.
+1. Not "one of two fails" — **of N concurrent allocations exactly ONE succeeded.**
+2. The issue's evidence-table row 2 ("row exists, no read before allocating → both succeed") is
+   **wrong**. `allocateNumber`'s own first statement is the `INSERT … ON CONFLICT DO NOTHING` seed —
+   a write, which fixes the snapshot before the claim. Allocating as a transaction's *first*
+   operation aborts too, so "just allocate first" is not a fix. A sequence would dodge it but leaks
+   gaps, and "consumes no number when the save fails" is pinned. Retry is what is left.
 
-**#68** — add a `reopen` (POSTED → OPEN) so mis-keyed posted cash is correctable; `voidBatch` gains the
-matching POSTED guard it currently lacks; reword `voidPayment`'s refusal now that `reopen` exists.
-**`reopen` must refuse when the batch's month is closed** — reopening into a frozen month would silently
-change closed figures, the exact leak the period lock exists to close. It is a posting mutation: run it
-**Serializable** under the per-`(year,month)` advisory lock, and take the locks **in ascending order** if
-the batch spans months (the `claimOrdersInOrder` rule for advisory mutexes). Audit it with a reason.
+`ALLOCATION_TRIES = 10`, not the default 5: N concurrent allocations serialize into N rounds (one
+commit per round), so the last caller needs up to N attempts, and 5 covers the documented 1–5 users
+with **zero margin**.
 
-**Why grouped:** both are about Serializable discipline and the period lock, and both touch `receipts.ts`.
-Split them and you do the retry-safety analysis of that file twice.
+**The `clientRequestId` question resolved cleanly.** On orders/shippers the retry wraps the
+try/catch rather than sitting inside it, so a nonce collision is answered by the replay on the FIRST
+attempt and never retried, while a 40001 is rethrown by the catch and absorbed.
+
+**The test trap was real, and it bit in a second way nobody had flagged.** Beyond "vitest runs Read
+Committed", **four existing tests tolerated a 409 loser** — once there are no losers their rejection
+branch simply stops executing and they pass VACUOUSLY. All four now assert no rejections at all.
+RED-verified by pinning `ALLOCATION_TRIES` to 1: **7 tests across 4 suites go red.** The new
+`tests/allocation-retry.test.ts` names Serializable explicitly and proves the abort deterministically
+with a Read Committed gate (the `close-periods.ts` technique), rather than hoping for overlap.
+
+**One STANDING INVARIANT test changed shape — the invariant did not.** The §5.14 quote-link
+dangerous-direction test asserted the save ABORTS with 409. With the retry the request succeeds on a
+second attempt whose snapshot sees the line-drop, so it links nothing (measured: `orders=1`,
+`linkedToDead=0`, the surviving line's `quoteLineId` null). It now asserts that null — the data
+outcome rather than a status code — which is a **sharper** tripwire: RED-verified by downgrading
+`updateQuote` to Read Committed, which makes the save commit WITH a link to the dropped line.
+
+**#68 — `reopenBatch` (POSTED → OPEN), owner ruling option (b).** Full posting-mutation discipline:
+Serializable, the batch claim, and the period guard (un-posting drops that cash out of recognition,
+so it must never touch a frozen month). The month-locking loop became `assertBatchMonthsOpen`, shared
+with `postBatch`, so the ascending-order rule for advisory mutexes is stated once. `voidBatch` gained
+the POSTED guard it lacked — checked BEFORE the live-payment guard, so the message names `reopen`
+instead of sending the operator at a control `refusePosted` refuses. Gated `receivables.edit`
+(symmetric with the post it undoes), reason required and audited, with a route and a Reopen button.
+RED-verified twice: removing the period guard reds both period tests, and narrowing it to the first
+month only reds the multi-month one specifically.
+
+This also makes posted cash reachable by the GL-export delta for the first time — the correction path
+is reopen-period → reopen-batch → correct → re-close → the re-export reverses.
 
 ---
 
