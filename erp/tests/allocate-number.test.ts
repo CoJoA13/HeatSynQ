@@ -41,6 +41,11 @@ describe("allocateNumber", () => {
   // `INSERT … ON CONFLICT`), and went red the first time it ran on a faster box. Widening the burst
   // widens the overlap window, so the seeding race is pinned on slow hardware too: every allocation
   // must be handed out exactly once, and none may be rejected by the primary key.
+  //
+  // SCOPE: this runs at Prisma's default Read Committed. It pins the SEEDING race and nothing more.
+  // Every production caller allocates inside a Serializable transaction, where a concurrent
+  // allocation aborts with 40001 whether or not the row was just inserted — unfixed, issue #115.
+  // A green run here is NOT evidence that concurrent order entry is safe.
   it("a burst of concurrent allocations from an unseeded counter never collides or skips", async () => {
     const results = await Promise.allSettled(
       Array.from({ length: 5 }, () => prisma.$transaction((tx) => allocateNumber("order_number_next", tx))),

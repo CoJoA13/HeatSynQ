@@ -72,6 +72,15 @@ order/shipper/BOL/credit/receipt-batch number. Now a raw `INSERT … ON CONFLICT
 the `SELECT … FOR UPDATE` claim that serializes the readers is unchanged. `settings.ts` held the only
 `update: {}` upsert in the tree — the other seven call sites all pass a non-empty `update`. A 5-way
 burst test pins it on slow hardware too, and the trap is now in CLAUDE.md's constraints list.
+**Scope, precisely: this fixed the P2002 insert race and NOTHING else.** Codex's review of the PR
+pushed on the isolation level, and probing it found a larger PRE-EXISTING hole → **issue #115 (P1)**:
+every caller of `allocateNumber` allocates inside a **Serializable** transaction, and a transaction
+whose snapshot is fixed before the `FOR UPDATE` claim aborts with **40001** as soon as another
+allocation commits — on **every** allocation, not just the first, and with **no retry** anywhere but
+`close-periods.ts`. Seeding the counter rows does not fix it (a pre-existing row fails identically);
+the direction is `retryOnSerializationConflict` around the six allocating callers. **The vitest suite
+cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
+concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
 
 ### Phase 8B (Practice DB & First-run Wizard) MERGED 2026-08-15 — 8C remaining
 
