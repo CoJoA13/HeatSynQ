@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { orderEntryReadiness } from "./order-entry-readiness";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
@@ -706,7 +706,16 @@ export async function createOrder(
     );
   }
 
-  return withDbErrors({ entity: "Order", conflictField: "order number" }, async () => {
+  // `retryAllocation` (#115) wraps the try/catch, and the nesting is the whole point. A 40001 from
+  // `allocateNumber`'s Serializable claim is rethrown by the catch below (it is not a
+  // `clientRequestId` collision) and absorbed by the retry, which re-runs on a fresh snapshot — so
+  // two clerks saving at the same instant both get an order instead of one getting a 409. A
+  // `clientRequestId` collision, by contrast, is answered by the replay on the FIRST attempt and
+  // never retried: it is already the right answer, and re-running it would only fail identically.
+  // The pre-transaction reads above stay outside — they are read-only install config, and re-running
+  // them per attempt would buy nothing (the `closePeriod` precedent re-reads its aging inside the
+  // retry only because that figure is what it goes on to reconcile).
+  return withDbErrors({ entity: "Order", conflictField: "order number" }, () => retryAllocation(async () => {
     try {
       return await saveNewOrder(data, defaultRequestDays, traffic);
     } catch (err) {
@@ -723,7 +732,7 @@ export async function createOrder(
       if (!existing) throw err;
       return { order: await readDetail(prisma, existing.id, traffic), warnings: [], deduped: true };
     }
-  });
+  }));
 }
 
 /**

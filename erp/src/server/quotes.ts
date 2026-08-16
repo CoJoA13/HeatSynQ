@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type Quote } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { finalizedInvoicesFor } from "./invoice-guards";
 import type { Blocker } from "./reference-blockers";
@@ -399,8 +399,13 @@ export async function createQuote(input: unknown): Promise<QuoteMutationResult> 
   const data = CREATE.parse(input);
   const validDays = await getSetting("quote_valid_days");
 
+  // `retryAllocation` (#115): `quote_number_next` is claimed under this Serializable transaction and
+  // a concurrent allocation aborted it with 40001, unretried. The re-run is a fresh transaction, so
+  // the §5.14 quote-link pairing is unaffected — each attempt does its own in-transaction reads and
+  // forms its own SSI edges; an attempt that loses that race legitimately aborts and re-runs against
+  // the committed state, which is the same answer a caller arriving a moment later would get.
   return withDbErrors({ entity: "Quote", conflictField: "quote number" }, () =>
-    prisma.$transaction(async (tx) => {
+    retryAllocation(() => prisma.$transaction(async (tx) => {
       const customer = await tx.customer.findFirst({
         where: { id: data.customerId, deletedAt: null },
         select: { id: true, code: true, active: true },
@@ -486,7 +491,7 @@ export async function createQuote(input: unknown): Promise<QuoteMutationResult> 
 
       const detail = await readDetail(tx, quote.id);
       return { ...detail, warnings: await overlapWarnings(tx, quote.id) };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 const DETAIL_INCLUDE = {

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type Order, type Shipper } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -654,7 +654,12 @@ export async function createShipper(
   if (!anyPositiveQty) throw new HttpError(400, "A shipment needs at least one line with a positive quantity");
   const shipDate = parseDate(data.shipDate, "Ship date");
 
-  return withDbErrors({ entity: "Shipper", conflictField: "shipper number" }, async () => {
+  // `retryAllocation` (#115) wraps the try/catch — the `createOrder` nesting and for the same
+  // reason: a 40001 from `allocateNumber`'s Serializable claim is rethrown by the catch and absorbed
+  // by the retry, while a `clientRequestId` collision is answered by the replay on the FIRST attempt
+  // and never retried. A shipment racing another on `shipper_number_next` no longer costs one of
+  // them a 409.
+  return withDbErrors({ entity: "Shipper", conflictField: "shipper number" }, () => retryAllocation(async () => {
     try {
       return await saveNewShipper(data, shipDate, opts);
     } catch (err) {
@@ -671,7 +676,7 @@ export async function createShipper(
       const detail = await readShipperDetail(prisma, existing.id);
       return { shipper: detail, warnings: await shipmentWarnings(prisma, detail), deduped: true };
     }
-  });
+  }));
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1722,10 +1727,14 @@ export async function reverseShipper(
   const why = data.reason.trim();
   if (!why) throw new HttpError(400, "A reason is required to reverse a shipment");
 
+  // The injected-`tx` path takes NO retry, deliberately: a caller's transaction that has already
+  // aborted cannot be re-run from in here, and re-running the body on the same `tx` would just fail
+  // again on a dead transaction. Retrying is the entry point's job, and this path has no entry point
+  // of its own — only the self-opening branch below does. (#115)
   if (tx) return reverseShipperInTx(tx, id, data, why);
   return withDbErrors({ entity: "Shipper", conflictField: "shipper number" }, () =>
-    prisma.$transaction((fresh) => reverseShipperInTx(fresh, id, data, why),
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+    retryAllocation(() => prisma.$transaction((fresh) => reverseShipperInTx(fresh, id, data, why),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 // -------------------------------------------------------------------------------------------
@@ -2034,7 +2043,12 @@ export async function printBol(
 ): Promise<{ documentId: string; bolNumber: number; shipperNumber: number; pdf: Buffer }> {
   const settings = await bolSettings();
 
-  return withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
+  // `retryAllocation` (#115): only the FIRST print of a shipment allocates, but that is exactly the
+  // print that can lose the counter race, and a 409 on a BOL print reads as "the printer is broken".
+  // A losing attempt aborts AT the claim — before `renderPdf` — so a retry re-renders nothing it did
+  // not already have to. A reprint (bolNumber already set) never enters the allocation branch and so
+  // never has anything to retry.
+  return withDbErrors({ entity: "Shipper" }, () => retryAllocation(() => prisma.$transaction(async (tx) => {
     // Pre-claim stub read only to learn which orders to claim (the printShippingTickets shape),
     // then the Shipper row's own claim AFTER the order claims (claimShipperRow's comment) — the
     // voided-state re-read below is only trustworthy under that lock.
@@ -2079,7 +2093,7 @@ export async function printBol(
     // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
     const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf, resolved.versionId);
     return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 /**

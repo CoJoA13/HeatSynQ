@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -261,10 +261,14 @@ async function createBatchInTx(tx: Db, data: z.infer<typeof CREATE_BATCH>): Prom
 
 export async function createBatch(input: unknown): Promise<BatchDetail> {
   const data = CREATE_BATCH.parse(input);
-  return withDbErrors({ entity: "ReceiptBatch" }, () => prisma.$transaction(
+  // `retryAllocation` (#115): the Serializable claim inside `allocateNumber` aborts with 40001 the
+  // moment a concurrent allocation commits, so without this exactly ONE of N simultaneous batch
+  // creates would succeed. Inside withDbErrors, outside $transaction — each attempt needs its own
+  // snapshot.
+  return withDbErrors({ entity: "ReceiptBatch" }, () => retryAllocation(() => prisma.$transaction(
     (tx) => createBatchInTx(tx, data),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-  ));
+  )));
 }
 
 // -------------------------------------------------------------------------------------------

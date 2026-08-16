@@ -141,13 +141,19 @@ export async function allocateNumber(key: NumberSettingKey, tx: Prisma.Transacti
   // heuristic changes). DO NOTHING, not DO UPDATE: this statement only guarantees the row EXISTS
   // — the claim below is what serializes the readers, exactly as before.
   //
-  // ⚠️ This closes the P2002 insert race ONLY. It does NOT make concurrent allocation safe under
-  // Serializable, which is what every caller of this function actually runs: a transaction whose
-  // snapshot was fixed before the claim below aborts with 40001 the moment another allocation
-  // commits, and no caller retries (`retryOnSerializationConflict` is used only by
-  // close-periods.ts). That is pre-existing, applies to every allocation after the first, and is
-  // NOT fixed here — see issue #115. Do not read the tests below as covering it: vitest runs at
-  // Read Committed, where the failure does not reproduce.
+  // ⚠️ This statement closes the P2002 insert race ONLY. It does NOT make concurrent allocation safe
+  // under Serializable, which is what every caller of this function actually runs: a transaction
+  // whose snapshot was fixed before the claim below aborts with 40001 the moment another allocation
+  // commits — and this statement is itself a write, so it fixes the snapshot even for a caller that
+  // read nothing beforehand. Allocating cannot be made conflict-free from in here.
+  //
+  // That is why safety lives at the CALLERS (issue #115): all eight allocating entry points wrap
+  // their transaction in `retryAllocation` (db-errors.ts), so the loser re-runs on a fresh snapshot
+  // instead of surfacing a 409. **Any new caller of this function must do the same** — allocating
+  // inside a bare Serializable transaction is a request that fails whenever a second user is doing
+  // anything numbered. Do not read the tests in `allocate-number.test.ts` as covering it: vitest
+  // opens those at Read Committed, where the failure does not reproduce;
+  // `tests/allocation-retry.test.ts` is the one that names Serializable explicitly.
   await tx.$executeRaw`
     INSERT INTO "Setting" ("key", "value", "updatedAt")
     VALUES (${key}, ${JSON.stringify(def.default)}::jsonb, now())
