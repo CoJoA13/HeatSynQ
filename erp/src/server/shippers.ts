@@ -633,6 +633,16 @@ async function saveNewShipper(
       }
     }
 
+    // #125: the re-shipped-serial advisory, computed through the SAME two helpers
+    // `shipmentWarnings` uses rather than re-derived here. Creation builds its warning list inline
+    // (its messages name the input the operator just sent, e.g. "shipping 5 / 5.00 lbs exceeds the
+    // remaining …", where a later read can only speak of shipped-to-date), so the two lists are
+    // deliberately not one function — but the RULE behind any single warning must live in exactly
+    // one place, which is the #50/#54 lesson. Every selection here is fresh, so each carries a live
+    // `orderSerialId` and the input is the selection set.
+    warnings.push(...reshippedSerialWarnings(await priorShipmentsOf(
+      tx, shipper.id, data.orders.flatMap((o) => o.serials.map((sr) => ({ orderSerialId: sr.orderSerialId }))))));
+
     return { shipper: await readShipperDetail(tx, shipper.id), warnings, deduped: false };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
@@ -1150,7 +1160,10 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
   // `orderLineIdAtSave` snapshot — live rows prefer the live join, same convention as reads.
   const shipSerials = await db.shipperSerial.findMany({
     where: { shipperOrder: { shipperId: detail.id } },
-    select: { orderLineIdAtSave: true, orderSerial: { select: { lineId: true } } },
+    select: {
+      orderLineIdAtSave: true, orderSerialId: true, serial: true,
+      orderSerial: { select: { lineId: true } },
+    },
   });
   const serialLineIds = new Set(
     shipSerials.map((sr) => sr.orderSerial?.lineId ?? sr.orderLineIdAtSave).filter((id) => id !== ""),
@@ -1173,8 +1186,67 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
       }
     }
   }
+  warnings.push(...reshippedSerialWarnings(await priorShipmentsOf(db, detail.id, shipSerials)));
   warnings.push(...overshipWarnings(detail));
   return warnings;
+}
+
+/** One serial on this shipment that has ALSO gone out on an earlier, still-live shipment. */
+type ReshippedSerial = { serial: string; shipperId: string; shipperNumber: number; shipDate: Date };
+
+/**
+ * Where else have THIS shipment's serials already shipped? (Issue #125, owner ruling 2026-08-16:
+ * warn, never block.)
+ *
+ * **Derived, not stored.** The ruling asked whether the shipped fact could come from live
+ * `ShipperSerial` rows before a column was added, and it can: a selection IS the record that the
+ * serial went out, so the join below is the whole mechanism and the schema is untouched.
+ *
+ * Keyed on `orderSerialId`, the identity of the physical part instance within its order — never on
+ * the `serial` TEXT, which is only unique per line and would fire falsely across customers that
+ * happen to reuse a numbering scheme. Two consequences follow, both wanted: a RELEASED row
+ * (`orderSerialId` nulled by snapshot + release when the order's serials were replaced) is
+ * excluded, because it no longer refers to a serial anyone can re-select; and the current shipment
+ * is excluded by id, so re-reading a shipment never accuses it of duplicating its own selection.
+ *
+ * A VOIDED shipment does not count — `deletedAt` on the Shipper, the same "voided blocks nothing"
+ * rule as every other guard here. Ascending by ship date so the sentence names the earliest
+ * shipment first and a repeat read says the same thing twice.
+ */
+async function priorShipmentsOf(
+  db: Db, shipperId: string, selected: { orderSerialId: string | null }[],
+): Promise<ReshippedSerial[]> {
+  const ids = selected.map((s) => s.orderSerialId).filter((id): id is string => id !== null);
+  if (ids.length === 0) return [];
+  const rows = await db.shipperSerial.findMany({
+    where: {
+      orderSerialId: { in: ids },
+      shipperOrder: { shipperId: { not: shipperId }, shipper: { deletedAt: null } },
+    },
+    select: {
+      serial: true,
+      shipperOrder: {
+        select: { shipper: { select: { id: true, shipperNumber: true, shipDate: true } } },
+      },
+    },
+    orderBy: [{ shipperOrder: { shipper: { shipDate: "asc" } } }, { serial: "asc" }],
+  });
+  return rows.map((r) => ({
+    serial: r.serial,
+    shipperId: r.shipperOrder.shipper.id,
+    shipperNumber: r.shipperOrder.shipper.shipperNumber,
+    shipDate: r.shipperOrder.shipper.shipDate,
+  }));
+}
+
+/** §5.14 — the warning names its cause: which serial, which packing list, when, and a link to it.
+ *  "has already shipped", not "cannot ship": a returned part legitimately goes back out, and the
+ *  ruling explicitly refused to block (there is no return/RMA concept to unblock it with, so a
+ *  refusal could wedge a real shipment). Pure over the rows, so the sentence is testable on its own. */
+function reshippedSerialWarnings(prior: ReshippedSerial[]): string[] {
+  return prior.map((p) =>
+    `Serial ${p.serial} has already shipped on Packing List ${p.shipperNumber} ` +
+    `(${formatDateOnly(p.shipDate)}) — see /shipping/${p.shipperId}`);
 }
 
 /**

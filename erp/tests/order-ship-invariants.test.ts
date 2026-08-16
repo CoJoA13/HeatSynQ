@@ -6,7 +6,7 @@ import {
   type OrderDetail,
 } from "@/server/orders";
 import {
-  createShipper, voidShipper, getShipper, updateShipper, overshipWarnings,
+  createShipper, voidShipper, getShipper, updateShipper, overshipWarnings, shipmentWarnings,
   replaceShipperContainers, replaceShipperSerials,
 } from "@/server/shippers";
 import { readAudit } from "@/server/audit";
@@ -266,6 +266,101 @@ describe("snapshot + release: order corrections after shipment references", () =
     expect(detail.orders[0].containers[0].typeName).toBe("Basket");
     expect(detail.orders[0].containers[0].customerContainerId).toBe("BIN-9");
     expect(detail.orders[0].containers[0].orderContainerId).toBeNull();
+  });
+
+  /**
+   * Issue #125 — RULED by the owner 2026-08-16: WARN when an already-shipped serial is re-selected,
+   * do not block. Open since Phase 4 (ping #2).
+   *
+   * Nothing recorded that a specific serial had already shipped, so the same serialised part could
+   * go out twice with no notice. A hard refusal was explicitly rejected: unblocking the legitimate
+   * case (a returned part going back out) would need a return/RMA concept that does not exist, so a
+   * block could wedge a real shipment with no way forward.
+   *
+   * The shipped fact is DERIVED, not stored — the ruling asked for that to be checked first, and
+   * live `ShipperSerial` rows joined to non-voided shippers carry it already, so no column was
+   * added. Folded into `shipmentWarnings` so it reaches BOTH the idempotent replay and every edit
+   * response via `shipperResponse` (the #50/#54 lesson: a warning computed in one path is half-built).
+   */
+  describe("re-shipping a serial warns and names where it went (#125)", () => {
+    /** One order with two serials, and a first shipment that sends `SN-1`. */
+    async function shippedOnce() {
+      const { order } = await savedOrder({ qty: 10 });
+      const s1 = await prisma.orderSerial.create({
+        data: { orderId: order.id, lineId: order.lines[0].id, position: 1, serial: "SN-1" },
+      });
+      const s2 = await prisma.orderSerial.create({
+        data: { orderId: order.id, lineId: order.lines[0].id, position: 2, serial: "SN-2" },
+      });
+      const first = await createShipper({
+        customerId: order.customerId, shipDate: "2026-08-04",
+        orders: [{
+          orderId: order.id,
+          lines: [{ orderLineId: order.lines[0].id, qty: 1, weight: "1.00", lineComplete: false }],
+          containers: [], serials: [{ orderSerialId: s1.id, printOnShipper: true }],
+        }],
+      }, { canOverrideCreditHold: false });
+      return { order, s1, s2, first: first.shipper };
+    }
+
+    function shipAgain(order: OrderDetail, serialId: string) {
+      return createShipper({
+        customerId: order.customerId, shipDate: "2026-08-06",
+        orders: [{
+          orderId: order.id,
+          lines: [{ orderLineId: order.lines[0].id, qty: 1, weight: "1.00", lineComplete: false }],
+          containers: [], serials: [{ orderSerialId: serialId, printOnShipper: true }],
+        }],
+      }, { canOverrideCreditHold: false });
+    }
+
+    it("warns — never refuses — and names WHICH shipment and WHEN", async () => {
+      const { order, s1, first } = await shippedOnce();
+
+      const second = await shipAgain(order, s1.id);
+
+      // Not blocked: the shipment exists.
+      expect(second.shipper.id).toBeTruthy();
+      // §5.14 — the warning names its cause: the serial, the packing list, the date, and a link.
+      expect(second.warnings).toContainEqual(
+        `Serial SN-1 has already shipped on Packing List ${first.shipperNumber} ` +
+        `(2026-08-04) — see /shipping/${first.id}`);
+    });
+
+    it("says nothing about a serial shipping for the first time", async () => {
+      const { order, s2 } = await shippedOnce();
+      const second = await shipAgain(order, s2.id);
+      expect(second.warnings.filter((w) => w.includes("already shipped"))).toEqual([]);
+    });
+
+    it("a VOIDED earlier shipment does not count as shipped", async () => {
+      const { order, s1, first } = await shippedOnce();
+      await asSystem(() => voidShipper(first.id, "wrong truck"));
+
+      const second = await shipAgain(order, s1.id);
+      expect(second.warnings.filter((w) => w.includes("already shipped"))).toEqual([]);
+    });
+
+    it("does not warn about a serial against the shipment it is currently on", async () => {
+      const { first } = await shippedOnce();
+      // Re-reading the FIRST shipment must not accuse it of duplicating its own selection.
+      const detail = await getShipper(first.id);
+      expect((await shipmentWarnings(prisma, detail)).filter((w) => w.includes("already shipped")))
+        .toEqual([]);
+    });
+
+    it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
+      const { order, s1 } = await shippedOnce();
+      const second = await shipAgain(order, s1.id);
+
+      // Every mutating shipment route wraps its response through `shipperResponse`, which recomputes
+      // the FULL §5.7 surface via `shipmentWarnings` — so proving the warning lives in that one
+      // function is what proves it reaches the edit path. An unrelated header edit must still carry
+      // it; a warning computed only at creation is half-built (#50/#54).
+      await asSystem(() => updateShipper(second.shipper.id, { comments: "re-ship" }));
+      const after = await shipmentWarnings(prisma, await getShipper(second.shipper.id));
+      expect(after.filter((w) => w.includes("already shipped"))).toHaveLength(1);
+    });
   });
 
   it("audits released serials in a deterministic order — the snapshot key, not the null FK", async () => {
