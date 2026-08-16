@@ -7,11 +7,51 @@ Binding spec: the Phase 8 design spec §6 + **§6.4** (owner kickoff rulings, 20
 vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22 · 37 migrations.
 
 ## FINAL gates on the branch (2026-08-16, watched to completion, post-fix-wave)
-**vitest 2986 / 179 files · tsc clean · eslint clean · build clean · E2E 23/23 · 39 migrations.**
+**vitest 2988 / 179 files · tsc clean · eslint clean · build clean · E2E 23/23 · 39 migrations.**
+(Re-run after the Codex fix rounds `118121e` + `93b32b8`; `.next` removed first so the counts are real.)
 Delta from baseline: **+88 tests, +8 files, +1 E2E flow, +2 migrations.** No `ClosePeriod` debris, no
 leftover archives in `erp/backups` or `erp/e2e-backups`, working tree clean.
 **Gate order matters:** `.next` was removed BEFORE running vitest — a post-build `npm test` currently
 crashes collecting `.next/standalone/**/tests/` (P3, pre-existing from 8B, filed not fixed).
+
+## Codex PR review (PR #117, 2026-08-16) — 3 P1 + 7 P2
+**All three P1s were in the RESTORE RUNBOOK**, which had already passed a dedicated task review AND
+the five-lens whole-branch review. Both verified the commands *run*; neither checked what the shell
+*semantics* meant. Fixed on-branch (`118121e`, `93b32b8`):
+- `pg_dump | gzip` with no `pipefail` — a failed/truncated dump exits 0, so the "safety dump" reads as
+  successful and the procedure **drops the live database with no recovery copy**.
+- The restore stopped only `app`, leaving the nightly `backup` loop able to archive a **partially
+  restored** database and write `ok:true` — green over a corrupt archive.
+- `psql` without `ON_ERROR_STOP=1` — continues past a failed statement, so a partial restore reads clean.
+- P2s fixed: the safety dump landed in the **tracked source tree** (a `git add .` would stage every
+  customer's data); mixed repo-root/`erp/`-relative paths; `parseStatus` coercing a malformed `error`
+  to null (green over a corrupt status doc); `child.kill()` not awaiting exit (single-flight released
+  while `pg_dump` may still hold locks).
+
+**The re-review then found three problems IN THE FIX** — the reason fixes get reviewed too:
+- awaiting `"close"` (needs stdio closed) instead of `"exit"`: a grandchild inheriting stdout means
+  `close` NEVER fires → the promise never settles → `inFlight` **wedges permanently**, re-introducing
+  the defect the stall timeout existed to bound, now with no ceiling.
+- `before-restore-*.sql.gz` never matched the `erp_*.sql.gz` prune, so full production dumps
+  accumulate forever — and the README's "everything inside is pruned at 30 days" was **false** for
+  exactly the file holding a complete copy of the database.
+- the SIGPIPE risk on `ls -t … | head -1` was **~7× worse than the controller estimated**: measured
+  141 on 5/5 trials at **160 files**, 0/5 at 120 (the trigger is `ls`'s ~4KB stdio flush, not the 64KB
+  pipe buffer). It compounds with the prune gap — the un-pruned safety dumps are the very files whose
+  growing count trips it, aborting the operator's shell mid-incident.
+
+**Every finding across all three layers had the same shape: something that FAILS WHILE REPORTING
+SUCCESS.** That is what this feature is — a backup system's only real failure mode is lying about
+itself — and the property proved fractal: it recurred in the TS, in the shell script, and in the prose
+telling a human what to type.
+
+**Filed, not fixed:** unbounded concurrent `gzip -t` per page load; preflight failures (missing/
+unwritable `BACKUP_DIR`, unset `DATABASE_URL`) producing no audit row; a failing retention `find`
+skipping `write_status true`; the error bar reaching non-`manage_backups` users in a total DB outage
+(the silencing 403 itself needs a DB read); and **P3, pre-existing from 8B** — `vitest.config.ts` sets
+no `include`/`exclude`, so a stale copy under `.next/standalone/**/tests` is collected too, which
+**inflated some targeted test counts reported during this phase**. Final figures below were taken
+after `rm -rf .next` and are real.
 
 ## Reviews
 - Nine per-task reviews: **seven approved on round 1**; Task 4 needed one fix round, Task 8 two.
