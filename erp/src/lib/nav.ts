@@ -15,8 +15,20 @@
 //     (it is a different area).
 // The page itself still enforces the gate: /api/templates does `mustCan(requireUser(), "templates",
 // "view")` — the nav is never the authorization.
+//
+// PHASE 8C ADDENDUM — gating on a special ACTION, not just an area: Backups (Task 6) has no
+// `backups.view` and never will — `manage_backups` is one of the 10 named special actions
+// (permission-constants.ts), not one of the 12 permission areas. Gating the Backups entry on
+// `admin.view` instead would repeat the exact §5.15 silent-dead-end mistake the Templates entry
+// above exists to avoid: a user granted `manage_backups` but not `admin.view` could use the page
+// but never see a link to it. So `NavEntry` is a discriminated union — an entry declares EXACTLY
+// ONE gate, either an `area` (checked as `<area>.view`, the Templates shape) or an `action`
+// (checked as `action.<name>`, the Backups shape) — and both `visibleNav`/`visibleAdmin` resolve
+// through the single `canSeeEntry` below rather than each re-implementing the check.
 
-export type NavEntry = { label: string; href: string; area: string };
+export type NavEntry =
+  | { label: string; href: string; area: string; action?: never }
+  | { label: string; href: string; action: string; area?: never };
 
 export const NAV: NavEntry[] = [
   { label: "Orders", href: "/", area: "orders" },
@@ -45,6 +57,11 @@ export const ADMIN: NavEntry[] = [
   { label: "Surcharges", href: "/admin/surcharges", area: "admin" },
   { label: "Templates", href: "/admin/templates", area: "templates" },
   { label: "Audit log", href: "/admin/audit", area: "admin" },
+  // Gated on the `manage_backups` ACTION rather than an area — backups are not one of the 12
+  // permission areas, and gating this on `admin.view` would leave a manage_backups-only user able
+  // to use the page but unable to find it (the §5.15 silent-dead-end rule the Templates entry
+  // above exists to avoid).
+  { label: "Backups", href: "/admin/backups", action: "manage_backups" },
 ];
 
 /** True iff the permission set grants `<area>.view`. An absent array (permissions still loading)
@@ -53,10 +70,19 @@ export function canViewArea(perms: string[] | undefined, area: string): boolean 
   return (perms ?? []).includes(`${area}.view`);
 }
 
+/** True iff the permission set grants the ONE gate this entry declares — `<area>.view` for an
+ *  area entry, `action.<name>` for an action entry. An absent array (permissions still loading)
+ *  is treated as "no grants", so entries stay hidden until /api/auth/me resolves. */
+export function canSeeEntry(perms: string[] | undefined, entry: NavEntry): boolean {
+  return entry.action !== undefined
+    ? (perms ?? []).includes(`action.${entry.action}`)
+    : canViewArea(perms, entry.area);
+}
+
 export function visibleNav(perms: string[] | undefined): NavEntry[] {
-  return NAV.filter((n) => canViewArea(perms, n.area));
+  return NAV.filter((n) => canSeeEntry(perms, n));
 }
 
 export function visibleAdmin(perms: string[] | undefined): NavEntry[] {
-  return ADMIN.filter((n) => canViewArea(perms, n.area));
+  return ADMIN.filter((n) => canSeeEntry(perms, n));
 }

@@ -11,6 +11,10 @@ export const SPECIAL_ACTIONS = [
   "edit_cert_results_after_print", "apply_payments", "run_qbo_export",
   "close_ar_period", "edit_templates", "manage_users", "override_credit_hold",
   "write_off",
+  // Phase 8C §6.2/§12 item 6 (owner-approved at design approval — do NOT re-raise): gates the
+  // Backups page, "Back up now", and the staleness reads. A dump is a full copy of every
+  // customer's record, which is why it is a named dangerous action rather than part of `admin`.
+  "manage_backups",
 ] as const;
 
 export type Area = (typeof AREAS)[number];

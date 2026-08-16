@@ -79,8 +79,86 @@ database identity (`practiceMode()`), so a mis-set flag can't touch production.
    cookies (`erp_practice_session` vs `erp_session`), so they no longer clash on a shared host.
 
 ## Backups
-- Nightly `pg_dump` gzip into `./backups/`, 30 days kept (backup container).
-- Restore: `gunzip -c backups/erp_<stamp>.sql.gz | docker compose exec -T db psql -U erp -d erp`
+
+The nightly `backup` container `pg_dump`s the production database into the shared backup folder and
+keeps 30 days. The app mounts the **same** folder, so `/admin/backups` (which needs the
+`manage_backups` action) lists the archives, shows the resolved folder, and can take an on-demand
+backup. Both writers also maintain `backup-status.json`, which is what the staleness indicator reads.
+
+- **Folder:** set by `BACKUP_DIR` (container `/backups`, host `./backups`). A deploy value shared by
+  both writers — deliberately not a runtime setting, because the nightly container cannot honor a
+  live change.
+- **Staleness:** `backup_stale_hours` (Admin → Settings, default **36**). The indicator is green only
+  when the newest integrity-passing archive is inside that window **and** the last recorded run did
+  not fail **and** the status file is readable. **Anything else is red, including a missing status
+  file** — if the backup container never started, that silence is the failure you need to see.
+- **Practice copy:** has no backup folder, no Backups page, and its routes refuse. Its data is
+  disposable; the reset re-seeds it.
+
+### Restoring
+
+Restore is a deliberate terminal command, never a button. **Read all five steps before starting.**
+Every command below is `erp/`-relative — run the whole block from `erp/`, same as every other
+command in this file — and the block assumes `bash` (for `set -euo pipefail`; paste it into a `bash`
+shell, not `sh`). `set -e` means the block stops itself at the first failing command, so it cannot
+walk forward into the destructive steps after step 2's safety dump fails.
+
+```bash
+set -euo pipefail
+
+# 1. Pick the archive and verify it BEFORE you touch the live database.
+ls -la backups
+gzip -t backups/erp_2026-08-16_020000.sql.gz && echo "integrity OK"
+
+# 2. Take a fresh dump of the CURRENT database first — restoring is destructive and this is your
+#    only way back if the archive turns out to be the wrong one. `db` has no compose profile, so it
+#    needs no --profile flag; it is always up alongside `app`. Without `set -o pipefail` a failed or
+#    truncated pg_dump here would still exit 0 (gzip's own exit code masks it), so the archive is
+#    verified before anything destructive happens — `gzip -t` it and require it be non-empty. The
+#    dump lands inside `backups/` (already gitignored), not the repo root.
+SAFETY_DUMP="backups/before-restore-$(date +%s).sql.gz"
+docker compose exec -T db pg_dump -U erp -d erp | gzip > "$SAFETY_DUMP"
+gzip -t "$SAFETY_DUMP"
+test -s "$SAFETY_DUMP"
+echo "safety dump verified: $SAFETY_DUMP — safe to continue"
+# Do NOT continue past this point unless that line printed. If it didn't, `set -e` already stopped
+# you — you do not yet have a way back if the restore below goes wrong.
+
+# 3. Stop the app AND the nightly backup worker so nothing writes mid-restore. `docker-compose.yml`
+#    runs `backup` as a `while true; do sh /backup.sh; sleep 86400; done` loop — if it fires while
+#    the database is empty-then-restoring, it happily archives a partially restored database and
+#    still reports `ok:true`, which is exactly the "failure that reports success" this feature
+#    exists to prevent. Then drop every other connection to `erp` (a stray psql/Prisma-Studio
+#    session on the published 5432 port is enough to make DROP DATABASE refuse).
+docker compose --profile prod stop app backup
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'erp' AND pid <> pg_backend_pid();"
+
+# 4. Recreate the database empty, then restore into it. `-v ON_ERROR_STOP=1` makes psql abort at the
+#    FIRST failed statement instead of its default of silently continuing past it — without it, a
+#    missing extension/role/dependency mid-restore leaves a partially restored database that reads
+#    as a clean run, and step 5 would start the app on top of it.
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c 'DROP DATABASE erp;'
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c 'CREATE DATABASE erp OWNER erp;'
+gunzip -c backups/erp_2026-08-16_020000.sql.gz | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d erp
+echo "restore completed without error"
+
+# 5. Bring the app AND the backup worker back — the app's start command runs `prisma migrate deploy`
+#    before serving, so any migration newer than the archive applies automatically. This only runs
+#    if step 4 exited 0 (see `set -e` above).
+docker compose --profile prod start app backup
+```
+
+**Verify before you trust it:** sign in, open `/orders` and `/receivables`, and confirm the newest
+order and the A/R total match what you expect from the archive's date. If the restore was wrong, the
+step-2 dump (`backups/before-restore-<epoch>.sql.gz`) is your way back — repeat steps 3–5 with it in
+place of the chosen archive.
+
+**Keeping an archive longer than 30 days** — copy it out of the backup folder. Everything inside is
+pruned at 30 days, on-demand archives included.
 
 ## Updating
-`git pull && docker compose --profile prod up -d --build` — users just refresh.
+`git pull && docker compose --profile prod up -d --build` — users just refresh. Migrations apply
+automatically on container start, including permission backfills: an existing install picks up
+`manage_backups` on whichever live role already holds `admin.view` and `action.manage_users` (or
+every other permission) the moment it updates — no manual `npm run db:seed` step is needed.

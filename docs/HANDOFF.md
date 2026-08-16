@@ -83,7 +83,7 @@ the direction is `retryOnSerializationConflict` around the six allocating caller
 cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
 concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
 
-### Phase 8B (Practice DB & First-run Wizard) MERGED 2026-08-15 — 8C remaining
+### Phase 8 — all three sub-phases (8A/8B/8C) built; 8C reviewed and open as PR #117
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
 Phase 8. Full narrative: `docs/history/2026-08-15-phase-8b-practice-wizard.md`. It shipped the separate
@@ -106,11 +106,34 @@ comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball), two 
 E2E flow. **8A deferred a follow-up (issue filed):** the report wrappers use unbounded `findMany` + JS
 aggregation — fine at shop scale; DB-side aggregation is a future optimization.
 
-**Phase 8C (Backup polish) is the sole remaining sub-phase.** The approved design spec
-(`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded)
-covers it (D5): an in-app **Backups page** (list + folder + back-up-now + red staleness + integrity),
-restore stays a documented command, in-app alerting only; the app↔container **bridge** is the real
-design work there. **Env note: Docker is disabled at boot** — check `systemctl is-active docker` before
+**Phase 8C (Backup polish) is REVIEWED and OPEN AS [PR #117](https://github.com/CoJoA13/HeatSynQ/pull/117)
+from branch `phase-8c-backup-polish` (all 9 tasks landed 2026-08-16; awaiting merge).** Reviews are
+complete: nine per-task reviews (**seven approved on round 1**; Task 4 one fix round, Task 8 two), a
+five-lens whole-branch review that returned **ZERO Critical and nothing blocking**, and one fix wave
+(`90f128a`) closing four *silences*, whose scoped re-review verdicted "ready to become a PR". Final
+gates, each watched to completion: **2986 tests / 179 files · tsc · eslint · build clean · E2E 23/23 ·
+39 migrations** (baseline was 2898/171 and 22 flows). It closes the approved design spec's D5
+(`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded):
+a pure `backup-paths.ts` leaf (archive-name-gated path confinement, no fs/db) and client-safe
+constants; the `manage_backups` action + `backup_stale_hours` setting behind **two** migrations — the
+second backfills `manage_backups` onto any LIVE role holding `admin.view` **and**
+`action.manage_users`, because the first (full-role) migration would have been a silent no-op on a
+real upgraded install, where `SPECIAL_ACTIONS` has grown three times since Phase 1 and only the seed
+backfills existing roles; `evaluateHealth`/`listArchives`/`backupHealth`/`backupsView`/`runBackupNow`
+(argv-spawned `pg_dump`, fail-loud on an empty dump, gzip-verified before being declared good, a
+30-minute stall ceiling); three `manage_backups`-gated routes; the `/admin/backups` page (list +
+folder + Back up now + red staleness + integrity) and the shell `BackupBanner` (throttled,
+session-latched, a hook-free presentational split for a repo with no DOM test environment); the deploy
+wiring (Dockerfile gains `postgresql18-client`, compose wires `BACKUP_DIR` + the `./backups` mount onto
+`app`/`backup` but pointedly **not** `app-practice`, the hardened `scripts/backup.sh`); and the
+expanded restore runbook (`erp/README.md`) plus the `backups` E2E flow — the one place the real host
+`pg_dump` (major-matched 18.4 to the `postgres:18` server) is exercised; vitest injects a fake dump
+command everywhere else. **Upgrading an existing install now grants `manage_backups` automatically on
+`migrate deploy` — no manual `npm run db:seed` step.** Final gates on the branch: **2984 tests / 179
+files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**. **This completes roadmap Phase
+8 (8A + 8B + 8C) and, with it, every build phase in the 8-phase roadmap**
+(`docs/superpowers/plans/2026-07-29-roadmap.md`) — what remains is the whole-branch review, PR, and
+merge (§9). **Env note: Docker is disabled at boot** — check `systemctl is-active docker` before
 diagnosing ECONNREFUSED (§8, and the session-memory index).
 
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
@@ -564,7 +587,11 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 
 ```bash
 # 1. Tooling
-sudo dnf install -y git nodejs26 npm            # or use nvm; Node 26 required (Dockerfile + CI pin it)
+sudo dnf install -y git nodejs26 npm postgresql # or use nvm for node; Node 26 required (Dockerfile + CI pin it)
+# `postgresql` is the CLIENT (pg_dump/psql), needed by the E2E `backups` flow (Phase 8C — it is the
+# one place the real binary is exercised; vitest injects a fake) and by the restore runbook
+# (`erp/README.md`). Its major must match the `postgres:` image tag (currently 18) — pg_dump refuses
+# to dump a server newer than itself. Fedora 44's `postgresql` package is 18.4, matching today.
 # Node 26 ships npm 12, which does NOT run dependency install scripts unless you approve them.
 # `npm ci` prints a warning naming five: @prisma/engines, argon2, esbuild, prisma, unrs-resolver.
 # That warning is EXPECTED and must not be "fixed" with `npm approve-scripts --all`. None of the
@@ -603,7 +630,7 @@ npm run test:e2e                  # runs against the DEV db (erp), not erp_test
 Use `migrate deploy` to **apply** migrations. `migrate dev` is only for **authoring** a new one, and since Prisma 7 it needs a TTY — it refuses in a non-interactive shell, so an agent session must use the `migrate diff` workflow in `CLAUDE.md` (the `create-migration` skill) instead. `db-init/` runs **only on a fresh `dbdata` volume**; a box that already ran the stack before `erp_practice` existed creates it once by hand with `docker compose exec db createdb -U erp erp_practice`.
 
 Fedora-specific notes:
-- **SELinux**: the compose file bind-mounts `./db-init`, `./scripts/backup.sh`, and `./backups`. If Postgres init or the backup container hits `permission denied`, append `:z` to those three bind mounts in `erp/docker-compose.yml` (named volume `dbdata` needs nothing). Prefer `:z` labels over disabling SELinux.
+- **SELinux**: the compose file bind-mounts `./db-init`, `./scripts/backup.sh`, and `./backups` (on both `app` and `backup` — Phase 8C mounts it on `app` too, for its archive list and on-demand dump). If Postgres init or the backup container hits `permission denied`, append `:z` to those four bind mounts in `erp/docker-compose.yml` (named volume `dbdata` needs nothing). Prefer `:z` labels over disabling SELinux.
 - **Podman**: if you use podman instead of Docker CE, you need `podman-docker` + a compose provider that supports `profiles` and `depends_on: condition: service_healthy`; Docker CE avoids the friction.
 - **firewalld**: only relevant when exposing the prod app to the shop LAN (`sudo firewall-cmd --add-port=80/tcp --permanent && sudo firewall-cmd --reload`).
 - Dev DB data from the old machine does not travel (it was throwaway seed/test data). If you ever need it: `erp/backups/` gzip dumps restore per `erp/README.md`.
@@ -611,42 +638,30 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-**Phase 8 (Reports & parallel-run tools) is the active track — design APPROVED 2026-08-14** (spec
-`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`), building as three
-sub-phases 8A/8B/8C; see §4. **8A and 8B are MERGED (PR #106, #109); 8C (Backup polish) is the sole
-remaining sub-phase.** A fresh session should read CLAUDE.md, §4, and the Phase 8 design spec's 8C
-section (D5), then brainstorm→plan→subagent-driven execution of **8C** on a fresh branch (start Docker
-first — §8).
+**Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases (8A/8B/8C) are built.** 8A
+and 8B are MERGED (PR #106, #109); 8C (Backup polish) is reviewed and open as PR #117 from branch
+`phase-8c-backup-polish` (§4) and awaits the standing whole-branch review, PR, and merge. **That
+completes every build phase in the 8-phase roadmap**
+(`docs/superpowers/plans/2026-07-29-roadmap.md`) — there is no ninth phase. The open work now is
+acceptance and backlog, not new build. A fresh session should read CLAUDE.md and §4, then pick among:
 
-**Three things 8C's kickoff must not rediscover** (the desktop stand-up, 2026-08-16):
-
-1. **`manage_backups` is already APPROVED** — spec **§12 item 6**, resolved at design approval. It
-   joins §9's dangerous-action list and the `SPECIAL_ACTIONS`/roles-UI/permission-test work proceeds.
-   ⚠️ The spec's own **§6.2 and §8 prose still reads "flagged for owner sign-off"**, which is stale
-   and has already misled one handoff; **§12 is the authority**. Do not re-ask the owner for it.
-2. **What IS open is spec §12 item 11** — the deploy values: the backup-folder **env name + default
-   path** (the compose bind-mount and the app must agree; a shared value between two writers, so pin
-   it before wiring), the **`backup_stale_hours` default**, and the nightly cadence + retention.
-3. **Decide where #115 sits relative to 8C.** It is P1, pre-existing, and does not block 8C — but it
-   breaks concurrent order/shipper/invoice/quote/receipt/GL-export creation, which is exactly what a
-   parallel-run acceptance month exercises. Schedule it deliberately rather than meeting it live.
-
-The original next-track candidates (now decided in favour of Phase 8), kept for context:
-
-1. **Roadmap Phase 8 — Reports & parallel-run tools** (report set, comparison scoreboard, practice
-   database, first-run wizard, backup polish) — the last remaining build phase; **only 8C (backup
-   polish) is left.** Spec §13's acceptance month needs the (delivered) comparison scoreboard.
-2. **Parallel-run / acceptance-month prep** — Phase 5 unlocked it; gated on the owner-owed
-   GL-account list and the bookkeeper's QBO import method (§7) before a *real* export month.
-3. **The Phase 7 demo** — walk the owner through the designer end to end (restyle a document,
-   per-customer assignment, publish/versioning); the owner still owes the shop logo file
-   (`docs/samples/`, §7 item 6) for the traveler restyle, though nothing blocks on it.
-4. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
+1. **The parallel-run acceptance month** (spec §13) — Phase 5 unlocked it and Phase 8's comparison
+   scoreboard delivered the tooling it needs; still gated on the owner-owed GL-account list and the
+   bookkeeper's QBO import method (§7) before a *real* export month can start.
+2. **Issue #115 (P1)** — every caller of `allocateNumber` allocates inside a Serializable
+   transaction that aborts with `40001` on **any** concurrent allocation, with no retry anywhere but
+   `close-periods.ts` (detail in §4/§6). It does not block anything already built, but it breaks
+   concurrent creation of every numbered entity — exactly what an acceptance month run by more than
+   one person at a time would exercise. Worth scheduling deliberately before that starts.
+3. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
    (delete-customer-with-live-payment); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
    #102 (render two-pass blank-page) and #103 (contract-tightening print-500); the per-worker-test-DB
    infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look:
    the sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes
    addressed on two pages — customers/parts/orders/certs detail pages likely share the hole).
+
+Whichever is picked next, 8C's own review/PR/merge (the immediate next step, §4) comes first — it is
+the last piece of build still sitting on a branch.
 
 Whichever track is chosen: brainstorm → spec → plan → subagent-driven execution on a fresh branch,
 per-task reviews, whole-branch review on the strongest model, one fix wave, PR with attribution in

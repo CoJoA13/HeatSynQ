@@ -65,6 +65,22 @@ export async function assertPracticeDatabase(db: Db = prisma): Promise<void> {
   }
 }
 
+// The mirror of assertPracticeDatabase, for the actions that are PRODUCTION-only (Phase 8C §6.3):
+// the Backups page, its reads, and "Back up now". A trainer's manual backup must never pollute
+// production's archive list or staleness signal, and the practice copy's data is disposable (the
+// reset re-seeds it), so it carries no backup responsibility at all. Un-memoized and on the
+// caller's client for the same reason its twin is: a mis-set flag must never reach the action.
+// Belt AND braces — compose also denies app-practice both BACKUP_DIR and the ./backups mount.
+export async function assertNotPracticeDatabase(db: Db = prisma): Promise<void> {
+  const name = await currentDatabase(db);
+  if (name === PRACTICE_DB_NAME) {
+    throw new HttpError(
+      403,
+      "Backups are managed on the production copy only — the practice database is not backed up.",
+    );
+  }
+}
+
 // Warm the memoized decision eagerly at SERVER module load — outside any request transaction — so an
 // API print on a cold process does not fire the current_database() query while a claim transaction
 // holds a pooled connection (traveler/cert/invoice/etc. render INSIDE their transaction; Codex). The

@@ -51,4 +51,22 @@ describe("nav gating", () => {
     const templates = ADMIN.find((e) => e.label === "Templates");
     expect(templates).toEqual({ label: "Templates", href: "/admin/templates", area: "templates" });
   });
+
+  // Phase 8C: Backups gates on the `manage_backups` special ACTION, not an area — the same
+  // silent-dead-end concern the Templates entry above exists to avoid, but for an action instead
+  // of an area.
+  it("shows Backups to a manage_backups holder who has no admin.view", () => {
+    const entries = visibleAdmin(["action.manage_backups"]);
+    expect(entries.map((n) => n.href)).toEqual(["/admin/backups"]);
+  });
+
+  it("hides Backups from an admin.view user without manage_backups", () => {
+    const hrefs = visibleAdmin(["admin.view"]).map((n) => n.href);
+    expect(hrefs).not.toContain("/admin/backups");
+    expect(hrefs).toContain("/admin/users"); // the rest of the group is unaffected
+  });
+
+  it("hides Backups while permissions are still loading", () => {
+    expect(visibleAdmin(undefined).map((n) => n.href)).not.toContain("/admin/backups");
+  });
 });

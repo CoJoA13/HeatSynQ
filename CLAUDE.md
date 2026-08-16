@@ -107,6 +107,24 @@ Business rules live in the services under `src/server/*.ts`. React components ho
 
 **Practice copy & first-run onboarding (Phase 8B).** The app ships as a **separate practice copy** (its own `erp_practice` DB + an `app-practice` compose service on port 8080 under a `practice` profile) — never an in-app toggle. **`practiceMode()` (`src/server/practice-mode.ts`) is the single source of practice-vs-production**, resolved **authoritatively from the database identity** (`SELECT current_database() = 'erp_practice'`, memoized per process), with `PRACTICE_MODE` only corroborating — a loud throw on the dangerous mismatch (env says practice, DB is prod). Every consumer reads this one helper: the **banner** (the now-`async` root layout `app/layout.tsx` mounts it above `Shell`'s `/login` and me-null early returns; the flag is NEVER read in a client component — §8), the **watermark** (`render.ts`'s `stampPractice`, see the pdf-lib constraint), and the **reset guard** (`assertPracticeDatabase`, an UN-memoized in-request re-check that is the load-bearing §5.3 refusal). **`SetupState` is a second by-construction singleton** (`id='singleton'` CHECK, the `BillingConfig` precedent; added to `AuditableModel` + `SNAPSHOT_INCLUDE`) holding only the two non-derivable first-run facts (`numbersConfirmedAt`, `checklistDismissedAt`) — everything else on the setup checklist is a live signal (`install-readiness.ts`, incl. the §5.7 admin-password-still-`admin` check). **`reseedSingletons` (`practice-seed.ts`)** restores the singletons + the eight Standard templates from `defaultConfigFor`, reused by both `truncateAll` (tests) and the practice reset (`practice-reset.ts`: truncate → singletons FIRST → `seedDemoSlice`, deliberately non-atomic behind the db-identity pre-check). **The order-entry gate** blocks `createOrder` until company identity AND a chart of accounts are configured (`order-entry-readiness.ts`), evaluated as a **pre-transaction read at the single `createOrder` chokepoint** — before the Serializable save, so a concurrent config edit is never a no-retry abort; the demo seed satisfies it, and the vitest harness seeds it **opt-in per order-creating suite** (`seedOrderGatePrereqs`), never in global `truncateAll` (which would red the pristine-default suites and contaminate the reset).
 
+**Backups bridge the app and the nightly container through one shared folder (Phase 8C).** `BACKUP_DIR`
+(container `/backups`, host `./backups`) is a **deploy value read by both writers**, never a runtime
+`Setting` — the nightly container cannot honor a live change. `src/server/backup-paths.ts` is a **pure
+leaf** (no fs, no db) and the ONLY way a filename becomes a path: `archivePath` refuses any name failing
+the strict archive regex, which is what makes escaping the folder impossible — the deploy-set directory
+cannot be "confined to a root" because it *is* the root. `pg_dump` is spawned **via argv, never a shell
+string**, dumped to a temp file and checked for a non-zero size before it is gzipped into place (an empty
+archive is never written). **`lastSuccessAt` is DERIVED from the newest integrity-passing archive, not
+stored** — the archive is the evidence — which is what lets `backup-status.json` be a single un-merged
+overwrite that `sh` can write. The two writers **never share a filename** (`erp_<stamp>` vs
+`erp_manual_<stamp>_<rand>`), so no cross-process lock exists or is needed; both match the script's one
+`-mtime +30` prune. The indicator is green ONLY on a recent integrity-passing archive **and** a clean last
+run **and** a readable status file — **absence is failure**, so a missing status file reads red. Backups
+are **production-only**: `assertNotPracticeDatabase` (the `assertPracticeDatabase` mirror in
+`practice-mode.ts`) refuses the routes, and compose denies `app-practice` both the env and the mount. The
+suite must **never shell out to a host `pg_dump`** — CI's major is older than the server and pg_dump
+refuses a newer server, so `runBackupNow` takes an injectable dump command (a parameter, not an env var).
+
 ## Constraints that will bite you
 
 - **Client components must not import from `src/server/**`** — it drags `node:async_hooks` and Prisma into the browser bundle. Shared constants go in `src/lib/` (`permission-constants.ts` is the precedent).
@@ -141,7 +159,7 @@ The Phase 1 process is worth keeping: a fresh subagent per task, an independent 
 
 ## Environment notes (Fedora)
 
-If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or `./backups` bind mounts, append `:z` to those three mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
+If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or either `./backups` bind mount (`app`'s and `backup`'s — Phase 8C mounts it on both), append `:z` to those four mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
 
 ## Agent skills
 

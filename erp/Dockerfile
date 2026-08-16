@@ -18,6 +18,11 @@ RUN npx prisma generate && npm run build && npm prune --omit=dev
 FROM node:26-alpine AS run
 WORKDIR /app
 ENV NODE_ENV=production
+# Phase 8C §6.1: "Back up now" runs pg_dump inside the app container, so the run image needs the
+# client tools. The MAJOR must match the db service's server — pg_dump hard-refuses a server newer
+# than itself — so this stays version-locked to docker-compose.yml's `postgres:` image tag, the same
+# rule the backup container already follows. pg_restore ships alongside it for the restore runbook.
+RUN apk add --no-cache postgresql18-client
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
