@@ -66,7 +66,3 @@ export type BackupStatusFile = {
   source: BackupSource;
   error: string | null;
 };
-
-export function isHealthy(h: BackupHealth): boolean {
-  return h.state === "ok";
-}

@@ -1,0 +1,145 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  advanceBannerState,
+  BackupBannerView,
+  INITIAL_BANNER_STATE,
+  REFRESH_MS,
+  type BannerFetchState,
+} from "@/components/BackupBanner";
+import type { BackupHealth } from "@/lib/backup-constants";
+
+// This repo has no DOM test environment (no jsdom/testing-library — see the "no DOM test env"
+// comment in tests/practice-banner.test.tsx), so BackupBanner splits its throttle/403-latch
+// decision and its fetch (`advanceBannerState`) from its presentational render (`BackupBannerView`)
+// specifically so both halves can be driven directly here, without mounting the "use client"
+// component or running a real useEffect. Together the two cover the same four ways the bar could
+// silently fail to warn that a jsdom-mounted test would: a real payload renders, "ok" renders
+// nothing, a 403 renders nothing without throwing, and /login neither renders nor fetches.
+
+const NOW = Date.parse("2026-08-16T12:00:00Z");
+
+const RED_HEALTH: BackupHealth = {
+  state: "stale",
+  lastSuccessAt: "2026-08-14T02:00:00Z",
+  lastRunAt: "2026-08-16T02:00:00Z",
+  lastRunOk: true,
+  staleHours: 36,
+  reason: "No integrity-passing backup in the last 36 hours.",
+};
+
+const OK_HEALTH: BackupHealth = {
+  state: "ok",
+  lastSuccessAt: "2026-08-16T02:00:00Z",
+  lastRunAt: "2026-08-16T02:00:00Z",
+  lastRunOk: true,
+  staleHours: 36,
+  reason: "",
+};
+
+function stubFetch(status: number, body: unknown) {
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+describe("BackupBanner (Phase 8C §6.4)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Case 1: a red health payload renders the bar, its reason, and a link to /admin/backups.
+  it("fetches a non-ok payload and renders its reason with a link to /admin/backups", async () => {
+    stubFetch(200, RED_HEALTH);
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    expect(next.health).toEqual(RED_HEALTH);
+
+    const markup = renderToStaticMarkup(<BackupBannerView health={next.health} />);
+    expect(markup).toContain("No integrity-passing backup in the last 36 hours.");
+    expect(markup).toContain('href="/admin/backups"');
+  });
+
+  // Case 2: state: "ok" renders nothing (both the raw view and the fetched-then-rendered path).
+  it("renders nothing for state: ok", async () => {
+    expect(renderToStaticMarkup(<BackupBannerView health={OK_HEALTH} />)).toBe("");
+
+    stubFetch(200, OK_HEALTH);
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    expect(renderToStaticMarkup(<BackupBannerView health={next.health} />)).toBe("");
+  });
+
+  it("renders nothing before any health has loaded", () => {
+    expect(renderToStaticMarkup(<BackupBannerView health={null} />)).toBe("");
+  });
+
+  // Case 3: a 403 (a caller without manage_backups) renders nothing and does not throw.
+  it("a 403 clears health, renders nothing, latches forbidden, and does not throw", async () => {
+    stubFetch(403, { error: "You do not have permission for that" });
+
+    // If fetchHealth's catch let the ApiError escape, this await would reject and fail the test —
+    // the assertion IS that this line resolves.
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+
+    expect(next.health).toBeNull();
+    expect(next.forbidden).toBe(true);
+    expect(renderToStaticMarkup(<BackupBannerView health={next.health} />)).toBe("");
+  });
+
+  // The judgment call: a 403 is a stable fact about the signed-in user (their grants don't change
+  // navigation to navigation), unlike a transient network blip — so it latches off for the rest of
+  // the session rather than re-requesting on every single page view forever (the common case: every
+  // caller without manage_backups, on every page).
+  it("does not re-fetch on a later navigation once latched forbidden", async () => {
+    const forbiddenState: BannerFetchState = { health: null, lastFetchedAt: NOW, forbidden: true };
+    const fetchMock = stubFetch(200, OK_HEALTH);
+
+    const next = await advanceBannerState("/orders", forbiddenState, NOW + REFRESH_MS * 100);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(next).toBe(forbiddenState);
+  });
+
+  it("re-arms the forbidden latch on /login, so the next signed-in session retries", async () => {
+    const forbiddenState: BannerFetchState = { health: null, lastFetchedAt: NOW, forbidden: true };
+    const next = await advanceBannerState("/login", forbiddenState, NOW);
+    expect(next).toEqual(INITIAL_BANNER_STATE);
+  });
+
+  // Case 4: on /login it renders nothing AND does not fetch.
+  it("does not fetch on /login, even when a fetch is otherwise due", async () => {
+    const fetchMock = stubFetch(200, RED_HEALTH);
+
+    const next = await advanceBannerState("/login", INITIAL_BANNER_STATE, NOW);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(renderToStaticMarkup(<BackupBannerView health={next.health} />)).toBe("");
+  });
+
+  it("throttles: skips the fetch when the last one is within REFRESH_MS", async () => {
+    const recentState: BannerFetchState = { health: RED_HEALTH, lastFetchedAt: NOW, forbidden: false };
+    const fetchMock = stubFetch(200, OK_HEALTH);
+
+    const next = await advanceBannerState("/customers", recentState, NOW + REFRESH_MS - 1);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(next).toBe(recentState);
+  });
+
+  it("refetches once REFRESH_MS has elapsed since the last fetch", async () => {
+    const staleState: BannerFetchState = { health: RED_HEALTH, lastFetchedAt: NOW, forbidden: false };
+    const fetchMock = stubFetch(200, OK_HEALTH);
+
+    const next = await advanceBannerState("/customers", staleState, NOW + REFRESH_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(next.health).toEqual(OK_HEALTH);
+  });
+
+  it("a transient (non-403) failure resets lastFetchedAt so the next navigation retries", async () => {
+    stubFetch(500, { error: "boom" });
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    expect(next).toEqual({ health: null, lastFetchedAt: 0, forbidden: false });
+  });
+});
