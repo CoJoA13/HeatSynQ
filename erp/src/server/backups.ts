@@ -283,11 +283,19 @@ async function doBackup(
       // Codex review, PR #117 (finding #7). `child.kill()` alone only SENDS SIGTERM; it does not
       // prove the process is actually gone. Settling (and therefore releasing `inFlight`) the
       // instant SIGTERM is sent let a NEW dump start while the OLD `pg_dump` could still be running,
-      // still holding its snapshot and its locks. This waits for the child's own "close" event —
-      // the proof the OS process has actually exited — before resolving, and escalates to SIGKILL
-      // after `killGraceMs` so a process that ignores SIGTERM (or is merely slow to die) cannot hold
-      // the promise open forever. A child with no pid (never spawned) or already exited resolves
+      // still holding its snapshot and its locks. This waits for the child's own "exit" event — the
+      // proof the OS process has actually exited — before resolving, and escalates to SIGKILL after
+      // `killGraceMs` so a process that ignores SIGTERM (or is merely slow to die) cannot hold the
+      // promise open forever. A child with no pid (never spawned) or already exited resolves
       // immediately — nothing to wait for.
+      //
+      // Re-review, finding #1: this MUST be "exit", not "close". "close" additionally waits for
+      // every stdio stream to close, which never happens if a GRANDCHILD process inherits our
+      // child's stdout (e.g. `pg_dump -j` forking workers) — the reviewer measured "exit" firing at
+      // 4ms in that shape while "close" never fires at all, wedging `inFlight` permanently with no
+      // ceiling, since the escalation timer only SENDS SIGKILL, it does not itself settle anything.
+      // "exit" needs only the process itself to have terminated, which is the actual claim this
+      // promise makes.
       const killAndWait = (): Promise<void> => new Promise((done) => {
         if (!child.pid || child.exitCode !== null || child.signalCode !== null) {
           done();
@@ -295,7 +303,7 @@ async function doBackup(
         }
         child.kill(); // SIGTERM — the default signal
         const escalateTimer = setTimeout(() => { child.kill("SIGKILL"); }, killGraceMs);
-        child.once("close", () => {
+        child.once("exit", () => {
           clearTimeout(escalateTimer);
           done();
         });

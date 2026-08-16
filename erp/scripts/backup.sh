@@ -60,6 +60,12 @@ fi
 # Retention (a deploy value, not a setting). The pattern covers BOTH writers' archives — on-demand
 # names also start `erp_` — which is the owner's one-retention-rule decision (§6.4).
 find "$DIR" -name 'erp_*.sql.gz' -mtime +30 -delete
+# Codex re-review, PR #117 (finding #2): the restore runbook's pre-restore safety dump
+# (`before-restore-<epoch>.sql.gz`, README.md's "Restoring" section) lands in this SAME folder but
+# never matched the pattern above, so full production dumps piled up forever and the README's "copy
+# it out if you want to keep it — everything in here is pruned at 30 days" claim was false for
+# exactly the file holding a complete copy of the database. Same 30-day rule, same folder.
+find "$DIR" -name 'before-restore-*.sql.gz' -mtime +30 -delete
 # Orphaned temps from a crashed dump would otherwise accumulate forever.
 find "$DIR" -name '.erp_*.sql.tmp' -mtime +1 -delete
 write_status true ""

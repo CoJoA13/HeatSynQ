@@ -116,8 +116,8 @@ gzip -t backups/erp_2026-08-16_020000.sql.gz && echo "integrity OK"
 #    truncated pg_dump here would still exit 0 (gzip's own exit code masks it), so the archive is
 #    verified before anything destructive happens — `gzip -t` it and require it be non-empty. The
 #    dump lands inside `backups/` (already gitignored), not the repo root.
-docker compose exec -T db pg_dump -U erp -d erp | gzip > "backups/before-restore-$(date +%s).sql.gz"
-SAFETY_DUMP=$(ls -t backups/before-restore-*.sql.gz | head -1)
+SAFETY_DUMP="backups/before-restore-$(date +%s).sql.gz"
+docker compose exec -T db pg_dump -U erp -d erp | gzip > "$SAFETY_DUMP"
 gzip -t "$SAFETY_DUMP"
 test -s "$SAFETY_DUMP"
 echo "safety dump verified: $SAFETY_DUMP — safe to continue"
