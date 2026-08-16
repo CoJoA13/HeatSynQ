@@ -677,7 +677,16 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       **CLOSED — built in Phase 6** (`e2c91e8`, ruling 14): `User.title` on the admin user form,
       printing on both the quote and cert signature blocks (blank title prints nothing).
 6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — **DEFERRED by the owner
-   2026-08-16 to after the acceptance month.** Cosmetic; the parallel run does not depend on it. The
+   2026-08-16 to after the acceptance month.** **Artwork EXISTS and was shown 2026-08-16** (American
+   Heat Treating Alabama — five variants: the flame mark alone ×2, the horizontal flame+wordmark
+   lockup ×2, and the wordmark alone). It was sent from a phone, so **the files are NOT on this
+   machine yet** — they must be dropped into `docs/company-confidential/` (gitignored; the repo is
+   public) when the owner is back at the laptop. When it is picked up: the **horizontal lockup** is
+   the document-header shape for all eight template types, the flame mark alone suits a tight slot
+   or a favicon, and the wordmark alone is likely unused. Upload constraints are `image/png` or
+   `image/jpeg`, **512 KB** max (`LOGO_MAX_BYTES`, templates.ts), one image per template through the
+   editor — and **PNG, not JPEG**, wherever the flame's transparent background sits over a coloured
+   band. Cosmetic; the parallel run does not depend on it. The
    template logo slot stays unused until then, and Phase 7's "restyle the traveler with the real logo"
    outcome stays unexercised (the E2E flow uses a fixture image).
    Nothing blocks the build; the E2E flow uses a fixture logo until it lands.
