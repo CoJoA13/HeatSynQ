@@ -3,7 +3,7 @@ import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createBatch, getBatch, addPayment, voidPayment, postBatch, reopenBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
 import { applyPayment, voidApplication } from "@/server/applications";
-import { reopenPeriod } from "@/server/close-periods";
+import { reopenPeriod, preliminaryReport } from "@/server/close-periods";
 import { parseDateOnly } from "@/lib/business-days";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
@@ -328,6 +328,107 @@ describe("reopenBatch — POSTED -> OPEN (#68)", () => {
 
     const reopened = await asSystem(() => reopenBatch(batch.id, "mis-keyed"));
     expect(reopened.status).toBe("OPEN");
+  });
+
+  /**
+   * APPLIED CASH — deliberately NOT guarded, and this test is the record of that decision.
+   *
+   * `voidPayment` refuses a payment holding live applications because voiding STRANDS them: the
+   * payment disappears while the invoice still reads settled over an application sourced from it.
+   * Reopening strands nothing — payment, applications and invoice balance all survive intact
+   * (`ar-balances` derives from live `Application` rows and never looks at batch status), so the
+   * A/R sub-ledger is unmoved. That is why the symmetric guard is not copied here.
+   *
+   * What DOES move is GL recognition: `buildCurrentJournal` recognizes a PAYMENT only while its
+   * batch is POSTED, and the close's roll-forward scopes `paymentTotal` the same way
+   * (`close-periods.ts`), while the aging it reconciles against does not. So a month left with a
+   * reopened batch reconciles short and `closePeriod` refuses on a nonzero variance — the operator
+   * must re-post before closing. Loud, not silent, which is the whole design of that reconciliation.
+   * (A PAYMENT-type application is not itself a journal event — only DISCOUNT/WRITE_OFF are — so
+   * nothing double-counts.)
+   */
+  it("reopens a batch whose payment is applied, stranding nothing — balances and applications survive", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const paymentId = afterAdd.payments[0].id;
+
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 960000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+      },
+    });
+    await asSystem(() => applyPayment({ paymentId, lines: [{ invoiceId: invoice.id, type: "PAYMENT", amount: 300 }] }));
+    await asSystem(() => postBatch(batch.id));
+
+    const reopened = await asSystem(() => reopenBatch(batch.id, "wrong deposit total"));
+    expect(reopened.status).toBe("OPEN");
+
+    // Nothing stranded: the application is still live and the payment still shows zero on-account.
+    expect(await prisma.application.count({ where: { paymentId, deletedAt: null } })).toBe(1);
+    expect(reopened.payments[0].onAccount).toBe(0);
+    expect(reopened.payments[0].applications).toHaveLength(1);
+
+    // And the payment list is editable again only through the applications-first path `voidPayment`
+    // already enforces — reopening did not weaken that guard.
+    await expect(asSystem(() => voidPayment(batch.id, paymentId, "mis-keyed")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/applications/i) });
+  });
+
+  /**
+   * ...and the SAFETY NET that justifies not guarding it, verified rather than asserted.
+   *
+   * The reasoning above rests on a claim: a month left with a reopened batch cannot be closed
+   * quietly, because the roll-forward's `paymentTotal` scopes to POSTED batches while the aging it
+   * reconciles against does not, so the two derivations diverge and the close refuses on a nonzero
+   * variance. Both halves are readable in the source, but "the two premises are true so the
+   * conclusion holds" is exactly the kind of inference this project has been burned by. So this
+   * measures the variance directly, through `preliminaryReport` — the same schedule `closePeriod`
+   * reconciles, without needing the advisory locks or a genesis close.
+   */
+  it("makes the month refuse to reconcile until it is re-posted — the reopen cannot close quietly", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 970000 + customerSeq, customerId: customer.id, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 300, finalizedAt: new Date(),
+      },
+    });
+    await asSystem(() => applyPayment({
+      paymentId: afterAdd.payments[0].id, lines: [{ invoiceId: invoice.id, type: "PAYMENT", amount: 300 }] }));
+    await asSystem(() => postBatch(batch.id));
+
+    // Posted: invoiced 300, payments 300, ending A/R 0 — and the aging agrees, so it reconciles.
+    const before = await asSystem(() => preliminaryReport(2026, 8));
+    expect(before.schedule.paymentTotal).toBe(300);
+    expect(before.schedule.variance).toBe(0);
+
+    await asSystem(() => reopenBatch(batch.id, "wrong deposit total"));
+
+    // Reopened: the cash drops out of the roll-forward while the aging still sees the invoice
+    // settled, so the month is off by exactly the reopened amount and `closePeriod` would 409.
+    const after = await asSystem(() => preliminaryReport(2026, 8));
+    expect(after.schedule.paymentTotal).toBe(0);
+    expect(after.schedule.agingEndingAr).toBe(before.schedule.agingEndingAr); // the sub-ledger did not move
+    expect(after.schedule.variance).toBe(300);
+    expect(after.unpostedBatchCount).toBe(1); // and the preview names the batch to re-post
   });
 
   /**
