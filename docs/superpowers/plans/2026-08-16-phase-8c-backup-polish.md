@@ -1007,7 +1007,26 @@ git commit -m "feat(backups): evaluate staleness and list archives with integrit
 
 - [ ] **Step 1: Create the fake dump command**
 
-Create `erp/tests/fixtures/fake-pg-dump.sh` (make it executable — `chmod +x`):
+Create `erp/tests/fixtures/fake-pg-dump.sh` — this is the repo's **first** `tests/fixtures/` entry and
+its first executable fixture, so there is no convention to copy.
+
+> **This step has a CI-breaking trap. Read it before writing the file.** The test spawns this script
+> directly, so it must be executable **in a fresh clone** — and git only preserves that if the file was
+> already `chmod +x` when it was staged. `chmod +x` *after* `git add` records mode `100644`, everything
+> passes on your machine, and CI dies with `EACCES` on a file that looks fine in the diff.
+>
+> Do it in this order, and verify the recorded mode rather than the working-tree mode:
+>
+> ```bash
+> cd erp
+> chmod +x tests/fixtures/fake-pg-dump.sh
+> git add tests/fixtures/fake-pg-dump.sh
+> git ls-files -s tests/fixtures/fake-pg-dump.sh   # MUST print 100755, not 100644
+> ```
+>
+> If it prints `100644`, fix it with `git update-index --chmod=+x tests/fixtures/fake-pg-dump.sh` and
+> re-check. **Report the `git ls-files -s` output in your report** — a reviewer cannot see a file mode
+> in a diff body.
 
 ```sh
 #!/bin/sh
