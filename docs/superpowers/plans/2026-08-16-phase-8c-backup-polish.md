@@ -607,8 +607,12 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { evaluateHealth, listArchives, backupHealth } from "@/server/backups";
 import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
+import { truncateAll } from "./helpers/db";
 
-const NOW = new Date("2026-08-16T12:00:00Z");
+// `NOW` is a FIXED instant for the pure evaluateHealth cases. The filesystem describes below use
+// hoursAgo() only to stamp mtimes, and judge against the real clock — so keep NOW recent enough
+// that a stamped file is not accidentally outside the 36h window.
+const NOW = new Date();
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000);
 
 const base = { newestSuccessAt: hoursAgo(4), status: { lastRunAt: hoursAgo(4).toISOString(), ok: true, source: "nightly" as const, error: null }, staleHours: 36, now: NOW, folderError: null };
@@ -720,7 +724,13 @@ describe("listArchives", () => {
 
 describe("backupHealth against a real folder", () => {
   let dir: string;
-  beforeEach(async () => { dir = await mkdtemp(path.join(tmpdir(), "hsq-backups-")); });
+  // backupHealth reads `backup_stale_hours` from the DATABASE. The suite shares one database with
+  // fileParallelism:false, so without this truncate a value left behind by an earlier test FILE
+  // would silently change the threshold this file judges against.
+  beforeEach(async () => {
+    await truncateAll();
+    dir = await mkdtemp(path.join(tmpdir(), "hsq-backups-"));
+  });
   afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
   it("reads RED for a folder that does not exist", async () => {
@@ -729,16 +739,21 @@ describe("backupHealth against a real folder", () => {
   });
 
   it("ignores a CORRUPT newest archive and derives success from the newest INTACT one", async () => {
-    // The corrupt file is newer; a naive "newest mtime" would call this fresh. Integrity decides.
-    await writeFile(path.join(dir, "erp_2026-08-14_020000.sql.gz"), gzipSync(Buffer.from("-- good\n")));
-    await writeFile(path.join(dir, "erp_2026-08-16_020000.sql.gz"), Buffer.from("corrupt"));
+    // The corrupt file is NEWER; a naive "newest mtime" would call this fresh. Integrity decides.
+    const good = path.join(dir, "erp_2026-08-14_020000.sql.gz");
+    const corrupt = path.join(dir, "erp_2026-08-16_020000.sql.gz");
+    await writeFile(good, gzipSync(Buffer.from("-- good\n")));
+    await writeFile(corrupt, Buffer.from("corrupt"));
+    // Pin the mtimes so "newer" is a fact of the test, not of write order.
+    await utimes(good, hoursAgo(10), hoursAgo(10));
+    await utimes(corrupt, hoursAgo(1), hoursAgo(1));
     await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), JSON.stringify(
       { lastRunAt: new Date().toISOString(), ok: true, source: "nightly", error: null }));
+
     const h = await backupHealth(dir);
-    expect(h.lastSuccessAt).not.toBeNull();
-    // The intact archive is the one whose mtime is reported.
-    expect(new Date(h.lastSuccessAt!).getTime())
-      .toBeLessThan(new Date().getTime());
+    // EXACTLY the good archive's mtime — not merely "some time in the past".
+    expect(h.lastSuccessAt).toBe(hoursAgo(10).toISOString());
+    expect(h.state).toBe("ok"); // 10h < the 36h default
   });
 
   it("reads RED when the status file is unparseable JSON", async () => {
