@@ -60,7 +60,8 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**Fix 2026-08-16 (PR #114) — `allocateNumber`'s counter-row seed is now atomic.** Standing up the
+**Fix MERGED to `main` as `a5aac43` (PR #114, squash, 2026-08-16) — `allocateNumber`'s counter-row
+seed is now atomic.** Standing up the
 build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
 where it had passed for five phases on the laptop and in CI. Not a regression: `allocateNumber`
 seeded its `Setting` row with `upsert(… update: {})`, and Prisma degrades an EMPTY `update` to
@@ -293,6 +294,12 @@ Then write a small `.mjs` that imports `chromium` from that cached `playwright` 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
 ## 6. Known backlog (all triaged, none blocking)
+
+**Highest open item: #115 (P1, 2026-08-16) — concurrent `allocateNumber` aborts with 40001 under
+Serializable, with no retry on any caller.** Pre-existing; found by probing Codex's review of PR #114.
+It does not block 8C, but it breaks concurrent creation of every numbered entity (order, shipper,
+BOL, credit, receipt batch, quote, GL export) and the vitest suite structurally cannot see it —
+vitest runs Read Committed. Detail in the §4 entry; full evidence in the issue.
 
 **Five issues are absorbed into Phase 7's scope by owner ruling 6 (2026-08-12, P7 spec §5.8):
 #36 (traveler continuation-page header), #43 (bounded all-loads traveler render), #97
@@ -575,6 +582,8 @@ sudo usermod -aG docker $USER   # then log out/in
 # 2. Project
 git clone https://github.com/CoJoA13/HeatSynQ.git && cd HeatSynQ/erp
 cp .env.example .env
+git config --global user.name "cojoa13"          # git REFUSES to commit without an identity, and it
+git config --global user.email "cjones1308@pm.me" # fails when you have work to save, not at setup
 docker compose up -d db   # a FRESH dbdata volume runs db-init/, creating erp_test AND erp_practice
 npm install
 npx prisma migrate deploy  # APPLY existing migrations to the dev DB (erp) — not `migrate dev`
@@ -598,6 +607,7 @@ Fedora-specific notes:
 - **Podman**: if you use podman instead of Docker CE, you need `podman-docker` + a compose provider that supports `profiles` and `depends_on: condition: service_healthy`; Docker CE avoids the friction.
 - **firewalld**: only relevant when exposing the prod app to the shop LAN (`sudo firewall-cmd --add-port=80/tcp --permanent && sudo firewall-cmd --reload`).
 - Dev DB data from the old machine does not travel (it was throwaway seed/test data). If you ever need it: `erp/backups/` gzip dumps restore per `erp/README.md`.
+- **Run `npm run test:e2e` in the BACKGROUND.** It now runs close to ten minutes, which is the agent tooling's per-command ceiling; a run killed at the cap leaves a `ClosePeriod` row that the harness deliberately does NOT self-heal (its reaper is id+`closedById`-scoped so it can never hard-delete a real close). The next run then fails three flows — `invoice-shipped-order`, `receivables-apply-age-statement`, `close-month-end` — because the month is closed, and clearing it needs a hand-written `DELETE` of the `ClosePeriod` + its `GlExportBatch`/`GlPosting` rows against the DEV db. Verified end to end on 2026-08-16.
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
@@ -606,7 +616,22 @@ Fedora-specific notes:
 sub-phases 8A/8B/8C; see §4. **8A and 8B are MERGED (PR #106, #109); 8C (Backup polish) is the sole
 remaining sub-phase.** A fresh session should read CLAUDE.md, §4, and the Phase 8 design spec's 8C
 section (D5), then brainstorm→plan→subagent-driven execution of **8C** on a fresh branch (start Docker
-first — §8). The original next-track candidates (now decided in favour of Phase 8), kept for context:
+first — §8).
+
+**Three things 8C's kickoff must not rediscover** (the desktop stand-up, 2026-08-16):
+
+1. **`manage_backups` is already APPROVED** — spec **§12 item 6**, resolved at design approval. It
+   joins §9's dangerous-action list and the `SPECIAL_ACTIONS`/roles-UI/permission-test work proceeds.
+   ⚠️ The spec's own **§6.2 and §8 prose still reads "flagged for owner sign-off"**, which is stale
+   and has already misled one handoff; **§12 is the authority**. Do not re-ask the owner for it.
+2. **What IS open is spec §12 item 11** — the deploy values: the backup-folder **env name + default
+   path** (the compose bind-mount and the app must agree; a shared value between two writers, so pin
+   it before wiring), the **`backup_stale_hours` default**, and the nightly cadence + retention.
+3. **Decide where #115 sits relative to 8C.** It is P1, pre-existing, and does not block 8C — but it
+   breaks concurrent order/shipper/invoice/quote/receipt/GL-export creation, which is exactly what a
+   parallel-run acceptance month exercises. Schedule it deliberately rather than meeting it live.
+
+The original next-track candidates (now decided in favour of Phase 8), kept for context:
 
 1. **Roadmap Phase 8 — Reports & parallel-run tools** (report set, comparison scoreboard, practice
    database, first-run wizard, backup polish) — the last remaining build phase; **only 8C (backup
