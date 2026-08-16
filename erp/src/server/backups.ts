@@ -7,15 +7,23 @@
 // be a single un-merged overwrite — a shell script cannot reasonably read-merge JSON to preserve a
 // previous success across a failed run, and any scheme that needed it would be fragile in exactly
 // the failure case it exists to report.
-import { readdir, stat, readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { readdir, stat, readFile, rename, unlink, writeFile, access } from "node:fs/promises";
+import { constants as FS, createReadStream, createWriteStream } from "node:fs";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { createGzip } from "node:zlib";
+import { pipeline } from "node:stream/promises";
+import { randomBytes } from "node:crypto";
+import path from "node:path";
 import {
   type ArchiveInfo, type BackupHealth, type BackupStatusFile, type BackupsView,
   archiveSourceOf, isArchiveName,
 } from "@/lib/backup-constants";
-import { archivePath, resolveBackupDir, statusPath } from "./backup-paths";
+import { archivePath, resolveBackupDir, statusPath, manualArchiveName, tempNameFor } from "./backup-paths";
 import { getSetting } from "./settings";
+import { HttpError } from "./errors";
+import { auditBackupRun } from "./audit";
+import { assertNotPracticeDatabase } from "./practice-mode";
 
 const execFileAsync = promisify(execFile);
 
@@ -167,4 +175,130 @@ export async function backupsView(): Promise<BackupsView> {
     listArchives(dir).catch(() => [] as ArchiveInfo[]),
   ]);
   return { folder: dir, health, archives };
+}
+
+/** Written by the app; mirrors what scripts/backup.sh writes. Temp-then-rename so a reader can
+ *  never observe a half-written file (both writers do this). */
+async function writeStatus(dir: string, status: BackupStatusFile): Promise<void> {
+  const final = statusPath(dir);
+  const tmp = `${final}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(status, null, 2)}\n`, "utf8");
+  await rename(tmp, final);
+}
+
+/** Single-flight: a double-click must not run two dumps. The unique names already make a collision
+ *  harmless, so this is about not doubling the load on the database, not about correctness. */
+let inFlight: Promise<ArchiveInfo> | null = null;
+
+export function runBackupNow(
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string } = {},
+): Promise<ArchiveInfo> {
+  if (inFlight) return inFlight;
+  inFlight = doBackup(opts).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function doBackup(
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string },
+): Promise<ArchiveInfo> {
+  // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
+  await assertNotPracticeDatabase();
+
+  const dir = opts.dir ?? resolveBackupDir();
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  if (!databaseUrl) throw new HttpError(500, "DATABASE_URL is not configured.");
+
+  // `dumpBin` is a plain PARAMETER, not an env var (§6.4): vitest injects a fake so the suite never
+  // depends on a host pg_dump, whose major on CI's ubuntu-latest is older than the postgres:18
+  // server — and pg_dump hard-refuses a newer server.
+  const bin = opts.dumpBin ?? "pg_dump";
+  const args = opts.dumpArgs ?? [databaseUrl];
+
+  try {
+    await access(dir, FS.W_OK);
+  } catch {
+    throw new HttpError(500, `The backup folder is not writable: ${dir}`);
+  }
+
+  const name = manualArchiveName(new Date(), randomBytes(4).toString("hex"));
+  const tmpPath = path.join(dir, tempNameFor(name));
+  const finalPath = archivePath(dir, name);
+
+  const fail = async (message: string): Promise<never> => {
+    await unlink(tmpPath).catch(() => {});
+    await unlink(finalPath).catch(() => {});
+    await writeStatus(dir, {
+      lastRunAt: new Date().toISOString(), ok: false, source: "manual", error: message,
+    }).catch(() => {});
+    await auditBackupRun(name, false, message).catch(() => {});
+    throw new HttpError(500, `Backup failed: ${message}`);
+  };
+
+  // --- dump to the temp file, via ARGV. No string ever reaches a shell. ---
+  let stderr = "";
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const out = createWriteStream(tmpPath);
+      const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout.pipe(out);
+      child.stderr.on("data", (c: Buffer) => { stderr += c.toString(); });
+
+      // `child.stdout.pipe(out)` ends `out` itself once stdout hits EOF, which can happen before
+      // OR after the process's own "close" event — so a "finish" listener registered ONLY inside
+      // the "close" handler can be registered after "finish" has already fired, and the promise
+      // hangs forever. Track both signals independently and settle once both have arrived,
+      // regardless of which order they land in.
+      let closeCode: number | null = null;
+      let closed = false;
+      let finished = false;
+      let settled = false;
+      const maybeSettle = () => {
+        if (settled || !closed || !finished) return;
+        settled = true;
+        if (closeCode === 0) resolve();
+        else reject(new Error(stderr.trim() || `exit ${closeCode}`));
+      };
+      const settleError = (err: Error) => { if (!settled) { settled = true; reject(err); } };
+
+      child.on("error", settleError);
+      child.on("close", (code) => { closeCode = code; closed = true; maybeSettle(); });
+      out.on("finish", () => { finished = true; maybeSettle(); });
+      out.on("error", settleError);
+    });
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+
+  // --- fail loud on an EMPTY dump: pg_dump can exit zero having written nothing, and an empty
+  //     archive that looks like a backup is worse than no archive at all (the Phase 1 lesson). ---
+  const tmpStat = await stat(tmpPath).catch(() => null);
+  if (!tmpStat || tmpStat.size === 0) {
+    return fail("pg_dump produced an empty dump; refusing to write an empty archive.");
+  }
+
+  // --- gzip into place, then verify the FINAL bytes before declaring success. ---
+  try {
+    await pipeline(createReadStream(tmpPath), createGzip(), createWriteStream(finalPath));
+  } catch (err) {
+    return fail(`could not compress the dump: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  await unlink(tmpPath).catch(() => {});
+
+  if (!(await integrityOk(finalPath))) {
+    return fail("the written archive failed its gzip integrity check.");
+  }
+
+  const finalStat = await stat(finalPath);
+  await writeStatus(dir, {
+    lastRunAt: new Date().toISOString(), ok: true, source: "manual", error: null,
+  });
+  await auditBackupRun(name, true, null);
+
+  return {
+    name,
+    source: "manual",
+    sizeBytes: finalStat.size,
+    modifiedAt: finalStat.mtime.toISOString(),
+    integrityOk: true,
+  };
 }

@@ -450,6 +450,26 @@ export async function auditSettingChange(key: string, beforeValue: unknown, afte
   });
 }
 
+/** Phase 8C §6.4. A dump is a full copy of every customer's record and `manage_backups` is a named
+ *  dangerous action, so "who dumped production, and when" is an audit question — but a backup has
+ *  no entity ROW to hang an auditedCreate on. This is the auditSettingChange sanctioned-exception
+ *  shape: a direct write, kept HERE so audit.ts stays the sole prisma.auditLog.create caller (the
+ *  permissions sweep asserts exactly that). A FAILED attempt is audited too — an attempted dump is
+ *  still an access event. */
+export async function auditBackupRun(archive: string, ok: boolean, error: string | null): Promise<void> {
+  const actor = currentActor();
+  await prisma.auditLog.create({
+    data: {
+      actorId: actor.id,
+      actorName: actor.name,
+      entity: "backup",
+      entityId: archive,
+      action: "create",
+      after: redact({ archive, ok, error }),
+    },
+  });
+}
+
 export async function auditedCreate<T extends { id: string }>(
   model: AuditableModel, data: object, doIt: () => Promise<T>, opts: { tx: Prisma.TransactionClient },
 ): Promise<T> {
