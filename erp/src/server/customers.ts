@@ -334,7 +334,9 @@ export async function customerQuoteBlockers(customerId: string): Promise<Blocker
  * here), so both are covered transitively. Payments are the one A/R row that can exist with no order
  * behind it — which is exactly why this was the hole.
  */
-export async function customerPaymentBlockers(customerId: string): Promise<Blocker[]> {
+export async function customerPaymentBlockers(
+  customerId: string, opts: { includeAmounts: boolean },
+): Promise<Blocker[]> {
   const payments = await prisma.payment.findMany({
     where: { customerId, deletedAt: null },
     select: { id: true, amount: true, batchId: true, batch: { select: { batchNumber: true } } },
@@ -342,7 +344,18 @@ export async function customerPaymentBlockers(customerId: string): Promise<Block
   });
   return payments.map((p) => ({
     entityLabel: "Payment",
-    name: `Batch #${p.batch.batchNumber} · ${p.amount.toNumber().toFixed(2)}`,
+    // The AMOUNT is withheld from a caller who does not hold `receivables.view`. This route is
+    // gated on `customers.view`, and without this a customer-only viewer could read receipt figures
+    // here that every dedicated A/R endpoint requires `receivables.view` for — a permission leak
+    // through a delete-blocker list (Codex, PR #129). The blocker itself is still NAMED, because the
+    // §5.14 promise is owed to whoever holds `customers.delete` regardless of their A/R grants:
+    // suppressing the row entirely would hand them a refusal citing "1 live payment(s)" above an
+    // EMPTY list, which is the dead end this whole mechanism exists to prevent. A batch number is an
+    // internal sequence identifier, not a financial figure, so it stays — it is what lets them tell
+    // a receivables user WHICH deposit to look at.
+    name: opts.includeAmounts
+      ? `Batch #${p.batch.batchNumber} · ${p.amount.toNumber().toFixed(2)}`
+      : `Batch #${p.batch.batchNumber}`,
     id: p.id,
     href: `/receivables/batches/${p.batchId}`,
   }));

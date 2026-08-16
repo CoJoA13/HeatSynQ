@@ -99,6 +99,54 @@ describe("customer routes", () => {
     expect((await res.json()).error).toMatch(/already exists/i);
   });
 
+  /**
+   * Codex, PR #129 — the payment blockers must not leak A/R figures through a `customers.view`
+   * route. The blockers route is gated on `customers.view`, and #84 added payment rows carrying the
+   * receipt AMOUNT, which every dedicated receivables read requires `receivables.view` for.
+   *
+   * The fix withholds the amount, NOT the row: §5.14's promise is owed to whoever holds
+   * `customers.delete` whatever their A/R grants, so suppressing the blocker entirely would hand
+   * them a "1 live payment(s)" refusal above an EMPTY list — the exact dead end the panel exists to
+   * prevent. A batch number is an internal sequence identifier, not a financial figure, so it stays:
+   * it is what lets them tell a receivables user WHICH deposit to look at.
+   */
+  it("blockers: withholds the payment AMOUNT from a caller without receivables.view, but still names the blocker", async () => {
+    const { id } = await createCustomer({ code: "ACME", name: "Acme" });
+    const paymentType = await prisma.paymentType.create({ data: { name: "Check" } });
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 1000, depositDate: parseDateOnly("2026-08-08") },
+    });
+    const pay = await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: id, paymentTypeId: paymentType.id,
+        amount: 300, reference: "1234", receivedDate: parseDateOnly("2026-08-08"),
+      },
+    });
+
+    const customersOnly = await signInWith(["customers.view"], "cust-blockers-nofin");
+    const redacted = await blockersRoute(
+      getReq(`http://t/api/customers/${id}/blockers`, customersOnly), withId(id));
+    expect(await redacted.json()).toEqual([
+      { entityLabel: "Payment", name: "Batch #1000", id: pay.id, href: `/receivables/batches/${batch.id}` },
+    ]);
+
+    const withAr = await signInWith(["customers.view", "receivables.view"], "cust-blockers-fin");
+    const full = await blockersRoute(getReq(`http://t/api/customers/${id}/blockers`, withAr), withId(id));
+    expect(await full.json()).toEqual([
+      { entityLabel: "Payment", name: "Batch #1000 · 300.00", id: pay.id, href: `/receivables/batches/${batch.id}` },
+    ]);
+
+    // The EXPORT is the same data in a downloadable workbook — it must redact identically, or the
+    // leak simply moves to the file.
+    const sheet = await blockersExportRoute(
+      getReq(`http://t/api/customers/${id}/blockers/export`, customersOnly), withId(id));
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await sheet.arrayBuffer()) as unknown as ArrayBuffer);
+    const row = (wb.getWorksheet(1)!.getRow(2).values as unknown[]).map(String).join(" ");
+    expect(row).toContain("Batch #1000");
+    expect(row).not.toContain("300.00");
+  });
+
   // H4 (Codex round 3 review): mirrors the part-fields blockers/export route tests
   // (parts-routes.test.ts) — same 401/403/200 shape, same xlsx content-type and disposition.
   // Task 15 extends this to the COMBINED part+order list: the route now unions

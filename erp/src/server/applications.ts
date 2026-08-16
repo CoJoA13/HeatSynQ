@@ -75,6 +75,40 @@ function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDat
   return Math.round((cents(settledOpen) * terms.discountPercent.toNumber()) / 100) / 100;
 }
 
+/**
+ * The early-pay discount still available on this invoice — what `discountFor` offers, capped by the
+ * entitlement not yet consumed.
+ *
+ * **Why the second cap exists (#81, Codex PR #129).** `discountFor` is a percentage of the CURRENT
+ * open balance, and a discount reduces that balance — so each new request was offered a fresh, only
+ * slightly smaller entitlement: $20 on a $1,000 invoice, then $19.60 of the remaining $980, then
+ * $19.21… converging on the whole receivable. Capping the aggregate within one request (#81's first
+ * half) did nothing about it, because every call started its tally at zero.
+ *
+ * The ceiling is the percentage of a **stable basis** — the invoice TOTAL, which never moves —
+ * minus the DISCOUNT already taken. That makes the entitlement a one-time quantity instead of a
+ * renewable one.
+ *
+ * **Deliberately the tighter of the two, never the looser**, because which basis SHOULD apply is a
+ * terms-policy question the owner has not ruled on: after a partial payment, today's rule offers 2%
+ * of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule alone would
+ * allow the full $20. Taking the minimum changes nothing in any case that works today and closes the
+ * one that does not — so this is a hole being closed, not a policy being chosen.
+ */
+function remainingDiscountFor(
+  terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
+  total: number, apps: ApplicationLite[],
+): number {
+  const offered = discountFor(terms, invoiceDate, receivedDate, invoiceOpenBalance(total, apps));
+  if (offered <= 0) return 0; // out of window, or no terms discount — nothing to cap
+  const entitlement = discountFor(terms, invoiceDate, receivedDate, total);
+  const consumed = apps
+    .filter((a) => a.deletedAt === null && a.type === "DISCOUNT")
+    .reduce((s, a) => s + cents(a.amount), 0);
+  const remaining = cents(entitlement) - consumed;
+  return Math.max(0, Math.min(cents(offered), remaining)) / 100;
+}
+
 export async function discountAvailable(paymentId: string, invoiceId: string): Promise<number> {
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId }, select: { receivedDate: true },
@@ -89,8 +123,11 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
     },
   });
   if (!invoice) throw new HttpError(404, "Invoice not found");
-  const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
-  return discountFor(invoice.customer.terms, invoice.invoiceDate, payment.receivedDate, open);
+  // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
+  // will refuse (#81 / Codex PR #129).
+  return remainingDiscountFor(
+    invoice.customer.terms, invoice.invoiceDate, payment.receivedDate,
+    invoice.total.toNumber(), invoice.applications.map(toLite));
 }
 
 /** One invoice's current open balance, by id — the same read `discountAvailable` already does,
@@ -394,8 +431,13 @@ function resolveReason(
     return why;
   }
   if (line.type === "DISCOUNT") {
-    const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
-    const elig = discountFor(invoice.customer.terms, invoice.invoiceDate, receivedDate, open);
+    // The REMAINING entitlement (#81, and Codex PR #129's cross-request half): a percentage of the
+    // stable invoice total minus what has already been discounted, floored against the current
+    // per-call offer. `discountSoFarCents` then adds this request's own accepted lines on top, so
+    // the cap holds both WITHIN one payload and ACROSS separate calls.
+    const elig = remainingDiscountFor(
+      invoice.customer.terms, invoice.invoiceDate, receivedDate,
+      invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
     }

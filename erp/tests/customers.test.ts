@@ -533,7 +533,7 @@ describe("customers service", () => {
 
       // §5.14: a block names its blockers and links to where they live. A Payment has no detail
       // page of its own, so it links to the batch that holds it — where it can actually be voided.
-      expect(await customerPaymentBlockers(id)).toEqual([{
+      expect(await customerPaymentBlockers(id, { includeAmounts: true })).toEqual([{
         entityLabel: "Payment", name: "Batch #1000 · 300.00",
         id: pay.id, href: `/receivables/batches/${pay.batchId}`,
       }]);
@@ -545,7 +545,7 @@ describe("customers service", () => {
     it("a customer with only VOIDED payments deletes cleanly — voided cash blocks nothing", async () => {
       const { id } = await createCustomer({ code: "BETA", name: "Beta" });
       await paymentFor(id, 300, 1001, { deletedAt: new Date() });
-      expect(await customerPaymentBlockers(id)).toEqual([]);
+      expect(await customerPaymentBlockers(id, { includeAmounts: true })).toEqual([]);
       await deleteCustomer(id, "test cleanup");
       expect((await prisma.customer.findFirst({ where: { id } }))!.deletedAt).not.toBeNull();
     });
@@ -557,7 +557,7 @@ describe("customers service", () => {
 
       await expect(deleteCustomer(id, "test cleanup"))
         .rejects.toThrow("That customer still has 2 live payment(s)");
-      const blockers = await customerPaymentBlockers(id);
+      const blockers = await customerPaymentBlockers(id, { includeAmounts: true });
       expect(blockers.map((b) => b.name)).toEqual(["Batch #1002 · 125.50", "Batch #1003 · 300.00"]);
     });
   });
