@@ -1215,6 +1215,16 @@ export async function addLine(
     const order = await claimOrder(tx, orderId);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
 
+    // §5.7, owner ruling 2026-08-16 (#126): once a finalized invoice covers this order its billable
+    // content is settled, and corrections go through unlock. Charges froze here from the start
+    // (`replaceCharges` below) while LINES did not, so §5.7 meant two different things — and the
+    // gap was a usability trap rather than a money bug: the invoice is frozen paper, so editing a
+    // line changed nothing on it and the operator could not tell whether the edit had worked. Read
+    // on `tx`, UNDER the claim taken immediately above, so the answer cannot go stale before the
+    // write (the order-locks house rule; `finalizedInvoiceFor` is a dependency-free leaf).
+    const invoiced = await finalizedInvoiceFor(tx, orderId);
+    if (invoiced) throw new HttpError(400, invoiceBlockMessage(invoiced, "A line cannot be added"));
+
     const { _max } = await tx.orderLine.aggregate({ where: { orderId }, _max: { position: true } });
     const position = (_max.position ?? 0) + 1;
     const [part] = await resolveLineParts(tx, order.customerId, [data], position - 1);
@@ -1260,6 +1270,13 @@ export async function updateLine(
   return withDbErrors({ entity: "Order" }, () => prisma.$transaction(async (tx) => {
     const order = await claimOrder(tx, orderId);
     if (!order || order.deletedAt !== null) throw new HttpError(404, "Order not found");
+
+    // §5.7 (#126) — the `addLine` guard's other half; see its comment for why lines freeze at all.
+    // Placed BEFORE the line read so an invoiced order refuses identically whether or not the line
+    // exists: the freeze is a property of the ORDER, and answering "that line does not exist" first
+    // would make the refusal depend on which of two settled facts happened to be checked first.
+    const invoiced = await finalizedInvoiceFor(tx, orderId);
+    if (invoiced) throw new HttpError(400, invoiceBlockMessage(invoiced, "A line cannot be changed"));
 
     const line = await tx.orderLine.findFirst({
       where: { id: lineId, orderId },

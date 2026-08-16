@@ -1823,6 +1823,135 @@ describe("replaceSerials", () => {
   });
 });
 
+/**
+ * Issue #126 — RULED by the owner 2026-08-16: order-line edits freeze too, so §5.7 means ONE thing.
+ *
+ * Spec §5.7 froze extra charges, voiding and shipment edits once an order carried a finalized
+ * invoice, but `addLine`/`updateLine` were not blocked. That was never a money bug — the invoice is
+ * frozen paper, so a later line edit changes nothing on it, and unlock -> recalculate re-prices
+ * correctly. It was a usability trap: someone edits a line, sees no change on the invoice, and
+ * cannot tell whether it worked.
+ *
+ * The guard mirrors `replaceCharges` exactly — `finalizedInvoiceFor` on the caller's own claimed
+ * `tx`, the caller's own `HttpError`, `invoiceBlockMessage` naming the invoice and linking to it.
+ * Read UNDER the order claim, never before it (CLAUDE.md: the guarded state must live on, or be
+ * locked with, the claimed row).
+ */
+describe("addLine / updateLine freeze once a finalized invoice covers the order (#126)", () => {
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
+
+  /** A finalized INVOICE on `orderId`, raw-built — the orders service must not depend on invoices.ts
+   *  to construct its own fixtures (the `voidOrder` A/R test above uses the same shape). */
+  async function finalize(orderId: string, customerId: string) {
+    return prisma.invoice.create({
+      data: {
+        orderId, customerId, kind: "INVOICE", status: "FINALIZED",
+        invoiceDate: parseDateOnly("2026-08-08"), total: 500, finalizedAt: new Date(),
+      },
+    });
+  }
+
+  it("refuses addLine, naming the invoice and linking to it", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const invoice = await finalize(order.id, customer.id);
+
+    await expect(asSystem(() => addLine(order.id, { partId: rider.id, qty: 2, weight: "27.00" })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(
+          new RegExp(`A line cannot be added — Invoice ${order.orderNumber} is finalized`)),
+      });
+    // §5.14: the refusal links to the blocker, not just names it.
+    await expect(asSystem(() => addLine(order.id, { partId: rider.id, qty: 2, weight: "27.00" })))
+      .rejects.toThrow(new RegExp(`/invoicing/${invoice.id}`));
+
+    expect((await getOrder(order.id)).lines).toHaveLength(1); // refused, nothing written
+  });
+
+  it("refuses updateLine on the same terms", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await finalize(order.id, customer.id);
+
+    await expect(asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 5 })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(
+          new RegExp(`A line cannot be changed — Invoice ${order.orderNumber} is finalized`)),
+      });
+    expect((await getOrder(order.id)).lines[0].qty).toBe(1);
+  });
+
+  it("a DRAFT invoice freezes nothing — only finalized paper does", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "INVOICE", status: "DRAFT",
+        invoiceDate: parseDateOnly("2026-08-08"), total: 500,
+      },
+    });
+    await asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 5 }));
+    expect((await getOrder(order.id)).lines[0].qty).toBe(5);
+  });
+
+  /**
+   * THE CORRECTION ROUTE, end to end — after this guard, unlock is the ONLY way to change an
+   * invoiced order's lines, so if this path breaks the guard has locked the shop out of its own
+   * paper. That is why the ruling asked for it explicitly.
+   */
+  it("unlock -> edit -> re-finalize is the correction route, and it still works", async () => {
+    const { customer, lead } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: lead.id, qty: 1, weight: "13.50" }],
+    }));
+    const invoice = await finalize(order.id, customer.id);
+
+    await expect(asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 5 })))
+      .rejects.toMatchObject({ status: 400 });
+
+    await asSystem(() => unlockInvoice(invoice.id, "correcting the quantity"));
+    await asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 5 }));
+    expect((await getOrder(order.id)).lines[0].qty).toBe(5);
+
+    // ...and re-freezing closes it again.
+    await prisma.invoice.update({
+      where: { id: invoice.id }, data: { status: "FINALIZED", finalizedAt: new Date() } });
+    await expect(asSystem(() => updateLine(order.id, order.lines[0].id, { qty: 9 })))
+      .rejects.toMatchObject({ status: 400 });
+  });
+
+  /**
+   * `removeLine` is deliberately NOT given this guard — the ruling scoped the freeze to
+   * `addLine`/`updateLine` and noted removeLine "already has its own shipped-line guard". This
+   * records what that actually leaves reachable, so the scope is visible rather than assumed: an
+   * UNSHIPPED line on an invoiced order can still be removed, and the message that comes back is
+   * the shipped-line one or nothing at all — never a contradictory invoice message.
+   */
+  it("removeLine keeps its own shipped-line guard and does not contradict the invoice one", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [
+        { partId: lead.id, qty: 1, weight: "13.50" },
+        { partId: rider.id, qty: 1, weight: "13.50" },
+      ],
+    }));
+    await finalize(order.id, customer.id);
+
+    // The rider is unshipped, so removeLine's own guard does not fire and no invoice guard exists.
+    await asSystem(() => removeLine(order.id, order.lines[1].id));
+    expect((await getOrder(order.id)).lines).toHaveLength(1);
+  });
+});
+
 describe("replaceCharges", () => {
   beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
