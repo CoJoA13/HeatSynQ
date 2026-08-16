@@ -448,7 +448,13 @@ import { truncateAll } from "./helpers/db";
 import { getSetting, setSetting } from "@/server/settings";
 import { SPECIAL_ACTIONS } from "@/lib/permission-constants";
 import { DEFAULT_STALE_HOURS } from "@/lib/backup-constants";
-import { asActor } from "./helpers/actor";
+import { runWithContext } from "@/server/context";
+
+// setSetting audits, so it needs an actor in context. This is the repo's established idiom —
+// copied verbatim from tests/order-entry-readiness.test.ts, which declares it the same way.
+// There is NO tests/helpers/actor.ts; do not create one.
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
 describe("backup_stale_hours", () => {
   beforeEach(async () => { await truncateAll(); });
@@ -458,12 +464,12 @@ describe("backup_stale_hours", () => {
   });
 
   it("accepts a sane override", async () => {
-    await asActor(async () => { await setSetting("backup_stale_hours", 24); });
+    await asSystem(async () => { await setSetting("backup_stale_hours", 24); });
     expect(await getSetting("backup_stale_hours")).toBe(24);
   });
 
   it("refuses zero, negatives, non-integers and absurd values", async () => {
-    await asActor(async () => {
+    await asSystem(async () => {
       await expect(setSetting("backup_stale_hours", 0)).rejects.toThrow();
       await expect(setSetting("backup_stale_hours", -1)).rejects.toThrow();
       await expect(setSetting("backup_stale_hours", 1.5)).rejects.toThrow();
@@ -478,10 +484,6 @@ describe("manage_backups", () => {
   });
 });
 ```
-
-> **Note for the implementer:** `tests/helpers/actor.ts` may not exist under that exact name. Before
-> writing this test, open an existing settings test (`rg -l "setSetting" erp/tests`) and copy **its**
-> actor-context helper and import path verbatim. Do not invent a helper.
 
 - [ ] **Step 2: Run it to make sure it fails**
 
@@ -532,20 +534,29 @@ import { DEFAULT_STALE_HOURS } from "@/lib/backup-constants";
 
 - [ ] **Step 5: Extend the permission test**
 
-In `erp/tests/permissions.test.ts`, find the case that enumerates special actions and add
-`manage_backups` to its expectations. If the file asserts a count, update the count. Then add:
+`erp/tests/permissions.test.ts` already has a local, DB-free helper at the top of the file:
 
 ```ts
-  it("manage_backups is denied by default and granted by an explicit action grant", async () => {
-    const user = await userWithPermissions([]);
-    expect(canDo(user, "manage_backups")).toBe(false);
-    const granted = await userWithPermissions(["action.manage_backups"]);
-    expect(canDo(granted, "manage_backups")).toBe(true);
+function user(rolePerms: string[], overrides: { permission: string; mode: "GRANT" | "DENY" }[] = []): PermUser
+```
+
+Use it — do **not** invent a `userWithPermissions`. Add this case:
+
+```ts
+  it("manage_backups is denied by default and granted by an explicit action grant", () => {
+    expect(canDo(user([]), "manage_backups")).toBe(false);
+    expect(canDo(user(["action.manage_backups"]), "manage_backups")).toBe(true);
+    // A DENY override must beat the grant, like every other dangerous action.
+    expect(canDo(
+      user(["action.manage_backups"], [{ permission: "action.manage_backups", mode: "DENY" }]),
+      "manage_backups",
+    )).toBe(false);
   });
 ```
 
-> **Note for the implementer:** copy `userWithPermissions`'s real name and signature from the
-> surrounding file — do not invent it.
+Then scan the rest of the file (and `tests/permissions-sweep.test.ts`) for any case that enumerates
+`SPECIAL_ACTIONS` or asserts a **count** of permissions — `ALL_PERMISSIONS` grows by one — and update
+it. Run the whole of both files, not just your new case.
 
 - [ ] **Step 6: Run the tests**
 
@@ -1012,14 +1023,15 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { runBackupNow, listArchives, readStatus } from "@/server/backups";
 import { MANUAL_ARCHIVE_RE, BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
-import { truncateAll } from "./helpers/db";
-import { prisma } from "@/server/db";
+import { prisma, truncateAll } from "./helpers/db";
+import { runWithContext } from "@/server/context";
 
 const FAKE = path.join(process.cwd(), "tests/fixtures/fake-pg-dump.sh");
 
-// See the note in Task 2 Step 1: copy the real actor-context helper from an existing test rather
-// than inventing one. runBackupNow writes an audit row, so it needs an actor in context.
-import { asActor } from "./helpers/actor";
+// runBackupNow writes an audit row, so it needs an actor in context. The repo's established idiom
+// (tests/order-entry-readiness.test.ts) — there is NO tests/helpers/actor.ts, do not create one.
+const asSystem = <T>(fn: () => Promise<T>) =>
+  runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
 describe("runBackupNow", () => {
   let dir: string;
@@ -1033,7 +1045,7 @@ describe("runBackupNow", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  const run = () => asActor(() => runBackupNow({ dumpBin: FAKE, dir }));
+  const run = () => asSystem(() => runBackupNow({ dumpBin: FAKE, dir }));
 
   it("writes a collision-proof, gzip-valid archive and returns it", async () => {
     const info = await run();
@@ -1107,7 +1119,7 @@ describe("runBackupNow", () => {
 
   it("refuses a folder it cannot write to, without leaving debris", async () => {
     const missing = path.join(dir, "does-not-exist");
-    await expect(asActor(() => runBackupNow({ dumpBin: FAKE, dir: missing }))).rejects.toThrow();
+    await expect(asSystem(() => runBackupNow({ dumpBin: FAKE, dir: missing }))).rejects.toThrow();
   });
 
   it("does not let the nightly writer's names collide with a manual one", async () => {
@@ -1326,44 +1338,49 @@ Create `erp/tests/backups-routes.test.ts`:
 ```ts
 import { describe, it, expect, beforeEach } from "vitest";
 import { truncateAll } from "./helpers/db";
+import { signInWith } from "./helpers/auth";
 import { GET as getView } from "@/app/api/admin/backups/route";
 import { GET as getHealth } from "@/app/api/admin/backups/health/route";
 import { POST as postRun } from "@/app/api/admin/backups/run/route";
 
-// Copy the real request/session helpers from an existing route test (e.g. rg -l "as admin" tests)
-// rather than inventing them.
-import { signInWith, requestAs } from "./helpers/http";
-
+// The repo's real route-test idiom (tests/excel.test.ts is the model):
+//   signInWith(permissions: string[], username?) -> a COOKIE STRING (not a user object)
+//   the request carries it as `headers: { cookie }`
+//   ctx is always passed — the Handler type requires it (Next's ParamCheck rejects optional ctx)
+// There is NO tests/helpers/http.ts and no `requestAs`. Do not create them.
 const ctx = { params: Promise.resolve({}) };
+const req = (url: string, cookie?: string, init: RequestInit = {}) =>
+  new Request(url, { ...init, headers: cookie ? { cookie } : {} });
 
 describe("backup routes", () => {
   beforeEach(async () => { await truncateAll(); });
 
-  it("refuses a caller without manage_backups on every route", async () => {
-    const user = await signInWith({ permissions: [] });
-    for (const [name, call] of [
-      ["view", () => getView(requestAs(user, "http://x/api/admin/backups"), ctx)],
-      ["health", () => getHealth(requestAs(user, "http://x/api/admin/backups/health"), ctx)],
-      ["run", () => postRun(requestAs(user, "http://x/api/admin/backups/run", { method: "POST" }), ctx)],
-    ] as const) {
-      const res = await call();
-      expect(res.status, name).toBe(403);
-    }
+  it("401s an anonymous caller on every route", async () => {
+    expect((await getView(req("http://t/api/admin/backups"), ctx)).status).toBe(401);
+    expect((await getHealth(req("http://t/api/admin/backups/health"), ctx)).status).toBe(401);
+    expect((await postRun(req("http://t/api/admin/backups/run", undefined, { method: "POST" }), ctx)).status).toBe(401);
+  });
+
+  it("403s a signed-in caller who lacks manage_backups, on every route", async () => {
+    const cookie = await signInWith(["admin.view"]);
+    expect((await getView(req("http://t/api/admin/backups", cookie), ctx)).status).toBe(403);
+    expect((await getHealth(req("http://t/api/admin/backups/health", cookie), ctx)).status).toBe(403);
+    expect((await postRun(req("http://t/api/admin/backups/run", cookie, { method: "POST" }), ctx)).status).toBe(403);
   });
 
   it("serves the folder, health and archive list to a holder of manage_backups", async () => {
-    const user = await signInWith({ permissions: ["action.manage_backups"] });
-    const res = await getView(requestAs(user, "http://x/api/admin/backups"), ctx);
+    const cookie = await signInWith(["action.manage_backups"]);
+    const res = await getView(req("http://t/api/admin/backups", cookie), ctx);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("folder");
-    expect(body).toHaveProperty("health.state");
+    expect(body.health).toHaveProperty("state");
     expect(Array.isArray(body.archives)).toBe(true);
   });
 
   it("serves health alone on the cheap endpoint", async () => {
-    const user = await signInWith({ permissions: ["action.manage_backups"] });
-    const res = await getHealth(requestAs(user, "http://x/api/admin/backups/health"), ctx);
+    const cookie = await signInWith(["action.manage_backups"]);
+    const res = await getHealth(req("http://t/api/admin/backups/health", cookie), ctx);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toHaveProperty("state");
@@ -1375,8 +1392,8 @@ describe("backup routes", () => {
     const prev = process.env.BACKUP_DIR;
     process.env.BACKUP_DIR = "/nonexistent-backup-folder-for-tests";
     try {
-      const user = await signInWith({ permissions: ["action.manage_backups"] });
-      const res = await getHealth(requestAs(user, "http://x/api/admin/backups/health"), ctx);
+      const cookie = await signInWith(["action.manage_backups"]);
+      const res = await getHealth(req("http://t/api/admin/backups/health", cookie), ctx);
       expect(res.status).toBe(200);
       expect((await res.json()).state).toBe("unknown");
     } finally {
@@ -1385,6 +1402,9 @@ describe("backup routes", () => {
   });
 });
 ```
+
+> **Note:** `signInWith` creates a role named `Role-<username>` and a user, so two calls in one test
+> need distinct usernames — pass a second argument when a test signs in twice.
 
 - [ ] **Step 2: Run it to make sure it fails**
 
@@ -1463,8 +1483,9 @@ git commit -m "feat(backups): add the manage_backups-gated backup routes"
 **Files:**
 - Create: `erp/src/app/admin/backups/page.tsx`
 - Modify: `erp/src/components/Shell.tsx` (nav entry)
-- Create: `erp/tests/backups-page.test.tsx` *(only if the repo has precedent for component tests — check
-  `ls erp/tests/*.test.tsx`; if there is none, skip the file and rely on the E2E flow in Task 9)*
+- *(No component test here — the page is a thin render over one endpoint and is covered by the Task 9
+  E2E flow. The component test that IS worth writing lands in Task 7, where `tests/practice-banner.test.tsx`
+  gives a direct precedent for the banner's conditional-render logic.)*
 
 **Interfaces:**
 - Consumes: `GET /api/admin/backups`, `POST /api/admin/backups/run`; types from `@/lib/backup-constants`.
@@ -1653,10 +1674,20 @@ git commit -m "feat(backups): add the Backups admin page"
 **Files:**
 - Create: `erp/src/components/BackupBanner.tsx`
 - Modify: `erp/src/app/layout.tsx`
+- Create: `erp/tests/backup-banner.test.tsx`
 
 **Interfaces:**
 - Consumes: `GET /api/admin/backups/health`.
 - Produces: `<BackupBanner />`.
+
+**Component test:** `erp/tests/practice-banner.test.tsx` is the precedent — read it first and match its
+setup (render harness, fetch stubbing, and how it drives `usePathname`). The four cases that matter,
+because each is a way the bar could silently fail to warn:
+
+1. a red health payload renders the bar with its `reason` and a link to `/admin/backups`;
+2. `state: "ok"` renders **nothing**;
+3. a **403** (a caller without `manage_backups`) renders **nothing** and does not throw;
+4. on `/login` it renders nothing and does not fetch.
 
 - [ ] **Step 1: Read the precedent**
 
