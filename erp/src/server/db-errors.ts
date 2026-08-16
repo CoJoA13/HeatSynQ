@@ -100,3 +100,43 @@ export async function retryOnSerializationConflict<T>(run: () => Promise<T>, tri
     }
   }
 }
+
+/**
+ * How many attempts an ALLOCATING transaction gets. Higher than the default above, and the number is
+ * measured rather than picked (issue #115).
+ *
+ * `allocateNumber` claims its counter with `SELECT … FOR UPDATE`, and every caller runs Serializable,
+ * so N concurrent allocations serialize into N rounds: each round exactly ONE commits and every other
+ * transaction aborts with 40001 the instant it unblocks onto a row updated after its own snapshot.
+ * The last caller therefore needs up to **N attempts**. Measured against `erp_test`:
+ *
+ *   concurrent |  tries=1 (pre-fix)  |  tries=5  |  tries=10
+ *       2      |  1 ok, 1 FAIL       |  2 ok     |  2 ok
+ *       5      |  1 ok, 4 FAIL       |  5 ok     |  5 ok
+ *       8      |  1 ok, 7 FAIL       |  5 ok, 3 FAIL |  8 ok
+ *
+ * `tries = 5` would cover exactly the spec's documented 1–5 users with ZERO margin — one extra tab or
+ * one client-side resubmit and a save fails. 10 leaves real headroom on a shop this size. Retries are
+ * immediate (no backoff) and a losing attempt aborts AT the claim, before any expensive work, so the
+ * cost of the higher ceiling is a few extra short transactions in a race that is already rare.
+ *
+ * Why retry at all, rather than removing the conflict: the hazard is NOT "the caller read something
+ * first". `allocateNumber`'s own first statement is an `INSERT … ON CONFLICT DO NOTHING`, which fixes
+ * the snapshot before the claim — so allocating as a transaction's very first operation aborts too
+ * (measured). A Postgres sequence would dodge it entirely but leaks gaps on rollback, and
+ * "consumes no number when the save fails" is a pinned contract (tests/orders.test.ts). Retry is what
+ * is left, and it is the shape `close-periods.ts` already uses.
+ */
+export const ALLOCATION_TRIES = 10;
+
+/**
+ * Wrap an allocating transaction so a 40001 loser re-runs instead of surfacing as a 409 the user has
+ * to resubmit. Each `run()` MUST open its own transaction — the retry only helps because the re-run
+ * gets a fresh snapshot. Sits INSIDE `withDbErrors` (which would otherwise have already translated
+ * the raw error) and OUTSIDE `prisma.$transaction`, exactly as `close-periods.ts` does.
+ *
+ * A business refusal (`HttpError`) is not retryable and surfaces on the first attempt.
+ */
+export async function retryAllocation<T>(run: () => Promise<T>): Promise<T> {
+  return retryOnSerializationConflict(run, ALLOCATION_TRIES);
+}

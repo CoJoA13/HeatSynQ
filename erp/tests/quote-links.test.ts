@@ -577,7 +577,7 @@ describe("the §5.14 SSI pairing — dangerous direction (STANDING INVARIANT)", 
     quoteSeq = 0;
   });
 
-  it("a link save whose snapshot predates a committed line-drop ABORTS (409) — the link never lands on a dead line", async () => {
+  it("a link save whose snapshot predates a committed line-drop re-resolves — the link never lands on a dead line", async () => {
     const f = await orderFixture();
     // Two lines so updateQuote can DROP the part line while keeping one (lines min 1): the
     // free-text keeper is never eligible, so the save's auto-resolution targets the dropped one.
@@ -630,12 +630,33 @@ describe("the §5.14 SSI pairing — dangerous direction (STANDING INVARIANT)", 
     releaseGate();
     await gate;
 
-    // SSI aborts the save (40001 → the retryable 409). Nothing survives: no order row, so no
-    // link can point at the dead line — the retry re-resolves against the post-drop truth.
+    // SSI aborts the save's first attempt (40001), and since #115 `createOrder` absorbs that with
+    // `retryAllocation` instead of surfacing it as a 409. So the REQUEST now succeeds — on a second
+    // attempt whose snapshot SEES the drop, so `resolveQuoteLinks` finds nothing eligible and links
+    // nothing. The order is created carrying NO quote link.
+    //
+    // ⚠️ WHAT THIS TEST GUARDS DID NOT CHANGE, and the distinction is the whole point of the
+    // STANDING INVARIANT. The invariant is "**the link never lands on a dead line**" — never "the
+    // request fails". Before #115 those were the same observation, because the only way the save
+    // could avoid the dead link was to abort outright; the operator's client then resubmitted and
+    // got exactly the order this retry now produces in one request. The end state is identical; only
+    // who retries moved, from the browser to the server.
+    //
+    // `quoteLineId === null` is therefore the SSI proof, and a strictly sharper one than the old
+    // 409 was. If either side is downgraded to Read Committed, SSI stops tracking the pair, the
+    // save's stale snapshot never aborts, and it commits WITH a link to the dropped line — so this
+    // assertion goes red on exactly the regression CLAUDE.md names. RED-verified by dropping
+    // `updateQuote`'s `isolationLevel`: `quoteLineId` comes back as the dead line's id.
     const outcome = await save;
-    expect(outcome).not.toBe("resolved");
-    expect(outcome).toMatchObject({ status: 409 });
-    expect(await prisma.order.count()).toBe(0);
+    expect(outcome).toBe("resolved");
+    expect(await prisma.order.count()).toBe(1);
+
+    // THE INVARIANT: nothing points at the dropped line, and the surviving line carries no link at
+    // all (re-resolved against post-drop truth, not silently re-pointed at the keeper).
     expect(await prisma.orderLine.count({ where: { quoteLineId: target.id } })).toBe(0);
+    const lines = await prisma.orderLine.findMany({ select: { quoteLineId: true } });
+    expect(lines).toEqual([{ quoteLineId: null }]);
+    // ...and the keeper was never eligible in the first place, so it must not have been grabbed.
+    expect(await prisma.orderLine.count({ where: { quoteLineId: keeper.id } })).toBe(0);
   });
 });

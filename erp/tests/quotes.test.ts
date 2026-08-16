@@ -378,24 +378,27 @@ describe("createQuote: defaults and numbering", () => {
   });
 
   // The allocation contract under real concurrency: allocateNumber's SELECT ... FOR UPDATE on the
-  // Setting row serializes the two creates. A loser may surface as a clean 409 (Serializable
-  // write-write on the counter row) — retried, never absorbed as a duplicate or a gap.
+  // Setting row serializes the two creates, and since #115 `createQuote` wraps its transaction in
+  // `retryAllocation`, so the side that loses that race re-runs inside the request. BOTH creates must
+  // therefore succeed — never a duplicate, never a gap, and now never a 409 either.
+  //
+  // This test used to accept a 409 loser and re-drive it by hand. That shape passes VACUOUSLY once
+  // the retry exists (the rejection branch never runs), so the assertion moved to "no rejections",
+  // which is what actually goes red if the wrapper is removed.
+  //
   // RED-verified by replacing the allocateNumber call with a naive unguarded read-then-increment
   // and dropping the transaction to Read Committed: both creates read 1000, one collides on the
-  // plain quoteNumber unique and surfaces as a 400 this helper refuses to absorb.
-  it("two concurrent creates get distinct, consecutive numbers and never share one", async () => {
+  // plain quoteNumber unique and surfaces as a 400 this test refuses to absorb.
+  it("two concurrent creates both succeed with distinct, consecutive numbers and never share one", async () => {
     const f = await serviceFixture();
     const input = { customerId: f.customer.id, lines: [linkedLine(f.part.id, f.harden.id)] };
 
     const settled = await Promise.allSettled(
       [input, input].map((i) => asUser(f.quoter, () => createQuote(i))));
-    const numbers: number[] = [];
-    for (const [i, result] of settled.entries()) {
-      if (result.status === "fulfilled") { numbers.push(result.value.quoteNumber); continue; }
-      expect(result.reason).toMatchObject({ status: 409 });
-      const retried = await asUser(f.quoter, () => createQuote([input, input][i]));
-      numbers.push(retried.quoteNumber);
-    }
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(rejected.map((r) => String(r.reason))).toEqual([]);
+    const numbers = settled
+      .map((r) => (r as PromiseFulfilledResult<{ quoteNumber: number }>).value.quoteNumber);
 
     expect(new Set(numbers).size).toBe(2);
     expect([...numbers].sort((a, b) => a - b)).toEqual([1000, 1001]);

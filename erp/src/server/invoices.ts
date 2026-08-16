@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type Order } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -1408,7 +1408,13 @@ const negateMoney = (d: Prisma.Decimal) => {
  * have been soft-deleted since it finalized, and fresh paper must not post to a dead account.
  */
 export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
-  return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
+  // `retryAllocation` (#115): `credit_number_next` is claimed under this Serializable transaction, so
+  // a concurrent allocation ANYWHERE (another credit, an order save, a shipment) aborted this with
+  // 40001 and nothing retried. Safe to re-run whole — the claim/status refusals below re-read under a
+  // fresh claim, and `HttpError` refusals are not retryable so a genuine "already credited" or
+  // "not finalized" still answers on the first attempt. The period guard is a transaction-scoped
+  // advisory lock, released on abort and re-taken by the retry.
+  return withDbErrors({ entity: "Invoice" }, () => retryAllocation(() => prisma.$transaction(async (tx) => {
     // Claim the order, lock and re-read the SOURCE invoice — the guarded state (its status/kind)
     // must be read under the claim. `claimInvoiceRow` 404s a discarded source (deletedAt) already.
     const { invoice: source, order } = await claimInvoiceRow(tx, invoiceId);
@@ -1519,7 +1525,7 @@ export async function createCredit(invoiceId: string): Promise<InvoiceDetail> {
     }, { tx });
 
     return readInvoiceDetail(tx, credit.id);
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 // -------------------------------------------------------------------------------------------

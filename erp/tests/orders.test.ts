@@ -71,30 +71,31 @@ const mockupLines = (leadId: string, riderId: string) => [
 ];
 
 /**
- * Fires every input without awaiting between starts, then retries whichever lost the race.
+ * Fires every input without awaiting between starts. **Every one must succeed.**
  *
- * The retry is not slack in the test — it is the documented contract. The order save runs
- * Serializable (required by the registered-FK writer pattern for `containers[].typeId`), and
- * `allocateNumber`'s `SELECT … FOR UPDATE` is a write-write conflict: under Read Committed
- * Postgres blocks and re-reads, but under Serializable it refuses with 40001, which
- * `withDbErrors` maps to the retryable 409 (global constraints: "serialization failures already
- * map to 409"). So a loser is EXPECTED — and this helper asserts the loser fails with exactly
- * that 409 and nothing else. What must never happen is two saves sharing a number, a number
- * being skipped, or a partial order surviving the abort.
+ * This used to tolerate a loser. The order save runs Serializable (required by the registered-FK
+ * writer pattern for `containers[].typeId`), `allocateNumber`'s `SELECT … FOR UPDATE` is a
+ * write-write conflict, and under Serializable the side whose snapshot predates the winner's commit
+ * refuses with 40001 → the retryable 409. So this helper used to assert "if there is a loser, it
+ * failed with exactly 409" and re-drove it by hand.
+ *
+ * Issue #115 fixed that at the source — `createOrder` now wraps its save in `retryAllocation`, so the
+ * loser re-runs on a fresh snapshot inside the request and the caller never sees a 409. Which means
+ * the old shape would now pass VACUOUSLY: the rejection branch simply never executes, and a helper
+ * that "asserts the loser is a 409" proves nothing once there are no losers. Asserting **no
+ * rejections at all** is what actually pins the new contract — and it is what goes red if the retry
+ * is ever unwrapped (measured pre-fix: of N concurrent saves exactly ONE succeeded).
+ *
+ * What must never happen is unchanged: two saves sharing a number, a number being skipped, or a
+ * partial order surviving an abort.
  */
 async function createConcurrently(inputs: unknown[]): Promise<number[]> {
   const settled = await Promise.allSettled(inputs.map((i) => asSystem(() => createOrder(i))));
-  const numbers: number[] = [];
-  for (const [i, result] of settled.entries()) {
-    if (result.status === "fulfilled") {
-      numbers.push(result.value.order.orderNumber);
-      continue;
-    }
-    expect(result.reason).toMatchObject({ status: 409 });
-    const retried = await asSystem(() => createOrder(inputs[i]));
-    numbers.push(retried.order.orderNumber);
-  }
-  return numbers;
+  // Named rejections rather than a count — a red here must say WHAT failed, not just how many.
+  const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  expect(rejected.map((r) => String(r.reason))).toEqual([]);
+  return settled.map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof createOrder>>>)
+    .value.order.orderNumber);
 }
 
 describe("createOrder: the two-line sibling order", () => {

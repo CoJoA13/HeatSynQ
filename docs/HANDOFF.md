@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #68–#93, #95–#100, #102–#103, **#115 (highest — P1)**, and now **#118–#122** (§6).
+**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** on branch `fix-allocation-retry`.
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -74,14 +74,43 @@ the `SELECT … FOR UPDATE` claim that serializes the readers is unchanged. `set
 `update: {}` upsert in the tree — the other seven call sites all pass a non-empty `update`. A 5-way
 burst test pins it on slow hardware too, and the trap is now in CLAUDE.md's constraints list.
 **Scope, precisely: this fixed the P2002 insert race and NOTHING else.** Codex's review of the PR
-pushed on the isolation level, and probing it found a larger PRE-EXISTING hole → **issue #115 (P1)**:
-every caller of `allocateNumber` allocates inside a **Serializable** transaction, and a transaction
-whose snapshot is fixed before the `FOR UPDATE` claim aborts with **40001** as soon as another
-allocation commits — on **every** allocation, not just the first, and with **no retry** anywhere but
-`close-periods.ts`. Seeding the counter rows does not fix it (a pre-existing row fails identically);
-the direction is `retryOnSerializationConflict` around the six allocating callers. **The vitest suite
-cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
-concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
+pushed on the isolation level, and probing it found a larger PRE-EXISTING hole → **issue #115 (P1)**,
+now **FIXED on branch `fix-allocation-retry` (`fc7eb54`)** — see the burn-down entry below.
+
+**#115 FIXED (2026-08-16, branch `fix-allocation-retry`).** Every caller of `allocateNumber`
+allocates inside a **Serializable** transaction, and a transaction whose snapshot is fixed before the
+`FOR UPDATE` claim aborts with **40001** as soon as another allocation commits — on **every**
+allocation, not just the first, and with **no retry** anywhere but `close-periods.ts`. Measuring it
+against `erp_test` corrected the issue's own analysis in two ways worth keeping:
+
+- **It was not "one of two fails" — of N concurrent allocations exactly ONE succeeded** (n=8 → 1 ok,
+  7 failed). Every loser died.
+- **The hazard is NOT "the caller reads before allocating"** (the issue's evidence table row 2 said a
+  no-prior-read allocation was safe; it is not). `allocateNumber`'s own first statement is the
+  `INSERT … ON CONFLICT DO NOTHING` seed — a **write**, which fixes the snapshot itself. So
+  allocating as a transaction's very first operation aborts too, which kills the "just allocate
+  first" alternative. A Postgres sequence would dodge it entirely but leaks gaps on rollback, and
+  "consumes no number when the save fails" is a pinned contract. Retry is what is left.
+
+Also **eight** allocating sites, not six: `shippers.ts` has three (`saveNewShipper`,
+`reverseShipperInTx`, `printBol`). All eight now wrap in `retryAllocation` (`db-errors.ts`) at
+`ALLOCATION_TRIES = 10` — N concurrent allocations serialize into N rounds, one commit per round, so
+the last caller needs up to N attempts and the default 5 would cover the documented 1–5 users with
+**zero margin**. `reverseShipper`'s injected-`tx` path deliberately takes no retry. On
+orders/shippers the retry wraps the `clientRequestId` try/catch, so a nonce collision is answered by
+the replay on the first attempt and never retried. **The vitest suite structurally could not see any
+of this — vitest runs Read Committed — so a green allocate-number run was never evidence.**
+`tests/allocation-retry.test.ts` names Serializable explicitly and proves the abort deterministically
+with a Read Committed gate (the `close-periods.ts` technique). **Four existing tests tolerated a 409
+loser and would have passed VACUOUSLY once there are no losers** — all four now assert no rejections;
+RED-verified by pinning `ALLOCATION_TRIES` to 1 (7 tests across 4 suites go red).
+
+**One consequence worth knowing: the §5.14 quote-link dangerous-direction test changed shape.** It
+asserted the save ABORTS with 409; with the retry the request succeeds on a second attempt whose
+snapshot sees the line-drop, so it links nothing. **The invariant is unchanged and still pinned** —
+it now asserts the surviving order line's `quoteLineId` is **null** (verified: `orders=1`,
+`linkedToDead=0`). That is a sharper tripwire than the status code was: RED-verified by downgrading
+`updateQuote` to Read Committed, which makes the save commit WITH a link to the dropped line.
 
 ### Phase 8 — COMPLETE; all three sub-phases (8A/8B/8C) merged
 
@@ -310,12 +339,11 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
-**Highest open item: #115 (P1, 2026-08-16) — concurrent `allocateNumber` aborts with 40001 under
-Serializable, with no retry on any caller.** Pre-existing; found by probing Codex's review of PR #114.
-It blocks nothing already built, but it breaks concurrent creation of every numbered entity (order,
-shipper, BOL, credit, receipt batch, quote, GL export) and the vitest suite structurally cannot see it —
-vitest runs Read Committed, so a green `allocate-number.test.ts` is not evidence. **Schedule it before
-the parallel-run acceptance month, not during** (§9 item 2); full evidence in the issue.
+**#115 (P1) — FIXED 2026-08-16, branch `fix-allocation-retry` (`fc7eb54`), the burn-down's Group A.**
+Concurrent `allocateNumber` aborted with 40001 under Serializable with no retry on any caller, so
+concurrent creation of every numbered entity (order, shipper, BOL, credit, receipt batch, quote, GL
+export) was broken. Full account, including the two corrections measurement made to the issue's own
+analysis, in §4. **#68 rode the same branch** (owner ruling: add a `reopen`).
 
 **Phase 8C (Backup polish) follow-ups — GitHub issues #118–#122 (2026-08-16), all deferred by the
 whole-branch triage rule, none correctness/concurrency/data-integrity.** #118 unbounded concurrent
@@ -389,11 +417,26 @@ fix-link). #90 the cosmetic follow-ups bundle. #91 whether the summary export sh
 to the bookkeeper's QBO import method, with ruling 7's correction-JE dating). #93 the GL-export
 create-audit records batch metadata only, not the emitted journal (the postings ARE persisted
 immutably on the batch, so it is completeness, not data loss). Plus the Codex re-raise of **#68**
-(carried from 5B, now with the GL-export consequence): once a receipt batch is POSTED there is no path
-to correct or reverse its cash — `refusePosted` fires before the period check, there is no un-post, and
-no negative/compensating payment — so a posted payment can never reach a reversing QBO delta.
-Pre-existing and self-protecting; the fix relaxes the documented "POSTED locks the payment list"
-invariant, so it stays the owner's (a)/(b)/(c)/(d) decision. Full triage:
+(carried from 5B, with the GL-export consequence) — **RULED option (b) and BUILT 2026-08-16, branch
+`fix-allocation-retry` (`20ed463`)**: once a receipt batch was POSTED there was no path to correct or
+reverse its cash, so a posted payment could never reach a reversing QBO delta (the delta's
+payment-reversal branch was dead code for PAYMENT keys). **`reopenBatch` (POSTED → OPEN) closes it**
+— a posting mutation carrying the full discipline (Serializable, the batch claim, and the period
+guard, since un-posting drops that cash out of recognition and must never touch a frozen month), so
+the correction path is now reopen-period → reopen-batch → correct → re-close → the re-export
+reverses. `voidBatch` gained the POSTED guard it lacked (an EMPTY posted batch was voidable while a
+non-empty one was frozen solid), checked BEFORE the live-payment guard so the message names `reopen`
+rather than sending the operator at a control `refusePosted` refuses. The month-locking loop is now
+`assertBatchMonthsOpen`, shared with `postBatch`, so the ascending-order rule for advisory mutexes is
+stated once. Gated `receivables.edit` (symmetric with the post it undoes), reason required and
+audited. **One consequence the ruling did not cover, found in self-review and now measured:** a
+POSTED batch's payments can carry live applications (§5.2), and reopening strands none of them —
+`ar-balances` never looks at batch status, so the invoice balance is unmoved and `voidPayment`'s
+applications-first guard is deliberately NOT copied onto reopen (voiding *strands*; reopening does
+not). GL recognition does move, and the close is the net: `preliminaryReport` shows variance 0 → 300
+and `paymentTotal` 300 → 0 the moment the batch reopens, so **the month refuses to reconcile until it
+is re-posted**. Operationally that means a reopened batch left un-re-posted blocks month-end — loud,
+not silent, which is the design. Full triage:
 `docs/execution/2026-08-09-phase-5c-close-qbo-export/progress.md`.
 
 **Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
@@ -671,23 +714,14 @@ and §4, then pick among:
    Phase 8's comparison scoreboard delivered the weekly tooling, and 8C made the box trustworthy to
    leave running. Still gated on the owner-owed GL-account list and the bookkeeper's QBO import method
    (§7) before a *real* export month can start.
-2. **Issue #115 (P1) — RULED 2026-08-16: this is the NEXT piece of work, before the acceptance
-   month.** (Owner's decision at the Phase 8 demo: the acceptance month is the first time two people
-   use the system at once, order entry and shipping are exactly the paths that break, and a failed
-   save mid-parallel-run reads as "the ERP is unreliable" rather than as a known bug.) The shape of
-   the fix: wrap the six allocating callers in `retryOnSerializationConflict` (the pattern
-   `close-periods.ts` already uses), each needing its own retry-safety pass first — `saveNewOrder`
-   (+ its `clientRequestId` idempotency), `createShipper`, `createCredit`, `createReceiptBatch`,
-   `createQuote`, `exportClose`. Every caller of
-   `allocateNumber` allocates inside a Serializable transaction that aborts with `40001` on **any**
-   concurrent allocation, with no retry anywhere but `close-periods.ts` (detail in §4/§6). It breaks
-   concurrent creation of every numbered entity — order, shipper, BOL, credit, receipt batch, quote,
-   GL export — which is exactly what an acceptance month run by more than one person exercises. **The
-   vitest suite structurally cannot see it: vitest runs Read Committed, so a green
-   `allocate-number.test.ts` is not evidence.** Any regression test must set Serializable explicitly.
-3. **The six items ruled at the Phase 8 close-out (2026-08-16)** — all filed with build notes, none
-   started: **#68** add a `reopen` (POSTED→OPEN, refusing on a closed month, Serializable under the
-   period lock; `voidBatch` gains the matching POSTED guard); **#91** net the GL export to one signed
+2. ~~**Issue #115 (P1)**~~ — **DONE 2026-08-16**, branch `fix-allocation-retry` (`fc7eb54`), with
+   **#68** (`20ed463`) on the same branch as burn-down Group A. All **eight** allocating entry points
+   (not six — `shippers.ts` had three) now wrap in `retryAllocation`. Detail, and the two corrections
+   measurement made to the issue's own analysis, in §4.
+3. **The six items ruled at the Phase 8 close-out (2026-08-16)** — all filed with build notes;
+   **#68 is DONE** (Group A, `20ed463`): the `reopen` (POSTED→OPEN, refusing on a closed month,
+   Serializable under the period lock; `voidBatch` gained the matching POSTED guard). The
+   remaining five: **#91** net the GL export to one signed
    column per `(account, side)` — deliberately decided WITHOUT waiting on the bookkeeper, because a
    gross dual-column line risks importing 150 where 120 was meant; **#125** warn (don't block) on
    re-selecting an already-shipped serial; **#126** freeze `addLine`/`updateLine` once a finalized

@@ -55,11 +55,12 @@ async function oneLineOrder(opts: { qty?: number } = {}): Promise<{
   return { order, line: { id: order.lines[0].id, orderId: order.id }, part, customer };
 }
 
-/** `n` distinct, live orders' ids, sorted ascending. Sequential, deliberately: `createOrder` runs
- *  Serializable and its own `allocateNumber` claim is a write-write conflict under concurrent
- *  callers (orders.test.ts's `createConcurrently` documents this exact, expected 409) — nothing
- *  below needs the orders to exist at the SAME instant, only to exist as distinct rows, so
- *  `Promise.all` here would just be trading determinism for a race this file has no interest in. */
+/** `n` distinct, live orders' ids, sorted ascending. Sequential, deliberately: nothing below needs
+ *  the orders to exist at the SAME instant, only to exist as distinct rows, so `Promise.all` here
+ *  would trade determinism for a race this file has no interest in. (Concurrent creation is safe
+ *  since #115 — `createOrder` retries the `allocateNumber` conflict internally, and
+ *  orders.test.ts's `createConcurrently` now asserts every concurrent save succeeds — but "safe"
+ *  is not a reason to introduce a race into a fixture helper.) */
 async function savedOrderIds(n: number): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < n; i += 1) ids.push((await savedOrder()).order.id);

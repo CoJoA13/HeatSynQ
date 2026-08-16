@@ -43,9 +43,12 @@ describe("allocateNumber", () => {
   // must be handed out exactly once, and none may be rejected by the primary key.
   //
   // SCOPE: this runs at Prisma's default Read Committed. It pins the SEEDING race and nothing more.
-  // Every production caller allocates inside a Serializable transaction, where a concurrent
-  // allocation aborts with 40001 whether or not the row was just inserted — unfixed, issue #115.
-  // A green run here is NOT evidence that concurrent order entry is safe.
+  // Every production caller allocates inside a SERIALIZABLE transaction, where a concurrent
+  // allocation aborts with 40001 whether or not the row was just inserted. A green run here is still
+  // NOT evidence that concurrent order entry is safe — Read Committed simply blocks and re-reads, so
+  // this file structurally cannot see that failure. That contract lives in
+  // `tests/allocation-retry.test.ts`, every transaction of which names Serializable explicitly
+  // (issue #115, fixed by wrapping the eight allocating entry points in `retryAllocation`).
   it("a burst of concurrent allocations from an unseeded counter never collides or skips", async () => {
     const results = await Promise.allSettled(
       Array.from({ length: 5 }, () => prisma.$transaction((tx) => allocateNumber("order_number_next", tx))),

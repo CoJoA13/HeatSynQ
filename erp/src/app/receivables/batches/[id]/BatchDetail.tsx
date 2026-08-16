@@ -73,12 +73,14 @@ type PickListRow = { id: string; name: string; active: boolean };
  *  on-account cash "is appliable to a later invoice from the same payment at any time (even after
  *  its batch is POSTED)" — `applyPayment` (applications.ts) itself performs no batch-status check,
  *  and this screen must not add one either, so apply/discount/write-off are deliberately NOT run
- *  through this helper (they stay gated by `receivables.create`/`write_off` alone). Also
- *  deliberately NOT applied to voiding the BATCH itself — `voidBatch` (receipts.ts) is allowed
- *  against a POSTED batch as long as it holds no live payments, so that gate is computed on its
- *  own below rather than run through this helper — nor to voiding one APPLICATION (Fix #11):
- *  correcting a misapplication is not editing the payment list, and `voidApplication` itself
- *  performs no batch-status check either. */
+ *  through this helper (they stay gated by `receivables.create`/`write_off` alone). Nor is it
+ *  applied to voiding one APPLICATION (Fix #11): correcting a misapplication is not editing the
+ *  payment list, and `voidApplication` itself performs no batch-status check either.
+ *
+ *  Voiding the BATCH is now posted-locked too (issue #68) but still computes its own gate below,
+ *  because it carries a SECOND reason to be disabled (live payments) and §5.16 wants the tooltip to
+ *  name whichever one is actually blocking — "Reopen the batch first" and "Void every payment
+ *  first" send the operator to different places. */
 function statusLocked(g: Gate, posted: boolean): Gate {
   if (posted) return { allowed: false, disabled: true, title: "Batch is posted" };
   return g;
@@ -412,13 +414,25 @@ export function BatchDetail({ id }: { id: string }) {
     : posted
       ? { allowed: false, disabled: true, title: "Already posted" }
       : gate(perms, "receivables.edit");
-  // `voidBatch` (receipts.ts) refuses only on live payments, never on posted/open — so this is
-  // deliberately NOT run through `statusLocked`; see that helper's own comment.
+  // The inverse of `postGate` (issue #68) — reopening is only ever available ON a posted batch, and
+  // it is the action every other posted-batch refusal now points at, so it must be visible-and-
+  // disabled rather than hidden (§5.16) even when there is nothing to reopen.
+  const reopenGate: Gate = voided
+    ? { allowed: false, disabled: true, title: "Batch is voided" }
+    : !posted
+      ? { allowed: false, disabled: true, title: "Only a posted batch can be reopened" }
+      : gate(perms, "receivables.edit");
+  // Two independent blockers, POSTED checked first — the same order `voidBatchInTx` uses, so the
+  // tooltip names the guard the server would actually hit. A posted batch told "Void every payment
+  // first" would be sent at a control `refusePosted` refuses; "Reopen the batch first" is the one
+  // route that unblocks it.
   const voidBatchGate: Gate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
-    : (batch?.payments.length ?? 0) > 0
-      ? { allowed: false, disabled: true, title: "Void every payment first" }
-      : gate(perms, "receivables.delete");
+    : posted
+      ? { allowed: false, disabled: true, title: "Reopen the batch first" }
+      : (batch?.payments.length ?? 0) > 0
+        ? { allowed: false, disabled: true, title: "Void every payment first" }
+        : gate(perms, "receivables.delete");
 
   // Payer picker (Add payment form) — customers.view, the `InvoicingList.tsx` customer-filter
   // precedent: fetched only once the caller is known to hold it, never left silently empty.
@@ -501,6 +515,27 @@ export function BatchDetail({ id }: { id: string }) {
     }
   }
 
+  // POSTED -> OPEN (issue #68). Reason-prompted like `voidBatchAction`, because it un-settles cash
+  // and the service refuses a blank one; optimistic like `postBatchAction`, because the route
+  // returns the fresh detail.
+  async function reopenBatchAction() {
+    if (!batch) return;
+    const reason = prompt(
+      `Reopen batch #${batch.batchNumber}?\n\n` +
+      `Its payments stop counting as posted cash until it is posted again.\n\n` +
+      `Reason for reopening (recorded in the audit history):`);
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) { setError("A reason is required to reopen a batch."); return; }
+    try {
+      await applyMutation(() => api<BatchDetailData>(`/api/receivables/batches/${id}/reopen`, {
+        method: "POST", body: JSON.stringify({ reason }),
+      }));
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   // Non-optimistic: DELETE returns `{ ok: true }`, not a fresh detail — picking up `deletedAt`
   // needs a follow-up `load()` (the `InvoiceDetail.tsx` `discard` precedent, two separate
   // try/catches so a load failure after a successful void doesn't read as the void itself failing).
@@ -545,6 +580,10 @@ export function BatchDetail({ id }: { id: string }) {
           <button onClick={() => void postBatchAction()} disabled={!postGate.allowed} title={postGate.title}
                   className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
             Post
+          </button>
+          <button onClick={() => void reopenBatchAction()} disabled={!reopenGate.allowed} title={reopenGate.title}
+                  className="rounded border border-slate-800 px-3 py-1.5 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
+            Reopen
           </button>
           <button onClick={() => void voidBatchAction()} disabled={!voidBatchGate.allowed} title={voidBatchGate.title}
                   className="rounded border border-red-600 px-3 py-1.5 text-sm text-red-600 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">

@@ -1,6 +1,6 @@
 import { Prisma } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
-import { withDbErrors } from "./db-errors";
+import { withDbErrors, retryAllocation } from "./db-errors";
 import { HttpError } from "./errors";
 import { auditedCreate } from "./audit";
 import { allocateNumber } from "./settings";
@@ -106,7 +106,12 @@ function monthBoundsFromEnd(periodEnd: Date): MonthBounds {
  * `GlExportBatch` + one `GlPosting` per emitted line through `auditedCreate`, and renders the CSV.
  */
 export async function exportClose(closePeriodId: string): Promise<ExportedBatch> {
-  return withDbErrors({ entity: "GL export" }, () => prisma.$transaction(async (tx) => {
+  // `retryAllocation` (#115). The Σdebit = Σcredit backstop and the readiness refusal are both INSIDE
+  // the transaction, so they re-run per attempt — a retry recomputes the delta from a fresh snapshot
+  // and re-proves the batch balances rather than persisting a figure computed under the aborted one.
+  // Both refusals are `HttpError`s, which are not retryable, so a genuine unbalanced batch or
+  // readiness gap still fails on the first attempt instead of being re-attempted ten times.
+  return withDbErrors({ entity: "GL export" }, () => retryAllocation(() => prisma.$transaction(async (tx) => {
     const period = await tx.closePeriod.findFirst({ where: { id: closePeriodId } });
     if (!period) throw new HttpError(404, "Close period not found");
     if (period.status !== "CLOSED") {
@@ -221,7 +226,7 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
       })),
       file,
     };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }
 
 /** The 2-part event key — an invoice/credit/payment/application id under its source type. */

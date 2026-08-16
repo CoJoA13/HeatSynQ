@@ -336,7 +336,7 @@ describe("createShipper", () => {
   // shape, not a deterministic row-lock regression guard (see that file's own comment on why): it
   // proves two real double-submits can't duplicate a number or a sequence, honestly allowing for
   // the legitimate 409 retry signal on the losing side.
-  it("two concurrent shipments against the SAME order never collide on a packing-list number or a sequence (not a deterministic row-lock regression guard — see comment)", async () => {
+  it("two concurrent shipments against the SAME order both succeed with distinct packing-list numbers and sequences (not a deterministic row-lock regression guard — see comment)", async () => {
     const { order } = await savedOrder({ qty: 20 });
     const input = oneOrderInput(order);
     input.orders[0].lines[0].qty = 5;
@@ -346,17 +346,16 @@ describe("createShipper", () => {
       createShipper(input, { canOverrideCreditHold: false }),
     ]);
 
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        expect((result.reason as { status?: number }).status).toBe(409); // a retry signal, never a 500
-      }
-    }
-    const fulfilled = settled.filter((r): r is PromiseFulfilledResult<ShipperCreateResult> => r.status === "fulfilled");
-    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
-    if (fulfilled.length === 2) {
-      expect(fulfilled[0].value.shipper.shipperNumber).not.toBe(fulfilled[1].value.shipper.shipperNumber);
-      expect(fulfilled[0].value.shipper.orders[0].sequence).not.toBe(fulfilled[1].value.shipper.orders[0].sequence);
-    }
+    // Since #115 `createShipper` wraps its save in `retryAllocation`, so the counter-race loser
+    // re-runs inside the request instead of surfacing the 409 this test used to tolerate. Both must
+    // now succeed — and the paired assertions below are no longer conditional on that having
+    // happened, which is what stops this passing vacuously if the retry is ever unwrapped.
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(rejected.map((r) => String(r.reason))).toEqual([]);
+    const fulfilled = settled as PromiseFulfilledResult<ShipperCreateResult>[];
+    expect(fulfilled).toHaveLength(2);
+    expect(fulfilled[0].value.shipper.shipperNumber).not.toBe(fulfilled[1].value.shipper.shipperNumber);
+    expect(fulfilled[0].value.shipper.orders[0].sequence).not.toBe(fulfilled[1].value.shipper.orders[0].sequence);
   });
 
   // The hazard spec §5.3 names directly: two multi-order saves touching {A,B} and {B,A} deadlock
@@ -413,14 +412,13 @@ describe("createShipper", () => {
       createShipper(inputBA, { canOverrideCreditHold: false }),
     ]);
 
-    for (const result of settled) {
-      if (result.status === "rejected") {
-        // A legitimate outcome under Serializable is a 409 retry signal, never an unmapped 500
-        // and never an indefinite hang (the deadlock this test exists to rule out).
-        expect((result.reason as { status?: number }).status).toBe(409);
-      }
-    }
-    expect(settled.some((r) => r.status === "fulfilled")).toBe(true);
+    // Both must complete. A deadlock — the hazard this test exists to rule out — would hang or
+    // surface as an unretryable 40P01, and `retryAllocation` deliberately does NOT absorb that
+    // (`isRetryableConflict` matches 40001/P2034/P2002 only), so a real ABBA deadlock still reds this
+    // rather than being papered over by the retry. Since #115 the counter-race loser re-runs inside
+    // the request, so "one of them may legitimately 409" is no longer an acceptable outcome here.
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(rejected.map((r) => String(r.reason))).toEqual([]);
   });
 });
 
