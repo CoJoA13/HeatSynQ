@@ -19,6 +19,17 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
 | 8 | Deploy wiring (Dockerfile/compose/backup.sh) | | | |
 | 9 | Restore runbook + E2E flow + docs | | | |
 
+## OPEN — owner decision, surfaced 2026-08-16 during Task 6
+**After upgrading an EXISTING install to 8C, no role holds `action.manage_backups`, so the Backups
+page is invisible and its routes 403 — the feature looks like it did not ship.** Mechanism: the
+documented upgrade path (`git pull && docker compose --profile prod up -d --build`, README) runs the
+container CMD's `prisma migrate deploy`, which does **not** run the seed. `prisma/seed.ts` *is*
+idempotent and *does* grant `ALL_PERMISSIONS` to the existing "Admin" role, so `npm run db:seed`
+fixes it — but nothing in the upgrade path invokes it. Found on the dev DB by Task 6's implementer
+(403 on first load); confirmed by reading `prisma/seed.ts:26-36` and the container CMD.
+This is not new to 8C — `write_off` (Phase 5B) has the same latent shape — but 8C is where it bites a
+feature the owner is expected to go looking for. Options are recorded in the plan's Task 9.
+
 ## Deferred minors (triage input for the whole-branch review)
 - **T5 (pre-existing, worth a decision at whole-branch).** `resolveBackupDir()` **throws** for a
   *malformed* `BACKUP_DIR` (unsafe characters, a `..` segment) — as opposed to a merely *missing* folder,
