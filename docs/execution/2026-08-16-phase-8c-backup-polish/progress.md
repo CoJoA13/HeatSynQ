@@ -55,6 +55,18 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
   rather than write a test for dead code.**
 
 ## Process notes
+- **2026-08-16, Tasks 4-5 — CONTROLLER ERROR, the shared-DB one.** Twice, a subagent's test run
+  collided with another process's test run against the SAME `erp_test` database, producing
+  `documentTemplate.createMany` unique-constraint failures inside `reseedSingletons()`/`truncateAll()`
+  and a `truncateAll` deadlock. Both were **environmental, not code defects** — re-running the affected
+  file alone passed immediately. The precise mechanism, correctly diagnosed by the Task 5 agent:
+  **`fileParallelism: false` serializes test FILES within ONE vitest invocation; it does nothing across
+  SEPARATE vitest processes.** CLAUDE.md's "tests share one database" warning is about exactly this, and
+  the SDD pattern of overlapping a reviewer (which may run tests) with an implementer (which certainly
+  does) walks straight into it.
+  **Standing correction:** only ONE test-running process at a time. Reviewers are told not to re-run the
+  full suite; implementers must be told not to run it "as a bonus" either. Reserve the full-suite run for
+  a moment when nothing else is dispatched — the final gate chain.
 - **2026-08-16, Task 1:** `.superpowers/sdd/.gitignore` was found reverted to a bare `*` *during this
   session* — the clobber CLAUDE.md documents as having cost Phase 3's record. It was hiding the task
   briefs from git; the implementer restored it before touching anything else. The durable record
