@@ -190,8 +190,20 @@ async function writeStatus(dir: string, status: BackupStatusFile): Promise<void>
  *  harmless, so this is about not doubling the load on the database, not about correctness. */
 let inFlight: Promise<ArchiveInfo> | null = null;
 
+/** Review round 2, finding #2. A stalled `pg_dump` (a wedged lock, a partition, a full pipe with
+ *  nobody reading — see finding #1 below) settles neither the "close" nor the "finish" signal, so
+ *  without a ceiling `inFlight` wedges the manual-backup button for the rest of the PROCESS's
+ *  life: every later click just awaits the same dead promise forever. 30 minutes is deliberately
+ *  generous — this deployment dumps its OWN database (a shop-floor ERP's own working set, not a
+ *  data-warehouse workload) over a local/same-host connection, and a `pg_dump` of that finishes in
+ *  seconds to low minutes even at a size meaningfully larger than today's actual data. The ceiling
+ *  exists to catch a dump that is genuinely stuck, not to bound one that is merely large.
+ *  Overridable via `opts.timeoutMs` so tests can exercise the stall path without a real 30-minute
+ *  wait. */
+const DEFAULT_DUMP_TIMEOUT_MS = 30 * 60_000;
+
 export function runBackupNow(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string } = {},
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number } = {},
 ): Promise<ArchiveInfo> {
   if (inFlight) return inFlight;
   inFlight = doBackup(opts).finally(() => { inFlight = null; });
@@ -199,7 +211,7 @@ export function runBackupNow(
 }
 
 async function doBackup(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string },
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number },
 ): Promise<ArchiveInfo> {
   // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
   await assertNotPracticeDatabase();
@@ -236,6 +248,7 @@ async function doBackup(
 
   // --- dump to the temp file, via ARGV. No string ever reaches a shell. ---
   let stderr = "";
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_DUMP_TIMEOUT_MS;
   try {
     await new Promise<void>((resolve, reject) => {
       const out = createWriteStream(tmpPath);
@@ -252,18 +265,49 @@ async function doBackup(
       let closed = false;
       let finished = false;
       let settled = false;
+
+      // Review round 2, finding #1 (REQUIRED). On ANY error settle — the destination write
+      // erroring (ENOSPC on a full backup folder is THE archetypal case this feature must
+      // survive), the source `child.stdout` erroring, the child failing to spawn, or the stall
+      // timeout below — the dump must actually be OVER, not merely reported as over.
+      // `child.stdout.pipe(out)` only unpipes on a destination error; it never kills the SOURCE,
+      // so without an explicit kill() here a write-stream error leaves `pg_dump` running
+      // indefinitely, still holding its snapshot and its locks on every table (reviewer repro,
+      // 2026-08-16: child still alive 600ms after the promise settled, killed only by hand — and
+      // every retry click strands another one). `child.kill()` on an already-dead or
+      // never-spawned child is a harmless no-op, so this is safe to call unconditionally.
+      const settleError = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.kill();
+        reject(err);
+      };
+
+      // Same finding: `pipe()` attaches no `error` handler to its SOURCE, so an error emitted by
+      // `child.stdout` itself (a broken pipe, an invalid fd) had no listener at all and became an
+      // uncaught exception rather than a rejected promise.
+      child.on("error", settleError);
+      child.stdout.on("error", settleError);
+      out.on("error", settleError);
+
+      // Review round 2, finding #2. Bounds the whole dump step so a stalled `pg_dump` can't wedge
+      // `inFlight` — and therefore the manual-backup button — for the rest of the process's life.
+      const timer = setTimeout(() => {
+        settleError(new Error(
+          `pg_dump did not finish within ${Math.round(timeoutMs / 1000)}s; treating it as stalled`,
+        ));
+      }, timeoutMs);
+
       const maybeSettle = () => {
         if (settled || !closed || !finished) return;
         settled = true;
+        clearTimeout(timer);
         if (closeCode === 0) resolve();
         else reject(new Error(stderr.trim() || `exit ${closeCode}`));
       };
-      const settleError = (err: Error) => { if (!settled) { settled = true; reject(err); } };
-
-      child.on("error", settleError);
       child.on("close", (code) => { closeCode = code; closed = true; maybeSettle(); });
       out.on("finish", () => { finished = true; maybeSettle(); });
-      out.on("error", settleError);
     });
   } catch (err) {
     return fail(err instanceof Error ? err.message : String(err));
@@ -289,10 +333,26 @@ async function doBackup(
   }
 
   const finalStat = await stat(finalPath);
+
+  // Review round 2, finding #4. By this point `finalPath` is a real, complete, integrity-checked
+  // archive — the backup already succeeded. Bookkeeping (the status file, the audit row) is
+  // evidence ABOUT that success, not a precondition for it, so a failure writing either one must
+  // not turn a good archive into a reported failure (contrast `fail()` above, where the write
+  // failing IS the story). This mirrors the module's own load-bearing rule that the archive is
+  // itself the evidence: `backupHealth`/`newestIntactAt` derive success from the newest
+  // integrity-passing file on disk, not from this status write, so a swallowed failure here does
+  // not make a bad run look good — the archive was already good. It also cannot make a genuinely
+  // bad run look good, because `fail()`'s own status/audit writes are unconditional. The one
+  // acknowledged tradeoff: if a STALE "ok: false" from an earlier failed run is still sitting in
+  // the status file when THIS write also fails, `evaluateHealth` keeps reporting "failed" even
+  // though a fresh good archive now exists — under-reporting health, never over-reporting it,
+  // which is the same fail-toward-red bias §6.2 already applies everywhere else in this module.
+  // Each write is independently best-effort (matching `fail()`'s own per-step `.catch`s) so one
+  // failing doesn't stop the other from being attempted.
   await writeStatus(dir, {
     lastRunAt: new Date().toISOString(), ok: true, source: "manual", error: null,
-  });
-  await auditBackupRun(name, true, null);
+  }).catch(() => {});
+  await auditBackupRun(name, true, null).catch(() => {});
 
   return {
     name,
