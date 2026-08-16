@@ -223,11 +223,37 @@ async function claimLiveBatch(tx: Db, id: string): Promise<{ id: string; status:
   return batch;
 }
 
-/** POSTED locks payment entry (§4.1) — shared by `addPayment` and `voidPayment`, verbatim message. */
+/** POSTED locks payment entry (§4.1) — shared by `addPayment` and `voidPayment`, verbatim message.
+ *  The message named `reopen` for two phases before one existed, and pointed at "void a payment" as
+ *  the escape hatch from the very guard refusing it — a dead end (issue #68). `reopenBatch` below is
+ *  the owner's ruling (option b, 2026-08-16), so the message now names the action that exists. */
 function refusePosted(status: string): void {
   if (status === "POSTED") {
-    throw new HttpError(400, "This batch is posted — reopen or void a payment to change it");
+    throw new HttpError(400, "This batch is posted — reopen it first to change it");
   }
+}
+
+/**
+ * Guard EVERY month this batch's live payments land in, in ASCENDING order.
+ *
+ * Shared by `postBatch` and `reopenBatch` — the two mutations that flip whether those payments are
+ * recognized cash at all — precisely so the ordering rule below is stated once. A batch can span
+ * months, and the `claimOrdersInOrder` rule applies to advisory mutexes too: an unsorted per-payment
+ * loop would let two concurrent calls over batches sharing two months take those months' locks in
+ * opposite order and deadlock (Postgres 40P01). The sort/dedup is also what dedups the `ClosePeriod`
+ * reads per month; `assertPeriodOpen`'s own advisory lock only closes the phantom-row race, not this.
+ *
+ * Call UNDER the batch claim, before the status write.
+ */
+async function assertBatchMonthsOpen(tx: Db, batchId: string): Promise<void> {
+  const dates = await tx.payment.findMany({
+    where: { batchId, deletedAt: null }, select: { receivedDate: true },
+  });
+  const months = [...new Map(dates.map((d) => {
+    const key = d.receivedDate.getUTCFullYear() * 100 + (d.receivedDate.getUTCMonth() + 1);
+    return [key, d.receivedDate] as const;
+  })).entries()].sort((a, b) => a[0] - b[0]);
+  for (const [, d] of months) await assertPeriodOpen(tx, d);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -405,20 +431,9 @@ async function postBatchInTx(tx: Db, id: string): Promise<BatchDetail> {
 
   // §4.1: posting a batch makes its payments live CASH-journal paper effective at each payment's
   // `receivedDate`, so posting is refused if ANY of them falls in a CLOSED period. Read under the
-  // batch claim above, before the status write. A batch can span months, so this guards one
-  // distinct (year, month) per batch, taken in ASCENDING order — the `claimOrdersInOrder` rule for
-  // advisory mutexes: an unsorted per-payment loop would let two concurrent `postBatch` calls over
-  // batches sharing two months acquire the two months' advisory locks in opposite order (ABBA
-  // deadlock, Postgres 40P01). The sort/dedup below is what actually dedups the ClosePeriod reads
-  // per month; `assertPeriodOpen`'s own advisory lock only closes the phantom-row race, not this.
-  const dates = await tx.payment.findMany({
-    where: { batchId: id, deletedAt: null }, select: { receivedDate: true },
-  });
-  const months = [...new Map(dates.map((d) => {
-    const key = d.receivedDate.getUTCFullYear() * 100 + (d.receivedDate.getUTCMonth() + 1);
-    return [key, d.receivedDate] as const;
-  })).entries()].sort((a, b) => a[0] - b[0]);
-  for (const [, d] of months) await assertPeriodOpen(tx, d);
+  // batch claim above, before the status write. See `assertBatchMonthsOpen` for why the months are
+  // taken in ascending order.
+  await assertBatchMonthsOpen(tx, id);
 
   await auditedUpdate("receiptBatch", id,
     () => tx.receiptBatch.update({ where: { id }, data: { status: "POSTED" } }), { tx });
@@ -433,12 +448,70 @@ export async function postBatch(id: string): Promise<BatchDetail> {
 }
 
 // -------------------------------------------------------------------------------------------
+// reopenBatch — POSTED -> OPEN. Owner ruling, 2026-08-16 (issue #68, option b): a mis-keyed deposit
+// must be correctable without a compensating entry, and this is the escape hatch `refusePosted`'s
+// message already promised for two phases before it existed.
+//
+// It is the exact inverse of `postBatch`, and it is a POSTING MUTATION — reopening un-recognizes
+// every payment on the batch as cash (`buildCurrentJournal` recognizes a payment only while its
+// batch is `POSTED`), which is what finally makes a posted payment reachable by the GL-export
+// delta: reopen the period, reopen the batch, correct it, re-close, and the re-export reverses the
+// prior posting. That path was dead code for PAYMENT keys before this (the 5C consequence recorded
+// on #68).
+//
+// So it carries the full posting-mutation discipline: Serializable, the batch claim, and
+// `assertBatchMonthsOpen` — reopening INTO a frozen month would silently change closed figures,
+// which is the precise leak the period lock exists to close. CLAUDE.md standing invariant:
+// downgrading any posting mutation to Read Committed silently breaks that lock (SSI only tracks
+// all-Serializable transactions).
+//
+// Gated on `receivables.edit`, symmetric with `postBatch` — reopening is undoing an edit, not a
+// delete. The reason is required and trimmed IN THE SERVICE (the `voidBatch`/`discardInvoice`
+// precedent) so no future caller can bypass it, and it rides into the audit entry: un-settling cash
+// is exactly the kind of act §5.17 wants a justification for.
+// -------------------------------------------------------------------------------------------
+
+async function reopenBatchInTx(tx: Db, id: string, reason: string): Promise<BatchDetail> {
+  const batch = await claimLiveBatch(tx, id);
+  // The `postBatch` idempotent-refusal shape: a repeat is a 400 naming the state, never a second
+  // write (and never a silent no-op that would log an empty-diff audit row).
+  if (batch.status !== "POSTED") throw new HttpError(400, "already open");
+
+  await assertBatchMonthsOpen(tx, id);
+
+  await auditedUpdate("receiptBatch", id,
+    () => tx.receiptBatch.update({ where: { id }, data: { status: "OPEN" } }), { tx, reason });
+  return readBatchDetail(tx, id);
+}
+
+export async function reopenBatch(id: string, reason: string): Promise<BatchDetail> {
+  const why = reason.trim();
+  if (!why) throw new HttpError(400, "A reason is required to reopen a receipt batch");
+  return withDbErrors({ entity: "ReceiptBatch" }, () => prisma.$transaction(
+    (tx) => reopenBatchInTx(tx, id, why),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
+}
+
+// -------------------------------------------------------------------------------------------
 // voidBatch — refuses while any payment on it is still live ("void its payments first"); with
 // none, soft-deletes with the reason trimmed IN THE SERVICE (the `discardInvoice` precedent).
 // -------------------------------------------------------------------------------------------
 
 async function voidBatchInTx(tx: Db, id: string, reason: string): Promise<void> {
-  await claimLiveBatch(tx, id);
+  const batch = await claimLiveBatch(tx, id);
+  // The matching POSTED guard `voidBatch` lacked (issue #68). Without it an EMPTY posted batch was
+  // voidable while a NON-EMPTY one was frozen solid — its payments un-voidable by `refusePosted` and
+  // the batch un-voidable by the live-payment guard below. Two states of the same posted batch
+  // behaving oppositely is the inconsistency the ruling closes.
+  //
+  // Checked BEFORE the live-payment guard, and the order is the point: a posted non-empty batch told
+  // "void its payments first" would be sent to an action `refusePosted` immediately refuses — the
+  // same dead end that message used to create. Naming `reopen` here routes the caller to the one
+  // action that actually unblocks them (§5.14: a block must name what unblocks it).
+  if (batch.status === "POSTED") {
+    throw new HttpError(400, "This batch is posted — reopen it first to void it");
+  }
   const livePayment = await tx.payment.findFirst({ where: { batchId: id, deletedAt: null }, select: { id: true } });
   if (livePayment) throw new HttpError(400, "This batch has payments — void its payments first");
   await auditedSoftDelete("receiptBatch", id, reason, tx);

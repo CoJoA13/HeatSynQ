@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { createBatch, getBatch, addPayment, voidPayment, postBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
+import { createBatch, getBatch, addPayment, voidPayment, postBatch, reopenBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
 import { applyPayment, voidApplication } from "@/server/applications";
+import { reopenPeriod } from "@/server/close-periods";
 import { parseDateOnly } from "@/lib/business-days";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
@@ -29,6 +30,21 @@ async function makePaymentType(name = "Check"): Promise<PaymentType> {
 
 async function openBatch(controlTotal: string | null = null): Promise<BatchDetail> {
   return asSystem(() => createBatch({ depositDate: "2026-08-08", controlTotal }));
+}
+
+/** A CLOSED month covering `dateStr`, written directly — the `period-locks.test.ts` precedent.
+ *  `closePeriod()` itself would drag in a prior-month close and a zero-variance reconciliation that
+ *  none of these tests are about; the guard under test reads only "is there a CLOSED row for this
+ *  (year, month)". */
+async function closeMonthOf(dateStr: string) {
+  const d = parseDateOnly(dateStr);
+  return prisma.closePeriod.create({
+    data: {
+      year: d.getUTCFullYear(), month: d.getUTCMonth() + 1,
+      beginningAr: 0, invoicedTotal: 0, creditTotal: 0, paymentTotal: 0,
+      discountTotal: 0, writeOffTotal: 0, endingAr: 0, agingEndingAr: 0,
+    },
+  });
 }
 
 function paymentInput(customer: Customer, paymentType: PaymentType, amount: number) {
@@ -196,7 +212,7 @@ describe("postBatch — locks payment entry", () => {
     await expect(asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 5))))
       .rejects.toMatchObject({
         status: 400,
-        message: "This batch is posted — reopen or void a payment to change it",
+        message: "This batch is posted — reopen it first to change it",
       });
 
     await expect(asSystem(() => postBatch(batch.id)))
@@ -210,6 +226,127 @@ describe("postBatch — locks payment entry", () => {
       where: { entity: "receiptBatch", entityId: batch.id, action: "update" } });
     expect((entry!.before as Record<string, unknown>).status).toBe("OPEN");
     expect((entry!.after as Record<string, unknown>).status).toBe("POSTED");
+  });
+});
+
+/**
+ * `reopenBatch` — POSTED -> OPEN. Owner ruling, 2026-08-16 (issue #68, option b): a mis-keyed
+ * deposit must be correctable without a compensating entry, and this is the escape hatch
+ * `refusePosted`'s message promised for two phases before it existed.
+ *
+ * It is a POSTING MUTATION, so the interesting cases are not "does the status flip" but the period
+ * guard: reopening a batch whose cash sits in a CLOSED month would silently change frozen figures —
+ * the exact leak the period lock exists to close.
+ */
+describe("reopenBatch — POSTED -> OPEN (#68)", () => {
+  it("flips a posted batch back to OPEN and re-allows payment entry", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+    await asSystem(() => postBatch(batch.id));
+
+    const reopened = await asSystem(() => reopenBatch(batch.id, "keyed the wrong deposit date"));
+    expect(reopened.status).toBe("OPEN");
+
+    // The whole point: the payment list is editable again, both directions.
+    const afterAdd = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 5)));
+    expect(afterAdd.payments).toHaveLength(2);
+    const corrected = await asSystem(() => voidPayment(batch.id, afterAdd.payments[0].id, "mis-keyed"));
+    expect(corrected.payments).toHaveLength(1);
+  });
+
+  it("requires a non-blank reason, and records it on the audit entry", async () => {
+    const batch = await openBatch();
+    await asSystem(() => postBatch(batch.id));
+    await expect(asSystem(() => reopenBatch(batch.id, "   "))).rejects.toThrow(/reason/i);
+
+    await asSystem(() => reopenBatch(batch.id, "deposit slip did not foot"));
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "receiptBatch", entityId: batch.id, action: "update" },
+      orderBy: { at: "desc" }, // the post's own entry is the older of the two
+    });
+    expect((entry!.before as Record<string, unknown>).status).toBe("POSTED");
+    expect((entry!.after as Record<string, unknown>).status).toBe("OPEN");
+    expect(entry!.reason).toBe("deposit slip did not foot");
+  });
+
+  it("refuses an already-OPEN batch — the postBatch idempotent-refusal shape, never a second write", async () => {
+    const batch = await openBatch();
+    await expect(asSystem(() => reopenBatch(batch.id, "why")))
+      .rejects.toMatchObject({ status: 400, message: "already open" });
+    // No empty-diff audit row for a refused no-op.
+    expect(await prisma.auditLog.count({
+      where: { entity: "receiptBatch", entityId: batch.id, action: "update" } })).toBe(0);
+  });
+
+  it("404s a voided batch", async () => {
+    const batch = await openBatch();
+    await asSystem(() => voidBatch(batch.id, "duplicate"));
+    await expect(asSystem(() => reopenBatch(batch.id, "why"))).rejects.toMatchObject({ status: 404 });
+  });
+
+  /**
+   * THE GUARD THAT MATTERS. A batch whose payment sits in a month that has since been CLOSED must
+   * not reopen — un-posting it would drop that cash out of `buildCurrentJournal`'s recognition and
+   * silently change a frozen figure. `postBatch` already refuses INTO a closed month; the inverse
+   * has to refuse for the same reason, or the freeze is one-directional and therefore not a freeze.
+   *
+   * RED-verified by deleting the `assertBatchMonthsOpen` call from `reopenBatchInTx`: the reopen
+   * succeeds against the closed month and this test fails on the 409 that never comes.
+   */
+  it("refuses to reopen a batch whose cash lands in a CLOSED month", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+    await asSystem(() => postBatch(batch.id));
+
+    // The payment's receivedDate is 2026-08-08 (paymentInput) — close that month.
+    await closeMonthOf("2026-08-08");
+
+    await expect(asSystem(() => reopenBatch(batch.id, "mis-keyed")))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.status).toBe("POSTED");
+  });
+
+  /**
+   * The correction path the 5C GL-export consequence on #68 called for: reopening the PERIOD must
+   * make the batch reopenable again, so mis-keyed posted cash can actually be corrected and the
+   * correction can flow through the export delta. A REOPENED ClosePeriod row is not CLOSED and does
+   * not block (period-locks.ts, §4.1) — this pins that the two reopens compose.
+   */
+  it("reopens once the period is reopened — period reopen, then batch reopen", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+    await asSystem(() => postBatch(batch.id));
+
+    const closed = await closeMonthOf("2026-08-08");
+    await asSystem(() => reopenPeriod(closed.id, "correcting a mis-keyed deposit"));
+
+    const reopened = await asSystem(() => reopenBatch(batch.id, "mis-keyed"));
+    expect(reopened.status).toBe("OPEN");
+  });
+
+  /**
+   * A batch can span months (`postBatch`'s own comment), and `assertBatchMonthsOpen` guards EVERY
+   * one of them. Closing only the SECOND month must still block the reopen — a guard that checked
+   * one payment, or only the earliest month, would pass here.
+   */
+  it("refuses when ANY of a multi-month batch's months is closed, not just the first", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, { ...paymentInput(customer, paymentType, 50), receivedDate: "2026-07-20" }));
+    await asSystem(() => addPayment(batch.id, { ...paymentInput(customer, paymentType, 50), receivedDate: "2026-08-08" }));
+    await asSystem(() => postBatch(batch.id));
+
+    await closeMonthOf("2026-08-08"); // the LATER month only
+
+    await expect(asSystem(() => reopenBatch(batch.id, "mis-keyed")))
+      .rejects.toMatchObject({ status: 409 });
   });
 });
 
@@ -255,7 +392,7 @@ describe("voidPayment", () => {
     await expect(asSystem(() => voidPayment(batch.id, paymentId, "mistake")))
       .rejects.toMatchObject({
         status: 400,
-        message: "This batch is posted — reopen or void a payment to change it",
+        message: "This batch is posted — reopen it first to change it",
       });
   });
 
@@ -317,6 +454,35 @@ describe("voidBatch", () => {
     await expect(asSystem(() => voidBatch(batch.id, "mistake")))
       .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/void its payments first/i) });
     expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.deletedAt).toBeNull();
+  });
+
+  // Issue #68. `voidBatch` had NO posted guard, so an EMPTY posted batch was voidable while a
+  // NON-EMPTY one was frozen solid — payments un-voidable by `refusePosted`, batch un-voidable by
+  // the live-payment guard. Both posted shapes now refuse identically, and both name `reopen`.
+  it("refuses to void a POSTED batch — empty or not — and names reopen as the way out", async () => {
+    const empty = await openBatch();
+    await asSystem(() => postBatch(empty.id));
+    await expect(asSystem(() => voidBatch(empty.id, "duplicate")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/posted — reopen it first to void it/i) });
+    expect((await prisma.receiptBatch.findUnique({ where: { id: empty.id } }))!.deletedAt).toBeNull();
+
+    const filled = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(filled.id, paymentInput(customer, paymentType, 10)));
+    await asSystem(() => postBatch(filled.id));
+    // POSTED is checked BEFORE the live-payment guard, deliberately: "void its payments first" would
+    // send the operator at a control `refusePosted` refuses — the dead end #68 is about.
+    await expect(asSystem(() => voidBatch(filled.id, "duplicate")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/reopen it first to void it/i) });
+  });
+
+  it("voids a posted EMPTY batch once it is reopened — the full escape hatch", async () => {
+    const batch = await openBatch();
+    await asSystem(() => postBatch(batch.id));
+    await asSystem(() => reopenBatch(batch.id, "keyed the wrong deposit date"));
+    await asSystem(() => voidBatch(batch.id, "duplicate deposit entry"));
+    expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.deletedAt).not.toBeNull();
   });
 
   it("soft-deletes an empty batch with the reason recorded in the audit entry", async () => {

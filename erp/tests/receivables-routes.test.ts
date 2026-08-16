@@ -6,6 +6,7 @@ import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 import { GET as getRoute, PATCH as patchRoute, DELETE as deleteRoute } from "@/app/api/receivables/batches/[id]/route";
 import { GET as listRoute, POST as createRoute } from "@/app/api/receivables/batches/route";
+import { POST as reopenBatchRoute } from "@/app/api/receivables/batches/[id]/reopen/route";
 import { POST as addPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/route";
 import { DELETE as voidPaymentRoute } from "@/app/api/receivables/batches/[id]/payments/[paymentId]/route";
 import { GET as agingRoute } from "@/app/api/receivables/aging/route";
@@ -148,6 +149,54 @@ describe("PATCH /api/receivables/batches/[id] — post", () => {
     const res = await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH", editor), withParams({ id: batch.id }));
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe("POSTED");
+  });
+});
+
+// Issue #68 — POSTED -> OPEN. Same gate as the post it undoes (`receivables.edit`), deliberately:
+// reopening is the inverse of an edit, not a delete. The reason is mandatory and reaches the audit
+// entry, which is what makes un-settling cash accountable.
+describe("POST /api/receivables/batches/[id]/reopen", () => {
+  it("401s without a session, 403s without receivables.edit, then reopens a posted batch with a reason", async () => {
+    const creator = await signInWith(["receivables.create"], "rb-reopen-creator");
+    const batch = await createdBatch(creator);
+    const editor = await signInWith(["receivables.edit"], "rb-reopen-editor");
+    await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH", editor), withParams({ id: batch.id }));
+
+    expect((await reopenBatchRoute(
+      bodyReq("http://t/api/receivables/batches/x/reopen", "POST", undefined, { reason: "mis-keyed" }),
+      withParams({ id: batch.id }),
+    )).status).toBe(401);
+
+    const wrong = await signInWith(["receivables.view"], "rb-reopen-wrong");
+    expect((await reopenBatchRoute(
+      bodyReq("http://t/api/receivables/batches/x/reopen", "POST", wrong, { reason: "mis-keyed" }),
+      withParams({ id: batch.id }),
+    )).status).toBe(403);
+
+    const res = await reopenBatchRoute(
+      bodyReq("http://t/api/receivables/batches/x/reopen", "POST", editor, { reason: "deposit slip did not foot" }),
+      withParams({ id: batch.id }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("OPEN");
+    const entry = await prisma.auditLog.findFirst({
+      where: { entity: "receiptBatch", entityId: batch.id, action: "update" },
+      orderBy: { at: "desc" } });
+    expect(entry!.reason).toBe("deposit slip did not foot");
+  });
+
+  it("400s a blank reason — the service trims, so whitespace cannot masquerade as a justification", async () => {
+    const creator = await signInWith(["receivables.create"], "rb-reopen-blank-creator");
+    const batch = await createdBatch(creator);
+    const editor = await signInWith(["receivables.edit"], "rb-reopen-blank-editor");
+    await patchRoute(noBodyReq("http://t/api/receivables/batches/x", "PATCH", editor), withParams({ id: batch.id }));
+
+    const res = await reopenBatchRoute(
+      bodyReq("http://t/api/receivables/batches/x/reopen", "POST", editor, { reason: "   " }),
+      withParams({ id: batch.id }),
+    );
+    expect(res.status).toBe(400);
+    expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.status).toBe("POSTED");
   });
 });
 
