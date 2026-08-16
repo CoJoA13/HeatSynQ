@@ -55,7 +55,7 @@ export function SetupBanner() {
             }}
             className="text-amber-700 underline"
           >
-            Dismiss
+            Not now
           </button>
         </div>
       )}
