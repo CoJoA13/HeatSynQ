@@ -4,6 +4,7 @@ import { HttpError } from "./errors";
 import { currentActor } from "./context";
 import { auditSettingChange } from "./audit";
 import { CERT_SCOPES } from "@/lib/cert-constants";
+import { DEFAULT_STALE_HOURS } from "@/lib/backup-constants";
 import type { Prisma } from "../../prisma/generated/prisma/client";
 
 const int = (min: number, max = Number.MAX_SAFE_INTEGER) => z.number().int().min(min).max(max);
@@ -64,6 +65,15 @@ export const SETTINGS = {
   traffic_may_miss_days: { schema: int(0), default: 5, label: "May-miss window (days)", group: "Dates" },
   traffic_will_miss_days: { schema: int(0), default: 3, label: "Will-miss window (days)", group: "Dates" },
   session_timeout_minutes: { schema: int(5, 1440), default: 480, label: "Session timeout (minutes)", group: "System" },
+  // Phase 8C §6.4: the ONLY backup setting. The folder, cadence and retention are deploy config —
+  // the nightly container cannot honor a live change, and a setting the writer ignores is a
+  // half-working feature. This one the app CAN honor, because the app is what evaluates staleness.
+  // Default 36 = a full 12h of slack past the 24h cadence: one late run never cries wolf, two
+  // consecutive misses always do. Capped at a year, floored at 1 (a zero-hour window is
+  // permanently red and therefore meaningless).
+  backup_stale_hours: {
+    schema: int(1, 8760), default: DEFAULT_STALE_HOURS, label: "Backup staleness threshold (hours)", group: "System",
+  },
 } as const satisfies Record<string, { schema: z.ZodType; default: unknown; label: string; group: string }>;
 
 export type SettingKey = keyof typeof SETTINGS;

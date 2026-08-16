@@ -41,13 +41,23 @@ describe("permission resolution", () => {
   it("ALL_PERMISSIONS covers areas × actions plus specials", () => {
     expect(ALL_PERMISSIONS).toContain("orders.view");
     expect(ALL_PERMISSIONS).toContain("action.close_ar_period");
-    // 13 areas (Phase 5B adds "receivables") × 4 CRUD actions + 12 specials (Phase 5B adds
-    // "write_off").
-    expect(ALL_PERMISSIONS.length).toBe(13 * 4 + 12);
+    // 13 areas (Phase 5B adds "receivables") × 4 CRUD actions + 13 specials (Phase 8C adds
+    // "manage_backups" on top of Phase 5B's "write_off").
+    expect(ALL_PERMISSIONS.length).toBe(13 * 4 + 13);
   });
 
   it("has a receivables area and a write_off special action", () => {
     expect(AREAS).toContain("receivables");
     expect(SPECIAL_ACTIONS).toContain("write_off");
+  });
+
+  it("manage_backups is denied by default and granted by an explicit action grant", () => {
+    expect(canDo(user([]), "manage_backups")).toBe(false);
+    expect(canDo(user(["action.manage_backups"]), "manage_backups")).toBe(true);
+    // A DENY override must beat the grant, like every other dangerous action.
+    expect(canDo(
+      user(["action.manage_backups"], [{ permission: "action.manage_backups", mode: "DENY" }]),
+      "manage_backups",
+    )).toBe(false);
   });
 });
