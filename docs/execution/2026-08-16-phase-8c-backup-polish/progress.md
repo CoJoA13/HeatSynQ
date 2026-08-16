@@ -44,3 +44,17 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
   **or** action-gated), both list builders route through one `canSeeEntry`, and `nav.test.ts` gains the
   case that pins it. **This was a genuine gap between the permission model and the nav model**, not a
   transcription slip.
+- **2026-08-16, during Task 3 — CONTROLLER ERROR, worth not repeating.** I ran `git add -A` twice to
+  commit plan/doc edits *while the Task 3 implementer was actively editing the working tree*, so two
+  documentation commits silently absorbed its files: `tests/backup-health.test.ts` landed in
+  `29b162d` ("docs: pin the E2E harness's backup-folder plumbing") and `src/server/practice-mode.ts`
+  in `c1de215` ("chore: match the gitignore convention"). The implementer found its own work already
+  committed under unrelated messages and correctly reported it as a possible second process writing
+  to the branch — a good catch on its part.
+  **Nothing was lost and nothing is wrong in the tree** (full suite 2934 / 174 files green), and the
+  branch squash-merges so the misleading messages never reach `main`. History was deliberately NOT
+  rewritten: the benefit is cosmetic and pre-merge only, and `git rebase -i` is unavailable in this
+  environment. The Task 3 review package spans all three commits so the reviewer sees the complete
+  task.
+  **Standing correction: never `git add -A` while an implementer subagent is live — stage explicit
+  paths.** Doc edits during a task must be staged file-by-file.
