@@ -6,6 +6,19 @@ Binding spec: the Phase 8 design spec §6 + **§6.4** (owner kickoff rulings, 20
 ## Baseline gates on `main` (2026-08-16, before branching)
 vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22 · 37 migrations.
 
+## FINAL gates on the branch (2026-08-16, watched to completion, post-fix-wave)
+**vitest 2986 / 179 files · tsc clean · eslint clean · build clean · E2E 23/23 · 39 migrations.**
+Delta from baseline: **+88 tests, +8 files, +1 E2E flow, +2 migrations.** No `ClosePeriod` debris, no
+leftover archives in `erp/backups` or `erp/e2e-backups`, working tree clean.
+**Gate order matters:** `.next` was removed BEFORE running vitest — a post-build `npm test` currently
+crashes collecting `.next/standalone/**/tests/` (P3, pre-existing from 8B, filed not fixed).
+
+## Reviews
+- Nine per-task reviews: **seven approved on round 1**; Task 4 needed one fix round, Task 8 two.
+- **Whole-branch review (5 lenses, opus): approved to merge, ZERO Critical, nothing blocking.**
+- **One fix wave** (`90f128a`) closing four *silences* → scoped re-review: all ADDRESSED, no new
+  breakage, "ready to become a PR".
+
 ## Tasks
 | # | Task | Implementer | Review | Notes |
 |---|---|---|---|---|
