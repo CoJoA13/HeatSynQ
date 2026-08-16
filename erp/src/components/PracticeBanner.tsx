@@ -3,6 +3,8 @@
 // see they are on the practice copy. Presentational ONLY: whether to show it is decided server-side
 // by the root layout via practiceMode() (§8 forbids reading the flag in a client component), so this
 // takes no props and reads no environment.
+import Link from "next/link";
+
 export function PracticeBanner() {
   return (
     <div
@@ -10,7 +12,8 @@ export function PracticeBanner() {
       className="w-full bg-amber-500 px-4 py-1.5 text-center text-sm font-semibold text-amber-950"
     >
       PRACTICE MODE — sample data for training. Documents are watermarked; nothing here affects
-      production.
+      production.{" "}
+      <Link href="/practice" className="underline">Reset practice data</Link>
     </div>
   );
 }
