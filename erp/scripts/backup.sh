@@ -44,7 +44,12 @@ if [ ! -s "$TMP" ]; then
   echo "backup FAILED: empty dump" >&2
   exit 1
 fi
-gzip < "$TMP" > "$DIR/erp_${STAMP}.sql.gz"
+if ! gzip < "$TMP" > "$DIR/erp_${STAMP}.sql.gz"; then
+  rm -f "$TMP" "$DIR/erp_${STAMP}.sql.gz"
+  write_status false "could not compress the dump"
+  echo "backup FAILED: compress error" >&2
+  exit 1
+fi
 rm -f "$TMP"
 if ! gzip -t "$DIR/erp_${STAMP}.sql.gz"; then
   rm -f "$DIR/erp_${STAMP}.sql.gz"

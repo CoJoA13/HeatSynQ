@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
+import { ALL_PERMISSIONS } from "@/server/permissions";
 
 /**
  * Phase 8C Task 8 — the `action.manage_backups` permission-backfill migration
@@ -58,6 +59,18 @@ describe("the migration's own SQL literal (drift guard — parses the file, neve
     expect(REQUIRED_PERMISSIONS).toHaveLength(64);
     expect(new Set(REQUIRED_PERMISSIONS).size).toBe(64);
     expect(REQUIRED_PERMISSIONS).not.toContain("action.manage_backups");
+  });
+
+  // The three checks above only pin the COUNT and shape of what the regex pulled out of the SQL —
+  // a typo'd permission string PAIRED WITH an omitted one would still count 64, still contain no
+  // duplicates, and still exclude "action.manage_backups" literally, and would still pass every
+  // assertion above. Comparing the actual set against the real source of truth
+  // (permission-constants.ts, via ALL_PERMISSIONS) is what catches a mistyped or substituted
+  // entry — the dangerous direction, since a wrong entry only ever LOOSENS the migration's rule
+  // (a role that should have been excluded gets backfilled instead).
+  it("is exactly ALL_PERMISSIONS minus action.manage_backups — no typo'd or substituted entry", () => {
+    const expected = ALL_PERMISSIONS.filter((p) => p !== "action.manage_backups");
+    expect([...REQUIRED_PERMISSIONS].sort()).toEqual([...expected].sort());
   });
 });
 
