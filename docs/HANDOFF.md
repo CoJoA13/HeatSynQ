@@ -646,6 +646,14 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
+> **Backlog burn-down is the chosen next track (owner, 2026-08-16).** A ready-to-paste, grouped plan
+> lives in **`docs/2026-08-16-issue-burndown-handoff.md`** — Task 0 (#122, measurement hygiene) then four
+> groups: **A** allocation & posting concurrency (#115, #68) · **B** money shape & A/R integrity (#91,
+> #81, #84) · **C** order & shipment guards (#126, #125) · **D** backups follow-ups (#123, #124, #119,
+> #120, #118, with #121 needing an owner call). Grouped by shared machinery so one branch's review covers
+> one concern. **Chase §7 items 2 and 4 in parallel — they are the acceptance month's critical path and
+> no code shortens them.**
+
 **Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases MERGED** (8A PR #106, 8B
 PR #109, 8C PR #117 / `941ceab`, §4). **That completes every build phase in the 8-phase roadmap**
 (`docs/superpowers/plans/2026-07-29-roadmap.md`) — there is no ninth phase, and nothing is in flight.
