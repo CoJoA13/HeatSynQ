@@ -30,9 +30,20 @@ export type BannerFetchState = {
    *  common case: every caller without `manage_backups`) would be pure waste for a result that
    *  cannot change until they log out, which already clears this state via the `/login` branch. */
   forbidden: boolean;
+  /** True for exactly the render that followed a non-403 failure (a 500, a network error, a thrown
+   *  `resolveBackupDir()` before the route's own try/catch). §6.2's "absence is failure" applies to
+   *  the ENDPOINT, not just the status file: a malformed deploy must not go silent on every screen.
+   *  Unlike `forbidden`, this never latches — `lastFetchedAt` is reset to 0 in the same step so the
+   *  next navigation retries immediately, the way a transient network blip always has. */
+  error: boolean;
 };
 
-export const INITIAL_BANNER_STATE: BannerFetchState = { health: null, lastFetchedAt: 0, forbidden: false };
+export const INITIAL_BANNER_STATE: BannerFetchState = {
+  health: null,
+  lastFetchedAt: 0,
+  forbidden: false,
+  error: false,
+};
 
 /** Calls the health endpoint and classifies the outcome. Never throws — the caller (component or
  *  test) always gets a value back. */
@@ -66,15 +77,38 @@ export async function advanceBannerState(
     return state;
   }
   const outcome = await fetchHealth();
-  if (outcome.kind === "success") return { health: outcome.health, lastFetchedAt: now, forbidden: false };
-  if (outcome.kind === "forbidden") return { health: null, lastFetchedAt: now, forbidden: true };
-  // Transient failure: reset lastFetchedAt so the NEXT navigation retries immediately.
-  return { health: null, lastFetchedAt: 0, forbidden: false };
+  if (outcome.kind === "success") {
+    return { health: outcome.health, lastFetchedAt: now, forbidden: false, error: false };
+  }
+  if (outcome.kind === "forbidden") {
+    return { health: null, lastFetchedAt: now, forbidden: true, error: false };
+  }
+  // Non-403 failure (a 500, a thrown resolveBackupDir(), a DB-down 500, a network blip): reset
+  // lastFetchedAt so the NEXT navigation retries immediately — same transient-retry behaviour as
+  // before — but mark `error` so THIS render shows the red bar instead of going silent.
+  return { health: null, lastFetchedAt: 0, forbidden: false, error: true };
 }
 
-/** Pure presentational piece: renders the bar for a health snapshot, or nothing. Hook-free, so
- *  tests/backup-banner.test.tsx can render it with `react-dom/server`'s `renderToStaticMarkup`. */
-export function BackupBannerView({ health }: { health: BackupHealth | null }) {
+/** Pure presentational piece: renders the bar for a health snapshot, an honest "could not be read"
+ *  bar for a non-403 fetch failure, or nothing. Hook-free, so tests/backup-banner.test.tsx can
+ *  render it with `react-dom/server`'s `renderToStaticMarkup`. `error` takes priority over `health`
+ *  — a fetch failure means `health` is always null anyway (see `advanceBannerState`), but the
+ *  priority keeps this component's contract obvious without relying on that invariant. */
+export function BackupBannerView({
+  health,
+  error = false,
+}: {
+  health: BackupHealth | null;
+  error?: boolean;
+}) {
+  if (error) {
+    return (
+      <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
+        <span>⚠ Backup status could not be read.</span>
+        <Link href="/admin/backups" className="font-semibold underline">Open Backups</Link>
+      </div>
+    );
+  }
   if (!health || health.state === "ok") return null;
   return (
     <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
@@ -87,6 +121,7 @@ export function BackupBannerView({ health }: { health: BackupHealth | null }) {
 export function BackupBanner() {
   const pathname = usePathname();
   const [health, setHealth] = useState<BackupHealth | null>(null);
+  const [error, setError] = useState(false);
   const stateRef = useRef<BannerFetchState>(INITIAL_BANNER_STATE);
 
   useEffect(() => {
@@ -95,11 +130,12 @@ export function BackupBanner() {
       if (cancelled) return;
       stateRef.current = next;
       setHealth(next.health);
+      setError(next.error);
     });
     return () => {
       cancelled = true;
     };
   }, [pathname]);
 
-  return <BackupBannerView health={health} />;
+  return <BackupBannerView health={health} error={error} />;
 }

@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
 
 /**
  * Phase 8C Task 8 review, finding #1 — scripts/backup.sh's compress step was unguarded:
@@ -68,7 +69,7 @@ function runScript(): ReturnType<typeof spawnSync> {
 }
 
 function statusOf(d: string): { ok: boolean; error: string | null } {
-  return JSON.parse(readFileSync(path.join(d, "backup-status.json"), "utf8"));
+  return JSON.parse(readFileSync(path.join(d, BACKUP_STATUS_FILENAME), "utf8"));
 }
 
 describe("scripts/backup.sh — compress-step failure (Task 8 review finding #1)", () => {
@@ -111,5 +112,18 @@ describe("scripts/backup.sh — compress-step failure (Task 8 review finding #1)
     expect(status.error).toBeNull();
     expect(readdirSync(dir).filter((f) => f.endsWith(".sql.gz"))).toHaveLength(1);
     expect(readdirSync(dir).some((f) => f.endsWith(".sql.tmp"))).toBe(false);
+  });
+});
+
+// P1 (whole-branch review, Minor) — the status filename is duplicated with nothing enforcing
+// agreement: scripts/backup.sh hardcodes it (a shell file has no way to import a TS constant),
+// BACKUP_STATUS_FILENAME is what both TS readers use, and this test file used to hardcode a THIRD
+// copy in `statusOf` (now fixed to import the constant above). A silent rename on either side
+// would make the app read "no status file" forever — the safe direction (red, never a false
+// green), but a real drift bug this repo had no test to catch. This is that test.
+describe("scripts/backup.sh — status filename drift guard (P1)", () => {
+  it("backup.sh's hardcoded status filename literal matches BACKUP_STATUS_FILENAME", () => {
+    const scriptText = readFileSync(SCRIPT, "utf8");
+    expect(scriptText).toContain(`STATUS="$DIR/${BACKUP_STATUS_FILENAME}"`);
   });
 });

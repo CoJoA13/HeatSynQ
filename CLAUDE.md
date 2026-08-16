@@ -159,7 +159,7 @@ The Phase 1 process is worth keeping: a fresh subagent per task, an independent 
 
 ## Environment notes (Fedora)
 
-If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or `./backups` bind mounts, append `:z` to those three mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
+If Postgres init or the backup container hits `permission denied` on the `./db-init`, `./scripts/backup.sh`, or either `./backups` bind mount (`app`'s and `backup`'s — Phase 8C mounts it on both), append `:z` to those four mounts in `erp/docker-compose.yml`. Prefer SELinux labels over disabling SELinux. The named `dbdata` volume needs nothing.
 
 ## Agent skills
 

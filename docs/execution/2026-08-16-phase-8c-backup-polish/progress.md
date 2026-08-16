@@ -84,9 +84,12 @@ feature the owner is expected to go looking for. Options are recorded in the pla
 - **T4** `child.kill()` is SIGTERM only, no SIGKILL escalation. Fine for `pg_dump`, which honours it.
 - **T4** A crash *mid-gzip* leaves a truncated file at the archive's REAL final name (`pipeline` writes
   straight to `finalPath`; there is no gzip-then-rename hop). It cannot masquerade as a good backup —
-  `gzip -t` rejects it and `newestIntactAt` skips it — but it is permanent debris nothing cleans up, and
-  an operator eyeballing the raw folder rather than the health banner could misread its *presence*.
-  Closing it means a second temp-then-rename around the gzip step. Design hardening, not a task defect.
+  `gzip -t` rejects it and `newestIntactAt` skips it. **Whole-branch review (D1) corrected this entry:**
+  the debris is NOT permanent — its name still matches `erp_*.sql.gz`, so the nightly
+  `find … -mtime +30 -delete` prune collects it like any other archive; it is bounded at 30 days, not
+  cleanup-free. An operator eyeballing the raw folder rather than the health banner could still misread
+  its *presence* inside that window. Closing that read sooner means a second temp-then-rename around the
+  gzip step. Design hardening, not a task defect — shipped as-is per the review's D1 verdict.
 - **T4** `fail()`'s per-step best-effort `.catch(() => {})` writes are pre-existing and untouched.
 - **T3** No direct test for a **zero-byte** archive or for a **directory** named like an archive. The
   reviewer verified both behaviours by execution (`gzip -t` fails a zero-byte file; both readers filter

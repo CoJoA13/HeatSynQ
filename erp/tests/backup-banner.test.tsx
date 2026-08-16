@@ -92,7 +92,12 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
   // the session rather than re-requesting on every single page view forever (the common case: every
   // caller without manage_backups, on every page).
   it("does not re-fetch on a later navigation once latched forbidden", async () => {
-    const forbiddenState: BannerFetchState = { health: null, lastFetchedAt: NOW, forbidden: true };
+    const forbiddenState: BannerFetchState = {
+      health: null,
+      lastFetchedAt: NOW,
+      forbidden: true,
+      error: false,
+    };
     const fetchMock = stubFetch(200, OK_HEALTH);
 
     const next = await advanceBannerState("/orders", forbiddenState, NOW + REFRESH_MS * 100);
@@ -102,7 +107,12 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
   });
 
   it("re-arms the forbidden latch on /login, so the next signed-in session retries", async () => {
-    const forbiddenState: BannerFetchState = { health: null, lastFetchedAt: NOW, forbidden: true };
+    const forbiddenState: BannerFetchState = {
+      health: null,
+      lastFetchedAt: NOW,
+      forbidden: true,
+      error: false,
+    };
     const next = await advanceBannerState("/login", forbiddenState, NOW);
     expect(next).toEqual(INITIAL_BANNER_STATE);
   });
@@ -118,7 +128,12 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
   });
 
   it("throttles: skips the fetch when the last one is within REFRESH_MS", async () => {
-    const recentState: BannerFetchState = { health: RED_HEALTH, lastFetchedAt: NOW, forbidden: false };
+    const recentState: BannerFetchState = {
+      health: RED_HEALTH,
+      lastFetchedAt: NOW,
+      forbidden: false,
+      error: false,
+    };
     const fetchMock = stubFetch(200, OK_HEALTH);
 
     const next = await advanceBannerState("/customers", recentState, NOW + REFRESH_MS - 1);
@@ -128,7 +143,12 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
   });
 
   it("refetches once REFRESH_MS has elapsed since the last fetch", async () => {
-    const staleState: BannerFetchState = { health: RED_HEALTH, lastFetchedAt: NOW, forbidden: false };
+    const staleState: BannerFetchState = {
+      health: RED_HEALTH,
+      lastFetchedAt: NOW,
+      forbidden: false,
+      error: false,
+    };
     const fetchMock = stubFetch(200, OK_HEALTH);
 
     const next = await advanceBannerState("/customers", staleState, NOW + REFRESH_MS);
@@ -137,9 +157,29 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
     expect(next.health).toEqual(OK_HEALTH);
   });
 
-  it("a transient (non-403) failure resets lastFetchedAt so the next navigation retries", async () => {
+  // C2 (whole-branch review, Important): §6.2's "absence is failure" applies to the health
+  // ENDPOINT, not just the on-disk status file. A non-403 failure (a 500, a thrown
+  // resolveBackupDir() before the route's own try/catch, a DB-down 500, a network blip) must
+  // still surface as a visible red bar on THIS render, while still resetting lastFetchedAt so the
+  // next navigation retries immediately — the pre-existing transient-retry behaviour.
+  it("a transient (non-403) failure resets lastFetchedAt for retry AND renders a red 'could not be read' bar this render", async () => {
     stubFetch(500, { error: "boom" });
     const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
-    expect(next).toEqual({ health: null, lastFetchedAt: 0, forbidden: false });
+    expect(next).toEqual({ health: null, lastFetchedAt: 0, forbidden: false, error: true });
+
+    const markup = renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />);
+    expect(markup).toContain("Backup status could not be read");
+    expect(markup).toContain('href="/admin/backups"');
+  });
+
+  // The other half of C2: a 403 (no manage_backups) must still render nothing, not the error bar —
+  // that is a legitimate "not your concern", the one case §6.2's rule does not apply to.
+  it("a 403 does NOT render the error bar", async () => {
+    stubFetch(403, { error: "You do not have permission for that" });
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    expect(next.error).toBe(false);
+    expect(
+      renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />),
+    ).toBe("");
   });
 });
