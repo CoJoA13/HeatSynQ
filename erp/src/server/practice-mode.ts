@@ -64,3 +64,15 @@ export async function assertPracticeDatabase(db: Db = prisma): Promise<void> {
     );
   }
 }
+
+// Warm the memoized decision eagerly at SERVER module load — outside any request transaction — so an
+// API print on a cold process does not fire the current_database() query while a claim transaction
+// holds a pooled connection (traveler/cert/invoice/etc. render INSIDE their transaction; Codex). The
+// query runs once here on a free connection; every later practiceMode() returns the cache. The
+// root layout also warms it on the first page render. Skipped during `next build` (no serving, and
+// the Docker build points DATABASE_URL at an unreachable placeholder).
+if (process.env.NEXT_PHASE !== "phase-production-build") {
+  void practiceMode().catch(() => {
+    /* a transient first-call failure clears the cache (see practiceMode); the next call retries */
+  });
+}

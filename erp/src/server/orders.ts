@@ -676,6 +676,20 @@ export async function createOrder(
   const defaultRequestDays = await getSetting("request_days_default");
   const traffic = await trafficSettings();
 
+  // Idempotency BEFORE the gate (Codex): a retried request whose order already committed must get
+  // that order back — even if an admin has since cleared a company field or the A/R account. The
+  // gate runs only for genuine first submissions; a delayed retry carrying a committed nonce would
+  // otherwise receive a setup-400 instead of its existing order, breaking the replay contract. (The
+  // collision-replay in the catch below still handles the concurrent-first-submission race.)
+  if (data.clientRequestId) {
+    const existing = await prisma.order.findFirst({
+      where: { clientRequestId: data.clientRequestId }, select: { id: true },
+    });
+    if (existing) {
+      return { order: await readDetail(prisma, existing.id, traffic), warnings: [], deduped: true };
+    }
+  }
+
   // Order-entry gate (Phase 8B §5.6): real order entry is blocked until company identity AND a
   // chart of accounts are configured. Evaluated here as a PRE-transaction read (alongside the
   // settings reads above), BEFORE saveNewOrder's Serializable transaction — inside Serializable it

@@ -338,9 +338,12 @@ export async function seedPracticeDemo(): Promise<void> {
   await seedDemoSlice();
 }
 
-// The runnable entry `tsx prisma/demo-seed.ts` executes calls the GUARDED entry, so pointing it at
-// the wrong database refuses. Guarded by a main-module check so importing this file (the vitest
-// suite does) never triggers a run.
+// The runnable entry `tsx prisma/demo-seed.ts` (npm run db:seed:demo) calls the GUARDED entry, so it
+// refuses unless connected to erp_practice. IT READS `DATABASE_URL`: inside the app-practice
+// container that already points at erp_practice, so it just works there; run it LOCALLY with the
+// practice URL, e.g. `DATABASE_URL="$DATABASE_URL_PRACTICE" npm run db:seed:demo`. (Running it with
+// the default DATABASE_URL is harmless — the guard refuses before writing a row.) Guarded by a
+// main-module check so importing this file (the vitest suite does) never triggers a run.
 function invokedDirectly(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;

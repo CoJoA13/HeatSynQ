@@ -44,4 +44,32 @@ describe("order-entry gate at createOrder (Phase 8B §5.6)", () => {
     const err = await caught(() => asSystem(() => createOrder(input)));
     expect(err.message).not.toMatch(/Finish setup/);
   });
+
+  it("returns the existing order for a retried nonce even after setup becomes incomplete", async () => {
+    // Idempotency (Codex): a delayed retry of an already-committed order must get its order back,
+    // not a setup-400, if an admin has since cleared a company field.
+    await seedOrderGatePrereqs();
+    const customer = await prisma.customer.create({ data: { code: "IDEM", name: "Idem Co" } });
+    const code = await prisma.processStepCode.create({ data: { code: "HT", name: "Harden" } });
+    const part = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "IP1", name: "Idem Part", eachWeight: "1.0000" },
+    });
+    const rev = await prisma.partProcessRevision.create({ data: { partId: part.id, revisionNumber: 1 } });
+    await prisma.partProcessStep.create({
+      data: { revisionId: rev.id, position: 1, codeId: code.id, instruction: "Harden." },
+    });
+
+    const nonce = crypto.randomUUID();
+    const req = { customerId: customer.id, clientRequestId: nonce, lines: [{ partId: part.id, qty: 1, weight: "1.00" }] };
+    const first = await asSystem(() => createOrder(req));
+    expect(first.order.orderNumber).toBeGreaterThan(0);
+
+    // Setup becomes incomplete AFTER the order committed.
+    await asSystem(() => setSetting("company_name", ""));
+
+    // The retry carrying the same nonce returns the EXISTING order, never the gate 400.
+    const retried = await asSystem(() => createOrder(req));
+    expect(retried.deduped).toBe(true);
+    expect(retried.order.orderNumber).toBe(first.order.orderNumber);
+  });
 });

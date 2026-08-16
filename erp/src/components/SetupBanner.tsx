@@ -9,6 +9,7 @@
 // once the password changes.
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { api } from "@/lib/fetcher";
 
 type SetupStep = { key: string; complete: boolean };
@@ -20,12 +21,18 @@ export function SetupBanner() {
   const [data, setData] = useState<Readiness | null>(null);
   const [pwDismissed, setPwDismissed] = useState(true); // assume dismissed until localStorage is read
 
+  const pathname = usePathname();
   useEffect(() => {
     setPwDismissed(localStorage.getItem(PW_DISMISS_KEY) === "1");
-    api<Readiness>("/api/setup/readiness").then(setData).catch(() => {
-      /* non-admin or signed out → no banner */
-    });
-  }, []);
+    // Re-run on navigation: this layout-mounted component is NOT remounted by a client-side login
+    // (/login → /), so an empty-dep fetch would never appear after the normal first login. Keying on
+    // pathname also refreshes the banner as setup state changes. On /login (signed out), skip (401).
+    if (pathname === "/login") {
+      setData(null);
+      return;
+    }
+    api<Readiness>("/api/setup/readiness").then(setData).catch(() => setData(null));
+  }, [pathname]);
 
   if (!data) return null;
   const passwordIncomplete = data.steps.some((s) => s.key === "password" && !s.complete);

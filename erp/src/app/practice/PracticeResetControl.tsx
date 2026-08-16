@@ -20,7 +20,13 @@ export function PracticeResetControl() {
     setMessage(null);
     try {
       await api<{ ok: boolean }>("/api/practice/reset", { method: "POST", body: "{}" });
-      setMessage("Practice data was reset to the demo baseline.");
+      // The reset truncated the current session + user rows and recreated admin/admin, so the shell
+      // now holds stale auth — the next request would 401. Send the user to sign in again with the
+      // reset credentials (Codex). A full navigation, since the session no longer exists server-side.
+      setMessage("Practice data was reset. Signing you out — sign back in with admin / admin.");
+      setTimeout(() => {
+        window.location.href = "/login";
+      }, 1500);
     } catch (e) {
       setError((e as Error).message);
     } finally {

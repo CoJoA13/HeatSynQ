@@ -17,6 +17,9 @@ type Readiness = { steps: SetupStep[]; dismissed: boolean; complete: boolean };
 export function SetupChecklist() {
   const { permissions: perms, error: permsError } = usePermissions();
   const viewGate = gate(perms, "admin.view");
+  // The page is viewable with admin.view, but the confirm/dismiss controls PUT /api/setup/state
+  // (admin.edit) — disable them for a read-only admin so they never see a control that 403s (Codex).
+  const editGate = gate(perms, "admin.edit");
   const [data, setData] = useState<Readiness | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,8 +83,10 @@ export function SetupChecklist() {
                 </span>
                 <span className="flex items-center gap-3">
                   {s.key === "numbers" && !s.complete && (
-                    <button type="button" disabled={busy} onClick={() => void putState({ confirmNumbers: true })}
-                            className="rounded border px-2 py-1 text-sm">
+                    <button type="button" disabled={busy || !editGate.allowed}
+                            title={editGate.allowed ? undefined : editGate.title}
+                            onClick={() => void putState({ confirmNumbers: true })}
+                            className="rounded border px-2 py-1 text-sm disabled:opacity-50">
                       Mark confirmed
                     </button>
                   )}
@@ -93,8 +98,10 @@ export function SetupChecklist() {
             ))}
           </ul>
           <div className="mt-4">
-            <button type="button" disabled={busy || data.dismissed} onClick={() => void putState({ dismiss: true })}
-                    className="rounded border px-3 py-1 text-sm text-slate-600">
+            <button type="button" disabled={busy || data.dismissed || !editGate.allowed}
+                    title={editGate.allowed ? undefined : editGate.title}
+                    onClick={() => void putState({ dismiss: true })}
+                    className="rounded border px-3 py-1 text-sm text-slate-600 disabled:opacity-50">
               {data.dismissed ? "Checklist dismissed" : "Dismiss checklist"}
             </button>
           </div>
