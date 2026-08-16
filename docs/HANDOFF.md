@@ -324,11 +324,18 @@ makes from every page); #119 preflight failures of a manual backup (missing/unwr
 unset `DATABASE_URL`) produce no audit row despite the stated rule that failed attempts are access
 events; #120 a failing retention `find` leaves the status green while retention is silently broken;
 #121 the error bar reaches non-`manage_backups` users during a total DB outage, because the silencing
-403 itself needs a DB read. **#122 is pre-existing from 8B and worth doing early because it is cheap
-and it distorts measurement:** `vitest.config.ts` sets no `include`/`exclude`, so after a build vitest
-also collects `.next/standalone/**/tests` — gate ORDER silently matters (`npm test` must precede
-`npm run build`, or `.next` must be cleared), and **any test count reported after a build is
-inflated**.
+403 itself needs a DB read. **#122 — FIXED on branch `fix-vitest-collection` (`c69d82a`), the
+burn-down's Task 0.** `vitest.config.ts` set no `include`/`exclude`, so after a build vitest also
+collected `.next/standalone/**/tests` and ran every file twice — gate ORDER silently mattered and any
+post-build count was inflated. Measured on `main` with a build present: `vitest list --filesOnly`
+emitted **358 files for 179 real ones**. Now `include: ["tests/**/*.test.{ts,tsx}"]` plus
+`exclude: [...configDefaults.exclude, "**/.next/**"]`, with `tests/vitest-collection.test.ts`
+guarding both. **Gate order no longer matters** — verified by running the full suite with the 179
+stale copies still on disk: 180 files, zero `.next` paths. The trap for anyone extending that guard is
+recorded in its header: **`.next` is a dot-directory and vitest matches with `dot: true`, while Node's
+`path.matchesGlob` does not** — so a behavioural model of the build-output half written with
+`matchesGlob` is green no matter how broken the config is (it scored the pre-fix config as safe on the
+first draft). That half is therefore guarded by construction, not by simulation.
 
 **Five issues are absorbed into Phase 7's scope by owner ruling 6 (2026-08-12, P7 spec §5.8):
 #36 (traveler continuation-page header), #43 (bounded all-loads traveler render), #97
@@ -689,9 +696,7 @@ and §4, then pick among:
    **#124** refresh the shell staleness bar after a successful "Back up now".
 4. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
    (delete-customer-with-live-payment); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
-   #102/#103; **Phase 8C's #118–#122** (of which **#122** is worth doing early and cheaply — a
-   post-build `npm test` collects a stale copy under `.next/standalone/**/tests`, so gate ORDER
-   silently matters and any test count reported after a build is inflated); the per-worker-test-DB
+   #102/#103; **Phase 8C's #118–#121** (**#122 is DONE** — branch `fix-vitest-collection`, §6); the per-worker-test-DB
    infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
    sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
    on two pages — customers/parts/orders/certs detail pages likely share the hole).
