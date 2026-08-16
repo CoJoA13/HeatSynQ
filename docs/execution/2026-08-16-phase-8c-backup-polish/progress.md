@@ -12,7 +12,7 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
 | 1 | Pure leaf: constants + path safety | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `bbc2611..e5f2c56`. 14/14 new tests; tsc/eslint clean. Reviewer independently re-ran the tests and verified by execution that `UNSAFE_CHARS` is a well-formed character class and that neither archive regex can match a name containing `/`, `..`, or an embedded newline — i.e. the filename-shaped escape guard actually holds. |
 | 2 | `manage_backups` + `backup_stale_hours` | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `cce97df`. Full suite 2917 / 173 files. The task's real risk was the permission-count growth: the reviewer independently swept `src`/`tests`/`prisma` for hardcoded counts and for bare numeric literals encoding one, found the single site (`permissions.test.ts:46`, `13*4+12`→`13*4+13`), and confirmed the arithmetic from source (13 areas × 4 + 13 actions = 65) rather than accepting the edit as self-evident. |
 | 3 | Health evaluation + archive listing | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `e6ea01c..8c703c2`. 17 new tests; full suite 2934 / 174 files. Reviewer hunted specifically for an **unsafe green** and found none: confirmed by execution that `gzip -t` fails a zero-byte archive, and that both `listArchives` and `newestIntactAt` filter on `s.isFile()` so a *directory* named like an archive is excluded. Green-rule branch order, derived-only `lastSuccessAt`, `parseStatus`'s wrong-shape rejection, and the un-memoized `assertNotPracticeDatabase` all verified at file:line. |
-| 4 | `runBackupNow` | | | |
+| 4 | `runBackupNow` | sonnet, DONE | round 1 **Needs fixes** (1 Important, 8 Minor) → fix round 1 → **all 3 ADDRESSED, approved** | `d6e9d0e..1bb5fcb`. 15 tests here, full suite 2946 / 175. **TDD caught a real hang in the PLAN's own code**: the spawn/pipe promise registered `out.on("finish")` inside the `close` handler, but `pipe()`'s auto-`end()` can fire `finish` first — every call hung at the 5s timeout. **Review (opus) then found an Important the implementer's fix had left open**: on a write-stream error (ENOSPC — the archetypal case) the promise rejected but `pg_dump` kept running, holding a libpq connection, a REPEATABLE READ snapshot and `ACCESS SHARE` on every table; each retry click stranded another. `child.stdout` also had NO error listener (a source `destroy(err)` → uncaught exception). Fixed with `child.kill()` on the error-settle path + a bounded 30-min timeout + a guarded success path. Re-review verified exactly-once settlement, no TDZ on `clearTimeout` (probed empirically), the timer cleared on both settle paths, and that `child.kill()` cannot run on the success path. |
 | 5 | API routes | | | |
 | 6 | Backups admin page | | | |
 | 7 | Shell warning bar | | | |
@@ -20,6 +20,21 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
 | 9 | Restore runbook + E2E flow + docs | | | |
 
 ## Deferred minors (triage input for the whole-branch review)
+- **T4 — CARRY INTO TASK 5 (not a minor, an instruction).** `timeoutMs` is now a public option on
+  `runBackupNow` with no caller outside `backups.ts`. **The route must NOT forward request-controlled
+  opts** — a client-settable dump timeout (or `dir`, or `dumpBin`) would be a real hole. The POST route
+  calls `runBackupNow()` with NO arguments.
+- **T4** Finding #1's kill test passes today via its no-assertion branch (`backup-run.test.ts:312-320`
+  measures 571ms against a 500ms `waitForPid` budget, so `waitForProcessExit` never runs). It is still a
+  genuine regression guard — unfixed code reliably records the pid and reddens it — but today's green is
+  absence-of-evidence. Finding #2's timeout test is the unconditional proof.
+- **T4** `child.kill()` is SIGTERM only, no SIGKILL escalation. Fine for `pg_dump`, which honours it.
+- **T4** A crash *mid-gzip* leaves a truncated file at the archive's REAL final name (`pipeline` writes
+  straight to `finalPath`; there is no gzip-then-rename hop). It cannot masquerade as a good backup —
+  `gzip -t` rejects it and `newestIntactAt` skips it — but it is permanent debris nothing cleans up, and
+  an operator eyeballing the raw folder rather than the health banner could misread its *presence*.
+  Closing it means a second temp-then-rename around the gzip step. Design hardening, not a task defect.
+- **T4** `fail()`'s per-step best-effort `.catch(() => {})` writes are pre-existing and untouched.
 - **T3** No direct test for a **zero-byte** archive or for a **directory** named like an archive. The
   reviewer verified both behaviours by execution (`gzip -t` fails a zero-byte file; both readers filter
   on `s.isFile()`), so this is coverage, not a defect. Cheap to add alongside Task 4's fixture work.
