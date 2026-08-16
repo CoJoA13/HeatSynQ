@@ -11,24 +11,26 @@
 
 ## Task ledger
 
-| Task | Title | Status | Notes |
-|---|---|---|---|
-| T1 | SetupState singleton migration + schema | in progress | foundational migration; commits the exec record |
-| T2 | practiceMode() leaf | pending | |
-| T3 | order-entry readiness predicate leaf | pending | |
-| T4 | SetupState service + audit wiring | pending | depends T1 |
-| T5 | practice banner in root layout | pending | depends T2 |
-| T6 | PRACTICE watermark post-stamp in render.ts | pending | depends T2 |
-| T7 | order-entry gate + opt-in harness | pending | depends T3 |
-| T8 | readiness route + blocking notice | pending | depends T3, T7 |
-| T9 | install-readiness rollup + route | pending | depends T3, T4 |
-| T10 | /setup checklist + state route + reminder + nav | pending | depends T4, T9 |
-| T11 | extract reseedSingletons | pending | depends T1 |
-| T12 | demo-seed module | pending | depends T2, T6, T7 |
-| T13 | reset-practice-data route + control | pending | depends T2, T11, T12 |
-| T14 | deploy shape (erp_practice + practice app) | pending | infra |
-| T15 | E2E flows | pending | depends T5, T8, T10, T14 |
-| T16 | docs consolidation | pending | depends architecture tasks |
+All 16 tasks **done** (committed to `phase-8b-practice-wizard`); see the per-task records below for commit SHAs. Final gates green: vitest 2896/171, tsc/eslint/build clean, E2E 22/22, one migration on both DBs. Two per-task review waves + a 5-lens whole-branch review (no blocking findings; the substantive drift-risk finding fixed on-branch).
+
+| Task | Title | Commit |
+|---|---|---|
+| T1 | SetupState singleton migration + schema | `b39516d` |
+| T2 | practiceMode() leaf | `d222daa` (+ `51e2cdb` fix) |
+| T3 | order-entry readiness predicate leaf | `410b279` |
+| T4 | SetupState service + audit wiring | `cf34e59` |
+| T5 | practice banner in root layout | `dca088d` |
+| T6 | PRACTICE watermark post-stamp in render.ts | `c87281a` |
+| T7 | order-entry gate + opt-in harness | `f88b0cd` |
+| T8 | readiness route + blocking notice | `3b1e38d` |
+| T9 | install-readiness rollup + route | `cbe96af` |
+| T10 | /setup checklist + state route + reminder + nav | `fa713b4` |
+| T11 | extract reseedSingletons | `f04db4f` |
+| T12 | demo-seed module | `0918e9b` |
+| T13 | reset-practice-data route + control | `4526385` |
+| T14 | deploy shape (erp_practice + practice app) | `342b739` |
+| T15 | E2E flows | `97fdd7e` |
+| T16 | docs consolidation (CLAUDE.md) | `5daea6f` |
 
 ## Per-task record
 

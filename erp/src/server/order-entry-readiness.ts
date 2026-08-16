@@ -17,9 +17,12 @@ export type OrderEntryReadiness = { ready: boolean; gaps: SetupGap[] };
  * chart of accounts are configured. Threadable on a caller's client so the gate (T7) can read it
  * pre-transaction on the plain `prisma`, and the rollup (T9) can compose it.
  */
-export async function orderEntryReadiness(
-  db: Prisma.TransactionClient | typeof prisma = prisma,
-): Promise<OrderEntryReadiness> {
+type Db = Prisma.TransactionClient | typeof prisma;
+
+/** The raw blocking-signal conditions, computed ONCE here so the gate, the order-entry notice, AND
+ *  the setup checklist's two blocking steps all read a single source — no drift if §12's optional
+ *  relaxation of the company predicate to name+address is ever applied. */
+async function rawSignals(db: Db) {
   const [name, address, phone, config, glCount] = await Promise.all([
     getSetting("company_name", db),
     getSetting("company_address", db),
@@ -27,19 +30,41 @@ export async function orderEntryReadiness(
     getBillingConfig(db),
     db.glAccount.count({ where: { deletedAt: null } }),
   ]);
+  return {
+    companyComplete: [name, address, phone].every((v) => v.trim() !== ""),
+    hasGlAccounts: glCount > 0,
+    hasArAccount: config.arGlAccountId != null,
+  };
+}
 
+export async function orderEntryReadiness(db: Db = prisma): Promise<OrderEntryReadiness> {
+  const s = await rawSignals(db);
   const gaps: SetupGap[] = [];
   // Company identity — all three letterhead fields; the "" default is the true "unset" signal.
-  if (![name, address, phone].every((v) => v.trim() !== "")) {
+  if (!s.companyComplete) {
     gaps.push({ label: "Company identity (name, address, phone) is not set", href: "/admin/settings" });
   }
   // Chart of accounts — at least one live GL account AND the A/R control account set.
-  if (glCount === 0) {
+  if (!s.hasGlAccounts) {
     gaps.push({ label: "No GL accounts have been created (chart of accounts)", href: "/admin/reference" });
   }
-  if (config.arGlAccountId == null) {
+  if (!s.hasArAccount) {
     gaps.push({ label: "The A/R control account is not set", href: "/admin/billing" });
   }
-
   return { ready: gaps.length === 0, gaps };
+}
+
+/** The two blocking install signals as booleans for the setup checklist (install-readiness.ts) —
+ *  from the SAME source the gate reads, so the checklist's "required" markers can never disagree
+ *  with what createOrder actually enforces. `chartHref` is the screen that completes the chart step:
+ *  create GL accounts first (/admin/reference), then set the A/R control account (/admin/billing). */
+export async function orderEntrySignals(
+  db: Db = prisma,
+): Promise<{ companyComplete: boolean; chartComplete: boolean; chartHref: string }> {
+  const s = await rawSignals(db);
+  return {
+    companyComplete: s.companyComplete,
+    chartComplete: s.hasGlAccounts && s.hasArAccount,
+    chartHref: !s.hasGlAccounts ? "/admin/reference" : "/admin/billing",
+  };
 }
