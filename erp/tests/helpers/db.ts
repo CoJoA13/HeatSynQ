@@ -1,22 +1,10 @@
 import { prisma } from "@/server/db";
-import {
-  TEMPLATE_DOC_TYPES, defaultConfigFor, type TemplateDocTypeString,
-} from "@/lib/template-contracts/index";
-import type { Prisma } from "../../prisma/generated/prisma/client";
+import { reseedSingletons } from "@/server/practice-seed";
 
-/** 'MOS_SHIPPER' → 'standard-mos-shipper' — the seed migration's fixed template row ids,
- *  re-created by `truncateAll()` below after every TRUNCATE. Exported ONCE from here (Task 3
- *  review carry): the drift guard and the Task 4+ service fixtures reference the same seeded
- *  rows, and a second hand-rolled copy of the minting rule is exactly the drift the guard
- *  exists to catch. */
-export function templateId(docType: TemplateDocTypeString): string {
-  return `standard-${docType.toLowerCase().replace(/_/g, "-")}`;
-}
-
-/** The seeded template's v1 PUBLISHED version id ('standard-traveler-v1'). */
-export function templateVersionId(docType: TemplateDocTypeString): string {
-  return `${templateId(docType)}-v1`;
-}
+// The seeded template row ids are minted by practice-seed.ts (the single source — the drift-guard
+// precedent, so a second hand-rolled copy of the minting rule can't drift) and re-exported here so
+// the many test files that reference them keep importing from "./helpers/db".
+export { templateId, templateVersionId } from "@/server/practice-seed";
 
 /**
  * Deletes all rows from every table except _prisma_migrations, then restores the rows the
@@ -49,32 +37,10 @@ export async function truncateAll(): Promise<void> {
   if (tables.length === 0) return;
   const list = tables.map((t) => `"${t.tablename}"`).join(", ");
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} CASCADE`);
-  await prisma.$executeRaw`
-    INSERT INTO "BillingConfig" ("id", "billForCertDefault", "updatedAt")
-    VALUES ('singleton', false, now())
-    ON CONFLICT ("id") DO NOTHING`;
-  await prisma.$executeRaw`
-    INSERT INTO "SetupState" ("id", "updatedAt")
-    VALUES ('singleton', now())
-    ON CONFLICT ("id") DO NOTHING`;
-
-  const now = new Date();
-  await prisma.documentTemplate.createMany({
-    data: TEMPLATE_DOC_TYPES.map((docType) => ({
-      id: templateId(docType), docType, name: "Standard", isDefault: true, updatedAt: now,
-    })),
-  });
-  await prisma.documentTemplateVersion.createMany({
-    data: TEMPLATE_DOC_TYPES.map((docType) => ({
-      id: templateVersionId(docType), templateId: templateId(docType), versionNumber: 1,
-      status: "PUBLISHED", config: defaultConfigFor(docType) as unknown as Prisma.InputJsonValue,
-      publishedAt: now, updatedAt: now,
-    })),
-  });
-  await prisma.$executeRaw`
-    UPDATE "DocumentTemplate" t SET "publishedVersionId" = v."id"
-    FROM "DocumentTemplateVersion" v
-    WHERE v."templateId" = t."id" AND v."versionNumber" = 1`;
+  // Restore the by-construction singletons + the eight Standard templates. Phase 8B §5.3 lifted this
+  // body into practice-seed.ts (a NON-test-only module) so the production practice reset reuses the
+  // exact same restore; truncateAll itself stays test-only.
+  await reseedSingletons();
 }
 
 /**

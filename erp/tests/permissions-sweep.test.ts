@@ -117,6 +117,12 @@ describe("permission sweep", () => {
       // autosave cadence would flood the log with junk. Full authorization quote in the file's
       // own header comment.
       "order-drafts.ts",
+      // practice-seed.ts (Phase 8B §5.3) — reseedSingletons RESTORES the by-construction singletons
+      // + the eight Standard templates after a truncate (tests' truncateAll and the practice reset).
+      // A truncate/reseed writes no audit trail by design — it is a reset to a valid baseline, not an
+      // acknowledged history (§5.3 states this explicitly); it is the non-test-only home of exactly
+      // the re-seed truncateAll always performed unaudited.
+      "practice-seed.ts",
     ]);
     const offenders = readdirSync(join(process.cwd(), "src/server"))
       .filter((f) => f.endsWith(".ts") && !EXCEPT.has(f))
