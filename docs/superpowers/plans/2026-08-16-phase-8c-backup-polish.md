@@ -2134,10 +2134,42 @@ Register it in `erp/e2e/run.mjs` at the tail of `FLOWS`:
   { name: "backups", as: "admin", module: "./flows/backups.mjs" },
 ```
 
-> **The harness needs `BACKUP_DIR` set for the dev server it spawns.** Check how `run.mjs` passes env
-> to the dev server it starts and add `BACKUP_DIR` pointing at a folder the harness creates and
-> **cleans up afterwards** (the harness's existing fixture-cleanup discipline — do not leave archives
-> in `erp/backups` after the run).
+**The harness must own the backup folder — do not let this flow depend on the developer's `.env`.**
+I have read `e2e/run.mjs`; here are the four exact edits, with the line neighbourhoods as of this
+writing (verify by content, not by line number):
+
+1. Beside `const ARTIFACTS_DIR = …` (~line 24):
+
+```js
+// Phase 8C: the backups flow writes REAL pg_dump archives, so the harness owns a throwaway folder
+// rather than inheriting the developer's BACKUP_DIR (or, worse, writing into erp/backups and
+// leaving archives behind). Created fresh in main(), removed in teardown().
+const BACKUP_DIR = path.join(ERP_ROOT, "e2e-backups");
+```
+
+2. In `startDevServer()`'s spawn env (~line 186) — the dev server is what actually runs `pg_dump`:
+
+```js
+    env: { ...process.env, PORT: String(PORT), BACKUP_DIR },
+```
+
+3. Beside the existing `ARTIFACTS_DIR` reset in `main()` (~lines 354-355), so every run starts from an
+   empty folder and the flow's "no archives yet ⇒ red" assertion is real:
+
+```js
+    await rm(BACKUP_DIR, { recursive: true, force: true });
+    await mkdir(BACKUP_DIR, { recursive: true });
+```
+
+4. In `teardown()` (~line 227) — **the one teardown path**, which both `main()`'s `finally` and the
+   SIGINT/SIGTERM handlers share, so a Ctrl-C mid-run cleans up too:
+
+```js
+  await rm(BACKUP_DIR, { recursive: true, force: true });
+```
+
+> **Note:** `runBackupNow` dumps the dev server's own `DATABASE_URL`, i.e. the **DEV** database `erp`
+> — not `erp_test`. That is correct and intended; the archive is thrown away with the folder.
 
 - [ ] **Step 2: Write the restore runbook**
 
