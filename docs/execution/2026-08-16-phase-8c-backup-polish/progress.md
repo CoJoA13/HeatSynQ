@@ -11,7 +11,7 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
 |---|---|---|---|---|
 | 1 | Pure leaf: constants + path safety | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `bbc2611..e5f2c56`. 14/14 new tests; tsc/eslint clean. Reviewer independently re-ran the tests and verified by execution that `UNSAFE_CHARS` is a well-formed character class and that neither archive regex can match a name containing `/`, `..`, or an embedded newline — i.e. the filename-shaped escape guard actually holds. |
 | 2 | `manage_backups` + `backup_stale_hours` | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `cce97df`. Full suite 2917 / 173 files. The task's real risk was the permission-count growth: the reviewer independently swept `src`/`tests`/`prisma` for hardcoded counts and for bare numeric literals encoding one, found the single site (`permissions.test.ts:46`, `13*4+12`→`13*4+13`), and confirmed the arithmetic from source (13 areas × 4 + 13 actions = 65) rather than accepting the edit as self-evident. |
-| 3 | Health evaluation + archive listing | | | |
+| 3 | Health evaluation + archive listing | sonnet, DONE | **Spec ✅ · Approved** (round 1) | `e6ea01c..8c703c2`. 17 new tests; full suite 2934 / 174 files. Reviewer hunted specifically for an **unsafe green** and found none: confirmed by execution that `gzip -t` fails a zero-byte archive, and that both `listArchives` and `newestIntactAt` filter on `s.isFile()` so a *directory* named like an archive is excluded. Green-rule branch order, derived-only `lastSuccessAt`, `parseStatus`'s wrong-shape rejection, and the un-memoized `assertNotPracticeDatabase` all verified at file:line. |
 | 4 | `runBackupNow` | | | |
 | 5 | API routes | | | |
 | 6 | Backups admin page | | | |
@@ -20,6 +20,12 @@ vitest 2898 / 171 files · tsc clean · eslint clean · build clean · E2E 22/22
 | 9 | Restore runbook + E2E flow + docs | | | |
 
 ## Deferred minors (triage input for the whole-branch review)
+- **T3** No direct test for a **zero-byte** archive or for a **directory** named like an archive. The
+  reviewer verified both behaviours by execution (`gzip -t` fails a zero-byte file; both readers filter
+  on `s.isFile()`), so this is coverage, not a defect. Cheap to add alongside Task 4's fixture work.
+- **T3** `parseStatus` tolerates a status file missing its `error` key (coerces to `null`). It can never
+  produce a false green — `ok` and `lastRunAt` are both still strictly validated — so it is leniency,
+  not a hole.
 - **T1** `isHealthy()` is exported from `backup-constants.ts` but untested and, so far, unused — the
   page reads `health.state === "ok"` directly. Inherited verbatim from the plan's code block, so it is
   a plan-level gap, not an implementer defect. **If no consumer exists by Task 7, delete it (YAGNI)
