@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { truncateAll, seedOrderGatePrereqs } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { createOrder } from "@/server/orders";
 import { setSetting } from "@/server/settings";
 import { HttpError } from "@/server/errors";

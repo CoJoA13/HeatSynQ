@@ -749,16 +749,16 @@ async function deleteClosePeriodFixture(
  * close flow's own "GL export not ready" assertions still hold). Restored by cleanup: company
  * identity via `priorCompanyIdentity`, arGl via `restoreBillingConfig`/`priorBillingConfig`.
  */
-async function seedOrderGateForE2E(arGlAccountId: string): Promise<void> {
+async function seedOrderGateForE2E(tx: Prisma.TransactionClient, arGlAccountId: string): Promise<void> {
   const identity: Record<string, string> = {
     company_name: "E2E Heat Treat Co.",
     company_address: "1 E2E Way, Testville",
     company_phone: "555-0100",
   };
   for (const [key, value] of Object.entries(identity)) {
-    await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+    await tx.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
   }
-  await prisma.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId } });
+  await tx.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId } });
 }
 
 async function restoreBillingConfig(prior: Fixtures["priorBillingConfig"] | undefined): Promise<void> {
@@ -1245,7 +1245,7 @@ async function create(): Promise<Fixtures> {
   // `state.fixtures` and so skipped cleanup entirely. The partial set then sat in the developer's
   // database until some later run's reapLeftovers happened along. All-or-nothing removes the
   // partial state rather than adding another compensating path to get it wrong.
-  const fixtures = await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     const customer = await tx.customer.create({
       data: { code: FIXTURE.customerCode, name: "E2E Test Customer" },
     });
@@ -1653,6 +1653,12 @@ async function create(): Promise<Fixtures> {
         passwordHash: priceEditHash, roleId: priceEditRole.id,
       },
     });
+
+    // Phase 8B: seed the order-entry gate's prerequisites INSIDE the fixture transaction (Codex) —
+    // company identity + arGlAccountId — so it is all-or-nothing with the rest of the fixture; a
+    // failure can no longer leave a committed partial set that run.mjs then skips cleaning up.
+    await seedOrderGateForE2E(tx, closeArGlAccount.id);
+
     return {
       customerId: customer.id, customerCode: customer.code,
       partId: part.id, partNumber: part.partNumber,
@@ -1711,16 +1717,11 @@ async function create(): Promise<Fixtures> {
       quoteStepCodeName: quoteStepCode.name,
       quoteEndingStatementName: FIXTURE.quoteEndingStatementName,
       priorDefaultEndingStatementId,
+      priorCompanyIdentity,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
   }, { timeout: 30000 });
-
-  // Phase 8B: the order-entry gate blocks createOrder until company identity + a chart of accounts
-  // (incl. arGlAccountId) are configured. Seed both AFTER the fixture transaction (which created the
-  // GL accounts) so every order-creating flow passes the gate; cleanup restores them.
-  await seedOrderGateForE2E(fixtures.closeArGlAccountId);
-  return { ...fixtures, priorCompanyIdentity };
 }
 
 /**

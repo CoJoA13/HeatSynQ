@@ -37,5 +37,16 @@ export async function resetPracticeDataUnguarded(): Promise<void> {
  */
 export async function resetPracticeData(): Promise<void> {
   await assertPracticeDatabase(prisma);
-  await resetPracticeDataUnguarded();
+  // Serialize concurrent resets (Codex): hold a session-spanning advisory lock for the WHOLE
+  // (intentionally non-atomic) reset via a pinned interactive transaction, so two admins' resets can
+  // never interleave and leave a partial baseline. A second reset blocks on the lock rather than
+  // racing. The lock auto-releases when this tx ends; the reset runs on the ambient singleton's own
+  // pooled connections (the timeout is generous — the demo re-seed is many service calls).
+  await prisma.$transaction(
+    async (lock) => {
+      await lock.$executeRaw`SELECT pg_advisory_xact_lock(88018802)`;
+      await resetPracticeDataUnguarded();
+    },
+    { timeout: 120_000, maxWait: 120_000 },
+  );
 }

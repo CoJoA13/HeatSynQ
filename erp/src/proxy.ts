@@ -4,7 +4,10 @@ import type { NextRequest } from "next/server";
 // Duplicated from `SESSION_COOKIE` in `@/server/http` rather than imported: that module
 // pulls in `./sessions` -> `./db` (Prisma), and this runs on the Edge runtime, which cannot
 // load the Prisma client. Keep this in sync with `SESSION_COOKIE` by hand.
-const SESSION_COOKIE = "erp_session";
+// Reads the SAME env var as http.ts's SESSION_COOKIE (which it deliberately does not import — that
+// would drag Prisma into the Edge bundle). The self-hosted standalone server runs the proxy in Node,
+// so process.env is read at runtime; the practice copy sets SESSION_COOKIE_NAME=erp_practice_session.
+const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME ?? "erp_session";
 
 // Next 16 renamed the `middleware` file convention to `proxy` — same execution model, same
 // `config.matcher`, only the file and function names changed.

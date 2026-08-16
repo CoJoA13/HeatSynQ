@@ -1,12 +1,18 @@
 "use client";
 import { useState } from "react";
 import { api } from "@/lib/fetcher";
+import { gate } from "@/lib/permission-ui";
+import { usePermissions } from "@/lib/use-permissions";
 
 // The practice-only "Reset practice data" control (Phase 8B §5.3). Rendered only in practice mode
 // (its parent server page decides that). The reset route is fully guarded (admin + practiceMode +
 // the in-request db-identity re-check), so this control is UX only — a mis-click on production would
 // be refused server-side regardless.
 export function PracticeResetControl() {
+  // The reset route requires admin.edit; the banner links every signed-in operator here, so disable
+  // the control (rather than let it deterministically 403) for anyone lacking it (Codex).
+  const { permissions } = usePermissions();
+  const editGate = gate(permissions, "admin.edit");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +50,8 @@ export function PracticeResetControl() {
       {message && <p className="mb-2 rounded bg-green-50 p-2 text-sm text-green-700">{message}</p>}
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || !editGate.allowed}
+        title={editGate.allowed ? undefined : editGate.title}
         onClick={() => void reset()}
         className="rounded bg-red-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
       >

@@ -334,7 +334,13 @@ export default function NewOrderPage() {
     // the SAME predicate the gate enforces (order-entry-readiness.ts), so the two cannot disagree.
     if (!saveGate.allowed) return;
     api<{ ready: boolean; gaps: { label: string; href: string }[] }>("/api/orders/entry-readiness")
-      .then(setReadiness).catch((e) => addLoadError((e as Error).message));
+      .then(setReadiness)
+      .catch((e) => {
+        addLoadError((e as Error).message);
+        // Don't strand the form on "Checking setup…" forever on a fetch failure — fall through
+        // optimistically; the SERVER-side gate is the real enforcement and refuses a genuine block.
+        setReadiness({ ready: true, gaps: [] });
+      });
   }, [saveGate.allowed, addLoadError]);
 
   // ---- entry-defaults (request date) — refetched whenever the customer, the LEAD part, or the
@@ -686,7 +692,11 @@ export default function NewOrderPage() {
         <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{loadError ?? autosaveError}</p>
       )}
 
-      {readiness && !readiness.ready ? (
+      {saveGate.allowed && readiness === null ? (
+        // Wait for the readiness predicate before rendering the form, so a fast user can't start or
+        // submit an order in the window before the gate result arrives (Codex).
+        <p className="text-sm text-slate-500">Checking setup…</p>
+      ) : readiness && !readiness.ready ? (
         // Phase 8B §5.6: real order entry is blocked until company identity + a chart of accounts
         // are configured. The form is replaced (not merely disabled) by a notice linking to /setup.
         <div className="rounded border border-amber-300 bg-amber-50 p-4">

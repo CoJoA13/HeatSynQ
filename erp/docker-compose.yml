@@ -45,6 +45,9 @@ services:
       DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp_practice
       PRACTICE_MODE: "true"
       SESSION_SECRET: ${SESSION_SECRET:?set in .env}
+      # A distinct session cookie so a practice login on :8080 never overwrites the prod token on :80
+      # (cookies are host/path-scoped, not port). http.ts + proxy.ts both read this at runtime.
+      SESSION_COOKIE_NAME: erp_practice_session
     depends_on:
       db: { condition: service_healthy }
     profiles: ["practice"]
