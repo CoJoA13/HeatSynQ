@@ -200,3 +200,33 @@ feature the owner is expected to go looking for. Options are recorded in the pla
   task.
   **Standing correction: never `git add -A` while an implementer subagent is live — stage explicit
   paths.** Doc edits during a task must be staged file-by-file.
+
+## Phase 8 demo (2026-08-16, post-merge)
+Walked 8A/8B/8C live against a production-identity dev server and the practice copy.
+
+**Worked as designed, verified end to end:**
+- A fresh production install shows all three Phase 8 signals stacked — setup checklist (blue), the
+  §5.7 password reminder (amber), and **8C's red staleness bar**. No status file exists, so it reads
+  **overdue, not green**: the "absence is failure" rule doing its job on day one.
+- **"Back up now" ran a real `pg_dump`**: collision-proof archive name, the single-overwrite status
+  file in exactly its designed `{lastRunAt, ok, source, error}` shape, `gzip -t` passing, and an
+  `AuditLog` row (`entity=backup`, `action=create`) attributed to **Administrator**.
+- **Practice copy:** the orange PRACTICE banner renders **on the login screen** — proof it is mounted
+  above `Shell` and survives the signed-out early return. The demo slice seeded through the services.
+- **The traveler printed from practice carries the diagonal PRACTICE / SAMPLE watermark** (visual
+  confirmation captured).
+- The demo seed **refused to run against `erp`** (`assertPracticeDatabase`) — the guard working.
+- Backlog report totals verified correct against the page text (1125 + 9072 = 10197; 500 + 672 = 1172).
+
+**Found, filed:**
+- **#123** the practice copy still shows a Backups nav entry and an enabled "Back up now" button
+  (the route correctly refuses and no red bar appears, but the controls render).
+- **#124** the shell staleness bar does not refresh after a successful "Back up now" — the page flips
+  green while the bar above it stays red until the next page load.
+
+**Two false alarms of my own, both caught before reporting — worth recording as method:**
+1. I read "3125"/"4072" off a low-resolution screenshot and suspected a wrong report total. The page
+   text showed 1125/9072, which sum correctly. **Do not read numbers off a scaled screenshot.**
+2. My PDF stream-inflation check reported **no** practice watermark. Rasterising the page showed it
+   plainly — the glyphs are subset-encoded, so the text search was a false negative. **A negative
+   from a hand-rolled detector is not evidence; render it and look.**

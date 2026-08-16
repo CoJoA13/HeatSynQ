@@ -654,7 +654,14 @@ and §4, then pick among:
    Phase 8's comparison scoreboard delivered the weekly tooling, and 8C made the box trustworthy to
    leave running. Still gated on the owner-owed GL-account list and the bookkeeper's QBO import method
    (§7) before a *real* export month can start.
-2. **Issue #115 (P1) — schedule this BEFORE the acceptance month, not during it.** Every caller of
+2. **Issue #115 (P1) — RULED 2026-08-16: this is the NEXT piece of work, before the acceptance
+   month.** (Owner's decision at the Phase 8 demo: the acceptance month is the first time two people
+   use the system at once, order entry and shipping are exactly the paths that break, and a failed
+   save mid-parallel-run reads as "the ERP is unreliable" rather than as a known bug.) The shape of
+   the fix: wrap the six allocating callers in `retryOnSerializationConflict` (the pattern
+   `close-periods.ts` already uses), each needing its own retry-safety pass first — `saveNewOrder`
+   (+ its `clientRequestId` idempotency), `createShipper`, `createCredit`, `createReceiptBatch`,
+   `createQuote`, `exportClose`. Every caller of
    `allocateNumber` allocates inside a Serializable transaction that aborts with `40001` on **any**
    concurrent allocation, with no retry anywhere but `close-periods.ts` (detail in §4/§6). It breaks
    concurrent creation of every numbered entity — order, shipper, BOL, credit, receipt batch, quote,
