@@ -115,6 +115,18 @@ month only reds the multi-month one specifically.
 This also makes posted cash reachable by the GL-export delta for the first time — the correction path
 is reopen-period → reopen-batch → correct → re-close → the re-export reverses.
 
+**One question the ruling did not cover, found in self-review: a POSTED batch's payments can carry
+live applications** (§5.2 allows applying on-account cash after posting), so what does reopening do
+to them? Answer: nothing is stranded — payment, applications and invoice balance all survive, because
+`ar-balances` derives from live `Application` rows and never looks at batch status. So `voidPayment`'s
+applications-first guard is deliberately NOT copied onto reopen (voiding *strands*; reopening does
+not). What moves is GL recognition, and the safety net is **measured, not inferred**: the roll-forward
+scopes `paymentTotal` to POSTED batches while the aging does not, so `preliminaryReport` shows
+variance 0 → **300** and `paymentTotal` 300 → 0 the moment the batch reopens, with the aging unmoved
+and `unpostedBatchCount` naming the batch to re-post. **The month cannot close quietly** — the close
+refuses on the nonzero variance until it is re-posted. Worth the owner knowing, since it means a
+reopened batch left un-re-posted blocks the month-end.
+
 ---
 
 ### Group B — Money shape & A/R integrity  ·  **#91**, **#81**, **#84**

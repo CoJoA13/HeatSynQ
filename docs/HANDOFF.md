@@ -429,7 +429,15 @@ non-empty one was frozen solid), checked BEFORE the live-payment guard so the me
 rather than sending the operator at a control `refusePosted` refuses. The month-locking loop is now
 `assertBatchMonthsOpen`, shared with `postBatch`, so the ascending-order rule for advisory mutexes is
 stated once. Gated `receivables.edit` (symmetric with the post it undoes), reason required and
-audited. Full triage: `docs/execution/2026-08-09-phase-5c-close-qbo-export/progress.md`.
+audited. **One consequence the ruling did not cover, found in self-review and now measured:** a
+POSTED batch's payments can carry live applications (§5.2), and reopening strands none of them —
+`ar-balances` never looks at batch status, so the invoice balance is unmoved and `voidPayment`'s
+applications-first guard is deliberately NOT copied onto reopen (voiding *strands*; reopening does
+not). GL recognition does move, and the close is the net: `preliminaryReport` shows variance 0 → 300
+and `paymentTotal` 300 → 0 the moment the batch reopens, so **the month refuses to reconcile until it
+is re-posted**. Operationally that means a reopened batch left un-re-posted blocks month-end — loud,
+not silent, which is the design. Full triage:
+`docs/execution/2026-08-09-phase-5c-close-qbo-export/progress.md`.
 
 **Owner-approved, scheduled for immediately after Phase 5A merges (owner, 2026-08-06):
 per-worker test databases, to lift the suite's serial-execution ceiling.** The suite is at 1425
