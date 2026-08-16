@@ -75,7 +75,7 @@ Copied verbatim from the binding documents. **Every task's requirements implicit
 | `src/app/admin/backups/page.tsx` | **NEW** — the client page |
 | `src/components/BackupBanner.tsx` | **NEW** — the shell warning bar, a `SetupBanner` clone |
 | `src/app/layout.tsx` | **MODIFY** — mount `<BackupBanner />` beside `<SetupBanner />` |
-| `src/components/Shell.tsx` | **MODIFY** — add the Backups nav entry under Admin |
+| `src/lib/nav.ts` + `tests/nav.test.ts` | **MODIFY** — the nav model gates only on `<area>.view`, but `manage_backups` is a special ACTION. `NavEntry` becomes a discriminated union (area-gated **or** action-gated), both list builders route through one `canSeeEntry`, and the Backups entry gates on the action. Gating it on `admin.view` instead would be a §5.15 silent dead end. `Shell.tsx` itself needs no change — it renders `visibleAdmin(...)` |
 | `Dockerfile` | **MODIFY** — `apk add --no-cache postgresql18-client` in the run stage |
 | `docker-compose.yml` | **MODIFY** — `BACKUP_DIR` + `./backups` mount on `app`; `BACKUP_DIR` on `backup`; **nothing** on `app-practice` |
 | `scripts/backup.sh` | **MODIFY** — honor `BACKUP_DIR`, write the status file, prune orphaned `.tmp` files |
