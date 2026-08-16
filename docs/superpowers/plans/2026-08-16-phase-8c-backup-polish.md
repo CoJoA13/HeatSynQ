@@ -1516,7 +1516,8 @@ git commit -m "feat(backups): add the manage_backups-gated backup routes"
 
 **Files:**
 - Create: `erp/src/app/admin/backups/page.tsx`
-- Modify: `erp/src/components/Shell.tsx` (nav entry)
+- Modify: `erp/src/lib/nav.ts` (the nav model gains action-gating + the Backups entry)
+- Modify: `erp/tests/nav.test.ts`
 - *(No component test here — the page is a thin render over one endpoint and is covered by the Task 9
   E2E flow. The component test that IS worth writing lands in Task 7, where `tests/practice-banner.test.tsx`
   gives a direct precedent for the banner's conditional-render logic.)*
@@ -1668,12 +1669,85 @@ export default function BackupsPage() {
 }
 ```
 
-- [ ] **Step 3: Add the nav entry**
+- [ ] **Step 3: Teach the nav model to gate on a special action, then add the entry**
 
-In `erp/src/components/Shell.tsx`, find the Admin nav group and add an entry pointing at
-`/admin/backups`, gated the way the group's siblings are gated. **Match the file's existing gating
-idiom exactly** — read the neighbouring entries first; if they gate on a permission key, use
-`action.manage_backups`.
+The nav lives in **`erp/src/lib/nav.ts`** (a pure client-safe module), not in `Shell.tsx` — `Shell`
+just renders `visibleAdmin(me.permissions)`. **This step is bigger than adding a line, and here is
+why.** Every existing entry is gated by `canViewArea`, which tests for `<area>.view`. But
+`manage_backups` is a **special action**, not an area — `backups.view` does not exist and never will.
+
+Gating the entry on `admin.view` instead would be a **§5.15 silent dead end**: a user granted
+`manage_backups` but not `admin.view` could use the page but would never see it. That is precisely
+the failure the file's own nav-decision note calls out for Templates ("a `templates.view`-only user
+still sees an Admin group containing just Templates, and so reaches /admin/templates"). So the nav
+model gains action-gating.
+
+Change the type to a discriminated union so an entry declares exactly one gate:
+
+```ts
+export type NavEntry =
+  | { label: string; href: string; area: string; action?: never }
+  | { label: string; href: string; action: string; area?: never };
+```
+
+Add the entry to `ADMIN`, beside the other configuration surfaces:
+
+```ts
+  // Gated on the `manage_backups` ACTION rather than an area — backups are not one of the 12
+  // permission areas, and gating this on `admin.view` would leave a manage_backups-only user able
+  // to use the page but unable to find it (the §5.15 silent-dead-end rule the Templates entry
+  // above exists to avoid).
+  { label: "Backups", href: "/admin/backups", action: "manage_backups" },
+```
+
+Add the resolver beside `canViewArea` (keep `canViewArea` exported — `tests/nav.test.ts` uses it):
+
+```ts
+/** True iff the permission set grants the ONE gate this entry declares — `<area>.view` for an
+ *  area entry, `action.<name>` for an action entry. An absent array (permissions still loading)
+ *  is treated as "no grants", so entries stay hidden until /api/auth/me resolves. */
+export function canSeeEntry(perms: string[] | undefined, entry: NavEntry): boolean {
+  return entry.action !== undefined
+    ? (perms ?? []).includes(`action.${entry.action}`)
+    : canViewArea(perms, entry.area);
+}
+```
+
+and route **both** list builders through it:
+
+```ts
+export function visibleNav(perms: string[] | undefined): NavEntry[] {
+  return NAV.filter((n) => canSeeEntry(perms, n));
+}
+
+export function visibleAdmin(perms: string[] | undefined): NavEntry[] {
+  return ADMIN.filter((n) => canSeeEntry(perms, n));
+}
+```
+
+Finally, extend the nav-decision comment at the top of the file to record that admin entries now gate
+on an area **or** a special action, and why.
+
+- [ ] **Step 3b: Extend `tests/nav.test.ts`**
+
+Read the existing cases and match their style. Add at least:
+
+```ts
+  it("shows Backups to a manage_backups holder who has no admin.view", () => {
+    const entries = visibleAdmin(["action.manage_backups"]);
+    expect(entries.map((n) => n.href)).toEqual(["/admin/backups"]);
+  });
+
+  it("hides Backups from an admin.view user without manage_backups", () => {
+    const hrefs = visibleAdmin(["admin.view"]).map((n) => n.href);
+    expect(hrefs).not.toContain("/admin/backups");
+    expect(hrefs).toContain("/admin/users");   // the rest of the group is unaffected
+  });
+
+  it("hides Backups while permissions are still loading", () => {
+    expect(visibleAdmin(undefined).map((n) => n.href)).not.toContain("/admin/backups");
+  });
+```
 
 - [ ] **Step 4: Verify in the browser**
 
