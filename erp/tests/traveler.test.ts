@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, voidOrder } from "@/server/orders";
@@ -156,7 +156,7 @@ describe("pdf plumbing", () => {
 });
 
 describe("buildTravelerDefinition", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("is pure: synchronous, plain JSON, and deterministic", async () => {
     const { order } = await orderFixture();
@@ -306,7 +306,7 @@ describe("buildTravelerDefinition", () => {
 });
 
 describe("printTraveler", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("stores the rendered PDF and returns the same bytes", async () => {
     const { order } = await orderFixture();
@@ -642,7 +642,7 @@ describe("printTraveler", () => {
 });
 
 describe("listDocuments / getDocument", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("lists newest first, without the bytes", async () => {
     const { order } = await orderFixture();
@@ -664,7 +664,7 @@ describe("listDocuments / getDocument", () => {
 });
 
 describe("traveler routes", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("POST /api/orders/[id]/traveler streams a PDF for orders.view", async () => {
     const { order } = await orderFixture();
@@ -755,7 +755,7 @@ describe("traveler routes", () => {
 });
 
 describe("traveler edge shapes", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("survives blank company settings, no addresses, no inspections and no containers", async () => {
     const customer = await prisma.customer.create({ data: { code: "BARE", name: "Bare Co" } });

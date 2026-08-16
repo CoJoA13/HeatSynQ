@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
@@ -121,7 +121,7 @@ async function finalizedInvoice() {
 }
 
 describe("invoice routes", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   // ---------------------------------------------------------------------------------------
   // GET /api/invoices, GET /api/invoices?candidates=1, POST /api/invoices

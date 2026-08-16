@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, getOrder, updateOrder, type OrderDetail } from "@/server/orders";
@@ -143,7 +143,7 @@ function zeroQtyInput(order: OrderDetail) {
 }
 
 describe("createShipper", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("blocks a customer on credit hold and names them", async () => {
     const { order, customer } = await savedOrder({ creditHold: true });
@@ -425,7 +425,7 @@ describe("createShipper", () => {
 });
 
 describe("getShipper", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns full detail — label, ordered/shipped-to-date figures, containers and serials", async () => {
     const { order, customer } = await savedOrder({ qty: 10, weight: "25.00" });
@@ -516,7 +516,7 @@ describe("getShipper", () => {
 // order for its line/container/serial catalog. Same name, same dense shape, same single
 // `shippedTotals` derivation — a widened existing payload, not a new route (spec §9 unchanged).
 describe("getOrder shipped-to-date (the /shipping/new prefill seam)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("carries a dense per-line ledger on the order's own detail", async () => {
     const { order } = await twoLineOrder();

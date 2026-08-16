@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import {
   listCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer,
   customerPartBlockers, customerOrderBlockers, customerQuoteBlockers,
@@ -37,7 +37,7 @@ async function giveSteps(partId: string) {
 }
 
 describe("customers service", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("creates and lists by code", async () => {
     await createCustomer({ code: "BETA", name: "Beta Co" });

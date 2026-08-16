@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
@@ -82,7 +82,7 @@ async function makeShipment(customerId: string, orderId: string): Promise<{ id: 
 }
 
 describe("cert routes", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   // ---------------------------------------------------------------------------------------
   // GET /api/certs, POST /api/certs

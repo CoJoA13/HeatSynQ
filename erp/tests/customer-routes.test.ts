@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { GET as list, POST as create } from "@/app/api/customers/route";
 import { GET as detail, PUT as update, DELETE as remove } from "@/app/api/customers/[id]/route";
@@ -20,7 +20,7 @@ function getReq(url: string, cookie?: string): Request {
 }
 
 describe("customer routes", () => {
-  beforeEach(async () => await truncateAll());
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("401s every verb without a session", async () => {
     expect((await list(new Request("http://t/api/customers"), noParams)).status).toBe(401);

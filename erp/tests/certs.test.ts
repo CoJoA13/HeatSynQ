@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import ExcelJS from "exceljs";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { readAudit } from "@/server/audit";
 import { createOrder, voidOrder, type OrderDetail } from "@/server/orders";
@@ -82,7 +82,7 @@ async function makeShipment(
 }
 
 describe("createCert", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("refuses a second live cert for the same scope instance", async () => {
     const { order } = await savedOrder();
@@ -311,7 +311,7 @@ describe("createCert", () => {
 });
 
 describe("requirement identity is frozen at seed (ruling 24; round-4 finding)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("keeps the seeded part identity when the part is later renamed", async () => {
     const { order, part } = await savedOrder();
@@ -333,7 +333,7 @@ describe("requirement identity is frozen at seed (ruling 24; round-4 finding)", 
 });
 
 describe("createCert at order save", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("creates an ORDER-scope cert at order save and nothing for the other scopes", async () => {
     const a = await savedOrder({ certRequired: true, certScope: "ORDER" });
@@ -346,7 +346,7 @@ describe("createCert at order save", () => {
 });
 
 describe("load re-split leaves a load-scope cert untouched", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("leaves the cert live with its loadNumber unchanged after a re-split", async () => {
     const { order } = await savedOrder({ loadQty: 300, qty: 1000 }); // 4 loads
@@ -385,7 +385,7 @@ describe("load re-split leaves a load-scope cert untouched", () => {
 });
 
 describe("getCert", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns full detail with poNumber, material, receivedDate and empty defaults", async () => {
     const { order, part } = await savedOrder({ poNumber: "PO-777" });
@@ -421,7 +421,7 @@ describe("getCert", () => {
 });
 
 describe("updateCert", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("updates freeform and internalNotes and produces a real before/after audit diff", async () => {
     const { order } = await savedOrder();
@@ -453,7 +453,7 @@ describe("updateCert", () => {
 });
 
 describe("voidCert", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("requires a reason to void", async () => {
     const { order } = await savedOrder();
@@ -489,7 +489,7 @@ describe("voidCert", () => {
 });
 
 describe("listCerts", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("excludes voided certs by default and includes them when asked", async () => {
     const { order } = await savedOrder();
@@ -535,7 +535,7 @@ describe("listCerts", () => {
 });
 
 describe("exportCerts", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   async function sheetOf(buf: Buffer) {
     const wb = new ExcelJS.Workbook();
@@ -579,7 +579,7 @@ describe("exportCerts", () => {
 // resolved successfully and wrote a reading onto the voided cert — the fix-wave report carries the
 // transcript.
 describe("voided-state guard rides the Cert row lock, not SSI (fix-wave Important #1)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("replaceReadings racing a Read-Committed voidCert never writes readings through a void that committed while it was blocked", async () => {
     const customer = await makeCustomer();
@@ -641,7 +641,7 @@ describe("voided-state guard rides the Cert row lock, not SSI (fix-wave Importan
 });
 
 describe("certsForOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns every cert for the order, voided included", async () => {
     const { order } = await savedOrder({ loadQty: 5 }); // qty 10 -> loads 1 and 2

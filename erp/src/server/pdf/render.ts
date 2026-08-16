@@ -10,10 +10,12 @@ import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 import PdfPrinter from "pdfmake/src/printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
 import { toBuffer } from "bwip-js/node";
-// pdf-lib is imported ONLY here (plan Global Constraints): it exists solely to merge the
-// per-sheet-group PDFs renderSheetGroups produces, and no other file may reach for it — the
-// same module boundary that confines pdfmake and bwip-js to this file.
-import { PDFDocument } from "pdf-lib";
+// pdf-lib is imported ONLY here (plan Global Constraints), for its TWO sanctioned jobs: merging the
+// per-sheet-group PDFs renderSheetGroups produces, and post-stamping the Phase 8B practice
+// watermark (stampPractice). No other file may reach for it — the same module boundary that
+// confines pdfmake and bwip-js to this file.
+import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import { practiceMode } from "../practice-mode";
 
 /**
  * The font map — the four contract-enumerated families (Phase 7 spec §6.2, owner ruling 5),
@@ -257,7 +259,7 @@ function normalizeMargins(
  * definition key (a hand-written `footer`/`background` callback) would silently vanish from the
  * clone and skew the probe, so it is refused by name. Use the declarative specs instead.
  */
-export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
+async function renderPdfCore(def: RenderableDefinition): Promise<Buffer> {
   assertFontsRegistered(def);
   const full = toPdfmakeDefinition(def); // validates the spec/key collisions for BOTH passes
   const reserve = def.continuationHeaderSpec?.overflowTopMargin;
@@ -286,6 +288,50 @@ export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
 }
 
 /**
+ * The public single-document render: the pdfmake core plus the Phase 8B practice watermark. Every
+ * document type reaches its bytes through here (bol/cert/invoice/statement/quote); the traveler and
+ * shipping tickets go through renderSheetGroups, which stamps the MERGED bytes instead.
+ */
+export async function renderPdf(def: RenderableDefinition): Promise<Buffer> {
+  return stampPractice(await renderPdfCore(def));
+}
+
+/**
+ * The practice-copy watermark (Phase 8B §5.4): a diagonal, low-opacity "PRACTICE / SAMPLE" on every
+ * page of already-rendered bytes, keyed off the single practiceMode() helper — NOT the template
+ * config, so it can never be removed through the Phase 7 editor. In production this is a TRUE no-op:
+ * it short-circuits to the input Buffer with NO pdf-lib re-serialize, so production renders stay
+ * byte-golden-identical and reprints of stored bytes stay Buffer.compare-exact. Both entry points
+ * funnel through here exactly once — renderPdf stamps its one document; renderSheetGroups stamps the
+ * merged bytes (its per-group renders use renderPdfCore, unstamped), so a page is never stamped
+ * twice. `useObjectStreams: false` preserves the uncompressed `/Count N` marker, the same reason the
+ * merge does.
+ */
+async function stampPractice(bytes: Buffer): Promise<Buffer> {
+  if (!(await practiceMode())) return bytes;
+  const pdf = await PDFDocument.load(bytes);
+  const font = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const text = "PRACTICE / SAMPLE";
+  const angle = Math.PI / 4;
+  for (const page of pdf.getPages()) {
+    const { width, height } = page.getSize();
+    const size = Math.max(24, Math.min(width, height) / 9);
+    const textWidth = font.widthOfTextAtSize(text, size);
+    // Center the rotated baseline on the page (offset the start point back along the 45° vector).
+    page.drawText(text, {
+      x: width / 2 - (textWidth / 2) * Math.cos(angle),
+      y: height / 2 - (textWidth / 2) * Math.sin(angle),
+      size,
+      font,
+      color: rgb(0.86, 0.15, 0.15),
+      rotate: degrees(45),
+      opacity: 0.18,
+    });
+  }
+  return Buffer.from(await pdf.save({ useObjectStreams: false }));
+}
+
+/**
  * Renders each sheet-group definition as its OWN document and merges the results into one PDF
  * (spec §6.1). This is the whole mechanism behind per-group page numbers and continuation
  * headers: pdfmake's callbacks only ever see whole-document page counts, so "Page 1 of 2" on a
@@ -304,12 +350,14 @@ export async function renderSheetGroups(defs: RenderableDefinition[]): Promise<B
   }
   const merged = await PDFDocument.create();
   for (const def of defs) {
-    const src = await PDFDocument.load(await renderPdf(def));
+    // renderPdfCore, NOT the public renderPdf: the per-group renders stay UNstamped so the merged
+    // document is watermarked exactly once below (no double-stamp — Phase 8B §5.4).
+    const src = await PDFDocument.load(await renderPdfCore(def));
     for (const page of await merged.copyPages(src, src.getPageIndices())) {
       merged.addPage(page);
     }
   }
-  return Buffer.from(await merged.save({ useObjectStreams: false }));
+  return stampPractice(Buffer.from(await merged.save({ useObjectStreams: false })));
 }
 
 /**

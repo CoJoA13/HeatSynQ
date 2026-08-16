@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { prisma, truncateAll, templateVersionId, seedOrderGatePrereqs } from "./helpers/db";
 import { drawnPages, drawnText, pageCount, paintedImageCounts } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
@@ -123,7 +123,7 @@ async function finalizedFixture(processName = "") {
 // ================================================================================================
 
 describe("replaceInvoiceLines — #98: sourceQuoteNumber requires priceSource QUOTE", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("refuses a MANUAL line that carries a sourceQuoteNumber", async () => {
     const { invoice } = await draftFixture();
@@ -166,7 +166,7 @@ describe("replaceInvoiceLines — #98: sourceQuoteNumber requires priceSource QU
 // ================================================================================================
 
 describe("invoice processNames — create-time source (spec §5.7)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("snapshots part.processName when it is non-blank", async () => {
     const { invoice } = await draftFixture("MARQUENCHZONE");
@@ -604,6 +604,7 @@ async function stampOf(documentId: string): Promise<string | null> {
 describe("printInvoice — resolution stamps the version (INVOICE for both invoice and credit)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama, LLC"));
     await asSystem(() => setSetting("company_address", "3008 Red Morris Parkway\nAnniston AL 36207"));
     await asSystem(() => setSetting("company_phone", "256-835-3370"));

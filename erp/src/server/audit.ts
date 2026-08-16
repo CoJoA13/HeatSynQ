@@ -14,7 +14,7 @@ export type AuditableModel =
   | "order" | "partAttachment" | "orderAttachment" | "savedView" | "storedDocument"
   | "cert" | "shipper"
   | "surcharge" | "surchargeStepCode" | "customerSurcharge"
-  | "invoice" | "invoiceLine" | "billingConfig"
+  | "invoice" | "invoiceLine" | "billingConfig" | "setupState"
   | "receiptBatch" | "payment" | "application"
   | "closePeriod" | "glExportBatch"
   | "quote" | "endingStatement"
@@ -216,6 +216,8 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   },
   invoiceLine: undefined,
   billingConfig: undefined,
+  // Phase 8B §7: two scalar facts, no relations — the billingConfig singleton precedent.
+  setupState: undefined,
   // Phase 5B A/R. A batch's payments and a payment's applications are audited as their OWN models
   // (receipts.ts/applications.ts wrap each in its own audited* call), so the parent snapshots pull
   // in only the live reference name history would otherwise render as a cuid — the partInspection

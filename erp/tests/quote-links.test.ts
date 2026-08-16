@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { eligibleQuoteLines, resolveAutoLink, judgeQuoteLine } from "@/server/quote-links";
 import { createOrder, addLine, updateLine, updateOrder, getOrder } from "@/server/orders";
@@ -72,6 +72,7 @@ async function makeQuote(f: Fixture, opts: {
 describe("quote-links: the §5.2 eligibility predicate, clause by clause", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -205,6 +206,7 @@ describe("quote-links: the §5.2 eligibility predicate, clause by clause", () =>
 describe("quote-links: resolveAutoLink ordering (ruling 7)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -270,6 +272,7 @@ const line = (partId: string, extra?: Record<string, unknown>) =>
 describe("createOrder: the three-way quoteLineId semantics (spec §5.2)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -374,6 +377,7 @@ describe("createOrder: the three-way quoteLineId semantics (spec §5.2)", () => 
 describe("addLine: the same three-way semantics, judged against the ORDER's received date", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -416,6 +420,7 @@ describe("addLine: the same three-way semantics, judged against the ORDER's rece
 describe("updateLine: explicit re-pick/unlink; an absent key NEVER re-judges (ruling 6)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -486,6 +491,7 @@ describe("updateLine: explicit re-pick/unlink; an absent key NEVER re-judges (ru
 describe("ruling 6: a received-date edit never re-judges stored links", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -508,6 +514,7 @@ describe("ruling 6: a received-date edit never re-judges stored links", () => {
 describe("the idempotent replay returns the SAME links (the clientRequestId path)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 
@@ -566,6 +573,7 @@ describe("the idempotent replay returns the SAME links (the clientRequestId path
 describe("the §5.14 SSI pairing — dangerous direction (STANDING INVARIANT)", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     quoteSeq = 0;
   });
 

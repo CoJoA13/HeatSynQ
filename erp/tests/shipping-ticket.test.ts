@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
@@ -212,7 +212,7 @@ describe("buildShippingTicketDefinition", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("printShippingTickets", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("renders one sheet per order on the shipment", async () => {
     const { shipper } = await twoOrderShipment();
@@ -335,7 +335,7 @@ describe("printShippingTickets", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("readShippingTicketData", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("assembles the sample's blocks: parties, field strip, lines, containers, printable serials", async () => {
     await asSystem(() => setSetting("company_name", "American Heat Treating - Alabama,"));
@@ -411,7 +411,7 @@ describe("readShippingTicketData", () => {
 // -------------------------------------------------------------------------------------------
 
 describe("POST /api/shippers/[id]/print", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("requires shipping.view", async () => {
     const { shipper } = await oneOrderShipment();

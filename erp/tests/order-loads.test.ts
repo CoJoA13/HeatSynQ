@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, updateLine, voidOrder } from "@/server/orders";
 import { replaceLoads, resplitLoads } from "@/server/order-loads";
@@ -38,7 +38,7 @@ async function baseOrder(leadId: string, customerId: string, qty = 100, weight =
 }
 
 describe("replaceLoads", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("rejects a gap in the load-number set", async () => {
     const { customer, lead } = await fixture();
@@ -346,7 +346,7 @@ describe("replaceLoads", () => {
 });
 
 describe("resplitLoads", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("rebuilds loads from the order's current totals after a qty edit, under the lead's cap", async () => {
     const { customer, lead } = await fixture(); // loadQty cap: 40

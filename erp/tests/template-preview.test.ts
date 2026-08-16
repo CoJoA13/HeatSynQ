@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { drawnText } from "./helpers/pdf";
 import { runWithContext } from "@/server/context";
@@ -140,6 +140,7 @@ let ordersOnly: string;    // orders.view, no templates.view
 
 beforeEach(async () => {
   await truncateAll();
+  await seedOrderGatePrereqs();
   full = await signInWith(
     ["templates.view", "orders.view", "shipping.view", "certs.view", "invoicing.view", "receivables.view", "quotes.view"],
     "pfull");

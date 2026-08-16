@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { ZodError } from "zod";
 import ExcelJS from "exceljs";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { HttpError } from "@/server/http";
 import {
@@ -98,7 +98,7 @@ async function createConcurrently(inputs: unknown[]): Promise<number[]> {
 }
 
 describe("createOrder: the two-line sibling order", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("locks the lead part's current revision onto line 1 and leaves riders null", async () => {
     const { customer, lead, rider, leadRev } = await fixture();
@@ -306,7 +306,7 @@ describe("createOrder: the two-line sibling order", () => {
 });
 
 describe("createOrder: numbering", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("two concurrent saves get distinct, consecutive numbers and never share one", async () => {
     const { customer, lead } = await fixture();
@@ -367,7 +367,7 @@ describe("createOrder: numbering", () => {
  * the same draft carry the same one.
  */
 describe("createOrder: clientRequestId idempotency", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   const NONCE = "3f6a1b2c-1111-4d22-8e33-9f0a1b2c3d4e";
 
@@ -485,7 +485,7 @@ describe("createOrder: clientRequestId idempotency", () => {
 });
 
 describe("createOrder: dates", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("defaults receivedDate to today", async () => {
     const { customer, lead } = await fixture();
@@ -567,7 +567,7 @@ describe("createOrder: dates", () => {
 });
 
 describe("createOrder: rejections", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("rejects an unknown or soft-deleted customer", async () => {
     const { customer, lead } = await fixture();
@@ -711,7 +711,7 @@ describe("createOrder: rejections", () => {
 });
 
 describe("createOrder: serials", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("stores each line's serials against that line, numbered from 1", async () => {
     const { customer, lead, rider } = await fixture();
@@ -764,7 +764,7 @@ describe("createOrder: serials", () => {
 });
 
 describe("createOrder: warnings", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("warns per line when a serialization-required part carries no serials, and still saves", async () => {
     const { customer, lead, rider } = await fixture();
@@ -821,7 +821,7 @@ describe("createOrder: warnings", () => {
 });
 
 describe("createOrder: audit", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("writes exactly one order create entry whose snapshot carries the ordered children", async () => {
     const { customer, lead, rider, containerType } = await fixture();
@@ -937,7 +937,7 @@ describe("createOrder: audit", () => {
 });
 
 describe("createOrder: draft", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("clears the acting user's draft inside the same transaction", async () => {
     const { customer, lead } = await fixture();
@@ -985,7 +985,7 @@ describe("createOrder: draft", () => {
 });
 
 describe("createOrder + step edits: the locked revision (spec §12.3)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("a post-save step edit cuts revision N+1 and leaves the order's locked N byte-identical", async () => {
     const { customer, lead } = await fixture();
@@ -1063,7 +1063,7 @@ describe("createOrder + step edits: the locked revision (spec §12.3)", () => {
 });
 
 describe("getOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("404s an unknown id", async () => {
     await expect(getOrder("nope")).rejects.toMatchObject({ status: 404, message: "Order not found" });
@@ -1176,7 +1176,7 @@ async function board() {
 const numbersOf = (rows: { orderNumber: number }[]) => rows.map((r) => r.orderNumber);
 
 describe("listOrders", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns a board row per order with summed qty/weight, lead part, loads and light", async () => {
     const { acmeEarly } = await board();
@@ -1299,7 +1299,7 @@ describe("listOrders", () => {
 });
 
 describe("exportOrders", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   async function sheetOf(buf: Buffer) {
     const wb = new ExcelJS.Workbook();
@@ -1351,7 +1351,7 @@ describe("exportOrders", () => {
 });
 
 describe("updateOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("PATCHes poNumber/vsOrderNumber/dates/notes and audits a real diff", async () => {
     const { customer, lead } = await fixture();
@@ -1460,7 +1460,7 @@ describe("updateOrder", () => {
 });
 
 describe("addLine", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("adds a rider at position max+1, validated like createOrder's lines", async () => {
     const { customer, lead, rider } = await fixture();
@@ -1527,7 +1527,7 @@ describe("addLine", () => {
 });
 
 describe("updateLine", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("changes qty/weight on the lead line, never partId or revisionNumber", async () => {
     const { customer, lead, rider } = await fixture();
@@ -1590,7 +1590,7 @@ describe("updateLine", () => {
 });
 
 describe("removeLine", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("refuses to remove the lead line with the exact message", async () => {
     const { customer, lead, rider } = await fixture();
@@ -1672,7 +1672,7 @@ describe("removeLine", () => {
 });
 
 describe("replaceContainers", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("bulk-replaces the order's containers, renumbered from 1", async () => {
     const { customer, lead, containerType } = await fixture();
@@ -1728,7 +1728,7 @@ describe("replaceContainers", () => {
 });
 
 describe("replaceContainers: races a concurrent containerType delete", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   // Same mechanism as customers.test.ts's "cannot form a reciprocal parent cycle" race and the
   // four writers documented in reference.ts's deleteReference doc comment: assertRefExists (here,
@@ -1739,6 +1739,7 @@ describe("replaceContainers: races a concurrent containerType delete", () => {
   it("never leaves a live container pointing at a soft-deleted container type", async () => {
     for (let i = 0; i < 10; i++) {
       await truncateAll();
+      await seedOrderGatePrereqs(); // per-iteration reset wipes the beforeEach prereqs; re-seed for the gate
       const { customer, lead } = await fixture();
       const type = await prisma.containerType.create({ data: { name: `Basket ${i}` } });
       const { order } = await asSystem(() => createOrder({
@@ -1767,7 +1768,7 @@ describe("replaceContainers: races a concurrent containerType delete", () => {
 });
 
 describe("replaceSerials", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("atomically swaps one line's serial set, renumbered from 1", async () => {
     const { customer, lead } = await fixture();
@@ -1822,7 +1823,7 @@ describe("replaceSerials", () => {
 });
 
 describe("replaceCharges", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("bulk-replaces the order's charges, renumbered from 1", async () => {
     const { customer, lead } = await fixture();
@@ -1853,7 +1854,7 @@ describe("replaceCharges", () => {
 });
 
 describe("voidOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("requires a non-blank reason", async () => {
     const { customer, lead } = await fixture();
@@ -2008,7 +2009,7 @@ describe("voidOrder", () => {
 });
 
 describe("linkOrder / unlinkOrder", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("refuses linking orders from two different customers", async () => {
     const { customer, lead, code } = await fixture();
@@ -2246,7 +2247,7 @@ describe("linkOrder / unlinkOrder", () => {
 });
 
 describe("every mutator refuses a voided order", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("404s update, every line op, every replace op, void again, link and unlink", async () => {
     const { customer, lead, rider, containerType } = await fixture();
@@ -2287,7 +2288,7 @@ describe("every mutator refuses a voided order", () => {
 // itself reads, deliberately without that function's live-part gate, because the order's own
 // stored reference — not the part's current liveness — is what this read is anchored on.
 describe("getLockedRevision", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("returns the same content getRevision itself would, for a normal (non-voided) order", async () => {
     const { customer, lead } = await fixture();

@@ -7,7 +7,11 @@ import { readableMessage } from "./error-message";
 
 export { HttpError };
 export type { SessionUser };
-export const SESSION_COOKIE = "erp_session";
+// Env-configurable so the practice copy (§5.1) can use a DISTINCT cookie name: prod (:80) and
+// practice (:8080) share a host, and cookies are host/path-scoped (not port), so a shared name would
+// let logging into one overwrite the other's token (Codex P1). The practice compose service sets
+// SESSION_COOKIE_NAME=erp_practice_session. Kept in sync with proxy.ts by reading the SAME env var.
+export const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME ?? "erp_session";
 
 export function cookieToken(req: Request): string | null {
   const header = req.headers.get("cookie") ?? "";

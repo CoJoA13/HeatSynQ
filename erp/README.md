@@ -60,6 +60,24 @@ Each flow writes numbered checkpoint screenshots and a `video.webm` to
    (match host/credentials to whatever you set in step 1).
 4. App at http://<server>/ — migrations apply automatically on start.
 
+## Practice copy (training)
+A separate training instance on its own database (`erp_practice`) + port (8080), under the
+`practice` compose profile — never mixed with production. Practice-vs-production is decided by
+database identity (`practiceMode()`), so a mis-set flag can't touch production.
+
+1. **Provision `erp_practice`.** `db-init/` runs ONLY on a fresh `dbdata` volume, so an existing
+   install must create the database once by hand:
+   `docker compose exec db createdb -U erp erp_practice`
+2. `docker compose --profile practice up -d --build` — the `app-practice` service migrates
+   `erp_practice` on start and serves it at http://<server>:8080/ with a PRACTICE banner and
+   watermarked documents. (Leaving out this step means the prod bring-up is unchanged.)
+3. First population: seed the representative demo slice once, pointed at the practice DB —
+   `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_practice" npm run db:seed:demo`
+   (or run `npm run db:seed:demo` inside the `app-practice` container, whose `DATABASE_URL` already
+   points there). Thereafter, "Reset practice data" on the `/practice` page re-seeds it in-app.
+4. Access practice in a **separate browser profile** from production: the two use distinct session
+   cookies (`erp_practice_session` vs `erp_session`), so they no longer clash on a shared host.
+
 ## Backups
 - Nightly `pg_dump` gzip into `./backups/`, 30 days kept (backup container).
 - Restore: `gunzip -c backups/erp_<stamp>.sql.gz | docker compose exec -T db psql -U erp -d erp`

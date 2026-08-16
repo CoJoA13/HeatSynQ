@@ -103,6 +103,7 @@ const FLOWS = [
   // it needs no db-fixtures reap entry and runs last for the usual nothing-after-needs-its-state
   // reason; being purely a read, it is safe after whatever period/close state the tail leaves behind.
   { name: "reports", as: "admin", module: "./flows/reports.mjs" },
+  { name: "setup-checklist", as: "admin", module: "./flows/setup-checklist.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below

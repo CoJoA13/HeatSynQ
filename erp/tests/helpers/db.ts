@@ -1,22 +1,10 @@
 import { prisma } from "@/server/db";
-import {
-  TEMPLATE_DOC_TYPES, defaultConfigFor, type TemplateDocTypeString,
-} from "@/lib/template-contracts/index";
-import type { Prisma } from "../../prisma/generated/prisma/client";
+import { reseedSingletons } from "@/server/practice-seed";
 
-/** 'MOS_SHIPPER' → 'standard-mos-shipper' — the seed migration's fixed template row ids,
- *  re-created by `truncateAll()` below after every TRUNCATE. Exported ONCE from here (Task 3
- *  review carry): the drift guard and the Task 4+ service fixtures reference the same seeded
- *  rows, and a second hand-rolled copy of the minting rule is exactly the drift the guard
- *  exists to catch. */
-export function templateId(docType: TemplateDocTypeString): string {
-  return `standard-${docType.toLowerCase().replace(/_/g, "-")}`;
-}
-
-/** The seeded template's v1 PUBLISHED version id ('standard-traveler-v1'). */
-export function templateVersionId(docType: TemplateDocTypeString): string {
-  return `${templateId(docType)}-v1`;
-}
+// The seeded template row ids are minted by practice-seed.ts (the single source — the drift-guard
+// precedent, so a second hand-rolled copy of the minting rule can't drift) and re-exported here so
+// the many test files that reference them keep importing from "./helpers/db".
+export { templateId, templateVersionId } from "@/server/practice-seed";
 
 /**
  * Deletes all rows from every table except _prisma_migrations, then restores the rows the
@@ -29,6 +17,8 @@ export function templateVersionId(docType: TemplateDocTypeString): string {
  * bare TRUNCATE deletes it, which would make every test run against a database in a state the
  * production schema cannot be in, and would push the first service that reads it toward exactly
  * the lazy create the spec rules out. Re-seeding it here keeps the invariant true everywhere.
+ * `SetupState` (Phase 8B §7) is the same by-construction singleton once more — re-seeded here for
+ * the same reason, so `getSetupState` stays a plain `findFirst`.
  *
  * The eight "Standard" document templates (Phase 7 spec §9) are the same invariant one phase
  * over: the seed migration guarantees every docType a live default template with a PUBLISHED v1,
@@ -47,28 +37,35 @@ export async function truncateAll(): Promise<void> {
   if (tables.length === 0) return;
   const list = tables.map((t) => `"${t.tablename}"`).join(", ");
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} CASCADE`);
-  await prisma.$executeRaw`
-    INSERT INTO "BillingConfig" ("id", "billForCertDefault", "updatedAt")
-    VALUES ('singleton', false, now())
-    ON CONFLICT ("id") DO NOTHING`;
+  // Restore the by-construction singletons + the eight Standard templates. Phase 8B §5.3 lifted this
+  // body into practice-seed.ts (a NON-test-only module) so the production practice reset reuses the
+  // exact same restore; truncateAll itself stays test-only.
+  await reseedSingletons();
+}
 
-  const now = new Date();
-  await prisma.documentTemplate.createMany({
-    data: TEMPLATE_DOC_TYPES.map((docType) => ({
-      id: templateId(docType), docType, name: "Standard", isDefault: true, updatedAt: now,
-    })),
+/**
+ * Seeds the minimum config the Phase 8B order-entry gate (order-entry-readiness.ts) requires so
+ * order-creating suites can call `createOrder`: company identity + one live GL account +
+ * `BillingConfig.arGlAccountId`. OPT-IN — called in the `beforeEach` of order-creating suites ONLY,
+ * never inside `truncateAll`. Seeding it globally would (a) red the pristine-default suites that
+ * assert the empty baseline (billing-config's `arGlAccountId: null`, settings' `company_name === ""`,
+ * reference-gl's GL-account counts) and (b) via T11's `reseedSingletons` lift, contaminate the
+ * production practice reset with non-singleton demo rows. Raw prisma writes (no audit) — this is
+ * harness setup, not a service call, so it adds no audit rows to the baseline.
+ */
+export async function seedOrderGatePrereqs(): Promise<void> {
+  await prisma.setting.createMany({
+    data: [
+      { key: "company_name", value: "Test Heat Treat Co." },
+      { key: "company_address", value: "1 Test Way, Testville" },
+      { key: "company_phone", value: "555-0000" },
+    ],
+    skipDuplicates: true,
   });
-  await prisma.documentTemplateVersion.createMany({
-    data: TEMPLATE_DOC_TYPES.map((docType) => ({
-      id: templateVersionId(docType), templateId: templateId(docType), versionNumber: 1,
-      status: "PUBLISHED", config: defaultConfigFor(docType) as unknown as Prisma.InputJsonValue,
-      publishedAt: now, updatedAt: now,
-    })),
+  const gl = await prisma.glAccount.create({
+    data: { name: "0000-GATE-AR", description: "A/R (order-gate prereq)" },
   });
-  await prisma.$executeRaw`
-    UPDATE "DocumentTemplate" t SET "publishedVersionId" = v."id"
-    FROM "DocumentTemplateVersion" v
-    WHERE v."templateId" = t."id" AND v."versionNumber" = 1`;
+  await prisma.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId: gl.id } });
 }
 
 export { prisma };

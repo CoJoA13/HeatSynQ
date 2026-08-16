@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { prisma, truncateAll, templateVersionId } from "./helpers/db";
+import { prisma, truncateAll, templateVersionId, seedOrderGatePrereqs } from "./helpers/db";
 import {
   TINY_JPEG, drawnPages, drawnText, pageCount, paintedImageCounts, parseObjects,
 } from "./helpers/pdf";
@@ -54,7 +54,7 @@ async function miniOrder(partExtra: { processName?: string; loadQty?: number } =
 // ------------------------------------------------------------------------------------------------
 
 describe("storeDocument — the templateVersionId stamp", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("a stored row carries the template version id it was given", async () => {
     const { order } = await miniOrder();
@@ -414,7 +414,7 @@ describe("buildTravelerDefinition — purity, config included", () => {
 // ------------------------------------------------------------------------------------------------
 
 describe("readTravelerData — processName", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   it("reads the lead part's processName and prints it", async () => {
     const { order } = await miniOrder({ processName: "Marquench + Temper" });
@@ -463,7 +463,7 @@ async function stampOf(documentId: string): Promise<string | null> {
 }
 
 describe("printTraveler — template resolution and the version stamp", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   /** Create → tweak the v1 draft → (optionally logo) → publish. Returns the published version. */
   async function publishCustom(
@@ -636,7 +636,7 @@ describe("buildTravelerDefinitions — one definition per load (pure)", () => {
 });
 
 describe("printTraveler — sheet groups through the real path (#36)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   /** A single-load order whose recipe overflows LETTER: 25 steps with wrapping instructions. */
   async function overflowOrder() {
@@ -728,7 +728,7 @@ describe("printTraveler — sheet groups through the real path (#36)", () => {
 // ------------------------------------------------------------------------------------------------
 
 describe("the all-loads traveler's load bound (#43)", () => {
-  beforeEach(truncateAll);
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
 
   /** An order auto-split into exactly `loads` loads: one piece per load, no recipe. The row COUNT
    *  is the whole point — qty/weight are trivial and the part carries no steps or inspections, so

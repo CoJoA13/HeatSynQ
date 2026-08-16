@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { prisma, truncateAll } from "./helpers/db";
+import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import { createShipper, voidShipper, removeOrderFromShipper, type ShipperDetail } from "@/server/shippers";
@@ -145,6 +145,7 @@ async function twoOrderShipmentWithShipmentCertOnFirst(): Promise<{
 describe("voidShipper", () => {
   beforeEach(async () => {
     await truncateAll();
+    await seedOrderGatePrereqs();
     claimOrdersInOrderMock.mockClear();
   });
 

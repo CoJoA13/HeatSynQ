@@ -11,7 +11,7 @@
 // `erp_test`. `assertDevDb` below is the guard against ever running this against the wrong
 // database.
 import "dotenv/config";
-import { PrismaClient } from "../../prisma/generated/prisma/client";
+import { PrismaClient, Prisma } from "../../prisma/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "../../src/server/password";
 import { lockRevision } from "../../src/server/part-process-steps";
@@ -347,6 +347,10 @@ export type Fixtures = {
     writeOffGlAccountId: string | null;
     salesTaxGlAccountId: string | null;
   };
+  /** Phase 8B: the company-identity settings as they were BEFORE this run seeded the order-entry
+   *  gate's prerequisites — cleanup restores them (absent before → deleted after). arGl rides along
+   *  in priorBillingConfig / restoreBillingConfig. */
+  priorCompanyIdentity: { key: string; value: Prisma.JsonValue | null }[];
   /** Task 11 (Phase 6): the quoting flow's own fixtures — see FIXTURE's comment. */
   quoteCustomerId: string;
   quoteCustomerCode: string;
@@ -738,6 +742,25 @@ async function deleteClosePeriodFixture(
  * MUST run before `deleteInvoicingReference` deletes the fixture GL accounts these columns may
  * still point at (BillingConfig's four GL FKs are plain RESTRICT, no `onDelete` override).
  */
+/**
+ * Phase 8B: seed the order-entry gate's prerequisites on the shared dev DB so every order-creating
+ * flow passes the gate — company identity (settings) + `arGlAccountId` (pointed at the close
+ * fixture's A/R account, which the close flow uses anyway; the OTHER GL mappings stay unset, so the
+ * close flow's own "GL export not ready" assertions still hold). Restored by cleanup: company
+ * identity via `priorCompanyIdentity`, arGl via `restoreBillingConfig`/`priorBillingConfig`.
+ */
+async function seedOrderGateForE2E(tx: Prisma.TransactionClient, arGlAccountId: string): Promise<void> {
+  const identity: Record<string, string> = {
+    company_name: "E2E Heat Treat Co.",
+    company_address: "1 E2E Way, Testville",
+    company_phone: "555-0100",
+  };
+  for (const [key, value] of Object.entries(identity)) {
+    await tx.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+  }
+  await tx.billingConfig.update({ where: { id: "singleton" }, data: { arGlAccountId } });
+}
+
 async function restoreBillingConfig(prior: Fixtures["priorBillingConfig"] | undefined): Promise<void> {
   if (!prior) return;
   await prisma.billingConfig.update({ where: { id: "singleton" }, data: { ...prior } });
@@ -1208,6 +1231,14 @@ async function create(): Promise<Fixtures> {
   });
   const priorDefaultEndingStatementId = priorDefaultEndingStatementRow?.id ?? null;
 
+  // Phase 8B: snapshot the company-identity settings BEFORE seeding the order-gate prereqs, so
+  // cleanup restores whatever the developer's DB had (usually absent → deleted after the run).
+  const companyKeys = ["company_name", "company_address", "company_phone"];
+  const priorCompanyRows = await prisma.setting.findMany({ where: { key: { in: companyKeys } } });
+  const priorCompanyIdentity = companyKeys.map((key) => ({
+    key, value: (priorCompanyRows.find((r) => r.key === key)?.value ?? null) as Prisma.JsonValue | null,
+  }));
+
   // One transaction, so a failure part-way through leaves NOTHING behind (Codex, PR #22).
   // Sequential creates committed as they went, and a failure after the first one exited with rows
   // already written — while run.mjs, whose `runDbScript("create")` had thrown, never assigned
@@ -1622,6 +1653,12 @@ async function create(): Promise<Fixtures> {
         passwordHash: priceEditHash, roleId: priceEditRole.id,
       },
     });
+
+    // Phase 8B: seed the order-entry gate's prerequisites INSIDE the fixture transaction (Codex) —
+    // company identity + arGlAccountId — so it is all-or-nothing with the rest of the fixture; a
+    // failure can no longer leave a committed partial set that run.mjs then skips cleaning up.
+    await seedOrderGateForE2E(tx, closeArGlAccount.id);
+
     return {
       customerId: customer.id, customerCode: customer.code,
       partId: part.id, partNumber: part.partNumber,
@@ -1680,6 +1717,7 @@ async function create(): Promise<Fixtures> {
       quoteStepCodeName: quoteStepCode.name,
       quoteEndingStatementName: FIXTURE.quoteEndingStatementName,
       priorDefaultEndingStatementId,
+      priorCompanyIdentity,
     };
     // Generous: the admin role alone writes one row per permission, and this runs against a
     // developer machine that may also be compiling a dev server at the time.
@@ -1767,6 +1805,16 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   await deleteKnownEmptyBatch(payload.closeBatchId);
   await deleteClosePeriodFixture(payload.closePeriodYear, payload.closePeriodMonth, payload.adminUserId);
   await restoreBillingConfig(payload.priorBillingConfig);
+  // Phase 8B: restore the company-identity settings the order-gate seed set — one absent before the
+  // run is deleted, one present is reset to its prior value.
+  for (const s of payload.priorCompanyIdentity) {
+    if (s.value === null) await prisma.setting.deleteMany({ where: { key: s.key } });
+    else await prisma.setting.upsert({
+      where: { key: s.key },
+      update: { value: s.value as Prisma.InputJsonValue },
+      create: { key: s.key, value: s.value as Prisma.InputJsonValue },
+    });
+  }
   await deleteInvoicesAndLines([
     payload.invCustomerId, payload.arCustomerId, payload.closeCustomerId, payload.quoteCustomerId,
   ]);
