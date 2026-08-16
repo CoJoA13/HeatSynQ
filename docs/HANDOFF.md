@@ -60,31 +60,35 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-### Phase 8A (Reports & Scoreboard) MERGED 2026-08-14 — 8B/8C remaining
+### Phase 8B (Practice DB & First-run Wizard) MERGED 2026-08-15 — 8C remaining
 
-**Phase 8A MERGED to `main` as `7d3ebb1` (PR #106, squash, 2026-08-14)** — first sub-phase of roadmap
-Phase 8. Full narrative: `docs/history/2026-08-14-phase-8a-reports-scoreboard.md`. It shipped the
-`/reports` platform (the `reports` area went live; a reusable five-part report shape cloned from A/R
-aging), five native reports (backlog, shipped, turnaround, sales, payments), the homed invoice
-register + A/R aging, the comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball),
-two indexes, a shared `report-ui.tsx`/`report-export-state.ts`, and a reports E2E flow. Reviews: all
-per-task Approved, a clean 5-lens whole-branch review, a fix wave, and **two rounds of the Codex
-GitHub bot (6 P2s, all fixed on-branch)**. Final gates: 2849 tests / 156 files, tsc/eslint/build
-clean, E2E 21/21, CI green.
+**Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
+Phase 8. Full narrative: `docs/history/2026-08-15-phase-8b-practice-wizard.md`. It shipped the separate
+practice training copy (own `erp_practice` DB + an `app-practice` compose service on the `practice`
+profile, port 8080, own session cookie; **`practiceMode()` the single db-identity source** driving the
+banner, the PRACTICE watermark, and the double-guarded reset), the demo seed built through the services
+(`npm run db:seed:demo`), the first-run **setup checklist** (`/setup`, eight steps, the new `SetupState`
+by-construction singleton), and the **order-entry gate** (`createOrder` blocked until company identity +
+a chart of accounts — a pre-transaction read at the single chokepoint). Reviews: two per-task waves + a
+clean 5-lens whole-branch review (**security lens clean**) + **three Codex bot rounds** (r1: 1 P1/7 P2;
+r2: 2 P1/5 P2 — all fixed on-branch; **r3: 3 P2 logged as issues #110–#112 and merged**, per owner
+instruction). Final gates: 2897 tests / 171 files, tsc/eslint/build clean, E2E 22/22, CI green. **The
+two by-construction singletons are now `BillingConfig` + `SetupState`.**
 
-**Phase 8 is the active track; 8B and 8C remain.** The approved design spec
+**Phase 8A MERGED to `main` as `7d3ebb1` (PR #106, squash, 2026-08-14)** — first sub-phase. Full
+narrative: `docs/history/2026-08-14-phase-8a-reports-scoreboard.md`. It shipped the `/reports` platform
+(the `reports` area went live; a reusable five-part report shape cloned from A/R aging), five native
+reports (backlog, shipped, turnaround, sales, payments), the homed invoice register + A/R aging, the
+comparison scoreboard (invoiced-$ by **`invoiceDate`** — the VS eyeball), two indexes, and a reports
+E2E flow. **8A deferred a follow-up (issue filed):** the report wrappers use unbounded `findMany` + JS
+aggregation — fine at shop scale; DB-side aggregation is a future optimization.
+
+**Phase 8C (Backup polish) is the sole remaining sub-phase.** The approved design spec
 (`docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`; §15 amendment recorded)
-covers all three sub-phases, each its own branch/review/merge (the 5A/B/C pattern): **8B Practice DB +
-First-run wizard · 8C Backup polish.** 8B rulings (D4/D6/D7): a separate practice copy with a
-**db-identity-guarded** reset + watermarked PDFs + representative-slice demo seed; a first-run setup
-checklist that **gates real order entry on company identity + chart of accounts** (password change
-recommended, not forced). 8C (D5): an in-app **Backups page** (list + folder + back-up-now + red
-staleness + integrity), restore stays a documented command, in-app alerting only; the app↔container
-**bridge** is the real design work there. **8A deferred a follow-up (issue filed):** the report
-wrappers use unbounded `findMany` + JS aggregation — fine at shop scale; DB-side aggregation is a
-future optimization. **Env note: Docker is disabled at boot; a fix wave ran against a stand-in
-rootless-Podman Postgres — restore the Docker stack (`sudo systemctl start docker`; `podman rm -f
-erp-db`) for the normal workflow.**
+covers it (D5): an in-app **Backups page** (list + folder + back-up-now + red staleness + integrity),
+restore stays a documented command, in-app alerting only; the app↔container **bridge** is the real
+design work there. **Env note: Docker is disabled at boot** — check `systemctl is-active docker` before
+diagnosing ECONNREFUSED (§8, and the session-memory index).
 
 **Phase 7 (Template designer) MERGED to `main` as `56c9722` (PR #104, squash, 2026-08-14),
 completing roadmap Phase 7.** Its full narrative is in
@@ -571,13 +575,14 @@ Fedora-specific notes:
 
 **Phase 8 (Reports & parallel-run tools) is the active track — design APPROVED 2026-08-14** (spec
 `docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md`), building as three
-sub-phases 8A/8B/8C; see §4. A fresh session should read CLAUDE.md, §4, and the Phase 8 design spec,
-then continue the 8A plan/execution (start Docker first — §4). The original next-track candidates
-(now decided in favour of Phase 8), kept for context:
+sub-phases 8A/8B/8C; see §4. **8A and 8B are MERGED (PR #106, #109); 8C (Backup polish) is the sole
+remaining sub-phase.** A fresh session should read CLAUDE.md, §4, and the Phase 8 design spec's 8C
+section (D5), then brainstorm→plan→subagent-driven execution of **8C** on a fresh branch (start Docker
+first — §8). The original next-track candidates (now decided in favour of Phase 8), kept for context:
 
 1. **Roadmap Phase 8 — Reports & parallel-run tools** (report set, comparison scoreboard, practice
-   database, first-run wizard, backup polish) — the last remaining build phase; spec §13's
-   acceptance month needs the comparison scoreboard.
+   database, first-run wizard, backup polish) — the last remaining build phase; **only 8C (backup
+   polish) is left.** Spec §13's acceptance month needs the (delivered) comparison scoreboard.
 2. **Parallel-run / acceptance-month prep** — Phase 5 unlocked it; gated on the owner-owed
    GL-account list and the bookkeeper's QBO import method (§7) before a *real* export month.
 3. **The Phase 7 demo** — walk the owner through the designer end to end (restyle a document,
