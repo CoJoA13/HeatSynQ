@@ -120,7 +120,28 @@ export async function allocateNumber(key: NumberSettingKey, tx: Prisma.Transacti
     throw new HttpError(400, `"${key}" is not a numbering key`);
   }
   const def = SETTINGS[key];
-  await tx.setting.upsert({ where: { key }, create: { key, value: def.default as number }, update: {} });
+  // Seed the counter row atomically. This was `tx.setting.upsert(… update: {})`, which looks
+  // atomic and is not: Prisma compiles an upsert to a native `INSERT … ON CONFLICT DO UPDATE`
+  // ONLY when `update` is non-empty, and degrades an EMPTY `update: {}` to a two-statement
+  // SELECT-then-INSERT. Two transactions allocating before the row exists therefore both read
+  // "no row", both INSERT, and the loser dies on the `Setting` primary key — reachable on the
+  // first allocation of a fresh install, after `truncateAll()`, and after a practice reset.
+  // Written raw so the atomicity is stated in the SQL rather than resting on that ORM heuristic
+  // (an `update: { key }` would also emit ON CONFLICT today, and would silently stop the day the
+  // heuristic changes). DO NOTHING, not DO UPDATE: this statement only guarantees the row EXISTS
+  // — the claim below is what serializes the readers, exactly as before.
+  //
+  // ⚠️ This closes the P2002 insert race ONLY. It does NOT make concurrent allocation safe under
+  // Serializable, which is what every caller of this function actually runs: a transaction whose
+  // snapshot was fixed before the claim below aborts with 40001 the moment another allocation
+  // commits, and no caller retries (`retryOnSerializationConflict` is used only by
+  // close-periods.ts). That is pre-existing, applies to every allocation after the first, and is
+  // NOT fixed here — see issue #115. Do not read the tests below as covering it: vitest runs at
+  // Read Committed, where the failure does not reproduce.
+  await tx.$executeRaw`
+    INSERT INTO "Setting" ("key", "value", "updatedAt")
+    VALUES (${key}, ${JSON.stringify(def.default)}::jsonb, now())
+    ON CONFLICT ("key") DO NOTHING`;
   const [row] = await tx.$queryRaw<{ value: unknown }[]>`
     SELECT "value" FROM "Setting" WHERE "key" = ${key} FOR UPDATE`;
   // Checked against the RAW stored value, ahead of the schema-fallback below — `def.schema`'s own

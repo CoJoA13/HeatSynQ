@@ -35,6 +35,31 @@ describe("allocateNumber", () => {
     expect([a, b].sort((x, y) => x - y)).toEqual([1000, 1001]);
   });
 
+  // The two-way test above only fails on a machine whose transactions actually overlap — it passed
+  // for five phases on slower hardware while `allocateNumber` seeded its counter row with a
+  // non-atomic `upsert(… update: {})` (Prisma emits SELECT-then-INSERT for an EMPTY update, not
+  // `INSERT … ON CONFLICT`), and went red the first time it ran on a faster box. Widening the burst
+  // widens the overlap window, so the seeding race is pinned on slow hardware too: every allocation
+  // must be handed out exactly once, and none may be rejected by the primary key.
+  //
+  // SCOPE: this runs at Prisma's default Read Committed. It pins the SEEDING race and nothing more.
+  // Every production caller allocates inside a Serializable transaction, where a concurrent
+  // allocation aborts with 40001 whether or not the row was just inserted — unfixed, issue #115.
+  // A green run here is NOT evidence that concurrent order entry is safe.
+  it("a burst of concurrent allocations from an unseeded counter never collides or skips", async () => {
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => prisma.$transaction((tx) => allocateNumber("order_number_next", tx))),
+    );
+
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected.map((r) => String((r as PromiseRejectedResult).reason))).toEqual([]);
+
+    const numbers = results
+      .map((r) => (r as PromiseFulfilledResult<number>).value)
+      .sort((a, b) => a - b);
+    expect(numbers).toEqual([1000, 1001, 1002, 1003, 1004]);
+  });
+
   it("writes no audit row", async () => {
     await prisma.$transaction((tx) => allocateNumber("order_number_next", tx));
     expect(await prisma.auditLog.count()).toBe(0);

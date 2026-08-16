@@ -60,6 +60,28 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
+**Fix 2026-08-16 (PR #114) — `allocateNumber`'s counter-row seed is now atomic.** Standing up the
+build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
+where it had passed for five phases on the laptop and in CI. Not a regression: `allocateNumber`
+seeded its `Setting` row with `upsert(… update: {})`, and Prisma degrades an EMPTY `update` to
+SELECT-then-INSERT (a non-empty one emits `INSERT … ON CONFLICT DO UPDATE`) — so two allocations
+racing before the row exists both INSERT and the loser dies on the primary key. The window is only
+open while the counter row is absent: the first allocation of a fresh install, after `truncateAll()`,
+and **after a practice reset**, where the loser would have got an opaque 500 instead of an
+order/shipper/BOL/credit/receipt-batch number. Now a raw `INSERT … ON CONFLICT ("key") DO NOTHING`;
+the `SELECT … FOR UPDATE` claim that serializes the readers is unchanged. `settings.ts` held the only
+`update: {}` upsert in the tree — the other seven call sites all pass a non-empty `update`. A 5-way
+burst test pins it on slow hardware too, and the trap is now in CLAUDE.md's constraints list.
+**Scope, precisely: this fixed the P2002 insert race and NOTHING else.** Codex's review of the PR
+pushed on the isolation level, and probing it found a larger PRE-EXISTING hole → **issue #115 (P1)**:
+every caller of `allocateNumber` allocates inside a **Serializable** transaction, and a transaction
+whose snapshot is fixed before the `FOR UPDATE` claim aborts with **40001** as soon as another
+allocation commits — on **every** allocation, not just the first, and with **no retry** anywhere but
+`close-periods.ts`. Seeding the counter rows does not fix it (a pre-existing row fails identically);
+the direction is `retryOnSerializationConflict` around the six allocating callers. **The vitest suite
+cannot see it — vitest runs Read Committed — so a green allocate-number run is not evidence that
+concurrent order entry is safe.** Any regression test for #115 must set Serializable explicitly.
+
 ### Phase 8B (Practice DB & First-run Wizard) MERGED 2026-08-15 — 8C remaining
 
 **Phase 8B MERGED to `main` as `6f173e5` (PR #109, squash, 2026-08-16)** — second sub-phase of roadmap
@@ -553,17 +575,23 @@ sudo usermod -aG docker $USER   # then log out/in
 # 2. Project
 git clone https://github.com/CoJoA13/HeatSynQ.git && cd HeatSynQ/erp
 cp .env.example .env
-docker compose up -d db
+docker compose up -d db   # a FRESH dbdata volume runs db-init/, creating erp_test AND erp_practice
 npm install
-npx prisma migrate dev
-npx prisma generate    # v7's migrate dev no longer does this for you; client is gitignored
+npx prisma migrate deploy  # APPLY existing migrations to the dev DB (erp) — not `migrate dev`
+npx prisma generate        # v7 no longer does this for you; client is gitignored
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed
-npm test        # expect 258 passing (Phase 1: 75; Phase 2A, 2B, and the Prisma 7 work added the rest)
 npm run dev     # http://localhost:3000 — admin/admin, change it
+
+# 3. Prove it — the four gates (expect the §4 tally of the phase you are on)
+npm test
+npx tsc --noEmit
+npx eslint src tests
+npx playwright install chromium   # one-time; the E2E harness spawns its own dev server on :3100
+npm run test:e2e                  # runs against the DEV db (erp), not erp_test
 ```
 
-`npx prisma migrate dev` needs a TTY and refuses in a non-interactive shell — see `CLAUDE.md`'s "Constraints that will bite you" if you're driving this from a script or an agent session rather than a human terminal.
+Use `migrate deploy` to **apply** migrations. `migrate dev` is only for **authoring** a new one, and since Prisma 7 it needs a TTY — it refuses in a non-interactive shell, so an agent session must use the `migrate diff` workflow in `CLAUDE.md` (the `create-migration` skill) instead. `db-init/` runs **only on a fresh `dbdata` volume**; a box that already ran the stack before `erp_practice` existed creates it once by hand with `docker compose exec db createdb -U erp erp_practice`.
 
 Fedora-specific notes:
 - **SELinux**: the compose file bind-mounts `./db-init`, `./scripts/backup.sh`, and `./backups`. If Postgres init or the backup container hits `permission denied`, append `:z` to those three bind mounts in `erp/docker-compose.yml` (named volume `dbdata` needs nothing). Prefer `:z` labels over disabling SELinux.
