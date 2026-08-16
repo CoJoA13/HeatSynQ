@@ -30,15 +30,27 @@ on the order between B, C and D.
 
 ---
 
-### Task 0 — #122, first, before anything else (~15 minutes)
+### Task 0 — #122 · **DONE** (branch `fix-vitest-collection`, `c69d82a`)
 
-`erp/vitest.config.ts` sets no `include`/`exclude`, so after a build vitest also collects
-`.next/standalone/**/tests`. Consequences: **gate order silently matters** (`npm test` must precede
-`npm run build`, or `.next` must be cleared), and **any test count reported after a build is inflated** —
+`erp/vitest.config.ts` set no `include`/`exclude`, so after a build vitest also collected
+`.next/standalone/**/tests`. Consequences: **gate order silently mattered** (`npm test` had to precede
+`npm run build`, or `.next` had to be cleared), and **any test count reported after a build was inflated** —
 a reviewer during Phase 8C saw 4 files / 66 tests when it requested 2 files.
 
-Do this first so every measurement afterwards is real. Add an `exclude` for `.next/**` and ideally an
-explicit `include` of `tests/**`. Verify by building and then running a single test file.
+Reproduced on `main` before touching anything: with a build present, `vitest list --filesOnly` emitted
+**358 files for 179 real ones**. Fixed with `include: ["tests/**/*.test.{ts,tsx}"]` and
+`exclude: [...configDefaults.exclude, "**/.next/**"]`, guarded by `tests/vitest-collection.test.ts`.
+Verified by running the **full suite with the 179 stale copies still on disk**: 180 files / 2996 tests,
+zero `.next` paths collected. Gate order no longer matters.
+
+**One trap worth carrying forward, because the first draft of the guard test fell into it:** `.next` is
+a **dot-directory** and vitest matches with `dot: true`, but Node's `path.matchesGlob` does **not** match
+dot segments. A behavioural model of the build-output half written with `matchesGlob` scores the
+*pre-fix* config as safe — green for a reason unrelated to what it claims. It was caught only because the
+test carried a bite-proof case asserting the broken config is detected as broken. That half is now
+guarded **by construction** (every include pattern begins with the literal segment `tests/`, which no
+`.next/...` path can match), not by simulation. This is the exact failure shape §"The failure shape to
+hunt" describes, found in the burn-down's own first fifteen minutes.
 
 ---
 
