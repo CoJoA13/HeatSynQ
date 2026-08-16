@@ -60,7 +60,7 @@ its full record now lives in. The *current* phase's state is kept here in full; 
 merged is a pointer. Do not append a new phase narrative here — this file is the entry point for
 every fresh session and has to stay readable in one pass.
 
-**Fix on `main` 2026-08-16 — `allocateNumber`'s counter-row seed is now atomic.** Standing up the
+**Fix 2026-08-16 (PR #114) — `allocateNumber`'s counter-row seed is now atomic.** Standing up the
 build on the new Fedora desktop turned `tests/allocate-number.test.ts`'s concurrent case red 5/5,
 where it had passed for five phases on the laptop and in CI. Not a regression: `allocateNumber`
 seeded its `Setting` row with `upsert(… update: {})`, and Prisma degrades an EMPTY `update` to
