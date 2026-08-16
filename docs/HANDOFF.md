@@ -400,8 +400,9 @@ which `fileParallelism` can be re-enabled. Deliberately **not** done inside Phas
 infrastructure change with no business riding in a pricing PR, and it touches the harness every
 other task depends on. Wall-clock now: ~127s for vitest alone.
 
-**OWNER DECISION OWED (filed 2026-08-07 by the Phase 5A whole-branch review) — should editing an
-already-invoiced order's LINES freeze, the way its charges do?** Spec §5.7's freeze covers extra
+**RULED 2026-08-16 — YES, order-line edits freeze too; filed as issue #126.** (Original framing kept
+below for the reasoning.) **OWNER DECISION, now closed (filed 2026-08-07 by the Phase 5A whole-branch
+review) — should editing an already-invoiced order's LINES freeze, the way its charges do?** Spec §5.7's freeze covers extra
 charges, voiding, and shipment edits on an order that has a finalized invoice — but `addLine`/
 `updateLine` (`orders.ts`) are NOT blocked. It is not a bug today: the finalized invoice is frozen
 paper (a snapshot), so a later line edit changes nothing on it, and the correction path
@@ -565,8 +566,8 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    mockups, and they **overturned four of the Phase 4 design's own decisions before a line of code
    was written** — see that spec's §3.19–§3.22. The traveler sample was closed earlier, 2026-08-03,
    by the ruling that the 2025 mockup is its build target (spec §3.9).
-2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely).
-3. The office's go-to report list.
+2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely). **This and item 4 are now the CRITICAL PATH to the acceptance month (spec §13); nothing in code gates it any more.** Take **#91's netting question** to the same conversation — it is ruled (net to a single signed column) but the import method still wants confirming.
+3. ~~The office's go-to report list.~~ **Effectively CLOSED by Phase 8A** — the five native reports + the two homed ones were built to the owner's list; extras are cheap additions now the platform exists.
 4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
@@ -574,10 +575,9 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    1. ~~The shipping ticket prints no **"Page N of M"**~~ — **IN PHASE 7 SCOPE (spec approved
       2026-08-12)**: the render runtime gains a renderer-side page-number primitive with
       per-sheet-group rendering (P7 spec §6.1), closing this for every document type.
-   2. **Serial re-shipment has no warning**: no per-serial shipped fact exists, so re-selecting an
-      already-shipped serial on a later shipment gets no §5.7-class notice — worth an owner decision.
-      **Deliberately NOT Phase 7 scope** (workflow/data-model, not template work — P7 spec §2) —
-      still open.
+   2. ~~**Serial re-shipment has no warning**~~ — **RULED 2026-08-16: warn, do not block** (a hard
+      refusal would need a return/RMA concept that does not exist and could wedge a real shipment).
+      Filed as **issue #125** with the build notes; closes this ping.
    3. ~~The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**~~ —
       **IN PHASE 7 SCOPE (spec approved 2026-08-12)**: the tear-off goes flow-based as ruling 3's
       column-widths guardrail (P7 spec §5.6).
@@ -585,8 +585,10 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       title line (the sample shows one) — a small follow-up migration if the owner wants it.~~
       **CLOSED — built in Phase 6** (`e2c91e8`, ruling 14): `User.title` on the admin user form,
       printing on both the quote and cert signature blocks (blank title prints nothing).
-6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — Phase 7's testable outcome
-   is "owner restyles the traveler/logo", so the real logo (PNG or JPEG) belongs in `docs/samples/`.
+6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — **DEFERRED by the owner
+   2026-08-16 to after the acceptance month.** Cosmetic; the parallel run does not depend on it. The
+   template logo slot stays unused until then, and Phase 7's "restyle the traveler with the real logo"
+   outcome stays unexercised (the E2E flow uses a fixture image).
    Nothing blocks the build; the E2E flow uses a fixture logo until it lands.
 
 ## 8. Fresh machine setup (Fedora)
@@ -668,7 +670,16 @@ and §4, then pick among:
    GL export — which is exactly what an acceptance month run by more than one person exercises. **The
    vitest suite structurally cannot see it: vitest runs Read Committed, so a green
    `allocate-number.test.ts` is not evidence.** Any regression test must set Serializable explicitly.
-3. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
+3. **The six items ruled at the Phase 8 close-out (2026-08-16)** — all filed with build notes, none
+   started: **#68** add a `reopen` (POSTED→OPEN, refusing on a closed month, Serializable under the
+   period lock; `voidBatch` gains the matching POSTED guard); **#91** net the GL export to one signed
+   column per `(account, side)` — deliberately decided WITHOUT waiting on the bookkeeper, because a
+   gross dual-column line risks importing 150 where 120 was meant; **#125** warn (don't block) on
+   re-selecting an already-shipped serial; **#126** freeze `addLine`/`updateLine` once a finalized
+   invoice covers the order, so §5.7 means one thing; **#123** disable the Backups page's own controls
+   in practice mode while keeping the nav entry (`nav.ts` must NOT learn about practice mode — §8);
+   **#124** refresh the shell staleness bar after a successful "Back up now".
+4. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
    (delete-customer-with-live-payment); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
    #102/#103; **Phase 8C's #118–#122** (of which **#122** is worth doing early and cheaply — a
    post-build `npm test` collects a stale copy under `.next/standalone/**/tests`, so gate ORDER
@@ -676,8 +687,12 @@ and §4, then pick among:
    infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
    sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
    on two pages — customers/parts/orders/certs detail pages likely share the hole).
-4. **A Phase 8 demo** — the owner has not yet walked the reports, the practice copy, or the Backups
-   page end to end. 8A/8B/8C all shipped without one; earlier phases' demos each produced real rulings.
+5. ~~**A Phase 8 demo**~~ — **DONE 2026-08-16** (record in `docs/execution/2026-08-16-phase-8c-backup-polish/progress.md`).
+   Walked 8A/8B/8C live: the day-one red staleness bar, a real `pg_dump` through "Back up now"
+   (archive + status file + audit row all verified on disk), the practice banner on the login screen,
+   and the PRACTICE/SAMPLE watermark on a printed traveler. Produced **#123** and **#124**, and the
+   six rulings above. A demo of the *order-to-invoice* flow on the practice copy is still worth doing
+   before the acceptance month — this one covered Phase 8's surface, not the daily workflow.
 
 Whichever track is chosen: brainstorm → spec → plan → subagent-driven execution on a fresh branch,
 per-task reviews, whole-branch review on the strongest model, one fix wave, PR with attribution in
