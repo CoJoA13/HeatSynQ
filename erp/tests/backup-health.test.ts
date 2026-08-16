@@ -165,4 +165,16 @@ describe("backupHealth against a real folder", () => {
     await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), JSON.stringify({ hello: "world" }));
     expect((await backupHealth(dir)).state).toBe("unknown");
   });
+
+  // Codex review, PR #117 (finding #6): a number/object/array/boolean `error` was silently coerced
+  // to null rather than rejected, so a status file with a malformed `error` but valid `ok:true` and
+  // a recent archive read GREEN — reporting health over a corrupt status document, the opposite of
+  // every other malformed field's strict red treatment.
+  it("reads RED when the status file's error field is present but not a string or null", async () => {
+    await writeFile(path.join(dir, "erp_2026-08-16_020000.sql.gz"), gzipSync(Buffer.from("-- ok\n")));
+    await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), JSON.stringify({
+      lastRunAt: new Date().toISOString(), ok: true, source: "nightly", error: 42,
+    }));
+    expect((await backupHealth(dir)).state).toBe("unknown");
+  });
 });

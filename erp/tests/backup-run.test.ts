@@ -234,4 +234,36 @@ describe("runBackupNow", () => {
       expect(archives.some((a) => a.name === info.name && a.integrityOk)).toBe(true);
     });
   });
+
+  // Codex review, PR #117 (finding #7): `child.kill()` only SENDS SIGTERM, it does not wait for the
+  // OS process to actually die — settling right away let a NEW dump start while the OLD pg_dump
+  // could still be holding its snapshot and locks. Unlike the plain `hang` fixture above (which
+  // dies immediately on SIGTERM, so it can't distinguish "waited for death" from "merely sent a
+  // signal"), `hang-ignore-term` ignores SIGTERM and only dies to SIGKILL, so this test actually
+  // exercises the escalation and proves the ordering: the process must be gone BEFORE the promise
+  // settles, not merely eventually.
+  describe("review round 3 fix (finding #7 — kill must be awaited, not fire-and-forget)", () => {
+    it("escalates to SIGKILL and the process is already gone by the time the promise settles", async () => {
+      process.env.FAKE_DUMP_MODE = "hang-ignore-term";
+      const pidFile = path.join(dir, "child.pid");
+      process.env.FAKE_PID_FILE = pidFile;
+
+      // A short stall timeout triggers the kill path; a short kill grace means this test exercises
+      // the SIGKILL escalation itself rather than waiting out a realistic multi-second grace period.
+      const runPromise = asSystem(() =>
+        runBackupNow({ dumpBin: FAKE, dir, timeoutMs: 200, killGraceMs: 150 }));
+
+      const pid = await waitForPid(pidFile);
+      await expect(runPromise).rejects.toThrow(/stalled/i);
+
+      // No polling loop here — that is the whole point. If the promise settled without actually
+      // waiting for the kill to take effect (the bug), this process would still be alive right now.
+      expect(() => process.kill(pid, 0)).toThrow();
+
+      // The single-flight guard must be free immediately too: a later click can run right away.
+      process.env.FAKE_DUMP_MODE = "ok";
+      const info = await asSystem(() => runBackupNow({ dumpBin: FAKE, dir }));
+      expect(info.integrityOk).toBe(true);
+    });
+  });
 });

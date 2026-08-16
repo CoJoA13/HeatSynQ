@@ -44,6 +44,11 @@ next-env.d.ts
 # nightly pg_dump backups (production)
 /backups
 
+# Codex review, PR #117 (finding #4): the restore runbook's pre-restore safety dump belongs inside
+# /backups (already ignored above) — this is defence in depth in case it's ever written elsewhere,
+# e.g. by hand, mid-incident, from the wrong directory.
+before-restore-*.sql.gz
+
 # prisma client (generated; run `npx prisma generate`)
 /prisma/generated
 

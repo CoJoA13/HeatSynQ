@@ -98,37 +98,61 @@ backup. Both writers also maintain `backup-status.json`, which is what the stale
 ### Restoring
 
 Restore is a deliberate terminal command, never a button. **Read all five steps before starting.**
+Every command below is `erp/`-relative — run the whole block from `erp/`, same as every other
+command in this file — and the block assumes `bash` (for `set -euo pipefail`; paste it into a `bash`
+shell, not `sh`). `set -e` means the block stops itself at the first failing command, so it cannot
+walk forward into the destructive steps after step 2's safety dump fails.
 
 ```bash
+set -euo pipefail
+
 # 1. Pick the archive and verify it BEFORE you touch the live database.
-ls -la erp/backups
-gzip -t erp/backups/erp_2026-08-16_020000.sql.gz && echo "integrity OK"
+ls -la backups
+gzip -t backups/erp_2026-08-16_020000.sql.gz && echo "integrity OK"
 
 # 2. Take a fresh dump of the CURRENT database first — restoring is destructive and this is your
 #    only way back if the archive turns out to be the wrong one. `db` has no compose profile, so it
-#    needs no --profile flag; it is always up alongside `app`.
-cd erp && docker compose exec -T db pg_dump -U erp -d erp | gzip > "before-restore-$(date +%s).sql.gz"
+#    needs no --profile flag; it is always up alongside `app`. Without `set -o pipefail` a failed or
+#    truncated pg_dump here would still exit 0 (gzip's own exit code masks it), so the archive is
+#    verified before anything destructive happens — `gzip -t` it and require it be non-empty. The
+#    dump lands inside `backups/` (already gitignored), not the repo root.
+docker compose exec -T db pg_dump -U erp -d erp | gzip > "backups/before-restore-$(date +%s).sql.gz"
+SAFETY_DUMP=$(ls -t backups/before-restore-*.sql.gz | head -1)
+gzip -t "$SAFETY_DUMP"
+test -s "$SAFETY_DUMP"
+echo "safety dump verified: $SAFETY_DUMP — safe to continue"
+# Do NOT continue past this point unless that line printed. If it didn't, `set -e` already stopped
+# you — you do not yet have a way back if the restore below goes wrong.
 
-# 3. Stop the app so nothing writes mid-restore, then drop every other connection to `erp` (a stray
-#    psql/Prisma-Studio session on the published 5432 port is enough to make DROP DATABASE refuse).
-docker compose --profile prod stop app
-docker compose exec -T db psql -U erp -d postgres -c \
+# 3. Stop the app AND the nightly backup worker so nothing writes mid-restore. `docker-compose.yml`
+#    runs `backup` as a `while true; do sh /backup.sh; sleep 86400; done` loop — if it fires while
+#    the database is empty-then-restoring, it happily archives a partially restored database and
+#    still reports `ok:true`, which is exactly the "failure that reports success" this feature
+#    exists to prevent. Then drop every other connection to `erp` (a stray psql/Prisma-Studio
+#    session on the published 5432 port is enough to make DROP DATABASE refuse).
+docker compose --profile prod stop app backup
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c \
   "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'erp' AND pid <> pg_backend_pid();"
 
-# 4. Recreate the database empty, then restore into it.
-docker compose exec -T db psql -U erp -d postgres -c 'DROP DATABASE erp;'
-docker compose exec -T db psql -U erp -d postgres -c 'CREATE DATABASE erp OWNER erp;'
-gunzip -c backups/erp_2026-08-16_020000.sql.gz | docker compose exec -T db psql -U erp -d erp
+# 4. Recreate the database empty, then restore into it. `-v ON_ERROR_STOP=1` makes psql abort at the
+#    FIRST failed statement instead of its default of silently continuing past it — without it, a
+#    missing extension/role/dependency mid-restore leaves a partially restored database that reads
+#    as a clean run, and step 5 would start the app on top of it.
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c 'DROP DATABASE erp;'
+docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d postgres -c 'CREATE DATABASE erp OWNER erp;'
+gunzip -c backups/erp_2026-08-16_020000.sql.gz | docker compose exec -T db psql -v ON_ERROR_STOP=1 -U erp -d erp
+echo "restore completed without error"
 
-# 5. Bring the app back — its start command runs `prisma migrate deploy` before serving, so any
-#    migration newer than the archive applies automatically.
-docker compose --profile prod start app
+# 5. Bring the app AND the backup worker back — the app's start command runs `prisma migrate deploy`
+#    before serving, so any migration newer than the archive applies automatically. This only runs
+#    if step 4 exited 0 (see `set -e` above).
+docker compose --profile prod start app backup
 ```
 
 **Verify before you trust it:** sign in, open `/orders` and `/receivables`, and confirm the newest
 order and the A/R total match what you expect from the archive's date. If the restore was wrong, the
-step-2 dump (`before-restore-<epoch>.sql.gz`) is your way back — repeat steps 3–5 with it in place of
-the chosen archive.
+step-2 dump (`backups/before-restore-<epoch>.sql.gz`) is your way back — repeat steps 3–5 with it in
+place of the chosen archive.
 
 **Keeping an archive longer than 30 days** — copy it out of the backup folder. Everything inside is
 pruned at 30 days, on-demand archives included.

@@ -15,10 +15,21 @@
 #                         the SAME pid (exec preserves it) and dies immediately on SIGTERM (its
 #                         default disposition) — instead of leaving `sleep` as a separate forked
 #                         child, which some shells could orphan out from under a killed parent.
+#   FAKE_DUMP_MODE=hang-ignore-term  same as `hang`, but `trap '' TERM` first — POSIX preserves an
+#                         IGNORED disposition across `exec` (only a CAUGHT one resets to default),
+#                         so the resulting `sleep` ignores SIGTERM entirely and only SIGKILL can end
+#                         it. Exists to prove the SIGKILL-escalation path (Codex review, PR #117,
+#                         finding #7) actually kills a child that refuses to die from SIGTERM alone,
+#                         rather than merely proving a signal was sent.
 case "${FAKE_DUMP_MODE:-ok}" in
   fail)  echo "pg_dump: error: connection failed" >&2; exit 1 ;;
   empty) exit 0 ;;
   hang)  [ -n "$FAKE_PID_FILE" ] && echo $$ > "$FAKE_PID_FILE"
+         echo "-- fake dump of $1"
+         exec sleep 3600 ;;
+  hang-ignore-term)
+         trap '' TERM
+         [ -n "$FAKE_PID_FILE" ] && echo $$ > "$FAKE_PID_FILE"
          echo "-- fake dump of $1"
          exec sleep 3600 ;;
   *)     echo "-- fake dump of $1"; echo "CREATE TABLE t (id int);" ;;

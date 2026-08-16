@@ -118,7 +118,13 @@ function parseStatus(raw: string): BackupStatusFile | null {
     if (typeof o.lastRunAt !== "string" || Number.isNaN(Date.parse(o.lastRunAt))) return null;
     if (typeof o.ok !== "boolean") return null;
     if (o.source !== "nightly" && o.source !== "manual") return null;
-    const error = o.error === null || typeof o.error === "string" ? o.error : null;
+    // A number/object/array/boolean `error` is a malformed status document, not a legitimately
+    // absent one — reject the whole file rather than silently coercing it to null, which would let
+    // `evaluateHealth` report GREEN over a corrupt status document whenever `ok:true` happens to
+    // also be set (Codex review, PR #117). Genuinely absent (`undefined`) and explicit `null` are
+    // the only ways to say "no error", matching what both writers actually emit.
+    if (o.error !== undefined && o.error !== null && typeof o.error !== "string") return null;
+    const error = typeof o.error === "string" ? o.error : null;
     return { lastRunAt: o.lastRunAt, ok: o.ok, source: o.source, error };
   } catch {
     return null;   // unparseable reads exactly like missing: red
@@ -202,8 +208,15 @@ let inFlight: Promise<ArchiveInfo> | null = null;
  *  wait. */
 const DEFAULT_DUMP_TIMEOUT_MS = 30 * 60_000;
 
+/** Codex review, PR #117 (finding #7). `child.kill()` only SENDS SIGTERM — it does not wait for the
+ *  process to actually exit. A process that dies quickly from SIGTERM (the overwhelmingly common
+ *  case for `pg_dump`) closes well inside this window; it exists only to bound how long a process
+ *  that ignores SIGTERM can hold the promise (and therefore `inFlight`) open before the escalation
+ *  to SIGKILL below fires. Overridable via `opts.killGraceMs` for the same reason `timeoutMs` is. */
+const DEFAULT_KILL_GRACE_MS = 5_000;
+
 export function runBackupNow(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number } = {},
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number } = {},
 ): Promise<ArchiveInfo> {
   if (inFlight) return inFlight;
   inFlight = doBackup(opts).finally(() => { inFlight = null; });
@@ -211,7 +224,7 @@ export function runBackupNow(
 }
 
 async function doBackup(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number },
+  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number },
 ): Promise<ArchiveInfo> {
   // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
   await assertNotPracticeDatabase();
@@ -249,6 +262,7 @@ async function doBackup(
   // --- dump to the temp file, via ARGV. No string ever reaches a shell. ---
   let stderr = "";
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DUMP_TIMEOUT_MS;
+  const killGraceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   try {
     await new Promise<void>((resolve, reject) => {
       const out = createWriteStream(tmpPath);
@@ -266,6 +280,27 @@ async function doBackup(
       let finished = false;
       let settled = false;
 
+      // Codex review, PR #117 (finding #7). `child.kill()` alone only SENDS SIGTERM; it does not
+      // prove the process is actually gone. Settling (and therefore releasing `inFlight`) the
+      // instant SIGTERM is sent let a NEW dump start while the OLD `pg_dump` could still be running,
+      // still holding its snapshot and its locks. This waits for the child's own "close" event —
+      // the proof the OS process has actually exited — before resolving, and escalates to SIGKILL
+      // after `killGraceMs` so a process that ignores SIGTERM (or is merely slow to die) cannot hold
+      // the promise open forever. A child with no pid (never spawned) or already exited resolves
+      // immediately — nothing to wait for.
+      const killAndWait = (): Promise<void> => new Promise((done) => {
+        if (!child.pid || child.exitCode !== null || child.signalCode !== null) {
+          done();
+          return;
+        }
+        child.kill(); // SIGTERM — the default signal
+        const escalateTimer = setTimeout(() => { child.kill("SIGKILL"); }, killGraceMs);
+        child.once("close", () => {
+          clearTimeout(escalateTimer);
+          done();
+        });
+      });
+
       // Review round 2, finding #1 (REQUIRED). On ANY error settle — the destination write
       // erroring (ENOSPC on a full backup folder is THE archetypal case this feature must
       // survive), the source `child.stdout` erroring, the child failing to spawn, or the stall
@@ -274,14 +309,15 @@ async function doBackup(
       // so without an explicit kill() here a write-stream error leaves `pg_dump` running
       // indefinitely, still holding its snapshot and its locks on every table (reviewer repro,
       // 2026-08-16: child still alive 600ms after the promise settled, killed only by hand — and
-      // every retry click strands another one). `child.kill()` on an already-dead or
-      // never-spawned child is a harmless no-op, so this is safe to call unconditionally.
+      // every retry click strands another one). `settled` flips to true BEFORE the async kill-and-
+      // wait starts, so the outer "close" listener's `maybeSettle` below (which will ALSO fire once
+      // the kill takes effect) is already a no-op by the time it runs — exactly-once settlement is
+      // preserved even though this path now settles asynchronously instead of synchronously.
       const settleError = (err: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        child.kill();
-        reject(err);
+        void killAndWait().finally(() => reject(err));
       };
 
       // Same finding: `pipe()` attaches no `error` handler to its SOURCE, so an error emitted by
