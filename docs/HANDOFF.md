@@ -631,7 +631,35 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    by the ruling that the 2025 mockup is its build target (spec §3.9).
 2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely). **This and item 4 are now the CRITICAL PATH to the acceptance month (spec §13); nothing in code gates it any more.** **#91 is ruled AND built** (netted to a single signed column, `0b5ea81`) — but confirm the import method against it at the same conversation, since netting was decided without waiting on the bookkeeper.
 3. ~~The office's go-to report list.~~ **Effectively CLOSED by Phase 8A** — the five native reports + the two homed ones were built to the owner's list; extras are cheap additions now the platform exists.
-4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
+4. GL account list for operations, surcharges, payment types. **PARTIALLY DELIVERED 2026-08-16** —
+   the owner supplied Visual Shop's own *General Ledger Report* (process code → GL#, 3 pages).
+   **NOT IN GIT — the repository is PUBLIC and this is the company's chart of accounts.** It lives at
+   `docs/company-confidential/2026-08-16-visual-shop-gl-numbers.pdf`, a directory gitignored under
+   the same 2026-08-07 ruling as the VS screen capture. Never quote an account number into a commit,
+   a PR body, or an issue. Owner's note: "not all of them are used anymore", and no rush — nothing
+   was built against it.
+
+   **Fifteen distinct accounts appear:** 4401–4408, 4411–4414 (revenue), 5525 energy surcharge, 5620
+   freight, 5621 trucking. Some rows carry no GL# at all and three carry a literal `%` — consistent
+   with the retired-codes caveat, and harmless here since a step code's account is optional
+   (2026-07-30).
+
+   **⚠️ TWO FINDINGS THAT NEED THE OWNER BEFORE THIS CAN BE KEYED IN:**
+
+   1. **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
+      Process Step Code.** The report's `Gr Id` column is what separates 4401 (IQ) / 4402 (Vacuum) /
+      4403 (Tip Up) / 4404 (Bell) / 4405 (Temper) / 4407 (Car Bot) / 4411 (Rotary) / 4412 (Pusher),
+      and the SAME process code lands in several: `AnnealAtmos` appears under 4401, 4404 and 4411;
+      `Normal Atmos` under 4401, 4404, 4405 and 4412; `SR Air` under 4403, 4405 and 4407. Our model
+      hangs ONE `glAccountId` off each `ProcessStepCode` (CLAUDE.md), so a single step code cannot
+      reproduce that split. Either the step codes are defined per (process × equipment group) — which
+      is how the shop already names them in practice, worth confirming — or the account has to be
+      chosen somewhere else. **Do not key the chart in until this is settled**; guessing would
+      mis-post revenue by furnace.
+   2. **The balance-sheet side is not in this list.** The QBO export's readiness gate also needs
+      `BillingConfig`'s A/R control, sales-tax, discount and write-off accounts, plus a cash account
+      per payment type. This report covers the REVENUE side only, so §7 item 2's bookkeeper
+      conversation still owes those four-plus-N numbers.
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
    session; §9 carries them into the next PR:

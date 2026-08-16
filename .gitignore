@@ -32,3 +32,9 @@ docs/samples/05-accounts-receivable/
 docs/samples/06-notes-crm-reports/
 docs/samples/README.md
 docs/samples/screen-index.csv
+
+# Owner-supplied live company data (added 2026-08-16) — kept LOCAL, never committed, for the same
+# reason and under the same ruling as the screen capture above. THE REPOSITORY IS PUBLIC: the
+# company's chart of accounts is internal financial structure, so it must never reach a commit, a
+# PR body, or an issue. The whole directory is ignored so a future drop needs no new rule.
+docs/company-confidential/
