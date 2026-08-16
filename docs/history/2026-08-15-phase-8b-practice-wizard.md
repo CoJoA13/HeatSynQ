@@ -1,0 +1,44 @@
+# Phase 8B — Practice DB & First-run Wizard (2026-08-15)
+
+**Merged to `main` as `6f173e5` (PR #109, squash, 2026-08-16).** Second sub-phase of roadmap Phase 8 (Reports & parallel-run tools). Design spec: `docs/superpowers/specs/2026-08-14-phase-8-reports-parallel-run-design.md` §5 (approved 2026-08-14). Full execution record: `docs/execution/2026-08-15-phase-8b/`; plan: `docs/superpowers/plans/2026-08-15-phase-8b-practice-wizard.md`.
+
+## What shipped
+
+A **separate practice training copy** and a **first-run setup checklist that gates real order entry** — the two parallel-run enablers spec §5 called for, with a single source of truth for practice-vs-production and a by-construction second singleton.
+
+- **Practice copy** — its own `erp_practice` DB (a `db-init/create-practice-db.sql` for fresh volumes) + an `app-practice` compose service on its own `practice` profile, host port 8080, own session cookie (`erp_practice_session`). Prod bring-up is unchanged.
+- **`practiceMode()` (`practice-mode.ts`)** — the single practice-vs-production source, resolved **authoritatively from the database identity** (`SELECT current_database() = 'erp_practice'`, memoized), with `PRACTICE_MODE` only corroborating (a loud throw on the dangerous env-says-practice/DB-is-prod mismatch). It drives the banner, the watermark, and the reset guard; `assertPracticeDatabase` is the un-memoized in-request re-check.
+- **PRACTICE watermark** — a `pdf-lib` post-stamp (`stampPractice`) both render entry points funnel through exactly once (`renderSheetGroups` stamps the *merged* bytes); a true no-op short-circuit in production so renders stay **byte-golden** and reprints byte-exact.
+- **Demo seed** (`prisma/demo-seed.ts`, `npm run db:seed:demo`) — a representative Summit Heat Treating slice built **through the services** (no `createMany`), reproducing the admin bootstrap; guard-split (`seedDemoSlice` ambient/tested vs erp_test, `seedPracticeDemo` db-identity-guarded).
+- **Reset practice data** — double-guarded `POST /api/practice/reset` (`admin.edit` + `practiceMode()` + the load-bearing in-request `assertPracticeDatabase` re-check), restoring the singletons **before** any demo rows; a `/practice` page + control the banner links to. Non-atomic by design (§5.3) behind the db-identity pre-check.
+- **First-run setup checklist** (`/setup`) — eight dependency-ordered steps (incl. the §5.7 admin-password-still-`admin` live signal), a new **`SetupState` by-construction singleton** (`id='singleton'` CHECK, the `BillingConfig` precedent; only the two non-derivable facts — `numbersConfirmedAt`, `checklistDismissedAt`), a dynamic surfacing banner + a dismissible password reminder mounted by the now-async root layout above Shell's early returns.
+- **Order-entry gate** — `createOrder` is blocked until **company identity AND a chart of accounts** are configured (`order-entry-readiness.ts`), evaluated as a **pre-transaction read at the single `createOrder` chokepoint** so a concurrent config edit is never a no-retry Serializable abort. `reseedSingletons` (`practice-seed.ts`) lifted out of test-only code and reused by `truncateAll`; an **opt-in** `seedOrderGatePrereqs` harness (never global — it would red the pristine-default suites and contaminate the reset).
+
+## Owner decisions
+
+Deploy = dedicated `practice` profile + port 8080 (not an in-app toggle); demo slice designed by the controller, owner-reviewed at T12 (accepted as-is); order-gate = all three company-identity fields; `practiceMode` db-identity authoritative with a loud throw on the dangerous mismatch; `/setup` admin-gated + surfaced-until-complete (a dynamic banner, not a static nav entry); first population = a documented one-time guarded seed command; §5.7 password nudge = a live signal + client-side dismiss (no schema field). Process: write the formal plan doc, then execute; open the PR and merge on CI green.
+
+## Process & the three-layer review stack
+
+- **16 tasks**, subagent-per-task (TDD, small commits, no attribution trailer). Plan built from a 10-agent touchpoint-mapping pass + a **3-lens adversarial plan review** (house-rules/data-integrity · feasibility · spec-coverage), every substantive finding folded in before execution (the opt-in gate harness, the ambient-singleton demo seed + auth bootstrap, the §5.7 reminder, the reprint-watermark test, the banner-home E2E).
+- **Two per-task review waves** — all pass/approved (T7 zero findings). The one IMPORTANT catch: T2's memoized `??=` cached a *rejected* promise permanently (a transient first-call DB failure would poison every later layout render until restart) → fixed with `.catch(clear-cache-and-rethrow)`.
+- **Whole-branch 5-lens review** — no blocking (correctness/concurrency/data-integrity) findings; the **security lens was clean** (the reset provably can't touch production; all four new routes gated; the gate is the single `Order` chokepoint; the flag isn't leaked to any client component). The one substantive finding — the gate predicate re-derived in two places — fixed on-branch (`install-readiness` now composes the leaf's `orderEntrySignals`; the chart-step href fixed with it).
+- **Codex automated PR review (the GitHub bot), three rounds.** Round 1 (1 P1 + 7 P2) and round 2 (2 P1 + 5 P2) all fixed on-branch — including a CI-caught typecheck regression from a round-1 "unused import" polish, and two round-2 findings that were themselves regressions in round-1 fixes (the convergence the *when-to-stop-reviewing* ruling predicts). Round 1 P1s: the async layout needed `force-dynamic` to avoid a build-time DB query; round 2 P1s: the practice service needed its own session cookie, and existing volumes needed a hand-provisioned `erp_practice`. **Round 3 (3 P2s)** landed after CI was green; per owner instruction they were **logged as issues #110–#112 and the PR merged** (see Deferred).
+
+**Final gates:** 2897 tests / 171 files, tsc/eslint/build clean, **E2E 22/22**; **CI green**.
+
+## Deferred (follow-ups)
+
+Codex round-3 P2s, logged rather than fixed on-branch (owner instruction — log, then merge; none were correctness/concurrency/data-integrity blockers):
+
+- **#110** — `SetupBanner` shows stale setup/password readiness for the rest of the session after a client-side setup mutation (the one-shot fetch is the deliberate round-1 fix to avoid a per-nav argon2 verify; needs a cheaper cached signal the mutations bump). Over-shown, never under-shown.
+- **#111** — the practice-reset advisory lock pins a pool connection while the seed runs on the ambient client; a 1-connection pool (or enough concurrent resets) can starve it. This is the round-2 "serialize the reset" fix drawing a round-3 finding; low-probability in the single-admin practice deployment.
+- **#112** — the README's in-container `npm run db:seed:demo` fails (`tsx` is pruned from the practice image, same constraint already documented for the production seed); remove or fix that parenthetical path. The primary from-a-checkout path is correct.
+- The remaining Phase 8: **8C** (backup polish).
+
+## Lessons
+
+- **The three-layer stack held again** — the whole-branch review was clean on the blocking classes, yet Codex found real P1s the first two layers missed (build-time DB query in the async layout, missing per-service session cookie, unprovisioned practice DB on existing volumes), and rounds 2–3 caught regressions in earlier-round fixes. Keep all three layers; expect a fix to draw a re-review; **from round 6+ triage non-blocking findings to issues** (here: round 3 → #110–112) rather than reading a non-empty late round as "not ready to merge."
+- **The order-entry gate's blast radius was captured empirically, not guessed** — a full-suite run showed exactly which 38 files / 683 tests the new prereq broke; the opt-in `seedOrderGatePrereqs` sweep (never global) fixed them without reddening the pristine-default suites or contaminating the reset baseline. The E2E fixture's prereq seeding was deliberately deferred from T7 to T15, where E2E actually runs and the change is verifiable.
+- **db-identity, not an env flag, is the load-bearing safety boundary** — resolving practice-vs-production from `current_database()` (with the env only corroborating, loud-throwing on mismatch) means a mis-set `PRACTICE_MODE` on a production-pointed app can never watermark-clean or truncate real data. The reset's refusal is the in-request `assertPracticeDatabase` re-check, exercised as the RED safety test in the erp_test process.
+- **The watermark had to stay byte-golden in production** — `stampPractice` is a true short-circuit no-op when not in practice, so existing golden-PDF and byte-exact-reprint tests keep passing; the stamp detection test inflates the content stream and counts hex-encoded "PRACTICE" occurrences (pdf-lib hex-encodes `drawText`), which also catches an accidental double-stamp on the merged sheet-group path.
