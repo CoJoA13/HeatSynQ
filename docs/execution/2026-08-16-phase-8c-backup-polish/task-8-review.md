@@ -1,0 +1,53 @@
+# Task 8 review — deploy wiring + permission backfill (base e542a51 → head 75124d8)
+
+## Spec Compliance
+❌ / ⚠️ — every brief step is implemented as written; one plan-inherited defect in `backup.sh`.
+
+- Dockerfile:53-57 — `apk add --no-cache postgresql18-client` in the `run` stage after `ENV NODE_ENV=production`, with the version-lock comment. ✅
+- docker-compose.yml:83-88 (`app` gets `BACKUP_DIR: /backups` + `./backups:/backups`), :123 (`backup` gets `BACKUP_DIR`), :110-113 (`app-practice` gets the comment ONLY — no env, no mount; confirmed from the diff hunk, nothing else added under that service). ✅
+- .env.example:32-37 — documented `BACKUP_DIR="./backups"`; `resolveBackupDir` (`src/server/backup-paths.ts:24`) resolves a relative dev value, and `erp/.gitignore:45` already ignores `/backups`, so local dumps can't be committed. ✅
+- Migration `20260816120000_.../migration.sql:14-92` — verified in depth, see below. ✅
+- `tests/backup-permission-backfill.test.ts` — drives the migration's OWN SQL file. ✅ (re-ran it: 6 passed, pristine output, 439ms).
+- ⚠️ Cannot verify from diff: the container evidence (Steps 5–6 image build / nightly + failure runs). I independently reproduced the script's semantics under `postgres:18`'s own `dash` instead (below), which covers the same ground.
+- ⚠️ Cannot verify from diff: the shape of the OWNER'S PRODUCTION roles. The predicate is exactly the owner's rule, but no earlier migration ever backfilled `RolePermission` (`grep "INSERT INTO \"RolePermission\"" prisma/migrations/*/migration.sql` → only this one), so a role seeded before `receivables.*` / `reports.*` / `templates.*` / `action.write_off` / `action.override_credit_hold` existed holds fewer than 64 and will NOT qualify — the migration would then be a silent no-op and the Backups page stays invisible. Controller should run this read-only check on the real DB **before** deploying: `SELECT r.name, count(rp.*) FROM "Role" r LEFT JOIN "RolePermission" rp ON rp."roleId"=r.id WHERE r."deletedAt" IS NULL GROUP BY r.name;` — expect ≥1 role at 64 (or 65 if already granted). Recovery if not: grant it in the roles UI.
+
+## Priority 1 — the migration (checked, not eyeballed)
+
+**Predicate is the stated rule.** `NOT EXISTS (SELECT 1 FROM (VALUES …) required WHERE NOT EXISTS (rp for r.id))` = "no required permission is missing" = holds all 64. Case by case: zero-permission role → some required row survives the inner NOT EXISTS → outer NOT EXISTS false → not selected (test at :386); missing exactly one → same (test at :379); all 64 + unknown/stale strings → still qualifies, which is correct under "already holds everything" (and `roles.ts:45` rejects unknown strings on new grants anyway); soft-deleted → excluded by `r."deletedAt" IS NULL` at migration.sql:17 (test at :402). No path lets a partially-granted role through.
+
+**The 64-list is exact — verified programmatically, not by grep -c.** I rebuilt `ALL_PERMISSIONS` from `src/lib/permission-constants.ts` (13 AREAS × 4 CRUD + 13 SPECIAL_ACTIONS = 65) minus `action.manage_backups` and diffed it against the SQL's parsed VALUES rows: length 64, zero duplicates, **0 missing, 0 extra, sorted-equal true**. The dangerous direction (a typo'd entry silently loosening the rule) is not present.
+
+**`id` / conflict target / idempotency — verified against the live DB (read-only `\d "RolePermission"`):** `id text NOT NULL` with **no** column default, so the INSERT's `gen_random_uuid()::text` (migration.sql:15) is required and correct — `SELECT gen_random_uuid()::text` runs fine on this Postgres 18 with no extension. The unique index is `RolePermission_roleId_permission_key UNIQUE, btree ("roleId", permission)` — plain, not partial — so `ON CONFLICT ("roleId","permission")` (migration.sql:92) infers it; `RolePermission` has no `deletedAt`, so the partial-unique house rule doesn't apply here. Re-running is a genuine no-op (test at :392 executes the file twice and asserts exactly one row).
+
+**Test design — the most important question — answered correctly.** `readFileSync(MIGRATION_PATH)` + `prisma.$executeRawUnsafe(SQL)` (test:33,42): the shipped statement itself runs, not a paraphrase, and the 64 strings are parsed out of that same text (test:39) rather than re-typed. Applied to both DBs: `_prisma_migrations` in `erp` and `erp_test` both show `20260816120000_grant_manage_backups_to_full_roles` finished, `rolled_back_at` null.
+
+## Priority 2 — scripts/backup.sh
+
+**Verified by execution under the container's real shell** (`postgres:18` → `/bin/sh` is `dash`), harness lifted verbatim from the shipped `write_status`:
+
+- **`set -e` never eats a failure status.** `write_status` reached the end with rc=0 for every input tried — empty message, plain message, embedded `"`, embedded `\`, embedded newline+tab, and `%s`/`$var` text. The `$([ -n "$msg" ] && printf '"%s"' "$msg" || echo null)` construct is an AND-OR list inside a command substitution used as a `printf` argument, so neither branch can trip errexit; both branches exit 0 anyway. `if ! pg_dump …` is an `if` condition, likewise exempt. No failure branch dies before writing.
+- **Output is always valid JSON for anything `pg_dump` realistically emits.** `tr -d '"\\'` (the single-quoted `'"\\'` correctly reaches `tr` as the set `{"​, \}`) plus `tr '\n\r\t' '   '` produced JSON.parse-clean files in every case above, and the shape satisfies `parseStatus` (`src/server/backups.ts:112-124`): `lastRunAt` Date.parse-able, `ok` a real boolean, `source: "nightly"`, `error` string-or-null. Lossy only (quotes/backslashes dropped), never malformed — with the one exception in Minor #2.
+- **No failure branch destroys a good backup.** Each `rm -f` names only the current `$STAMP`'s temp or archive (backup.sh:34,42,50); the retention `find` (backup.sh:57) is the last-but-two statement and is unreachable from any failure branch, so it cannot fire before a fresh, integrity-verified archive exists.
+- **`BACKUP_DIR` degrades sanely.** `DIR="${BACKUP_DIR:-/backups}"` covers unset *and* empty; a bad path makes the first redirect fail, the script exits non-zero, and the app reads "no readable status file" (red).
+- **Retention patterns match both writers.** `erp_*.sql.gz` covers nightly `erp_<stamp>.sql.gz` (`NIGHTLY_ARCHIVE_RE`) and manual `erp_manual_<stamp>_<hex>.sql.gz` (`MANUAL_ARCHIVE_RE`, `backup-paths.ts:66`); `.erp_*.sql.tmp` covers both the script's own temp and the app's `tempNameFor()` output `.erp_manual_….sql.tmp` (`backup-paths.ts:75`). `-mtime +1` cannot reach an in-flight manual dump.
+
+## Priority 3 — compose and image
+`app` genuinely gets both env and mount; `backup` gets the env the script now reads; `app-practice` has neither (comment only). The run stage declares no `USER`, so the app container writes `/backups` as root just like the `backup` container — no uid mismatch on the shared bind mount. Version-lock comment present and accurate at Dockerfile:53-56.
+
+## Issues
+
+### Critical (Must Fix)
+None.
+
+### Important (Should Fix)
+1. **`scripts/backup.sh:47` — the compress step is the one failure that writes NO status, leaving a stale `"ok": true`.** `gzip < "$TMP" > "$DIR/erp_${STAMP}.sql.gz"` is a bare command under `set -e`: it aborts the script before `write_status`. I reproduced it (stub `gzip` returning `write error: No space left on device`): exit 1, `backup-status.json` still held the *previous* night's `{"ok":true}`, and a truncated `erp_<stamp>.sql.gz` plus the `.erp_….sql.tmp` were left behind. `evaluateHealth` (`src/server/backups.ts:44`) then reports **ok/green** until the last *good* archive passes `backup_stale_hours` (default 36, `src/lib/backup-constants.ts:8`) — so a disk-full night reads green for ~12h past the daily cadence and never reports "failed" or a reason. Disk-full is precisely the case the app-side path guards explicitly (`fail("could not compress the dump")`, backups.ts). One-line fix: `if ! gzip < "$TMP" > "$DIR/erp_${STAMP}.sql.gz"; then rm -f "$TMP" "$DIR/erp_${STAMP}.sql.gz"; write_status false "could not compress the dump"; echo "backup FAILED: compress" >&2; exit 1; fi`. **Plan-mandated:** the brief's literal Step-3 script has this exact shape, so the implementer followed instructions — flagging for the human to decide.
+
+### Minor (Nice to Have)
+2. `scripts/backup.sh:24` — control characters other than `\n\r\t` still pass through raw, and `JSON.parse` rejects them ("Bad control character in string literal"); confirmed with a `\f`/ESC message producing an unparseable status file. Unreachable today (all three call sites pass static literals), and correctly documented as lossy in the report. If ever fed real stderr, add `tr -d '\000-\010\013\014\016-\037'` to the existing pipeline.
+3. `tests/backup-permission-backfill.test.ts:363-367` — the drift guard pins the parsed list against ITSELF (length 64, no dupes, no `manage_backups`); a typo'd entry paired with an omission would still be 64 and pass, which is the loosening direction the brief warned about. I did that cross-check externally and it is exact, so the shipped artifact is right, but one line would make the test carry it: `expect([...REQUIRED_PERMISSIONS].sort()).toEqual(ALL_PERMISSIONS.filter(p => p !== "action.manage_backups").sort())` (`ALL_PERMISSIONS` is derived from the constants at `src/server/permissions.ts:9`).
+4. `scripts/backup.sh:57-59` — a failing retention/prune `find` also skips `write_status true`, so a *successful* run can leave a stale `ok:false`. Fails toward red (the same bias `backups.ts` documents for its own best-effort writes), so acceptable as-is; noted only for completeness.
+5. Practice-copy noise: with no `BACKUP_DIR` and no mount, `/backups` doesn't exist in `app-practice`, so `backupHealth` returns `state:"unknown"` and `BackupBanner` (`src/components/BackupBanner.tsx:78` renders for every non-"ok" state) shows a permanent red bar to any trainer holding `manage_backups`. The asymmetry itself is spec-mandated (§6.3) and correct; consider suppressing the banner in practice mode in a later task.
+
+## Assessment
+**Task quality:** Needs fixes
+**Reasoning:** The migration — the once-only, real-data half of this task — is correct on every axis I could check independently (predicate, exact 64-permission set, id/conflict target, soft-delete exclusion, real-SQL-driven test), and the script's hardened `write_status` holds up under the container's actual `dash`. The single blocker is one line: the unguarded `gzip` compress step turns the archetypal backup failure (disk full) into a stale green status, which is the opposite of what this task's status file exists to deliver — and it is inherited from the brief's literal text, so the controller may choose to accept it.
