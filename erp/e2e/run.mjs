@@ -22,6 +22,10 @@ const ERP_ROOT = path.resolve(__dirname, "..");
 const PORT = 3100;
 const BASE_URL = `http://localhost:${PORT}`;
 const ARTIFACTS_DIR = path.join(ERP_ROOT, "e2e-artifacts");
+// Phase 8C: the backups flow writes REAL pg_dump archives, so the harness owns a throwaway folder
+// rather than inheriting the developer's BACKUP_DIR (or, worse, writing into erp/backups and
+// leaving archives behind). Created fresh in main(), removed in teardown().
+const BACKUP_DIR = path.join(ERP_ROOT, "e2e-backups");
 const HEADED = Boolean(process.env.HEADED);
 
 // Order matters for two reasons: later flows build on state earlier ones leave behind (the
@@ -104,6 +108,13 @@ const FLOWS = [
   // reason; being purely a read, it is safe after whatever period/close state the tail leaves behind.
   { name: "reports", as: "admin", module: "./flows/reports.mjs" },
   { name: "setup-checklist", as: "admin", module: "./flows/setup-checklist.mjs" },
+  // Task 9 (Phase 8C) adds the 23rd and now-last flow, `backups`, as admin (needs
+  // `manage_backups`, held via ALL_PERMISSIONS) — the only place the real host `pg_dump` binary is
+  // exercised (vitest injects a fake dump command so the suite never depends on a host major
+  // matching the postgres:18 server). It mutates only the harness-owned BACKUP_DIR, never a
+  // seeded/shared DB fixture, so it needs no db-fixtures reap entry and runs last for the usual
+  // nothing-after-needs-its-state reason.
+  { name: "backups", as: "admin", module: "./flows/backups.mjs" },
 ];
 
 // Mutable, module-level: both main()'s own finally block and the SIGINT/SIGTERM handlers below
@@ -183,7 +194,7 @@ async function waitForServer(url, timeoutMs, devServer) {
 function startDevServer() {
   const child = spawn("npx", ["next", "dev", "-p", String(PORT)], {
     cwd: ERP_ROOT,
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, PORT: String(PORT), BACKUP_DIR },
     stdio: ["ignore", "pipe", "pipe"],
     // Own process group so killDevServer can take down webpack's worker processes with it, not
     // just the `next` wrapper.
@@ -268,6 +279,7 @@ function teardown() {
         }
       }
       if (state.browser) await state.browser.close().catch(() => {});
+      await rm(BACKUP_DIR, { recursive: true, force: true });
     })();
   }
   return teardownPromise;
@@ -353,6 +365,8 @@ async function main() {
   try {
     await rm(ARTIFACTS_DIR, { recursive: true, force: true });
     await mkdir(ARTIFACTS_DIR, { recursive: true });
+    await rm(BACKUP_DIR, { recursive: true, force: true });
+    await mkdir(BACKUP_DIR, { recursive: true });
 
     if (!(await isPortFree(PORT))) {
       throw new Error(

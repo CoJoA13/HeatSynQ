@@ -79,8 +79,62 @@ database identity (`practiceMode()`), so a mis-set flag can't touch production.
    cookies (`erp_practice_session` vs `erp_session`), so they no longer clash on a shared host.
 
 ## Backups
-- Nightly `pg_dump` gzip into `./backups/`, 30 days kept (backup container).
-- Restore: `gunzip -c backups/erp_<stamp>.sql.gz | docker compose exec -T db psql -U erp -d erp`
+
+The nightly `backup` container `pg_dump`s the production database into the shared backup folder and
+keeps 30 days. The app mounts the **same** folder, so `/admin/backups` (which needs the
+`manage_backups` action) lists the archives, shows the resolved folder, and can take an on-demand
+backup. Both writers also maintain `backup-status.json`, which is what the staleness indicator reads.
+
+- **Folder:** set by `BACKUP_DIR` (container `/backups`, host `./backups`). A deploy value shared by
+  both writers — deliberately not a runtime setting, because the nightly container cannot honor a
+  live change.
+- **Staleness:** `backup_stale_hours` (Admin → Settings, default **36**). The indicator is green only
+  when the newest integrity-passing archive is inside that window **and** the last recorded run did
+  not fail **and** the status file is readable. **Anything else is red, including a missing status
+  file** — if the backup container never started, that silence is the failure you need to see.
+- **Practice copy:** has no backup folder, no Backups page, and its routes refuse. Its data is
+  disposable; the reset re-seeds it.
+
+### Restoring
+
+Restore is a deliberate terminal command, never a button. **Read all five steps before starting.**
+
+```bash
+# 1. Pick the archive and verify it BEFORE you touch the live database.
+ls -la erp/backups
+gzip -t erp/backups/erp_2026-08-16_020000.sql.gz && echo "integrity OK"
+
+# 2. Take a fresh dump of the CURRENT database first — restoring is destructive and this is your
+#    only way back if the archive turns out to be the wrong one. `db` has no compose profile, so it
+#    needs no --profile flag; it is always up alongside `app`.
+cd erp && docker compose exec -T db pg_dump -U erp -d erp | gzip > "before-restore-$(date +%s).sql.gz"
+
+# 3. Stop the app so nothing writes mid-restore, then drop every other connection to `erp` (a stray
+#    psql/Prisma-Studio session on the published 5432 port is enough to make DROP DATABASE refuse).
+docker compose --profile prod stop app
+docker compose exec -T db psql -U erp -d postgres -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'erp' AND pid <> pg_backend_pid();"
+
+# 4. Recreate the database empty, then restore into it.
+docker compose exec -T db psql -U erp -d postgres -c 'DROP DATABASE erp;'
+docker compose exec -T db psql -U erp -d postgres -c 'CREATE DATABASE erp OWNER erp;'
+gunzip -c backups/erp_2026-08-16_020000.sql.gz | docker compose exec -T db psql -U erp -d erp
+
+# 5. Bring the app back — its start command runs `prisma migrate deploy` before serving, so any
+#    migration newer than the archive applies automatically.
+docker compose --profile prod start app
+```
+
+**Verify before you trust it:** sign in, open `/orders` and `/receivables`, and confirm the newest
+order and the A/R total match what you expect from the archive's date. If the restore was wrong, the
+step-2 dump (`before-restore-<epoch>.sql.gz`) is your way back — repeat steps 3–5 with it in place of
+the chosen archive.
+
+**Keeping an archive longer than 30 days** — copy it out of the backup folder. Everything inside is
+pruned at 30 days, on-demand archives included.
 
 ## Updating
-`git pull && docker compose --profile prod up -d --build` — users just refresh.
+`git pull && docker compose --profile prod up -d --build` — users just refresh. Migrations apply
+automatically on container start, including permission backfills: an existing install picks up
+`manage_backups` on whichever live role already holds `admin.view` and `action.manage_users` (or
+every other permission) the moment it updates — no manual `npm run db:seed` step is needed.

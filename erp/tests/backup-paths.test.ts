@@ -45,7 +45,18 @@ describe("backup archive names", () => {
 
 describe("resolveBackupDir", () => {
   it("defaults to /backups when BACKUP_DIR is unset", () => {
-    expect(resolveBackupDir(undefined)).toBe("/backups");
+    // resolveBackupDir's own default PARAMETER is `process.env.BACKUP_DIR`, so calling it with an
+    // explicit `undefined` only exercises the hardcoded DEFAULT_BACKUP_DIR fallback if the ambient
+    // env var is ALSO actually unset — and dotenv's `config()` in tests/helpers/setup.ts loads
+    // `.env`, whose dev-convenience `BACKUP_DIR="./backups"` (Phase 8C) would otherwise leak in and
+    // silently test the wrong branch. Save/restore, the `backups-routes.test.ts` precedent.
+    const prev = process.env.BACKUP_DIR;
+    delete process.env.BACKUP_DIR;
+    try {
+      expect(resolveBackupDir(undefined)).toBe("/backups");
+    } finally {
+      if (prev === undefined) delete process.env.BACKUP_DIR; else process.env.BACKUP_DIR = prev;
+    }
   });
 
   it("resolves a relative dev path to an absolute one", () => {
