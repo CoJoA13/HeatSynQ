@@ -458,6 +458,122 @@ describe("applyPayment — DISCOUNT line", () => {
     expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "DISCOUNT" } })).toBe(1);
     expect(await openBalance(inv.invoiceId)).toBe(980);
   });
+
+  /**
+   * #81 (P1) — the cap was PER LINE, not aggregate.
+   *
+   * `APPLY.lines` permits repeated lines against the same invoice, and `resolveReason` derived
+   * eligibility only from applications persisted BEFORE the call — so `elig` was recomputed
+   * identically for every line in one request. Fifty $20 lines each passed the $20 per-line check,
+   * the running open-balance guard permitted the $1,000 aggregate, and the entire receivable was
+   * waived as an "early-pay discount". The per-line cap that closed the single-line case
+   * (`bb40d66`) is what made this look guarded.
+   */
+  it("refuses repeated DISCOUNT lines that together exceed the eligible amount — the fifty-line waiver", async () => {
+    const terms = await makeTerms("2.00", 10); // 2/10 → eligible 20 on a 1000 invoice
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id,
+      lines: Array.from({ length: 50 }, () => ({
+        invoiceId: inv.invoiceId, type: "DISCOUNT" as const, amount: 20,
+      })),
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringMatching(/discount exceeds the eligible early-pay amount of 20/),
+    });
+
+    // The whole call rolls back — not "the first eligible 20 landed and the rest were refused".
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+    expect(await openBalance(inv.invoiceId)).toBe(1000);
+  });
+
+  it("refuses a SECOND discount line that tips a legal first one over the cap", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+
+    // 15 + 10 = 25 > 20. Each line alone would pass the per-line check.
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id,
+      lines: [
+        { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 15 },
+        { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 10 },
+      ],
+    }))).rejects.toMatchObject({ status: 400 });
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId } })).toBe(0);
+  });
+
+  it("still allows split discount lines that together stay within the cap", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+
+    // The aggregate cap must not become "one discount line per invoice" — 12 + 8 = 20 is legal.
+    await asSystem(() => applyPayment({
+      paymentId: payment.id,
+      lines: [
+        { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 12 },
+        { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 8 },
+      ],
+    }));
+    expect(await prisma.application.count({ where: { invoiceId: inv.invoiceId, type: "DISCOUNT" } })).toBe(2);
+    expect(await openBalance(inv.invoiceId)).toBe(980);
+  });
+
+  /**
+   * SCOPE BOUNDARY, pinned so nobody mistakes it for guarded. #81's fix caps the aggregate WITHIN
+   * one request. It does NOT cap across requests, because `elig` is recomputed each call as
+   * `discountPercent × the CURRENT open balance` — so a discount already taken shrinks the balance
+   * and a fresh call is offered a fresh (smaller) entitlement.
+   *
+   * Measured below: a second call after a $20 discount on a $1,000 invoice is still offered $19.60
+   * (2% of 980), and takes it. Repeated, the series 20 + 19.60 + 19.21 … converges on the whole
+   * receivable — the same hole #81 describes, an order of magnitude slower.
+   *
+   * Closing it means deciding what the entitlement IS: 2% of the invoice TOTAL, once (a one-time
+   * right), or 2% of whatever is open at the moment of payment (what is built, and what
+   * `discountAvailable` shows the operator). That is a terms-policy question, not an implementation
+   * one, so it is the owner's call rather than something to change under a bug fix. This test asserts
+   * TODAY'S behaviour so the decision is visible and any change to it is deliberate.
+   */
+  it("does NOT cap discounts across separate requests — pinned, not endorsed (owner decision)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
+    }));
+    expect(await openBalance(inv.invoiceId)).toBe(980);
+
+    // A second call is offered 2% of the NEW open balance, not zero.
+    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(19.6);
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 19.6 }],
+    }));
+    expect(await openBalance(inv.invoiceId)).toBe(960.4); // 39.60 discounted on a 2% entitlement
+  });
+
+  it("caps each invoice on its own — one invoice's discount does not consume another's", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const a = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    // Same customer, so one payment can settle both and the running maps are keyed per invoice.
+    const b = await finalizedInvoice({
+      total: 1000, invoiceDate: "2026-08-08", termsId: terms.id, customerId: a.customerId });
+    const payment = await makePayment(a.customerId, 2000, "2026-08-08");
+
+    await asSystem(() => applyPayment({
+      paymentId: payment.id,
+      lines: [
+        { invoiceId: a.invoiceId, type: "DISCOUNT", amount: 20 },
+        { invoiceId: b.invoiceId, type: "DISCOUNT", amount: 20 },
+      ],
+    }));
+    expect(await openBalance(a.invoiceId)).toBe(980);
+    expect(await openBalance(b.invoiceId)).toBe(980);
+  });
 });
 
 // -------------------------------------------------------------------------------------------

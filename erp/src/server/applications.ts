@@ -309,6 +309,13 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   for (const inv of invoices) {
     appliedCents.set(inv.id, inv.applications.reduce((s, a) => s + cents(a.amount.toNumber()), 0));
   }
+  // invoiceId -> DISCOUNT cents accepted BY THIS CALL so far (#81). The per-line cap in
+  // `resolveReason` derives `elig` from applications persisted BEFORE the call, so it recomputed the
+  // SAME ceiling for every line of one request: fifty $20 lines each passed the $20 check while the
+  // running open-balance guard above happily permitted the $1,000 aggregate, waiving the whole
+  // receivable as an "early-pay discount". Keyed per invoice so one invoice's discount never
+  // consumes another's entitlement in a multi-invoice apply.
+  const discountCents = new Map<string, number>();
 
   const resolved: { line: ApplyLine; invoice: ClaimedInvoice; reason: string }[] = [];
   let paymentLinesCents = 0;
@@ -325,9 +332,11 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
       throw new HttpError(400, `That exceeds the invoice's open balance of ${openCents / 100}`);
     }
 
-    const reason = resolveReason(line, inv, payment.receivedDate);
+    const discountSoFar = discountCents.get(inv.id) ?? 0;
+    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar);
 
     if (line.type === "PAYMENT") paymentLinesCents += lineCents;
+    if (line.type === "DISCOUNT") discountCents.set(inv.id, discountSoFar + lineCents);
     appliedCents.set(inv.id, alreadyCents + lineCents);
     resolved.push({ line, invoice: inv, reason });
   }
@@ -371,8 +380,14 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
 
 /** The per-type reason rule: a WRITE_OFF requires a trimmed reason (§4.1); a DISCOUNT must fall
  *  inside the early-pay window and always carries "early-pay terms"; a PAYMENT carries whatever
- *  (optional) note was sent. */
-function resolveReason(line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date): string {
+ *  (optional) note was sent.
+ *
+ *  `discountSoFarCents` is the DISCOUNT already accepted for THIS invoice by THIS call — the
+ *  aggregate half of the cap (#81). Passed in rather than re-derived because `invoice.applications`
+ *  is the pre-call snapshot and cannot see the lines this request has already resolved. */
+function resolveReason(
+  line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date, discountSoFarCents: number,
+): string {
   if (line.type === "WRITE_OFF") {
     const why = (line.reason ?? "").trim();
     if (!why) throw new HttpError(400, "a write-off needs a reason");
@@ -384,10 +399,13 @@ function resolveReason(line: ApplyLine, invoice: ClaimedInvoice, receivedDate: D
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
     }
-    // Cap the line at the terms-derived eligible amount — the early-pay window opening does NOT
-    // license waiving the whole receivable as a "discount". The operator may take part of it
-    // (line ≤ elig), never more. Integer cents to dodge float drift.
-    if (cents(line.amount) > cents(elig)) {
+    // Cap the AGGREGATE at the terms-derived eligible amount — the early-pay window opening does NOT
+    // license waiving the whole receivable as a "discount". Per-line alone was not enough (#81):
+    // `APPLY.lines` permits repeated lines against one invoice and `elig` is recomputed identically
+    // for each, so fifty $20 lines each passed a $20 check and together waived $1,000. The operator
+    // may still SPLIT the entitlement across lines (12 + 8 against a 20 cap is fine) — what is
+    // refused is the total exceeding it. Integer cents to dodge float drift.
+    if (discountSoFarCents + cents(line.amount) > cents(elig)) {
       throw new HttpError(400, `discount exceeds the eligible early-pay amount of ${elig}`);
     }
     return "early-pay terms";
