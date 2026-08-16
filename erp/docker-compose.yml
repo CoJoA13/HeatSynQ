@@ -27,6 +27,12 @@ services:
     environment:
       DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp
       SESSION_SECRET: ${SESSION_SECRET:?set in .env}
+      # Phase 8C §6.4: the SAME folder the backup container writes to, so the app can list archives
+      # and write on-demand ones. A deploy value, deliberately not a runtime Setting — the nightly
+      # container cannot honor a live change, and a setting the writer ignores is half a feature.
+      BACKUP_DIR: /backups
+    volumes:
+      - ./backups:/backups
     depends_on:
       db: { condition: service_healthy }
     profiles: ["prod"]
@@ -48,6 +54,10 @@ services:
       # A distinct session cookie so a practice login on :8080 never overwrites the prod token on :80
       # (cookies are host/path-scoped, not port). http.ts + proxy.ts both read this at runtime.
       SESSION_COOKIE_NAME: erp_practice_session
+      # Phase 8C §6.3: NO BACKUP_DIR and NO ./backups mount, deliberately. The practice copy's data
+      # is disposable (the reset re-seeds it) so it has no backup responsibility, and a trainer's
+      # "Back up now" must never pollute production's archive list or staleness signal. The routes
+      # also refuse it via assertNotPracticeDatabase — this is the belt to that pair of braces.
     depends_on:
       db: { condition: service_healthy }
     profiles: ["practice"]
@@ -57,6 +67,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://erp:erp_local_dev@db:5432/erp
+      BACKUP_DIR: /backups
     volumes:
       - ./backups:/backups
       - ./scripts/backup.sh:/backup.sh:ro
