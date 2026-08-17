@@ -366,7 +366,13 @@ const DEFAULT_DUMP_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 
 export function runBackupNow(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number } = {},
+  opts: {
+    dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
+    /** The archive verifier, a PARAMETER for the same reason `dumpBin` is (§6.4): the corrupt and
+     *  unverifiable branches are otherwise unreachable in a test, since the code writes the archive
+     *  itself and `gzip` will happily verify its own valid output. */
+    verify?: (p: string) => Promise<IntegrityVerdict>;
+  } = {},
 ): Promise<ArchiveInfo> {
   if (inFlight) return inFlight;
   inFlight = doBackup(opts).finally(() => { inFlight = null; });
@@ -374,8 +380,12 @@ export function runBackupNow(
 }
 
 async function doBackup(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number },
+  opts: {
+    dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
+    verify?: (p: string) => Promise<IntegrityVerdict>;
+  },
 ): Promise<ArchiveInfo> {
+  const verify = opts.verify ?? integrityOk;
   // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
   // Deliberately BEFORE the name is minted and left un-audited: this is a refusal on the practice
   // copy, not an attempt on production, and there is no production backup folder to record it in.
@@ -541,7 +551,18 @@ async function doBackup(
   }
   await unlink(tmpPath).catch(() => {});
 
-  if (!(await integrityOk(finalPath))) {
+  // Compared against "intact" EXPLICITLY (Codex, PR #131 — a P1 I introduced). When `integrityOk`
+  // started returning a three-valued verdict, this truthiness check silently inverted: `"corrupt"`
+  // and `"unverifiable"` are both truthy strings, so `!verdict` was false and the failure branch
+  // became unreachable — a corrupt archive would have been recorded and returned as a SUCCESSFUL
+  // backup with `integrityOk: true`. `tsc` cannot catch it (`!string` is valid), and no test
+  // covered a corrupt freshly-written archive, which is why the suite stayed green.
+  //
+  // "unverifiable" fails too, deliberately: an archive we could not check is not one we may call a
+  // backup. Unlike the read paths, this is the WRITE path — there is no later re-check to recover
+  // on, and claiming success for an unverified dump is the exact failure this feature exists to
+  // prevent.
+  if ((await verify(finalPath)) !== "intact") {
     return fail("the written archive failed its gzip integrity check.");
   }
 

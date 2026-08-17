@@ -178,6 +178,41 @@ describe("runBackupNow", () => {
     }
   });
 
+  /**
+   * Codex, PR #131 (P1) — the integrity gate on the WRITE path.
+   *
+   * When `integrityOk` started returning a three-valued verdict, `if (!(await integrityOk(...)))`
+   * silently inverted: `"corrupt"` and `"unverifiable"` are truthy strings, so the failure branch
+   * became unreachable and a corrupt archive would have been recorded and RETURNED as a successful
+   * backup with `integrityOk: true`. `tsc` cannot catch it (`!string` is valid TypeScript), and
+   * nothing here covered a corrupt freshly-written archive — which is why the whole suite stayed
+   * green over it. That gap is what these two cases close.
+   *
+   * The verifier is injected for the same reason `dumpBin` is (§6.4): the code writes the archive
+   * itself, so `gzip` would happily verify its own valid output and neither branch is otherwise
+   * reachable.
+   */
+  it("refuses and cleans up when the written archive verifies CORRUPT", async () => {
+    await expect(asSystem(() => runBackupNow({
+      dumpBin: FAKE, dir, verify: async () => "corrupt" as const,
+    }))).rejects.toThrow(/integrity check/i);
+
+    expect(await listArchives(dir)).toEqual([]);        // never left on disk as if it were a backup
+    expect((await readStatus(dir))?.ok).toBe(false);    // and never reported as a success
+  });
+
+  /** "unverifiable" fails too, deliberately. Unlike the read paths — where not caching the verdict
+   *  lets the next read recover — this is the WRITE path: there is no later re-check, and calling
+   *  an unverified dump a backup is the precise failure this feature exists to prevent. */
+  it("refuses when the written archive cannot be verified at all", async () => {
+    await expect(asSystem(() => runBackupNow({
+      dumpBin: FAKE, dir, verify: async () => "unverifiable" as const,
+    }))).rejects.toThrow(/integrity check/i);
+
+    expect(await listArchives(dir)).toEqual([]);
+    expect((await readStatus(dir))?.ok).toBe(false);
+  });
+
   it("two concurrent clicks never clobber each other", async () => {
     const [a, b] = await Promise.all([run(), run()]);
     const names = new Set([a.name, b.name]);
