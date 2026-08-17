@@ -160,6 +160,26 @@ export function invalidateBackupBanner(): void {
   for (const listen of invalidationListeners) listen();
 }
 
+/**
+ * May a resolved health fetch commit its result?
+ *
+ * Only if no invalidation happened while it was in flight (Codex, PR #131). React's `cancelled`
+ * flag is NOT sufficient on its own: it flips in the effect's CLEANUP, which runs only after React
+ * has processed the state update an invalidation queues — so a request resolving inside that window
+ * still passed the check and overwrote `stateRef.current` with its stale health AND a fresh
+ * `lastFetchedAt`. The nonce-triggered pass then saw a full timestamp, treated itself as throttled,
+ * and did nothing: a successful backup left the old red bar up, or a failed one left the bar hidden,
+ * for another five minutes — the exact contradiction #124 and its follow-up exist to remove.
+ *
+ * The generation counter is bumped SYNCHRONOUSLY inside the invalidation handler, so unlike a React
+ * state update it is already visible to any promise that resolves afterwards.
+ */
+export function shouldCommitBannerFetch(
+  startedGeneration: number, currentGeneration: number, cancelled: boolean,
+): boolean {
+  return !cancelled && startedGeneration === currentGeneration;
+}
+
 export function BackupBanner() {
   const pathname = usePathname();
   const [health, setHealth] = useState<BackupHealth | null>(null);
@@ -168,6 +188,9 @@ export function BackupBanner() {
   // Bumped by an invalidation to re-run the effect below; the effect clears `lastFetchedAt` first,
   // so the refetch is not swallowed by the throttle.
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // Bumped SYNCHRONOUSLY by the same invalidation, which is what makes it usable by a promise that
+  // resolves before React has processed the nonce (see `shouldCommitBannerFetch`).
+  const generationRef = useRef(0);
 
   useEffect(() => {
     const onInvalidate = () => {
@@ -179,6 +202,7 @@ export function BackupBanner() {
       // silently swallowed the refetch. An EXPLICIT invalidation means "something happened, go and
       // look", which is exactly the case the latch's own reasoning (a 403 is a stable fact about
       // the signed-in user) does not cover.
+      generationRef.current += 1;
       stateRef.current = { ...stateRef.current, lastFetchedAt: 0, forbidden: false };
       setRefreshNonce((n) => n + 1);
     };
@@ -188,8 +212,11 @@ export function BackupBanner() {
 
   useEffect(() => {
     let cancelled = false;
+    const startedGeneration = generationRef.current;
     advanceBannerState(pathname, stateRef.current, Date.now()).then((next) => {
-      if (cancelled) return;
+      // An invalidation that landed mid-flight wins: this result is stale, and committing it would
+      // also restore a full `lastFetchedAt` that throttles the refetch it just asked for.
+      if (!shouldCommitBannerFetch(startedGeneration, generationRef.current, cancelled)) return;
       stateRef.current = next;
       setHealth(next.health);
       setError(next.error);

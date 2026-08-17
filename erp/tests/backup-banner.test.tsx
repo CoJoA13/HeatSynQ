@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   advanceBannerState,
   BackupBannerView,
+  shouldCommitBannerFetch,
   INITIAL_BANNER_STATE,
   REFRESH_MS,
   type BannerFetchState,
@@ -192,6 +193,31 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
     expect(markup).toMatch(/database or the server may be unavailable/i);
     expect(markup).not.toContain("href=");        // no admin link for a fault that may not be admin's
     expect(markup.toLowerCase()).not.toContain("backup");
+  });
+
+  /**
+   * Codex, PR #131 — an invalidation that lands MID-FLIGHT must win.
+   *
+   * React's `cancelled` flag alone is not enough: it flips in the effect CLEANUP, which runs only
+   * after React has processed the state update an invalidation queues. A health request resolving
+   * inside that window passed the check and overwrote the shared state with its stale health AND a
+   * fresh `lastFetchedAt` — after which the nonce-triggered pass saw a full timestamp, treated
+   * itself as throttled, and did nothing. A successful backup then left the old red bar up (or a
+   * failed one left the bar hidden) for another five minutes, which is the exact contradiction
+   * #124 exists to remove.
+   *
+   * The generation counter is bumped SYNCHRONOUSLY in the invalidation handler, so unlike a React
+   * state update it is visible to any promise resolving afterwards.
+   */
+  it("discards a fetch whose generation was superseded while it was in flight", () => {
+    // The ordinary case: nothing happened while it ran.
+    expect(shouldCommitBannerFetch(3, 3, false)).toBe(true);
+    // An invalidation landed mid-flight — this result is stale AND would re-arm the throttle.
+    expect(shouldCommitBannerFetch(3, 4, false)).toBe(false);
+    // Unmount/navigation still wins on its own, generation unchanged.
+    expect(shouldCommitBannerFetch(3, 3, true)).toBe(false);
+    // Both at once is still a discard.
+    expect(shouldCommitBannerFetch(3, 4, true)).toBe(false);
   });
 
   /**
