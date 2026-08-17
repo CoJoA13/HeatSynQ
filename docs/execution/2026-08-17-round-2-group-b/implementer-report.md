@@ -125,18 +125,21 @@ row as well as a wrong total.
 
 ## Gates
 
-| Gate | Result |
-|---|---|
-| `npm test` | **3118 passed / 183 files** (from 3104) |
-| `npx tsc --noEmit` | clean |
-| `npx eslint src tests` | clean |
-| `npm run build` | clean |
-| `npm run test:e2e` | **23/23**, exit code checked directly |
-| `prisma migrate status` | up to date on **both** databases |
+Re-run in full at every round, never carried forward:
 
-**Two migrations**, both applied to `erp` and `erp_test`, neither destructive:
-`20260817121616_terms_discount_pair_check` (verified against zero violating rows in both databases
-first) and `20260817121950_invoice_terms_discount_snapshot` (additive columns + the backfill).
+| Gate | Round 0 | Round 1 (review fixes) |
+|---|---|---|
+| `npm test` | 3118 / 183 files | **3121 / 183** |
+| `npx tsc --noEmit` | clean | clean |
+| `npx eslint src tests` | clean | clean |
+| `npm run build` | clean | clean |
+| `npm run test:e2e` | 23/23 | **23/23**, exit code checked directly |
+| `prisma migrate status` | both DBs up to date | both DBs up to date |
+
+**Three migrations**, all applied to `erp` and `erp_test`, none destructive:
+`20260817121500_terms_discount_pair_normalize` (added in review round 1, deliberately timestamped
+AHEAD of the constraint it protects — see its own header), `20260817121616_terms_discount_pair_check`
+and `20260817121950_invoice_terms_discount_snapshot` (additive columns + the backfill).
 
 ## A mistake worth recording
 
@@ -145,6 +148,35 @@ first) and `20260817121950_invoice_terms_discount_snapshot` (additive columns + 
 browser verification still held port 3000, so Next refused to start the E2E server — and it was only
 caught by reading the log. That is exactly the fails-while-reporting-success shape this project keeps
 hunting, built into my own tooling. Re-run with the port free and the exit code checked directly.
+
+## Review round 1 — TWO independent reviewers, and they agreed
+
+Codex posted 6 findings on PR #135 (1 P1, 5 P2); the task reviewer returned Spec Compliance ❌ /
+**Needs fixes** with 2 Important. **Both found the same two Important issues independently**, which is
+the strongest signal either could have given.
+
+| Finding | Source | Disposition |
+|---|---|---|
+| **The CHECK migration fails on an upgraded install carrying a half-pair** — `ADD CONSTRAINT` validates immediately, and production applies migrations on container start | Codex **P1** | **Fixed.** A normalization migration slotted *ahead* of the constraint nulls both halves of any half-pair. Behaviour-preserving, not a data decision: `discountFor` already returns 0 unless BOTH are set, so this writes down what the row already meant. Proven against the real scenario — violating row present, constraint refuses; normalize; constraint adds. Checking my own two databases said nothing about anyone else's, which was the actual mistake. |
+| **`openItemsForCustomer` dropped all three point-in-time cuts**, so a post-dated check breaks the sum #83 exists to establish | **Both** | **Fixed.** One `asOf` is sampled once and handed to both halves, with the same three filters (`receivedDate`, `appliedDate`, `finalizedAt`). The task reviewer's worst repro — a fully post-dated settlement showing an empty table reading "Nothing open — this customer is settled" beneath a net of the entire receivable — is now a test. |
+| **#85's per-division detection is scoped to ACTIVE while both service halves use LIVE**, so a parent whose divisions are merely deactivated still printed parent-only | **Both** | **Fixed.** The screen fetches `includeInactive=1`; inactive customers are listed and *labelled*, which also makes an inactive division's statement reachable at all. |
+| Per-division prints documents the preview never showed | Codex P2 | **Fixed** — the confirm names every member (marking inactive ones) and says the preview covers this customer only. |
+| The generated per-division documents are unreachable from the screen | Codex P2 | **Fixed** — each result links to its own archived PDF. |
+| The credit-apply picker offers only the customer's OWN invoices, though `applyCredit` permits a family target | Codex P2 | **Not changed — raised for the owner.** The section is single-customer *by design* (the Task 15 fix round closed a real bug where family invoices leaked in), so widening it reverses a prior decision on a UX question the shop should answer. The task reviewer separately confirmed a cross-family credit **reconciles correctly in both directions**, so this is a reach gap, not a correctness one. |
+| Schema comment overstated when the pair is null | task reviewer | **Fixed** — "null until first finalize"; unlock leaves the pair standing. |
+| A `Terms` CHECK violation surfaces as a raw 500 | task reviewer | **Not changed** — consistent with the `Application_source_check` precedent; noted. |
+| No cleanup pass for an already-negative `financeChargeRate` | task reviewer | **Not changed, deliberately.** Nulling it means "inherit the plant rate", which could *start* charging a customer who is not charged today — a business consequence, and #76 (are finance charges even used?) is PARKED on the accounting meeting. |
+| Loose `/discount/i` matcher | task reviewer | **Fixed** — pinned to "no early-pay discount applies", verified that string exists. |
+| A second green-on-arrival test unnamed | task reviewer | **Fixed here:** the CREDIT half of the #79 finalize test (`termsDiscount* === null`) is trivially green once the columns exist; the reported RED covered only the INVOICE half. |
+| Cosmetics: `-Math.abs` redundancy, O(n^2) filter | task reviewer | **Fixed** — `creditRemaining` is already positive; the invoice list is hoisted out of the row map. |
+
+**One defect I introduced during the fixes and caught myself:** hoisting that filter left a reference
+to a variable I had not defined. `tsc` caught it; `npm run build` did **not** (0 errors) and neither
+did eslint — a reminder that the build is not a typecheck.
+
+Also added `type="button"` to both new buttons. They are not inside a form today, so nothing was
+broken, but an untyped `<button>` defaults to `submit` and the codebase sets it explicitly elsewhere
+(`LogoPanel.tsx`).
 
 ## Known limits, stated rather than hidden
 

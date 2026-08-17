@@ -84,6 +84,10 @@ export function ReceivablesSection(
     );
   }
 
+  // Computed ONCE rather than per row — every credit row needs the same list of invoices it could
+  // be applied to.
+  const openInvoices = (summary?.openItems ?? []).filter((i) => i.kind === "INVOICE");
+
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <div className="mb-2 flex items-center justify-between">
@@ -153,7 +157,7 @@ export function ReceivablesSection(
                   <OpenItemRow
                     key={`${r.kind}-${r.id}`}
                     item={r}
-                    invoices={summary.openItems.filter((i) => i.kind === "INVOICE")}
+                    invoices={openInvoices}
                     applyGate={applyGate}
                     onApplied={() => void load()}
                     onError={setError}
@@ -231,6 +235,7 @@ function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
         <td className="text-right">
           {item.kind === "CREDIT" && (
             <button
+              type="button"
               onClick={() => (open ? setOpen(false) : start())}
               disabled={!applyGate.allowed || !canApply || saving}
               title={!applyGate.allowed ? applyGate.title
@@ -275,6 +280,7 @@ function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
                 />
               </label>
               <button
+                type="button"
                 onClick={() => void submit()}
                 disabled={saving}
                 className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:bg-slate-400"

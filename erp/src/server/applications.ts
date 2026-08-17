@@ -263,7 +263,9 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
  * not an open item.
  *
  * `db` threads the caller's transaction so the items and the aging strip can be read from ONE
- * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent. Scoped to the
+ * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent — and `asOfDate`
+ * MUST be the one that strip used, or the two describe different moments and stop reconciling.
+ * Scoped to the
  * single customer, NEVER the family: `openInvoicesForPayer` deliberately answers the other question
  * for the batch-apply screen and must keep doing so.
  */
@@ -281,7 +283,7 @@ export type CustomerOpenItem = {
 };
 
 export async function openItemsForCustomer(
-  customerId: string, db: Prisma.TransactionClient = prisma,
+  customerId: string, db: Prisma.TransactionClient = prisma, asOfDate: Date = todayDateOnly(),
 ): Promise<CustomerOpenItem[]> {
   const customer = await db.customer.findFirst({
     where: { id: customerId, deletedAt: null }, select: { id: true },
@@ -289,13 +291,24 @@ export async function openItemsForCustomer(
   if (!customer) throw new HttpError(404, "Customer not found");
   const prefix = await getSetting("invoice_number_prefix", db);
 
+  // POINT-IN-TIME, matching `readSnapshotIn`/`bucketAging` cut for cut (review round 1). Nothing
+  // stops a post-dated receipt — the receipt form takes a bare date — and the aging strip ignores
+  // one, so an unfiltered read here put a row in the table that the net above it did not count. The
+  // worse half was the APPLICATION: `appliedDate` follows the payment's `receivedDate`, so a
+  // post-dated settlement reduced the table's invoice while the strip still showed it fully open,
+  // and a full one produced an empty table reading "Nothing open — this customer is settled" beneath
+  // a net of the entire receivable. Three cuts, because the strip applies three.
+  const liveAsOf = { deletedAt: null, appliedDate: { lte: asOfDate } };
   const invoices = await db.invoice.findMany({
-    where: { customerId: customer.id, deletedAt: null, status: "FINALIZED" },
+    where: {
+      customerId: customer.id, deletedAt: null, status: "FINALIZED",
+      finalizedAt: { lte: asOfDate }, // not yet finalized as of this date never appears at all
+    },
     select: {
       id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,
       order: { select: { orderNumber: true } },
-      applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
-      creditApplications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+      applications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
+      creditApplications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
     },
     orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
   });
@@ -324,15 +337,15 @@ export async function openItemsForCustomer(
       kind: "CREDIT", id: inv.id,
       documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.order.orderNumber, prefix),
       date: formatDateOnly(inv.invoiceDate), dueDate: null,
-      original: total, open: -Math.abs(remaining),
+      original: total, open: -remaining, // `creditRemaining` is already positive
     });
   }
 
   const payments = await db.payment.findMany({
-    where: { customerId: customer.id, deletedAt: null },
+    where: { customerId: customer.id, deletedAt: null, receivedDate: { lte: asOfDate } },
     select: {
       id: true, amount: true, reference: true, receivedDate: true,
-      applications: { where: { deletedAt: null, type: "PAYMENT" }, select: { amount: true } },
+      applications: { where: { ...liveAsOf, type: "PAYMENT" }, select: { amount: true } },
     },
     orderBy: [{ receivedDate: "asc" }, { id: "asc" }],
   });

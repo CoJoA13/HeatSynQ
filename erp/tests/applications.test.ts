@@ -368,7 +368,9 @@ describe("discountAvailable — the early-pay window", () => {
     await expect(asSystem(() => applyPayment({
       paymentId: payment.id,
       lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
-    }))).rejects.toThrow(/discount/i);
+    // Pinned to the exact refusal: several other messages in `resolveReason` also say "discount",
+    // so a loose /discount/i could pass through the wrong branch entirely.
+    }))).rejects.toThrow(/no early-pay discount applies/i);
   });
 });
 

@@ -95,6 +95,84 @@ describe("customerReceivablesSummary — the customer page's A/R section", () =>
     expect(cents(byKind.get("PAYMENT")!.open)).toBe(cents(-150));
   });
 
+  // Review round 1, found independently by both reviewers. The aging strip cuts point-in-time —
+  // payments `receivedDate <= asOf`, applications `appliedDate <= asOf`, invoices `finalizedAt <=
+  // asOf` — and the open-items read did not cut at all. A post-dated check (nothing stops one: the
+  // receipt form takes a bare date) therefore appeared as a row the net did not count, breaking the
+  // one property #83 exists to establish.
+  it("applies the SAME point-in-time cut as the aging strip, so a post-dated check cannot break the sum (#83)", async () => {
+    const customerId = await makeCustomer();
+    await invoice(customerId, 1000);
+    // Dated well into the future — the aging strip ignores it; the table must too.
+    seq += 1;
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 840000 + seq, depositDate: parseDateOnly("2099-01-01") } });
+    const paymentType = await prisma.paymentType.create({ data: { name: `PT-future-${seq}` } });
+    await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId, paymentTypeId: paymentType.id,
+        amount: 150, reference: "POST-DATED", receivedDate: parseDateOnly("2099-01-01"),
+      },
+    });
+
+    const { aging, openItems } = await asSystem(() => customerReceivablesSummary(customerId));
+    expect(cents(aging.net)).toBe(cents(1000)); // the strip does not see it
+    expect(openItems.some((i) => i.documentNumber === "POST-DATED")).toBe(false);
+    expect(openItems.reduce((t, i) => t + cents(i.open), 0)).toBe(cents(aging.net));
+  });
+
+  it("ignores a post-dated APPLICATION too, so the invoice reads open on both sides (#83)", async () => {
+    // The worse half: `appliedDate` follows the payment's `receivedDate`, so a post-dated settlement
+    // reduced the table's invoice while the strip still showed it fully open — a net of 1000 over an
+    // empty table claiming the customer was settled.
+    const customerId = await makeCustomer();
+    const invoiceId = await invoice(customerId, 1000);
+    seq += 1;
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 850000 + seq, depositDate: parseDateOnly("2099-01-01") } });
+    const paymentType = await prisma.paymentType.create({ data: { name: `PT-fut-app-${seq}` } });
+    const payment = await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId, paymentTypeId: paymentType.id,
+        amount: 1000, receivedDate: parseDateOnly("2099-01-01"),
+      },
+    });
+    await prisma.application.create({
+      data: {
+        invoiceId, paymentId: payment.id, type: "PAYMENT", amount: 1000,
+        appliedDate: parseDateOnly("2099-01-01"),
+      },
+    });
+
+    const { aging, openItems } = await asSystem(() => customerReceivablesSummary(customerId));
+    expect(cents(aging.net)).toBe(cents(1000));
+    expect(openItems).toHaveLength(1);
+    expect(cents(openItems[0].open)).toBe(cents(1000)); // still fully open, as the strip says
+    expect(openItems.reduce((t, i) => t + cents(i.open), 0)).toBe(cents(aging.net));
+  });
+
+  it("ignores an invoice finalized in the future, matching the strip (#83)", async () => {
+    const customerId = await makeCustomer();
+    seq += 1;
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 860000 + seq, customerId, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId,
+        invoiceDate: parseDateOnly("2099-01-01"), dueDate: parseDateOnly("2099-02-01"),
+        total: 500, finalizedAt: parseDateOnly("2099-01-01"),
+      },
+    });
+
+    const { aging, openItems } = await asSystem(() => customerReceivablesSummary(customerId));
+    expect(cents(aging.net)).toBe(0);
+    expect(openItems).toEqual([]);
+  });
+
   it("shows a credit-only customer their credit, not an empty table under a negative net (#83)", async () => {
     // The issue's own example: a customer with nothing but a $200 credit read "−$200.00" above the
     // words "No open invoices."

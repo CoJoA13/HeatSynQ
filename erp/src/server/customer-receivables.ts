@@ -24,6 +24,7 @@
  * stays untouched.
  */
 import { Prisma } from "../../prisma/generated/prisma/client";
+import { todayDateOnly, formatDateOnly } from "../lib/business-days";
 import { prisma } from "./db";
 import { customerOwnAgingRow, type AgingRow } from "./aging";
 import { openItemsForCustomer, type CustomerOpenItem } from "./applications";
@@ -47,10 +48,15 @@ export type CustomerReceivablesSummary = { aging: AgingRow; openItems: CustomerO
  * write, not Serializable.
  */
 export async function customerReceivablesSummary(customerId: string): Promise<CustomerReceivablesSummary> {
+  // ONE as-of, sampled once and handed to BOTH halves (review round 1). They each defaulted to
+  // "today" independently, which is nearly always the same instant but is not the same VALUE — and
+  // more importantly the open-items read applied no cut at all, so a post-dated receipt showed up as
+  // a row the strip did not count. Same moment, same cuts, or the sum stops meaning anything.
+  const asOf = todayDateOnly();
   return prisma.$transaction(async (tx) => {
     const [aging, openItems] = await Promise.all([
-      customerOwnAgingRow(customerId, undefined, tx),
-      openItemsForCustomer(customerId, tx),
+      customerOwnAgingRow(customerId, formatDateOnly(asOf), tx),
+      openItemsForCustomer(customerId, tx, asOf),
     ]);
     return { aging, openItems };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });

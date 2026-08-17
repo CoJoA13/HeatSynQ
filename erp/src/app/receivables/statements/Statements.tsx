@@ -24,7 +24,7 @@ import { ReceivablesNav } from "../ReceivablesNav";
 // component pulling from there drags node:async_hooks and Prisma into the browser bundle).
 // ---------------------------------------------------------------------------------------------
 
-type CustomerOption = { id: string; code: string; name: string; parentId: string | null };
+type CustomerOption = { id: string; code: string; name: string; parentId: string | null; active: boolean };
 /** What `POST .../statements/divisions` returns — one entry per printed family member (#85). */
 type PerDivisionResult = {
   customerId: string; customerCode: string; customerName: string;
@@ -141,7 +141,12 @@ function StatementsScreen() {
   const customersAllowed = customersGate.allowed;
   useEffect(() => {
     if (!customersAllowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    // `includeInactive=1` because BOTH service halves define the family by `deletedAt: null`,
+    // not by `active` (review round 1). A parent whose divisions are merely deactivated —
+    // how a dormant division that still owes money is parked — otherwise never switched the
+    // button, so unchecking "Combine family" silently printed the parent alone: #85's exact
+    // symptom, unfixed for that family, while the COMBINED print included those divisions.
+    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch((e) => setError((e as Error).message));
   }, [customersAllowed]);
 
   // ---- Preview (GET, build-only — the route's own "a preview" comment) ----
@@ -210,11 +215,21 @@ function StatementsScreen() {
   const [perDivision, setPerDivision] = useState<PerDivisionResult[] | null>(null);
   // A family HEAD (some other customer names it as parent) printed un-combined. A division printed
   // un-combined is already correct — it is its own statement — so only the head switches behaviour.
-  const perDivisionMode = !combineFamily
-    && customerId !== ""
-    && customers.some((c) => c.parentId === customerId);
+  const familyMembers = customerId === "" ? [] : customers.filter((c) => c.parentId === customerId);
+  const perDivisionMode = !combineFamily && familyMembers.length > 0;
 
   async function printPerDivision() {
+    // The preview below shows the PARENT's statement only — `buildStatement` with combineFamily
+    // false is a single customer by definition — while this archives one document per member.
+    // Naming them and confirming is the disclosure that gap needs (review round 1): the operator
+    // must not approve a parent-only preview and silently create child paper they never saw.
+    const members = [customerId, ...familyMembers.map((c) => c.id)];
+    const names = familyMembers.map((c) => `${c.code}${c.active ? "" : " (inactive)"}`).join(", ");
+    if (!confirm(
+      `Print ${members.length} statements as of ${asOf} — this customer plus its divisions `
+      + `(${names})?\n\nThe preview above shows this customer's statement only; each division's `
+      + "is archived and listed with a link once printed.",
+    )) return;
     setPrinting(true);
     setPrintError(null);
     setPerDivision(null);
@@ -286,10 +301,16 @@ function StatementsScreen() {
           <p className="mb-1">
             Printed {perDivision.length} statement{perDivision.length === 1 ? "" : "s"} — one per division.
           </p>
+          {/* Each result links to ITS OWN archived PDF: the Documents table below is filtered to the
+              selected parent, so without these the children's statements would be unreachable from
+              this screen (and an inactive child's doubly so). */}
           <ul className="list-inside list-disc">
             {perDivision.map((r) => (
               <li key={r.documentId}>
                 <span className="font-mono">{r.customerCode}</span> {r.customerName} — {r.totalDue.toFixed(2)} due
+                {" — "}
+                <a href={`/api/documents/${r.documentId}`} target="_blank" rel="noreferrer"
+                   className="text-blue-700 underline">open PDF</a>
               </li>
             ))}
           </ul>
@@ -313,7 +334,13 @@ function StatementsScreen() {
                     onChange={(e) => setCustomerId(e.target.value)}
                     className="mt-1 block rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100">
               <option value="">Select…</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+              {/* Inactive customers are LISTED (a deactivated division can still owe money, and its
+                  statement has to be reachable) but marked, so the list stays honest. */}
+              {customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} · {c.name}{c.active ? "" : " (inactive)"}
+                </option>
+              ))}
             </select>
           </label>
           <label className="block">
