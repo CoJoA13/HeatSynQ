@@ -414,6 +414,92 @@ describe("createInvoice", () => {
   // internal path directly against a manually-opened Read Committed tx) removes SSI from the
   // picture, so `claimOrder`'s row lock is the only thing that can serialize the two. Verified by
   // hand: RED with the claim removed, GREEN with it restored (see the task report for transcripts).
+  // #96. `buildPricingInput` skips a zero-net line BEFORE the quote/part fork (seam #3), while the
+  // lead-line header read resolves `orderLines[0]`'s quote link unconditionally. So the identical
+  // corrupt link threw on a zero-net LEAD line and was silently skipped on a zero-net RIDER. The
+  // asymmetry was the finding; throwing is the safe direction on corrupt state, so both now throw.
+  it("throws on a corrupt quote link on a ZERO-NET rider, as it already did on the lead (#96)", async () => {
+    const customer = await makeCustomer();
+    const partA = await makePart(customer.id);
+    const partB = await makePart(customer.id);
+    await giveSteps(partA.id);
+    await giveSteps(partB.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [
+        { partId: partA.id, qty: 100, weight: "100.00" },
+        { partId: partB.id, qty: 100, weight: "100.00" },
+      ],
+    }));
+
+    // A quote line that quotes partA, linked onto the partB order line — the part-mismatch
+    // corruption §5.14 makes unreachable through the services, written here directly.
+    const user = await prisma.user.create({
+      data: { username: "q96-user", passwordHash: "x", displayName: "Q96" } });
+    const quote = await prisma.quote.create({
+      data: {
+        quoteNumber: 960001, customerId: customer.id, quotedById: user.id,
+        quoteDate: parseDateOnly("2026-08-01"), effectiveDate: parseDateOnly("2026-08-01"),
+        expiryDate: parseDateOnly("2026-08-31"),
+        lines: { create: [{ position: 1, partId: partA.id }] },
+      },
+      include: { lines: true },
+    });
+    await prisma.orderLine.update({
+      where: { id: order.lines[1].id }, data: { quoteLineId: quote.lines[0].id } });
+
+    // The rider ships ZERO but is marked complete, so the order reaches SHIPPED with a zero-net
+    // line — the exact state the skip fires on.
+    await asSystem(() => createShipper({
+      customerId: customer.id, shipDate: "2026-08-04",
+      orders: [{
+        orderId: order.id,
+        lines: [
+          { orderLineId: order.lines[0].id, qty: 100, weight: 100, lineComplete: true },
+          { orderLineId: order.lines[1].id, qty: 0, weight: 0, lineComplete: true },
+        ],
+        containers: [], serials: [],
+      }],
+    }, { canOverrideCreditHold: false }));
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+
+    // Before the fix this created a perfectly ordinary invoice, silently ignoring the corruption.
+    await expect(asSystem(() => createInvoice({ orderId: order.id })))
+      .rejects.toThrow(/quotes a different part/i);
+  });
+
+  // #60. `listPartPrices` read through the top-level `prisma` singleton while being called from
+  // INSIDE the Serializable invoice transaction, per order line and again for the lead line's
+  // process names. A second-connection read sits outside that transaction's snapshot AND its
+  // read-set, so a concurrent price edit was invisible to SSI — no 40001, no retry — and the several
+  // per-line calls could tear across a mid-flight change. Pinning it the deterministic way: a row
+  // written inside the caller's transaction is visible to the pricing read only if that read really
+  // is on the caller's transaction. Before the fix this priced "Needs price" off a stale connection.
+  it("prices from the CALLER's transaction, not a second connection (#60)", async () => {
+    const fixture = await shippedOrder({ qty: 100 });
+    const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-60", name: "Austemper", glAccountId: gl.id } });
+
+    const invoice = await prisma.$transaction(async (tx) => {
+      await tx.partPrice.create({
+        data: {
+          partId: fixture.part.id, processStepCodeId: code.id, position: 1,
+          unitPrice: "2.0000", pricePer: "EACH",
+        },
+      });
+      const created = await asSystem(() => createInvoice({ orderId: fixture.order.id }, tx));
+      return created.invoice;
+    });
+
+    const op = invoice.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.needsPrice).toBe(false);
+    expect(op.amount).toBe(200); // 100 × $2.00, from the uncommitted row
+    expect(op.glAccountName).toBe("4010");
+    // The lead-line header read takes the same transaction, so it names the same operation.
+    expect(invoice.processNames).toBe("Austemper");
+  });
+
   it("blocks a concurrent create under Read Committed until the holder commits, then refuses (row-lock discipline)", async () => {
     const { order } = await pricedShippedOrder();
 

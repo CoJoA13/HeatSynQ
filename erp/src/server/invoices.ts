@@ -493,10 +493,24 @@ async function buildPricingInput(
   const lines: OrderLineInput[] = [];
   for (const ol of orderLines) {
     const totals = shipped.get(ol.id) ?? { qty: 0, weight: 0 };
-    if (totals.qty === 0 && totals.weight === 0) continue;
+    if (totals.qty === 0 && totals.weight === 0) {
+      // #96: a zero-net line is never PRICED (seam #3) — but a corrupt quote link on it is corrupt
+      // state either way, and the lead-line header read below resolves `orderLines[0]`'s link
+      // UNCONDITIONALLY. So the same corruption threw on a zero-net LEAD line and was silently
+      // skipped on a zero-net rider. The asymmetry was the finding; throwing is the safe direction
+      // on corrupt state, so the rider is validated here too and the two agree. Constructionally
+      // unreachable while the §5.14 guards hold — which is exactly why it must not depend on which
+      // position the line happens to occupy.
+      if (ol.quoteLineId !== null) {
+        await quotePriceRowInputs(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId });
+      }
+      continue;
+    }
     const prices: PriceRowInput[] = ol.quoteLineId !== null
       ? await quotePriceRowInputs(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId })
-      : (await listPartPrices(ol.partId)).map((p) => ({
+      // #60: on `tx`, never the singleton — inside a Serializable transaction a second-connection
+      // read sits outside the snapshot and the read-set, so SSI cannot see a racing price edit.
+      : (await listPartPrices(ol.partId, tx)).map((p) => ({
           processStepCodeId: p.processStepCodeId, stepCode: p.stepCode, stepName: p.stepName, position: p.position,
           setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
           pricePer: p.pricePer, breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
@@ -797,7 +811,7 @@ async function createInvoiceInTx(
     ? []
     : lead.quoteLineId !== null
       ? await quotePriceRowInputs(tx, { id: lead.id, partId: lead.partId, quoteLineId: lead.quoteLineId })
-      : await listPartPrices(lead.partId);
+      : await listPartPrices(lead.partId, tx); // #60 — the same transaction, for the same reason
   // Ruling 4's invoice half (spec §5.7): the header's Process: snapshot is the lead part's
   // `processName` (presentation vocabulary) when it is non-blank, else today's priced-operation
   // comma-join. CREATE-TIME only — this is the ONLY behavioral change to invoice data, and prints
