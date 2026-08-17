@@ -592,6 +592,28 @@ describe("customers service", () => {
     expect(unmatched).toEqual([]);
   });
 
+  // #86. `financeChargeRateField` was declared `decimalField(6, 4)` with no `min`, while the
+  // `salesTaxRateField` two lines below it and `BillingConfig.financeChargeRate` both carry
+  // `nonnegative`. A negative customer override WINS over a valid plant rate
+  // (`financeChargeRateFor`), and `financeCharge`'s `computed > 0` gate then collapses the negative
+  // result to null — so the customer silently stops being charged finance charges at all.
+  describe("financeChargeRate", () => {
+    it("rejects a negative rate on create and update, matching the plant-rate rule (#86)", async () => {
+      const { id } = await createCustomer({ code: "FCR", name: "Finance Co", financeChargeRate: "0.0150" });
+      expect((await getCustomer(id)).financeChargeRate).toBe(0.015);
+
+      await expect(createCustomer({ code: "FCRBAD", name: "Bad", financeChargeRate: "-0.0150" }))
+        .rejects.toBeInstanceOf(ZodError);
+      await expect(asSystem(() => updateCustomer(id, { financeChargeRate: "-1" })))
+        .rejects.toBeInstanceOf(ZodError);
+
+      // Refused, not half-applied — and clearing to null (inherit the plant rate) still works.
+      expect((await getCustomer(id)).financeChargeRate).toBe(0.015);
+      await asSystem(() => updateCustomer(id, { financeChargeRate: null }));
+      expect((await getCustomer(id)).financeChargeRate).toBeNull();
+    });
+  });
+
   describe("requestDaysOverride", () => {
     it("round-trips through create and update, clears to null, and rejects a negative value", async () => {
       const { id } = await createCustomer({ code: "ACME", name: "Acme", requestDaysOverride: 10 });
