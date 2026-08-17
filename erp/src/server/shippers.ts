@@ -1278,16 +1278,29 @@ async function otherShipmentsWith(
       { serial: "asc" },
     ],
   });
-  return rows
-    .filter((r) => wanted.has(serialKeyOf({
-      lineId: r.orderSerial?.lineId ?? r.orderLineIdAtSave, serial: r.serial,
-    })))
-    .map((r) => ({
+  // ONE entry per (serial, shipment), not per matched ROW (Codex, PR #130).
+  // `replaceShipperSerials` deliberately PRESERVES a released row while adding the new live one
+  // (snapshot + release — the shipment still prints that serial), so one packing list can legitimately
+  // hold several rows for the same (line, serial), and each further replacement adds another. A
+  // one-for-one map then repeated the identical sentence once per row. First occurrence wins, which
+  // keeps the query's ship-date ordering.
+  const seen = new Set<string>();
+  const out: ReshippedSerial[] = [];
+  for (const r of rows) {
+    const lineId = r.orderSerial?.lineId ?? r.orderLineIdAtSave;
+    if (!wanted.has(serialKeyOf({ lineId, serial: r.serial }))) continue;
+    const shipper = r.shipperOrder.shipper;
+    const dedupeKey = `${shipper.id}\u0000${r.serial}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
       serial: r.serial,
-      shipperId: r.shipperOrder.shipper.id,
-      shipperNumber: r.shipperOrder.shipper.shipperNumber,
-      shipDate: r.shipperOrder.shipper.shipDate,
-    }));
+      shipperId: shipper.id,
+      shipperNumber: shipper.shipperNumber,
+      shipDate: shipper.shipDate,
+    });
+  }
+  return out;
 }
 
 /** §5.14 — the warning names its cause: which serial, which packing list, when, and a link to it.

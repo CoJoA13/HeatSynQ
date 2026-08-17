@@ -431,6 +431,42 @@ describe("snapshot + release: order corrections after shipment references", () =
       expect(voided.filter((w) => w.includes("also appears on"))).toEqual([]);
     });
 
+    /**
+     * Codex, PR #130 (P2) — one warning per (serial, packing list), not per matched ROW.
+     *
+     * `replaceShipperSerials` deliberately PRESERVES a released row while adding the new live one
+     * (snapshot + release: the shipment still prints that serial). So one packing list can legitimately
+     * hold two rows for the same (line, serial) — and a one-for-one map over matches then emitted the
+     * identical sentence twice, with more piling up after each further replacement.
+     */
+    it("emits ONE warning per shipment even when it holds a released and a live row for the serial", async () => {
+      const { order, first } = await shippedOnce();
+
+      // Release the first shipment's selection, then re-select the recreated serial ON THAT SAME
+      // shipment — leaving it holding both the released snapshot row and a live row.
+      await asSystem(() => replaceSerials(order.id, order.lines[0].id, [
+        { serial: "SN-1", description: "" },
+        { serial: "SN-2", description: "" },
+      ]));
+      const recreated = await prisma.orderSerial.findFirstOrThrow({
+        where: { lineId: order.lines[0].id, serial: "SN-1" },
+      });
+      const so = await prisma.shipperOrder.findFirstOrThrow({
+        where: { shipperId: first.id, orderId: order.id }, select: { id: true },
+      });
+      await asSystem(() => replaceShipperSerials(first.id, so.id, [
+        { orderSerialId: recreated.id, printOnShipper: true },
+      ]));
+      expect(await prisma.shipperSerial.count({
+        where: { shipperOrder: { shipperId: first.id }, serial: "SN-1" },
+      })).toBeGreaterThan(1); // the shape only exists because the released row is preserved
+
+      // A LATER shipment of that serial must be told once, not once per row.
+      const second = await shipAgain(order, recreated.id);
+      const about = second.warnings.filter((w) => w.includes(`Packing List ${first.shipperNumber}`));
+      expect(about).toHaveLength(1);
+    });
+
     it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
       const { order, s1 } = await shippedOnce();
       const second = await shipAgain(order, s1.id);
