@@ -1384,9 +1384,19 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
   // Idempotent: a re-finalize is a 400 naming the state, never a second write (§5.5).
   if (invoice.status === "FINALIZED") throw new HttpError(400, "That invoice is already finalized");
-  // Finalize is refused while any line still needs a price (§5.5) — the ONLY finalize block. It reads
-  // the RESOLVED price already snapshotted on the line (Task 9), so a break-only line does not block.
-  // No GL-account check: spec §15 puts that on 5C's export, not here.
+  // #63: an invoice with NO LINES has nothing to bill, and the `needsPrice` check below passes
+  // VACUOUSLY over an empty set — so an emptied draft used to finalize into a $0 INVOICED order that
+  // `listInvoiceCandidates` then excluded, leaving no way to bill the order at all. Owner ruling
+  // 2026-08-17: the guard is on the EMPTY LINE SET, not on a zero total — a warranty or no-charge
+  // rework legitimately goes out at $0, listing what was done — and it sits at FINALIZE rather than
+  // on the save, so a draft may still be emptied while the operator rebuilds it.
+  if (invoice.lines.length === 0) {
+    throw new HttpError(400,
+      "That invoice has no lines — add the work being billed, or discard it");
+  }
+  // Finalize is refused while any line still needs a price (§5.5). It reads the RESOLVED price
+  // already snapshotted on the line (Task 9), so a break-only line does not block. No GL-account
+  // check: spec §15 puts that on 5C's export, not here.
   const offending = invoice.lines.find((l) => l.needsPrice);
   if (offending) {
     const label = offending.partNumber === ""
@@ -1489,7 +1499,14 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
       where: { id },
       data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
     }), { tx, reason: why });
-  await recomputeOrderStatus(tx, [order.id], [order.id]);
+  // #59: branch on `kind` exactly as `finalizeInvoiceInTx` does. Only an INVOICE owns the order's
+  // status (§5.2), so only an INVOICE hands it back. Unlocking a CREDIT used to pass the order in
+  // the `released` set too, lifting `recomputeOrderStatus`'s INVOICE_OWNED skip and settling the
+  // order on its ship-derived status — while the source invoice was still FINALIZED and still owned
+  // INVOICED. An invoiced order silently fell back to SHIPPED via finalize-credit → unlock-credit.
+  if (invoice.kind === "INVOICE") {
+    await recomputeOrderStatus(tx, [order.id], [order.id]);
+  }
   return readInvoiceDetail(tx, id);
 }
 

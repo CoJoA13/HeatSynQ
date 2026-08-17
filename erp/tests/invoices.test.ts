@@ -844,6 +844,39 @@ describe("finalizeInvoice", () => {
     await expect(asSystem(() => finalizeInvoice(invoice.id))).rejects.toThrow(/needs a price/i);
   });
 
+  // #63. The line editor lets an operator remove every row, and `replaceInvoiceLines` accepts an
+  // empty array. Finalize's only block was `needsPrice`, which a `.find` over zero lines passes
+  // VACUOUSLY — so an emptied invoice finalized into a $0 INVOICED order, which then drops out of
+  // `listInvoiceCandidates` and can never be billed again. Owner ruling 2026-08-17: block the EMPTY
+  // LINE SET, not a zero total (a warranty/rework invoice legitimately goes out at $0), and block at
+  // FINALIZE so a draft may still be emptied mid-rebuild.
+  it("refuses to finalize an invoice with no lines at all (#63)", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id, [])); // still allowed — the draft is mid-edit
+    await expect(asSystem(() => finalizeInvoice(invoice.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/no lines/i) });
+    // Refused, not half-applied: the invoice is still an editable draft and the order has NOT been
+    // stranded at INVOICED.
+    expect((await getInvoice(invoice.id)).status).toBe("DRAFT");
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+    // And the way out is the ordinary one — recalculate rebuilds the derived lines, then it bills.
+    const rebuilt = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(rebuilt.lines.length).toBeGreaterThan(0);
+    expect((await asSystem(() => finalizeInvoice(invoice.id))).status).toBe("FINALIZED");
+  });
+
+  it("finalizes a legitimately $0 invoice that still carries its lines (#63's other half)", async () => {
+    // The ruling's point: zero DOLLARS is real paper — a no-charge rework still lists what was done.
+    // Only zero LINES is the integrity hole.
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id,
+      invoice.lines.map((l) => (l.kind === "OPERATION" ? overrideAmount(l, "0.00") : toLineInput(l)))));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.status).toBe("FINALIZED");
+    expect(done.total).toBe(0);
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+  });
+
   it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {
     const { order, invoice } = await draftFixture();
     const done = await asSystem(() => finalizeInvoice(invoice.id));
@@ -966,6 +999,29 @@ describe("unlockInvoice", () => {
     const entry = await prisma.auditLog.findFirst({
       where: { entity: "invoice", entityId: invoice.id, action: "update" }, orderBy: { at: "desc" } });
     expect(entry!.reason).toBe("wrong PO on the paper");
+  });
+
+  // #59. `finalizeInvoiceInTx` branches on `kind` — only an INVOICE owns the order's status (§5.2) —
+  // but `unlockInvoice` did not, so unlocking a CREDIT passed the order in the `released` set and
+  // recomputed it to a ship-derived status. The source INVOICE stayed FINALIZED, still owning
+  // INVOICED, while the order silently fell back to SHIPPED.
+  it("unlocking a CREDIT leaves the order's invoice-owned status alone (#59)", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    await asSystem(() => finalizeInvoice(credit.id));
+    expect((await getOrder(order.id)).status).toBe("INVOICED"); // finalizing a credit never wrote it
+
+    await asSystem(() => unlockInvoice(credit.id, "credited the wrong amount"));
+    expect((await getInvoice(credit.id)).status).toBe("DRAFT");
+    // Before the fix: SHIPPED, while the source invoice was still FINALIZED.
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+    // ...and no order-status audit entry was written by the credit unlock at all.
+    const ord = await prisma.auditLog.findFirst({
+      where: { entity: "order", entityId: order.id, action: "update" }, orderBy: { at: "desc" } });
+    expect((ord!.after as Record<string, unknown>).status).toBe("INVOICED");
   });
 
   it("unlock stays available after the invoice has printed", async () => {
