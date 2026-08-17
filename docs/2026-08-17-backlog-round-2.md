@@ -67,7 +67,7 @@ missing labels or stop documenting them.
 
 ---
 
-## Group A — The invoice engine · **DONE 2026-08-17**, branch `group-a-invoice-engine`
+## Group A — The invoice engine · **MERGED 2026-08-17** as `1c1fc77` (PR #133)
 
 All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3104 tests / 182 files**
 (from 3080), `tsc`/`eslint`/`build` clean, E2E 23/23 — all re-run at each of THREE review rounds,
@@ -290,7 +290,7 @@ it twice. Cross-referenced to the question list.
 
 ## Recommended order
 
-~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine)~~ → **B** (A/R, unblocked) ← **NEXT** →
+~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ → **B** (A/R, unblocked) ← **IN FLIGHT** →
 **C** (shipping/status) → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
 → **F** → **G**/**H** as filler.
 
