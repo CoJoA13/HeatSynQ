@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir, utimes } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, utimes, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import {
   evaluateHealth, listArchives, backupHealth,
   mapLimited, verifyArchive, clearIntegrityCache,
-  INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS,
+  INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS, INTEGRITY_TIMEOUT_MS,
 } from "@/server/backups";
 import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
 import { truncateAll } from "./helpers/db";
@@ -368,6 +368,46 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
     expect(await verifyArchive("/rotten.gz", 7, 7, verify, 0)).toBe(false);
     expect(await verifyArchive("/rotten.gz", 7, 7, verify, 5)).toBe(false);
     expect(calls).toBe(1);
+  });
+
+  /**
+   * Codex, PR #131 — a gzip that starts but cannot READ the file is not a corrupt archive.
+   *
+   * A permission or ACL change landing between our `stat` and gzip's `open` makes it exit non-zero
+   * with a NUMERIC code, exactly like a format rejection — so the exit code alone cannot separate
+   * them, and the first version of this fix (which only excluded spawn failures and signals) cached
+   * a healthy file as CORRUPT for the full TTL, surviving the recovery.
+   *
+   * Driven through the REAL `gzip` against a real unreadable file, not a stubbed verifier: the
+   * point is which branch the actual child process lands in.
+   */
+  it("reports an unreadable archive as unverifiable, not corrupt — and does not cache it", async () => {
+    const own = await mkdtemp(path.join(tmpdir(), "backup-access-"));
+    const good = path.join(own, "erp_2026-08-16_010101.sql.gz");
+    await writeFile(good, gzipSync(Buffer.from("SELECT 1;")));
+    await chmod(good, 0o000);                       // readable to nobody (root would bypass; see below)
+    const stats = await stat(good);
+
+    const first = await verifyArchive(good, stats.size, stats.mtimeMs, undefined, 0);
+    await chmod(good, 0o600);                       // access recovers
+
+    if (first === false) {
+      // The expected path: unreadable ⇒ unverifiable ⇒ NOT cached, so recovery is immediate.
+      expect(await verifyArchive(good, stats.size, stats.mtimeMs, undefined, 1)).toBe(true);
+    } else {
+      // Running as root (CI containers often do), chmod 000 does not actually deny reads, so gzip
+      // succeeds and there is nothing to distinguish. Assert the honest thing rather than skipping.
+      expect(first).toBe(true);
+    }
+    await rm(own, { recursive: true, force: true });
+  });
+
+  it("bounds each verifier so a wedged one cannot hold a shared slot forever", () => {
+    // The ceiling made a hang process-wide rather than request-local, so the child must be bounded.
+    // A timed-out child is killed and reported with a `signal`, which is classified unverifiable and
+    // therefore never cached — the next read retries once the volume recovers.
+    expect(INTEGRITY_TIMEOUT_MS).toBeGreaterThan(1_000);
+    expect(INTEGRITY_TIMEOUT_MS).toBeLessThanOrEqual(120_000);
   });
 
   it("the shipped ceiling is a real bound", () => {

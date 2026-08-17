@@ -83,23 +83,52 @@ export function evaluateHealth(i: HealthInputs): BackupHealth {
  *  load, a transient storage error, a momentary permission problem) says nothing about the file. */
 type IntegrityVerdict = "intact" | "corrupt" | "unverifiable";
 
-/** Did `gzip` actually RUN and reject the file, or did it never get to look?
- *  A process that ran and exited non-zero carries a numeric `code`; a spawn/OS failure carries a
- *  string errno like `ENOENT` or `EMFILE`. `execFile` also reports a killed process via `signal`,
- *  which is likewise not a verdict about the archive. */
-function ranAndRejected(err: unknown): boolean {
+/**
+ * How long a single `gzip -t` may run before it is killed (Codex, PR #131).
+ *
+ * `execFile` starts children with NO timeout by default, and the module-level semaphore made that
+ * far worse than it used to be: a verifier wedged on an unresponsive network-backed volume holds a
+ * shared slot forever, four of them exhaust the pool, and every later banner poll and page listing
+ * then queues behind them indefinitely — a process-wide outage where the same hang used to cost one
+ * request. Bounding the child is what keeps the shared ceiling from becoming a shared failure.
+ *
+ * Sixty seconds is far beyond any real `gzip -t` of a shop-sized dump (milliseconds to a couple of
+ * seconds) while still being unambiguously "this is never coming back". A timed-out child is killed
+ * and reported with a `signal`, which `ranAndRejected` already reads as UNVERIFIABLE — so it is not
+ * cached, and the next read retries once the volume recovers.
+ */
+export const INTEGRITY_TIMEOUT_MS = 60_000;
+
+/**
+ * Did `gzip` actually run and REJECT THE ARCHIVE'S CONTENT, or did it fail for a reason that says
+ * nothing about the file?
+ *
+ * Three shapes are NOT a verdict: a spawn/OS failure (string errno like `ENOENT`/`EMFILE`), a killed
+ * process (`signal` — including the timeout above), and — the one the first version of this got
+ * wrong (Codex, PR #131) — `gzip` starting successfully and then failing to OPEN or READ the file,
+ * e.g. a permission or ACL change landing between our `stat` and its `open`. That exits non-zero
+ * with a NUMERIC code, exactly like a format rejection, so the exit code alone cannot separate them.
+ *
+ * Rather than parse stderr (whose wording is not stable across gzip builds or locales), this tests
+ * the actual condition: if the file is no longer readable BY US, gzip's failure is an access
+ * problem, not a corrupt archive. `readable` is passed in by the caller, which has just checked.
+ */
+function ranAndRejected(err: unknown, readable: boolean): boolean {
   const e = err as { code?: unknown; signal?: unknown } | null;
-  return typeof e?.code === "number" && !e.signal;
+  return typeof e?.code === "number" && !e.signal && readable;
 }
 
-/** `gzip -t`, spawned via argv. Returns a verdict rather than throwing — a corrupt archive is a
- *  reportable fact about that file, not a failure of the listing. */
+/** `gzip -t`, spawned via argv and bounded. Returns a verdict rather than throwing — a corrupt
+ *  archive is a reportable fact about that file, not a failure of the listing. */
 async function integrityOk(fullPath: string): Promise<IntegrityVerdict> {
   try {
-    await execFileAsync("gzip", ["-t", fullPath]);
+    await execFileAsync("gzip", ["-t", fullPath], { timeout: INTEGRITY_TIMEOUT_MS });
     return "intact";
   } catch (err) {
-    return ranAndRejected(err) ? "corrupt" : "unverifiable";
+    // Checked AFTER the failure, so it reflects the state gzip actually hit rather than a stale
+    // pre-flight. A file we cannot read is not a file we may call corrupt.
+    const readable = await access(fullPath, FS.R_OK).then(() => true, () => false);
+    return ranAndRejected(err, readable) ? "corrupt" : "unverifiable";
   }
 }
 
