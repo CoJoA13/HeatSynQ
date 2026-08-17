@@ -231,6 +231,23 @@ production database contain any finalized invoices at all?* The parallel-run mon
 and if the answer is none, every one of these backfills is a no-op and the whole line of argument was
 about an empty set.
 
+## Review round 6 — the stop-reviewing rule applied
+
+One P2: `familyMembers` comes from a one-time fetch, so a division created while the page is open is
+silently omitted from a per-division print.
+
+**Triaged to #136, not fixed** — CLAUDE.md's 2026-08-06 owner ruling: from round 6 onward, findings go
+to issues unless they are correctness, concurrency or data-integrity defects. This is stale client
+state: every document that prints is correct, one can be missing, nothing is corrupted, and the
+result list shows the operator exactly which members were printed.
+
+**And three rounds have now landed on the same seam** — the client choosing the print path from a
+list it holds: round 1 (the list was `active`-only), round 4 (it might not have loaded), round 6 (it
+can be stale). That is the convergence signal the ruling exists for. A fourth client-side patch is
+predictably wrong; #136 records the server-side fix and the one question inside it that belongs to the
+owner — whether a parent-only statement is ever legitimately wanted, which decides whether the single
+-print route should simply refuse for a parent printed uncombined.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute
