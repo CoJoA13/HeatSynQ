@@ -641,7 +641,7 @@ async function saveNewShipper(
     // one place, which is the #50/#54 lesson. Every selection here is fresh, so each carries a live
     // `orderSerialId` and the input is the selection set.
     warnings.push(...reshippedSerialWarnings(await priorShipmentsOf(
-      tx, shipper.id, data.orders.flatMap((o) => o.serials.map((sr) => ({ orderSerialId: sr.orderSerialId }))))));
+      tx, shipperNumber, data.orders.flatMap((o) => o.serials.map((sr) => ({ orderSerialId: sr.orderSerialId }))))));
 
     return { shipper: await readShipperDetail(tx, shipper.id), warnings, deduped: false };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -1186,7 +1186,7 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
       }
     }
   }
-  warnings.push(...reshippedSerialWarnings(await priorShipmentsOf(db, detail.id, shipSerials)));
+  warnings.push(...reshippedSerialWarnings(await priorShipmentsOf(db, detail.shipperNumber, shipSerials)));
   warnings.push(...overshipWarnings(detail));
   return warnings;
 }
@@ -1204,24 +1204,33 @@ type ReshippedSerial = { serial: string; shipperId: string; shipperNumber: numbe
  *
  * Keyed on `orderSerialId`, the identity of the physical part instance within its order — never on
  * the `serial` TEXT, which is only unique per line and would fire falsely across customers that
- * happen to reuse a numbering scheme. Two consequences follow, both wanted: a RELEASED row
- * (`orderSerialId` nulled by snapshot + release when the order's serials were replaced) is
- * excluded, because it no longer refers to a serial anyone can re-select; and the current shipment
- * is excluded by id, so re-reading a shipment never accuses it of duplicating its own selection.
+ * happen to reuse a numbering scheme. One consequence is wanted: a RELEASED row (`orderSerialId`
+ * nulled by snapshot + release when the order's serials were replaced) is excluded, because it no
+ * longer refers to a serial anyone can re-select.
+ *
+ * **STRICTLY EARLIER, not merely "not this one" (Codex, PR #130).** Excluding only the current
+ * shipment made the relationship SYMMETRIC: once SN-1 was re-shipped on Packing List 1001,
+ * re-reading the ORIGINAL 1000 warned that the serial "has already shipped on 1001" — accusing the
+ * first shipment of duplicating its own successor and reversing the history it reports. The bound
+ * is `shipperNumber`, the allocation sequence: it is unique, monotonic in creation order, and
+ * therefore the reliable record of WHICH selection came first. `shipDate` is not usable for this —
+ * it is operator-entered, so two shipments can share a date or a later one can be backdated. The
+ * `lt` also subsumes the old "not this shipper" exclusion, since a shipment is never earlier than
+ * itself.
  *
  * A VOIDED shipment does not count — `deletedAt` on the Shipper, the same "voided blocks nothing"
  * rule as every other guard here. Ascending by ship date so the sentence names the earliest
  * shipment first and a repeat read says the same thing twice.
  */
 async function priorShipmentsOf(
-  db: Db, shipperId: string, selected: { orderSerialId: string | null }[],
+  db: Db, shipperNumber: number, selected: { orderSerialId: string | null }[],
 ): Promise<ReshippedSerial[]> {
   const ids = selected.map((s) => s.orderSerialId).filter((id): id is string => id !== null);
   if (ids.length === 0) return [];
   const rows = await db.shipperSerial.findMany({
     where: {
       orderSerialId: { in: ids },
-      shipperOrder: { shipperId: { not: shipperId }, shipper: { deletedAt: null } },
+      shipperOrder: { shipper: { shipperNumber: { lt: shipperNumber }, deletedAt: null } },
     },
     select: {
       serial: true,

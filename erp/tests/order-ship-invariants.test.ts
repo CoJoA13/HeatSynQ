@@ -349,6 +349,28 @@ describe("snapshot + release: order corrections after shipment references", () =
         .toEqual([]);
     });
 
+    /**
+     * Codex, PR #130 (P2) — the relationship was SYMMETRIC, so the warning reversed history.
+     *
+     * The query excluded only the CURRENT shipment and never established that a match predates it.
+     * So once SN-1 was re-shipped on PL 1001, re-reading the ORIGINAL PL 1000 warned that the serial
+     * "has already shipped on Packing List 1001" — accusing the first shipment of duplicating the
+     * second. The fix constrains matches to a genuinely EARLIER `shipperNumber`, which is the
+     * allocation sequence and therefore the reliable record of which selection came first (shipDate
+     * is operator-entered and can tie or be backdated).
+     */
+    it("never warns the ORIGINAL shipment about a LATER re-ship — the history is not reversed", async () => {
+      const { order, s1, first } = await shippedOnce();
+      const second = await shipAgain(order, s1.id);
+
+      // The later shipment is warned, naming the earlier one.
+      expect(second.warnings.some((w) => w.includes(`Packing List ${first.shipperNumber}`))).toBe(true);
+
+      // The earlier one is NOT — re-reading it must not claim it duplicated its own successor.
+      const original = await shipmentWarnings(prisma, await getShipper(first.id));
+      expect(original.filter((w) => w.includes("already shipped"))).toEqual([]);
+    });
+
     it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
       const { order, s1 } = await shippedOnce();
       const second = await shipAgain(order, s1.id);
