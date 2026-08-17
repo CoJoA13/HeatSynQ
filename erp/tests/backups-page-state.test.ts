@@ -58,12 +58,25 @@ describe("runControlState — the Back up now gate (#123)", () => {
    * routinely land first — leaving the gate open with both `view` and `refusal` still null. The
    * control flashed ENABLED in that window and would fire a POST refused by construction.
    */
-  it("stays disabled while the view is still loading, even with a grant and no refusal yet", () => {
+  it("stays disabled while the view request is in flight, even with a grant and no refusal yet", () => {
     expect(runControlState(open, false, null, false)).toEqual({ disabled: true, title: "Loading…" });
   });
 
-  it("opens once the view resolves — the loading gate is a window, not a wall", () => {
+  it("opens once the view SETTLES — the gate is a window, not a wall", () => {
     expect(runControlState(open, false, null, true).disabled).toBe(false);
+  });
+
+  /**
+   * Codex, PR #131 — a regression in the first version of this gate, which keyed on
+   * `view !== null`. A transient non-403 failure left `view` null forever, and with no retry on the
+   * mounted page the control stayed disabled reading "Loading…" until the operator reloaded the
+   * browser. Settled-but-failed is not a reason to forbid the attempt: the POST does its own
+   * practice and permission checks, so it is authoritative, and a brief blip should not cost the
+   * shop its backup button.
+   */
+  it("re-opens after a SETTLED but failed load — a transient error is not a permanent lock", () => {
+    // No refusal (the failure was a 500 or a network blip, not a 403), request finished, no view.
+    expect(runControlState(open, false, null, true)).toEqual({ disabled: false, title: undefined });
   });
 
   // Bite-proof: the pre-fix behaviour was "enabled regardless of the refusal", so a helper that

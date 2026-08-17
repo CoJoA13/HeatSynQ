@@ -37,20 +37,28 @@ const fmtWhen = (iso: string) => new Date(iso).toLocaleString();
  */
 export function runControlState(
   gate: { disabled: boolean; title?: string }, running: boolean, refusal: string | null,
-  viewLoaded: boolean,
+  viewSettled: boolean,
 ): { disabled: boolean; title: string | undefined } {
   // The refusal wins the TOOLTIP even when the gate is also closed: it is the more specific fact,
   // and it is the one the operator can act on ("use the production copy") versus a generic
   // permission line.
   if (refusal !== null) return { disabled: true, title: refusal };
-  // CLOSED WHILE THE VIEW IS UNRESOLVED (Codex, PR #131). `/api/auth/me` and the view request are
-  // independent, and on the practice copy the view one carries an EXTRA round trip
+  // CLOSED WHILE THE VIEW REQUEST IS IN FLIGHT (Codex, PR #131). `/api/auth/me` and the view
+  // request are independent, and on the practice copy the view one carries an EXTRA round trip
   // (`assertNotPracticeDatabase`'s database-identity query) — so permissions routinely land first,
   // leaving `gate` open with both `view` and `refusal` still null. The control flashed ENABLED in
   // that window and would fire a POST that is refused by construction. `usePermissions` solves the
   // same problem the same way (it holds controls disabled while `permissions` is undefined rather
   // than flashing them open); this is that rule applied to the second async fact this page needs.
-  if (!viewLoaded) return { disabled: true, title: "Loading…" };
+  //
+  // SETTLED, not LOADED (Codex again, PR #131 — a regression in the first version of this gate).
+  // Keying on `view !== null` meant a transient non-403 failure left `view` null FOREVER, and with
+  // no retry on the mounted page the control stayed disabled reading "Loading…" until the operator
+  // reloaded the browser. A settled-but-failed load is not a reason to forbid the attempt: the POST
+  // does its own `assertNotPracticeDatabase` and its own permission check, so it is authoritative,
+  // and a brief network blip should not cost the shop its backup button. A genuine refusal is
+  // already handled above, where it belongs.
+  if (!viewSettled) return { disabled: true, title: "Loading…" };
   return { disabled: gate.disabled || running, title: gate.title };
 }
 
@@ -72,6 +80,9 @@ export default function BackupsPage() {
    * nav entry).
    */
   const [refusal, setRefusal] = useState<string | null>(null);
+  /** Has the view request FINISHED — succeeded or failed? Distinct from "did it return a view", so a
+   *  transient failure re-opens the control rather than pinning it on "Loading…" forever. */
+  const [viewSettled, setViewSettled] = useState(false);
   // The SHARED hook, never a hand-rolled /api/auth/me effect. Its own header names "reimplemented
   // rather than shared" as this repo's recurring defect shape, and it gets two things right that a
   // local copy reliably gets wrong: `permissions` stays `undefined` while in flight (so gateDo
@@ -100,9 +111,11 @@ export default function BackupsPage() {
   }, []);
 
   useEffect(() => {
-    load().catch((e) => {
-      setError(e instanceof ApiError ? e.message : "Could not read the backup folder.");
-    });
+    load()
+      .catch((e) => {
+        setError(e instanceof ApiError ? e.message : "Could not read the backup folder.");
+      })
+      .finally(() => setViewSettled(true));
   }, [load]);
 
   const gate = gateDo(permissions, "manage_backups");
@@ -142,7 +155,7 @@ export default function BackupsPage() {
 
   const health = view?.health;
   const green = health?.state === "ok";
-  const { disabled: runDisabled, title: runTitle } = runControlState(gate, running, refusal, view !== null);
+  const { disabled: runDisabled, title: runTitle } = runControlState(gate, running, refusal, viewSettled);
 
   return (
     <div className="p-6">
