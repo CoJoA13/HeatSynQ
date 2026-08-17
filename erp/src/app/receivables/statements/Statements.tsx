@@ -24,7 +24,12 @@ import { ReceivablesNav } from "../ReceivablesNav";
 // component pulling from there drags node:async_hooks and Prisma into the browser bundle).
 // ---------------------------------------------------------------------------------------------
 
-type CustomerOption = { id: string; code: string; name: string };
+type CustomerOption = { id: string; code: string; name: string; parentId: string | null };
+/** What `POST .../statements/divisions` returns — one entry per printed family member (#85). */
+type PerDivisionResult = {
+  customerId: string; customerCode: string; customerName: string;
+  documentId: string; totalDue: number;
+};
 
 type AgingRow = {
   customerId: string; customerCode: string; customerName: string;
@@ -196,6 +201,37 @@ function StatementsScreen() {
     }
   }
 
+  // ---- Print per division (#85) ----
+  // Unchecking "Combine family" on a PARENT used to send one request for the parent alone, so the
+  // divisions were silently omitted and the advertised choice produced strictly less than the
+  // combined one. This prints one statement per family member. It returns a LIST rather than a PDF
+  // (N documents cannot be one blob), so it reports like "Run for everyone" does instead of opening
+  // a tab — the archived statements are in Documents below, each under its own customer.
+  const [perDivision, setPerDivision] = useState<PerDivisionResult[] | null>(null);
+  // A family HEAD (some other customer names it as parent) printed un-combined. A division printed
+  // un-combined is already correct — it is its own statement — so only the head switches behaviour.
+  const perDivisionMode = !combineFamily
+    && customerId !== ""
+    && customers.some((c) => c.parentId === customerId);
+
+  async function printPerDivision() {
+    setPrinting(true);
+    setPrintError(null);
+    setPerDivision(null);
+    try {
+      const printed = await api<PerDivisionResult[]>("/api/receivables/statements/divisions", {
+        method: "POST",
+        body: JSON.stringify({ customerId, asOf, assessFinanceCharges }),
+      });
+      setPerDivision(printed);
+      setDocsRefresh((n) => n + 1);
+    } catch (e) {
+      setPrintError((e as Error).message);
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   // ---- Run for everyone with a balance ----
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -245,6 +281,20 @@ function StatementsScreen() {
       )}
       {printError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{printError}</p>}
       {runError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{runError}</p>}
+      {perDivision && (
+        <div className="mb-3 rounded bg-emerald-50 p-2 text-sm text-emerald-800">
+          <p className="mb-1">
+            Printed {perDivision.length} statement{perDivision.length === 1 ? "" : "s"} — one per division.
+          </p>
+          <ul className="list-inside list-disc">
+            {perDivision.map((r) => (
+              <li key={r.documentId}>
+                <span className="font-mono">{r.customerCode}</span> {r.customerName} — {r.totalDue.toFixed(2)} due
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {runResult && (
         <p className="mb-3 rounded bg-emerald-50 p-2 text-sm text-emerald-800">
           {runResult.length === 0
@@ -279,9 +329,13 @@ function StatementsScreen() {
             <input type="checkbox" checked={assessFinanceCharges} onChange={(e) => setAssessFinanceCharges(e.target.checked)} />
             Assess finance charges
           </label>
-          <button onClick={() => void printSingle()} disabled={printTitle !== undefined} title={printTitle}
+          {/* A family head printed UN-combined is the per-division choice, and it prints one
+              statement per member (#85). Every other case — a division, a standalone customer, or
+              "Combine family" checked — is the ordinary single print. */}
+          <button onClick={() => void (perDivisionMode ? printPerDivision() : printSingle())}
+                  disabled={printTitle !== undefined} title={printTitle}
                   className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-            {printing ? "Printing…" : "Print"}
+            {printing ? "Printing…" : perDivisionMode ? "Print per division" : "Print"}
           </button>
           <button onClick={() => void runForEveryone()} disabled={runTitle !== undefined} title={runTitle}
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">

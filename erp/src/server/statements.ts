@@ -333,7 +333,7 @@ export async function buildStatement(customerId: string, opts: StatementOpts): P
 
 async function printStatementInTx(
   tx: Db, customerId: string, opts: StatementOpts, settings: InvoicePrintSettings,
-): Promise<{ documentId: string; pdf: Buffer }> {
+): Promise<{ documentId: string; pdf: Buffer; data: StatementData }> {
   const data = await buildStatementInTx(tx, customerId, opts, settings);
 
   // §5.2 resolution on THIS Serializable transaction at its isolation — correct by §5.1
@@ -352,7 +352,9 @@ async function printStatementInTx(
   const pdf = await renderPdf(buildStatementDefinition(data, resolved.config, logoDataUri));
   // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
   const doc = await storeDocument(tx, { kind: "STATEMENT", customerId }, pdf, resolved.versionId);
-  return { documentId: doc.id, pdf };
+  // `data` rides back for callers that report on what they printed (`printStatementsPerDivision`
+  // lists each member's Total Due) — it is already built here, so nothing is re-read to get it.
+  return { documentId: doc.id, pdf, data };
 }
 
 /** Render, archive and return the statement PDF (spec §8). A reprint of a STORED document is the
@@ -417,6 +419,59 @@ export async function runStatements(
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     ));
     results.push({ customerId: row.customerId, documentId });
+  }
+  return results;
+}
+
+export type PerDivisionStatement = {
+  customerId: string; customerCode: string; customerName: string;
+  documentId: string; totalDue: number;
+};
+
+/**
+ * The PER-DIVISION half of "combined or per-division" (spec §3 ruling 10) — one archived statement
+ * for the parent AND one for each live division, each scoped to its own activity (#85).
+ *
+ * Unchecking "Combine family" used to send exactly ONE request, for the parent, which
+ * `buildStatement` correctly answered with the parent alone: the divisions were silently omitted,
+ * so the advertised per-division option produced strictly LESS than the combined one rather than a
+ * statement each. The choice is real now.
+ *
+ * Shaped exactly like `runStatements` above — settings read ONCE outside, then one Serializable
+ * print transaction per member — because it is the same act at a different scope, and two different
+ * print loops would be two things to keep in step. A customer with no children yields exactly its
+ * own statement, so the caller never has to ask whether this one is a family head. Unlike
+ * `runStatements` it does NOT skip a settled member: the operator asked for this family's
+ * statements by name, and a division that owes nothing still gets the paper saying so.
+ */
+export async function printStatementsPerDivision(
+  customerId: string, opts: StatementOpts,
+): Promise<PerDivisionStatement[]> {
+  const asOf = opts.asOf ?? formatDateOnly(todayDateOnly());
+  const parent = await prisma.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: CUSTOMER_REF_SELECT,
+  });
+  if (!parent) throw new HttpError(404, "Customer not found");
+  // LIVE children only — the same filter `buildStatement`'s own family roll-up applies, so the two
+  // halves of the choice cover exactly the same set of customers.
+  const children = await prisma.customer.findMany({
+    where: { parentId: parent.id, deletedAt: null }, select: CUSTOMER_REF_SELECT, orderBy: { code: "asc" },
+  });
+
+  const settings = await invoicePrintSettings(); // OUTSIDE every per-member print transaction below
+  const results: PerDivisionStatement[] = [];
+  for (const member of [parent, ...children]) {
+    // `combineFamily: false` for every member, INCLUDING the parent — the whole point is that each
+    // one reports its own activity. A parent printed `true` here would double-count its divisions.
+    const printOpts: StatementOpts = { asOf, combineFamily: false, assessFinanceCharges: opts.assessFinanceCharges };
+    const printed = await withDbErrors({ entity: "Statement" }, () => prisma.$transaction(
+      (tx) => printStatementInTx(tx, member.id, printOpts, settings),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    ));
+    results.push({
+      customerId: member.id, customerCode: member.code, customerName: member.name,
+      documentId: printed.documentId, totalDue: printed.data.totalDue,
+    });
   }
   return results;
 }

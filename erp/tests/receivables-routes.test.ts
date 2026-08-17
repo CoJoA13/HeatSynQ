@@ -13,6 +13,7 @@ import { GET as agingRoute } from "@/app/api/receivables/aging/route";
 import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/route";
 import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/receivables/statements/route";
 import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
+import { POST as divisionStatementsRoute } from "@/app/api/receivables/statements/divisions/route";
 import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements/documents/route";
 import { GET as preliminaryRoute } from "@/app/api/receivables/close/preliminary/route";
 import { GET as listCloseRoute, POST as closeRoute } from "@/app/api/receivables/close/route";
@@ -500,6 +501,35 @@ describe("POST /api/receivables/statements/run", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { customerId: string; documentId: string }[];
     expect(body.length).toBeGreaterThan(0);
+  });
+});
+
+describe("POST /api/receivables/statements/divisions (#85)", () => {
+  it("401s, 403s without receivables.create, then archives one statement per family member", async () => {
+    const parent = await invoicedCustomer();
+    const division = await prisma.customer.create({
+      data: { code: "DIVSTMT", name: "Division", parentId: parent.id },
+    });
+    const payload = { customerId: parent.id, asOf: "2026-08-08" };
+
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", undefined, payload), withParams({}),
+    )).status).toBe(401);
+
+    // The same gate as the single print and the run — each call archives new documents.
+    const wrong = await signInWith(["receivables.view"], "stmt-div-wrong");
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", wrong, payload), withParams({}),
+    )).status).toBe(403);
+
+    const creator = await signInWith(["receivables.create"], "stmt-div-creator");
+    const res = await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", creator, payload), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { customerId: string; documentId: string }[];
+    // The parent AND the division — before #85 the screen sent one request and got the parent only.
+    expect(body.map((r) => r.customerId).sort()).toEqual([parent.id, division.id].sort());
   });
 });
 

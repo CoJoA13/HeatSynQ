@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { buildStatement, printStatement, runStatements } from "@/server/statements";
+import { buildStatement, printStatement, runStatements, printStatementsPerDivision } from "@/server/statements";
 import { getDocument } from "@/server/documents";
 import { parseDateOnly, formatDateOnly, addDays } from "@/lib/business-days";
 import type { Customer } from "../prisma/generated/prisma/client";
@@ -243,6 +243,62 @@ describe("buildStatement — family roll-up", () => {
     const parentOnly = await buildStatement(parent.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false });
     expect(parentOnly.openItems).toHaveLength(1);
     expect(parentOnly.totalDue).toBe(100);
+  });
+});
+
+// #85. "Combined or per-division" (spec §3 ruling 10) is offered as a CHOICE on the statements
+// screen, but unchecking "Combine family" sent exactly one request for the parent — which
+// `buildStatement` correctly answered with the parent alone. The divisions were silently omitted:
+// the advertised option produced strictly less than the combined one, rather than a statement each.
+describe("printStatementsPerDivision — the per-division choice (#85)", () => {
+  it("archives ONE statement per live family member, each scoped to its own activity", async () => {
+    const parent = await makeCustomer();
+    const a = await prisma.customer.create({ data: { code: `${parent.code}-A`, name: "Division A", parentId: parent.id } });
+    const b = await prisma.customer.create({ data: { code: `${parent.code}-B`, name: "Division B", parentId: parent.id } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(a.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(b.id, { total: 300, dueDate: back(5) });
+
+    const printed = await asSystem(() => printStatementsPerDivision(parent.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+
+    // Before the fix this produced ONE document, for the parent only.
+    expect(printed.map((p) => p.customerId).sort()).toEqual([parent.id, a.id, b.id].sort());
+
+    // Each is a real archived STATEMENT owned by ITS member, scoped to that member's own activity.
+    for (const entry of printed) {
+      const stored = await getDocument(entry.documentId);
+      expect(stored.kind).toBe("STATEMENT");
+      expect(stored.customerId).toBe(entry.customerId);
+    }
+    const totals = new Map(printed.map((p) => [p.customerId, p.totalDue]));
+    expect(totals.get(parent.id)).toBe(100);
+    expect(totals.get(a.id)).toBe(200);
+    expect(totals.get(b.id)).toBe(300);
+  });
+
+  it("excludes a soft-deleted division, and a childless customer gets exactly its own", async () => {
+    const parent = await makeCustomer();
+    const live = await prisma.customer.create({ data: { code: `${parent.code}-L`, name: "Live", parentId: parent.id } });
+    const gone = await prisma.customer.create({
+      data: { code: `${parent.code}-X`, name: "Closed", parentId: parent.id, deletedAt: new Date() } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(live.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(gone.id, { total: 999, dueDate: back(5) });
+
+    const family = await asSystem(() => printStatementsPerDivision(parent.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+    expect(family.map((p) => p.customerId).sort()).toEqual([parent.id, live.id].sort());
+
+    const alone = await makeCustomer();
+    await finalizedInvoice(alone.id, { total: 50, dueDate: back(5) });
+    const single = await asSystem(() => printStatementsPerDivision(alone.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+    expect(single).toHaveLength(1);
+    expect(single[0].customerId).toBe(alone.id);
   });
 });
 
