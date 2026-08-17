@@ -329,7 +329,11 @@ describe("printStatementsPerDivision — the per-division choice (#85)", () => {
     }
     // …and the failure says which member and why, instead of the whole run reporting as failed.
     expect(failed[0].documentId).toBeNull();
-    expect(failed[0].error).toMatch(/render failed/i);
+    // REDACTED: the thrown Error was not an HttpError, so its raw text must not reach the client —
+    // this route returns 200 with the message in the BODY, which would walk around `handle`'s
+    // HttpError-only discipline and could carry Prisma diagnostics or server paths (round 5).
+    expect(failed[0].error).toBe("Printing failed — see the server log");
+    expect(failed[0].error).not.toMatch(/render failed/i);
     expect([parent.id, good.id, bad.id]).toContain(failed[0].customerId);
   });
 

@@ -481,10 +481,19 @@ export async function printStatementsPerDivision(
       // run as failed, the screen cleared its list, and the already-archived documents became
       // unreachable; a retry then duplicated them. Making it atomic is the wrong direction: it
       // would mean holding N Serializable transactions open across N PDF renders.
+      // REDACTED unless it is an `HttpError` (review round 5). `handle` only ever exposes
+      // `HttpError`/validation text; everything else becomes a bare 500 precisely so raw exceptions
+      // — Prisma diagnostics, queries, server paths — never reach a client. This route returns 200
+      // with the message INSIDE the body, which would have walked straight around that. An
+      // HttpError's message is written to be read by an operator; anything else is logged here and
+      // reported generically.
+      if (!(err instanceof HttpError)) {
+        console.error(`[statements] per-division print failed for ${member.code}:`, err);
+      }
       results.push({
         customerId: member.id, customerCode: member.code, customerName: member.name,
         documentId: null, totalDue: null,
-        error: err instanceof Error ? err.message : "Printing failed",
+        error: err instanceof HttpError ? err.message : "Printing failed — see the server log",
       });
     }
   }

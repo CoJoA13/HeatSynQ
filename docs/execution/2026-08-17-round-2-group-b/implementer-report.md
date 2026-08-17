@@ -211,6 +211,26 @@ missing FK. `Invoice.termsId` is the actual answer, and it is now written down r
 | **P1 — the backfill copied the customer's CURRENT terms**, so an invoice finalized before a terms reassignment gets the wrong pair *permanently* once this ships: a `Net 30` invoice granted a discount it never offered, or a `2/10 Net 30` invoice losing one | **Fixed** by a follow-up migration that re-derives the pair from the invoice's OWN frozen `termsName` (`Terms.name` is unique among live rows, so the match is unambiguous). Proven on the exact scenario: the old backfill left a `2/10 Net 30` invoice with a null pair; the new one restores 2.00. **I had written this limit into this very report** as "not archaeology… the backfilled figure is the post-reassignment one" — and left it. Codex was right that `termsName` is better evidence than the relation that caused the original bug. Stating a limit is not the same as accepting it. |
 | **P2 — a partial family batch threw away committed work.** Each member is its own committed transaction; a later failure threw, the screen cleared its list, the already-archived documents became unreachable, and a retry duplicated them | **Fixed** — `printStatementsPerDivision` returns PARTIAL results: every member is reported, successes keep their `documentId`, failures carry the reason. Atomicity was the wrong direction (it would mean holding N Serializable transactions open across N PDF renders). The screen now shows failures in amber and says "Printed X of Y". |
 
+## Review round 5 — and the point at which inference had to stop
+
+| Finding | Disposition |
+|---|---|
+| **P1 — even the label-based backfill cannot reconstruct history.** `updateReference` permits changing a Terms row's figures and its NAME independently, so a matched row may carry figures it did not have when the invoice was issued (2% issued, 3% today), and a renamed row matches nothing and gets cleared | **Fixed by drawing a provable line instead of guessing again.** `Terms.updatedAt` proves it: if the row has not been touched since `finalizedAt`, its current figures ARE the issued figures. Everything else is cleared. Deliberately conservative — `updatedAt` bumps on any field change, so some rows whose discount never moved are declined. Declining costs a discount an operator can grant by hand; guessing costs money out the door on paper the shop cannot take back. |
+| **P1 — #86 left existing negative rates in place**, so the silent not-being-charged persists until someone edits that one field | **Fixed** — a migration clears them to null (inherit the plant rate), the only meaning a negative could ever have had. In practice it changes nothing today: finance charges are opt-in per run and the plant rate is itself null unless configured. |
+| **P2 — the partial-result body carried RAW exception text.** The route returns 200 with the message inside, walking around `handle`'s HttpError-only discipline; Prisma diagnostics or server paths could reach any receivables user | **Fixed** — `HttpError` messages pass through (they are written for operators), anything else is logged server-side and reported as a generic line. The test asserts the raw text does NOT appear. |
+
+**This is where the inference stopped, and that is the finding.** Four successive backfills — customer's
+current terms → the invoice's own label → label plus a provability guard — each was a better guess,
+and each review round found the next way a guess could be wrong. The design finding underneath is
+simple: **history that was never recorded cannot be reconstructed.** The provability guard is not a
+fourth guess; it is the boundary of what the stored data can actually support, with the un-provable
+set explicitly emptied and documented rather than filled with something plausible.
+
+**The question this raises for the owner** — asked on the PR and worth repeating here: *does the
+production database contain any finalized invoices at all?* The parallel-run month has not happened,
+and if the answer is none, every one of these backfills is a no-op and the whole line of argument was
+about an empty set.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute
