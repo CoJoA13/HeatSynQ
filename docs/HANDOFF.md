@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** merged (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** merged (PR #129, `b56aa0f`); Group C **#126 + #125** open (PR #130). Remaining: Group D (#118–#121, #123, #124).
+**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** merged (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** merged (PR #129, `b56aa0f`); Group C **#126 + #125** merged (PR #130, `1d8eac8`); Group D **#118–#121 + #123 + #124** open (PR #131). **All five groups built — 14 issues closed**; final gates 3052 tests / 182 files, `tsc`/`eslint`/`build` clean, E2E 23/23.
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -353,8 +353,15 @@ makes from every page); #119 preflight failures of a manual backup (missing/unwr
 unset `DATABASE_URL`) produce no audit row despite the stated rule that failed attempts are access
 events; #120 a failing retention `find` leaves the status green while retention is silently broken;
 #121 the error bar reaches non-`manage_backups` users during a total DB outage, because the silencing
-403 itself needs a DB read. **#122 — FIXED on branch `fix-vitest-collection` (`c69d82a`), the
-burn-down's Task 0.** `vitest.config.ts` set no `include`/`exclude`, so after a build vitest also
+403 itself needs a DB read — **RULED by the owner 2026-08-16 (reword the unknown-cause bar) and
+BUILT** in Group D; the issue's own suggested direction proved unbuildable, since telling "cannot
+determine your permissions" apart from "status unavailable" needs the same database that is down.
+**#118, #119, #120, #123 and #124 are all DONE in the same group** (branch `fix-backups-followups`):
+bounded + metadata-and-TTL-cached integrity checks, audited preflight failures, a failing retention
+prune now going red instead of leaving the previous green, the practice copy's own controls disabled
+with the server's sentence as the tooltip (nav entry kept, `nav.ts` untouched per §8), and the shell
+bar refreshing after a successful "Back up now".
+**#122 — FIXED on branch `fix-vitest-collection` (`c69d82a`), the burn-down's Task 0.** `vitest.config.ts` set no `include`/`exclude`, so after a build vitest also
 collected `.next/standalone/**/tests` and ran every file twice — gate ORDER silently mattered and any
 post-build count was inflated. Measured on `main` with a build present: `vitest list --filesOnly`
 emitted **358 files for 179 real ones**. Now `include: ["tests/**/*.test.{ts,tsx}"]` plus
@@ -816,9 +823,11 @@ and §4, then pick among:
    claim, with the unlock → edit → re-finalize correction route tested end to end). The remaining
    two: **#123** disable the Backups page's own controls
    in practice mode while keeping the nav entry (`nav.ts` must NOT learn about practice mode — §8);
-   **#124** refresh the shell staleness bar after a successful "Back up now".
-4. **Backlog burn-down** — ~~the P1s #81 and #84~~ **both DONE** (Group B); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
-   #102/#103; **Phase 8C's #118–#121** (**#122 is DONE** — branch `fix-vitest-collection`, §6); the per-worker-test-DB
+   **#124** refresh the shell staleness bar after a successful "Back up now". **All six are now BUILT**
+   — #125/#126 in Group C (`fix-order-guards`), #123/#124 in Group D (`fix-backups-followups`).
+4. **Backlog burn-down — ALL FIVE GROUPS BUILT (2026-08-16), 14 issues closed** (#68, #81, #84, #91,
+   #115, #118–#126). Still open: Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
+   #102/#103; the per-worker-test-DB
    infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
    sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
    on two pages — customers/parts/orders/certs detail pages likely share the hole).
