@@ -3,7 +3,11 @@ import { mkdtemp, rm, writeFile, mkdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
-import { evaluateHealth, listArchives, backupHealth } from "@/server/backups";
+import {
+  evaluateHealth, listArchives, backupHealth,
+  mapLimited, verifyArchive, clearIntegrityCache,
+  INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS,
+} from "@/server/backups";
 import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
 import { truncateAll } from "./helpers/db";
 
@@ -176,5 +180,106 @@ describe("backupHealth against a real folder", () => {
       lastRunAt: new Date().toISOString(), ok: true, source: "nightly", error: 42,
     }));
     expect((await backupHealth(dir)).state).toBe("unknown");
+  });
+});
+
+/**
+ * Issue #118 — the integrity checks were unbounded and uncached.
+ *
+ * `listArchives` ran `gzip -t` over EVERY archive in one `Promise.all`, so opening the Backups page
+ * with a month of nightlies launched dozens of full decompressions at once on the production host.
+ * Separately `backupHealth` re-decompressed the newest archive on every `/health` poll — and the
+ * shell banner polls that from every page.
+ *
+ * Both halves are fixed with seams that can be driven directly, rather than trying to observe
+ * `gzip` concurrency through the filesystem: `mapLimited` takes a counter, `verifyArchive` takes its
+ * verifier and its clock as parameters (the `runBackupNow({ dumpBin })` precedent, §6.4).
+ */
+describe("mapLimited — the concurrency ceiling (#118)", () => {
+  it("never exceeds the limit, and still returns results in INPUT order", async () => {
+    let live = 0;
+    let peak = 0;
+    const items = Array.from({ length: 25 }, (_, i) => i);
+
+    const out = await mapLimited(items, 4, async (n) => {
+      live += 1;
+      peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 5));
+      live -= 1;
+      return n * 2;
+    });
+
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);              // it really did run them concurrently
+    expect(out).toEqual(items.map((n) => n * 2)); // input order, not completion order
+  });
+
+  it("handles an empty list and a limit larger than the work", async () => {
+    expect(await mapLimited([], 4, async () => 1)).toEqual([]);
+    expect(await mapLimited([1, 2], 99, async (n) => n + 1)).toEqual([2, 3]);
+  });
+
+  // Bite-proof: an UNBOUNDED map over the same work would peak at the item count, so the assertion
+  // above is measuring the ceiling rather than an artifact of the timing.
+  it("an unbounded Promise.all over the same work peaks at every item — what this replaces", async () => {
+    let live = 0;
+    let peak = 0;
+    await Promise.all(Array.from({ length: 25 }, async () => {
+      live += 1; peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 5));
+      live -= 1;
+    }));
+    expect(peak).toBe(25);
+  });
+});
+
+describe("verifyArchive — the metadata + TTL cache (#118)", () => {
+  beforeEach(() => clearIntegrityCache());
+
+  it("verifies once, then serves the cached verdict for an unchanged file", async () => {
+    let calls = 0;
+    const verify = async () => { calls += 1; return true; };
+
+    expect(await verifyArchive("/a.gz", 100, 1000, verify, 0)).toBe(true);
+    expect(await verifyArchive("/a.gz", 100, 1000, verify, 1000)).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  it("re-verifies when the file CHANGED — size or mtime moves the key", async () => {
+    let calls = 0;
+    const verify = async () => { calls += 1; return true; };
+
+    await verifyArchive("/a.gz", 100, 1000, verify, 0);
+    await verifyArchive("/a.gz", 101, 1000, verify, 0); // grew
+    await verifyArchive("/a.gz", 100, 2000, verify, 0); // rewritten
+    expect(calls).toBe(3);
+  });
+
+  /** The reason the TTL exists at all: a cache keyed on metadata ALONE would answer "intact"
+   *  forever for a file rotting quietly underneath it, defeating the one thing `gzip -t` is for. */
+  it("re-verifies an unchanged file once the TTL lapses, so bit rot is still caught", async () => {
+    let ok = true;
+    let calls = 0;
+    const verify = async () => { calls += 1; return ok; };
+
+    expect(await verifyArchive("/a.gz", 100, 1000, verify, 0)).toBe(true);
+    ok = false; // the file rots on disk without its size or mtime changing
+    expect(await verifyArchive("/a.gz", 100, 1000, verify, INTEGRITY_CACHE_TTL_MS - 1)).toBe(true);
+    expect(calls).toBe(1);
+    expect(await verifyArchive("/a.gz", 100, 1000, verify, INTEGRITY_CACHE_TTL_MS + 1)).toBe(false);
+    expect(calls).toBe(2);
+  });
+
+  it("caches a FAILED verdict too — a corrupt archive is not re-checked every poll either", async () => {
+    let calls = 0;
+    const verify = async () => { calls += 1; return false; };
+    expect(await verifyArchive("/bad.gz", 1, 1, verify, 0)).toBe(false);
+    expect(await verifyArchive("/bad.gz", 1, 1, verify, 10)).toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  it("the shipped ceiling is a real bound", () => {
+    expect(INTEGRITY_CONCURRENCY).toBeGreaterThan(0);
+    expect(INTEGRITY_CONCURRENCY).toBeLessThan(16);
   });
 });

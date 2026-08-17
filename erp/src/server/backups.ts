@@ -89,10 +89,89 @@ async function integrityOk(fullPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * How many `gzip -t` decompressions may run at once (#118). `listArchives` used one unbounded
+ * `Promise.all`, so opening the Backups page with a month of nightlies plus on-demand copies
+ * launched dozens of full decompressions simultaneously, contending for disk and CPU on the
+ * PRODUCTION host — the one machine that must stay responsive. Four keeps the page quick on a
+ * spinning disk without ever becoming the reason an order save is slow.
+ */
+export const INTEGRITY_CONCURRENCY = 4;
+
+/**
+ * `Promise.all(items.map(fn))` with a ceiling on how many run at once. Results stay in INPUT order,
+ * so callers can zip them back against `items` — the whole reason this returns an array rather than
+ * streaming. Pure and exported for the tests, which drive it directly with a counter rather than
+ * trying to observe `gzip` concurrency through the filesystem.
+ */
+export async function mapLimited<T, R>(
+  items: T[], limit: number, fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
+ * How long a verified result may be reused for an UNCHANGED file (#118). `backupHealth` fully
+ * decompressed the newest archive on every `/health` poll — and the shell banner polls that from
+ * every page — so the busiest endpoint in the app was also the most expensive.
+ *
+ * The two bounds do different jobs, and both are needed:
+ *   - the KEY carries size and mtime, so a file that CHANGED is never served a stale verdict;
+ *   - the TTL bounds how long an unchanged file may go un-reverified, so silent bit rot on failing
+ *     storage is still caught. A cache keyed on metadata alone would answer "intact" forever for a
+ *     file quietly rotting underneath it — which would defeat the one thing `gzip -t` is here for.
+ * Fifteen minutes makes the banner's 5-minute poll free two times in three while still noticing rot
+ * within a quarter of an hour, which is ample for a nightly backup monitor.
+ */
+export const INTEGRITY_CACHE_TTL_MS = 15 * 60_000;
+
+/** Bounded so a long-lived process cannot grow this without limit; archives are pruned at 30 days,
+ *  so the live set is tens of entries and this ceiling is never reached in practice. */
+const INTEGRITY_CACHE_MAX = 500;
+
+const integrityCache = new Map<string, { ok: boolean; at: number }>();
+
+/** Exported for the tests — the cache is process-global, so a suite that asserts on verification
+ *  counts has to be able to start from a known state. */
+export function clearIntegrityCache(): void {
+  integrityCache.clear();
+}
+
+/**
+ * `integrityOk` memoized on (path, size, mtime) for `INTEGRITY_CACHE_TTL_MS`. `verify` is a
+ * PARAMETER rather than a module lookup for the same reason `runBackupNow` takes `dumpBin` that way
+ * (§6.4): it lets a test count real invocations without stubbing a child process.
+ */
+export async function verifyArchive(
+  fullPath: string, size: number, mtimeMs: number,
+  verify: (p: string) => Promise<boolean> = integrityOk,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const key = `${fullPath}|${size}|${mtimeMs}`;
+  const hit = integrityCache.get(key);
+  if (hit && now - hit.at < INTEGRITY_CACHE_TTL_MS) return hit.ok;
+  const ok = await verify(fullPath);
+  if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
+  integrityCache.set(key, { ok, at: now });
+  return ok;
+}
+
 export async function listArchives(dir: string = resolveBackupDir()): Promise<ArchiveInfo[]> {
   const entries = await readdir(dir);
   const names = entries.filter(isArchiveName);
-  const infos = await Promise.all(names.map(async (name) => {
+  // Bounded fan-out + the metadata cache (#118): an unbounded `Promise.all` here launched one full
+  // decompression per archive at once, on the production host, every time the page was opened.
+  const infos = await mapLimited(names, INTEGRITY_CONCURRENCY, async (name) => {
     const full = archivePath(dir, name);
     const s = await stat(full);
     // A directory that happens to be named like an archive is not an archive.
@@ -102,9 +181,9 @@ export async function listArchives(dir: string = resolveBackupDir()): Promise<Ar
       source: archiveSourceOf(name)!,
       sizeBytes: s.size,
       modifiedAt: s.mtime.toISOString(),
-      integrityOk: await integrityOk(full),
+      integrityOk: await verifyArchive(full, s.size, s.mtimeMs),
     } satisfies ArchiveInfo;
-  }));
+  });
   return infos
     .filter((a): a is ArchiveInfo => a !== null)
     .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
@@ -144,16 +223,19 @@ export async function readStatus(dir: string): Promise<BackupStatusFile | null> 
  *  cheap endpoint calls, rather than verifying the whole folder. */
 async function newestIntactAt(dir: string): Promise<Date | null> {
   const entries = (await readdir(dir)).filter(isArchiveName);
-  const stamped = await Promise.all(entries.map(async (name) => {
+  // `stat` only — cheap, and no decompression happens until the sorted walk below.
+  const stamped = await mapLimited(entries, INTEGRITY_CONCURRENCY, async (name) => {
     const full = archivePath(dir, name);
     const s = await stat(full);
-    return s.isFile() ? { full, mtime: s.mtime } : null;
-  }));
+    return s.isFile() ? { full, size: s.size, mtimeMs: s.mtimeMs, mtime: s.mtime } : null;
+  });
   const sorted = stamped
-    .filter((e): e is { full: string; mtime: Date } => e !== null)
+    .filter((e): e is { full: string; size: number; mtimeMs: number; mtime: Date } => e !== null)
     .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
   for (const e of sorted) {
-    if (await integrityOk(e.full)) return e.mtime;
+    // Cached (#118): the shell banner polls this from every page, and re-decompressing an archive
+    // that has not changed since the last poll was the single most repeated cost in the app.
+    if (await verifyArchive(e.full, e.size, e.mtimeMs)) return e.mtime;
   }
   return null;
 }
@@ -227,25 +309,29 @@ async function doBackup(
   opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number },
 ): Promise<ArchiveInfo> {
   // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
+  // Deliberately BEFORE the name is minted and left un-audited: this is a refusal on the practice
+  // copy, not an attempt on production, and there is no production backup folder to record it in.
   await assertNotPracticeDatabase();
 
-  const dir = opts.dir ?? resolveBackupDir();
-  const databaseUrl = process.env.DATABASE_URL ?? "";
-  if (!databaseUrl) throw new HttpError(500, "DATABASE_URL is not configured.");
+  // The archive name is minted FIRST, before anything that can fail (#119). Every failure past this
+  // point — including the two preflight refusals below, which used to throw before `fail()` even
+  // existed — then has an entityId to be audited against. An attempted dump of production is an
+  // access event and `manage_backups` is on spec §9's dangerous-action list, so "who tried, and
+  // when" has to be answerable even for the attempts that never started. The name is a timestamp
+  // plus random bytes with no side effects, so minting one that never gets used costs nothing.
+  const name = manualArchiveName(new Date(), randomBytes(4).toString("hex"));
 
-  // `dumpBin` is a plain PARAMETER, not an env var (§6.4): vitest injects a fake so the suite never
-  // depends on a host pg_dump, whose major on CI's ubuntu-latest is older than the postgres:18
-  // server — and pg_dump hard-refuses a newer server.
-  const bin = opts.dumpBin ?? "pg_dump";
-  const args = opts.dumpArgs ?? [databaseUrl];
-
+  // `resolveBackupDir()` can itself throw on a malformed deploy value — audited on its own, since
+  // without a resolved folder there is nowhere to write a status file.
+  let dir: string;
   try {
-    await access(dir, FS.W_OK);
-  } catch {
-    throw new HttpError(500, `The backup folder is not writable: ${dir}`);
+    dir = opts.dir ?? resolveBackupDir();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await auditBackupRun(name, false, message).catch(() => {});
+    throw new HttpError(500, `Backup failed: ${message}`);
   }
 
-  const name = manualArchiveName(new Date(), randomBytes(4).toString("hex"));
   const tmpPath = path.join(dir, tempNameFor(name));
   const finalPath = archivePath(dir, name);
 
@@ -258,6 +344,21 @@ async function doBackup(
     await auditBackupRun(name, false, message).catch(() => {});
     throw new HttpError(500, `Backup failed: ${message}`);
   };
+
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  if (!databaseUrl) await fail("DATABASE_URL is not configured.");
+
+  // `dumpBin` is a plain PARAMETER, not an env var (§6.4): vitest injects a fake so the suite never
+  // depends on a host pg_dump, whose major on CI's ubuntu-latest is older than the postgres:18
+  // server — and pg_dump hard-refuses a newer server.
+  const bin = opts.dumpBin ?? "pg_dump";
+  const args = opts.dumpArgs ?? [databaseUrl];
+
+  try {
+    await access(dir, FS.W_OK);
+  } catch {
+    await fail(`The backup folder is not writable: ${dir}`);
+  }
 
   // --- dump to the temp file, via ARGV. No string ever reaches a shell. ---
   let stderr = "";

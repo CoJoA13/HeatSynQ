@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readdir, readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile, writeFile, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -127,6 +127,55 @@ describe("runBackupNow", () => {
     const rows = await prisma.auditLog.findMany({ where: { entity: "backup" } });
     expect(rows).toHaveLength(1);
     expect((rows[0].after as { ok: boolean }).ok).toBe(false);
+  });
+
+  /**
+   * Issue #119 — a PREFLIGHT failure left no audit row at all.
+   *
+   * `runBackupNow` documents that a failed attempt is audited too, because an attempted dump of
+   * production is an access event and `manage_backups` sits on spec §9's dangerous-action list. But
+   * the preflight checks threw BEFORE the archive name and the `fail()` helper existed, so a
+   * permitted user could try to dump production — and be refused by configuration — with nothing
+   * recorded. "Who tried, and when" was unanswerable for exactly the attempts that never started.
+   *
+   * Fixed by minting the archive name FIRST, so every post-authorization failure has an entityId to
+   * be audited against, and routing the preflight refusals through `fail()` like every other one.
+   */
+  it("audits an unwritable backup folder — the attempt is recorded even though no dump started", async () => {
+    const readOnly = await mkdtemp(path.join(tmpdir(), "backup-ro-"));
+    await chmod(readOnly, 0o500); // r-x: readable, NOT writable
+    try {
+      await expect(asSystem(() => runBackupNow({ dumpBin: FAKE, dir: readOnly })))
+        .rejects.toThrow(/not writable/i);
+
+      const rows = await prisma.auditLog.findMany({ where: { entity: "backup" } });
+      expect(rows).toHaveLength(1);
+      expect((rows[0].after as { ok: boolean }).ok).toBe(false);
+      expect((rows[0].after as { error: string }).error).toMatch(/not writable/i);
+      // Named against the archive it WOULD have written, so the row is attributable.
+      expect(rows[0].entityId).toMatch(MANUAL_ARCHIVE_RE);
+      // Nothing was written into the folder it could not write to.
+      expect(await readdir(readOnly)).toEqual([]);
+    } finally {
+      await chmod(readOnly, 0o700);
+      await rm(readOnly, { recursive: true, force: true });
+    }
+  });
+
+  it("audits a missing DATABASE_URL — the other preflight refusal", async () => {
+    const saved = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      await expect(run()).rejects.toThrow(/DATABASE_URL/i);
+      const rows = await prisma.auditLog.findMany({ where: { entity: "backup" } });
+      expect(rows).toHaveLength(1);
+      expect((rows[0].after as { ok: boolean }).ok).toBe(false);
+      expect((rows[0].after as { error: string }).error).toMatch(/DATABASE_URL/i);
+      // A failed attempt is a failed run: the status file says so rather than leaving a stale green.
+      expect((await readStatus(dir))?.ok).toBe(false);
+    } finally {
+      if (saved !== undefined) process.env.DATABASE_URL = saved;
+    }
   });
 
   it("two concurrent clicks never clobber each other", async () => {
