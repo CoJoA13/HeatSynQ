@@ -192,22 +192,24 @@ describe("runBackupNow", () => {
    * itself, so `gzip` would happily verify its own valid output and neither branch is otherwise
    * reachable.
    */
-  it("refuses and cleans up when the written archive verifies CORRUPT", async () => {
+  it("refuses and cleans up when the written archive fails verification", async () => {
     await expect(asSystem(() => runBackupNow({
-      dumpBin: FAKE, dir, verify: async () => "corrupt" as const,
+      dumpBin: FAKE, dir, verify: async () => "rejected" as const,
     }))).rejects.toThrow(/integrity check/i);
 
     expect(await listArchives(dir)).toEqual([]);        // never left on disk as if it were a backup
     expect((await readStatus(dir))?.ok).toBe(false);    // and never reported as a success
   });
 
-  /** "unverifiable" fails too, deliberately. Unlike the read paths — where not caching the verdict
-   *  lets the next read recover — this is the WRITE path: there is no later re-check, and calling
-   *  an unverified dump a backup is the precise failure this feature exists to prevent. */
-  it("refuses when the written archive cannot be verified at all", async () => {
-    await expect(asSystem(() => runBackupNow({
-      dumpBin: FAKE, dir, verify: async () => "unverifiable" as const,
-    }))).rejects.toThrow(/integrity check/i);
+  /** Any non-"intact" verdict fails here, deliberately. Unlike the READ paths — where declining to
+   *  cache lets the next read recover — this is the WRITE path: there is no later re-check, and
+   *  calling an unverified dump a backup is the precise failure this feature exists to prevent. */
+  it("refuses on a verdict it cannot confirm, not only on a definite rejection", async () => {
+    // A verifier that answers anything other than "intact" must stop the run. Cast through unknown
+    // so a future third verdict cannot silently start passing this gate.
+    const odd = (async () => "something-else") as unknown as () => Promise<"intact" | "rejected">;
+    await expect(asSystem(() => runBackupNow({ dumpBin: FAKE, dir, verify: odd })))
+      .rejects.toThrow(/integrity check/i);
 
     expect(await listArchives(dir)).toEqual([]);
     expect((await readStatus(dir))?.ok).toBe(false);

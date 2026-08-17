@@ -78,10 +78,11 @@ export function evaluateHealth(i: HealthInputs): BackupHealth {
   return { ...common, state: "ok", reason: `Last successful backup ${Math.floor(ageHours)} hours ago.` };
 }
 
-/** A completed `gzip -t` verdict, or the fact that it could not be reached (Codex, PR #131).
- *  `"unverifiable"` is NOT the same as corrupt: `gzip` failing to spawn or read (EMFILE under
- *  load, a transient storage error, a momentary permission problem) says nothing about the file. */
-type IntegrityVerdict = "intact" | "corrupt" | "unverifiable";
+/** `"intact"` means `gzip -t` completed and accepted the archive. `"rejected"` means it did not —
+ *  which may be genuine corruption OR an I/O failure, a permission change, a spawn failure, or the
+ *  timeout, and NOTHING distinguishes those reliably (see `integrityOk`). Only `"intact"` is a
+ *  claim strong enough to cache. */
+type IntegrityVerdict = "intact" | "rejected";
 
 /**
  * How long a single `gzip -t` may run before it is killed (Codex, PR #131).
@@ -100,35 +101,29 @@ type IntegrityVerdict = "intact" | "corrupt" | "unverifiable";
 export const INTEGRITY_TIMEOUT_MS = 60_000;
 
 /**
- * Did `gzip` actually run and REJECT THE ARCHIVE'S CONTENT, or did it fail for a reason that says
- * nothing about the file?
+ * `gzip -t`, spawned via argv and bounded. Returns a verdict rather than throwing — a corrupt
+ * archive is a reportable fact about that file, not a failure of the listing.
  *
- * Three shapes are NOT a verdict: a spawn/OS failure (string errno like `ENOENT`/`EMFILE`), a killed
- * process (`signal` — including the timeout above), and — the one the first version of this got
- * wrong (Codex, PR #131) — `gzip` starting successfully and then failing to OPEN or READ the file,
- * e.g. a permission or ACL change landing between our `stat` and its `open`. That exits non-zero
- * with a NUMERIC code, exactly like a format rejection, so the exit code alone cannot separate them.
+ * **A non-zero exit is NOT proof of corruption, and this no longer pretends otherwise** (Codex,
+ * PR #131, third pass on the same question). A `gzip` that starts and then hits a read/I/O error —
+ * an NFS `EIO`, a permission change landing between our `stat` and its `open` — exits with a
+ * NUMERIC code and no signal, exactly like a format rejection. Two earlier attempts to separate
+ * them both failed: the exit code alone cannot, and an `access(R_OK)` probe afterwards cannot
+ * either, because a transient failure can clear before the probe runs and the probe never proves
+ * gzip read the whole file. Parsing stderr would, but its wording is not stable across gzip builds
+ * or locales.
  *
- * Rather than parse stderr (whose wording is not stable across gzip builds or locales), this tests
- * the actual condition: if the file is no longer readable BY US, gzip's failure is an access
- * problem, not a corrupt archive. `readable` is passed in by the caller, which has just checked.
+ * So the honest classification is coarser and the CACHE is where it is handled: only `"intact"` is
+ * ever cached (see `verifyArchive`). Everything else reports false for that attempt — the safe
+ * direction, since nothing may claim intact on evidence we do not have — and is re-checked on the
+ * next read rather than pinning a possibly-healthy archive as CORRUPT for the TTL.
  */
-function ranAndRejected(err: unknown, readable: boolean): boolean {
-  const e = err as { code?: unknown; signal?: unknown } | null;
-  return typeof e?.code === "number" && !e.signal && readable;
-}
-
-/** `gzip -t`, spawned via argv and bounded. Returns a verdict rather than throwing — a corrupt
- *  archive is a reportable fact about that file, not a failure of the listing. */
 async function integrityOk(fullPath: string): Promise<IntegrityVerdict> {
   try {
     await execFileAsync("gzip", ["-t", fullPath], { timeout: INTEGRITY_TIMEOUT_MS });
     return "intact";
-  } catch (err) {
-    // Checked AFTER the failure, so it reflects the state gzip actually hit rather than a stale
-    // pre-flight. A file we cannot read is not a file we may call corrupt.
-    const readable = await access(fullPath, FS.R_OK).then(() => true, () => false);
-    return ranAndRejected(err, readable) ? "corrupt" : "unverifiable";
+  } catch {
+    return "rejected";
   }
 }
 
@@ -245,16 +240,17 @@ export async function verifyArchive(
 
   const pending = withIntegritySlot(() => verify(fullPath))
     .then((verdict) => {
-      // An UNVERIFIABLE result is never cached (Codex, PR #131). `gzip` failing to spawn or read —
-      // EMFILE under load, a transient storage error, a momentary permission problem — says nothing
-      // about the archive, and caching it as `false` would keep the health red and the table
-      // labelled CORRUPT for the full TTL after the system had already recovered. The caller still
-      // gets `false` for this attempt, which is the safe direction (nothing claims intact on
-      // evidence we do not have) — but the next read re-checks immediately instead of inheriting a
-      // verdict that was never reached.
-      if (verdict !== "unverifiable") {
+      // ONLY "intact" is cached (Codex, PR #131). A non-zero `gzip` exit cannot be shown to mean
+      // corruption rather than a transient I/O or access failure — see `integrityOk` — so caching it
+      // would pin a possibly-healthy archive as CORRUPT for the full TTL, outliving the recovery, in
+      // the one system whose whole job is telling the shop whether its backups are good. The caller
+      // still gets `false` for this attempt (nothing may claim intact on evidence we do not have),
+      // and the next read re-checks. The cost is re-verifying a genuinely bad archive per read,
+      // bounded by the shared ceiling and the per-child timeout, and a genuinely bad archive is the
+      // rare case — a wrongly-condemned good one is not a trade worth making to avoid it.
+      if (verdict === "intact") {
         if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
-        integrityCache.set(key, { ok: verdict === "intact", at: now });
+        integrityCache.set(key, { ok: true, at: now });
       }
       return verdict === "intact";
     })
