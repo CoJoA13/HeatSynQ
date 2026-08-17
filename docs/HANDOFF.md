@@ -646,7 +646,30 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 
    **⚠️ TWO FINDINGS THAT NEED THE OWNER BEFORE THIS CAN BE KEYED IN:**
 
-   1. **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
+   1. ~~**VS keys the revenue account by EQUIPMENT GROUP**~~ — **ANSWERED 2026-08-16** by two more
+      owner-supplied exports (same confidential directory): `…-visual-shop-process-codes.pdf` and
+      `…-visual-shop-equipment.pdf`. The account is on **neither** table. The Process Code table has
+      **no GL column at all**; the Equipment table HAS a `G/L #` column (plus `Addon1 GL`/`Addon4
+      GL`) and **every row is blank**. The owner's Order Entry chart shows `Standard Steps → Table
+      Keys → Process Code · Equipment · Group · Cost Center`, and the GL report's columns are
+      exactly `GL# · Process Code · Eq Id · Gr Id · Cc Id` with `Eq Id` = 0 on all but two rows. So
+      VS hangs the account on the **Standard Step**, keyed effectively on **(Process Code × Group)**
+      — Group being the furnace type, which is why `AnnealAtmos` appears under 4401 IQ, 4404 Bell
+      and 4411 Rotary.
+
+      **What that means here, and it is a business choice, not a technical block** (owner: "they may
+      have multiple ways of doing depending on how the shop chooses"). HeatSynQ hangs one
+      `glAccountId` off each `ProcessStepCode` and has no Group concept — deliberately, since shared
+      process masters were removed and the recipe belongs to the part. So the split is reproduced
+      purely by how the CODES are named: either one step code per (process × furnace group)
+      — "Anneal in Atmosphere (Bell)" — which reproduces today's eight-account revenue split exactly
+      and keeps the bookkeeper's reports unchanged (~80–120 active pairs, a spreadsheet-paste job),
+      or one code per process with a single account, which is fewer codes and loses revenue-by-
+      furnace. **The step code is what prints on the invoice line**, so either naming is honest
+      paper. Owner's call; nothing is blocked on it.
+      (Superseded framing kept below for the reasoning.)
+
+      **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
       Process Step Code.** The report's `Gr Id` column is what separates 4401 (IQ) / 4402 (Vacuum) /
       4403 (Tip Up) / 4404 (Bell) / 4405 (Temper) / 4407 (Car Bot) / 4411 (Rotary) / 4412 (Pusher),
       and the SAME process code lands in several: `AnnealAtmos` appears under 4401, 4404 and 4411;
@@ -656,10 +679,13 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       is how the shop already names them in practice, worth confirming — or the account has to be
       chosen somewhere else. **Do not key the chart in until this is settled**; guessing would
       mis-post revenue by furnace.
-   2. **The balance-sheet side is not in this list.** The QBO export's readiness gate also needs
-      `BillingConfig`'s A/R control, sales-tax, discount and write-off accounts, plus a cash account
-      per payment type. This report covers the REVENUE side only, so §7 item 2's bookkeeper
-      conversation still owes those four-plus-N numbers.
+   2. **The balance-sheet side is not in this list, and CANNOT come from Visual Shop** (owner,
+      2026-08-16: "not sure how to provide that, especially from the settings of Visual Shop" —
+      correct, and expected). The QBO export's readiness gate needs `BillingConfig`'s A/R control,
+      sales-tax, discount and write-off accounts plus a cash account per payment type; VS only ever
+      knew the REVENUE side, which is exactly what its GL report shows. Those five-plus-N numbers
+      live in **QuickBooks' own chart of accounts**, so they are a bookkeeper question, not a VS
+      screen anyone is failing to find. Folds into §7 item 2's conversation.
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
    session; §9 carries them into the next PR:
