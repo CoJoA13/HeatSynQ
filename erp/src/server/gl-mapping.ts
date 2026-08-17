@@ -75,7 +75,7 @@ export function reverseLines(lines: JournalLine[]): JournalLine[] {
 }
 
 export type ReadinessGap = {
-  kind: "step-code" | "surcharge" | "payment-type" | "plant-default";
+  kind: "step-code" | "surcharge" | "payment-type" | "plant-default" | "invoice";
   id: string | null;
   label: string;
   href: string;
@@ -100,6 +100,13 @@ export type ReadinessInput = {
   hasFreight: boolean; // any in-scope FREIGHT line with a null GL and a nonzero amount
   hasCharge: boolean; // any in-scope CHARGE line with a null GL and a nonzero amount
   hasCert: boolean; // any in-scope CERT line with a null GL and a nonzero amount
+  // #89: the invoices carrying a FROZEN null-GL FREIGHT/CHARGE line. The three flags above name the
+  // CONFIG to fix; this names the PAPER to fix, and the two are independent — configuring the
+  // default does nothing to an invoice already finalized without one, because `buildCurrentJournal`
+  // reads the line's snapshot, not the config (§5.4). Without this the export read clean and then
+  // 500'd on the same line. Step-code/surcharge/cert lines already over-report unconditionally via
+  // the maps below, so only these two kinds needed it.
+  invoicesMissingGl: { id: string; label: string }[];
   stepCodesMissingGl: { id: string; code: string }[];
   surchargesMissingGl: { id: string; name: string }[];
   paymentTypesMissingGl: { id: string; name: string }[];
@@ -123,6 +130,9 @@ export function readinessGaps(input: ReadinessInput): ReadinessGap[] {
   if (input.hasFreight && !input.freightGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Freight account is not set", href: "/admin/billing" });
   if (input.hasCharge && !input.otherChargeGlAccountId) gaps.push({ kind: "plant-default", id: null, label: "Other charge account is not set", href: "/admin/billing" });
   if (input.hasCert && !input.certChargeStepCodeId) gaps.push({ kind: "plant-default", id: null, label: "Certification step code is not set", href: "/admin/billing" });
+  // #89: named UNCONDITIONALLY — the plant default above may well be set now, and the frozen line is
+  // still account-less. The only fix is to re-raise that paper, so the gap says so.
+  for (const i of input.invoicesMissingGl) gaps.push({ kind: "invoice", id: i.id, label: `Invoice ${i.label} has a line with no GL account — unlock and re-finalize it`, href: `/invoicing/${i.id}` });
   for (const s of input.stepCodesMissingGl) gaps.push({ kind: "step-code", id: s.id, label: `Process step code ${s.code} has no GL account`, href: "/admin/step-codes" });
   for (const u of input.surchargesMissingGl) gaps.push({ kind: "surcharge", id: u.id, label: `Surcharge ${u.name} has no GL account`, href: "/admin/surcharges" });
   for (const p of input.paymentTypesMissingGl) gaps.push({ kind: "payment-type", id: p.id, label: `Payment type ${p.name} has no GL account`, href: "/admin/reference" });

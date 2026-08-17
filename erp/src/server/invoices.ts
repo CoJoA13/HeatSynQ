@@ -24,7 +24,7 @@ import {
 } from "./pricing";
 import { parseDateOnly, formatDateOnly, todayDateOnly, dateOnly, addDays } from "../lib/business-days";
 import {
-  INVOICE_LINE_KINDS, PRICE_SOURCES,
+  INVOICE_LINE_KINDS, PRICE_SOURCES, invoiceDocumentNumber,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
@@ -143,19 +143,11 @@ function toLineDetail(l: LineRow): InvoiceLineDetail {
   };
 }
 
-/** The paper's "Invoice No." — the credit number for a CREDIT, otherwise the prefix + order number
- *  (P5A §10; a blank prefix prints the bare order number). The prefix is a print-time setting, read
- *  here rather than stored, so changing it re-labels drafts consistently. */
-function documentNumber(kind: InvoiceKindValue, creditNumber: number | null, orderNumber: number, prefix: string): string {
-  if (kind === "CREDIT") return String(creditNumber);
-  return prefix === "" ? String(orderNumber) : `${prefix} - ${orderNumber}`;
-}
-
 function toInvoiceDetail(row: DetailRow, prefix: string): InvoiceDetail {
   return {
     id: row.id, kind: row.kind, status: row.status,
     orderId: row.orderId, orderNumber: row.order.orderNumber,
-    documentNumber: documentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
+    documentNumber: invoiceDocumentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
     sourceInvoiceId: row.sourceInvoiceId, creditNumber: row.creditNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate),
@@ -262,7 +254,7 @@ function toListRow(row: ListRowShape, prefix: string): InvoiceListRow {
   return {
     id: row.id, kind: row.kind, status: row.status,
     orderId: row.orderId, orderNumber: row.order.orderNumber,
-    documentNumber: documentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
+    documentNumber: invoiceDocumentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate), total: row.total.toNumber(),
     finalizedAt: row.finalizedAt ? row.finalizedAt.toISOString() : null,
@@ -1182,10 +1174,15 @@ type RecalcLine = {
 
 // -------------------------------------------------------------------------------------------
 // recalculateInvoice — re-price from CURRENT data (new part prices, new surcharges, current shipped
-// totals) and replace every DERIVED line (priceSource ≠ MANUAL), keeping manual lines at the end.
-// It re-runs Task 11's whole build — `buildPricingInput` + `priceOrder` + the shared
-// `mapComputedLines`/`assertLineRefs`/`wireComputedParents` — so it produces exactly what a fresh
-// `createInvoice` would for the same order today. There is no second pricing path to drift from.
+// totals) and replace every DERIVED line (priceSource ≠ MANUAL), keeping the manual ones. It re-runs
+// Task 11's whole build — `buildPricingInput` + `priceOrder` + the shared
+// `mapComputedLines`/`assertLineRefs` — so it produces exactly what a fresh `createInvoice` would for
+// the same order today. There is no second pricing path to drift from.
+//
+// A manual line is kept in ONE of two places (#61, owner ruling 2026-08-17): substituted into the
+// slot of the derived line it overrides, or — matching nothing — appended (§5.5). The whole set is
+// then renumbered 1..n and parent-wired through `wirePayloadParents`, the same key-based pass
+// `replaceInvoiceLines` uses, so a substituted override keeps its place under its PART line.
 // -------------------------------------------------------------------------------------------
 
 export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {

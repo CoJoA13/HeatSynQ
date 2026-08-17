@@ -3,7 +3,7 @@ import { prisma } from "./db";
 import { withDbErrors, retryAllocation } from "./db-errors";
 import { HttpError } from "./errors";
 import { auditedCreate } from "./audit";
-import { allocateNumber } from "./settings";
+import { allocateNumber, getSetting } from "./settings";
 import { currentActor } from "./context";
 import { getBillingConfig } from "./billing-config";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./gl-mapping";
 import { formatDateOnly } from "../lib/business-days";
 import { GL_EXPORT_COLUMNS, type PostingSourceType } from "../lib/gl-constants";
+import { invoiceDocumentNumber } from "../lib/invoice-constants";
 import { renderPdf } from "./pdf/render";
 import { buildPostingRegister, type PostingRegisterData } from "./pdf/posting-register";
 
@@ -529,16 +530,21 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
   }
 
   // EVERY account-less non-TAX line the export would post a credit for (not just step-code/surcharge).
+  const prefix = await getSetting("invoice_number_prefix", tx);
   const badLines = await tx.invoiceLine.findMany({
     where: { glAccountId: null, kind: { not: "TAX" }, invoice: inScopeInvoice },
     select: {
       kind: true, amount: true,
       processStepCodeId: true, processStepCode: { select: { code: true } },
       surchargeId: true, surcharge: { select: { name: true } },
+      // #89: the owning paper, for the two kinds whose gap is the frozen line rather than the config.
+      invoiceId: true,
+      invoice: { select: { kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
     },
   });
   const stepCodesMissingGl = new Map<string, { id: string; code: string }>();
   const surchargesMissingGl = new Map<string, { id: string; name: string }>();
+  const invoicesMissingGl = new Map<string, { id: string; label: string }>();
   let hasFreight = false, hasCharge = false, hasCert = false, hasUnattributedLine = false;
   for (const l of badLines) {
     if (cents(l.amount.toNumber()) === 0) continue; // $0 header (PART) — posts nothing
@@ -549,10 +555,16 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
     } else if (l.kind === "CERT") {
       hasCert = true; // when the cert step code is unset, `readinessGaps` names the missing config
       if (certStep) stepCodesMissingGl.set(certStep.id, certStep); // else attribute to that step code
-    } else if (l.kind === "FREIGHT") {
-      hasFreight = true;
-    } else if (l.kind === "CHARGE") {
-      hasCharge = true;
+    } else if (l.kind === "FREIGHT" || l.kind === "CHARGE") {
+      // BOTH gaps, because they are two different fixes and either can be outstanding alone (#89).
+      // The flag names the plant default to configure — useful for the NEXT invoice; the invoice
+      // entry names paper already finalized against a null, which no amount of configuring repairs.
+      if (l.kind === "FREIGHT") hasFreight = true; else hasCharge = true;
+      invoicesMissingGl.set(l.invoiceId, {
+        id: l.invoiceId,
+        label: invoiceDocumentNumber(
+          l.invoice.kind, l.invoice.creditNumber, l.invoice.order.orderNumber, prefix),
+      });
     } else {
       hasUnattributedLine = true; // orphaned OPERATION (step code SetNull) — still MUST surface a gap
     }
@@ -587,6 +599,7 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
     hasFreight,
     hasCharge,
     hasCert,
+    invoicesMissingGl: [...invoicesMissingGl.values()],
     stepCodesMissingGl: [...stepCodesMissingGl.values()],
     surchargesMissingGl: [...surchargesMissingGl.values()],
     paymentTypesMissingGl: [...paymentTypesMissingGl.values()],

@@ -60,8 +60,20 @@ const clean: ReadinessInput = {
   arGlAccountId: "ar", discountGlAccountId: "d", writeOffGlAccountId: "w", salesTaxGlAccountId: "t",
   freightGlAccountId: "f", otherChargeGlAccountId: "oc", certChargeStepCodeId: "cs",
   hasDiscount: false, hasWriteOff: false, hasTax: false, hasFreight: false, hasCharge: false, hasCert: false,
+  invoicesMissingGl: [],
   stepCodesMissingGl: [], surchargesMissingGl: [], paymentTypesMissingGl: [], hasUnattributedLine: false,
 };
+
+// #89: this gap is UNCONDITIONAL — the plant defaults above are all set here, and a line frozen with
+// a null GL is still a dropped credit. The pure half of "readiness read clean and the export 500'd".
+it("readinessGaps names an invoice carrying a frozen null-GL line even with every default set", () => {
+  const gaps = readinessGaps({ ...clean, invoicesMissingGl: [{ id: "inv1", label: "INV - 1042" }] });
+  expect(gaps).toEqual([{
+    kind: "invoice", id: "inv1",
+    label: "Invoice INV - 1042 has a line with no GL account — unlock and re-finalize it",
+    href: "/invoicing/inv1",
+  }]);
+});
 
 it("readinessGaps lists a step code, surcharge, payment type, and missing A/R default", () => {
   const gaps = readinessGaps({

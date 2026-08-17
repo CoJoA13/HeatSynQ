@@ -7,6 +7,24 @@ export const INVOICE_KIND_LABELS: Record<InvoiceKindValue, string> = {
   CREDIT: "Credit",
 };
 
+/**
+ * The paper's own document number: the credit number for a CREDIT, otherwise the prefix + order
+ * number (P5A §10; a blank prefix prints the bare order number). The prefix is a print-time setting
+ * — `invoice_number_prefix`, read by the caller rather than stored — so changing it re-labels drafts
+ * consistently.
+ *
+ * Lives here, in the client-safe constants, because three server modules need the identical string
+ * and had begun keeping copies: `invoices.ts` (the invoice detail), `statements.ts` (a statement
+ * line) and `gl-export.ts` (naming the invoice behind a readiness gap, #89). Two of those copies
+ * carried a comment saying they were duplicates; a third was the point to stop.
+ */
+export function invoiceDocumentNumber(
+  kind: InvoiceKindValue, creditNumber: number | null, orderNumber: number, prefix: string,
+): string {
+  if (kind === "CREDIT") return String(creditNumber);
+  return prefix === "" ? String(orderNumber) : `${prefix} - ${orderNumber}`;
+}
+
 export const INVOICE_STATUSES = ["DRAFT", "FINALIZED"] as const;
 export type InvoiceStatusValue = (typeof INVOICE_STATUSES)[number];
 export const INVOICE_STATUS_LABELS: Record<InvoiceStatusValue, string> = {

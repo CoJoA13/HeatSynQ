@@ -612,6 +612,36 @@ describe("gl-export readiness", () => {
     await expect(asSystem(() => exportClose(period.id))).rejects.toThrow();
   });
 
+  // #89 — the shape every serious defect in this project has had: it fails while reporting success.
+  // `resolveReadiness` gated a null-GL FREIGHT/CHARGE line on the CURRENT plant default, but
+  // `buildCurrentJournal` reads the line's FROZEN snapshot (§5.4). Configure the default AFTER such
+  // an invoice was finalized and readiness went clean while the export 500'd on the same line.
+  for (const kind of ["CHARGE", "FREIGHT"] as const) {
+    const configColumn = kind === "CHARGE" ? "otherChargeGlAccountId" : "freightGlAccountId";
+    it(`names the owning invoice of a frozen null-GL ${kind} line once the default is configured (#89)`, async () => {
+      await seedGlDefaults(); // leaves both freight and other-charge unset
+      // Finalized while the default was unset, so the line's GL snapshot froze null.
+      const ref = await makeFinalizedKindLine("2026-07-06", kind, 50, null);
+      // ...and only THEN is the account configured. This clears the plant-default gap — but not the
+      // frozen null on paper that has already been raised.
+      const acct = await prisma.glAccount.create({ data: { name: `5100-${kind}` } });
+      await prisma.billingConfig.update({
+        where: { id: "singleton" }, data: { [configColumn]: acct.id },
+      });
+      await asSystem(() => closePeriod(2026, 7));
+      const period = await periodFor(2026, 7);
+
+      const gaps = await readinessForExport(new Date(Date.UTC(2026, 7, 0)));
+      // Before the fix: `[]`, then an opaque 500 out of `exportClose`.
+      const own = gaps.find((g) => g.kind === "invoice" && g.id === ref.invoiceId);
+      expect(own).toBeDefined();
+      expect(own!.label).toMatch(/no GL account/i);
+      expect(own!.label).toMatch(/unlock/i); // names the fix: unlock and re-finalize
+      expect(own!.href).toBe(`/invoicing/${ref.invoiceId}`);
+      await expect(asSystem(() => exportClose(period.id))).rejects.toThrow(/gap|readiness|export/i);
+    });
+  }
+
   it("posts a BALANCED batch once the freight and other-charge accounts are configured", async () => {
     await seedGlDefaults();
     const freightAcct = await prisma.glAccount.create({ data: { name: "5000-FRT" } });
