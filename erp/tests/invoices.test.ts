@@ -10,7 +10,7 @@ import { setBillingConfig } from "@/server/billing-config";
 import {
   createInvoice, listInvoiceCandidates, getInvoice,
   updateInvoice, replaceInvoiceLines, recalculateInvoice, discardInvoice,
-  finalizeInvoice, unlockInvoice, createCredit,
+  finalizeInvoice, unlockInvoice, createCredit, invoiceWarnings,
   type InvoiceDetail, type InvoiceLineDetail,
 } from "@/server/invoices";
 import { applyPayment, voidApplication } from "@/server/applications";
@@ -641,6 +641,145 @@ describe("recalculateInvoice", () => {
     expect(after.subtotal).toBe(-937.44);
     expect(after.total).toBe(-937.44);
     expect(after.lines).toEqual(credit.lines);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// The manual-line seam — issues #61 / #62 / #64, one defect surface with three faces. Owner
+// rulings 2026-08-17: the override WINS silently (no revert control — remove-and-recalculate is
+// the undo, pinned below), and a manual charge's GL account is defaulted SERVER-SIDE (no operator
+// picker). Every case here failed before the fix; each is RED-verified.
+// -------------------------------------------------------------------------------------------
+
+/** A manual override of a stored line, the shape `InvoiceDetail.tsx`'s `patchRow` produces: editing
+ *  an amount stamps `priceSource=MANUAL` and clears `needsPrice` so recalculate keeps it. */
+function overrideAmount(l: InvoiceLineDetail, amount: string) {
+  return { ...toLineInput(l), amount, priceSource: "MANUAL" as const, needsPrice: false };
+}
+
+describe("recalculateInvoice — the manual-line seam", () => {
+  it("suppresses the regenerated twin of an overridden operation, in place (#61)", async () => {
+    const { invoice } = await draftFixture({ qty: 144 }); // 144 × 6.51 = 937.44
+    expect(invoice.lines.find((l) => l.kind === "OPERATION")!.amount).toBe(937.44);
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    // Before the fix this billed BOTH the regenerated $937.44 and the preserved $100.
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(100);
+    expect(ops[0].priceSource).toBe("MANUAL");
+    expect(after.subtotal).toBe(100);
+    expect(after.total).toBe(100);
+    // Substituted IN PLACE, not appended: it keeps its slot under the regenerated PART line rather
+    // than becoming the standalone trailing line the issue describes.
+    expect(ops[0].parentLineId).toBe(after.lines.find((l) => l.kind === "PART")!.id);
+    // The whole set is exactly what a derived recalculate produces — the override occupies the
+    // operation's own slot rather than adding a trailing line.
+    expect(after.lines.map((l) => l.kind)).toEqual(["PART", "OPERATION"]);
+    expect(after.lines.map((l) => l.position)).toEqual([1, 2]);
+  });
+
+  it("restores the computed operation once the override row is removed (#61's undo path)", async () => {
+    const { invoice } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+    const overridden = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(overridden.total).toBe(100);
+
+    // The ruling took this instead of a per-line "revert to computed" control, so it is a contract:
+    // drop the override row, save, recalculate, and the computed line comes back.
+    await asSystem(() => replaceInvoiceLines(invoice.id,
+      overridden.lines.filter((l) => l.kind !== "OPERATION").map(toLineInput)));
+    const restored = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = restored.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(937.44);
+    expect(ops[0].priceSource).toBe("PART_PRICE");
+  });
+
+  it("recomputes tax over a preserved manual charge (#64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({
+      salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000", otherChargeGlAccountId: otherGl.id }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4); // 4% of the $100 operation
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    // A CHARGE is in the tax base (pricing.ts §5), so tax is 4% of $150 — before the fix the engine
+    // priced tax over the order-derived lines only, leaving the $50 charge untaxed at $4.
+    expect(after.chargeTotal).toBe(50);
+    expect(after.taxTotal).toBe(6);
+    expect(after.total).toBe(156);
+  });
+
+  it("recomputes tax over an OVERRIDDEN operation, not the computed one (#61 + #64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4);
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "50.00") : toLineInput(l)))));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.subtotal).toBe(50);
+    expect(after.taxTotal).toBe(2); // 4% of the override, not of the $100 the engine recomputed
+    expect(after.total).toBe(52);
+  });
+
+  it("leaves a MANUALLY overridden tax line alone (the override wins, uniformly)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "TAX" ? overrideAmount(l, "9.99") : toLineInput(l)))));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const tax = after.lines.filter((l) => l.kind === "TAX");
+    expect(tax).toHaveLength(1); // never the derived line PLUS the override
+    expect(tax[0].amount).toBe(9.99);
+    expect(after.taxTotal).toBe(9.99);
+  });
+
+  it("defaults a manually added charge to the configured other-charge account (#62)", async () => {
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({ otherChargeGlAccountId: otherGl.id }));
+    const { invoice } = await draftFixture();
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    // The grid renders the GL cell read-only and sends it blank, so the SERVER has to assign it —
+    // the same account `mapComputedLines` gives an engine-generated charge (seam #1).
+    const charge = saved.lines.find((l) => l.description === "Expedite")!;
+    expect(charge.glAccountId).toBe(otherGl.id);
+    expect(charge.glAccountName).toBe("4400");
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.lines.find((l) => l.description === "Expedite")!.glAccountId).toBe(otherGl.id);
+  });
+
+  it("warns about ANY account-bearing line with no GL account, not only operations (#62)", async () => {
+    // No other-charge account is configured, so the server default cannot fill one in. The line must
+    // then be WARNED about rather than slipping silently into 5C's export (#89 is the same hole,
+    // one step later, on the readiness side).
+    const { invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    const warnings = await asSystem(async () => invoiceWarnings(await getInvoice(invoice.id)));
+    expect(warnings.join(" ")).toMatch(/Expedite.*no GL account/i);
   });
 });
 
