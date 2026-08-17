@@ -425,7 +425,8 @@ export async function runStatements(
 
 export type PerDivisionStatement = {
   customerId: string; customerCode: string; customerName: string;
-  documentId: string; totalDue: number;
+  /** Null when this member's statement FAILED — `error` then says why (review round 4). */
+  documentId: string | null; totalDue: number | null; error: string | null;
 };
 
 /**
@@ -464,14 +465,28 @@ export async function printStatementsPerDivision(
     // `combineFamily: false` for every member, INCLUDING the parent — the whole point is that each
     // one reports its own activity. A parent printed `true` here would double-count its divisions.
     const printOpts: StatementOpts = { asOf, combineFamily: false, assessFinanceCharges: opts.assessFinanceCharges };
-    const printed = await withDbErrors({ entity: "Statement" }, () => prisma.$transaction(
-      (tx) => printStatementInTx(tx, member.id, printOpts, settings),
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    ));
-    results.push({
-      customerId: member.id, customerCode: member.code, customerName: member.name,
-      documentId: printed.documentId, totalDue: printed.data.totalDue,
-    });
+    try {
+      const printed = await withDbErrors({ entity: "Statement" }, () => prisma.$transaction(
+        (tx) => printStatementInTx(tx, member.id, printOpts, settings),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ));
+      results.push({
+        customerId: member.id, customerCode: member.code, customerName: member.name,
+        documentId: printed.documentId, totalDue: printed.data.totalDue, error: null,
+      });
+    } catch (err) {
+      // PARTIAL RESULTS, not an all-or-nothing throw (review round 4). Each member is its own
+      // committed transaction — a statement is an archived document, and one member's render
+      // failing does not un-archive the members already written. Throwing here reported the whole
+      // run as failed, the screen cleared its list, and the already-archived documents became
+      // unreachable; a retry then duplicated them. Making it atomic is the wrong direction: it
+      // would mean holding N Serializable transactions open across N PDF renders.
+      results.push({
+        customerId: member.id, customerCode: member.code, customerName: member.name,
+        documentId: null, totalDue: null,
+        error: err instanceof Error ? err.message : "Printing failed",
+      });
+    }
   }
   return results;
 }

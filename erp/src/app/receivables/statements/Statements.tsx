@@ -28,7 +28,9 @@ type CustomerOption = { id: string; code: string; name: string; parentId: string
 /** What `POST .../statements/divisions` returns — one entry per printed family member (#85). */
 type PerDivisionResult = {
   customerId: string; customerCode: string; customerName: string;
-  documentId: string; totalDue: number;
+  /** Null when that member's statement FAILED — `error` says why. Each member is its own committed
+   *  transaction, so one failing must not hide the ones already archived (review round 4). */
+  documentId: string | null; totalDue: number | null; error: string | null;
 };
 
 type AgingRow = {
@@ -311,20 +313,28 @@ function StatementsScreen() {
       {printError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{printError}</p>}
       {runError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{runError}</p>}
       {perDivision && (
-        <div className="mb-3 rounded bg-emerald-50 p-2 text-sm text-emerald-800">
+        <div className={`mb-3 rounded p-2 text-sm ${perDivision.some((r) => r.error !== null)
+          ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-800"}`}>
           <p className="mb-1">
-            Printed {perDivision.length} statement{perDivision.length === 1 ? "" : "s"} — one per division.
+            Printed {perDivision.filter((r) => r.error === null).length} of {perDivision.length}
+            {" "}statements — one per division.
           </p>
           {/* Each result links to ITS OWN archived PDF: the Documents table below is filtered to the
               selected parent, so without these the children's statements would be unreachable from
               this screen (and an inactive child's doubly so). */}
           <ul className="list-inside list-disc">
             {perDivision.map((r) => (
-              <li key={r.documentId}>
-                <span className="font-mono">{r.customerCode}</span> {r.customerName} — {r.totalDue.toFixed(2)} due
-                {" — "}
-                <a href={`/api/documents/${r.documentId}`} target="_blank" rel="noreferrer"
-                   className="text-blue-700 underline">open PDF</a>
+              <li key={r.customerId} className={r.error === null ? undefined : "text-red-700"}>
+                <span className="font-mono">{r.customerCode}</span> {r.customerName}
+                {r.error === null ? (
+                  <>
+                    {" "}— {(r.totalDue ?? 0).toFixed(2)} due —{" "}
+                    <a href={`/api/documents/${r.documentId}`} target="_blank" rel="noreferrer"
+                       className="text-blue-700 underline">open PDF</a>
+                  </>
+                ) : (
+                  <> — not printed: {r.error}</>
+                )}
               </li>
             ))}
           </ul>

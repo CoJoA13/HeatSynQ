@@ -268,7 +268,8 @@ describe("printStatementsPerDivision — the per-division choice (#85)", () => {
 
     // Each is a real archived STATEMENT owned by ITS member, scoped to that member's own activity.
     for (const entry of printed) {
-      const stored = await getDocument(entry.documentId);
+      expect(entry.error).toBeNull();
+      const stored = await getDocument(entry.documentId!);
       expect(stored.kind).toBe("STATEMENT");
       expect(stored.customerId).toBe(entry.customerId);
     }
@@ -276,6 +277,60 @@ describe("printStatementsPerDivision — the per-division choice (#85)", () => {
     expect(totals.get(parent.id)).toBe(100);
     expect(totals.get(a.id)).toBe(200);
     expect(totals.get(b.id)).toBe(300);
+  });
+
+  // Review round 4: each member is its own committed transaction, so one member failing must not
+  // discard the members already archived. Throwing reported the whole run as failed, the screen
+  // cleared its list, the committed documents became unreachable, and a retry duplicated them.
+  it("returns PARTIAL results when one member fails, keeping the archived ones reachable", async () => {
+    const parent = await makeCustomer();
+    const good = await prisma.customer.create({
+      data: { code: `${parent.code}-OK`, name: "Good Division", parentId: parent.id } });
+    const bad = await prisma.customer.create({
+      data: { code: `${parent.code}-BAD`, name: "Bad Division", parentId: parent.id } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(good.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(bad.id, { total: 300, dueDate: back(5) });
+
+    // Break exactly ONE member's print, deterministically. Each member gets its own
+    // `prisma.$transaction`, so failing the SECOND one fails exactly one member and leaves the
+    // first already committed — which is the whole point of the finding. Plain property
+    // save/restore (CLAUDE.md forbids `vi.spyOn` on a Prisma MODEL delegate because `mockRestore`
+    // corrupts the shared singleton; this is the client's own method, restored in `finally`).
+    const original = prisma.$transaction;
+    let printed: Awaited<ReturnType<typeof printStatementsPerDivision>>;
+    let call = 0;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (prisma as any).$transaction = (...args: unknown[]) => {
+        call += 1;
+        if (call === 2) return Promise.reject(new Error("render failed for this member"));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (original as any).apply(prisma, args);
+      };
+      printed = await asSystem(() => printStatementsPerDivision(parent.id, {
+        asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+      }));
+    } finally {
+      prisma.$transaction = original;
+    }
+
+    // Every member is reported, and the ones that succeeded carry their document.
+    // Every member is reported — the run does not vanish because one member failed.
+    expect(printed).toHaveLength(3);
+    const ok = printed.filter((r) => r.error === null);
+    const failed = printed.filter((r) => r.error !== null);
+    expect(ok).toHaveLength(2);
+    expect(failed).toHaveLength(1);
+    // The successes keep their documents (reachable, so a retry is not the only way back to them)…
+    for (const r of ok) {
+      expect(r.documentId).not.toBeNull();
+      expect((await getDocument(r.documentId!)).customerId).toBe(r.customerId);
+    }
+    // …and the failure says which member and why, instead of the whole run reporting as failed.
+    expect(failed[0].documentId).toBeNull();
+    expect(failed[0].error).toMatch(/render failed/i);
+    expect([parent.id, good.id, bad.id]).toContain(failed[0].customerId);
   });
 
   it("excludes a soft-deleted division, and a childless customer gets exactly its own", async () => {

@@ -204,6 +204,13 @@ finding"), and here the design finding is real: `termsName` is free text that is
 structured terms, with no link to the `Terms` row it came from. The fix rounds have been patching a
 missing FK. `Invoice.termsId` is the actual answer, and it is now written down rather than rediscovered.
 
+## Review round 4 — two, and the first one hit a limit I had written down but not fixed
+
+| Finding | Disposition |
+|---|---|
+| **P1 — the backfill copied the customer's CURRENT terms**, so an invoice finalized before a terms reassignment gets the wrong pair *permanently* once this ships: a `Net 30` invoice granted a discount it never offered, or a `2/10 Net 30` invoice losing one | **Fixed** by a follow-up migration that re-derives the pair from the invoice's OWN frozen `termsName` (`Terms.name` is unique among live rows, so the match is unambiguous). Proven on the exact scenario: the old backfill left a `2/10 Net 30` invoice with a null pair; the new one restores 2.00. **I had written this limit into this very report** as "not archaeology… the backfilled figure is the post-reassignment one" — and left it. Codex was right that `termsName` is better evidence than the relation that caused the original bug. Stating a limit is not the same as accepting it. |
+| **P2 — a partial family batch threw away committed work.** Each member is its own committed transaction; a later failure threw, the screen cleared its list, the already-archived documents became unreachable, and a retry duplicated them | **Fixed** — `printStatementsPerDivision` returns PARTIAL results: every member is reported, successes keep their `documentId`, failures carry the reason. Atomicity was the wrong direction (it would mean holding N Serializable transactions open across N PDF renders). The screen now shows failures in amber and says "Printed X of Y". |
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute
