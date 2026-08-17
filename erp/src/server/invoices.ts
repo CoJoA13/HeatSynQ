@@ -390,9 +390,12 @@ const ORDER_LINE_SELECT = {
  * link was judged at save time (quote-links.ts), so a dead or wrong-part target here is corrupt
  * state. Falling back to part rows instead would be the silent re-price §7.5 exists to prevent.
  */
-async function quotePriceRowInputs(
+/** The soundness half of the read below, on its own so a caller that only needs to REFUSE corrupt
+ *  state does not also fetch price rows it will discard (#96). Returns the quote line, so the
+ *  pricing path pays for exactly one read. */
+async function assertQuoteLinkSound(
   tx: Db, ol: { id: string; partId: string; quoteLineId: string },
-): Promise<PriceRowInput[]> {
+): Promise<{ id: string; quote: { quoteNumber: number } }> {
   const quoteLine = await tx.quoteLine.findFirst({
     where: { id: ol.quoteLineId },
     select: {
@@ -410,6 +413,13 @@ async function quotePriceRowInputs(
       `Order line ${ol.id} links quote line ${ol.quoteLineId}, which quotes a different part ` +
       `(${quoteLine.partId ?? "free-text"} vs ${ol.partId}) — refusing to price the line`);
   }
+  return quoteLine;
+}
+
+async function quotePriceRowInputs(
+  tx: Db, ol: { id: string; partId: string; quoteLineId: string },
+): Promise<PriceRowInput[]> {
+  const quoteLine = await assertQuoteLinkSound(tx, ol);
 
   const rows = await tx.quotePrice.findMany({
     where: { quoteLineId: quoteLine.id, deletedAt: null },
@@ -502,7 +512,7 @@ async function buildPricingInput(
       // unreachable while the §5.14 guards hold — which is exactly why it must not depend on which
       // position the line happens to occupy.
       if (ol.quoteLineId !== null) {
-        await quotePriceRowInputs(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId });
+        await assertQuoteLinkSound(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId });
       }
       continue;
     }
@@ -644,10 +654,11 @@ function mapComputedLines(computedLines: readonly ComputedLine[], otherChargeGl:
  * regenerated the derived twin AND preserved the override beside it — an outright double bill, and
  * the same shape for every kind, not only the operations the issue was filed about.
  *
- * `orderLineId` alone identifies an OPERATION, because the tier-3 "needs price" line the operator is
- * most likely to type into carries NO step code (`pricing.ts`); the step code joins the key so two
- * priced operations on one order line stay distinct. FREIGHT / CERT / TAX are singletons — the
- * engine emits at most one of each — so the kind is the whole identity.
+ * An OPERATION keys on order line AND step code, so two priced operations on one order line stay
+ * distinct — but that identity alone is NOT sufficient, because the derived line can come back under
+ * a different step code (the tier-3 "needs price" line carries none at all, `pricing.ts`). The
+ * caller therefore falls back to an order-line match; see `recalculateInvoice`. FREIGHT / CERT / TAX
+ * are singletons — the engine emits at most one of each — so the kind is the whole identity.
  *
  * The undo path the ruling took INSTEAD of a revert control: remove the row, save, recalculate, and
  * the computed line returns (pinned in `tests/invoices.test.ts`).
@@ -956,7 +967,9 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
     // here are the ones that genuinely post nothing: a PART line is a $0 header, and a TAX line's
     // account comes from the billing config at export time, never from the line.
     if (l.kind === "PART" || l.kind === "TAX") continue;
-    if (l.glAccountId === null) {
+    // A $0 line posts nothing, so it is not a gap — the same test `resolveReadiness` applies, and
+    // the two must agree or this warns about a line the export is perfectly happy with.
+    if (l.glAccountId === null && Math.round(l.amount * 100) !== 0) {
       // A CHARGE/FREIGHT/CERT line carries a blank part number — fall back to its own description,
       // the same label rule the needs-price warning above uses.
       const label = l.partNumber === "" ? l.description : `${l.partNumber} — ${l.description}`;
@@ -1136,7 +1149,17 @@ export async function replaceInvoiceLines(id: string, input: unknown): Promise<I
   const columns = data.map((l) => withChargeGl(lineColumns(l), otherChargeGl));
 
   return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveInvoice(tx, id);
+    const { invoice } = await claimLiveInvoice(tx, id);
+    // #64's OTHER seam. "Save lines" and "Recalculate" are independent actions — nothing makes an
+    // operator recalculate after typing a charge, and finalize freezes whatever is on the invoice —
+    // so re-deriving tax only in `recalculateInvoice` still let a taxable charge print under-taxed.
+    // Same rule as there: the rate is the invoice's own snapshot, and a MANUALLY overridden TAX line
+    // is left exactly as typed (the override wins, uniformly).
+    const taxRate = invoice.taxRate === null ? null : invoice.taxRate.toNumber();
+    const taxAt = columns.findIndex((c) => c.kind === "TAX");
+    if (taxRate !== null && taxAt !== -1 && columns[taxAt].priceSource !== "MANUAL") {
+      columns[taxAt] = { ...columns[taxAt], amount: taxOnLines(columns, taxRate) };
+    }
     await assertLineRefs(tx, columns); // every registered FK the payload writes (the create guard)
 
     await auditedUpdate("invoice", id, async () => {
@@ -1253,21 +1276,47 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     // twin no longer exists at all (its order line stopped shipping, say) falls through to the
     // additions rather than vanishing.
     const computedKeyByIdentity = new Map<string, string>();
+    const operationKeysByOrderLine = new Map<string, string[]>();
     for (const l of computed.lines) {
       const identity = overrideKey(l);
       if (identity !== null && !computedKeyByIdentity.has(identity)) computedKeyByIdentity.set(identity, l.key);
+      if (l.kind === "OPERATION" && l.orderLineId !== null) {
+        operationKeysByOrderLine.set(l.orderLineId,
+          [...(operationKeysByOrderLine.get(l.orderLineId) ?? []), l.key]);
+      }
     }
     const overrides = new Map<string, (typeof manual)[number]>(); // engine key -> the manual line taking its slot
+    const absorbed = new Set<string>(); // engine keys an override standing elsewhere already covers
     const added: (typeof manual)[number][] = [];
     const keyByManualId = new Map<string, string>();
+    const isClaimed = (key: string) => overrides.has(key) || absorbed.has(key);
+
     for (const m of manual) {
       const identity = overrideKey(m);
-      const computedKey = identity === null ? undefined : computedKeyByIdentity.get(identity);
-      // `overrides.has` keeps the FIRST claimant of a slot: a second manual line with the same
-      // identity rides as an addition rather than being silently dropped.
-      if (computedKey !== undefined && !overrides.has(computedKey)) {
-        overrides.set(computedKey, m);
-        keyByManualId.set(m.id, computedKey);
+      const exact = identity === null ? undefined : computedKeyByIdentity.get(identity);
+      // `isClaimed` keeps the FIRST claimant of a slot: a second manual line with the same identity
+      // rides as an addition rather than being silently dropped.
+      let slot = exact !== undefined && !isClaimed(exact) ? exact : undefined;
+      let cover: string[] = [];
+      if (slot === undefined && exact === undefined && m.kind === "OPERATION" && m.orderLineId !== null) {
+        // REVIEW ROUND 1 — a step-exact identity is not enough, and both misses double-billed
+        // exactly as the original #61 did. An operation can legitimately regenerate under a step
+        // code the override does not name: the operator typed into the tier-3 "needs price" line
+        // (which carries NO step code) and the shop has since priced the part, or a step code was
+        // retired and replaced. So an unmatched OPERATION override falls back to its ORDER LINE.
+        //
+        // How much it takes there is the careful part. A manual line with NO step code overrode a
+        // line that stood for the WHOLE order line, so it covers every operation that line now
+        // prices. One whose step code simply no longer exists replaced ONE operation, so it takes
+        // one — never quietly dropping a sibling operation's revenue, which would turn a double
+        // bill into an under-bill.
+        const free = (operationKeysByOrderLine.get(m.orderLineId) ?? []).filter((k) => !isClaimed(k));
+        [slot, ...cover] = m.processStepCodeId === null ? free : free.slice(0, 1);
+      }
+      if (slot !== undefined) {
+        overrides.set(slot, m);
+        for (const key of cover) absorbed.add(key);
+        keyByManualId.set(m.id, slot);
       } else {
         added.push(m);
         keyByManualId.set(m.id, `manual:${m.id}`);
@@ -1292,18 +1341,22 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     // exists, then the genuine additions. Positions stay 1..n and contiguous, so a substituted
     // override keeps its place under its PART line instead of becoming a trailing orphan.
     const derivedWrites = mapComputedLines(computed.lines, otherChargeGl);
-    const ordered: RecalcLine[] = computed.lines.map((l, i) => {
+    const ordered: RecalcLine[] = computed.lines.flatMap((l, i) => {
+      // Covered by an override standing in another slot — dropped outright, never billed twice.
+      // OPERATION lines are never a parent, so nothing is orphaned by this; and `wirePayloadParents`
+      // leaves a child flat rather than dangling if a `parentKey` names no line in the set.
+      if (absorbed.has(l.key)) return [];
       const m = overrides.get(l.key);
       if (m !== undefined) {
-        return {
+        return [{
           key: l.key, parentKey: l.parentKey, isManual: true,
           kind: m.kind, amount: m.amount.toNumber(), columns: manualWrite(m),
-        };
+        }];
       }
-      return {
+      return [{
         key: l.key, parentKey: l.parentKey, isManual: false,
         kind: l.kind, amount: l.amount, columns: derivedWrites[i],
-      };
+      }];
     }).concat(added.map((m) => ({
       key: keyByManualId.get(m.id)!,
       parentKey: m.parentLineId === null ? null : (keyByManualId.get(m.parentLineId) ?? null),

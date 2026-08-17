@@ -559,12 +559,23 @@ the six were more than their issue said, and the differences are the part worth 
   line now pairs with the derived line sharing its order-side identity (order line + step code;
   surcharge; order charge; FREIGHT/CERT/TAX as singletons) and is **substituted into that line's
   slot**, keeping its place under its PART line. A manual line matching nothing is an addition and
-  still rides at the end (§5.5). `orderLineId` ALONE identifies an OPERATION deliberately: the tier-3
-  "needs price" line an operator is most likely to type into carries no step code.
+  still rides at the end (§5.5). **Review round 1 found the step-exact identity insufficient**, and
+  the miss double-billed exactly as the original defect did: a derived operation can come back under
+  a step code the override does not name — the operator typed into the tier-3 "needs price" line
+  (which carries NO step code) and the part has since been priced, or a step code was retired and
+  replaced. So an unmatched OPERATION override falls back to its ORDER LINE, and **how much it takes
+  there is the careful part**: one carrying no step code overrode a line standing for the whole order
+  line, so it covers every operation that line now prices; one whose step code merely no longer
+  exists takes ONE, so a sibling operation's revenue is never quietly dropped — turning a double bill
+  into an under-bill is not a fix. A test pins that limit.
 - **#64's fix is what makes #61's honest.** Tax is recomputed over the FINAL line set through
   `pricing.ts`'s new `taxOnLines`, which shares its taxable-kind list with `priceOrder` so the two
   cannot drift. Without it an overridden operation stayed taxed at the figure the operator overrode
   away. A manually overridden TAX line is left exactly as typed — the override wins, uniformly.
+  **It has TWO seams, not one** (review round 1): "Save lines" and "Recalculate" are independent
+  buttons, nothing makes an operator press the second, and finalize freezes whatever is on the
+  invoice — so `replaceInvoiceLines` re-derives tax as well, off the invoice's own snapshot rate.
+  Re-deriving only in `recalculateInvoice` still let a typed taxable charge print under-taxed.
 - **#62 has a second half the issue did not name:** `invoiceWarnings` only flagged lines carrying a
   step code, so even after the server default a genuinely account-less line stayed silent. It now
   flags EVERY account-bearing kind (all but PART, which posts nothing, and TAX, whose account comes
@@ -572,7 +583,12 @@ the six were more than their issue said, and the differences are the part worth 
 - **#89 needed BOTH gaps, not a replacement.** Configuring the plant default and re-raising the
   frozen paper are two independent fixes and either can be outstanding alone, so readiness emits the
   plant-default gap AND a new `invoice`-kind gap naming the invoice, linked to it, saying to unlock
-  and re-finalize. It also collapsed the *third* copy of `documentNumber` before it was written —
+  and re-finalize. **Review round 1 widened the invoice gap to EVERY frozen null-GL line**, not only
+  FREIGHT/CHARGE: an OPERATION/SURCHARGE/CERT line frozen null whose step code or surcharge already
+  HAS an account raised only "step code X has no GL account", sending the operator to a screen with
+  nothing to fix — the §5.14 dead end one notch milder than the 500 — and a CERT line whose
+  configured cert step code row is gone recorded no gap at all, leaving one last readiness-clean →
+  export-500 path. One unconditional attribution closes both. It also collapsed the *third* copy of `documentNumber` before it was written —
   `invoiceDocumentNumber` now lives in the client-safe `invoice-constants.ts`, and `statements.ts`'s
   copy (which carried a comment admitting it was a duplicate) is gone.
 

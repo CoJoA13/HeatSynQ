@@ -767,6 +767,113 @@ describe("recalculateInvoice — the manual-line seam", () => {
     expect(after.lines.map((l) => l.position)).toEqual([1, 2]);
   });
 
+  // Review round 1 — a step-EXACT identity was not enough. Both cases below double-billed exactly
+  // as the original #61 did: the derived line regenerated under a step code the override does not
+  // name, so the pairing missed and the override rode along beside it.
+  it("suppresses the derived operation when the override PREDATES the part price (#61)", async () => {
+    // The invoice is raised before the part is priced, so the engine emits the tier-3 "needs price"
+    // OPERATION with NO step code at all. The operator types a price to get the paper out. THEN the
+    // shop sets the part price up properly — and the regenerated line now carries a step code.
+    const fixture = await shippedOrder({ qty: 144 });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    const op = invoice.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.needsPrice).toBe(true);
+    expect(op.processStepCodeId).toBeNull(); // the tier-3 line this pairing has to cope with
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-61a", name: "Austemper", glAccountId: gl.id } });
+    await asSystem(() => addPartPrice(fixture.part.id, {
+      processStepCodeId: code.id, position: 1, unitPrice: "6.5100", minimumCharge: "600.00",
+      pricePer: "EACH",
+    }));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1); // not the typed $100 PLUS a regenerated $937.44
+    expect(ops[0].amount).toBe(100);
+    expect(after.total).toBe(100);
+  });
+
+  it("suppresses the derived operation when the part's STEP CODE is replaced under an override (#61)", async () => {
+    const { invoice, part } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    // The priced operation is retired and re-added under a different step code — an ordinary
+    // process-vocabulary correction, which must not resurrect the line the operator overrode.
+    await prisma.partPrice.updateMany({ where: { partId: part.id }, data: { deletedAt: new Date() } });
+    const gl = await prisma.glAccount.create({ data: { name: "4011", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-61b", name: "Austemper II", glAccountId: gl.id } });
+    await asSystem(() => addPartPrice(part.id, {
+      processStepCodeId: code.id, position: 1, unitPrice: "6.5100", minimumCharge: "600.00",
+      pricePer: "EACH",
+    }));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(100);
+    expect(after.total).toBe(100);
+  });
+
+  it("keeps a SECOND priced operation billed when only the first is overridden (#61's limit)", async () => {
+    // The guard against over-correcting: suppression is per-operation, so overriding one of two
+    // priced operations must not silently drop the other's revenue.
+    const gl = await prisma.glAccount.create({ data: { name: "4012", description: "Sales" } });
+    const fixture = await shippedOrder({ qty: 100 });
+    for (const [i, name] of [["A", "Op A"], ["B", "Op B"]].entries()) {
+      const code = await prisma.processStepCode.create({
+        data: { code: `TWO-${name[0]}`, name: name[1], glAccountId: gl.id } });
+      await asSystem(() => addPartPrice(fixture.part.id, {
+        processStepCodeId: code.id, position: i + 1, unitPrice: "1.0000", pricePer: "EACH" }));
+    }
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    const ops0 = invoice.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops0).toHaveLength(2);
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.id === ops0[0].id ? overrideAmount(l, "40.00") : toLineInput(l)))));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(2);
+    expect(after.subtotal).toBe(140); // the $40 override + the untouched $100 operation
+  });
+
+  it("recomputes tax on a lines SAVE, not only on recalculate (#64)", async () => {
+    // Review round 1: Save lines and Recalculate are independent buttons — nothing makes an operator
+    // recalculate after typing a charge, and finalize freezes whatever is there. So the save seam
+    // has to re-derive tax too, or a taxable charge goes out on paper under-taxed.
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({
+      salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000", otherChargeGlAccountId: otherGl.id }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4);
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    expect(saved.taxTotal).toBe(6); // 4% of (100 + 50), without anyone pressing Recalculate
+    expect(saved.total).toBe(156);
+  });
+
+  it("leaves a manually overridden TAX line alone on a lines SAVE too (#64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "TAX" ? overrideAmount(l, "9.99") : toLineInput(l)))));
+    expect(saved.taxTotal).toBe(9.99);
+  });
+
   it("restores the computed operation once the override row is removed (#61's undo path)", async () => {
     const { invoice } = await draftFixture({ qty: 144 });
     await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>

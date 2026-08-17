@@ -548,6 +548,18 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
   let hasFreight = false, hasCharge = false, hasCert = false, hasUnattributedLine = false;
   for (const l of badLines) {
     if (cents(l.amount.toNumber()) === 0) continue; // $0 header (PART) — posts nothing
+    // EVERY frozen null-GL line names its owning invoice (#89, widened in review round 1). The
+    // source-side gaps below say what to CONFIGURE, which repairs the next invoice; only re-raising
+    // this paper repairs the snapshot `buildCurrentJournal` actually reads (§5.4). Attributing only
+    // FREIGHT/CHARGE left two milder versions of the same dead end: an OPERATION/SURCHARGE/CERT line
+    // frozen null whose step code or surcharge ALREADY has an account sent the operator to a screen
+    // with nothing to fix, and a CERT line whose configured cert step code row is gone recorded no
+    // gap at all — readiness clean, export 500. One unconditional attribution closes both.
+    invoicesMissingGl.set(l.invoiceId, {
+      id: l.invoiceId,
+      label: invoiceDocumentNumber(
+        l.invoice.kind, l.invoice.creditNumber, l.invoice.order.orderNumber, prefix),
+    });
     if (l.processStepCodeId) {
       stepCodesMissingGl.set(l.processStepCodeId, { id: l.processStepCodeId, code: l.processStepCode?.code ?? "" });
     } else if (l.surchargeId) {
@@ -555,16 +567,10 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
     } else if (l.kind === "CERT") {
       hasCert = true; // when the cert step code is unset, `readinessGaps` names the missing config
       if (certStep) stepCodesMissingGl.set(certStep.id, certStep); // else attribute to that step code
-    } else if (l.kind === "FREIGHT" || l.kind === "CHARGE") {
-      // BOTH gaps, because they are two different fixes and either can be outstanding alone (#89).
-      // The flag names the plant default to configure — useful for the NEXT invoice; the invoice
-      // entry names paper already finalized against a null, which no amount of configuring repairs.
-      if (l.kind === "FREIGHT") hasFreight = true; else hasCharge = true;
-      invoicesMissingGl.set(l.invoiceId, {
-        id: l.invoiceId,
-        label: invoiceDocumentNumber(
-          l.invoice.kind, l.invoice.creditNumber, l.invoice.order.orderNumber, prefix),
-      });
+    } else if (l.kind === "FREIGHT") {
+      hasFreight = true;
+    } else if (l.kind === "CHARGE") {
+      hasCharge = true;
     } else {
       hasUnattributedLine = true; // orphaned OPERATION (step code SetNull) — still MUST surface a gap
     }

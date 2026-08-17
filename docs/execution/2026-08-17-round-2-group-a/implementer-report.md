@@ -29,8 +29,15 @@ block recalculate used to carry.
 but the grid stamps `MANUAL` on ANY amount edit, so a retyped TAX line regenerated its derived twin
 the same way — two TAX lines, double tax. Fixing only operations would have left that live.
 
-`orderLineId` **alone** identifies an OPERATION on purpose: the tier-3 "needs price" line — the one
-an operator is most likely to type into — carries no step code at all.
+**Corrected in review round 1 — the step-exact identity was not sufficient**, and the miss
+double-billed exactly as the original defect did. A derived operation can legitimately come back
+under a step code the override does not name: the operator typed into the tier-3 "needs price" line
+(which carries no step code at all) and the shop has since priced the part, or a step code was
+retired and replaced. An unmatched OPERATION override now falls back to its ORDER LINE. How much it
+takes there is deliberate: one carrying **no** step code overrode a line standing for the whole order
+line, so it covers every operation that line now prices; one whose step code merely no longer exists
+replaced ONE operation, so it takes one. Turning a double bill into an under-bill by dropping a
+sibling operation's revenue would not be a fix, and a test pins that limit.
 
 ### #64 — tax recomputed over the final set, sharing one taxable-kind list
 
@@ -135,6 +142,29 @@ tests are measuring.
 `CLAUDE.md` (two standing rules: transaction-scoped reads, and MANUAL-as-override + the empty-line
 finalize guard), `HANDOFF.md` §4/§6/§9, `docs/2026-08-17-backlog-round-2.md`, and the spec's §15
 decision log.
+
+## Review round 1 — what the reviewer found, and what was done
+
+Verdict: Spec Compliance ❌ / Task quality **Needs fixes**, on one Important finding plus a second
+raised as a judgement call. Both were reproduced as failing tests before being fixed.
+
+| Finding | Disposition |
+|---|---|
+| **#61 still double-bills when the derived line's step code changes** — including the needs-price-then-priced path the branch's own comments named | **Fixed.** Order-line fallback with the two-way take rule above. Two RED tests (needs-price→priced; step code replaced), plus a third pinning that a second priced operation stays billed when only the first is overridden — the guard against over-correcting into an under-bill. |
+| **A manual charge saved and finalized WITHOUT a recalculate goes out under-taxed** — raised as "the human decides whether to close it here or file it" | **Fixed here.** Verified reachable first: `InvoiceDetail.tsx` has independent Save-lines and Recalculate buttons and nothing sequences them. It is #64 at a second seam, and it is wrong money on customer paper in the acceptance month, so it belongs in this branch rather than a new issue. |
+| Frozen null-GL OPERATION/SURCHARGE/CERT gap points at a config that is already correct | **Fixed**, together with the next row: the invoice attribution is now unconditional for every frozen null-GL line. |
+| Residual readiness-clean → export-500 path (cert step code row hard-deleted) | **Fixed** by that same widening — the invoice gap fires where the cert branch recorded nothing. |
+| `invoiceWarnings` has no amount test, unlike `resolveReadiness` | **Fixed** — a $0 line posts nothing and is no longer flagged, so the warning and the export agree. |
+| #96 runs the full price-row read purely to validate | **Fixed** — `assertQuoteLinkSound` extracted; the validation path now costs the one read the report claimed. |
+| Doc/code contradiction on the OPERATION key | **Fixed** in `invoices.ts`, `CLAUDE.md`, HANDOFF §6 and this report — the comment asserted the rule the fix has now actually implemented. |
+| An added manual CHARGE sorts below the TAX line | **Not changed.** Pre-existing §5.5 ordering (additions ride at the end, and the engine's last line is TAX), not introduced here. Filed rather than widened into this branch. |
+| `assertLineRefs`' widened parameter type lets a caller omit a field silently | **Not changed.** For `InvoiceLineCreateManyInput` an omitted key means null, so "nothing to check" is correct; the residual risk is a typo, and no caller omits one. Noted rather than churned. |
+
+The reviewer also confirmed, by reading rather than trusting the report: the canonical
+`withDbErrors → Serializable → claim → audited → tx` nesting is intact in both rewritten writers;
+every `prisma.` in `invoices.ts` is outside a transaction; `taxOnLines` and `priceOrder` compute
+bit-identical bases; header totals cannot disagree with the TAX line; positions stay contiguous 1..n;
+and the three fixture changes touch nothing the affected tests were measuring.
 
 ## Known limits, stated rather than hidden
 

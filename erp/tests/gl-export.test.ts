@@ -642,6 +642,28 @@ describe("gl-export readiness", () => {
     });
   }
 
+  // Review round 1 widened #89's attribution to EVERY frozen null-GL line. A step-code line whose
+  // step code already HAS an account used to raise only "Process step code X has no GL account",
+  // linking to a screen with nothing to fix — the same dead end as the 500, one notch milder.
+  it("also names the owning invoice when the step code behind a frozen null-GL line is fine (#89)", async () => {
+    const gl = await seedGlDefaults();
+    const ref = await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    // The line's own GL froze null, while the step code it points at is properly configured — so
+    // "Process step code HT has no GL account" would send the operator somewhere with nothing to do.
+    await prisma.invoiceLine.updateMany({
+      where: { invoiceId: ref.invoiceId, kind: "OPERATION" },
+      data: { glAccountId: null, processStepCodeId: gl.stepCodeId },
+    });
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const gaps = await readinessForExport(new Date(Date.UTC(2026, 7, 0)));
+    const own = gaps.find((g) => g.kind === "invoice" && g.id === ref.invoiceId);
+    expect(own).toBeDefined();
+    expect(own!.label).toMatch(/unlock/i);
+    await expect(asSystem(() => exportClose(period.id))).rejects.toThrow(/gap|readiness|export/i);
+  });
+
   it("posts a BALANCED batch once the freight and other-charge accounts are configured", async () => {
     await seedGlDefaults();
     const freightAcct = await prisma.glAccount.create({ data: { name: "5000-FRT" } });
