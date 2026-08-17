@@ -467,6 +467,91 @@ describe("snapshot + release: order corrections after shipment references", () =
       expect(about).toHaveLength(1);
     });
 
+    /**
+     * The SQL narrows, the JS pairs — and this is why both are needed (Codex, PR #130).
+     *
+     * The query filters `lineId IN (…) AND serial IN (…)`, which is a CROSS PRODUCT: it can return
+     * a (line A, serial belonging to line B) row that was never asked for. The `wanted` membership
+     * check enforces the exact pairing afterwards. Concretely, the same serial NUMBER on a different
+     * line — a different order, a different customer, a different part — must never warn, which is
+     * the whole reason the key is (line, serial) rather than serial alone.
+     */
+    it("never warns across lines that merely share a serial NUMBER", async () => {
+      const { order, s1 } = await shippedOnce();
+      await shipAgain(order, s1.id); // SN-1 genuinely duplicated on this order's line
+
+      // A DIFFERENT order, different customer, whose line also has a serial called "SN-1".
+      const { order: other } = await savedOrder({ qty: 10 });
+      const otherSerial = await prisma.orderSerial.create({
+        data: { orderId: other.id, lineId: other.lines[0].id, position: 1, serial: "SN-1" },
+      });
+      const shipped = await createShipper({
+        customerId: other.customerId, shipDate: "2026-08-07",
+        orders: [{
+          orderId: other.id,
+          lines: [{ orderLineId: other.lines[0].id, qty: 1, weight: "1.00", lineComplete: false }],
+          containers: [], serials: [{ orderSerialId: otherSerial.id, printOnShipper: true }],
+        }],
+      }, { canOverrideCreditHold: false });
+
+      // Its first shipment ever — the matching number on the OTHER order's line is not its problem.
+      expect(shipped.warnings.filter((w) => w.includes("also appears on"))).toEqual([]);
+    });
+
+    /**
+     * THE CROSS-PRODUCT, and why the JS pairing check is not redundant (Codex, PR #130).
+     *
+     * The query filters `lineId IN (…) AND serial IN (…)`, which is a cross product: with two lines
+     * in play it can return a (line 1, SN-B) row when what was actually asked for is (line 1, SN-A)
+     * and (line 2, SN-B). Those are DIFFERENT physical parts — a serial number is only unique
+     * within its line — so warning on it would be a false positive. `wanted` enforces the exact
+     * pairing after SQL has narrowed the candidates.
+     *
+     * RED-verified: deleting the `wanted` check makes this warn.
+     */
+    it("does not warn on a cross-product row — (line 1, SN-B) is not (line 2, SN-B)", async () => {
+      const { order: base } = await savedOrder({ qty: 10 });
+      const order = await addRiderLine(base, { qty: 10, weight: "25.00" });
+      const [line1, line2] = order.lines;
+
+      // Line 1 carries BOTH numbers; line 2 reuses SN-B. Legitimate — serials are per line.
+      const l1a = await prisma.orderSerial.create({
+        data: { orderId: order.id, lineId: line1.id, position: 1, serial: "SN-A" } });
+      const l1b = await prisma.orderSerial.create({
+        data: { orderId: order.id, lineId: line1.id, position: 2, serial: "SN-B" } });
+      const l2b = await prisma.orderSerial.create({
+        data: { orderId: order.id, lineId: line2.id, position: 1, serial: "SN-B" } });
+
+      // Shipment 1 sends (line 1, SN-B) — the row that will match both IN lists below.
+      await createShipper({
+        customerId: order.customerId, shipDate: "2026-08-04",
+        orders: [{
+          orderId: order.id,
+          lines: [{ orderLineId: line1.id, qty: 1, weight: "1.00", lineComplete: false }],
+          containers: [], serials: [{ orderSerialId: l1b.id, printOnShipper: true }],
+        }],
+      }, { canOverrideCreditHold: false });
+
+      // Shipment 2 asks about (line 1, SN-A) and (line 2, SN-B) — neither of which shipped.
+      const second = await createShipper({
+        customerId: order.customerId, shipDate: "2026-08-06",
+        orders: [{
+          orderId: order.id,
+          lines: [
+            { orderLineId: line1.id, qty: 1, weight: "1.00", lineComplete: false },
+            { orderLineId: line2.id, qty: 1, weight: "1.00", lineComplete: false },
+          ],
+          containers: [],
+          serials: [
+            { orderSerialId: l1a.id, printOnShipper: true },
+            { orderSerialId: l2b.id, printOnShipper: true },
+          ],
+        }],
+      }, { canOverrideCreditHold: false });
+
+      expect(second.warnings.filter((w) => w.includes("also appears on"))).toEqual([]);
+    });
+
     it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
       const { order, s1 } = await shippedOnce();
       const second = await shipAgain(order, s1.id);

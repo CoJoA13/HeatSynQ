@@ -1255,12 +1255,19 @@ async function otherShipmentsWith(
   if (keys.length === 0) return [];
   const wanted = new Set(keys.map(serialKeyOf));
   const lineIds = [...new Set(keys.map((k) => k.lineId))];
-  // Filtered on the LINE in SQL (cheap and selective), then matched on the full key in JS — the
-  // line reaches this row through either the live join or the snapshot, and expressing that
-  // either-or plus the serial as one composite SQL predicate would be far less legible than the
-  // set membership below.
+  const serials = [...new Set(keys.map((k) => k.serial))];
+  // BOTH halves filtered in SQL (Codex, PR #130): `lineId IN (…) AND serial IN (…)`. Filtering on
+  // the line alone fetched and materialised every ShipperSerial ever recorded for that line and
+  // rejected the rest in JS — and, the sharper point, it left the new
+  // `(orderLineIdAtSave, serial)` index unable to use its second column, since the predicate never
+  // mentioned `serial`.
+  //
+  // The JS membership check below still has to run and is NOT redundant: two `IN` lists are a
+  // CROSS PRODUCT, so SQL can return a (line A, serial from line B) row that was never actually
+  // asked for. SQL narrows to a small candidate set; `wanted` enforces the exact PAIRING.
   const rows = await db.shipperSerial.findMany({
     where: {
+      serial: { in: serials },
       OR: [{ orderLineIdAtSave: { in: lineIds } }, { orderSerial: { lineId: { in: lineIds } } }],
       shipperOrder: { shipperId: { not: shipperId }, shipper: { deletedAt: null } },
     },
