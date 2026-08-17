@@ -6,6 +6,7 @@ import { exportClose, readinessForExport } from "@/server/gl-export";
 import { closePeriod, reopenPeriod } from "@/server/close-periods";
 import { unlockInvoice } from "@/server/invoices";
 import { parseDateOnly } from "@/lib/business-days";
+import { GL_EXPORT_COLUMNS } from "@/lib/gl-constants";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -456,7 +457,20 @@ describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
     expect(await prisma.glPosting.count({ where: { batchId: out.batchId } })).toBe(4);
   });
 
-  it("aggregates an invoice and a same-month credit onto ONE A/R summary line carrying BOTH a debit and a credit column (current sum-without-netting behavior — pinned, not endorsed; netting is an open owner/bookkeeper decision)", async () => {
+  /**
+   * NETTED summary lines — owner ruling 2026-08-16 (issue #91), replacing the gross dual-column
+   * shape this test used to pin.
+   *
+   * Before: an invoice and a same-month credit collapsed onto one `1200-AR` row carrying BOTH a
+   * $100 debit and a $40 credit. Balance-preserving and literally compliant with ruling 9, but a
+   * QuickBooks journal line conventionally carries a SINGLE amount — so a row meant to net to $60
+   * could import as $100. The ruling: net each `(account, side)` to one signed column, larger side
+   * wins, the other zero.
+   *
+   * The per-event `GlPosting` ledger stays UN-aggregated and un-netted (CLAUDE.md: do not
+   * de-aggregate the file or aggregate the ledger) — asserted at the bottom.
+   */
+  it("nets an invoice and a same-month credit onto ONE A/R summary line with a single signed column", async () => {
     const gl = await seedGlDefaults();
     await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
     await makeFinalizedCreditDated(gl, "2026-07-20", 40);
@@ -468,20 +482,52 @@ describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
     const arRows = rows.filter((r) => r[1] === "1200-AR");
     const revRows = rows.filter((r) => r[1] === "4010-REV");
 
-    // Still ONE line per account per side (the invoice's A/R debit and the credit's A/R credit
-    // collapse onto the SAME "1200-AR" row) — but that one row now carries a NONZERO figure in BOTH
-    // the debit and credit columns, the gross amounts, not a single net column.
+    // ONE line per account per side, and now ONE populated column on it: 100 debit - 40 credit = 60
+    // debit, credit column empty (`money()` renders a zero as "").
     expect(arRows.length).toBe(1);
-    expect(arRows[0][2]).toBe("100.00"); // gross debit, from the INVOICE
-    expect(arRows[0][3]).toBe("40.00");  // gross credit, from the CREDIT memo
+    expect(arRows[0][2]).toBe("60.00");
+    expect(arRows[0][3]).toBe("");
+    // Revenue nets the other way: the credit memo debits 40, the invoice credits 100 → 60 credit.
     expect(revRows.length).toBe(1);
-    expect(revRows[0][2]).toBe("40.00");  // the credit memo debits revenue (reversed sales entry)
-    expect(revRows[0][3]).toBe("100.00"); // the invoice credits revenue
+    expect(revRows[0][2]).toBe("");
+    expect(revRows[0][3]).toBe("60.00");
 
-    // The batch still balances overall even though neither summary line nets to a single column.
+    // Balance is preserved by netting — it re-groups the same debits and credits.
     const debit = rows.reduce((s, r) => s + (r[2] ? Math.round(Number(r[2]) * 100) : 0), 0);
     const credit = rows.reduce((s, r) => s + (r[3] ? Math.round(Number(r[3]) * 100) : 0), 0);
     expect(debit).toBe(credit);
+    expect(debit).toBe(6000);
+
+    // The DETAIL ledger is untouched: 2 A/R + 2 revenue postings, still gross, still per-event.
+    const postings = await prisma.glPosting.findMany({
+      where: { batchId: out.batchId }, select: { debit: true, credit: true } });
+    expect(postings).toHaveLength(4);
+    const postedDebit = postings.reduce((s, p) => s + Math.round(p.debit.toNumber() * 100), 0);
+    expect(postedDebit).toBe(14000); // 100 A/R + 40 revenue — gross, NOT the netted 60
+  });
+
+  /**
+   * A group that nets to EXACTLY zero is dropped rather than emitted as a row with both columns
+   * blank. `money()` renders a zero amount as "", so keeping it would emit
+   * `2026-07-31,1200-AR,,,A/R` — a journal line carrying no amount at all, which is precisely the
+   * malformed row the netting ruling exists to prevent. Dropping preserves balance (a zero
+   * contributes nothing to either side).
+   */
+  it("drops a summary line whose account nets to exactly zero rather than emitting a blank-amount row", async () => {
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await makeFinalizedCreditDated(gl, "2026-07-20", 100); // fully credits the invoice
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const out = await asSystem(() => exportClose(period.id));
+    const rows = parseCsv(out.file.toString("utf8"));
+    expect(rows).toEqual([]); // every account nets out; nothing to import
+    expect(out.file.toString("utf8")).toContain(GL_EXPORT_COLUMNS.join(",")); // header still present
+
+    // ...and the per-event detail still records all four postings, so nothing is LOST — only the
+    // importable summary is empty.
+    expect(await prisma.glPosting.count({ where: { batchId: out.batchId } })).toBe(4);
   });
 
   it("stamps GlExportBatch.emittedById with the acting user (change D)", async () => {

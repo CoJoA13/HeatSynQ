@@ -129,31 +129,53 @@ reopened batch left un-re-posted blocks the month-end.
 
 ---
 
-### Group B — Money shape & A/R integrity  ·  **#91**, **#81**, **#84**
+### Group B — Money shape & A/R integrity  ·  **#91**, **#81**, **#84** · **DONE**
 
-**Branch:** `fix-ar-money` · All three can corrupt or strand money; none merely fails a request.
+**Branch:** `fix-ar-money` · #91 = `0b5ea81`, #81 = `1bb42b3`, #84 = `8229413`.
 
-**#91 (ruled 2026-08-16)** — net the GL export to a **single signed column** per `(account, side)`
-(larger side wins, other zero). Balance is preserved and ruling 9 still holds; this is purely the emitted
-column shape. Change is local to `aggregateLines` (`gl-export.ts`). **The current gross behaviour is
-pinned by a test** (`gl-export.test.ts`, invoice + same-month credit memo) — update it deliberately and
-assert the netted shape. **The per-event `GlPosting` ledger stays un-aggregated** (CLAUDE.md: do not
-de-aggregate the file or aggregate the ledger).
+**#91 — netted.** `aggregateLines` nets each `(account, side)` in integer cents, larger side wins,
+the other zero — the same arithmetic `buildPriorNet` already applied to the prior-posting side, so
+both halves of the delta now agree on shape as well as on keys. The invoice + same-month credit case
+goes from `A/R 100.00 debit AND 40.00 credit` to a single `60.00` debit. The old gross behaviour was
+pinned by a test; it was replaced deliberately, and the new one also asserts the per-event
+`GlPosting` ledger still totals the GROSS 140.00 while the file totals the netted 60.00.
 
-**#81 (P1)** — the DISCOUNT cap is **per-line, not aggregate**. `APPLY.lines` permits repeated lines
-against the same invoice and `resolveReason` derives eligibility only from applications persisted
-*before* the call, so fifty $20 discount lines each pass the $20 check and waive a $1,000 invoice
-entirely. Fix: track discount accepted **within this request** and cap the aggregate at the
-terms-derived eligible amount.
+**One decision the ruling did not spell out:** a group netting to EXACTLY zero is **dropped**, not
+emitted. `renderCsv`'s `money()` renders a zero as `""`, so keeping it would emit
+`2026-07-31,1200-AR,,,A/R` — a journal line carrying no amount at all, which is precisely the
+malformed row the netting ruling exists to prevent. Balance is unaffected and the ledger keeps every
+posting. Covered by its own test.
 
-**#84 (P1)** — `deleteCustomer` checks child customers, parts and orders, but not **live payments**. A
-customer holding unapplied cash and no live order can be soft-deleted, after which `applyPayment` can't
-use that cash (`familyCustomerIds` requires a live payer) — **the money is stranded.** Extend the blocker
-guard, and remember §5.14: **the block must name its blockers** and export them, like every other
-reference-delete guard in this system.
+**#81 — aggregate discount cap.** `applyPaymentInTx` now tracks DISCOUNT cents accepted per invoice
+**within the request**, and `resolveReason` caps `soFar + line` against `elig`. Splitting the
+entitlement across lines still works (12 + 8 under a 20 cap); what is refused is the total exceeding
+it. Keyed per invoice, so a multi-invoice apply never lets one invoice consume another's.
 
-**Why grouped:** one A/R fixture set (customer → invoice → payment → application) serves all three, and
-they share the same review lens.
+**⚠️ A SCOPE BOUNDARY worth your attention, measured and pinned as a test.** The cap is
+**per-request**. `elig` is recomputed each call as `discountPercent × the CURRENT open balance`, so
+after a $20 discount on a $1,000 invoice a second call is still offered **$19.60** (2% of 980) and
+takes it. Repeated, `20 + 19.60 + 19.21 …` converges on the whole receivable — the same hole #81
+describes, an order of magnitude slower. Closing it means deciding what the entitlement IS: 2% of the
+invoice **total, once**, or 2% of whatever is open at the moment of payment (what is built, and what
+`discountAvailable` shows the operator). **That is a terms-policy question, so it is left as the
+owner's call** rather than changed under a bug fix; the test asserts today's behaviour so any change
+is deliberate.
+
+**#84 — live payments block deleteCustomer.** `customerPaymentBlockers` joins the §5.14 union in both
+the blockers route and its Excel export; a Payment has no detail page, so the link goes to the BATCH
+holding it — which is also where it can be voided, so "name the blocker AND give a route out" is kept
+rather than half-kept. Deliberately the only new category: a live invoice hangs off an order (already
+blocking) and a live application needs both an invoice and a payment, so both are covered
+transitively. Payments are the one A/R row that can exist with no order behind it, which is why this
+was the hole. In-tx Serializable, SSI-pairing with `addPayment`'s `assertRefExists`.
+
+**The half of #84 that nearly shipped missing.** The customer page decides whether to show the
+blocker panel by **pattern-matching the refusal text**, and did not know about payments — so a
+payment-blocked delete would have rendered a bare error banner with no list and no export: a refusal
+naming nothing, the exact Visual Shop dead end §5.14 exists to escape. Found by reading the page
+rather than by any test. That coupling is now **swept, not commented**: a test extracts every
+templated "That customer still has …" message from the service and asserts each appears in the page's
+match condition, so the next guard added cannot degrade silently. RED-verified.
 
 ---
 

@@ -266,32 +266,51 @@ function sameNet(a: JournalLine[], b: JournalLine[]): boolean {
 
 /**
  * SUMMARY aggregation (owner ruling 9): collapse the per-event journal `lines` into ONE line per
- * `(account, side)`, summing debit and credit in integer cents, for the EXPORTED FILE and the
- * posting register — so 30 invoices become one A/R line + one revenue line per account, not 60 rows.
- * The per-event `GlPosting` rows stay UN-aggregated (the ERP-side detail + the delta driver, §4.3);
- * only what the bookkeeper imports is summarized. Balance is preserved: this only re-groups the same
- * debits/credits, so Σdebit and Σcredit are unchanged. First-occurrence order is kept (Map insertion
- * order), so the SALES lines still precede the CASH lines the register's side filter relies on. The
- * account key is the live `glAccountId` when present, else the frozen `glAccountName` (a SetNull
- * reversal of a hard-deleted account). The representative `memo` (and the unused
+ * `(account, side)` for the EXPORTED FILE and the posting register — so 30 invoices become one A/R
+ * line + one revenue line per account, not 60 rows. The per-event `GlPosting` rows stay
+ * UN-aggregated (the ERP-side detail + the delta driver, §4.3); only what the bookkeeper imports is
+ * summarized.
+ *
+ * **NETTED to a single signed column, owner ruling 2026-08-16 (issue #91).** Each group's debits and
+ * credits net in integer cents and the larger side wins, the other left zero. This used to sum the
+ * two columns SEPARATELY, so a month holding an invoice and a credit memo emitted one `A/R` row
+ * carrying BOTH `150.00` debit and `30.00` credit. Balance-preserving and literally ruling-9
+ * compliant, but a QuickBooks journal line conventionally carries a single amount — a row meant to
+ * net to 120 could import as 150. Netting is the same arithmetic `buildPriorNet` already applies to
+ * the prior-posting side, so the two halves of the delta now agree on shape as well as on keys.
+ *
+ * A group netting to EXACTLY zero is DROPPED rather than emitted. `renderCsv`'s `money()` renders a
+ * zero as `""`, so keeping it would emit a row with neither column populated — a journal line
+ * carrying no amount, which is precisely the malformed row this ruling exists to prevent. Balance is
+ * unaffected (a zero contributes to neither side), and nothing is lost: the per-event ledger still
+ * holds every posting.
+ *
+ * Balance is preserved either way — this only re-groups the same debits and credits, so Σdebit and
+ * Σcredit are unchanged, and `exportClose`'s Σdebit = Σcredit backstop runs on the PRE-aggregation
+ * per-event lines regardless. First-occurrence order is kept (Map insertion order), so the SALES
+ * lines still precede the CASH lines the register's side filter relies on. The account key is the
+ * live `glAccountId` when present, else the frozen `glAccountName` (a SetNull reversal of a
+ * hard-deleted account). The representative `memo` (and the unused
  * `sourceType`/`sourceId`/`isReversal`) are the group's first line's — the file and register render
  * none of the latter three, and within one `(account, side)` the memo is uniform in practice
  * ("A/R" / "Revenue" / "Cash receipt" / …).
  */
 function aggregateLines(lines: JournalLine[]): JournalLine[] {
-  const byKey = new Map<string, JournalLine>();
+  const repByKey = new Map<string, JournalLine>();
+  const netByKey = new Map<string, number>();
   for (const l of lines) {
     const acct = l.glAccountId !== "" ? l.glAccountId : l.glAccountName;
     const key = `${l.side}|${acct}`;
-    const prev = byKey.get(key);
-    if (prev) {
-      prev.debit = (cents(prev.debit) + cents(l.debit)) / 100;
-      prev.credit = (cents(prev.credit) + cents(l.credit)) / 100;
-    } else {
-      byKey.set(key, { ...l });
-    }
+    netByKey.set(key, (netByKey.get(key) ?? 0) + cents(l.debit) - cents(l.credit));
+    if (!repByKey.has(key)) repByKey.set(key, { ...l }); // first occurrence keeps the order + memo
   }
-  return [...byKey.values()];
+  const out: JournalLine[] = [];
+  for (const [key, rep] of repByKey) {
+    const net = netByKey.get(key)!;
+    if (net === 0) continue; // nets out entirely — emitting it would be an amount-less row
+    out.push({ ...rep, debit: net > 0 ? net / 100 : 0, credit: net < 0 ? -net / 100 : 0 });
+  }
+  return out;
 }
 
 /**

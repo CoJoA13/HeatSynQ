@@ -75,6 +75,40 @@ function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDat
   return Math.round((cents(settledOpen) * terms.discountPercent.toNumber()) / 100) / 100;
 }
 
+/**
+ * The early-pay discount still available on this invoice — what `discountFor` offers, capped by the
+ * entitlement not yet consumed.
+ *
+ * **Why the second cap exists (#81, Codex PR #129).** `discountFor` is a percentage of the CURRENT
+ * open balance, and a discount reduces that balance — so each new request was offered a fresh, only
+ * slightly smaller entitlement: $20 on a $1,000 invoice, then $19.60 of the remaining $980, then
+ * $19.21… converging on the whole receivable. Capping the aggregate within one request (#81's first
+ * half) did nothing about it, because every call started its tally at zero.
+ *
+ * The ceiling is the percentage of a **stable basis** — the invoice TOTAL, which never moves —
+ * minus the DISCOUNT already taken. That makes the entitlement a one-time quantity instead of a
+ * renewable one.
+ *
+ * **Deliberately the tighter of the two, never the looser**, because which basis SHOULD apply is a
+ * terms-policy question the owner has not ruled on: after a partial payment, today's rule offers 2%
+ * of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule alone would
+ * allow the full $20. Taking the minimum changes nothing in any case that works today and closes the
+ * one that does not — so this is a hole being closed, not a policy being chosen.
+ */
+function remainingDiscountFor(
+  terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
+  total: number, apps: ApplicationLite[],
+): number {
+  const offered = discountFor(terms, invoiceDate, receivedDate, invoiceOpenBalance(total, apps));
+  if (offered <= 0) return 0; // out of window, or no terms discount — nothing to cap
+  const entitlement = discountFor(terms, invoiceDate, receivedDate, total);
+  const consumed = apps
+    .filter((a) => a.deletedAt === null && a.type === "DISCOUNT")
+    .reduce((s, a) => s + cents(a.amount), 0);
+  const remaining = cents(entitlement) - consumed;
+  return Math.max(0, Math.min(cents(offered), remaining)) / 100;
+}
+
 export async function discountAvailable(paymentId: string, invoiceId: string): Promise<number> {
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId }, select: { receivedDate: true },
@@ -89,8 +123,11 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
     },
   });
   if (!invoice) throw new HttpError(404, "Invoice not found");
-  const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
-  return discountFor(invoice.customer.terms, invoice.invoiceDate, payment.receivedDate, open);
+  // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
+  // will refuse (#81 / Codex PR #129).
+  return remainingDiscountFor(
+    invoice.customer.terms, invoice.invoiceDate, payment.receivedDate,
+    invoice.total.toNumber(), invoice.applications.map(toLite));
 }
 
 /** One invoice's current open balance, by id — the same read `discountAvailable` already does,
@@ -309,6 +346,13 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   for (const inv of invoices) {
     appliedCents.set(inv.id, inv.applications.reduce((s, a) => s + cents(a.amount.toNumber()), 0));
   }
+  // invoiceId -> DISCOUNT cents accepted BY THIS CALL so far (#81). The per-line cap in
+  // `resolveReason` derives `elig` from applications persisted BEFORE the call, so it recomputed the
+  // SAME ceiling for every line of one request: fifty $20 lines each passed the $20 check while the
+  // running open-balance guard above happily permitted the $1,000 aggregate, waiving the whole
+  // receivable as an "early-pay discount". Keyed per invoice so one invoice's discount never
+  // consumes another's entitlement in a multi-invoice apply.
+  const discountCents = new Map<string, number>();
 
   const resolved: { line: ApplyLine; invoice: ClaimedInvoice; reason: string }[] = [];
   let paymentLinesCents = 0;
@@ -325,9 +369,11 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
       throw new HttpError(400, `That exceeds the invoice's open balance of ${openCents / 100}`);
     }
 
-    const reason = resolveReason(line, inv, payment.receivedDate);
+    const discountSoFar = discountCents.get(inv.id) ?? 0;
+    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar);
 
     if (line.type === "PAYMENT") paymentLinesCents += lineCents;
+    if (line.type === "DISCOUNT") discountCents.set(inv.id, discountSoFar + lineCents);
     appliedCents.set(inv.id, alreadyCents + lineCents);
     resolved.push({ line, invoice: inv, reason });
   }
@@ -371,23 +417,37 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
 
 /** The per-type reason rule: a WRITE_OFF requires a trimmed reason (§4.1); a DISCOUNT must fall
  *  inside the early-pay window and always carries "early-pay terms"; a PAYMENT carries whatever
- *  (optional) note was sent. */
-function resolveReason(line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date): string {
+ *  (optional) note was sent.
+ *
+ *  `discountSoFarCents` is the DISCOUNT already accepted for THIS invoice by THIS call — the
+ *  aggregate half of the cap (#81). Passed in rather than re-derived because `invoice.applications`
+ *  is the pre-call snapshot and cannot see the lines this request has already resolved. */
+function resolveReason(
+  line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date, discountSoFarCents: number,
+): string {
   if (line.type === "WRITE_OFF") {
     const why = (line.reason ?? "").trim();
     if (!why) throw new HttpError(400, "a write-off needs a reason");
     return why;
   }
   if (line.type === "DISCOUNT") {
-    const open = invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite));
-    const elig = discountFor(invoice.customer.terms, invoice.invoiceDate, receivedDate, open);
+    // The REMAINING entitlement (#81, and Codex PR #129's cross-request half): a percentage of the
+    // stable invoice total minus what has already been discounted, floored against the current
+    // per-call offer. `discountSoFarCents` then adds this request's own accepted lines on top, so
+    // the cap holds both WITHIN one payload and ACROSS separate calls.
+    const elig = remainingDiscountFor(
+      invoice.customer.terms, invoice.invoiceDate, receivedDate,
+      invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
     }
-    // Cap the line at the terms-derived eligible amount — the early-pay window opening does NOT
-    // license waiving the whole receivable as a "discount". The operator may take part of it
-    // (line ≤ elig), never more. Integer cents to dodge float drift.
-    if (cents(line.amount) > cents(elig)) {
+    // Cap the AGGREGATE at the terms-derived eligible amount — the early-pay window opening does NOT
+    // license waiving the whole receivable as a "discount". Per-line alone was not enough (#81):
+    // `APPLY.lines` permits repeated lines against one invoice and `elig` is recomputed identically
+    // for each, so fifty $20 lines each passed a $20 check and together waived $1,000. The operator
+    // may still SPLIT the entitlement across lines (12 + 8 against a 20 cap is fine) — what is
+    // refused is the total exceeding it. Integer cents to dodge float drift.
+    if (discountSoFarCents + cents(line.amount) > cents(elig)) {
       throw new HttpError(400, `discount exceeds the eligible early-pay amount of ${elig}`);
     }
     return "early-pay terms";

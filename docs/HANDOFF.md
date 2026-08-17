@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** on branch `fix-allocation-retry`.
+**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** merged (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** on branch `fix-ar-money`.
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -172,8 +172,9 @@ bookkeeper QBO homework still gate for a *real* export.
 `docs/history/2026-08-12-phase-6-quoting.md`; the demo ran 2026-08-12 with all 8 ratification items
 RULED (`docs/2026-08-12-phase-6-demo.md`); deferred findings are issues **#95–#101**.
 
-Carried A/R follow-up (unchanged): issues **#68–#93** (§6) — **#81** (aggregate discount cap) and
-**#84** (delete-customer-with-live-payment) are the P1s worth doing early, and **#68** now also carries
+Carried A/R follow-up: issues **#69–#93** (§6) — **#81** (aggregate discount cap), **#84**
+(delete-customer-with-live-payment) and **#91** (GL-export netting) are all DONE (branch
+`fix-ar-money`, burn-down Group B), and **#68** (also done, Group A) carried
 5C's posted-payment-reversal consequence (a posted payment can't be reversed by a re-export; a
 spec-silent accounting decision). The older backlog (#51–#52, #59–#65, the per-worker-test-DB infra
 task, §6) remains open too.
@@ -403,9 +404,16 @@ the vestigial `"ar"` area, post-dated payments). #75–#80 and #81–#87 came fr
 reviews (11 findings were fixed on-branch; the rest filed): missing UI paths (credit-apply,
 finance-charge-exempt setter, standalone bad-debt write-off), the point-in-time reproducibility gap
 (#78 — 5C's close depends on it), the issued-terms discount snapshot, the postBatch balance check,
-and **the two P1s: #81 (the discount cap is per-line, not aggregate — repeated lines can waive a
-whole invoice) and #84 (`deleteCustomer` doesn't block a customer with live payments — strands the
-cash)**. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-receivable/progress.md`.
+and **the two P1s — both FIXED 2026-08-16 on branch `fix-ar-money` (burn-down Group B): #81** (the
+discount cap was per-line, not aggregate — fifty $20 lines waived a $1,000 invoice; now capped in
+aggregate per invoice within the request, `1bb42b3`) **and #84** (`deleteCustomer` didn't block a
+customer with live payments and stranded the cash; now a fourth §5.14 blocker category with its own
+route/export entry, `8229413`). **#81 leaves a measured SCOPE BOUNDARY that is the owner's call:** the
+cap is per-REQUEST, and `elig` is recomputed each call as a percentage of the CURRENT open balance, so
+a second call after a $20 discount is still offered $19.60 and takes it — the series converges on the
+whole receivable. Closing it means ruling whether the entitlement is 2% of the invoice total ONCE or
+2% of whatever is open (what is built, and what `discountAvailable` shows). Pinned as a test so any
+change is deliberate. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-receivable/progress.md`.
 
 **Phase 5C (close + QBO export) follow-ups — GitHub issues #88–#93 (2026-08-10), all deferred, none
 blocking the 5C merge.** #88 the continuity chain goes stale when a NON-latest month is reopened
@@ -413,8 +421,13 @@ blocking the 5C merge.** #88 the continuity chain goes stale when a NON-latest m
 re-chaining policy is spec-silent, owner's call). #89 a freight/charge line finalized before its GL
 default reads clean in readiness but 500s the export (self-protecting via the Σdebit=Σcredit backstop;
 the fix is an invoice-attributed readiness gap, but there is no invoice detail page to anchor its
-fix-link). #90 the cosmetic follow-ups bundle. #91 whether the summary export should be netted (tied
-to the bookkeeper's QBO import method, with ruling 7's correction-JE dating). #93 the GL-export
+fix-link). #90 the cosmetic follow-ups bundle. **#91 — RULED and DONE 2026-08-16 (`0b5ea81`, Group
+B): the summary export is NETTED** to a single signed column per `(account, side)`, larger side wins
+— so an invoice + same-month credit emits one `A/R 60.00` debit instead of `100.00` debit AND `40.00`
+credit. Decided deliberately WITHOUT waiting on the bookkeeper, because a gross dual-column line
+risks importing 150 where 120 was meant. **A group netting to EXACTLY zero is dropped**, not emitted:
+`renderCsv` renders a zero as `""`, so keeping it would emit a row carrying no amount at all. The
+per-event `GlPosting` ledger stays gross and un-aggregated. #93 the GL-export
 create-audit records batch metadata only, not the emitted journal (the postings ARE persisted
 immutably on the batch, so it is completeness, not data loss). Plus the Codex re-raise of **#68**
 (carried from 5B, with the GL-export consequence) — **RULED option (b) and BUILT 2026-08-16, branch
@@ -616,9 +629,37 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    mockups, and they **overturned four of the Phase 4 design's own decisions before a line of code
    was written** — see that spec's §3.19–§3.22. The traveler sample was closed earlier, 2026-08-03,
    by the ruling that the 2025 mockup is its build target (spec §3.9).
-2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely). **This and item 4 are now the CRITICAL PATH to the acceptance month (spec §13); nothing in code gates it any more.** Take **#91's netting question** to the same conversation — it is ruled (net to a single signed column) but the import method still wants confirming.
+2. QuickBooks Online finance-charge treatment — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely). **This and item 4 are now the CRITICAL PATH to the acceptance month (spec §13); nothing in code gates it any more.** **#91 is ruled AND built** (netted to a single signed column, `0b5ea81`) — but confirm the import method against it at the same conversation, since netting was decided without waiting on the bookkeeper.
 3. ~~The office's go-to report list.~~ **Effectively CLOSED by Phase 8A** — the five native reports + the two homed ones were built to the owner's list; extras are cheap additions now the platform exists.
-4. GL account list for operations, surcharges, payment types. **No longer gates Phase 2** (2026-07-30) — the account is optional at operation entry, so masters can be keyed now; the list is needed before Phase 5's QBO export.
+4. GL account list for operations, surcharges, payment types. **PARTIALLY DELIVERED 2026-08-16** —
+   the owner supplied Visual Shop's own *General Ledger Report* (process code → GL#, 3 pages).
+   **NOT IN GIT — the repository is PUBLIC and this is the company's chart of accounts.** It lives at
+   `docs/company-confidential/2026-08-16-visual-shop-gl-numbers.pdf`, a directory gitignored under
+   the same 2026-08-07 ruling as the VS screen capture. Never quote an account number into a commit,
+   a PR body, or an issue. Owner's note: "not all of them are used anymore", and no rush — nothing
+   was built against it.
+
+   **Fifteen distinct accounts appear:** 4401–4408, 4411–4414 (revenue), 5525 energy surcharge, 5620
+   freight, 5621 trucking. Some rows carry no GL# at all and three carry a literal `%` — consistent
+   with the retired-codes caveat, and harmless here since a step code's account is optional
+   (2026-07-30).
+
+   **⚠️ TWO FINDINGS THAT NEED THE OWNER BEFORE THIS CAN BE KEYED IN:**
+
+   1. **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
+      Process Step Code.** The report's `Gr Id` column is what separates 4401 (IQ) / 4402 (Vacuum) /
+      4403 (Tip Up) / 4404 (Bell) / 4405 (Temper) / 4407 (Car Bot) / 4411 (Rotary) / 4412 (Pusher),
+      and the SAME process code lands in several: `AnnealAtmos` appears under 4401, 4404 and 4411;
+      `Normal Atmos` under 4401, 4404, 4405 and 4412; `SR Air` under 4403, 4405 and 4407. Our model
+      hangs ONE `glAccountId` off each `ProcessStepCode` (CLAUDE.md), so a single step code cannot
+      reproduce that split. Either the step codes are defined per (process × equipment group) — which
+      is how the shop already names them in practice, worth confirming — or the account has to be
+      chosen somewhere else. **Do not key the chart in until this is settled**; guessing would
+      mis-post revenue by furnace.
+   2. **The balance-sheet side is not in this list.** The QBO export's readiness gate also needs
+      `BillingConfig`'s A/R control, sales-tax, discount and write-off accounts, plus a cash account
+      per payment type. This report covers the REVENUE side only, so §7 item 2's bookkeeper
+      conversation still owes those four-plus-N numbers.
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
    session; §9 carries them into the next PR:
@@ -636,7 +677,16 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       **CLOSED — built in Phase 6** (`e2c91e8`, ruling 14): `User.title` on the admin user form,
       printing on both the quote and cert signature blocks (blank title prints nothing).
 6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — **DEFERRED by the owner
-   2026-08-16 to after the acceptance month.** Cosmetic; the parallel run does not depend on it. The
+   2026-08-16 to after the acceptance month.** **Artwork EXISTS and was shown 2026-08-16** (American
+   Heat Treating Alabama — five variants: the flame mark alone ×2, the horizontal flame+wordmark
+   lockup ×2, and the wordmark alone). It was sent from a phone, so **the files are NOT on this
+   machine yet** — they must be dropped into `docs/company-confidential/` (gitignored; the repo is
+   public) when the owner is back at the laptop. When it is picked up: the **horizontal lockup** is
+   the document-header shape for all eight template types, the flame mark alone suits a tight slot
+   or a favicon, and the wordmark alone is likely unused. Upload constraints are `image/png` or
+   `image/jpeg`, **512 KB** max (`LOGO_MAX_BYTES`, templates.ts), one image per template through the
+   editor — and **PNG, not JPEG**, wherever the flame's transparent background sits over a coloured
+   band. Cosmetic; the parallel run does not depend on it. The
    template logo slot stays unused until then, and Phase 7's "restyle the traveler with the real logo"
    outcome stays unexercised (the E2E flow uses a fixture image).
    Nothing blocks the build; the E2E flow uses a fixture logo until it lands.
@@ -721,15 +771,14 @@ and §4, then pick among:
 3. **The six items ruled at the Phase 8 close-out (2026-08-16)** — all filed with build notes;
    **#68 is DONE** (Group A, `20ed463`): the `reopen` (POSTED→OPEN, refusing on a closed month,
    Serializable under the period lock; `voidBatch` gained the matching POSTED guard). The
-   remaining five: **#91** net the GL export to one signed
-   column per `(account, side)` — deliberately decided WITHOUT waiting on the bookkeeper, because a
-   gross dual-column line risks importing 150 where 120 was meant; **#125** warn (don't block) on
+   **#91 is DONE too** (Group B, `0b5ea81`): the GL export nets to one
+   signed column per `(account, side)`, decided WITHOUT waiting on the bookkeeper because a gross
+   dual-column line risks importing 150 where 120 was meant. The remaining four: **#125** warn (don't block) on
    re-selecting an already-shipped serial; **#126** freeze `addLine`/`updateLine` once a finalized
    invoice covers the order, so §5.7 means one thing; **#123** disable the Backups page's own controls
    in practice mode while keeping the nav entry (`nav.ts` must NOT learn about practice mode — §8);
    **#124** refresh the shell staleness bar after a successful "Back up now".
-4. **Backlog burn-down** — the P1s #81 (aggregate discount cap) and #84
-   (delete-customer-with-live-payment); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
+4. **Backlog burn-down** — ~~the P1s #81 and #84~~ **both DONE** (Group B); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
    #102/#103; **Phase 8C's #118–#121** (**#122 is DONE** — branch `fix-vitest-collection`, §6); the per-worker-test-DB
    infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
    sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
