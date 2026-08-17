@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   advanceBannerState,
   BackupBannerView,
+  shouldCommitBannerFetch,
   INITIAL_BANNER_STATE,
   REFRESH_MS,
   type BannerFetchState,
@@ -168,7 +169,112 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
     expect(next).toEqual({ health: null, lastFetchedAt: 0, forbidden: false, error: true });
 
     const markup = renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />);
-    expect(markup).toContain("Backup status could not be read");
+    expect(markup).toContain("System status could not be read");
+  });
+
+  /**
+   * Issue #121, owner ruling 2026-08-16 — reword the unknown-cause bar; do not silence it.
+   *
+   * `handle()` resolves the session OUTSIDE its try/catch, so in a database outage the health route
+   * fails BEFORE reaching its own `mustDo("manage_backups")`: the 403 that normally silences a
+   * non-admin never happens, and every signed-in user saw a bar naming BACKUPS and linking to an
+   * admin page they may not be able to open. The misattribution is the cost — someone chases a
+   * backup problem while the database is the actual fault.
+   *
+   * (The issue's own suggested direction — distinguish "cannot determine your permissions" from
+   * "status unavailable" — is not buildable: determining the permission needs the same database.)
+   */
+  it("the unknown-cause bar names neither backups nor a link the reader may not be able to use (#121)", async () => {
+    stubFetch(500, { error: "boom" });
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    const markup = renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />);
+
+    expect(markup).toContain("System status could not be read");
+    expect(markup).toMatch(/database or the server may be unavailable/i);
+    expect(markup).not.toContain("href=");        // no admin link for a fault that may not be admin's
+    expect(markup.toLowerCase()).not.toContain("backup");
+  });
+
+  /**
+   * Codex, PR #131 — an invalidation that lands MID-FLIGHT must win.
+   *
+   * React's `cancelled` flag alone is not enough: it flips in the effect CLEANUP, which runs only
+   * after React has processed the state update an invalidation queues. A health request resolving
+   * inside that window passed the check and overwrote the shared state with its stale health AND a
+   * fresh `lastFetchedAt` — after which the nonce-triggered pass saw a full timestamp, treated
+   * itself as throttled, and did nothing. A successful backup then left the old red bar up (or a
+   * failed one left the bar hidden) for another five minutes, which is the exact contradiction
+   * #124 exists to remove.
+   *
+   * The generation counter is bumped SYNCHRONOUSLY in the invalidation handler, so unlike a React
+   * state update it is visible to any promise resolving afterwards.
+   */
+  it("discards a fetch whose generation was superseded while it was in flight", () => {
+    // The ordinary case: nothing happened while it ran.
+    expect(shouldCommitBannerFetch(3, 3, false)).toBe(true);
+    // An invalidation landed mid-flight — this result is stale AND would re-arm the throttle.
+    expect(shouldCommitBannerFetch(3, 4, false)).toBe(false);
+    // Unmount/navigation still wins on its own, generation unchanged.
+    expect(shouldCommitBannerFetch(3, 3, true)).toBe(false);
+    // Both at once is still a discard.
+    expect(shouldCommitBannerFetch(3, 4, true)).toBe(false);
+  });
+
+  /**
+   * Codex, PR #131 — an explicit invalidation must clear the 403 LATCH, not just the throttle.
+   *
+   * `advanceBannerState` returns early whenever `forbidden` is set, so resetting only
+   * `lastFetchedAt` could not force anything. A user granted `manage_backups` MID-SESSION —
+   * `getSessionUser` reloads role permissions per request, so the grant is live at once — would
+   * reach the Backups page, run a backup, and still see no banner, because a latch set before the
+   * grant silently swallowed the refetch.
+   *
+   * This drives `advanceBannerState` directly with each state, which is what the component's
+   * invalidation handler produces: the latch-cleared state must fetch; the latch-kept one must not.
+   */
+  it("a latched 403 blocks a refetch until the latch is cleared", async () => {
+    const latched = { ...INITIAL_BANNER_STATE, forbidden: true, lastFetchedAt: 0 };
+
+    // As it was: throttle reset alone. `forbidden` short-circuits before any fetch.
+    stubFetch(200, OK_HEALTH);
+    const throttleOnly = await advanceBannerState("/customers", latched, NOW);
+    expect(throttleOnly).toBe(latched);            // same object — the documented no-op
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    // As the invalidation handler now leaves it: latch cleared, so the request actually goes.
+    stubFetch(200, OK_HEALTH);
+    const cleared = await advanceBannerState(
+      "/customers", { ...latched, forbidden: false }, NOW);
+    expect(global.fetch).toHaveBeenCalled();
+    expect(cleared.health).toEqual(OK_HEALTH);
+  });
+
+  /**
+   * Codex, PR #131 — the two bars must be DISTINGUISHABLE, not just differently worded.
+   *
+   * They are visually identical and the generic one deliberately carries no link, so "is the Open
+   * Backups link absent?" does not answer "is the staleness bar gone?" — an assertion written that
+   * way is satisfied by the generic error bar still being on screen. The E2E flow now locates each
+   * by its accessible name, so those names are a contract and are pinned here.
+   */
+  it("gives the two bars distinct accessible names", () => {
+    const stale = { ...OK_HEALTH, state: "stale" as const, reason: "The newest backup is 40 hours old." };
+    const staleMarkup = renderToStaticMarkup(<BackupBannerView health={stale} />);
+    const errorMarkup = renderToStaticMarkup(<BackupBannerView health={null} error />);
+
+    expect(staleMarkup).toContain('aria-label="Backup status"');
+    expect(errorMarkup).toContain('aria-label="System status"');
+    // Neither may answer to the other's name, or the E2E locators would cross over.
+    expect(staleMarkup).not.toContain('aria-label="System status"');
+    expect(errorMarkup).not.toContain('aria-label="Backup status"');
+  });
+
+  /** ...while a GENUINE staleness verdict keeps its specific message AND its link — the reword must
+   *  not have flattened the case where we do know it is backups and who can fix it. */
+  it("a real staleness verdict still names backups and links to the page", async () => {
+    const stale = { ...OK_HEALTH, state: "stale" as const, reason: "The newest backup is 40 hours old." };
+    const markup = renderToStaticMarkup(<BackupBannerView health={stale} />);
+    expect(markup).toContain("The newest backup is 40 hours old.");
     expect(markup).toContain('href="/admin/backups"');
   });
 

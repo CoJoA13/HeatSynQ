@@ -59,14 +59,35 @@ if ! gzip -t "$DIR/erp_${STAMP}.sql.gz"; then
 fi
 # Retention (a deploy value, not a setting). The pattern covers BOTH writers' archives — on-demand
 # names also start `erp_` — which is the owner's one-retention-rule decision (§6.4).
-find "$DIR" -name 'erp_*.sql.gz' -mtime +30 -delete
+#
+# Issue #120: each prune is guarded and its failure RECORDED, never allowed to abort the script.
+# These run AFTER the archive is written and verified, so under a bare `set -e` a failing `find` (a
+# read-only folder, an NFS hiccup, a permission change on one old file) exited before
+# `write_status true` — leaving the PREVIOUS run's `{"ok":true}` in place beside a fresh intact
+# archive. The UI then read GREEN while retention was silently broken and old dumps accumulated
+# toward a full disk; "retention broken" was not a state the light could express. It is now the
+# ordinary red `ok:false` path, with a message that says the DUMP succeeded so nobody hunts a
+# nonexistent dump problem.
+RETENTION_ERR=""
+prune() {   # $1 = name pattern, $2 = -mtime spec
+  find "$DIR" -name "$1" -mtime "$2" -delete || RETENTION_ERR="${RETENTION_ERR}${RETENTION_ERR:+, }$1"
+}
+prune 'erp_*.sql.gz' +30
 # Codex re-review, PR #117 (finding #2): the restore runbook's pre-restore safety dump
 # (`before-restore-<epoch>.sql.gz`, README.md's "Restoring" section) lands in this SAME folder but
 # never matched the pattern above, so full production dumps piled up forever and the README's "copy
 # it out if you want to keep it — everything in here is pruned at 30 days" claim was false for
 # exactly the file holding a complete copy of the database. Same 30-day rule, same folder.
-find "$DIR" -name 'before-restore-*.sql.gz' -mtime +30 -delete
+prune 'before-restore-*.sql.gz' +30
 # Orphaned temps from a crashed dump would otherwise accumulate forever.
-find "$DIR" -name '.erp_*.sql.tmp' -mtime +1 -delete
+prune '.erp_*.sql.tmp' +1
+
+if [ -n "$RETENTION_ERR" ]; then
+  # The archive is KEPT: a retention failure is no reason to throw away a good backup, which is
+  # precisely why this reports rather than aborting earlier.
+  write_status false "the dump succeeded but retention cleanup failed for: $RETENTION_ERR"
+  echo "backup wrote erp_${STAMP}.sql.gz but retention FAILED for: $RETENTION_ERR" >&2
+  exit 1
+fi
 write_status true ""
 echo "backup complete: erp_${STAMP}.sql.gz"

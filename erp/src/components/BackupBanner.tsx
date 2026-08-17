@@ -102,20 +102,82 @@ export function BackupBannerView({
   error?: boolean;
 }) {
   if (error) {
+    // Issue #121, owner ruling 2026-08-16: reword, do not silence.
+    //
+    // `handle()` resolves the session OUTSIDE its try/catch (http.ts), so in a database outage this
+    // endpoint fails BEFORE reaching its own `mustDo("manage_backups")` — and the 403 that normally
+    // silences a non-admin never happens. Every signed-in user therefore saw this bar. The issue's
+    // own suggested direction (tell "cannot determine your permissions" apart from "status
+    // unavailable") is not buildable: determining the permission needs the same database that is
+    // down.
+    //
+    // So the bar stays — absence is failure, and a malformed deploy must not go silent — but it no
+    // longer NAMES backups or links to an admin page the reader may not be able to use. The real
+    // fault in this branch is unknown and, in the common case, is not backups at all: someone
+    // chasing a backup problem while the database is down is the actual cost of the old wording.
+    // Genuine staleness keeps its specific message and its link, below.
     return (
-      <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
-        <span>⚠ Backup status could not be read.</span>
-        <Link href="/admin/backups" className="font-semibold underline">Open Backups</Link>
+      <div role="status" aria-label="System status"
+           className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
+        <span>⚠ System status could not be read — the database or the server may be unavailable.</span>
       </div>
     );
   }
   if (!health || health.state === "ok") return null;
+  // The two bars carry DISTINCT labels (Codex, PR #131). They are visually identical and the
+  // generic one deliberately has no link, so "is the Open Backups link absent?" does not answer
+  // "is the staleness bar gone?" — an E2E assertion written that way is satisfied by the generic
+  // error bar. The labels also give each bar an accessible name, which it lacked.
   return (
-    <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
+    <div role="status" aria-label="Backup status"
+         className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
       <span>⚠ {health.reason}</span>
       <Link href="/admin/backups" className="font-semibold underline">Open Backups</Link>
     </div>
   );
+}
+
+/**
+ * Mounted banners that want telling when the backup state has certainly changed (#124).
+ *
+ * A module-level set rather than context: the banner lives in the SHELL and the thing that changes
+ * the state lives on a PAGE, so there is no common provider to hang context off without wrapping
+ * the whole app for one edge. A Set also means a remount cannot leave a stale subscriber behind.
+ */
+const invalidationListeners = new Set<() => void>();
+
+/**
+ * Tell the shell's staleness bar that its cached health is certainly out of date, and to refetch
+ * NOW rather than at the next navigation (#124).
+ *
+ * Called by the Backups page after a successful "Back up now". Without it the page panel flipped
+ * green while the red bar directly above it stayed red for up to `REFRESH_MS` — the two
+ * contradicting each other on one screen, which is precisely what teaches an operator to ignore the
+ * banner, the one thing this feature cannot afford. The ORDINARY polling throttle is untouched:
+ * this is an explicit "something happened" signal, not a shorter interval.
+ */
+export function invalidateBackupBanner(): void {
+  for (const listen of invalidationListeners) listen();
+}
+
+/**
+ * May a resolved health fetch commit its result?
+ *
+ * Only if no invalidation happened while it was in flight (Codex, PR #131). React's `cancelled`
+ * flag is NOT sufficient on its own: it flips in the effect's CLEANUP, which runs only after React
+ * has processed the state update an invalidation queues — so a request resolving inside that window
+ * still passed the check and overwrote `stateRef.current` with its stale health AND a fresh
+ * `lastFetchedAt`. The nonce-triggered pass then saw a full timestamp, treated itself as throttled,
+ * and did nothing: a successful backup left the old red bar up, or a failed one left the bar hidden,
+ * for another five minutes — the exact contradiction #124 and its follow-up exist to remove.
+ *
+ * The generation counter is bumped SYNCHRONOUSLY inside the invalidation handler, so unlike a React
+ * state update it is already visible to any promise that resolves afterwards.
+ */
+export function shouldCommitBannerFetch(
+  startedGeneration: number, currentGeneration: number, cancelled: boolean,
+): boolean {
+  return !cancelled && startedGeneration === currentGeneration;
 }
 
 export function BackupBanner() {
@@ -123,11 +185,38 @@ export function BackupBanner() {
   const [health, setHealth] = useState<BackupHealth | null>(null);
   const [error, setError] = useState(false);
   const stateRef = useRef<BannerFetchState>(INITIAL_BANNER_STATE);
+  // Bumped by an invalidation to re-run the effect below; the effect clears `lastFetchedAt` first,
+  // so the refetch is not swallowed by the throttle.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  // Bumped SYNCHRONOUSLY by the same invalidation, which is what makes it usable by a promise that
+  // resolves before React has processed the nonce (see `shouldCommitBannerFetch`).
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    const onInvalidate = () => {
+      // Clears the 403 LATCH as well as the throttle (Codex, PR #131). `advanceBannerState` returns
+      // early whenever `forbidden` is set, so resetting only `lastFetchedAt` could not force
+      // anything: a user granted `manage_backups` mid-session — `getSessionUser` reloads role
+      // permissions on every request, so the grant is live immediately — would reach the Backups
+      // page, run a backup, and still get no banner, because the latch from before the grant
+      // silently swallowed the refetch. An EXPLICIT invalidation means "something happened, go and
+      // look", which is exactly the case the latch's own reasoning (a 403 is a stable fact about
+      // the signed-in user) does not cover.
+      generationRef.current += 1;
+      stateRef.current = { ...stateRef.current, lastFetchedAt: 0, forbidden: false };
+      setRefreshNonce((n) => n + 1);
+    };
+    invalidationListeners.add(onInvalidate);
+    return () => { invalidationListeners.delete(onInvalidate); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const startedGeneration = generationRef.current;
     advanceBannerState(pathname, stateRef.current, Date.now()).then((next) => {
-      if (cancelled) return;
+      // An invalidation that landed mid-flight wins: this result is stale, and committing it would
+      // also restore a full `lastFetchedAt` that throttles the refetch it just asked for.
+      if (!shouldCommitBannerFetch(startedGeneration, generationRef.current, cancelled)) return;
       stateRef.current = next;
       setHealth(next.health);
       setError(next.error);
@@ -135,7 +224,7 @@ export function BackupBanner() {
     return () => {
       cancelled = true;
     };
-  }, [pathname]);
+  }, [pathname, refreshNonce]);
 
   return <BackupBannerView health={health} error={error} />;
 }

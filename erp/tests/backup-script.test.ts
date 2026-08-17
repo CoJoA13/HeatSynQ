@@ -115,6 +115,61 @@ describe("scripts/backup.sh — compress-step failure (Task 8 review finding #1)
   });
 });
 
+/**
+ * Issue #120 — a failing retention `find` left the status GREEN.
+ *
+ * The three `find … -delete` calls run under `set -e`, AFTER the archive is written and verified
+ * but BEFORE `write_status true`. So a cleanup failure (a read-only folder, an NFS hiccup, a
+ * permission change on an old file) aborted the script with the PREVIOUS run's `{"ok":true}` still
+ * in the status file and a fresh intact archive on disk — the UI reads green while retention is
+ * silently broken and old dumps accumulate toward a full disk. "Retention broken" was not a state
+ * the light could express.
+ *
+ * It now writes `ok:false` naming the pattern that failed. The dump itself SUCCEEDED, so the
+ * message says so — "The last backup run failed: …" over a message about retention would otherwise
+ * send someone hunting a dump problem that does not exist.
+ */
+describe("scripts/backup.sh — retention failure (#120)", () => {
+  /** A `find` on the doctored PATH that fails only for `-delete` runs, leaving the archive-writing
+   *  steps (which do not shell out to find) untouched. */
+  function installFailingFind(): void {
+    writeFileSync(
+      path.join(binDir, "find"),
+      '#!/bin/sh\necho "find: cannot delete: Read-only file system" >&2\nexit 1\n',
+    );
+    chmodSync(path.join(binDir, "find"), 0o755);
+  }
+
+  it("writes ok:false naming retention when a prune fails, instead of leaving the previous green", () => {
+    // Seed the previous night's success — the exact state that made this invisible.
+    writeFileSync(
+      path.join(dir, BACKUP_STATUS_FILENAME),
+      JSON.stringify({ lastRunAt: "2026-08-15T02:00:00Z", ok: true, source: "nightly", error: null }),
+    );
+    installFailingFind();
+
+    const result = runScript();
+    expect(result.status).not.toBe(0);
+
+    const status = statusOf(dir);
+    expect(status.ok).toBe(false);
+    expect(status.error?.toLowerCase()).toContain("retention");
+    // The dump is not what failed, and the message must not imply it did.
+    expect(status.error?.toLowerCase()).toContain("dump succeeded");
+
+    // ...and the archive it just wrote is KEPT — a retention failure is not a reason to throw away
+    // a good backup, which is the whole point of reporting it rather than aborting earlier.
+    expect(readdirSync(dir).filter((f) => f.endsWith(".sql.gz"))).toHaveLength(1);
+  });
+
+  it("control: with a working find the run still ends green", () => {
+    const result = runScript();
+    expect(result.status).toBe(0);
+    expect(statusOf(dir).ok).toBe(true);
+    expect(statusOf(dir).error).toBeNull();
+  });
+});
+
 // P1 (whole-branch review, Minor) — the status filename is duplicated with nothing enforcing
 // agreement: scripts/backup.sh hardcodes it (a shell file has no way to import a TS constant),
 // BACKUP_STATUS_FILENAME is what both TS readers use, and this test file used to hardcode a THIRD

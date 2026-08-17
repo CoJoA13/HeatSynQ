@@ -10,7 +10,6 @@
 import { readdir, stat, readFile, rename, unlink, writeFile, access } from "node:fs/promises";
 import { constants as FS, createReadStream, createWriteStream } from "node:fs";
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { randomBytes } from "node:crypto";
@@ -24,8 +23,6 @@ import { getSetting } from "./settings";
 import { HttpError } from "./errors";
 import { auditBackupRun } from "./audit";
 import { assertNotPracticeDatabase } from "./practice-mode";
-
-const execFileAsync = promisify(execFile);
 
 export type HealthInputs = {
   /** Newest INTEGRITY-PASSING archive's mtime, or null if there is none. */
@@ -78,21 +75,221 @@ export function evaluateHealth(i: HealthInputs): BackupHealth {
   return { ...common, state: "ok", reason: `Last successful backup ${Math.floor(ageHours)} hours ago.` };
 }
 
-/** `gzip -t`, spawned via argv. Returns false rather than throwing — a corrupt archive is a
- *  reportable fact about that file, not a failure of the listing. */
-async function integrityOk(fullPath: string): Promise<boolean> {
-  try {
-    await execFileAsync("gzip", ["-t", fullPath]);
-    return true;
-  } catch {
-    return false;
-  }
+/** `"intact"` means `gzip -t` completed and accepted the archive. `"rejected"` means it did not —
+ *  which may be genuine corruption OR an I/O failure, a permission change, a spawn failure, or the
+ *  timeout, and NOTHING distinguishes those reliably (see `integrityOk`). Only `"intact"` is a
+ *  claim strong enough to cache. */
+type IntegrityVerdict = "intact" | "rejected";
+
+/**
+ * How long a single `gzip -t` may run before it is killed (Codex, PR #131).
+ *
+ * `execFile` starts children with NO timeout by default, and the module-level semaphore made that
+ * far worse than it used to be: a verifier wedged on an unresponsive network-backed volume holds a
+ * shared slot forever, four of them exhaust the pool, and every later banner poll and page listing
+ * then queues behind them indefinitely — a process-wide outage where the same hang used to cost one
+ * request. Bounding the child is what keeps the shared ceiling from becoming a shared failure.
+ *
+ * Sixty seconds is far beyond any real `gzip -t` of a shop-sized dump (milliseconds to a couple of
+ * seconds) while still being unambiguously "this is never coming back". A timed-out child is killed
+ * and reported with a `signal`, which `ranAndRejected` already reads as UNVERIFIABLE — so it is not
+ * cached, and the next read retries once the volume recovers.
+ */
+export const INTEGRITY_TIMEOUT_MS = 60_000;
+
+/** How long a timed-out verifier gets to die on SIGTERM before SIGKILL — the `DEFAULT_KILL_GRACE_MS`
+ *  shape from the dump path. The promise has already settled by then; this is only about not leaving
+ *  a process behind when one can still be killed. */
+export const INTEGRITY_KILL_GRACE_MS = 5_000;
+
+/**
+ * `gzip -t`, spawned via argv and bounded. Returns a verdict rather than throwing — a corrupt
+ * archive is a reportable fact about that file, not a failure of the listing.
+ *
+ * **A non-zero exit is NOT proof of corruption, and this no longer pretends otherwise** (Codex,
+ * PR #131, third pass on the same question). A `gzip` that starts and then hits a read/I/O error —
+ * an NFS `EIO`, a permission change landing between our `stat` and its `open` — exits with a
+ * NUMERIC code and no signal, exactly like a format rejection. Two earlier attempts to separate
+ * them both failed: the exit code alone cannot, and an `access(R_OK)` probe afterwards cannot
+ * either, because a transient failure can clear before the probe runs and the probe never proves
+ * gzip read the whole file. Parsing stderr would, but its wording is not stable across gzip builds
+ * or locales.
+ *
+ * So the honest classification is coarser and the CACHE is where it is handled: only `"intact"` is
+ * ever cached (see `verifyArchive`). Everything else reports false for that attempt — the safe
+ * direction, since nothing may claim intact on evidence we do not have — and is re-checked on the
+ * next read rather than pinning a possibly-healthy archive as CORRUPT for the TTL.
+ */
+export function integrityOk(
+  fullPath: string, timeoutMs: number = INTEGRITY_TIMEOUT_MS,
+): Promise<IntegrityVerdict> {
+  return new Promise<IntegrityVerdict>((resolve) => {
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const settle = (verdict: IntegrityVerdict) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve(verdict);
+    };
+
+    const child = execFile("gzip", ["-t", fullPath], (err) => {
+      if (killTimer) clearTimeout(killTimer);
+      settle(err ? "rejected" : "intact");
+    });
+
+    const deadline = setTimeout(() => {
+      // SETTLE FIRST, then chase the child (Codex, PR #131). `execFile`'s own `timeout` option only
+      // SENDS a signal — the promise stays pending until the process actually exits, so a `gzip`
+      // ignoring SIGTERM, or stuck in an uninterruptible read on a wedged mount, held its slot
+      // forever and the ceiling I added turned that into a process-wide stall. Even SIGKILL cannot
+      // move a process in uninterruptible D-state, so waiting for exit can never be the guarantee
+      // here; releasing the slot is.
+      //
+      // This is deliberately the OPPOSITE of `doBackup`'s dump handling, which waits for the child's
+      // real `exit` before settling — there, a surviving `pg_dump` still holds a database snapshot
+      // and its locks, so reaping it IS the correctness requirement. A stray `gzip -t` holds no
+      // lock, writes nothing, and touches no shared state: the only thing that matters is that the
+      // app stops waiting on it.
+      settle("rejected");
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), INTEGRITY_KILL_GRACE_MS);
+      killTimer.unref?.();   // never hold the process open for a child we have already given up on
+    }, timeoutMs);
+  });
+}
+
+/**
+ * How many `gzip -t` decompressions may run at once (#118). `listArchives` used one unbounded
+ * `Promise.all`, so opening the Backups page with a month of nightlies plus on-demand copies
+ * launched dozens of full decompressions simultaneously, contending for disk and CPU on the
+ * PRODUCTION host — the one machine that must stay responsive. Four keeps the page quick on a
+ * spinning disk without ever becoming the reason an order save is slow.
+ */
+export const INTEGRITY_CONCURRENCY = 4;
+
+/*
+ * WHY THIS IS PER-TRAVERSAL AND NOT A MODULE-WIDE SEMAPHORE (owner ruling, 2026-08-17).
+ *
+ * A shared semaphore was tried and removed. It bounded the process more tightly, but every mechanism
+ * it needed to be correct — releasing a slot held by a wedged child, accounting for a timed-out
+ * child still alive, keeping the write path inside the same ceiling — generated a further defect in
+ * review, each fix creating the next. #118 asked for "a small concurrency limit, or cache results
+ * keyed on file metadata"; the limit below, plus the in-flight coalescing and the intact-only cache,
+ * deliver exactly that and delete the whole class of failures a shared slot can have, because there
+ * is no shared slot to exhaust, leak or bypass.
+ *
+ * What is given up, stated plainly: `backupsView` runs its health and listing reads concurrently and
+ * each gets its own budget, so a busy moment can reach roughly 8-12 concurrent checks rather than 4.
+ * On a 1-5 user shop (spec §3) — where the coalescer collapses repeat checks of the SAME archive,
+ * which is the common case the banner generates — that is a bounded, acceptable ceiling, and a far
+ * simpler one to reason about.
+ */
+
+/**
+ * `Promise.all(items.map(fn))` with a ceiling on how many run at once. Results stay in INPUT order,
+ * so callers can zip them back against `items` — the whole reason this returns an array rather than
+ * streaming. Pure and exported for the tests, which drive it directly with a counter rather than
+ * trying to observe `gzip` concurrency through the filesystem.
+ */
+export async function mapLimited<T, R>(
+  items: T[], limit: number, fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
+ * How long a verified result may be reused for an UNCHANGED file (#118). `backupHealth` fully
+ * decompressed the newest archive on every `/health` poll — and the shell banner polls that from
+ * every page — so the busiest endpoint in the app was also the most expensive.
+ *
+ * The two bounds do different jobs, and both are needed:
+ *   - the KEY carries size and mtime, so a file that CHANGED is never served a stale verdict;
+ *   - the TTL bounds how long an unchanged file may go un-reverified, so silent bit rot on failing
+ *     storage is still caught. A cache keyed on metadata alone would answer "intact" forever for a
+ *     file quietly rotting underneath it — which would defeat the one thing `gzip -t` is here for.
+ * Fifteen minutes makes the banner's 5-minute poll free two times in three while still noticing rot
+ * within a quarter of an hour, which is ample for a nightly backup monitor.
+ */
+export const INTEGRITY_CACHE_TTL_MS = 15 * 60_000;
+
+/** Bounded so a long-lived process cannot grow this without limit; archives are pruned at 30 days,
+ *  so the live set is tens of entries and this ceiling is never reached in practice. */
+const INTEGRITY_CACHE_MAX = 500;
+
+const integrityCache = new Map<string, { ok: boolean; at: number }>();
+
+/** Exported for the tests — the cache is process-global, so a suite that asserts on verification
+ *  counts has to be able to start from a known state. */
+export function clearIntegrityCache(): void {
+  integrityCache.clear();
+  integrityInFlight.clear();
+}
+
+/**
+ * Verifications currently RUNNING, keyed identically to the settled cache (Codex, PR #131).
+ *
+ * The cache alone only coalesces work that has already FINISHED, so N overlapping checks of the same
+ * archive each started their own `gzip -t` — and the newest archive is exactly the file every
+ * `/health` poll looks at, so that was the most repeated cost in the app. Sharing the in-flight
+ * promise makes concurrent callers wait on ONE decompression instead of starting N.
+ */
+const integrityInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * `integrityOk` memoized on (path, size, mtime) for `INTEGRITY_CACHE_TTL_MS`, coalesced while in
+ * flight, and run under the module-level concurrency ceiling. `verify` is a PARAMETER rather than a
+ * module lookup for the same reason `runBackupNow` takes `dumpBin` that way (§6.4): it lets a test
+ * count real invocations, and observe their concurrency, without stubbing a child process.
+ */
+export async function verifyArchive(
+  fullPath: string, size: number, mtimeMs: number,
+  verify: (p: string) => Promise<IntegrityVerdict> = integrityOk,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const key = `${fullPath}|${size}|${mtimeMs}`;
+  const hit = integrityCache.get(key);
+  if (hit && now - hit.at < INTEGRITY_CACHE_TTL_MS) return hit.ok;
+  const running = integrityInFlight.get(key);
+  if (running) return running;
+
+  const pending = verify(fullPath)
+    .then((verdict) => {
+      // ONLY "intact" is cached (Codex, PR #131). A non-zero `gzip` exit cannot be shown to mean
+      // corruption rather than a transient I/O or access failure — see `integrityOk` — so caching it
+      // would pin a possibly-healthy archive as CORRUPT for the full TTL, outliving the recovery, in
+      // the one system whose whole job is telling the shop whether its backups are good. The caller
+      // still gets `false` for this attempt (nothing may claim intact on evidence we do not have),
+      // and the next read re-checks. The cost is re-verifying a genuinely bad archive per read,
+      // bounded by the shared ceiling and the per-child timeout, and a genuinely bad archive is the
+      // rare case — a wrongly-condemned good one is not a trade worth making to avoid it.
+      if (verdict === "intact") {
+        if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
+        integrityCache.set(key, { ok: true, at: now });
+      }
+      return verdict === "intact";
+    })
+    .finally(() => { integrityInFlight.delete(key); });
+  integrityInFlight.set(key, pending);
+  return pending;
 }
 
 export async function listArchives(dir: string = resolveBackupDir()): Promise<ArchiveInfo[]> {
   const entries = await readdir(dir);
   const names = entries.filter(isArchiveName);
-  const infos = await Promise.all(names.map(async (name) => {
+  // Bounded fan-out + the metadata cache (#118): an unbounded `Promise.all` here launched one full
+  // decompression per archive at once, on the production host, every time the page was opened.
+  const infos = await mapLimited(names, INTEGRITY_CONCURRENCY, async (name) => {
     const full = archivePath(dir, name);
     const s = await stat(full);
     // A directory that happens to be named like an archive is not an archive.
@@ -102,9 +299,9 @@ export async function listArchives(dir: string = resolveBackupDir()): Promise<Ar
       source: archiveSourceOf(name)!,
       sizeBytes: s.size,
       modifiedAt: s.mtime.toISOString(),
-      integrityOk: await integrityOk(full),
+      integrityOk: await verifyArchive(full, s.size, s.mtimeMs),
     } satisfies ArchiveInfo;
-  }));
+  });
   return infos
     .filter((a): a is ArchiveInfo => a !== null)
     .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
@@ -144,16 +341,19 @@ export async function readStatus(dir: string): Promise<BackupStatusFile | null> 
  *  cheap endpoint calls, rather than verifying the whole folder. */
 async function newestIntactAt(dir: string): Promise<Date | null> {
   const entries = (await readdir(dir)).filter(isArchiveName);
-  const stamped = await Promise.all(entries.map(async (name) => {
+  // `stat` only — cheap, and no decompression happens until the sorted walk below.
+  const stamped = await mapLimited(entries, INTEGRITY_CONCURRENCY, async (name) => {
     const full = archivePath(dir, name);
     const s = await stat(full);
-    return s.isFile() ? { full, mtime: s.mtime } : null;
-  }));
+    return s.isFile() ? { full, size: s.size, mtimeMs: s.mtimeMs, mtime: s.mtime } : null;
+  });
   const sorted = stamped
-    .filter((e): e is { full: string; mtime: Date } => e !== null)
+    .filter((e): e is { full: string; size: number; mtimeMs: number; mtime: Date } => e !== null)
     .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
   for (const e of sorted) {
-    if (await integrityOk(e.full)) return e.mtime;
+    // Cached (#118): the shell banner polls this from every page, and re-decompressing an archive
+    // that has not changed since the last poll was the single most repeated cost in the app.
+    if (await verifyArchive(e.full, e.size, e.mtimeMs)) return e.mtime;
   }
   return null;
 }
@@ -216,7 +416,13 @@ const DEFAULT_DUMP_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_KILL_GRACE_MS = 5_000;
 
 export function runBackupNow(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number } = {},
+  opts: {
+    dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
+    /** The archive verifier, a PARAMETER for the same reason `dumpBin` is (§6.4): the failure branch
+     *  is otherwise unreachable in a test, since the code writes the archive itself and `gzip` will
+     *  happily verify its own valid output. */
+    verify?: (p: string, timeoutMs?: number) => Promise<IntegrityVerdict>;
+  } = {},
 ): Promise<ArchiveInfo> {
   if (inFlight) return inFlight;
   inFlight = doBackup(opts).finally(() => { inFlight = null; });
@@ -224,28 +430,36 @@ export function runBackupNow(
 }
 
 async function doBackup(
-  opts: { dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number },
+  opts: {
+    dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
+    verify?: (p: string, timeoutMs?: number) => Promise<IntegrityVerdict>;
+  },
 ): Promise<ArchiveInfo> {
+  const verify = opts.verify ?? integrityOk;
   // Production-only (§6.3). Belt AND braces: compose denies app-practice the mount entirely.
+  // Deliberately BEFORE the name is minted and left un-audited: this is a refusal on the practice
+  // copy, not an attempt on production, and there is no production backup folder to record it in.
   await assertNotPracticeDatabase();
 
-  const dir = opts.dir ?? resolveBackupDir();
-  const databaseUrl = process.env.DATABASE_URL ?? "";
-  if (!databaseUrl) throw new HttpError(500, "DATABASE_URL is not configured.");
+  // The archive name is minted FIRST, before anything that can fail (#119). Every failure past this
+  // point — including the two preflight refusals below, which used to throw before `fail()` even
+  // existed — then has an entityId to be audited against. An attempted dump of production is an
+  // access event and `manage_backups` is on spec §9's dangerous-action list, so "who tried, and
+  // when" has to be answerable even for the attempts that never started. The name is a timestamp
+  // plus random bytes with no side effects, so minting one that never gets used costs nothing.
+  const name = manualArchiveName(new Date(), randomBytes(4).toString("hex"));
 
-  // `dumpBin` is a plain PARAMETER, not an env var (§6.4): vitest injects a fake so the suite never
-  // depends on a host pg_dump, whose major on CI's ubuntu-latest is older than the postgres:18
-  // server — and pg_dump hard-refuses a newer server.
-  const bin = opts.dumpBin ?? "pg_dump";
-  const args = opts.dumpArgs ?? [databaseUrl];
-
+  // `resolveBackupDir()` can itself throw on a malformed deploy value — audited on its own, since
+  // without a resolved folder there is nowhere to write a status file.
+  let dir: string;
   try {
-    await access(dir, FS.W_OK);
-  } catch {
-    throw new HttpError(500, `The backup folder is not writable: ${dir}`);
+    dir = opts.dir ?? resolveBackupDir();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await auditBackupRun(name, false, message).catch(() => {});
+    throw new HttpError(500, `Backup failed: ${message}`);
   }
 
-  const name = manualArchiveName(new Date(), randomBytes(4).toString("hex"));
   const tmpPath = path.join(dir, tempNameFor(name));
   const finalPath = archivePath(dir, name);
 
@@ -258,6 +472,21 @@ async function doBackup(
     await auditBackupRun(name, false, message).catch(() => {});
     throw new HttpError(500, `Backup failed: ${message}`);
   };
+
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  if (!databaseUrl) await fail("DATABASE_URL is not configured.");
+
+  // `dumpBin` is a plain PARAMETER, not an env var (§6.4): vitest injects a fake so the suite never
+  // depends on a host pg_dump, whose major on CI's ubuntu-latest is older than the postgres:18
+  // server — and pg_dump hard-refuses a newer server.
+  const bin = opts.dumpBin ?? "pg_dump";
+  const args = opts.dumpArgs ?? [databaseUrl];
+
+  try {
+    await access(dir, FS.W_OK);
+  } catch {
+    await fail(`The backup folder is not writable: ${dir}`);
+  }
 
   // --- dump to the temp file, via ARGV. No string ever reaches a shell. ---
   let stderr = "";
@@ -372,7 +601,28 @@ async function doBackup(
   }
   await unlink(tmpPath).catch(() => {});
 
-  if (!(await integrityOk(finalPath))) {
+  // Compared against "intact" EXPLICITLY (Codex, PR #131 — a P1 I introduced). When `integrityOk`
+  // started returning a three-valued verdict, this truthiness check silently inverted: `"corrupt"`
+  // and `"unverifiable"` are both truthy strings, so `!verdict` was false and the failure branch
+  // became unreachable — a corrupt archive would have been recorded and returned as a SUCCESSFUL
+  // backup with `integrityOk: true`. `tsc` cannot catch it (`!string` is valid), and no test
+  // covered a corrupt freshly-written archive, which is why the suite stayed green.
+  //
+  // "unverifiable" fails too, deliberately: an archive we could not check is not one we may call a
+  // backup. Unlike the read paths, this is the WRITE path — there is no later re-check to recover
+  // on, and claiming success for an unverified dump is the exact failure this feature exists to
+  // prevent.
+  // Verified with the WRITE-PATH deadline, not the banner's read-poll one (Codex, PR #131). A
+  // legitimate archive of a large database can take longer than `INTEGRITY_TIMEOUT_MS` to read, and
+  // here a timeout does not merely under-report: `fail()` DELETES the freshly completed archive and
+  // records the backup as failed, so a short deadline would make "Back up now" progressively
+  // unusable as the database grows. The nightly shell path has no verification deadline at all;
+  // this one exists only so a wedged volume cannot pin `inFlight` forever, which is why it matches
+  // the dump's own generous ceiling rather than the poll's.
+  //
+  // No cache here either — `verifyArchive`'s key is (path, size, mtime) and this file has just been
+  // written, so a fresh archive must be verified for real, never answered from a cache.
+  if ((await verify(finalPath, DEFAULT_DUMP_TIMEOUT_MS)) !== "intact") {
     return fail("the written archive failed its gzip integrity check.");
   }
 

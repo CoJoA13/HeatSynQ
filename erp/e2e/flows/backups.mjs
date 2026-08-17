@@ -14,6 +14,28 @@ export async function run(page, shot, ctx) {
   await page.getByText("Backup folder:", { exact: false }).waitFor({ state: "visible" });
 
   // --- 2. Back up now writes a real archive and the indicator turns green. ---
+  //
+  // The staleness bar's PRECONDITION is checked before the click (Codex, PR #131): on a fresh
+  // install the shell shows it, and without establishing that first, a race between the initial
+  // health fetch and the backup could leave it never rendered — after which "it is gone" would be
+  // an assertion about nothing.
+  // `waitFor`, not a bare `count()` (Codex, PR #131): `count()` returns immediately rather than
+  // auto-waiting, and the page payload and the shell's health request are independent — so the
+  // backup-folder text above can render just before the health response paints the banner, failing
+  // this flow intermittently on a UI that is perfectly correct.
+  const staleBar = page.getByLabel("Backup status");
+  await staleBar.waitFor({ state: "visible", timeout: 15_000 });
+  assert.equal(
+    await staleBar.count(), 1,
+    "the staleness bar is on screen before the backup (the #124 precondition)",
+  );
+
+  // Armed BEFORE the click so the invalidation's OWN refetch is what gets awaited, rather than a
+  // later navigation's.
+  const healthAfterInvalidate = page.waitForResponse((res) =>
+    new URL(res.url()).pathname === "/api/admin/backups/health"
+    && res.request().method() === "GET" && res.ok());
+
   const before = await page.locator("table tbody tr").count();
   await page.getByRole("button", { name: "Back up now" }).click();
   await page.getByText("Backups are up to date", { exact: false })
@@ -22,6 +44,22 @@ export async function run(page, shot, ctx) {
   assert.ok(after > before || after >= 1, "an archive row appears after Back up now");
   await page.getByText("OK", { exact: true }).first().waitFor({ state: "visible" });
   await shot("backups-after-run");
+
+  // --- 2b. The staleness bar ITSELF clears, without navigating (#124). ---
+  // An earlier version waited on the "Open Backups" LINK disappearing, which is not the same claim:
+  // #121 added a second, visually identical red bar for an unknown failure that deliberately
+  // carries NO link, so a failed post-invalidation refetch satisfied a link-absence check while the
+  // shop still had a red bar on screen. The two bars now carry distinct accessible names.
+  await healthAfterInvalidate;
+  await staleBar.waitFor({ state: "detached", timeout: 15_000 });
+  assert.equal(
+    await staleBar.count(), 0,
+    "the staleness bar clears on the same page after a successful Back up now (#124)",
+  );
+  assert.equal(
+    await page.getByLabel("System status").count(), 0,
+    "...and it did not merely become the generic unknown-failure bar (#121)",
+  );
 
   // --- 3. The staleness bar is gone once a fresh backup exists. ---
   // BackupBanner throttles its own health re-fetch to once per 5 minutes and latches a 403 for the

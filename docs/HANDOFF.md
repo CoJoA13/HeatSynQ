@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). Open backlog: #51–#52, #59–#65, #69–#93, #95–#100, #102–#103, #118–#121, #123–#126 (§6). **Backlog burn-down IN FLIGHT (2026-08-16)** — Task 0 **#122** merged (PR #127, `20174b6`); Group A **#115 + #68** merged (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** merged (PR #129, `b56aa0f`); Group C **#126 + #125** open (PR #130). Remaining: Group D (#118–#121, #123, #124).
+**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **Backlog burn-down COMPLETE (2026-08-16) — 14 issues closed across five groups.** Task 0 **#122** (PR #127, `20174b6`); Group A **#115 + #68** (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** (PR #129, `b56aa0f`); Group C **#126 + #125** (PR #130, `1d8eac8`); Group D **#118–#121 + #123 + #124** (PR #131). Final gates: 3080 tests / 182 files, `tsc`/`eslint`/`build` clean, E2E 23/23. **Open backlog is now: #51–#52, #59–#65, #69–#80, #82–#83, #85–#90, #92–#93, #95–#100, #102–#103, and #132** (retention-failure latch, filed from the Group D review) — §6. **Do not re-pick #115, #118–#126, #68, #81, #84 or #91: they are done.**
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -353,8 +353,30 @@ makes from every page); #119 preflight failures of a manual backup (missing/unwr
 unset `DATABASE_URL`) produce no audit row despite the stated rule that failed attempts are access
 events; #120 a failing retention `find` leaves the status green while retention is silently broken;
 #121 the error bar reaches non-`manage_backups` users during a total DB outage, because the silencing
-403 itself needs a DB read. **#122 — FIXED on branch `fix-vitest-collection` (`c69d82a`), the
-burn-down's Task 0.** `vitest.config.ts` set no `include`/`exclude`, so after a build vitest also
+403 itself needs a DB read — **RULED by the owner 2026-08-16 (reword the unknown-cause bar) and
+BUILT** in Group D; the issue's own suggested direction proved unbuildable, since telling "cannot
+determine your permissions" apart from "status unavailable" needs the same database that is down.
+**#118's bound is PER-TRAVERSAL, by owner ruling 2026-08-17 — there is no module-wide semaphore, and
+that is deliberate.** A shared slot bounded the process more tightly, but every mechanism it needed to
+be *correct* generated the next review finding — freeing a slot held by a wedged child, then accounting
+for a timed-out-but-still-alive child, then keeping the write path inside the same ceiling — six rounds,
+each fix creating the next. #118 asked for "a small concurrency limit, or cache results keyed on file
+metadata"; `mapLimited` per traversal + in-flight coalescing + the intact-only cache deliver exactly
+that and delete the whole class of failure, because there is no shared slot to exhaust, leak or bypass.
+The trade is stated in the code and pinned by a test rather than left implicit: concurrent readers each
+get their own budget, so a busy moment reaches ~8–12 checks rather than 4 — bounded, and acceptable for
+1–5 users. Two related rules fell out of the same rounds: **only an `"intact"` verdict is cached** (a
+rejection may be a timeout, and caching that would hide a recovered archive), and **the WRITE path
+verifies with the dump's own generous deadline, never the banner's 60s read poll** — a timeout there
+DELETES the fresh archive and records a failure, so a short deadline would make "Back up now"
+progressively unusable as the database grows while the nightly path, which has no verification deadline
+at all, kept working.
+**#118, #119, #120, #123 and #124 are all DONE in the same group** (branch `fix-backups-followups`):
+bounded + metadata-and-TTL-cached integrity checks, audited preflight failures, a failing retention
+prune now going red instead of leaving the previous green, the practice copy's own controls disabled
+with the server's sentence as the tooltip (nav entry kept, `nav.ts` untouched per §8), and the shell
+bar refreshing after a successful "Back up now".
+**#122 — FIXED on branch `fix-vitest-collection` (`c69d82a`), the burn-down's Task 0.** `vitest.config.ts` set no `include`/`exclude`, so after a build vitest also
 collected `.next/standalone/**/tests` and ran every file twice — gate ORDER silently mattered and any
 post-build count was inflated. Measured on `main` with a build present: `vitest list --filesOnly`
 emitted **358 files for 179 real ones**. Now `include: ["tests/**/*.test.{ts,tsx}"]` plus
@@ -646,7 +668,30 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
 
    **⚠️ TWO FINDINGS THAT NEED THE OWNER BEFORE THIS CAN BE KEYED IN:**
 
-   1. **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
+   1. ~~**VS keys the revenue account by EQUIPMENT GROUP**~~ — **ANSWERED 2026-08-16** by two more
+      owner-supplied exports (same confidential directory): `…-visual-shop-process-codes.pdf` and
+      `…-visual-shop-equipment.pdf`. The account is on **neither** table. The Process Code table has
+      **no GL column at all**; the Equipment table HAS a `G/L #` column (plus `Addon1 GL`/`Addon4
+      GL`) and **every row is blank**. The owner's Order Entry chart shows `Standard Steps → Table
+      Keys → Process Code · Equipment · Group · Cost Center`, and the GL report's columns are
+      exactly `GL# · Process Code · Eq Id · Gr Id · Cc Id` with `Eq Id` = 0 on all but two rows. So
+      VS hangs the account on the **Standard Step**, keyed effectively on **(Process Code × Group)**
+      — Group being the furnace type, which is why `AnnealAtmos` appears under 4401 IQ, 4404 Bell
+      and 4411 Rotary.
+
+      **What that means here, and it is a business choice, not a technical block** (owner: "they may
+      have multiple ways of doing depending on how the shop chooses"). HeatSynQ hangs one
+      `glAccountId` off each `ProcessStepCode` and has no Group concept — deliberately, since shared
+      process masters were removed and the recipe belongs to the part. So the split is reproduced
+      purely by how the CODES are named: either one step code per (process × furnace group)
+      — "Anneal in Atmosphere (Bell)" — which reproduces today's eight-account revenue split exactly
+      and keeps the bookkeeper's reports unchanged (~80–120 active pairs, a spreadsheet-paste job),
+      or one code per process with a single account, which is fewer codes and loses revenue-by-
+      furnace. **The step code is what prints on the invoice line**, so either naming is honest
+      paper. Owner's call; nothing is blocked on it.
+      (Superseded framing kept below for the reasoning.)
+
+      **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
       Process Step Code.** The report's `Gr Id` column is what separates 4401 (IQ) / 4402 (Vacuum) /
       4403 (Tip Up) / 4404 (Bell) / 4405 (Temper) / 4407 (Car Bot) / 4411 (Rotary) / 4412 (Pusher),
       and the SAME process code lands in several: `AnnealAtmos` appears under 4401, 4404 and 4411;
@@ -656,10 +701,13 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       is how the shop already names them in practice, worth confirming — or the account has to be
       chosen somewhere else. **Do not key the chart in until this is settled**; guessing would
       mis-post revenue by furnace.
-   2. **The balance-sheet side is not in this list.** The QBO export's readiness gate also needs
-      `BillingConfig`'s A/R control, sales-tax, discount and write-off accounts, plus a cash account
-      per payment type. This report covers the REVENUE side only, so §7 item 2's bookkeeper
-      conversation still owes those four-plus-N numbers.
+   2. **The balance-sheet side is not in this list, and CANNOT come from Visual Shop** (owner,
+      2026-08-16: "not sure how to provide that, especially from the settings of Visual Shop" —
+      correct, and expected). The QBO export's readiness gate needs `BillingConfig`'s A/R control,
+      sales-tax, discount and write-off accounts plus a cash account per payment type; VS only ever
+      knew the REVENUE side, which is exactly what its GL report shows. Those five-plus-N numbers
+      live in **QuickBooks' own chart of accounts**, so they are a bookkeeper question, not a VS
+      screen anyone is failing to find. Folds into §7 item 2's conversation.
 5. **Four Phase 4 pings the owner has not ruled on yet** — kept here verbatim from the Phase 4
    record (`docs/history/2026-08-06-phase-4-certs-shipping.md`) so they stay in front of the next
    session; §9 carries them into the next PR:
@@ -790,10 +838,13 @@ and §4, then pick among:
    claim, with the unlock → edit → re-finalize correction route tested end to end). The remaining
    two: **#123** disable the Backups page's own controls
    in practice mode while keeping the nav entry (`nav.ts` must NOT learn about practice mode — §8);
-   **#124** refresh the shell staleness bar after a successful "Back up now".
-4. **Backlog burn-down** — ~~the P1s #81 and #84~~ **both DONE** (Group B); Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
-   #102/#103; **Phase 8C's #118–#121** (**#122 is DONE** — branch `fix-vitest-collection`, §6); the per-worker-test-DB
-   infra task (§6); owner question #68 (posted-payment reversal policy). Also worth an early look: the
+   **#124** refresh the shell staleness bar after a successful "Back up now". **All six are now BUILT**
+   — #125/#126 in Group C (`fix-order-guards`), #123/#124 in Group D (`fix-backups-followups`).
+4. **Backlog burn-down — COMPLETE (2026-08-16), 14 issues closed** (#68, #81, #84, #91,
+   #115, #118–#126). Still open: Phase 6 follow-ups #95–#96/#99–#101; the Phase 7 deferrals
+   #102/#103; **#132** (a retention failure is cleared by the next manual backup, which does no
+   retention — filed from the Group D review, self-correcting within one night); the
+   per-worker-test-DB infra task (§6). ~~owner question #68~~ is answered and built. Also worth an early look: the
    sibling-page stale-load sweep (the §5.13 class the Phase 7 quotes + templates-list fixes addressed
    on two pages — customers/parts/orders/certs detail pages likely share the hole).
 5. ~~**A Phase 8 demo**~~ — **DONE 2026-08-16** (record in `docs/execution/2026-08-16-phase-8c-backup-polish/progress.md`).
