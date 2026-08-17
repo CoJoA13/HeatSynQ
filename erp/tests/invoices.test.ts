@@ -1144,6 +1144,37 @@ describe("finalizeInvoice", () => {
     expect((await getOrder(order.id)).status).toBe("INVOICED");
   });
 
+  // #79. `termsName` always snapshotted the label; the NUMBERS behind it are frozen here too, beside
+  // `dueDate` and for the same reason — an invoice is frozen paper (§5.4). Without this write the
+  // frozen columns would be null and every newly finalized invoice would silently offer no
+  // early-pay discount at all, which is the opposite of the bug being fixed.
+  it("freezes the issued early-pay terms at finalize, and gives a CREDIT none (#79)", async () => {
+    const terms = await prisma.terms.create({
+      data: { name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10 } });
+    const { order, invoice } = await draftFixture();
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: terms.id } });
+
+    await asSystem(() => finalizeInvoice(invoice.id));
+    const frozen = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(frozen.termsDiscountPercent?.toNumber()).toBe(2);
+    expect(frozen.termsDiscountDays).toBe(10);
+
+    // Moving the customer off those terms afterwards must not touch what the invoice froze.
+    const plain = await prisma.terms.create({ data: { name: "Net 30", netDays: 30 } });
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: plain.id } });
+    const after = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(after.termsDiscountPercent?.toNumber()).toBe(2);
+    expect(after.termsDiscountDays).toBe(10);
+
+    // A CREDIT offers no early-pay discount, exactly as it gets no due date.
+    const credit = await asSystem(() => createCredit(invoice.id));
+    await asSystem(() => finalizeInvoice(credit.id));
+    const frozenCredit = await prisma.invoice.findUniqueOrThrow({ where: { id: credit.id } });
+    expect(frozenCredit.termsDiscountPercent).toBeNull();
+    expect(frozenCredit.termsDiscountDays).toBeNull();
+    expect(frozenCredit.dueDate).toBeNull();
+  });
+
   it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {
     const { order, invoice } = await draftFixture();
     const done = await asSystem(() => finalizeInvoice(invoice.id));

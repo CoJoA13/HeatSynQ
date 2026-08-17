@@ -64,6 +64,21 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 
 type DiscountTerms = { discountPercent: Prisma.Decimal | null; discountDays: number | null };
 
+/** The discount terms an invoice was ISSUED under, read off its own frozen columns (#79).
+ *
+ *  These used to come from `invoice.customer.terms` — the customer's terms RIGHT NOW — so moving a
+ *  customer between terms rewrote what invoices already in their hands were worth: an invoice sent
+ *  under `2/10 Net 30` lost its discount, and one sent under plain `Net 30` gained one it never
+ *  offered. An invoice is frozen paper (§5.4); `termsName` always snapshotted the label, and these
+ *  are the numbers behind it. A null pair means "no early-pay discount", exactly as it does on
+ *  `Terms` — there is deliberately no fallback to the live relation, because a fallback is how the
+ *  retroactive read would creep back in. */
+function issuedTerms(invoice: {
+  termsDiscountPercent: Prisma.Decimal | null; termsDiscountDays: number | null;
+}): DiscountTerms {
+  return { discountPercent: invoice.termsDiscountPercent, discountDays: invoice.termsDiscountDays };
+}
+
 /** Pure over already-read state — one definition shared by the public `discountAvailable` (which
  *  reads that state) and the DISCOUNT guard inside `applyPayment` (which already holds it under the
  *  claim), so the two can never drift. `settledOpen` is the invoice's open balance in dollars. */
@@ -118,7 +133,8 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
     where: { id: invoiceId },
     select: {
       invoiceDate: true, total: true,
-      customer: { select: { terms: { select: { discountPercent: true, discountDays: true } } } },
+      // #79: the invoice's OWN frozen pair, never the customer's current terms relation.
+      termsDiscountPercent: true, termsDiscountDays: true,
       applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
     },
   });
@@ -126,7 +142,7 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
   // will refuse (#81 / Codex PR #129).
   return remainingDiscountFor(
-    invoice.customer.terms, invoice.invoiceDate, payment.receivedDate,
+    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate,
     invoice.total.toNumber(), invoice.applications.map(toLite));
 }
 
@@ -251,7 +267,10 @@ type ApplyLine = ApplyInput["lines"][number];
 
 const INVOICE_CLAIM_SELECT = {
   id: true, total: true, invoiceDate: true, kind: true, status: true, deletedAt: true,
-  customer: { select: { terms: { select: { discountPercent: true, discountDays: true } } } },
+  // #79: frozen at finalize, read here — `applyPayment` caps the DISCOUNT line independently of
+  // `discountAvailable`, so both sides have to read the same frozen pair or the save would still let
+  // through a discount the paper never offered.
+  termsDiscountPercent: true, termsDiscountDays: true,
   order: { select: { orderNumber: true } },
   applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
 } satisfies Prisma.InvoiceSelect;
@@ -436,7 +455,7 @@ function resolveReason(
     // per-call offer. `discountSoFarCents` then adds this request's own accepted lines on top, so
     // the cap holds both WITHIN one payload and ACROSS separate calls.
     const elig = remainingDiscountFor(
-      invoice.customer.terms, invoice.invoiceDate, receivedDate,
+      issuedTerms(invoice), invoice.invoiceDate, receivedDate,
       invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");

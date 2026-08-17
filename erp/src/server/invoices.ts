@@ -115,7 +115,14 @@ export type InvoiceCreateResult = { invoice: InvoiceDetail; warnings: string[]; 
 const DETAIL_INCLUDE = {
   // `terms` is read here (not a second query) so `finalizeInvoiceInTx` can compute `dueDate` off the
   // SAME row this transaction already claimed via `claimInvoiceRow` — no new lock (Task 3/§4.3).
-  customer: { select: { code: true, name: true, terms: { select: { netDays: true } } } },
+  // `netDays` drives `dueDate` at finalize; the discount pair is frozen onto the invoice there too
+  // (#79), so the claim reads all three from the customer's terms in one go.
+  customer: {
+    select: {
+      code: true, name: true,
+      terms: { select: { netDays: true, discountPercent: true, discountDays: true } },
+    },
+  },
   order: { select: { orderNumber: true } },
   lines: { orderBy: { position: "asc" } },
 } satisfies Prisma.InvoiceInclude;
@@ -1541,12 +1548,21 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // its own `invoiceDate` instead), so the write below is INVOICE-only.
   const netDays = invoice.customer.terms?.netDays ?? null;
   const dueDate = netDays === null ? null : addDays(invoice.invoiceDate, netDays);
+  // #79: freeze the early-pay pair alongside `dueDate`, and for the same reason. `termsName` has
+  // always snapshotted the LABEL, but the discount kept reading the customer's CURRENT terms — so
+  // reassigning a customer rewrote what invoices already in their hands were worth, in both
+  // directions. An invoice is frozen paper (§5.4), so it carries its own numbers from here.
+  // INVOICE-only, exactly like `dueDate`: a CREDIT offers no early-pay discount.
+  const issuedDiscount = {
+    termsDiscountPercent: invoice.customer.terms?.discountPercent ?? null,
+    termsDiscountDays: invoice.customer.terms?.discountDays ?? null,
+  };
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
       data: {
         status: "FINALIZED", finalizedAt: now, finalizedById: actor.id,
-        ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
+        ...(invoice.kind === "INVOICE" ? { dueDate, ...issuedDiscount } : {}),
       },
     }), { tx });
   // Only an INVOICE owns the order's status (§5.2): finalizing one writes INVOICED. A CREDIT is a

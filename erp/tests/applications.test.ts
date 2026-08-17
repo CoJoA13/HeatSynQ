@@ -47,12 +47,21 @@ async function finalizedInvoice(opts: {
       receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
     },
   });
+  // #79: a finalized invoice carries its ISSUED discount terms, frozen. This fixture writes them
+  // directly (it builds the row rather than going through `finalizeInvoice`), so it has to write
+  // what finalize writes — otherwise it models an invoice that could not exist.
+  const issued = opts.termsId
+    ? await prisma.terms.findUniqueOrThrow({
+        where: { id: opts.termsId }, select: { discountPercent: true, discountDays: true } })
+    : null;
   const invoice = await prisma.invoice.create({
     data: {
       kind: "INVOICE", status: "FINALIZED",
       orderId: order.id, customerId,
       invoiceDate: parseDateOnly(opts.invoiceDate ?? "2026-08-08"),
       total: opts.total, finalizedAt: new Date(),
+      termsDiscountPercent: issued?.discountPercent ?? null,
+      termsDiscountDays: issued?.discountDays ?? null,
     },
   });
   return { invoiceId: invoice.id, orderId: order.id, orderNumber, customerId };
@@ -315,6 +324,51 @@ describe("discountAvailable — the early-pay window", () => {
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-18"); // invoiceDate + 10 days exactly
     expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+  });
+
+  // #79. The discount read the invoice CUSTOMER's current terms relation, so reassigning a customer
+  // rewrote what invoices already in their hands were worth — in BOTH directions. An invoice is
+  // frozen paper (§5.4): it now carries the numbers behind its own `termsName`.
+  it("keeps the discount its ISSUED terms offered when the customer is moved off them (#79)", async () => {
+    const issued = await makeTerms("2.00", 10); // 2/10 Net 30 on the day it was sent
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+
+    // The customer is moved to plain Net 30 AFTER the paper went out.
+    const now = await makeTerms(null, null);
+    await prisma.customer.update({ where: { id: inv.customerId }, data: { termsId: now.id } });
+
+    // Before the fix this collapsed to 0 — a discount the customer had been promised in writing.
+    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+  });
+
+  it("does not GRANT a discount the paper never offered (#79, the other direction)", async () => {
+    const issued = await makeTerms(null, null); // plain Net 30 on the day it was sent
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+
+    const now = await makeTerms("2.00", 10);
+    await prisma.customer.update({ where: { id: inv.customerId }, data: { termsId: now.id } });
+
+    // Before the fix this became 20 — money off an invoice that never offered any.
+    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+  });
+
+  it("refuses to APPLY a discount the issued terms never offered, not just to display none (#79)", async () => {
+    // The guard that matters: `discountAvailable` feeds the UI, but `applyPayment` caps the DISCOUNT
+    // line independently. Both must read the frozen pair or the save would still let one through.
+    const issued = await makeTerms(null, null);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    const now = await makeTerms("2.00", 10);
+    await prisma.customer.update({ where: { id: inv.customerId }, data: { termsId: now.id } });
+
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id,
+      lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
+    }))).rejects.toThrow(/discount/i);
   });
 });
 

@@ -195,7 +195,13 @@ describe("applications routes", () => {
       data: { orderNumber: 620000 + seq, customerId: customer.id, status: "SHIPPED", receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01") },
     });
     const invoice = await prisma.invoice.create({
-      data: { kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id, invoiceDate: parseDateOnly("2026-08-08"), total: 1000, finalizedAt: new Date() },
+      // #79: the discount now comes off the invoice's OWN frozen pair, not the customer's live
+      // terms, so this row has to carry what `finalizeInvoice` would have written for it.
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 1000, finalizedAt: new Date(),
+        termsDiscountPercent: "2.00", termsDiscountDays: 10,
+      },
     });
     const paymentId = await makePayment(customer.id, 1000);
     const res = await discountRoute(getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${invoice.id}`, cookie), noParams);
