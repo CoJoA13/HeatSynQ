@@ -633,6 +633,21 @@ async function saveNewShipper(
       }
     }
 
+    // #125: the re-shipped-serial advisory, computed through the SAME two helpers
+    // `shipmentWarnings` uses rather than re-derived here. Creation builds its warning list inline
+    // (its messages name the input the operator just sent, e.g. "shipping 5 / 5.00 lbs exceeds the
+    // remaining …", where a later read can only speak of shipped-to-date), so the two lists are
+    // deliberately not one function — but the RULE behind any single warning must live in exactly
+    // one place, which is the #50/#54 lesson. Every selection here is fresh, so `serialById` resolves
+    // each one to its (line, serial) identity — the same key a later read rebuilds from the live join
+    // or the snapshot.
+    warnings.push(...reshippedSerialWarnings(await otherShipmentsWith(
+      tx, shipper.id,
+      data.orders.flatMap((o) => o.serials.flatMap((sr) => {
+        const resolved = serialById.get(sr.orderSerialId);
+        return resolved ? [{ lineId: resolved.lineId, serial: resolved.serial }] : [];
+      })))));
+
     return { shipper: await readShipperDetail(tx, shipper.id), warnings, deduped: false };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
@@ -1150,7 +1165,10 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
   // `orderLineIdAtSave` snapshot — live rows prefer the live join, same convention as reads.
   const shipSerials = await db.shipperSerial.findMany({
     where: { shipperOrder: { shipperId: detail.id } },
-    select: { orderLineIdAtSave: true, orderSerial: { select: { lineId: true } } },
+    select: {
+      orderLineIdAtSave: true, orderSerialId: true, serial: true,
+      orderSerial: { select: { lineId: true } },
+    },
   });
   const serialLineIds = new Set(
     shipSerials.map((sr) => sr.orderSerial?.lineId ?? sr.orderLineIdAtSave).filter((id) => id !== ""),
@@ -1173,8 +1191,134 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
       }
     }
   }
+  // A VOIDED shipment derives none of this (Codex, PR #130). "Voided shipments do not count" was
+  // applied to the MATCHED side only — the other shipment is filtered on `deletedAt` inside
+  // `otherShipmentsWith` — but the CURRENT one never was, so opening a withdrawn packing list whose
+  // serial also sits on a live one still produced the advisory: telling read-only history to fix
+  // something it cannot, and implicating a document that has already been withdrawn.
+  if (detail.deletedAt === null) {
+    warnings.push(...reshippedSerialWarnings(await otherShipmentsWith(db, detail.id,
+      shipSerials
+        .map((sr) => ({ lineId: sr.orderSerial?.lineId ?? sr.orderLineIdAtSave, serial: sr.serial }))
+        // A row released BEFORE migration 20260806164109 carries neither a live join nor a line
+        // snapshot (`""` — the migration says so), so it has no identity to match on. There are no
+        // such rows in this deployment (the app has never been in production) and none can be
+        // created now, since every write since that migration populates the snapshot.
+        .filter((k) => k.lineId !== ""))));
+  }
   warnings.push(...overshipWarnings(detail));
   return warnings;
+}
+
+/** One serial that appears on ANOTHER live shipment as well as this one. */
+type ReshippedSerial = { serial: string; shipperId: string; shipperNumber: number; shipDate: Date };
+
+/** The stable identity of a selected serial: which ORDER LINE it belongs to, and its number.
+ *  `orderSerialId` cannot serve — see `otherShipmentsWith`. */
+type SerialKey = { lineId: string; serial: string };
+
+const serialKeyOf = (k: SerialKey): string => `${k.lineId}\u0000${k.serial}`;
+
+/**
+ * Where else do THIS shipment's serials appear? (Issue #125, owner ruling 2026-08-16: warn, never
+ * block — refined 2026-08-16 after three findings on PR #130.)
+ *
+ * **Derived, not stored.** A selection IS the record that the serial went out, so the join below is
+ * the whole mechanism and the schema is untouched.
+ *
+ * **Keyed on (order line, serial text), NOT on `orderSerialId`.** `replaceSerials` DELETES and
+ * recreates every `OrderSerial`, nulling the earlier `ShipperSerial.orderSerialId` by snapshot +
+ * release — so an id-keyed match lost the prior shipment entirely and the recreated serial could go
+ * out again unwarned. The line plus the number survives that, and scoping to the LINE is what makes
+ * the serial TEXT safe to match on (a line belongs to one order, one customer, one part), which was
+ * the original reason for avoiding it. Released rows still carry both halves: `orderLineIdAtSave` is
+ * the plain line snapshot kept for exactly this class of problem, and `serial` is the frozen number.
+ *
+ * **Every other live shipment, not just earlier ones — and the sentence says "also appears on".**
+ * The first draft said "has ALREADY shipped on …" and excluded only the current shipment, which made
+ * the relation SYMMETRIC and reversed history: re-reading the ORIGINAL ticket accused it of
+ * duplicating its own successor. Bounding on an earlier `shipperNumber` fixed that and broke
+ * something else, because packing-list order records DOCUMENT creation, not when a serial was
+ * selected during an EDIT — `replaceShipperSerials` on an older ticket can newly add a serial a
+ * higher-numbered ticket already holds, and a `lt` filter ignores it. Distinguishing those would
+ * need a `ShipperSerial.createdAt` column; the owner ruled for the symmetric wording instead, so
+ * both documents carry an advisory that is true from either side. That is the right reading anyway:
+ * a duplicate involves BOTH tickets.
+ *
+ * A VOIDED shipment does not count — `deletedAt` on the Shipper, the same "voided blocks nothing"
+ * rule as every other guard here. Ascending by ship date, then packing list, so the sentence is
+ * stable across repeat reads.
+ */
+async function otherShipmentsWith(
+  db: Db, shipperId: string, keys: SerialKey[],
+): Promise<ReshippedSerial[]> {
+  if (keys.length === 0) return [];
+  const wanted = new Set(keys.map(serialKeyOf));
+  const lineIds = [...new Set(keys.map((k) => k.lineId))];
+  const serials = [...new Set(keys.map((k) => k.serial))];
+  // BOTH halves filtered in SQL (Codex, PR #130): `lineId IN (…) AND serial IN (…)`. Filtering on
+  // the line alone fetched and materialised every ShipperSerial ever recorded for that line and
+  // rejected the rest in JS — and, the sharper point, it left the new
+  // `(orderLineIdAtSave, serial)` index unable to use its second column, since the predicate never
+  // mentioned `serial`.
+  //
+  // The JS membership check below still has to run and is NOT redundant: two `IN` lists are a
+  // CROSS PRODUCT, so SQL can return a (line A, serial from line B) row that was never actually
+  // asked for. SQL narrows to a small candidate set; `wanted` enforces the exact PAIRING.
+  const rows = await db.shipperSerial.findMany({
+    where: {
+      serial: { in: serials },
+      OR: [{ orderLineIdAtSave: { in: lineIds } }, { orderSerial: { lineId: { in: lineIds } } }],
+      shipperOrder: { shipperId: { not: shipperId }, shipper: { deletedAt: null } },
+    },
+    select: {
+      serial: true,
+      orderLineIdAtSave: true,
+      orderSerial: { select: { lineId: true } },
+      shipperOrder: {
+        select: { shipper: { select: { id: true, shipperNumber: true, shipDate: true } } },
+      },
+    },
+    orderBy: [
+      { shipperOrder: { shipper: { shipDate: "asc" } } },
+      { shipperOrder: { shipper: { shipperNumber: "asc" } } },
+      { serial: "asc" },
+    ],
+  });
+  // ONE entry per (serial, shipment), not per matched ROW (Codex, PR #130).
+  // `replaceShipperSerials` deliberately PRESERVES a released row while adding the new live one
+  // (snapshot + release — the shipment still prints that serial), so one packing list can legitimately
+  // hold several rows for the same (line, serial), and each further replacement adds another. A
+  // one-for-one map then repeated the identical sentence once per row. First occurrence wins, which
+  // keeps the query's ship-date ordering.
+  const seen = new Set<string>();
+  const out: ReshippedSerial[] = [];
+  for (const r of rows) {
+    const lineId = r.orderSerial?.lineId ?? r.orderLineIdAtSave;
+    if (!wanted.has(serialKeyOf({ lineId, serial: r.serial }))) continue;
+    const shipper = r.shipperOrder.shipper;
+    const dedupeKey = `${shipper.id}\u0000${r.serial}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      serial: r.serial,
+      shipperId: shipper.id,
+      shipperNumber: shipper.shipperNumber,
+      shipDate: shipper.shipDate,
+    });
+  }
+  return out;
+}
+
+/** §5.14 — the warning names its cause: which serial, which packing list, when, and a link to it.
+ *  "also appears on", not "cannot ship" and not "has already shipped": the ruling refused to block
+ *  (a returned part legitimately goes back out, and there is no return/RMA concept to unblock a
+ *  refusal with), and the neutral wording is what makes the same sentence honest on BOTH documents.
+ *  Pure over the rows, so the sentence is testable on its own. */
+function reshippedSerialWarnings(prior: ReshippedSerial[]): string[] {
+  return prior.map((p) =>
+    `Serial ${p.serial} also appears on Packing List ${p.shipperNumber} ` +
+    `(${formatDateOnly(p.shipDate)}) — see /shipping/${p.shipperId}`);
 }
 
 /**

@@ -1,0 +1,11 @@
+-- The SNAPSHOT half of the re-shipped-serial lookup (issue #125; Codex, PR #130).
+--
+-- `shipmentWarnings` asks "does this serial appear on any other live shipment?" on EVERY shipment
+-- read and edit. It matches on (order line, serial) rather than `orderSerialId`, because
+-- `replaceSerials` deletes and recreates the OrderSerial rows and an id-keyed match would lose the
+-- prior shipment entirely. Only `orderSerialId` was indexed, so the snapshot half of that OR
+-- scanned the whole accumulated serial history on every one of those reads.
+--
+-- Composite in (line, serial) order: the line is the selective half, and the serial narrows within
+-- it. Purely additive.
+CREATE INDEX "ShipperSerial_orderLineIdAtSave_serial_idx" ON "ShipperSerial"("orderLineIdAtSave", "serial");
