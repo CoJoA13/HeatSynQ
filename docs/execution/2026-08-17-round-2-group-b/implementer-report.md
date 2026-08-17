@@ -248,6 +248,24 @@ predictably wrong; #136 records the server-side fix and the one question inside 
 owner — whether a parent-only statement is ever legitimately wanted, which decides whether the single
 -print route should simply refuse for a parent printed uncombined.
 
+## Review round 7 — fixed, not triaged, and why the rule allows it
+
+One P2: a rejected credit application routed its message into the section's shared `error`, which
+gates the whole summary (`loaded && !error && summary`) — so the failure **unmounted the very form
+that produced it**, removing the only control that could clear it. The operator's only way back was a
+page reload.
+
+**Fixed rather than triaged**, and the round-6 rule permits it: the exception is for correctness
+defects, and a delivered control that traps the operator on a mistyped amount is not a working
+control. It is also the §5.14 principle applied to a form — a block must name a route out of itself,
+and this one removed the route. The fix is one piece of local state with no design question attached,
+which is the opposite of the churn the stop-reviewing rule guards against.
+
+Verified in the browser rather than by reasoning: typed $400 against a $100 invoice, confirmed the
+form stayed mounted with the amount preserved and "That exceeds the invoice's open balance of 100"
+beside it, corrected to $100 in place, and watched it apply — invoice settled, credit drawn down
+500 → 400, error cleared, rows still summing to the net.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute

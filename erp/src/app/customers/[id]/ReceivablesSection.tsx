@@ -160,7 +160,6 @@ export function ReceivablesSection(
                     invoices={openInvoices}
                     applyGate={applyGate}
                     onApplied={() => void load()}
-                    onError={setError}
                   />
                 ))}
               </tbody>
@@ -176,17 +175,22 @@ export function ReceivablesSection(
  *  the invoices it can pay down are both on this screen, so applying is a two-field act rather than
  *  a trip to another page. An on-account PAYMENT has no document page to link to, and is applied
  *  through its receipt batch (`BatchDetail.tsx`), which is a different flow. */
-function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
+function OpenItemRow({ item, invoices, applyGate, onApplied }: {
   item: CustomerOpenItem;
   invoices: CustomerOpenItem[];
   applyGate: Gate;
   onApplied: () => void;
-  onError: (message: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState("");
   const [amount, setAmount] = useState("");
   const [saving, setSaving] = useState(false);
+  // The APPLY's own failure, kept here rather than in the section's `error`. That one gates the
+  // whole summary (`loaded && !error && summary`), so routing a rejected amount into it unmounted
+  // this very form — taking away the only control that could clear it and leaving a page reload as
+  // the operator's only way back. A refused amount must stay correctable in place (§5.14's rule that
+  // a block names a route out of itself, applied to a form).
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const remaining = Math.abs(item.open);
   const canApply = item.kind === "CREDIT" && invoices.length > 0;
@@ -198,7 +202,7 @@ function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
     setInvoiceId(first.id);
     setAmount(Math.min(remaining, first.open).toFixed(2));
     setOpen(true);
-    onError(null);
+    setApplyError(null);
   }
 
   async function submit() {
@@ -209,9 +213,10 @@ function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
         body: JSON.stringify({ creditInvoiceId: item.id, invoiceId, amount: Number(amount) }),
       });
       setOpen(false);
+      setApplyError(null);
       onApplied();
     } catch (e) {
-      onError((e as Error).message);
+      setApplyError((e as Error).message); // stays open, with the amount the operator typed
     } finally {
       setSaving(false);
     }
@@ -289,6 +294,9 @@ function OpenItemRow({ item, invoices, applyGate, onApplied, onError }: {
               </button>
               <span className="text-xs text-slate-500">{remaining.toFixed(2)} remaining on this credit</span>
             </div>
+            {applyError && (
+              <p className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">{applyError}</p>
+            )}
           </td>
         </tr>
       )}
