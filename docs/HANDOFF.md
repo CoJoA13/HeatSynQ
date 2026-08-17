@@ -734,19 +734,30 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       **CLOSED — built in Phase 6** (`e2c91e8`, ruling 14): `User.title` on the admin user form,
       printing on both the quote and cert signature blocks (blank title prints nothing).
 6. **The shop logo file** (added 2026-08-12, Phase 7 spec §12 item 1) — **DEFERRED by the owner
-   2026-08-16 to after the acceptance month.** **Artwork EXISTS and was shown 2026-08-16** (American
-   Heat Treating Alabama — five variants: the flame mark alone ×2, the horizontal flame+wordmark
-   lockup ×2, and the wordmark alone). It was sent from a phone, so **the files are NOT on this
-   machine yet** — they must be dropped into `docs/company-confidential/` (gitignored; the repo is
-   public) when the owner is back at the laptop. When it is picked up: the **horizontal lockup** is
-   the document-header shape for all eight template types, the flame mark alone suits a tight slot
-   or a favicon, and the wordmark alone is likely unused. Upload constraints are `image/png` or
-   `image/jpeg`, **512 KB** max (`LOGO_MAX_BYTES`, templates.ts), one image per template through the
-   editor — and **PNG, not JPEG**, wherever the flame's transparent background sits over a coloured
-   band. Cosmetic; the parallel run does not depend on it. The
-   template logo slot stays unused until then, and Phase 7's "restyle the traveler with the real logo"
-   outcome stays unexercised (the E2E flow uses a fixture image).
-   Nothing blocks the build; the E2E flow uses a fixture logo until it lands.
+   2026-08-16 to after the acceptance month.** **The artwork is now ON THIS MACHINE** (2026-08-17):
+   five variants in `docs/company-confidential/logos/` (gitignored — the repo is public; the folder is
+   `.gitignore:40` and each file was `check-ignore`-verified when saved). They were sent from a phone
+   as chat images rather than as files, so they were recovered by decoding the base64 image blocks out
+   of the session transcript; that is the only copy on disk, and it is **outside the repo's history by
+   design** — a fresh clone will not have them.
+
+   | file | shape | px | notes |
+   |---|---|---|---|
+   | `aht-logo-horizontal.png` | flame + wordmark | 1716×560 | **RGBA, transparent** — the document-header choice |
+   | `aht-mark-flame.png` | flame alone | 591×802 | RGBA, transparent — tight slots, favicon |
+   | `aht-wordmark.png` | wordmark alone | 581×273 | RGBA, transparent — likely unused |
+   | `aht-logo-horizontal-white-bg.jpg` | flame + wordmark | 944×310 | opaque white box |
+   | `aht-mark-flame-white-bg.jpg` | flame alone | 448×604 | opaque white box |
+
+   **All five clear `LOGO_MAX_BYTES` with room** (512 KB, `templates.ts`; largest is the horizontal
+   PNG at 218 KB), and all five are `image/png`/`image/jpeg`, so the existing upload path accepts them
+   unchanged. Use the **PNGs** — the JPEGs are the same art flattened onto a white rectangle, which
+   will show as a box over any coloured band. **There is no vector original among them**; the
+   horizontal PNG is ample for a document header (~1700 px across a ~2 in header is >800 dpi), but if
+   an SVG/EPS/AI exists wherever the logo was made, it is worth asking for it **before** the logo work
+   starts rather than after. Cosmetic; the parallel run does not depend on it. The template logo slot
+   stays unused until then, and Phase 7's "restyle the traveler with the real logo" outcome stays
+   unexercised — the E2E flow uses a fixture image until it lands.
 
 ## 8. Fresh machine setup (Fedora)
 
