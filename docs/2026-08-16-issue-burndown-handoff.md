@@ -237,28 +237,86 @@ Tested on creation, on an edit, and on all three silent cases.
 
 ---
 
-### Group D — Backups follow-ups  ·  **#123**, **#124**, **#119**, **#120**, **#118**
+### Group D — Backups follow-ups  ·  **#123**, **#124**, **#119**, **#120**, **#118**, **#121** · **DONE**
 
-**Branch:** `fix-backups-followups` · All in `backups.ts` / `BackupBanner.tsx` / `scripts/backup.sh`.
+**Branch:** `fix-backups-followups`.
 
-- **#123 (ruled)** — disable the Backups page's own controls in practice mode (the route's 403 already
-  tells the page), with a §5.16 tooltip naming why; drop the `…` folder placeholder. **Keep the nav
-  entry, and do NOT teach `src/lib/nav.ts` about practice mode** — §8 forbids reading the flag in a
-  client component, and Phase 8B deliberately designed around that.
-- **#124** — refresh the shell staleness bar after a successful "Back up now"; today the page flips green
-  while the bar above it stays red until the next page load. Keep the 5-minute throttle for ordinary polling.
-- **#119** — audit preflight failures (missing/unwritable `BACKUP_DIR`, unset `DATABASE_URL`), which
-  currently throw before the audit path exists, so a permitted user's attempt leaves no record.
-- **#120** — a failing retention `find` exits before `write_status true`, leaving the UI green while
-  retention is silently broken.
-- **#118** — bound the concurrent `gzip -t` checks (currently one subprocess per archive per page load,
-  plus an uncached decompression per `/health` poll, which the banner makes from every page).
+**#120 — a failing retention `find` left the status GREEN.** The three prunes run under `set -e`
+AFTER the archive is written and verified, so a cleanup failure exited before `write_status true`,
+leaving the PREVIOUS run's `{"ok":true}` beside a fresh intact archive: green UI, silently broken
+retention, old dumps accumulating toward a full disk. Each prune is now guarded and reported through
+the ordinary red `ok:false` path, with a message saying the DUMP succeeded so nobody hunts a
+nonexistent dump problem — and the archive is KEPT, since a retention failure is no reason to discard
+a good backup. Tested by putting a failing `find` on the doctored PATH over a seeded previous-night
+green, which is the exact state that made this invisible.
 
-**#121 needs a decision, not a fix:** in a total DB outage the error bar reaches users without
-`manage_backups`, because the 403 that would silence them itself needs a DB read. Arguably correct — the
-shop probably *should* know something is broken. Raise it with the owner rather than picking silently.
+**#119 — preflight failures left no audit row.** The two preflight refusals threw before the archive
+name and `fail()` existed, so a permitted user could be refused by configuration with nothing
+recorded — and `manage_backups` is on spec §9's dangerous-action list. The name is minted FIRST (a
+timestamp plus random bytes, no side effects), so every post-authorization failure has an entityId.
+The practice-mode assert stays before it and stays UN-audited, deliberately: that is a refusal on the
+practice copy, not an attempt on production, and there is no production folder to record it in.
+
+**#118 — integrity checks were unbounded and uncached.** `mapLimited` caps the fan-out at 4;
+`verifyArchive` memoizes on (path, size, mtime) with a 15-minute TTL. **Both bounds are load-bearing
+and it is worth knowing why:** the KEY means a changed file is never served a stale verdict, and the
+TTL means an UNCHANGED file is still re-verified — a cache keyed on metadata alone would answer
+"intact" forever for a file quietly rotting on failing storage, defeating the one thing `gzip -t` is
+there for. Both take their collaborators as parameters (the `runBackupNow({ dumpBin })` precedent) so
+the tests drive concurrency with a counter and the TTL with an injected clock. The ceiling test is
+bite-proofed against an unbounded `Promise.all` over identical work, which peaks at every item.
+
+**#123 — the practice copy rendered an ENABLED "Back up now"** over an honest refusal, plus a `…`
+folder placeholder: a control that can never work, presented as available. The page keys on **any**
+403 from the view endpoint — on the status, not on which cause produced it, since `mustDo` and
+`assertNotPracticeDatabase` are both reasons its actions cannot work — and carries the server's own
+sentence as the §5.16 tooltip. **The nav entry stays and `nav.ts` is untouched**, per the ruling (§8
+forbids reading the practice flag in a client component). The decision is extracted as a pure
+`runControlState` so it is testable without a DOM — the `advanceBannerState` precedent.
+
+**#124 — the shell bar stayed red above a panel that had just gone green.** `invalidateBackupBanner()`
+is an explicit "something happened" signal; the ordinary polling throttle is untouched. Proven in the
+E2E flow by asserting the bar clears **without navigating**, which is what distinguishes the fix from
+the pre-existing remount check.
+
+**#121 — RULED by the owner 2026-08-16: reword the unknown-cause bar.** Tracing it first narrowed the
+options, and **the issue's own suggested direction turned out not to be buildable**: "distinguish
+cannot-determine-permissions from status-unavailable" needs the same database that is down. The
+mechanism is that `handle()` resolves the session OUTSIDE its try/catch (`http.ts`), so in an outage
+the health route fails before reaching its own `mustDo` — the 403 that silences a non-admin never
+happens, and every signed-in user saw a bar naming BACKUPS and linking to an admin page. The bar
+stays (absence is failure) but names neither backups nor a link, because the fault in that branch is
+unknown and usually is not backups; someone chasing a backup problem while the database is down was
+the real cost. A genuine staleness verdict keeps its specific message and its link, asserted
+separately so the reword cannot have flattened it.
 
 ---
+
+## Burn-down complete
+
+All five groups are done. Final: **3048 tests / 182 files**, `tsc`/`eslint`/`build` clean, E2E
+**23/23** (main was 2988/179 at the start).
+
+Closed: **#68, #81, #84, #91, #115, #118, #119, #120, #121, #122, #123, #124, #125, #126.**
+
+**Three things came out of the burn-down that outlive it:**
+
+1. **Two owner decisions are still open, both recorded in HANDOFF.** #81's terms basis (is the
+   early-pay entitlement 2% of the invoice total ONCE, or 2% of whatever is open?) — the hole is
+   closed either way by taking the tighter of the two, so this is a policy choice with no deadline.
+   And the GL chart's step-code granularity (one code per process × furnace group, or one per
+   process), now that the VS exports have shown the account lives on the Standard Step.
+2. **A reopened receipt batch left un-re-posted BLOCKS month-end** (#68's consequence, measured):
+   the roll-forward drops its cash while the aging does not, so the close refuses on a nonzero
+   variance. Loud rather than silent, which is the design — but worth knowing before the acceptance
+   month.
+3. **The failure shape this document names kept showing up, and twice it was in the TESTS.** The
+   #122 guard test passed for the wrong reason on its first draft (Node's `matchesGlob` skips
+   dot-directories, so it scored the pre-fix config as safe); four allocation tests would have passed
+   VACUOUSLY once #115 removed the losers they were written to tolerate; and #125's silent-case test
+   only covered a shipment with no successor, which is exactly the shape that cannot expose the
+   symmetric relation Codex then found. **Every one was caught by asking a test to fail on purpose
+   first** — RED-verification is what earned each of those, not review by reading.
 
 ## How to work these
 
