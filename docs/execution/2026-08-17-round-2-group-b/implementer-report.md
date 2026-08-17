@@ -190,6 +190,20 @@ All five verified against the code first; all five fixed.
 | **P2 — a `Terms` CHECK violation escaped as a raw 500.** Reaching it means two writers raced past the service validation: the loser's request was not wrong, it lost | **Fixed** — `db-errors.ts` translates the NAMED constraint to a 409 "try again". Deliberately a named allowlist, not a "message contains 'check constraint'" sniff, so a CHECK nobody has reasoned about still surfaces loudly. Round 1 had marked this "not changed, consistent with precedent"; two reviewers raising it earned the fix. |
 | **P2 — the per-division button was enabled for a view-only user**, who would confirm a multi-document print and get a 403 | **Fixed** — the button's gate now includes `receivables.create` whenever per-division mode is active (§5.16: disabled and says why, never offered then refused). |
 
+## Review round 3 — two more, both in round 2's own code
+
+| Finding | Disposition |
+|---|---|
+| **P1 — my round-2 no-terms exception produced the exact bug it was added to prevent.** A draft created under `2/10 Net 30` whose customer's terms are cleared before finalize kept the INHERITED label over a null pair — paper promising a discount `applyPayment` refuses | **Fixed by REVERSING round 2.** The label now always follows the terms, blank included. Nothing in the stored state distinguishes an inherited label from a typed one, so the conditional could only ever guess. Stated cost: a hand-typed label for a customer with no terms record is cleared at finalize; restoring it needs real state (`Invoice.termsId`, or an edited flag), named on the PR thread if the shop ever hits it. |
+| **P2 — the print path was decided from an asynchronously-populated list.** Opening with `?customerId=` before the fetch lands, or after it fails, or without `customers.view`, made `customers` empty → ordinary single print → silently the parent alone | **Fixed** — a `familyKnown` flag distinct from "the array is empty" (§5.15 again), and printing is disabled with a reason until the family lookup succeeds. Which path is correct genuinely depends on that list, so acting without it is a guess. |
+
+**The pattern is worth naming.** Round 2's finding was in round 1's code; round 3's P1 was in round 2's
+code — on the same field, in opposite directions. That is this project's recorded lesson 4 ("when
+consecutive rounds keep finding defects in the code written for the previous round, the design is the
+finding"), and here the design finding is real: `termsName` is free text that is supposed to describe
+structured terms, with no link to the `Terms` row it came from. The fix rounds have been patching a
+missing FK. `Invoice.termsId` is the actual answer, and it is now written down rather than rediscovered.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute

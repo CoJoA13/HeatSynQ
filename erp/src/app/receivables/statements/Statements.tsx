@@ -138,6 +138,12 @@ function StatementsScreen() {
   // Customer/family options — fetched only once the caller is known to hold customers.view
   // (§5.16), never left silently empty on failure — the AgingReport.tsx precedent.
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  // Whether the family lookup actually SUCCEEDED — not merely "the array is empty" (§5.15). Which
+  // print path is correct depends on whether the selected customer has divisions, and this list is
+  // the only thing that knows. While it is pending, failed, or never fetched (no `customers.view`),
+  // an empty array is indistinguishable from "no divisions" — and printing on that assumption
+  // silently archives the parent alone, which is the omission #85 exists to fix.
+  const [familyKnown, setFamilyKnown] = useState(false);
   const customersAllowed = customersGate.allowed;
   useEffect(() => {
     if (!customersAllowed) return;
@@ -146,7 +152,9 @@ function StatementsScreen() {
     // how a dormant division that still owes money is parked — otherwise never switched the
     // button, so unchecking "Combine family" silently printed the parent alone: #85's exact
     // symptom, unfixed for that family, while the COMBINED print included those divisions.
-    api<CustomerOption[]>("/api/customers?includeInactive=1").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers?includeInactive=1")
+      .then((rows) => { setCustomers(rows); setFamilyKnown(true); })
+      .catch((e) => setError((e as Error).message)); // leaves familyKnown false — see below
   }, [customersAllowed]);
 
   // ---- Preview (GET, build-only — the route's own "a preview" comment) ----
@@ -275,9 +283,10 @@ function StatementsScreen() {
   // multi-document print, and got a 403: §5.16 says a control the user cannot use is disabled and
   // says why, never offered and then refused.
   const printTitle = !viewGate.allowed ? viewGate.title
-    : perDivisionMode && !runGate.allowed ? runGate.title
-      : !customerId ? "Pick a customer first"
-        : printing ? "Printing…" : undefined;
+    : !customerId ? "Pick a customer first"
+      : !familyKnown ? "Checking whether this customer has divisions…"
+        : perDivisionMode && !runGate.allowed ? runGate.title
+          : printing ? "Printing…" : undefined;
   const runTitle = !runGate.allowed ? runGate.title : running ? "Running…" : undefined;
 
   // §5.16: a caller without receivables.view sees the page saying why, never a silently empty one.

@@ -1203,18 +1203,32 @@ describe("finalizeInvoice", () => {
     expect(frozen.termsDiscountDays).toBeNull();
   });
 
-  it("keeps a hand-typed terms label when the customer has NO terms record (#79)", async () => {
-    // The case that makes an unconditional overwrite wrong: with no terms to read, the operator's
-    // text is the only description of the terms, and blanking it at finalize would erase real
-    // information. The figures are null either way, so the label promises nothing the save refuses.
+  // REVERSED in review round 3, and the reversal is the point. Round 2 kept the label when the
+  // customer had no terms, to protect operator-typed text. That exception then produced the EXACT
+  // bug it was added to prevent: a draft created under `2/10 Net 30` whose customer's terms are
+  // cleared before finalize kept the inherited label over a null pair — paper promising a discount
+  // `applyPayment` refuses. Nothing distinguishes an INHERITED label from a TYPED one without new
+  // state, so the label now always follows the terms, blank included. The paper never lying about
+  // money outranks preserving free text; see the thread on PR #135 for the alternative if the shop
+  // wants the typed label back.
+  it("CLEARS a stale terms label when the customer's terms are removed before finalize (#79)", async () => {
+    const rich = await prisma.terms.create({
+      data: { name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10 } });
     const { order, invoice } = await draftFixture();
-    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: null } });
-    await asSystem(() => updateInvoice(invoice.id, { termsName: "Net 45 — special arrangement" }));
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: rich.id } });
+    await asSystem(() => discardInvoice(invoice.id, "re-draft under the new terms"));
+    const { invoice: drafted } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(drafted.termsName).toBe("2/10 Net 30"); // inherited at create
 
-    const done = await asSystem(() => finalizeInvoice(invoice.id));
-    expect(done.termsName).toBe("Net 45 — special arrangement");
-    const frozen = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    // The customer's terms are removed entirely before the invoice is finalized.
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: null } });
+
+    const done = await asSystem(() => finalizeInvoice(drafted.id));
+    // Before this reversal: "2/10 Net 30" over a null pair.
+    expect(done.termsName).toBe("");
+    const frozen = await prisma.invoice.findUniqueOrThrow({ where: { id: drafted.id } });
     expect(frozen.termsDiscountPercent).toBeNull();
+    expect(frozen.termsDiscountDays).toBeNull();
   });
 
   it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {

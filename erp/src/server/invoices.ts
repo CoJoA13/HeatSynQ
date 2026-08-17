@@ -1560,14 +1560,23 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // say "Net 30" while quietly granting one. Finalize is the moment the paper is issued, so the
   // label and the money are stamped from ONE source there.
   //
-  // ONLY when the customer actually HAS terms. With none there is nothing to stamp from, and the
-  // operator's typed text is then the only description of the terms on that invoice — blanking it
-  // would erase real information to fix nothing, since the figures are null either way.
+  // ALWAYS, including blank when the customer has no terms (reversed in review round 3). Round 2
+  // kept the label in the no-terms case to protect operator-typed text, and that exception produced
+  // the exact bug it was added to prevent: a draft created under `2/10 Net 30` whose customer's
+  // terms are then cleared kept the INHERITED label over a null pair — paper promising a discount
+  // `applyPayment` refuses. Nothing in the stored state distinguishes an inherited label from a
+  // typed one, so a conditional could only ever guess; the label follows the terms, full stop.
+  //
+  // The cost, stated rather than hidden: a hand-typed label on an invoice for a customer with no
+  // terms record is cleared at finalize. Assigning terms to the customer is the fix that also makes
+  // every future invoice right. Restoring the typed label would need real state — an
+  // `Invoice.termsId`, or a "was edited" flag set by `updateInvoice` — which is a schema change for
+  // a case this shop may never hit; PR #135's thread has it if it ever does.
   const issuedTerms = invoice.customer.terms ?? null;
   const issuedDiscount = {
     termsDiscountPercent: issuedTerms?.discountPercent ?? null,
     termsDiscountDays: issuedTerms?.discountDays ?? null,
-    ...(issuedTerms ? { termsName: issuedTerms.name } : {}),
+    termsName: issuedTerms?.name ?? "",
   };
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
