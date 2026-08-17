@@ -838,13 +838,21 @@ Fedora-specific notes:
 
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
-> **Backlog burn-down is the chosen next track (owner, 2026-08-16).** A ready-to-paste, grouped plan
-> lives in **`docs/2026-08-16-issue-burndown-handoff.md`** — Task 0 (#122, measurement hygiene) then four
-> groups: **A** allocation & posting concurrency (#115, #68) · **B** money shape & A/R integrity (#91,
-> #81, #84) · **C** order & shipment guards (#126, #125) · **D** backups follow-ups (#123, #124, #119,
-> #120, #118, with #121 needing an owner call). Grouped by shared machinery so one branch's review covers
-> one concern. **Chase §7 items 2 and 4 in parallel — they are the acceptance month's critical path and
-> no code shortens them.**
+> **START HERE (owner, 2026-08-17): `docs/2026-08-17-backlog-round-2.md`** — round 1 is complete (14
+> closed); this groups **all 66 remaining issues** and is the current track. **Task 0 (~1h) first:** at
+> least three open issues (**#6**, **#10**, **#7**) describe mechanisms that no longer exist and should
+> close, and the five triage labels `docs/agents/triage-labels.md` documents **do not exist in the repo**
+> — only `wontfix` does, so `--add-label ready-for-agent` fails today. Then **A** invoice engine (#61–#64,
+> #59, #60, #89, #96 — the acceptance month's own path, and #62+#89 are one defect from two ends) · **B**
+> A/R that needs no accountant (#83, #85, #86, #82, #79, #75) · **C** shipping/status integrity (#65 is
+> the real one) · **E** close + GL + tripwires (#88 is RULED — build the broken-chain flag) · **D**
+> stale-load class (decide **#31** first) · **F**/**G**/**H** infra, documents, polish. **Ten issues are
+> PARKED on the accounting meeting** (#69, #70, #73, #78, #80, #76, #77, #71, #4, #8) — do not start
+> them; the question list is `docs/company-confidential/2026-08-17-accounting-questions.md`.
+>
+> Round 1's own record stays at `docs/2026-08-16-issue-burndown-handoff.md` — read its closing
+> "outlives it" section before starting, especially lesson 4 (when each review round finds defects in
+> the code written for the previous round, the design is the finding).
 
 **Phase 8 (Reports & parallel-run tools) is DONE — all three sub-phases MERGED** (8A PR #106, 8B
 PR #109, 8C PR #117 / `941ceab`, §4). **That completes every build phase in the 8-phase roadmap**
