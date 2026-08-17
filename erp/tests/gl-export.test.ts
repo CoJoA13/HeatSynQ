@@ -612,6 +612,62 @@ describe("gl-export readiness", () => {
     await expect(asSystem(() => exportClose(period.id))).rejects.toThrow();
   });
 
+  // #89 — the shape every serious defect in this project has had: it fails while reporting success.
+  // `resolveReadiness` gated a null-GL FREIGHT/CHARGE line on the CURRENT plant default, but
+  // `buildCurrentJournal` reads the line's FROZEN snapshot (§5.4). Configure the default AFTER such
+  // an invoice was finalized and readiness went clean while the export 500'd on the same line.
+  for (const kind of ["CHARGE", "FREIGHT"] as const) {
+    const configColumn = kind === "CHARGE" ? "otherChargeGlAccountId" : "freightGlAccountId";
+    it(`names the owning invoice of a frozen null-GL ${kind} line once the default is configured (#89)`, async () => {
+      await seedGlDefaults(); // leaves both freight and other-charge unset
+      // Finalized while the default was unset, so the line's GL snapshot froze null.
+      const ref = await makeFinalizedKindLine("2026-07-06", kind, 50, null);
+      // ...and only THEN is the account configured. This clears the plant-default gap — but not the
+      // frozen null on paper that has already been raised.
+      const acct = await prisma.glAccount.create({ data: { name: `5100-${kind}` } });
+      await prisma.billingConfig.update({
+        where: { id: "singleton" }, data: { [configColumn]: acct.id },
+      });
+      await asSystem(() => closePeriod(2026, 7));
+      const period = await periodFor(2026, 7);
+
+      const gaps = await readinessForExport(new Date(Date.UTC(2026, 7, 0)));
+      // Before the fix: `[]`, then an opaque 500 out of `exportClose`.
+      const own = gaps.find((g) => g.kind === "invoice" && g.id === ref.invoiceId);
+      expect(own).toBeDefined();
+      expect(own!.label).toMatch(/no GL account/i);
+      expect(own!.label).toMatch(/unlock/i); // names the fix: unlock and re-finalize
+      expect(own!.href).toBe(`/invoicing/${ref.invoiceId}`);
+      await expect(asSystem(() => exportClose(period.id))).rejects.toThrow(/gap|readiness|export/i);
+    });
+  }
+
+  // Review round 1 widened #89's attribution to EVERY frozen null-GL line. A step-code line whose
+  // step code already HAS an account used to raise only "Process step code X has no GL account",
+  // linking to a screen with nothing to fix — the same dead end as the 500, one notch milder.
+  it("also names the owning invoice when the step code behind a frozen null-GL line is fine (#89)", async () => {
+    const gl = await seedGlDefaults();
+    const ref = await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    // The line's own GL froze null, while the step code it points at is properly configured — so
+    // "Process step code HT has no GL account" would send the operator somewhere with nothing to do.
+    await prisma.invoiceLine.updateMany({
+      where: { invoiceId: ref.invoiceId, kind: "OPERATION" },
+      data: { glAccountId: null, processStepCodeId: gl.stepCodeId },
+    });
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const gaps = await readinessForExport(new Date(Date.UTC(2026, 7, 0)));
+    const own = gaps.find((g) => g.kind === "invoice" && g.id === ref.invoiceId);
+    expect(own).toBeDefined();
+    expect(own!.label).toMatch(/unlock/i);
+    // Review round 2: and it must NOT also claim the step code has no GL account. It has one — that
+    // gap would point the operator at a screen with nothing to fix, which is the §5.14 dead end the
+    // whole invoice-attribution exists to avoid, one notch milder than the 500.
+    expect(gaps.some((g) => g.kind === "step-code")).toBe(false);
+    await expect(asSystem(() => exportClose(period.id))).rejects.toThrow(/gap|readiness|export/i);
+  });
+
   it("posts a BALANCED batch once the freight and other-charge accounts are configured", async () => {
     await seedGlDefaults();
     const freightAcct = await prisma.glAccount.create({ data: { name: "5000-FRT" } });

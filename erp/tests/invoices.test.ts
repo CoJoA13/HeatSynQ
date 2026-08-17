@@ -10,7 +10,7 @@ import { setBillingConfig } from "@/server/billing-config";
 import {
   createInvoice, listInvoiceCandidates, getInvoice,
   updateInvoice, replaceInvoiceLines, recalculateInvoice, discardInvoice,
-  finalizeInvoice, unlockInvoice, createCredit,
+  finalizeInvoice, unlockInvoice, createCredit, invoiceWarnings,
   type InvoiceDetail, type InvoiceLineDetail,
 } from "@/server/invoices";
 import { applyPayment, voidApplication } from "@/server/applications";
@@ -414,6 +414,92 @@ describe("createInvoice", () => {
   // internal path directly against a manually-opened Read Committed tx) removes SSI from the
   // picture, so `claimOrder`'s row lock is the only thing that can serialize the two. Verified by
   // hand: RED with the claim removed, GREEN with it restored (see the task report for transcripts).
+  // #96. `buildPricingInput` skips a zero-net line BEFORE the quote/part fork (seam #3), while the
+  // lead-line header read resolves `orderLines[0]`'s quote link unconditionally. So the identical
+  // corrupt link threw on a zero-net LEAD line and was silently skipped on a zero-net RIDER. The
+  // asymmetry was the finding; throwing is the safe direction on corrupt state, so both now throw.
+  it("throws on a corrupt quote link on a ZERO-NET rider, as it already did on the lead (#96)", async () => {
+    const customer = await makeCustomer();
+    const partA = await makePart(customer.id);
+    const partB = await makePart(customer.id);
+    await giveSteps(partA.id);
+    await giveSteps(partB.id);
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id,
+      lines: [
+        { partId: partA.id, qty: 100, weight: "100.00" },
+        { partId: partB.id, qty: 100, weight: "100.00" },
+      ],
+    }));
+
+    // A quote line that quotes partA, linked onto the partB order line — the part-mismatch
+    // corruption §5.14 makes unreachable through the services, written here directly.
+    const user = await prisma.user.create({
+      data: { username: "q96-user", passwordHash: "x", displayName: "Q96" } });
+    const quote = await prisma.quote.create({
+      data: {
+        quoteNumber: 960001, customerId: customer.id, quotedById: user.id,
+        quoteDate: parseDateOnly("2026-08-01"), effectiveDate: parseDateOnly("2026-08-01"),
+        expiryDate: parseDateOnly("2026-08-31"),
+        lines: { create: [{ position: 1, partId: partA.id }] },
+      },
+      include: { lines: true },
+    });
+    await prisma.orderLine.update({
+      where: { id: order.lines[1].id }, data: { quoteLineId: quote.lines[0].id } });
+
+    // The rider ships ZERO but is marked complete, so the order reaches SHIPPED with a zero-net
+    // line — the exact state the skip fires on.
+    await asSystem(() => createShipper({
+      customerId: customer.id, shipDate: "2026-08-04",
+      orders: [{
+        orderId: order.id,
+        lines: [
+          { orderLineId: order.lines[0].id, qty: 100, weight: 100, lineComplete: true },
+          { orderLineId: order.lines[1].id, qty: 0, weight: 0, lineComplete: true },
+        ],
+        containers: [], serials: [],
+      }],
+    }, { canOverrideCreditHold: false }));
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+
+    // Before the fix this created a perfectly ordinary invoice, silently ignoring the corruption.
+    await expect(asSystem(() => createInvoice({ orderId: order.id })))
+      .rejects.toThrow(/quotes a different part/i);
+  });
+
+  // #60. `listPartPrices` read through the top-level `prisma` singleton while being called from
+  // INSIDE the Serializable invoice transaction, per order line and again for the lead line's
+  // process names. A second-connection read sits outside that transaction's snapshot AND its
+  // read-set, so a concurrent price edit was invisible to SSI — no 40001, no retry — and the several
+  // per-line calls could tear across a mid-flight change. Pinning it the deterministic way: a row
+  // written inside the caller's transaction is visible to the pricing read only if that read really
+  // is on the caller's transaction. Before the fix this priced "Needs price" off a stale connection.
+  it("prices from the CALLER's transaction, not a second connection (#60)", async () => {
+    const fixture = await shippedOrder({ qty: 100 });
+    const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-60", name: "Austemper", glAccountId: gl.id } });
+
+    const invoice = await prisma.$transaction(async (tx) => {
+      await tx.partPrice.create({
+        data: {
+          partId: fixture.part.id, processStepCodeId: code.id, position: 1,
+          unitPrice: "2.0000", pricePer: "EACH",
+        },
+      });
+      const created = await asSystem(() => createInvoice({ orderId: fixture.order.id }, tx));
+      return created.invoice;
+    });
+
+    const op = invoice.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.needsPrice).toBe(false);
+    expect(op.amount).toBe(200); // 100 × $2.00, from the uncommitted row
+    expect(op.glAccountName).toBe("4010");
+    // The lead-line header read takes the same transaction, so it names the same operation.
+    expect(invoice.processNames).toBe("Austemper");
+  });
+
   it("blocks a concurrent create under Read Committed until the holder commits, then refuses (row-lock discipline)", async () => {
     const { order } = await pricedShippedOrder();
 
@@ -644,6 +730,326 @@ describe("recalculateInvoice", () => {
   });
 });
 
+// -------------------------------------------------------------------------------------------
+// The manual-line seam — issues #61 / #62 / #64, one defect surface with three faces. Owner
+// rulings 2026-08-17: the override WINS silently (no revert control — remove-and-recalculate is
+// the undo, pinned below), and a manual charge's GL account is defaulted SERVER-SIDE (no operator
+// picker). Every case here failed before the fix; each is RED-verified.
+// -------------------------------------------------------------------------------------------
+
+/** A manual override of a stored line, the shape `InvoiceDetail.tsx`'s `patchRow` produces: editing
+ *  an amount stamps `priceSource=MANUAL` and clears `needsPrice` so recalculate keeps it. */
+function overrideAmount(l: InvoiceLineDetail, amount: string) {
+  return { ...toLineInput(l), amount, priceSource: "MANUAL" as const, needsPrice: false };
+}
+
+describe("recalculateInvoice — the manual-line seam", () => {
+  it("suppresses the regenerated twin of an overridden operation, in place (#61)", async () => {
+    const { invoice } = await draftFixture({ qty: 144 }); // 144 × 6.51 = 937.44
+    expect(invoice.lines.find((l) => l.kind === "OPERATION")!.amount).toBe(937.44);
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    // Before the fix this billed BOTH the regenerated $937.44 and the preserved $100.
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(100);
+    expect(ops[0].priceSource).toBe("MANUAL");
+    expect(after.subtotal).toBe(100);
+    expect(after.total).toBe(100);
+    // Substituted IN PLACE, not appended: it keeps its slot under the regenerated PART line rather
+    // than becoming the standalone trailing line the issue describes.
+    expect(ops[0].parentLineId).toBe(after.lines.find((l) => l.kind === "PART")!.id);
+    // The whole set is exactly what a derived recalculate produces — the override occupies the
+    // operation's own slot rather than adding a trailing line.
+    expect(after.lines.map((l) => l.kind)).toEqual(["PART", "OPERATION"]);
+    expect(after.lines.map((l) => l.position)).toEqual([1, 2]);
+  });
+
+  // Review round 1 — a step-EXACT identity was not enough. Both cases below double-billed exactly
+  // as the original #61 did: the derived line regenerated under a step code the override does not
+  // name, so the pairing missed and the override rode along beside it.
+  it("suppresses the derived operation when the override PREDATES the part price (#61)", async () => {
+    // The invoice is raised before the part is priced, so the engine emits the tier-3 "needs price"
+    // OPERATION with NO step code at all. The operator types a price to get the paper out. THEN the
+    // shop sets the part price up properly — and the regenerated line now carries a step code.
+    const fixture = await shippedOrder({ qty: 144 });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    const op = invoice.lines.find((l) => l.kind === "OPERATION")!;
+    expect(op.needsPrice).toBe(true);
+    expect(op.processStepCodeId).toBeNull(); // the tier-3 line this pairing has to cope with
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const gl = await prisma.glAccount.create({ data: { name: "4010", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-61a", name: "Austemper", glAccountId: gl.id } });
+    await asSystem(() => addPartPrice(fixture.part.id, {
+      processStepCodeId: code.id, position: 1, unitPrice: "6.5100", minimumCharge: "600.00",
+      pricePer: "EACH",
+    }));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1); // not the typed $100 PLUS a regenerated $937.44
+    expect(ops[0].amount).toBe(100);
+    expect(after.total).toBe(100);
+  });
+
+  it("suppresses the derived operation when the part's STEP CODE is replaced under an override (#61)", async () => {
+    const { invoice, part } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    // The priced operation is retired and re-added under a different step code — an ordinary
+    // process-vocabulary correction, which must not resurrect the line the operator overrode.
+    await prisma.partPrice.updateMany({ where: { partId: part.id }, data: { deletedAt: new Date() } });
+    const gl = await prisma.glAccount.create({ data: { name: "4011", description: "Sales" } });
+    const code = await prisma.processStepCode.create({
+      data: { code: "AUST-61b", name: "Austemper II", glAccountId: gl.id } });
+    await asSystem(() => addPartPrice(part.id, {
+      processStepCodeId: code.id, position: 1, unitPrice: "6.5100", minimumCharge: "600.00",
+      pricePer: "EACH",
+    }));
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(100);
+    expect(after.total).toBe(100);
+  });
+
+  /** An order line priced under TWO operations, the first overridden to $40. Returns both, so a test
+   *  can then disturb one and assert the other survives. */
+  async function twoOperationsOneOverridden() {
+    const gl = await prisma.glAccount.create({ data: { name: "4012", description: "Sales" } });
+    const fixture = await shippedOrder({ qty: 100 });
+    const codes = [];
+    for (const [i, spec] of [["A", "Op A"], ["B", "Op B"]].entries()) {
+      const code = await prisma.processStepCode.create({
+        data: { code: `TWO-${spec[0]}`, name: spec[1], glAccountId: gl.id } });
+      await asSystem(() => addPartPrice(fixture.part.id, {
+        processStepCodeId: code.id, position: i + 1, unitPrice: "1.0000", pricePer: "EACH" }));
+      codes.push(code);
+    }
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    const ops = invoice.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(2);
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.id === ops[0].id ? overrideAmount(l, "40.00") : toLineInput(l)))));
+    return { ...fixture, invoice, codes, gl };
+  }
+
+  it("keeps a SECOND priced operation billed when only the first is overridden (#61's limit)", async () => {
+    // Suppression is per-operation: overriding one of two priced operations must not drop the
+    // other's revenue. NOTE this exercises the step-EXACT path — the fallback below is separate.
+    const { invoice } = await twoOperationsOneOverridden();
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.lines.filter((l) => l.kind === "OPERATION")).toHaveLength(2);
+    expect(after.subtotal).toBe(140); // the $40 override + the untouched $100 operation
+  });
+
+  // Review round 2: the order-line fallback must not become the mirror of the bug it fixed. With a
+  // SIBLING operation on the same order line, re-homing the override onto it would erase that
+  // sibling's revenue from customer paper — a double bill traded for an under-bill.
+  it("never re-homes an override onto a PRE-EXISTING sibling operation (#61)", async () => {
+    const { invoice, part, codes } = await twoOperationsOneOverridden();
+    // The overridden operation stops being priced — its part-price row is retired. Operation B is
+    // untouched and was ALREADY on the invoice as its own derived line.
+    await prisma.partPrice.updateMany({
+      where: { partId: part.id, processStepCodeId: codes[0].id }, data: { deletedAt: new Date() } });
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = after.lines.filter((l) => l.kind === "OPERATION");
+    // B keeps its own line at its own price; the stale override rides as an addition, visible to the
+    // operator, rather than silently swallowing B.
+    expect(ops.map((l) => l.amount).sort((a, b) => a - b)).toEqual([40, 100]);
+    expect(after.subtotal).toBe(140);
+    // ...and the $100 is genuinely B's REGENERATED line, not the override wearing B's amount — the
+    // one alternative shape those two numbers alone cannot rule out.
+    const hundred = ops.find((l) => l.amount === 100)!;
+    expect(hundred.priceSource).toBe("PART_PRICE");
+    expect(hundred.processStepCodeId).toBe(codes[1].id);
+    expect(ops.find((l) => l.amount === 40)!.priceSource).toBe("MANUAL");
+  });
+
+  it("warns that a typed price with no step code stands in for the whole part (review round 3)", async () => {
+    // The ruling's own limit, surfaced rather than guessed at: a tier-3 override covers every priced
+    // operation on its order line, INCLUDING work priced afterwards, and the stored state cannot
+    // tell that work apart from what the price was typed for. So it says so.
+    const fixture = await shippedOrder({ qty: 144 });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const warnings = await asSystem(async () => invoiceWarnings(await getInvoice(invoice.id)));
+    expect(warnings.join(" ")).toMatch(/standing in for every priced operation/i);
+
+    // A typed price that DOES name its step code is an ordinary override of that one operation, and
+    // must not draw the warning.
+    const { invoice: priced } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(priced.id, priced.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+    const none = await asSystem(async () => invoiceWarnings(await getInvoice(priced.id)));
+    expect(none.join(" ")).not.toMatch(/standing in for/i);
+  });
+
+  it("recomputes tax on a lines SAVE, not only on recalculate (#64)", async () => {
+    // Review round 1: Save lines and Recalculate are independent buttons — nothing makes an operator
+    // recalculate after typing a charge, and finalize freezes whatever is there. So the save seam
+    // has to re-derive tax too, or a taxable charge goes out on paper under-taxed.
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({
+      salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000", otherChargeGlAccountId: otherGl.id }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4);
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    expect(saved.taxTotal).toBe(6); // 4% of (100 + 50), without anyone pressing Recalculate
+    expect(saved.total).toBe(156);
+  });
+
+  it("re-derives a partial CREDIT's tax proportionally on a lines save (#64 reaches credits)", async () => {
+    // Review round 2 named this as an untested extension: `createCredit` copies both `taxRate` and
+    // the negated lines, so editing a credit down to a partial amount now re-derives its tax instead
+    // of keeping the full copied figure. That is what an operator wants, and the arithmetic is
+    // sign-symmetric — but it was neither tested nor written down, so it is both now.
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    await asSystem(() => finalizeInvoice(invoice.id));
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.taxTotal).toBe(-4); // the full invoice's tax, negated and copied
+
+    // Credit only half the work.
+    const halved = await asSystem(() => replaceInvoiceLines(credit.id, credit.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "-50.00") : toLineInput(l)))));
+    expect(halved.subtotal).toBe(-50);
+    expect(halved.taxTotal).toBe(-2); // 4% of -50, not the copied -4
+    expect(halved.total).toBe(-52);
+  });
+
+  it("leaves a manually overridden TAX line alone on a lines SAVE too (#64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "TAX" ? overrideAmount(l, "9.99") : toLineInput(l)))));
+    expect(saved.taxTotal).toBe(9.99);
+  });
+
+  it("restores the computed operation once the override row is removed (#61's undo path)", async () => {
+    const { invoice } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+    const overridden = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(overridden.total).toBe(100);
+
+    // The ruling took this instead of a per-line "revert to computed" control, so it is a contract:
+    // drop the override row, save, recalculate, and the computed line comes back.
+    await asSystem(() => replaceInvoiceLines(invoice.id,
+      overridden.lines.filter((l) => l.kind !== "OPERATION").map(toLineInput)));
+    const restored = await asSystem(() => recalculateInvoice(invoice.id));
+    const ops = restored.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(1);
+    expect(ops[0].amount).toBe(937.44);
+    expect(ops[0].priceSource).toBe("PART_PRICE");
+  });
+
+  it("recomputes tax over a preserved manual charge (#64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({
+      salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000", otherChargeGlAccountId: otherGl.id }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4); // 4% of the $100 operation
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    // A CHARGE is in the tax base (pricing.ts §5), so tax is 4% of $150 — before the fix the engine
+    // priced tax over the order-derived lines only, leaving the $50 charge untaxed at $4.
+    expect(after.chargeTotal).toBe(50);
+    expect(after.taxTotal).toBe(6);
+    expect(after.total).toBe(156);
+  });
+
+  it("recomputes tax over an OVERRIDDEN operation, not the computed one (#61 + #64)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(invoice.taxTotal).toBe(4);
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "50.00") : toLineInput(l)))));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.subtotal).toBe(50);
+    expect(after.taxTotal).toBe(2); // 4% of the override, not of the $100 the engine recomputed
+    expect(after.total).toBe(52);
+  });
+
+  it("leaves a MANUALLY overridden tax line alone (the override wins, uniformly)", async () => {
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "TAX" ? overrideAmount(l, "9.99") : toLineInput(l)))));
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    const tax = after.lines.filter((l) => l.kind === "TAX");
+    expect(tax).toHaveLength(1); // never the derived line PLUS the override
+    expect(tax[0].amount).toBe(9.99);
+    expect(after.taxTotal).toBe(9.99);
+  });
+
+  it("defaults a manually added charge to the configured other-charge account (#62)", async () => {
+    const otherGl = await prisma.glAccount.create({ data: { name: "4400", description: "Other charges" } });
+    await asSystem(() => setBillingConfig({ otherChargeGlAccountId: otherGl.id }));
+    const { invoice } = await draftFixture();
+
+    const saved = await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    // The grid renders the GL cell read-only and sends it blank, so the SERVER has to assign it —
+    // the same account `mapComputedLines` gives an engine-generated charge (seam #1).
+    const charge = saved.lines.find((l) => l.description === "Expedite")!;
+    expect(charge.glAccountId).toBe(otherGl.id);
+    expect(charge.glAccountName).toBe("4400");
+
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.lines.find((l) => l.description === "Expedite")!.glAccountId).toBe(otherGl.id);
+  });
+
+  it("warns about ANY account-bearing line with no GL account, not only operations (#62)", async () => {
+    // No other-charge account is configured, so the server default cannot fill one in. The line must
+    // then be WARNED about rather than slipping silently into 5C's export (#89 is the same hole,
+    // one step later, on the readiness side).
+    const { invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id, [
+      ...invoice.lines.map(toLineInput),
+      { kind: "CHARGE" as const, description: "Expedite", amount: "50.00", priceSource: "MANUAL" as const },
+    ]));
+    const warnings = await asSystem(async () => invoiceWarnings(await getInvoice(invoice.id)));
+    expect(warnings.join(" ")).toMatch(/Expedite.*no GL account/i);
+  });
+});
+
 describe("discardInvoice", () => {
   it("discards a draft with a reason and frees the order to be invoiced again", async () => {
     const { order, invoice } = await draftFixture();
@@ -703,6 +1109,39 @@ describe("finalizeInvoice", () => {
   it("refuses to finalize while a line needs a price", async () => {
     const { invoice } = await draftFixture({ priced: false });
     await expect(asSystem(() => finalizeInvoice(invoice.id))).rejects.toThrow(/needs a price/i);
+  });
+
+  // #63. The line editor lets an operator remove every row, and `replaceInvoiceLines` accepts an
+  // empty array. Finalize's only block was `needsPrice`, which a `.find` over zero lines passes
+  // VACUOUSLY — so an emptied invoice finalized into a $0 INVOICED order, which then drops out of
+  // `listInvoiceCandidates` and can never be billed again. Owner ruling 2026-08-17: block the EMPTY
+  // LINE SET, not a zero total (a warranty/rework invoice legitimately goes out at $0), and block at
+  // FINALIZE so a draft may still be emptied mid-rebuild.
+  it("refuses to finalize an invoice with no lines at all (#63)", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id, [])); // still allowed — the draft is mid-edit
+    await expect(asSystem(() => finalizeInvoice(invoice.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/no lines/i) });
+    // Refused, not half-applied: the invoice is still an editable draft and the order has NOT been
+    // stranded at INVOICED.
+    expect((await getInvoice(invoice.id)).status).toBe("DRAFT");
+    expect((await getOrder(order.id)).status).toBe("SHIPPED");
+    // And the way out is the ordinary one — recalculate rebuilds the derived lines, then it bills.
+    const rebuilt = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(rebuilt.lines.length).toBeGreaterThan(0);
+    expect((await asSystem(() => finalizeInvoice(invoice.id))).status).toBe("FINALIZED");
+  });
+
+  it("finalizes a legitimately $0 invoice that still carries its lines (#63's other half)", async () => {
+    // The ruling's point: zero DOLLARS is real paper — a no-charge rework still lists what was done.
+    // Only zero LINES is the integrity hole.
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => replaceInvoiceLines(invoice.id,
+      invoice.lines.map((l) => (l.kind === "OPERATION" ? overrideAmount(l, "0.00") : toLineInput(l)))));
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.status).toBe("FINALIZED");
+    expect(done.total).toBe(0);
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
   });
 
   it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {
@@ -827,6 +1266,29 @@ describe("unlockInvoice", () => {
     const entry = await prisma.auditLog.findFirst({
       where: { entity: "invoice", entityId: invoice.id, action: "update" }, orderBy: { at: "desc" } });
     expect(entry!.reason).toBe("wrong PO on the paper");
+  });
+
+  // #59. `finalizeInvoiceInTx` branches on `kind` — only an INVOICE owns the order's status (§5.2) —
+  // but `unlockInvoice` did not, so unlocking a CREDIT passed the order in the `released` set and
+  // recomputed it to a ship-derived status. The source INVOICE stayed FINALIZED, still owning
+  // INVOICED, while the order silently fell back to SHIPPED.
+  it("unlocking a CREDIT leaves the order's invoice-owned status alone (#59)", async () => {
+    const { order, invoice } = await draftFixture();
+    await asSystem(() => finalizeInvoice(invoice.id));
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    await asSystem(() => finalizeInvoice(credit.id));
+    expect((await getOrder(order.id)).status).toBe("INVOICED"); // finalizing a credit never wrote it
+
+    await asSystem(() => unlockInvoice(credit.id, "credited the wrong amount"));
+    expect((await getInvoice(credit.id)).status).toBe("DRAFT");
+    // Before the fix: SHIPPED, while the source invoice was still FINALIZED.
+    expect((await getOrder(order.id)).status).toBe("INVOICED");
+    // ...and no order-status audit entry was written by the credit unlock at all.
+    const ord = await prisma.auditLog.findFirst({
+      where: { entity: "order", entityId: order.id, action: "update" }, orderBy: { at: "desc" } });
+    expect((ord!.after as Record<string, unknown>).status).toBe("INVOICED");
   });
 
   it("unlock stays available after the invoice has printed", async () => {

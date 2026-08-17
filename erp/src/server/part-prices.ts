@@ -51,8 +51,20 @@ const EDIT_BREAK = z.object(BREAK_FIELDS).partial().strict();
 // as two hand-kept copies.
 export const LOT_WITH_BREAKS = "A LOT-priced operation cannot carry price breaks";
 
-export async function listPartPrices(partId: string): Promise<PartPriceRow[]> {
-  const rows = await prisma.partPrice.findMany({
+/**
+ * `db` defaults to the top-level client, the `listAddresses` / `readShipperDetail` precedent (#60).
+ *
+ * It is NOT optional in spirit for a transactional caller: invoice pricing calls this per order line
+ * from inside its Serializable transaction, and reading through the singleton put those reads on a
+ * DIFFERENT connection — outside the transaction's snapshot AND outside its read-set. A concurrent
+ * price edit was therefore invisible to SSI (no 40001, no retry), and the several per-line calls
+ * could tear across a mid-flight price change, producing an invoice from prices inconsistent with
+ * the rest of its own snapshot. Pass the `tx`.
+ */
+export async function listPartPrices(
+  partId: string, db: Prisma.TransactionClient = prisma,
+): Promise<PartPriceRow[]> {
+  const rows = await db.partPrice.findMany({
     where: { partId, deletedAt: null },
     include: {
       processStepCode: {

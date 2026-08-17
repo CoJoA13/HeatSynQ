@@ -29,6 +29,17 @@ production code; and when consecutive review rounds keep finding defects in the 
 
 ---
 
+## Task 0 — DONE 2026-08-17 · **63 issues open**
+
+All three suspects were re-verified against the code and closed with their evidence: **#6** (ruling 14
+built in full — registry, service, nine `/blockers` route pairs, the sweep test), **#10** (revival-on-create
+was *removed*, not consolidated — partial unique indexes, §5.18), **#7** (§5.16 decided and adopted in
+**68 of 83** client files; the four exceptions are correct — `login` has no session, `Combobox` and
+`LogoPanel` take gating from their parents, and the audit page's only button is a search — so no
+surviving sweep). The four missing triage labels now exist. The original reasoning is kept below.
+
+<details><summary>Task 0 as originally scoped</summary>
+
 ## Task 0 — Triage the list before trusting it (~1 hour) · DO THIS FIRST
 
 Round 1's Task 0 existed because a dirty measurement makes every later estimate wrong. Same reasoning:
@@ -52,9 +63,40 @@ for screens that predate §5.16 — that is a different, smaller issue than the 
 repo** — only `wontfix` does. `gh issue edit --add-label ready-for-agent` fails today. Create the four
 missing labels or stop documenting them.
 
+</details>
+
 ---
 
-## Group A — The invoice engine · **#61, #62, #64, #63, #89, #59, #60, #96**
+## Group A — The invoice engine · **DONE 2026-08-17**, branch `group-a-invoice-engine`
+
+All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3104 tests / 182 files**
+(from 3080), `tsc`/`eslint`/`build` clean, E2E 23/23 — all re-run at each of THREE review rounds,
+never carried forward.
+
+**Two of those rounds found defects in the previous round's code**, both on the same `#61` pairing
+fallback: round 1 found the step-exact identity insufficient, round 2 found its replacement had
+become the mirror of the bug it fixed (erasing a sibling operation's revenue). Round 3 approved.
+That is round 1's lesson 4 playing out live — worth reading before the next group.
+
+Four went further than the issue said, and those differences are in HANDOFF §6: #61's fix is one
+identity rule covering *every* overridable kind (a retyped TAX line double-billed the same way), #64
+is what makes #61 honest (tax follows the override), #62 had an unnamed second half in
+`invoiceWarnings`, and #89 needed BOTH gaps rather than a replacement. Three test fixtures that built
+line-less invoices had to gain a line — #63's guard is in the service, so they failed correctly.
+
+<details><summary>The rulings and the original issue-by-issue scoping</summary>
+
+> **Three owner rulings, 2026-08-17, taken before this branch opened.**
+> **#61 — the manual override WINS, silently.** Recalculate suppresses the regenerated twin (match on
+> `orderLineId` + `processStepCodeId`) and keeps the typed amount; **tax follows the override**. No new
+> revert control — remove the row, save, Recalculate restores the computed line, and that path becomes a
+> tested contract. (Ratifies what `patchRow`'s `MANUAL` stamp already intended.)
+> **#62 — default the GL account SERVER-SIDE** to `otherChargeGlAccountId`; the grid stays read-only and
+> now shows a real account. **No operator GL picker** — the list route is `admin.view`-gated, which an
+> invoicing clerk must not hold, and ruling 15 excludes `glAccount` from the open pick-list route on
+> purpose. Revisit only if the accountant asks for charges split across accounts.
+> **#63 — a $0 invoice is legitimate paper** (warranty, rework, no-charge). Block the **empty line set**,
+> not a zero total, and block at **finalize** — a draft may be transiently emptied mid-rebuild.
 
 **The acceptance month's own path, and the highest-consequence group in the list.** Six of the eight are
 in `invoices.ts`, most in the `recalculateInvoice` / `replaceInvoiceLines` seam, so one branch and one
@@ -86,6 +128,8 @@ saved with no account, the other lets readiness declare that fine. Fixing either
 
 **Note:** #61/#62/#64 all touch the manual-line handling in `recalculateInvoice`. Sequence them as one
 task, not three, or the second and third will each be rewriting the first.
+
+</details>
 
 ---
 
@@ -246,8 +290,9 @@ it twice. Cross-referenced to the question list.
 
 ## Recommended order
 
-**Task 0** (triage, ~1h) → **A** (invoice engine) → **B** (A/R, unblocked) → **C** (shipping/status) →
-**E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision) → **F** → **G**/**H** as filler.
+~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine)~~ → **B** (A/R, unblocked) ← **NEXT** →
+**C** (shipping/status) → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
+→ **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across

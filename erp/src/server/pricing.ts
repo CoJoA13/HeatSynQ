@@ -169,6 +169,28 @@ function applyRate(baseCents: number, rate: number): number {
   return divideRound(baseCents * Math.round(rate * RATE_SCALE), RATE_SCALE);
 }
 
+/** The line kinds sales tax is computed over. Freight is excluded, and only freight (§5). Stated
+ *  ONCE because two callers need it: `priceOrder`'s own TAX line below, and `taxOnLines` for a set
+ *  the engine never saw. */
+const TAXABLE_KINDS: readonly InvoiceLineKindValue[] = ["OPERATION", "SURCHARGE", "CHARGE", "CERT"];
+
+/**
+ * Sales tax over an ARBITRARY final line set, in dollars — the same base and the same rounding
+ * `priceOrder` gives its own TAX line.
+ *
+ * `recalculateInvoice` needs this (#61/#64): its final set is the engine's lines with manual
+ * overrides substituted IN and preserved manual lines added, none of which the engine ever priced.
+ * Recomputing over the engine's own output instead left a manually added taxable charge untaxed and
+ * an overridden operation taxed at the figure the operator overrode away.
+ */
+export function taxOnLines(
+  lines: readonly { kind: InvoiceLineKindValue; amount: number }[], rate: number,
+): number {
+  const base = lines.reduce(
+    (sum, l) => (TAXABLE_KINDS.includes(l.kind) ? sum + toCents(l.amount) : sum), 0);
+  return fromCents(applyRate(base, rate));
+}
+
 /** Does this operation line fall inside the surcharge's scope? An operation with no step code at
  *  all (a line with no price rows) can never be *listed*, so `INCLUDE` never matches it and
  *  `EXCLUDE` always does. */
@@ -306,8 +328,7 @@ export function priceOrder(input: PricingInput): PricingResult {
   }
 
   if (input.tax) {
-    // Freight is excluded, and only freight (§5).
-    const base = totalFor("OPERATION") + totalFor("SURCHARGE") + totalFor("CHARGE") + totalFor("CERT");
+    const base = TAXABLE_KINDS.reduce((sum, kind) => sum + totalFor(kind), 0);
     push(applyRate(base, input.tax.rate), {
       ...blank("TAX"), description: TAX_LABEL, rate: input.tax.rate,
       glAccountId: input.tax.glAccountId, glAccountName: input.tax.glAccountName,

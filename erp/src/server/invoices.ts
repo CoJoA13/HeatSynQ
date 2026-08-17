@@ -18,13 +18,13 @@ import { getSetting, allocateNumber } from "./settings";
 import { isDuplicateClientRequestId } from "./orders";
 import { shippedTotals, recomputeOrderStatus } from "./ship-ledger";
 import {
-  priceOrder,
+  priceOrder, taxOnLines,
   type PricingInput, type OrderLineInput, type PriceRowInput, type SurchargeInput, type ChargeInput,
-  type GlRef, type PricingResult, type ComputedLine,
+  type GlRef, type ComputedLine,
 } from "./pricing";
 import { parseDateOnly, formatDateOnly, todayDateOnly, dateOnly, addDays } from "../lib/business-days";
 import {
-  INVOICE_LINE_KINDS, PRICE_SOURCES,
+  INVOICE_LINE_KINDS, PRICE_SOURCES, invoiceDocumentNumber,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
 } from "../lib/invoice-constants";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "../lib/part-constants";
@@ -143,19 +143,11 @@ function toLineDetail(l: LineRow): InvoiceLineDetail {
   };
 }
 
-/** The paper's "Invoice No." — the credit number for a CREDIT, otherwise the prefix + order number
- *  (P5A §10; a blank prefix prints the bare order number). The prefix is a print-time setting, read
- *  here rather than stored, so changing it re-labels drafts consistently. */
-function documentNumber(kind: InvoiceKindValue, creditNumber: number | null, orderNumber: number, prefix: string): string {
-  if (kind === "CREDIT") return String(creditNumber);
-  return prefix === "" ? String(orderNumber) : `${prefix} - ${orderNumber}`;
-}
-
 function toInvoiceDetail(row: DetailRow, prefix: string): InvoiceDetail {
   return {
     id: row.id, kind: row.kind, status: row.status,
     orderId: row.orderId, orderNumber: row.order.orderNumber,
-    documentNumber: documentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
+    documentNumber: invoiceDocumentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
     sourceInvoiceId: row.sourceInvoiceId, creditNumber: row.creditNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate),
@@ -262,7 +254,7 @@ function toListRow(row: ListRowShape, prefix: string): InvoiceListRow {
   return {
     id: row.id, kind: row.kind, status: row.status,
     orderId: row.orderId, orderNumber: row.order.orderNumber,
-    documentNumber: documentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
+    documentNumber: invoiceDocumentNumber(row.kind, row.creditNumber, row.order.orderNumber, prefix),
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
     invoiceDate: formatDateOnly(row.invoiceDate), total: row.total.toNumber(),
     finalizedAt: row.finalizedAt ? row.finalizedAt.toISOString() : null,
@@ -329,6 +321,18 @@ async function loadInvoiceDeps(): Promise<InvoiceDeps> {
   return { config, surcharges, today: todayDateOnly() };
 }
 
+/** Seam #1's account, resolved id + name, for the paths that do not build a whole pricing input —
+ *  today `replaceInvoiceLines` (#62). Read on the top-level client OUTSIDE the transaction, the
+ *  `loadInvoiceDeps` discipline. `buildPricingInput` resolves the same pair from the batch of
+ *  config accounts it already reads, and the two must agree: an engine-generated charge and a
+ *  hand-typed one post to the SAME account or the export splits one charge class in two. */
+async function otherChargeGlRef(): Promise<GlRef> {
+  const { otherChargeGlAccountId: id } = await getBillingConfig();
+  if (id === null) return { glAccountId: null, glAccountName: "" };
+  const row = await prisma.glAccount.findFirst({ where: { id }, select: { name: true } });
+  return { glAccountId: id, glAccountName: row?.name ?? "" };
+}
+
 function pickDefault(addresses: AddressRow[], kind: AddressRow["kind"]): AddressRow | null {
   const of = addresses.filter((a) => a.kind === kind);
   return of.find((a) => a.isDefault) ?? of[0] ?? null;
@@ -363,32 +367,20 @@ const ORDER_LINE_SELECT = {
 } satisfies Prisma.OrderLineSelect;
 
 /**
- * Tier-1 substitution (Phase 6 spec §5.3, rulings 4 + 8): the `PriceRowInput[]` for an order line
- * that carries a quote link — the linked quote line's LIVE `QuotePrice` rows with their LIVE
- * breaks, WHOLESALE. When the link is taken the part's rows are not fetched, not merged, not
- * fallen back to: a linked line with zero live rows returns `[]`, which the engine prices as
- * tier 3's needs-price — the link declared the agreement, and an empty agreement is a flag, not
- * permission to bill something else.
+ * The two INVARIANT asserts a stored quote link has to satisfy — that its target is live, and that
+ * it quotes the SAME part the order line does. Neither is an expected failure (plain Error → the
+ * handler's 500): §5.14 refuses deleting or re-pointing a quote line any order line references, and
+ * every stored link was judged at save time (quote-links.ts), so a dead or wrong-part target here is
+ * corrupt state. Falling back to part rows instead would be the silent re-price §7.5 exists to
+ * prevent.
  *
- * Reads run on the invoice transaction's OWN client (the #60 lesson): the eligibility the link
- * was judged under is order-entry's business; what matters HERE is that a concurrent quote edit
- * lands inside this Serializable transaction's read set, so SSI sees it.
- *
- * Shape rules, mirrored from `listPartPrices` (part-prices.ts) so tier 1 and tier 2 resolve
- * identically: GL comes from each row's STEP CODE (`glAccountId` + live account name, `?? ""` —
- * quote rows deliberately carry no GL columns, spec §4.1), rows order `position asc, id asc`,
- * breaks `threshold asc`, live-rows-only throughout — and every read here is keyed through the
- * LIVE parent just verified (the Task 4 dangling-grandchildren shape: live breaks can exist
- * under a soft-deleted row; keying breaks through the live rows is what keeps them unreachable).
- *
- * The two throws are INVARIANT asserts, not expected failures (plain Error → the handler's 500):
- * §5.14 refuses deleting or re-pointing a quote line any order line references, and every stored
- * link was judged at save time (quote-links.ts), so a dead or wrong-part target here is corrupt
- * state. Falling back to part rows instead would be the silent re-price §7.5 exists to prevent.
+ * Split out of `quotePriceRowInputs` below (#96) so a caller that only needs to REFUSE corrupt state
+ * — the zero-net line the pricing loop skips — pays for one read rather than also fetching price
+ * rows it would discard. Returns the quote line, so the pricing path pays for one read as well.
  */
-async function quotePriceRowInputs(
+async function assertQuoteLinkSound(
   tx: Db, ol: { id: string; partId: string; quoteLineId: string },
-): Promise<PriceRowInput[]> {
+): Promise<{ id: string; quote: { quoteNumber: number } }> {
   const quoteLine = await tx.quoteLine.findFirst({
     where: { id: ol.quoteLineId },
     select: {
@@ -406,6 +398,33 @@ async function quotePriceRowInputs(
       `Order line ${ol.id} links quote line ${ol.quoteLineId}, which quotes a different part ` +
       `(${quoteLine.partId ?? "free-text"} vs ${ol.partId}) — refusing to price the line`);
   }
+  return quoteLine;
+}
+
+/**
+ * Tier-1 substitution (Phase 6 spec §5.3, rulings 4 + 8): the `PriceRowInput[]` for an order line
+ * that carries a quote link — the linked quote line's LIVE `QuotePrice` rows with their LIVE
+ * breaks, WHOLESALE. When the link is taken the part's rows are not fetched, not merged, not
+ * fallen back to: a linked line with zero live rows returns `[]`, which the engine prices as
+ * tier 3's needs-price — the link declared the agreement, and an empty agreement is a flag, not
+ * permission to bill something else.
+ *
+ * Reads run on the invoice transaction's OWN client (the #60 lesson): the eligibility the link
+ * was judged under is order-entry's business; what matters HERE is that a concurrent quote edit
+ * lands inside this Serializable transaction's read set, so SSI sees it.
+ *
+ * Shape rules, mirrored from `listPartPrices` (part-prices.ts) so tier 1 and tier 2 resolve
+ * identically: GL comes from each row's STEP CODE (`glAccountId` + live account name, `?? ""` —
+ * quote rows deliberately carry no GL columns, spec §4.1), rows order `position asc, id asc`,
+ * breaks `threshold asc`, live-rows-only throughout — and every read here is keyed through the
+ * LIVE parent `assertQuoteLinkSound` just verified (the Task 4 dangling-grandchildren shape: live
+ * breaks can exist under a soft-deleted row; keying breaks through the live rows is what keeps them
+ * unreachable).
+ */
+async function quotePriceRowInputs(
+  tx: Db, ol: { id: string; partId: string; quoteLineId: string },
+): Promise<PriceRowInput[]> {
+  const quoteLine = await assertQuoteLinkSound(tx, ol);
 
   const rows = await tx.quotePrice.findMany({
     where: { quoteLineId: quoteLine.id, deletedAt: null },
@@ -489,10 +508,24 @@ async function buildPricingInput(
   const lines: OrderLineInput[] = [];
   for (const ol of orderLines) {
     const totals = shipped.get(ol.id) ?? { qty: 0, weight: 0 };
-    if (totals.qty === 0 && totals.weight === 0) continue;
+    if (totals.qty === 0 && totals.weight === 0) {
+      // #96: a zero-net line is never PRICED (seam #3) — but a corrupt quote link on it is corrupt
+      // state either way, and the lead-line header read below resolves `orderLines[0]`'s link
+      // UNCONDITIONALLY. So the same corruption threw on a zero-net LEAD line and was silently
+      // skipped on a zero-net rider. The asymmetry was the finding; throwing is the safe direction
+      // on corrupt state, so the rider is validated here too and the two agree. Constructionally
+      // unreachable while the §5.14 guards hold — which is exactly why it must not depend on which
+      // position the line happens to occupy.
+      if (ol.quoteLineId !== null) {
+        await assertQuoteLinkSound(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId });
+      }
+      continue;
+    }
     const prices: PriceRowInput[] = ol.quoteLineId !== null
       ? await quotePriceRowInputs(tx, { id: ol.id, partId: ol.partId, quoteLineId: ol.quoteLineId })
-      : (await listPartPrices(ol.partId)).map((p) => ({
+      // #60: on `tx`, never the singleton — inside a Serializable transaction a second-connection
+      // read sits outside the snapshot and the read-set, so SSI cannot see a racing price edit.
+      : (await listPartPrices(ol.partId, tx)).map((p) => ({
           processStepCodeId: p.processStepCodeId, stepCode: p.stepCode, stepName: p.stepName, position: p.position,
           setupCharge: p.setupCharge, unitPrice: p.unitPrice, minimumCharge: p.minimumCharge,
           pricePer: p.pricePer, breaks: p.breaks.map((b) => ({ threshold: b.threshold, price: b.price })),
@@ -600,8 +633,8 @@ type InvoiceLineWrite = {
  *  account, so the config's `otherChargeGlAccountId` (and its resolved name) is assigned to CHARGE
  *  lines HERE, exactly as create always did — factored out so recalculate cannot post them to a
  *  different account than create would. */
-function mapComputedLines(computed: PricingResult, otherChargeGl: GlRef): InvoiceLineWrite[] {
-  return computed.lines.map((l, i) => ({
+function mapComputedLines(computedLines: readonly ComputedLine[], otherChargeGl: GlRef): InvoiceLineWrite[] {
+  return computedLines.map((l, i) => ({
     position: i + 1, kind: l.kind,
     orderLineId: l.orderLineId, processStepCodeId: l.processStepCodeId,
     surchargeId: l.surchargeId, orderChargeId: l.orderChargeId,
@@ -617,20 +650,67 @@ function mapComputedLines(computed: PricingResult, otherChargeGl: GlRef): Invoic
   }));
 }
 
+/**
+ * The identity a MANUAL line overrides, or null when it carries none.
+ *
+ * Owner ruling 2026-08-17 (#61): **the manual override wins, silently.** A manual line whose
+ * order-side identity matches a regenerated derived line is an OVERRIDE and takes that line's SLOT;
+ * one matching nothing is a genuine ADDITION and rides at the end (§5.5). Before this, recalculate
+ * regenerated the derived twin AND preserved the override beside it — an outright double bill, and
+ * the same shape for every kind, not only the operations the issue was filed about.
+ *
+ * An OPERATION keys on order line AND step code, so two priced operations on one order line stay
+ * distinct — but that identity alone is NOT sufficient, because the derived line can come back under
+ * a different step code (the tier-3 "needs price" line carries none at all, `pricing.ts`). The
+ * caller therefore falls back to an order-line match; see `recalculateInvoice`. FREIGHT / CERT / TAX
+ * are singletons — the engine emits at most one of each — so the kind is the whole identity.
+ *
+ * The undo path the ruling took INSTEAD of a revert control: remove the row, save, recalculate, and
+ * the computed line returns (pinned in `tests/invoices.test.ts`).
+ */
+function overrideKey(l: {
+  kind: InvoiceLineKindValue; orderLineId: string | null; processStepCodeId: string | null;
+  surchargeId: string | null; orderChargeId: string | null;
+}): string | null {
+  switch (l.kind) {
+    case "PART": return l.orderLineId === null ? null : `PART:${l.orderLineId}`;
+    case "OPERATION":
+      return l.orderLineId === null
+        ? null : `OPERATION:${l.orderLineId}:${l.processStepCodeId ?? ""}`;
+    case "SURCHARGE": return l.surchargeId === null ? null : `SURCHARGE:${l.surchargeId}`;
+    case "CHARGE": return l.orderChargeId === null ? null : `CHARGE:${l.orderChargeId}`;
+    case "FREIGHT": case "CERT": case "TAX": return l.kind;
+  }
+}
+
+/** Seam #1's MANUAL half (#62). The grid renders a charge line's GL account read-only and sends it
+ *  blank — and there is deliberately no operator picker (ruling 2026-08-17: the pick-list route
+ *  excludes `glAccount`, §5.15) — so the SERVER assigns the same plant default `mapComputedLines`
+ *  gives an engine-generated charge. Applied on the whole-array save AND on the recalculate that
+ *  preserves the row, so a draft written before the default existed does not stay account-less and
+ *  drop out of the GL export. A line that already names an account is never re-pointed. */
+function withChargeGl<T extends { kind: InvoiceLineKindValue; glAccountId: string | null; glAccountName: string }>(
+  line: T, otherChargeGl: GlRef,
+): T {
+  if (line.kind !== "CHARGE" || line.glAccountId !== null) return line;
+  return { ...line, glAccountId: otherChargeGl.glAccountId, glAccountName: otherChargeGl.glAccountName };
+}
+
 /** `assertRefExists` on every registered FK the lines carry (CLAUDE.md's FK-writer pattern; the
  *  Serializable isolation is what this pairs WITH, never a substitute for it). `extraStepCodeIds`
  *  covers the cert charge's step code, which never lands on any line's `processStepCodeId` column
  *  (only its GL account rides along) and so is invisible to the scan otherwise. */
 async function assertLineRefs(
   tx: Db,
-  lines: { glAccountId: string | null; processStepCodeId: string | null; surchargeId: string | null }[],
+  lines: { glAccountId?: string | null; processStepCodeId?: string | null; surchargeId?: string | null }[],
   extraStepCodeIds: string[] = [],
 ): Promise<void> {
-  const glAccountIds = new Set(lines.map((l) => l.glAccountId).filter((id): id is string => id !== null));
-  const processStepCodeIds = new Set(
-    lines.map((l) => l.processStepCodeId).filter((id): id is string => id !== null));
+  const set = (ids: (string | null | undefined)[]) =>
+    new Set(ids.filter((id): id is string => typeof id === "string"));
+  const glAccountIds = set(lines.map((l) => l.glAccountId));
+  const processStepCodeIds = set(lines.map((l) => l.processStepCodeId));
   for (const id of extraStepCodeIds) processStepCodeIds.add(id);
-  const surchargeIds = new Set(lines.map((l) => l.surchargeId).filter((id): id is string => id !== null));
+  const surchargeIds = set(lines.map((l) => l.surchargeId));
   for (const id of glAccountIds) await assertRefExists("glAccount", id, tx);
   for (const id of processStepCodeIds) await assertRefExists("processStepCode", id, tx);
   for (const id of surchargeIds) await assertRefExists("surcharge", id, tx);
@@ -747,7 +827,7 @@ async function createInvoiceInTx(
     ? []
     : lead.quoteLineId !== null
       ? await quotePriceRowInputs(tx, { id: lead.id, partId: lead.partId, quoteLineId: lead.quoteLineId })
-      : await listPartPrices(lead.partId);
+      : await listPartPrices(lead.partId, tx); // #60 — the same transaction, for the same reason
   // Ruling 4's invoice half (spec §5.7): the header's Process: snapshot is the lead part's
   // `processName` (presentation vocabulary) when it is non-blank, else today's priced-operation
   // comma-join. CREATE-TIME only — this is the ONLY behavioral change to invoice data, and prints
@@ -775,7 +855,7 @@ async function createInvoiceInTx(
   // in the gap — a distant delete-blocker (e.g. `BILLING_CONFIG_BLOCKER`) is not a substitute for
   // this local, permanent check. Both the mapping and the guard are shared verbatim with
   // `recalculateInvoice`, so the two write paths cannot drift.
-  const lineData = mapComputedLines(computed, otherChargeGl);
+  const lineData = mapComputedLines(computed.lines, otherChargeGl);
   const certStepIds = input.cert && deps.config.certChargeStepCodeId ? [deps.config.certChargeStepCodeId] : [];
   await assertLineRefs(tx, lineData, certStepIds);
 
@@ -886,8 +966,34 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
     }
   }
   for (const l of detail.lines) {
-    if (l.processStepCodeId !== null && l.glAccountId === null) {
-      warnings.push(`Line ${l.position} · ${l.partNumber} — ${l.description} has no GL account`);
+    // #62: EVERY account-bearing kind, not only the step-code-carrying ones. A hand-typed CHARGE
+    // carries no step code, so the old `processStepCodeId !== null` test let it through silently —
+    // and 5C's export then drops it (or, since #89, refuses the whole month). The kinds excluded
+    // here are the ones that genuinely post nothing: a PART line is a $0 header, and a TAX line's
+    // account comes from the billing config at export time, never from the line.
+    if (l.kind === "PART" || l.kind === "TAX") continue;
+    // A $0 line posts nothing, so it is not a gap — the same test `resolveReadiness` applies, and
+    // the two must agree or this warns about a line the export is perfectly happy with.
+    if (l.glAccountId === null && Math.round(l.amount * 100) !== 0) {
+      // A CHARGE/FREIGHT/CERT line carries a blank part number — fall back to its own description,
+      // the same label rule the needs-price warning above uses.
+      const label = l.partNumber === "" ? l.description : `${l.partNumber} — ${l.description}`;
+      warnings.push(`Line ${l.position} · ${label} has no GL account`);
+    }
+  }
+  for (const l of detail.lines) {
+    // Review round 3, and the honest answer to a limit the ruling itself mandates. A typed price on
+    // the tier-3 "needs price" line carries NO step code, so it stands in for the WHOLE order line
+    // (§5.5 / the #61 ruling) — and it keeps standing in: a priced operation added to that part
+    // AFTERWARDS is covered by the typed figure and never bills on its own. That is the ruled
+    // behaviour, not a defect, and the stored state genuinely cannot tell "the work this price was
+    // typed for" from "work added since. So it is SURFACED rather than guessed at, which is the one
+    // thing the recalculate must not do silently.
+    if (l.kind === "OPERATION" && l.priceSource === "MANUAL" && l.processStepCodeId === null) {
+      const label = l.partNumber === "" ? l.description : `${l.partNumber} — ${l.description}`;
+      warnings.push(
+        `Line ${l.position} · ${label} is a typed price standing in for every priced operation on ` +
+        "this part — re-check it after any pricing change");
     }
   }
   return warnings;
@@ -1057,10 +1163,23 @@ function lineColumns(l: LineInput) {
 
 export async function replaceInvoiceLines(id: string, input: unknown): Promise<InvoiceDetail> {
   const data = REPLACE_LINES.parse(input);
-  const columns = data.map(lineColumns);
+  // Seam #1's MANUAL half (#62) — read OUTSIDE the transaction, then applied to every account-less
+  // CHARGE the payload carries, so a hand-typed charge can never be persisted posting to nothing.
+  const otherChargeGl = await otherChargeGlRef();
+  const columns = data.map((l) => withChargeGl(lineColumns(l), otherChargeGl));
 
   return withDbErrors({ entity: "Invoice" }, () => prisma.$transaction(async (tx) => {
-    await claimLiveInvoice(tx, id);
+    const { invoice } = await claimLiveInvoice(tx, id);
+    // #64's OTHER seam. "Save lines" and "Recalculate" are independent actions — nothing makes an
+    // operator recalculate after typing a charge, and finalize freezes whatever is on the invoice —
+    // so re-deriving tax only in `recalculateInvoice` still let a taxable charge print under-taxed.
+    // Same rule as there: the rate is the invoice's own snapshot, and a MANUALLY overridden TAX line
+    // is left exactly as typed (the override wins, uniformly).
+    const taxRate = invoice.taxRate === null ? null : invoice.taxRate.toNumber();
+    const taxAt = columns.findIndex((c) => c.kind === "TAX");
+    if (taxRate !== null && taxAt !== -1 && columns[taxAt].priceSource !== "MANUAL") {
+      columns[taxAt] = { ...columns[taxAt], amount: taxOnLines(columns, taxRate) };
+    }
     await assertLineRefs(tx, columns); // every registered FK the payload writes (the create guard)
 
     await auditedUpdate("invoice", id, async () => {
@@ -1096,12 +1215,31 @@ async function wirePayloadParents(
   }
 }
 
+/** One line of `recalculateInvoice`'s final ordered set. `columns` is the whole write row minus the
+ *  three the writer assigns (`invoiceId`/`position`/`parentLineId`) — the Prisma input type rather
+ *  than `InvoiceLineWrite`, because a preserved manual row's decimals arrive as `Decimal` while the
+ *  engine's arrive as `number`, and both are valid here. `kind`/`amount` are lifted out for the two
+ *  passes that read them without caring which side produced the row: the tax recompute and the
+ *  totals. */
+type RecalcColumns =
+  Omit<Prisma.InvoiceLineCreateManyInput, "id" | "invoiceId" | "parentLineId" | "position">
+  & { position?: number };
+type RecalcLine = {
+  key: string; parentKey: string | null; isManual: boolean;
+  kind: InvoiceLineKindValue; amount: number; columns: RecalcColumns;
+};
+
 // -------------------------------------------------------------------------------------------
 // recalculateInvoice — re-price from CURRENT data (new part prices, new surcharges, current shipped
-// totals) and replace every DERIVED line (priceSource ≠ MANUAL), keeping manual lines at the end.
-// It re-runs Task 11's whole build — `buildPricingInput` + `priceOrder` + the shared
-// `mapComputedLines`/`assertLineRefs`/`wireComputedParents` — so it produces exactly what a fresh
-// `createInvoice` would for the same order today. There is no second pricing path to drift from.
+// totals) and replace every DERIVED line (priceSource ≠ MANUAL), keeping the manual ones. It re-runs
+// Task 11's whole build — `buildPricingInput` + `priceOrder` + the shared
+// `mapComputedLines`/`assertLineRefs` — so it produces exactly what a fresh `createInvoice` would for
+// the same order today. There is no second pricing path to drift from.
+//
+// A manual line is kept in ONE of two places (#61, owner ruling 2026-08-17): substituted into the
+// slot of the derived line it overrides, or — matching nothing — appended (§5.5). The whole set is
+// then renumbered 1..n and parent-wired through `wirePayloadParents`, the same key-based pass
+// `replaceInvoiceLines` uses, so a substituted override keeps its place under its PART line.
 // -------------------------------------------------------------------------------------------
 
 export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
@@ -1146,57 +1284,159 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     const otherChargeGl: GlRef = {
       glAccountId: deps.config.otherChargeGlAccountId, glAccountName: otherChargeGlName,
     };
-    const derived = mapComputedLines(computed, otherChargeGl);
-
-    // Manual lines survive untouched and ride at the END (§5.5). Read before the delete, recreated
-    // after the regenerated derived lines.
-    const manual = await tx.invoiceLine.findMany({
-      where: { invoiceId: id, priceSource: "MANUAL" }, orderBy: { position: "asc" },
+    // The whole previous line set, read before the delete. `manual` is what survives a recalculate
+    // (§5.5), re-created below — either in the slot of the derived line it overrides, or at the end
+    // if it overrides nothing. The DERIVED identities matter too (review round 2): they are what
+    // tells an operation that has newly APPEARED from one that was already being billed in its own
+    // right, which is the difference between re-homing an override and stealing a sibling's slot.
+    const previous = await tx.invoiceLine.findMany({
+      where: { invoiceId: id }, orderBy: { position: "asc" },
     });
+    const manual = previous.filter((l) => l.priceSource === "MANUAL");
+    const alreadyBilled = new Set(
+      previous.filter((l) => l.priceSource !== "MANUAL")
+        .map((l) => overrideKey(l))
+        .filter((k): k is string => k !== null));
+
+    // #61 (owner ruling 2026-08-17): pair each manual line with the derived line it overrides, by
+    // order-side identity. An override REPLACES its twin in place; anything left over is an addition
+    // and keeps riding at the end. Pairing on the ENGINE's own key means a manual line whose derived
+    // twin no longer exists at all (its order line stopped shipping, say) falls through to the
+    // additions rather than vanishing.
+    const computedKeyByIdentity = new Map<string, string>();
+    const identityByComputedKey = new Map<string, string>();
+    const operationKeysByOrderLine = new Map<string, string[]>();
+    for (const l of computed.lines) {
+      const identity = overrideKey(l);
+      if (identity !== null) identityByComputedKey.set(l.key, identity);
+      if (identity !== null && !computedKeyByIdentity.has(identity)) computedKeyByIdentity.set(identity, l.key);
+      if (l.kind === "OPERATION" && l.orderLineId !== null) {
+        operationKeysByOrderLine.set(l.orderLineId,
+          [...(operationKeysByOrderLine.get(l.orderLineId) ?? []), l.key]);
+      }
+    }
+    const overrides = new Map<string, (typeof manual)[number]>(); // engine key -> the manual line taking its slot
+    const absorbed = new Set<string>(); // engine keys an override standing elsewhere already covers
+    const added: (typeof manual)[number][] = [];
+    const keyByManualId = new Map<string, string>();
+    const isClaimed = (key: string) => overrides.has(key) || absorbed.has(key);
+
+    for (const m of manual) {
+      const identity = overrideKey(m);
+      const exact = identity === null ? undefined : computedKeyByIdentity.get(identity);
+      // `isClaimed` keeps the FIRST claimant of a slot: a second manual line with the same identity
+      // rides as an addition rather than being silently dropped.
+      let slot = exact !== undefined && !isClaimed(exact) ? exact : undefined;
+      let cover: string[] = [];
+      if (slot === undefined && exact === undefined && m.kind === "OPERATION" && m.orderLineId !== null) {
+        // REVIEW ROUND 1 — a step-exact identity is not enough, and the miss double-billed exactly
+        // as the original #61 did. An operation can legitimately regenerate under a step code the
+        // override does not name: the operator typed into the tier-3 "needs price" line (which
+        // carries NO step code) and the shop has since priced the part, or the operation's part
+        // price was retired and re-added under a different step code. So an unmatched OPERATION
+        // override falls back to its ORDER LINE.
+        //
+        // REVIEW ROUND 2 — and only onto an operation that has APPEARED SINCE. Re-homing onto any
+        // free operation traded the double bill for its mirror: on a line pricing steps A and B,
+        // with A overridden and then A's price retired, the override took B's slot and B's revenue
+        // vanished from customer paper. An operation that was ALREADY on the invoice as its own
+        // derived line is not the one this override replaced — it is a sibling, and it keeps its
+        // line. When nothing qualifies, the override rides as an addition where the operator can
+        // see it, which is the honest answer to an ambiguity rather than a guess at money.
+        //
+        // How much it takes is the remaining care. A manual line with NO step code overrode a line
+        // standing for the WHOLE order line, so it covers every operation that line now prices; one
+        // whose step code merely no longer prices replaced ONE operation, so it takes one.
+        const free = (operationKeysByOrderLine.get(m.orderLineId) ?? []).filter((k) => {
+          if (isClaimed(k)) return false;
+          // Fails CLOSED: an operation whose identity cannot be read is not re-homed onto. Every key
+          // here comes from an OPERATION with a non-null `orderLineId`, for which `overrideKey` never
+          // returns null, so this is unreachable — but the permissive direction would silently
+          // resurrect the sibling-erasure round 2 closed, and that is not a trade worth taking.
+          const derivedIdentity = identityByComputedKey.get(k);
+          return derivedIdentity !== undefined && !alreadyBilled.has(derivedIdentity);
+        });
+        [slot, ...cover] = m.processStepCodeId === null ? free : free.slice(0, 1);
+      }
+      if (slot !== undefined) {
+        overrides.set(slot, m);
+        for (const key of cover) absorbed.add(key);
+        keyByManualId.set(m.id, slot);
+      } else {
+        added.push(m);
+        keyByManualId.set(m.id, `manual:${m.id}`);
+      }
+    }
+
+    /** A preserved manual row as a write, with seam #1 backfilled (#62). */
+    const manualWrite = (m: (typeof manual)[number]): RecalcColumns => withChargeGl({
+      kind: m.kind,
+      orderLineId: m.orderLineId, processStepCodeId: m.processStepCodeId,
+      surchargeId: m.surchargeId, orderChargeId: m.orderChargeId, glAccountId: m.glAccountId,
+      partNumber: m.partNumber, partName: m.partName, partDescription: m.partDescription,
+      description: m.description, glAccountName: m.glAccountName,
+      qty: m.qty, weight: m.weight, eachWeight: m.eachWeight,
+      pricePer: m.pricePer, unitPrice: m.unitPrice, setupCharge: m.setupCharge,
+      minimumCharge: m.minimumCharge, breakThreshold: m.breakThreshold, minimumApplied: m.minimumApplied,
+      rate: m.rate, priceSource: m.priceSource, sourceQuoteNumber: m.sourceQuoteNumber,
+      needsPrice: m.needsPrice, amount: m.amount,
+    }, otherChargeGl);
+
+    // The final ordered set: derived lines in engine order, each swapped for its override where one
+    // exists, then the genuine additions. Positions stay 1..n and contiguous, so a substituted
+    // override keeps its place under its PART line instead of becoming a trailing orphan.
+    const derivedWrites = mapComputedLines(computed.lines, otherChargeGl);
+    const ordered: RecalcLine[] = computed.lines.flatMap((l, i) => {
+      // Covered by an override standing in another slot — dropped outright, never billed twice.
+      // OPERATION lines are never a parent, so nothing is orphaned by this; and `wirePayloadParents`
+      // leaves a child flat rather than dangling if a `parentKey` names no line in the set.
+      if (absorbed.has(l.key)) return [];
+      const m = overrides.get(l.key);
+      if (m !== undefined) {
+        return [{
+          key: l.key, parentKey: l.parentKey, isManual: true,
+          kind: m.kind, amount: m.amount.toNumber(), columns: manualWrite(m),
+        }];
+      }
+      return [{
+        key: l.key, parentKey: l.parentKey, isManual: false,
+        kind: l.kind, amount: l.amount, columns: derivedWrites[i],
+      }];
+    }).concat(added.map((m) => ({
+      key: keyByManualId.get(m.id)!,
+      parentKey: m.parentLineId === null ? null : (keyByManualId.get(m.parentLineId) ?? null),
+      isManual: true, kind: m.kind, amount: m.amount.toNumber(), columns: manualWrite(m),
+    })));
 
     const certStepIds = input.cert && deps.config.certChargeStepCodeId ? [deps.config.certChargeStepCodeId] : [];
-    await assertLineRefs(tx, [...derived, ...manual], certStepIds);
+    await assertLineRefs(tx, ordered.map((o) => o.columns), certStepIds);
 
+    // #64: the engine priced its TAX line over ITS OWN lines — before any override was substituted
+    // in and before the preserved manual lines existed, so a taxable hand-typed charge went untaxed
+    // and an overridden operation was taxed at the figure the operator overrode away. Recompute over
+    // the FINAL set. A MANUALLY overridden TAX line is left exactly as typed: the override wins,
+    // uniformly, and re-deriving it here would be the very thing #61 forbids.
     const taxRate = input.tax?.rate ?? null;
-    const totals = totalsFromLines([
-      ...derived, ...manual.map((m) => ({ kind: m.kind, amount: m.amount.toNumber() })),
-    ]);
+    const tax = ordered.find((o) => o.kind === "TAX");
+    if (taxRate !== null && tax !== undefined && !tax.isManual) {
+      tax.amount = taxOnLines(ordered, taxRate);
+      tax.columns = { ...tax.columns, amount: tax.amount };
+    }
+
+    const totals = totalsFromLines(ordered);
 
     await auditedUpdate("invoice", id, async () => {
       await tx.invoiceLine.deleteMany({ where: { invoiceId: id } });
-      await tx.invoiceLine.createMany({ data: derived.map((c) => ({ invoiceId: id, ...c })) });
-      const base = derived.length;
-      if (manual.length > 0) {
-        await tx.invoiceLine.createMany({
-          data: manual.map((m, j) => ({
-            invoiceId: id, position: base + j + 1, kind: m.kind,
-            orderLineId: m.orderLineId, processStepCodeId: m.processStepCodeId,
-            surchargeId: m.surchargeId, orderChargeId: m.orderChargeId, glAccountId: m.glAccountId,
-            partNumber: m.partNumber, partName: m.partName, partDescription: m.partDescription,
-            description: m.description, glAccountName: m.glAccountName,
-            qty: m.qty, weight: m.weight, eachWeight: m.eachWeight,
-            pricePer: m.pricePer, unitPrice: m.unitPrice, setupCharge: m.setupCharge,
-            minimumCharge: m.minimumCharge, breakThreshold: m.breakThreshold, minimumApplied: m.minimumApplied,
-            rate: m.rate, priceSource: m.priceSource, sourceQuoteNumber: m.sourceQuoteNumber,
-            needsPrice: m.needsPrice, amount: m.amount,
-          })),
-        });
-      }
-      // Derived parents wire off the engine keys (positions 1..base). A preserved manual line keeps
-      // a parent only if that parent was ALSO manual (remapped old->new id); a parent that was a
-      // derived line has been regenerated with a new id, so the link is dropped, never left
-      // dangling.
-      await wireComputedParents(tx, id, computed.lines);
-      if (manual.some((m) => m.parentLineId !== null)) {
-        const rows = await tx.invoiceLine.findMany({ where: { invoiceId: id }, select: { id: true, position: true } });
-        const idByPosition = new Map(rows.map((r) => [r.position, r.id]));
-        const newIdByOldManualId = new Map(manual.map((m, j) => [m.id, idByPosition.get(base + j + 1)!]));
-        for (const [j, m] of manual.entries()) {
-          if (m.parentLineId === null) continue;
-          const parentId = newIdByOldManualId.get(m.parentLineId);
-          if (parentId) await tx.invoiceLine.update({ where: { id: idByPosition.get(base + j + 1)! }, data: { parentLineId: parentId } });
-        }
-      }
+      await tx.invoiceLine.createMany({
+        // Spread first, then stamp: the engine's writes carry their own `position`, and the set is
+        // renumbered 1..n here so a substituted override and a trailing addition land in one series.
+        data: ordered.map((o, i) => ({ ...o.columns, invoiceId: id, position: i + 1 })),
+      });
+      // One wiring pass over the whole set, keyed the same way `replaceInvoiceLines` keys its
+      // payload: a substituted override inherits the engine parentKey of the line it replaced, so it
+      // stays under its PART line, and an added manual line keeps a manual parent. A parentKey
+      // naming no line in the set leaves the child flat rather than dangling.
+      await wirePayloadParents(tx, id, ordered);
 
       // taxRate is inseparable from the regenerated TAX line — leaving the header column stale would
       // make it disagree with the line. The descriptive header snapshots (PO, terms, addresses,
@@ -1256,9 +1496,19 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   if (order.deletedAt !== null) throw new HttpError(400, `Order #${order.orderNumber} has been voided`);
   // Idempotent: a re-finalize is a 400 naming the state, never a second write (§5.5).
   if (invoice.status === "FINALIZED") throw new HttpError(400, "That invoice is already finalized");
-  // Finalize is refused while any line still needs a price (§5.5) — the ONLY finalize block. It reads
-  // the RESOLVED price already snapshotted on the line (Task 9), so a break-only line does not block.
-  // No GL-account check: spec §15 puts that on 5C's export, not here.
+  // #63: an invoice with NO LINES has nothing to bill, and the `needsPrice` check below passes
+  // VACUOUSLY over an empty set — so an emptied draft used to finalize into a $0 INVOICED order that
+  // `listInvoiceCandidates` then excluded, leaving no way to bill the order at all. Owner ruling
+  // 2026-08-17: the guard is on the EMPTY LINE SET, not on a zero total — a warranty or no-charge
+  // rework legitimately goes out at $0, listing what was done — and it sits at FINALIZE rather than
+  // on the save, so a draft may still be emptied while the operator rebuilds it.
+  if (invoice.lines.length === 0) {
+    throw new HttpError(400,
+      "That invoice has no lines — add the work being billed, or discard it");
+  }
+  // Finalize is refused while any line still needs a price (§5.5). It reads the RESOLVED price
+  // already snapshotted on the line (Task 9), so a break-only line does not block. No GL-account
+  // check: spec §15 puts that on 5C's export, not here.
   const offending = invoice.lines.find((l) => l.needsPrice);
   if (offending) {
     const label = offending.partNumber === ""
@@ -1361,7 +1611,14 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
       where: { id },
       data: { status: "DRAFT", finalizedAt: null, finalizedById: null },
     }), { tx, reason: why });
-  await recomputeOrderStatus(tx, [order.id], [order.id]);
+  // #59: branch on `kind` exactly as `finalizeInvoiceInTx` does. Only an INVOICE owns the order's
+  // status (§5.2), so only an INVOICE hands it back. Unlocking a CREDIT used to pass the order in
+  // the `released` set too, lifting `recomputeOrderStatus`'s INVOICE_OWNED skip and settling the
+  // order on its ship-derived status — while the source invoice was still FINALIZED and still owned
+  // INVOICED. An invoiced order silently fell back to SHIPPED via finalize-credit → unlock-credit.
+  if (invoice.kind === "INVOICE") {
+    await recomputeOrderStatus(tx, [order.id], [order.id]);
+  }
   return readInvoiceDetail(tx, id);
 }
 

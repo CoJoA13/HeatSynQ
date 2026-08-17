@@ -79,6 +79,9 @@ async function draftInvoiceDated(dateStr: string): Promise<string> {
     data: {
       kind: "INVOICE", status: "DRAFT", orderId: order.id, customerId: customer.id,
       invoiceDate: parseDateOnly(dateStr),
+      // One line, because #63 refuses to finalize an invoice with none — and these tests are about
+      // the PERIOD guard, so the invoice has to reach it.
+      lines: { create: [{ position: 1, kind: "OPERATION", description: "Austemper", amount: 0 }] },
     },
   });
   return invoice.id;

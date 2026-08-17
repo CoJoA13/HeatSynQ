@@ -48,6 +48,7 @@ import { buildStatementDefinition, type StatementData } from "./pdf/statement";
 import { storeDocument } from "./documents";
 import { resolveTemplateForPrint } from "./template-assignments";
 import type { ApplicationTypeValue } from "../lib/ar-constants";
+import { invoiceDocumentNumber } from "../lib/invoice-constants";
 import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
 
 export type { StatementData };
@@ -161,13 +162,6 @@ function appsAsOf(
     .map((a) => ({ amount: a.amount, type: a.type, deletedAt: null }));
 }
 
-/** The paper's own document number: the credit number for a CREDIT, otherwise the prefix + order
- *  number — the `invoices.ts` `documentNumber` precedent (duplicated; private there). */
-function documentNumber(kind: "INVOICE" | "CREDIT", creditNumber: number | null, orderNumber: number, prefix: string): string {
-  if (kind === "CREDIT") return String(creditNumber);
-  return prefix === "" ? String(orderNumber) : `${prefix} - ${orderNumber}`;
-}
-
 /** Sums a set of `AgingRow`s into one combined family-total row, in integer cents — the
  *  `aging.ts` `sumRows` precedent (duplicated; private there). */
 function sumAgingRows(rows: AgingRow[], as: CustomerRef): AgingRow {
@@ -252,7 +246,7 @@ async function buildStatementInTx(
       if (cents(open) <= 0) continue; // fully settled as of this asOf — not an open item
 
       openItems.push({
-        documentNumber: documentNumber("INVOICE", null, inv.orderNumber, prefix),
+        documentNumber: invoiceDocumentNumber("INVOICE", null, inv.orderNumber, prefix),
         date: inv.invoiceDate, dueDate: inv.dueDate, kind: "INVOICE", original: inv.total, open,
       });
 
@@ -272,7 +266,7 @@ async function buildStatementInTx(
       if (cents(remaining) <= 0) continue;
 
       openItems.push({
-        documentNumber: documentNumber("CREDIT", inv.creditNumber, inv.orderNumber, prefix),
+        documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.orderNumber, prefix),
         date: inv.invoiceDate, dueDate: null, kind: "CREDIT", original: inv.total, open: -remaining,
       });
     }

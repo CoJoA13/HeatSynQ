@@ -1,6 +1,6 @@
 # HeatSynQ — Project Handoff
 
-**Updated:** 2026-08-16 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **Backlog burn-down COMPLETE (2026-08-16) — 14 issues closed across five groups.** Task 0 **#122** (PR #127, `20174b6`); Group A **#115 + #68** (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** (PR #129, `b56aa0f`); Group C **#126 + #125** (PR #130, `1d8eac8`); Group D **#118–#121 + #123 + #124** (PR #131). Final gates: 3080 tests / 182 files, `tsc`/`eslint`/`build` clean, E2E 23/23. **Open backlog is now: #51–#52, #59–#65, #69–#80, #82–#83, #85–#90, #92–#93, #95–#100, #102–#103, and #132** (retention-failure latch, filed from the Group D review) — §6. **Do not re-pick #115, #118–#126, #68, #81, #84 or #91: they are done.**
+**Updated:** 2026-08-17 — **Phase 8C (Backup polish) MERGED to `main` as `941ceab` (PR #117, squash, 2026-08-16), completing roadmap Phase 8 AND EVERY BUILD PHASE in the 8-phase roadmap. No phase is in flight, and there is no ninth — §9 is the open acceptance/backlog decision (owner's choice).** 8C gave the already-running nightly backup a face and a pulse: the `/admin/backups` page (archive list + integrity + resolved folder + "Back up now"), a red staleness indicator where **absence is failure**, a `manage_backups`-only shell warning bar, the app↔container bridge through a shared `BACKUP_DIR`, two permission-backfill migrations so an upgraded install gets the action automatically, and a live-verified restore runbook. Full narrative moved to `docs/history/2026-08-16-phase-8c-backup-polish.md`; §4 keeps the one-paragraph entry. Final gates on `main`: **2988 tests / 179 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**, **39 migrations**, CI green. Nine per-task reviews (seven clean on round 1), a 5-lens whole-branch review with **zero Critical**, one fix wave, then Codex's **3 P1 + 7 P2** — all three P1s in the *restore runbook*, which two prior reviews had passed because they checked that the commands RUN, not what the shell SEMANTICS meant. Deferred → **#118–#122**. Earlier: Phase 8B merged `6f173e5` (PR #109); Phase 8A `7d3ebb1` (PR #106); Phase 7 `56c9722` (PR #104); Phase 6 `e2c91e8` (PR #94); Phase 5C `c069b09` (PR #92); 5B `b55da3b` (PR #74); 5A `359c707` (PR #58); Phase 4 `f129aae` (PR #47) with burn-down `8647a7d` (PR #57); Phase 3 `12a17f9` (PR #39). **Backlog burn-down COMPLETE (2026-08-16) — 14 issues closed across five groups.** Task 0 **#122** (PR #127, `20174b6`); Group A **#115 + #68** (PR #128, `ac5f8ff`); Group B **#91 + #81 + #84** (PR #129, `b56aa0f`); Group C **#126 + #125** (PR #130, `1d8eac8`); Group D **#118–#121 + #123 + #124** (PR #131). Final gates: 3080 tests / 182 files, `tsc`/`eslint`/`build` clean, E2E 23/23. **Round 2 opened 2026-08-17** (`docs/2026-08-17-backlog-round-2.md`, all 66 grouped): Task 0 closed **#6/#10/#7** as describing mechanisms that no longer exist, and **Group A — the invoice engine — closed all eight of #59–#64, #89 and #96** (PR pending, branch `group-a-invoice-engine`; gates **3104 tests / 182 files** after three review rounds). **Open backlog is now: #51–#52, #65, #69–#80, #82–#83, #85–#88, #90, #92–#93, #95, #97–#100, #102–#103, #132, and #134** (the owner question review round 3 surfaced: should a typed price with no step code keep absorbing operations priced later — recommendation (a), leave it, the warning removes the silence) — §6. **Do not re-pick #115, #118–#126, #68, #81, #84, #91, #6, #7, #10, #59–#64, #89 or #96: they are done.**
 
 **This file was split on 2026-08-06** — it had grown past what one read can hold, so the merged phases' full narratives moved verbatim to `docs/history/` and §4 keeps one paragraph each. Nothing was summarised or dropped; see §2 and §4 for the rule that keeps it that way.
 
@@ -397,8 +397,11 @@ branch; the entries below are unchanged as the record of what they are.
 **Phase 6 (Quoting) follow-ups — GitHub issues #95–#100 (2026-08-12), all deferred by the
 whole-branch triage rule, none correctness/concurrency/data-integrity.** #95 dangerous-direction
 tests for the deletePart/deleteCustomer↔quote-writer SSI pairings (holes verified NOT live;
-`Quote.customerId` immutability is the load-bearing untested dependency); #96 zero-net lead-line
-corrupt-quote-link asymmetry (500 vs skip — throw is the safe direction); #97 `indicativeAmounts`
+`Quote.customerId` immutability is the load-bearing untested dependency); **#96 — FIXED 2026-08-17
+(round 2's Group A)**: the zero-net corrupt-quote-link asymmetry (a 500 on a zero-net LEAD line, a
+silent skip on a zero-net rider) is closed by validating the link before the seam-#3 skip, so both
+throw — the safe direction on corrupt state, and no longer dependent on which position the line
+happens to occupy; #97 `indicativeAmounts`
 `ops[i]` length assert; #98 `sourceQuoteNumber` `.refine` on the manual-lines save; #99 promoting
 a soft-deleted reference row's `isDefault` 200s silently (inherited generic-service hole, also
 terms); #100 the minors bundle. Full triage: the whole-branch section of
@@ -445,10 +448,13 @@ any closed month whose `beginningAr` no longer equals the prior month's `endingA
 re-closes the affected months. Nothing is refused and nothing cascades automatically: this is the
 §5.14 "name the blocker" shape rather than a wall (option a would dead-end someone correcting an old
 month) and it keeps re-closing an explicit, audited act rather than a side effect (option b). Not yet
-built. #89 a freight/charge line finalized before its GL
-default reads clean in readiness but 500s the export (self-protecting via the Σdebit=Σcredit backstop;
-the fix is an invoice-attributed readiness gap, but there is no invoice detail page to anchor its
-fix-link). #90 the cosmetic follow-ups bundle. **#91 — RULED and DONE 2026-08-16 (`0b5ea81`, Group
+built. **#89 — FIXED 2026-08-17 (round 2's Group A).** A freight/charge line finalized before its GL
+default read clean in readiness and then 500'd the export (self-protecting via the Σdebit=Σcredit
+backstop). Readiness now emits an invoice-attributed gap ALONGSIDE the plant-default one, since the
+two are independent fixes. **The issue's stated blocker — "there is no invoice detail page to anchor
+its fix-link" — was simply wrong**: `/invoicing/[id]` has existed since 5A, and the gap links
+straight to it. Worth remembering as a small instance of the standing rule: check the claim against
+the code before pricing the work. #90 the cosmetic follow-ups bundle. **#91 — RULED and DONE 2026-08-16 (`0b5ea81`, Group
 B): the summary export is NETTED** to a single signed column per `(account, side)`, larger side wins
 — so an invoice + same-month credit emits one `A/R 60.00` debit instead of `100.00` debit AND `40.00`
 credit. Decided deliberately WITHOUT waiting on the bookkeeper, because a gross dual-column line
@@ -523,7 +529,10 @@ carries its own raise-date vs the source invoice's `invoiceDate` — **deferred 
 carried in §9's kickoff). Only (6) is still open.
 
 **Deferred from the PR #58 Codex triage (2026-08-08), issues #59–#65 — all verified real against
-the branch, none already fixed; none data-loss, but three are money/status defects.** The owner
+the branch, none already fixed; none data-loss, but three are money/status defects. SIX OF THE SEVEN
+ARE NOW FIXED — round 2's Group A, branch `group-a-invoice-engine` (#59, #60, #61, #62, #63, #64,
+plus #89 and #96 from later phases). ONLY #65 REMAINS**, and it is round 2's Group C. The original
+analysis is kept below because it is what made the fixes checkable.** The owner
 elected to defer all seven to the post-5A burn-down rather than fix in-branch (the #48–#56
 pattern); every PR thread was replied to and resolved. **#59** unlocking a *credit* recomputes the
 order's invoice-owned status back to ship-derived (no `kind` branch, unlike finalize) — a
@@ -540,6 +549,89 @@ charges (tax is priced before manual lines load; `totalsFromLines` re-sums the s
 **#65** voiding either side of a reversal pair corrupts the order (`voidShipper` is
 reversal-unaware — stuck *Partial shipped*, or negative `shippedTotals`); non-invoiced pairs are
 exposed, invoiced ones only incidentally protected by `refuseIfInvoiced`.
+
+**What Group A actually changed (2026-08-17), beyond the six one-line descriptions above.** Four of
+the six were more than their issue said, and the differences are the part worth carrying forward:
+
+- **#61 generalized past operations.** The fix is not an operation-specific dedup but one identity
+  rule — `overrideKey` in `invoices.ts` — because the same double-bill existed for every kind the
+  grid lets an operator retype: a manually edited TAX line regenerated its derived twin too. A manual
+  line now pairs with the derived line sharing its order-side identity (order line + step code;
+  surcharge; order charge; FREIGHT/CERT/TAX as singletons) and is **substituted into that line's
+  slot**, keeping its place under its PART line. A manual line matching nothing is an addition and
+  still rides at the end (§5.5). **Review round 1 found the step-exact identity insufficient**, and
+  the miss double-billed exactly as the original defect did: a derived operation can come back under
+  a step code the override does not name — the operator typed into the tier-3 "needs price" line
+  (which carries NO step code) and the part has since been priced, or an operation's part price was
+  retired and re-added under a different code. (The step-code ROW cannot be soft-deleted underneath a
+  live override — `assertLineRefs` 400s on the preserved manual line first — so the reachable
+  mutation is always the price row, which is what the tests do.) An unmatched OPERATION override
+  therefore falls back to its ORDER LINE. **Review round 2 then found the fallback was the mirror of
+  the bug it fixed**: on a line pricing steps A and B, with A overridden and A's price then retired,
+  the override took B's slot and B's revenue vanished from customer paper — a double bill traded for
+  an under-bill. So it re-homes **only onto an operation that has APPEARED SINCE** (compared against
+  the invoice's previous derived identities, read before the delete); an operation already carrying
+  its own derived line is a sibling, and when nothing qualifies the override rides as an addition
+  where the operator can see it. How much it takes is the remaining care: no step code ⇒ every
+  qualifying operation on the line, a step code ⇒ exactly one. Both the round-1 and round-2 cases are
+  now tested. **The lesson is the project's own** (round 1's lesson 4): two successive rounds found
+  defects in the same fallback, each in the code written for the previous round. Round 3 approved it.
+  **One limit is RULED, not fixed, and is surfaced instead:** a tier-3 override (no step code) covers
+  every priced operation on its order line INCLUDING work priced afterwards, and the stored state
+  cannot tell that work apart from what the price was typed for — so `invoiceWarnings` says the line
+  is "standing in for every priced operation on this part" rather than a heuristic guessing at money.
+  Whether that absorb-all rule should narrow is an owner question, filed as its own issue.
+- **#64's fix is what makes #61's honest.** Tax is recomputed over the FINAL line set through
+  `pricing.ts`'s new `taxOnLines`, which shares its taxable-kind list with `priceOrder` so the two
+  cannot drift. Without it an overridden operation stayed taxed at the figure the operator overrode
+  away. A manually overridden TAX line is left exactly as typed — the override wins, uniformly.
+  **It has TWO seams, not one** (review round 1): "Save lines" and "Recalculate" are independent
+  buttons, nothing makes an operator press the second, and finalize freezes whatever is on the
+  invoice — so `replaceInvoiceLines` re-derives tax as well, off the invoice's own snapshot rate.
+  Re-deriving only in `recalculateInvoice` still let a typed taxable charge print under-taxed.
+- **#62 has a second half the issue did not name:** `invoiceWarnings` only flagged lines carrying a
+  step code, so even after the server default a genuinely account-less line stayed silent. It now
+  flags EVERY account-bearing kind (all but PART, which posts nothing, and TAX, whose account comes
+  from the config at export time).
+- **#89 needed BOTH gaps, not a replacement.** Configuring the plant default and re-raising the
+  frozen paper are two independent fixes and either can be outstanding alone, so readiness emits the
+  plant-default gap AND a new `invoice`-kind gap naming the invoice, linked to it, saying to unlock
+  and re-finalize. **Review round 1 widened the invoice gap to EVERY frozen null-GL line**, not only
+  FREIGHT/CHARGE: an OPERATION/SURCHARGE/CERT line frozen null whose step code or surcharge already
+  HAS an account raised only "step code X has no GL account", sending the operator to a screen with
+  nothing to fix — the §5.14 dead end one notch milder than the 500 — and a CERT line whose
+  configured cert step code row is gone recorded no gap at all, leaving one last readiness-clean →
+  export-500 path. One unconditional attribution closes both. It also collapsed the *third* copy of `documentNumber` before it was written —
+  `invoiceDocumentNumber` now lives in the client-safe `invoice-constants.ts`, and `statements.ts`'s
+  copy (which carried a comment admitting it was a duplicate) is gone.
+
+**Three of those seven were RULED by the owner 2026-08-17, before round 2's Group A branch opened.**
+**#61 — the manual override WINS, silently.** Recalculate suppresses the overridden operation's
+regenerated twin (matched on `orderLineId` + `processStepCodeId`) and keeps the typed amount; the
+tax base follows the override, not the computed figure. **No new revert control** — the undo path
+already exists and is now a tested contract: remove the row, save, Recalculate, and the computed
+line returns. This ratifies what the grid already intended (`InvoiceDetail.tsx` stamps an
+amount-edit `MANUAL` *specifically* so Recalculate will not discard it); the alternative — recalc
+reverts every override — was rejected because an operator recalculating for an unrelated reason
+would silently lose an edit they made deliberately. **#62 — the GL account is defaulted
+SERVER-SIDE**, to the configured `otherChargeGlAccountId`, the same account `mapComputedLines`
+already assigns to engine-generated charges; the grid keeps rendering it read-only, now showing a
+real account. **No operator-facing GL picker**: the existing list route (`/api/admin/reference/
+glAccount`) is gated on `admin.view`, which an invoicing clerk must not hold, so a selector would
+have meant a new gated route to buy a split nobody has asked for — and ruling 15 (§5.15) already
+excludes `glAccount` from the open pick-list route on purpose. Revisit only if the accountant's
+Q-list comes back wanting charges split across accounts. **#63 — a $0 invoice is LEGITIMATE paper**
+(warranty, rework, no-charge), so the guard blocks the **empty line set**, not a zero total, and it
+blocks at **finalize** — a draft may be transiently emptied while the operator rebuilds it. That
+is exactly the integrity hole as filed: zero lines make finalize's `needsPrice` check vacuous, and
+the order lands INVOICED at $0 where it can never be re-billed.
+
+**Owner decision 2026-08-17 on the GL account numbers in git history: LEAVE THEM.** They were
+committed to this **public** repo in `b56aa0f` (my error, PR #129) directly beneath the rule in §7
+forbidding it, and stripped from the working file in `87e057b`. Account numbers carrying no
+balances and no customer names are low-value to an outsider, and a history rewrite would invalidate
+every SHA from `b56aa0f` forward. **The §7 rule stands unchanged** — never quote an account number
+into a commit, PR body or issue; this ruling forgives one past leak, it does not relax the rule.
 
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
@@ -839,11 +931,14 @@ Fedora-specific notes:
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
 > **START HERE (owner, 2026-08-17): `docs/2026-08-17-backlog-round-2.md`** — round 1 is complete (14
-> closed); this groups **all 66 remaining issues** and is the current track. **Task 0 (~1h) first:** at
-> least three open issues (**#6**, **#10**, **#7**) describe mechanisms that no longer exist and should
-> close, and the five triage labels `docs/agents/triage-labels.md` documents **do not exist in the repo**
-> — only `wontfix` does, so `--add-label ready-for-agent` fails today. Then **A** invoice engine (#61–#64,
-> #59, #60, #89, #96 — the acceptance month's own path, and #62+#89 are one defect from two ends) · **B**
+> closed); this groups **all 66 remaining issues** and is the current track. **Task 0 is DONE
+> (2026-08-17):** **#6**, **#10** and **#7** were re-verified against the code and closed with their
+> evidence — all three described mechanisms that no longer exist — and the four missing triage labels
+> (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`) now exist, so
+> `--add-label ready-for-agent` works. **Group A (the invoice engine) is DONE the same day** — all
+> eight of #61–#64, #59, #60, #89, #96 on branch `group-a-invoice-engine`, gates **3104 tests / 182
+> files**, `tsc`/`eslint`/`build` clean, E2E 23/23 re-run every round; what the fixes actually did,
+> where they exceeded the issues, and what THREE review rounds found, is in §6. **55 open. NEXT: B** —
 > A/R that needs no accountant (#83, #85, #86, #82, #79, #75) · **C** shipping/status integrity (#65 is
 > the real one) · **E** close + GL + tripwires (#88 is RULED — build the broken-chain flag) · **D**
 > stale-load class (decide **#31** first) · **F**/**G**/**H** infra, documents, polish. **Ten issues are
