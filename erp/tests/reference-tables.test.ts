@@ -254,6 +254,31 @@ describe("terms: netDays + early-pay discount", () => {
       expect(row?.discountDays).toBe(10);
     });
 
+    // #82. Everything above is the FRIENDLY error, and it is not enough on its own: it reads the
+    // stored row before the row-locking update at the default isolation level, so two concurrent
+    // PATCHes can each validate against the same stale view — one clearing both halves, the other
+    // changing one half against the old other — and whichever commits second leaves exactly the
+    // broken pair these checks exist to prevent. The DB CHECK is the layer both transactions share
+    // and neither can talk its way past. Exercised the only way a constraint can be: by going AROUND
+    // the service, which is what a losing racer effectively does.
+    it("refuses a broken discount pair at the DATABASE, not only in the service (#82)", async () => {
+      const id = await seed210();
+      await expect(prisma.terms.update({ where: { id }, data: { discountPercent: null } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+      await expect(prisma.terms.update({ where: { id }, data: { discountDays: null } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+      // Refused, not half-applied.
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+
+      // Clearing BOTH is legal and stays legal — the constraint guards the pairing, not the feature.
+      await prisma.terms.update({ where: { id }, data: { discountPercent: null, discountDays: null } });
+      // ...and a row cannot be CREATED broken either, which no service check covered.
+      await expect(prisma.terms.create({ data: { name: "Half a discount", netDays: 30, discountDays: 10 } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+    });
+
     it("allows clearing both halves of the pair together", async () => {
       const id = await seed210();
       await updateReference("terms", id, { discountPercent: null, discountDays: null });
