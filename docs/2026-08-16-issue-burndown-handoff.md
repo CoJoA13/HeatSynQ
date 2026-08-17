@@ -266,6 +266,35 @@ there for. Both take their collaborators as parameters (the `runBackupNow({ dump
 the tests drive concurrency with a counter and the TTL with an injected clock. The ceiling test is
 bite-proofed against an unbounded `Promise.all` over identical work, which peaks at every item.
 
+**#118's bound is PER-TRAVERSAL — owner ruling 2026-08-17, and the reason is the most useful thing in
+this group.** The first build added a module-wide semaphore on top. It bounded the process more
+tightly, and every mechanism it needed to be *correct* generated the next review finding: free the slot
+held by a wedged child → account for a timed-out child still alive → keep the write path inside the
+same ceiling. **Seven consecutive rounds, each finding triggered by my own previous fix.** The
+complexity was the defect: #118 asked for "a small concurrency limit, or cache results keyed on file
+metadata", and `mapLimited` per traversal + in-flight coalescing + the cache deliver exactly that while
+deleting the whole class of failure, because there is no shared slot to exhaust, leak or bypass. The
+simplification removed more lines than it added. What is given up is stated in the code and pinned by a
+test asserting **both** halves rather than only the flattering one: concurrent readers each get their
+own budget, so a busy moment reaches ~8–12 checks instead of 4.
+
+Two rules fell out of those rounds and are worth carrying:
+
+- **Only an `"intact"` verdict is cached.** A rejection can be a *timeout* rather than corruption, and
+  caching that would keep reporting a recovered archive as bad.
+- **The write path verifies with the DUMP's deadline, not the banner's 60s read poll.** A timeout there
+  is not an under-report: `fail()` deletes the freshly completed archive and records a failed backup —
+  so a short deadline would have made "Back up now" progressively unusable as the database grew, while
+  the nightly path, which has no verification deadline at all, kept working. A test pins that the
+  deadline is minutes rather than seconds.
+
+Also here: a P1 **I introduced mid-round and no gate could catch.** Turning `integrityOk` into a
+verdict *string* left one caller as `if (!(await verify(path)))` — `"rejected"` is truthy, so a corrupt
+fresh archive would have been kept and returned as a **successful backup with `integrityOk: true`**,
+the exact fails-while-reporting-success shape this document is about. `tsc` cannot flag `!string`, and
+no test covered a corrupt *freshly written* archive. The comparison is now explicit (`!== "intact"`),
+the verifier is injectable, and two RED-verified regression tests cover it.
+
 **#123 — the practice copy rendered an ENABLED "Back up now"** over an honest refusal, plus a `…`
 folder placeholder: a control that can never work, presented as available. The page keys on **any**
 403 from the view endpoint — on the status, not on which cause produced it, since `mustDo` and
@@ -294,7 +323,7 @@ separately so the reword cannot have flattened it.
 
 ## Burn-down complete
 
-All five groups are done. Final: **3048 tests / 182 files**, `tsc`/`eslint`/`build` clean, E2E
+All five groups are done. Final: **3080 tests / 182 files**, `tsc`/`eslint`/`build` clean, E2E
 **23/23** (main was 2988/179 at the start).
 
 Closed: **#68, #81, #84, #91, #115, #118, #119, #120, #121, #122, #123, #124, #125, #126.**
@@ -317,6 +346,14 @@ Closed: **#68, #81, #84, #91, #115, #118, #119, #120, #121, #122, #123, #124, #1
    only covered a shipment with no successor, which is exactly the shape that cannot expose the
    symmetric relation Codex then found. **Every one was caught by asking a test to fail on purpose
    first** — RED-verification is what earned each of those, not review by reading.
+4. **When consecutive review rounds keep finding defects in the code written for the PREVIOUS round,
+   the design is the finding.** `backups.ts` took seven such rounds, each one triggered by my own prior
+   fix, because a shared concurrency slot needed a growing pile of interacting mechanisms to stay
+   correct under timeouts. What finally held was to **delete** the mechanism and accept a looser,
+   honestly-documented bound — a smaller diff than any of the six repairs, and the one change that
+   removed the failure class instead of moving it. The signal is not a round's severity but whether it
+   is auditing code that did not exist before the last round. CLAUDE.md's "when to stop reviewing" rule
+   governs *triage*; this governs what to do when triage keeps honestly answering "still correctness."
 
 ## How to work these
 
