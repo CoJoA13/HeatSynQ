@@ -1175,6 +1175,48 @@ describe("finalizeInvoice", () => {
     expect(frozenCredit.dueDate).toBeNull();
   });
 
+  // Review round 2 (#79). `termsName` is stamped at CREATE and is editable on a draft, while the
+  // figures behind it — `dueDate` and now the discount pair — are stamped at FINALIZE from the
+  // customer's live terms. So the finalized paper could say "2/10 Net 30" while the frozen pair was
+  // null and payment application refused the advertised discount, or say "Net 30" while quietly
+  // granting one. The label and the money have to describe the same terms.
+  it("re-stamps the terms LABEL from the same terms as the figures at finalize (#79)", async () => {
+    const rich = await prisma.terms.create({
+      data: { name: "2/10 Net 30", netDays: 30, discountPercent: "2.00", discountDays: 10 } });
+    const { order, invoice } = await draftFixture();
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: rich.id } });
+    // Re-create the draft so it picks the label up at create time, as a real one would.
+    await asSystem(() => discardInvoice(invoice.id, "re-draft under the new terms"));
+    const { invoice: drafted } = await asSystem(() => createInvoice({ orderId: order.id }));
+    expect(drafted.termsName).toBe("2/10 Net 30");
+
+    // The customer moves to plain Net 30 BEFORE the invoice is finalized.
+    const plain = await prisma.terms.create({ data: { name: "Net 30", netDays: 30 } });
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: plain.id } });
+
+    const done = await asSystem(() => finalizeInvoice(drafted.id));
+    const frozen = await prisma.invoice.findUniqueOrThrow({ where: { id: drafted.id } });
+    // Before the fix: label "2/10 Net 30" over a null pair — paper promising a discount the save
+    // would refuse.
+    expect(done.termsName).toBe("Net 30");
+    expect(frozen.termsDiscountPercent).toBeNull();
+    expect(frozen.termsDiscountDays).toBeNull();
+  });
+
+  it("keeps a hand-typed terms label when the customer has NO terms record (#79)", async () => {
+    // The case that makes an unconditional overwrite wrong: with no terms to read, the operator's
+    // text is the only description of the terms, and blanking it at finalize would erase real
+    // information. The figures are null either way, so the label promises nothing the save refuses.
+    const { order, invoice } = await draftFixture();
+    await prisma.customer.update({ where: { id: order.customerId }, data: { termsId: null } });
+    await asSystem(() => updateInvoice(invoice.id, { termsName: "Net 45 — special arrangement" }));
+
+    const done = await asSystem(() => finalizeInvoice(invoice.id));
+    expect(done.termsName).toBe("Net 45 — special arrangement");
+    const frozen = await prisma.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+    expect(frozen.termsDiscountPercent).toBeNull();
+  });
+
   it("finalizes, stamps the finalizer, and sets the order INVOICED", async () => {
     const { order, invoice } = await draftFixture();
     const done = await asSystem(() => finalizeInvoice(invoice.id));

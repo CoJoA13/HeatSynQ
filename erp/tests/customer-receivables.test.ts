@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { customerReceivablesSummary } from "@/server/customer-receivables";
-import { parseDateOnly } from "@/lib/business-days";
+import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -148,6 +148,36 @@ describe("customerReceivablesSummary — the customer page's A/R section", () =>
     expect(cents(aging.net)).toBe(cents(1000));
     expect(openItems).toHaveLength(1);
     expect(cents(openItems[0].open)).toBe(cents(1000)); // still fully open, as the strip says
+    expect(openItems.reduce((t, i) => t + cents(i.open), 0)).toBe(cents(aging.net));
+  });
+
+  // Review round 2. `finalizedAt` is a bare DateTime carrying a TIME OF DAY, while `asOf` is
+  // midnight — so an inclusive `lte` drops everything finalized since midnight TODAY, while the
+  // aging strip compares date-only and includes it. Finalize an invoice this morning and the net
+  // counts it while the table omits it. CLAUDE.md documents this precise trap for the GL export's
+  // month bound ("an inclusive `lte monthEnd`-at-midnight would drop a last-day finalize"); this is
+  // the same bug one scope down, and the same fix: a half-open upper bound.
+  it("includes an invoice finalized EARLIER TODAY, not just before midnight (#83)", async () => {
+    const customerId = await makeCustomer();
+    seq += 1;
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 870000 + seq, customerId, status: "SHIPPED",
+        receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01"),
+      },
+    });
+    await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId,
+        invoiceDate: todayDateOnly(), dueDate: todayDateOnly(),
+        total: 700,
+        finalizedAt: new Date(), // right now — a time of day, exactly as `finalizeInvoice` stamps it
+      },
+    });
+
+    const { aging, openItems } = await asSystem(() => customerReceivablesSummary(customerId));
+    expect(cents(aging.net)).toBe(cents(700));
+    expect(openItems).toHaveLength(1);
     expect(openItems.reduce((t, i) => t + cents(i.open), 0)).toBe(cents(aging.net));
   });
 

@@ -299,10 +299,16 @@ export async function openItemsForCustomer(
   // and a full one produced an empty table reading "Nothing open — this customer is settled" beneath
   // a net of the entire receivable. Three cuts, because the strip applies three.
   const liveAsOf = { deletedAt: null, appliedDate: { lte: asOfDate } };
+  // HALF-OPEN on `finalizedAt`, inclusive on the rest. `finalizedAt` is a bare `DateTime` carrying a
+  // TIME OF DAY while `asOfDate` is midnight, so an inclusive `lte` would drop everything finalized
+  // since midnight TODAY — while `bucketAging` compares date-only and includes it. CLAUDE.md
+  // documents this exact trap for the GL export's month bound; it is the same bug one scope down.
+  // `receivedDate`/`appliedDate` are `@db.Date`, so they stay inclusive.
+  const finalizedThrough = addDays(asOfDate, 1);
   const invoices = await db.invoice.findMany({
     where: {
       customerId: customer.id, deletedAt: null, status: "FINALIZED",
-      finalizedAt: { lte: asOfDate }, // not yet finalized as of this date never appears at all
+      finalizedAt: { lt: finalizedThrough }, // not yet finalized as of this date never appears
     },
     select: {
       id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,

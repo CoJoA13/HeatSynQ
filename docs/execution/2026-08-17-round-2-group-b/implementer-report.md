@@ -178,6 +178,18 @@ Also added `type="button"` to both new buttons. They are not inside a form today
 broken, but an untyped `<button>` defaults to `submit` and the codebase sets it explicitly elsewhere
 (`LogoPanel.tsx`).
 
+## Review round 2 — five more from Codex (2 P1, 3 P2)
+
+All five verified against the code first; all five fixed.
+
+| Finding | Disposition |
+|---|---|
+| **P1 — the divisions route returned financial totals on `receivables.create` alone.** Permissions resolve independently (DENY → GRANT → role), so create-without-view is reachable, and the body carries every member's code, name and Total Due | **Fixed** — the route requires BOTH grants. The test now pins all three cases: view-only 403, **create-only 403**, both 200. |
+| **P1 — the terms LABEL and the terms FIGURES could describe different terms.** `termsName` is stamped at create and is editable on a draft; `dueDate` and (now) the discount pair derive at finalize. So finalized paper could say "2/10 Net 30" over a null pair — promising a discount `applyPayment` refuses — or say "Net 30" while quietly granting one | **Fixed** — finalize stamps the label from the SAME terms as the figures, because finalize is the moment the paper is issued. **Only when the customer HAS terms:** with none, the operator's typed text is the only description of the terms on that invoice, and blanking it would erase real information to fix nothing (the figures are null either way). That guard is its own test, and it was green before the fix — it exists to catch the over-correction, not to prove the fix. |
+| **P2 — `finalizedAt` is a bare `DateTime` with a time of day while `asOf` is midnight**, so an inclusive `lte` dropped everything finalized since midnight TODAY while the aging strip (date-only) counted it | **Fixed** — half-open upper bound. **CLAUDE.md documents this exact trap** for the GL export's month interval; this was the same bug one scope down, walked into with the lesson already written. |
+| **P2 — a `Terms` CHECK violation escaped as a raw 500.** Reaching it means two writers raced past the service validation: the loser's request was not wrong, it lost | **Fixed** — `db-errors.ts` translates the NAMED constraint to a 409 "try again". Deliberately a named allowlist, not a "message contains 'check constraint'" sniff, so a CHECK nobody has reasoned about still surfaces loudly. Round 1 had marked this "not changed, consistent with precedent"; two reviewers raising it earned the fix. |
+| **P2 — the per-division button was enabled for a view-only user**, who would confirm a multi-document print and get a 403 | **Fixed** — the button's gate now includes `receivables.create` whenever per-division mode is active (§5.16: disabled and says why, never offered then refused). |
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute

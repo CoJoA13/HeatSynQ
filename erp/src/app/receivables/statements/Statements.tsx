@@ -270,9 +270,14 @@ function StatementsScreen() {
     }
   }
 
+  // Per-division printing archives N documents, so it needs `receivables.create` — the same grant
+  // its endpoint now requires. Without this a view-only user saw an ENABLED button, confirmed a
+  // multi-document print, and got a 403: §5.16 says a control the user cannot use is disabled and
+  // says why, never offered and then refused.
   const printTitle = !viewGate.allowed ? viewGate.title
-    : !customerId ? "Pick a customer first"
-      : printing ? "Printing…" : undefined;
+    : perDivisionMode && !runGate.allowed ? runGate.title
+      : !customerId ? "Pick a customer first"
+        : printing ? "Printing…" : undefined;
   const runTitle = !runGate.allowed ? runGate.title : running ? "Running…" : undefined;
 
   // §5.16: a caller without receivables.view sees the page saying why, never a silently empty one.

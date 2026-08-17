@@ -516,13 +516,20 @@ describe("POST /api/receivables/statements/divisions (#85)", () => {
       bodyReq("http://t/api/receivables/statements/divisions", "POST", undefined, payload), withParams({}),
     )).status).toBe(401);
 
-    // The same gate as the single print and the run — each call archives new documents.
-    const wrong = await signInWith(["receivables.view"], "stmt-div-wrong");
+    // BOTH grants are required (review round 2). `create` because each call archives documents...
+    const viewOnly = await signInWith(["receivables.view"], "stmt-div-wrong");
     expect((await divisionStatementsRoute(
-      bodyReq("http://t/api/receivables/statements/divisions", "POST", wrong, payload), withParams({}),
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", viewOnly, payload), withParams({}),
     )).status).toBe(403);
 
-    const creator = await signInWith(["receivables.create"], "stmt-div-creator");
+    // ...and `view` because the response carries every member's code, name and TOTAL DUE. Permissions
+    // resolve independently, so create-without-view is reachable, and it was a disclosure path.
+    const createOnly = await signInWith(["receivables.create"], "stmt-div-create-only");
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", createOnly, payload), withParams({}),
+    )).status).toBe(403);
+
+    const creator = await signInWith(["receivables.view", "receivables.create"], "stmt-div-creator");
     const res = await divisionStatementsRoute(
       bodyReq("http://t/api/receivables/statements/divisions", "POST", creator, payload), withParams({}),
     );

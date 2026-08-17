@@ -120,7 +120,7 @@ const DETAIL_INCLUDE = {
   customer: {
     select: {
       code: true, name: true,
-      terms: { select: { netDays: true, discountPercent: true, discountDays: true } },
+      terms: { select: { name: true, netDays: true, discountPercent: true, discountDays: true } },
     },
   },
   order: { select: { orderNumber: true } },
@@ -1553,9 +1553,21 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // reassigning a customer rewrote what invoices already in their hands were worth, in both
   // directions. An invoice is frozen paper (§5.4), so it carries its own numbers from here.
   // INVOICE-only, exactly like `dueDate`: a CREDIT offers no early-pay discount.
+  //
+  // The LABEL is re-stamped from those same terms (review round 2). `termsName` is written at CREATE
+  // and is editable on a draft, while `dueDate` and the pair are derived at FINALIZE — so the paper
+  // could say "2/10 Net 30" over a null pair, promising a discount `applyPayment` would refuse, or
+  // say "Net 30" while quietly granting one. Finalize is the moment the paper is issued, so the
+  // label and the money are stamped from ONE source there.
+  //
+  // ONLY when the customer actually HAS terms. With none there is nothing to stamp from, and the
+  // operator's typed text is then the only description of the terms on that invoice — blanking it
+  // would erase real information to fix nothing, since the figures are null either way.
+  const issuedTerms = invoice.customer.terms ?? null;
   const issuedDiscount = {
-    termsDiscountPercent: invoice.customer.terms?.discountPercent ?? null,
-    termsDiscountDays: invoice.customer.terms?.discountDays ?? null,
+    termsDiscountPercent: issuedTerms?.discountPercent ?? null,
+    termsDiscountDays: issuedTerms?.discountDays ?? null,
+    ...(issuedTerms ? { termsName: issuedTerms.name } : {}),
   };
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({

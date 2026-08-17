@@ -19,7 +19,14 @@ const BODY = z.object({
 // not-combined choice, and accepting a flag that could only ever be false would invite a caller to
 // set it true and silently get something else.
 export const POST = handle(async (req) => {
-  mustCan(requireUser(), "receivables", "create");
+  // BOTH grants. `create` because each call archives new documents (the `statements/run` gate), and
+  // `view` because the response body carries every family member's code, name and TOTAL DUE —
+  // financial data every other statement read and document download requires `view` for. Permissions
+  // resolve independently (DENY override → GRANT override → role grant), so `create` without `view`
+  // is a reachable combination, and `create` alone would have made this a disclosure path.
+  const user = requireUser();
+  mustCan(user, "receivables", "view");
+  mustCan(user, "receivables", "create");
   const body = BODY.parse(await req.json());
   return NextResponse.json(await printStatementsPerDivision(body.customerId, {
     asOf: body.asOf,

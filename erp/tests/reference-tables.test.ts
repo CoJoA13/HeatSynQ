@@ -6,6 +6,7 @@ import { readAudit } from "@/server/audit";
 import { pasteReference } from "@/server/paste";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
+import { withDbErrors } from "@/server/db-errors";
 
 describe("flat reference tables", () => {
   beforeEach(async () => await truncateAll());
@@ -277,6 +278,19 @@ describe("terms: netDays + early-pay discount", () => {
       // ...and a row cannot be CREATED broken either, which no service check covered.
       await expect(prisma.terms.create({ data: { name: "Half a discount", netDays: 30, discountDays: 10 } }))
         .rejects.toThrow(/Terms_discount_pair_check/);
+    });
+
+    // Review round 2: reaching the CHECK means two writers raced past the service validation — the
+    // loser's request was not wrong, it lost. That deserves a 409 "try again", not Postgres' raw
+    // constraint text escaping as a 500 (`handle` rethrows anything that is not an HttpError).
+    it("surfaces a CHECK violation as an explainable 409, not a raw 500 (#82)", async () => {
+      const id = await seed210();
+      await expect(withDbErrors({ entity: "Terms" }, () =>
+        prisma.terms.update({ where: { id }, data: { discountPercent: null } })))
+        .rejects.toMatchObject({
+          status: 409,
+          message: expect.stringMatching(/needs both a percent and a day count/i),
+        });
     });
 
     it("allows clearing both halves of the pair together", async () => {
