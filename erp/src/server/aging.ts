@@ -311,13 +311,22 @@ export async function agingReport(filter: AgingFilter = {}): Promise<AgingRow[]>
  * already does for a plain (non-parent) customer; the only difference here is that a live
  * children set never widens the query.
  */
-export async function customerOwnAgingRow(customerId: string, asOf?: string): Promise<AgingRow> {
+export async function customerOwnAgingRow(
+  customerId: string, asOf?: string, db?: Prisma.TransactionClient,
+): Promise<AgingRow> {
   const asOfResolved = asOf ?? formatDateOnly(todayDateOnly());
   const asOfDate = parseAsOf(asOfResolved);
-  const customer = await prisma.customer.findFirst({
+  const client = db ?? prisma;
+  const customer = await client.customer.findFirst({
     where: { id: customerId, deletedAt: null }, select: CUSTOMER_REF_SELECT,
   });
   if (!customer) throw new HttpError(404, "Customer not found");
-  const snap = await readSnapshot([customer.id], asOfDate);
+  // `db` lets a caller that must reconcile this row against something ELSE read both from ONE
+  // snapshot (`customer-receivables.ts`, #83) — the `agingReport` RepeatableRead precedent. Without
+  // it this opens its own, and a commit landing between the two reads could leave the net and the
+  // open items describing different states. Still a pure read either way: no claim, no write.
+  const snap = db
+    ? await readSnapshotIn(db, [customer.id], asOfDate)
+    : await readSnapshot([customer.id], asOfDate);
   return bucketAging(snap, asOfResolved, [customer])[0];
 }

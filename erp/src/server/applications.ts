@@ -10,6 +10,7 @@ import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type Application
 import { assertPeriodOpen } from "./period-locks";
 import { getSetting } from "./settings";
 import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
+import { invoiceDocumentNumber } from "../lib/invoice-constants";
 
 // -------------------------------------------------------------------------------------------
 // Task 7 (P5B §4.1/§4.2): the single cash write path. Every reduction of an invoice's open
@@ -246,6 +247,111 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
   const customer = await prisma.customer.findFirst({ where: { id: customerId, deletedAt: null }, select: { id: true } });
   if (!customer) throw new HttpError(404, "Customer not found");
   return openInvoicesForCustomerIds([customer.id]);
+}
+
+/**
+ * ONE customer's complete open items — finalized invoices, open CREDIT memos, and on-account cash
+ * (#83). The customer A/R section listed finalized invoices ALONE while the net above it folded in
+ * credits and unapplied cash (`customerOwnAgingRow`), so the figure printed above the table could
+ * not be arrived at from the rows in it: a customer holding nothing but a $200 credit read
+ * "-$200.00" over the words "No open invoices".
+ *
+ * Credits and payments are NEGATIVE here, exactly as they reduce the net, so the rows SUM to it —
+ * the same composition `buildStatement` makes for the printed document (§8, "open credits ... and
+ * on-account as negatives"), and on the same bases: `invoiceOpenBalance` / `creditRemaining` /
+ * `paymentOnAccount` from `ar-balances`, never re-derived here. Settled items drop out; a $0 row is
+ * not an open item.
+ *
+ * `db` threads the caller's transaction so the items and the aging strip can be read from ONE
+ * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent. Scoped to the
+ * single customer, NEVER the family: `openInvoicesForPayer` deliberately answers the other question
+ * for the batch-apply screen and must keep doing so.
+ */
+export type CustomerOpenItem = {
+  kind: "INVOICE" | "CREDIT" | "PAYMENT";
+  /** The invoice id, the credit's invoice id, or the payment id — what an apply action acts on. */
+  id: string;
+  documentNumber: string;
+  date: string;
+  dueDate: string | null;
+  /** As raised: the invoice/credit total, or the payment's full amount. */
+  original: number;
+  /** Signed the way it moves the net: positive for an invoice, negative for a credit or cash. */
+  open: number;
+};
+
+export async function openItemsForCustomer(
+  customerId: string, db: Prisma.TransactionClient = prisma,
+): Promise<CustomerOpenItem[]> {
+  const customer = await db.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: { id: true },
+  });
+  if (!customer) throw new HttpError(404, "Customer not found");
+  const prefix = await getSetting("invoice_number_prefix", db);
+
+  const invoices = await db.invoice.findMany({
+    where: { customerId: customer.id, deletedAt: null, status: "FINALIZED" },
+    select: {
+      id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,
+      order: { select: { orderNumber: true } },
+      applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+      creditApplications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+    },
+    orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
+  });
+
+  const items: CustomerOpenItem[] = [];
+  for (const inv of invoices) {
+    const total = inv.total.toNumber();
+    if (inv.kind === "INVOICE") {
+      const open = invoiceOpenBalance(total, inv.applications.map(toLite));
+      if (cents(open) <= 0) continue; // settled — not an open item
+      items.push({
+        kind: "INVOICE", id: inv.id,
+        documentNumber: invoiceDocumentNumber("INVOICE", null, inv.order.orderNumber, prefix),
+        date: formatDateOnly(inv.invoiceDate),
+        dueDate: inv.dueDate ? formatDateOnly(inv.dueDate) : null,
+        original: total, open,
+      });
+      continue;
+    }
+    // A CREDIT is drawn down through `creditApplications` (the applications that spend it), never
+    // through `applications` (which would be reductions OF it, and a credit has none). A credit
+    // carries no due date — `aging.ts`'s own rule.
+    const remaining = creditRemaining(total, inv.creditApplications.map(toLite));
+    if (cents(remaining) <= 0) continue;
+    items.push({
+      kind: "CREDIT", id: inv.id,
+      documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.order.orderNumber, prefix),
+      date: formatDateOnly(inv.invoiceDate), dueDate: null,
+      original: total, open: -Math.abs(remaining),
+    });
+  }
+
+  const payments = await db.payment.findMany({
+    where: { customerId: customer.id, deletedAt: null },
+    select: {
+      id: true, amount: true, reference: true, receivedDate: true,
+      applications: { where: { deletedAt: null, type: "PAYMENT" }, select: { amount: true } },
+    },
+    orderBy: [{ receivedDate: "asc" }, { id: "asc" }],
+  });
+  for (const pay of payments) {
+    const amount = pay.amount.toNumber();
+    // The SAME on-account basis `bucketAging` folds into `aging.unapplied` — a payment's cash less
+    // what it has actually settled — so these rows and the strip above them reconcile by
+    // construction rather than by coincidence.
+    const applied = pay.applications.reduce((sum, a) => sum + a.amount.toNumber(), 0);
+    const onAccount = paymentOnAccount(amount, [{ amount: applied, type: "PAYMENT", deletedAt: null }]);
+    if (cents(onAccount) <= 0) continue;
+    items.push({
+      kind: "PAYMENT", id: pay.id,
+      documentNumber: pay.reference !== "" ? pay.reference : "Payment on account",
+      date: formatDateOnly(pay.receivedDate), dueDate: null,
+      original: amount, open: -onAccount,
+    });
+  }
+  return items;
 }
 
 // -------------------------------------------------------------------------------------------

@@ -145,6 +145,10 @@ function CustomerDetail({ id }: { id: string }) {
   const canDelete = gate(perms, "customers.delete");
   const canEdit = gate(perms, "customers.edit");
   const receivablesViewGate = gate(perms, "receivables.view");
+  // #75: applying a credit memo CREATES an Application, so it takes `receivables.create` —
+  // the same gate the route enforces, so the control is disabled-with-a-reason (§5.16)
+  // rather than offered and then refused.
+  const receivablesApplyGate = gate(perms, "receivables.create");
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
   // customers.edit but not admin.view must still see Terms options, and a failure here is
@@ -891,7 +895,7 @@ function CustomerDetail({ id }: { id: string }) {
         </div>
       </section>
 
-      <ReceivablesSection customerId={id} viewGate={receivablesViewGate} />
+      <ReceivablesSection customerId={id} viewGate={receivablesViewGate} applyGate={receivablesApplyGate} />
 
       <HistoryPanel entity="customer" entityId={c.id} />
     </div>

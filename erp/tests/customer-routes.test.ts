@@ -242,13 +242,15 @@ describe("customer routes", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as {
       aging: { customerId: string; net: number };
-      openItems: { id: string; customerId: string; open: number }[];
+      openItems: { id: string; kind: string; open: number }[];
     };
     expect(body.aging.customerId).toBe(id);
     expect(body.aging.net).toBe(400);
     expect(body.openItems).toHaveLength(1);
-    expect(body.openItems[0].customerId).toBe(id);
+    expect(body.openItems[0].kind).toBe("INVOICE");
     expect(body.openItems[0].open).toBe(400);
+    // #83's property: the rows sum to the net printed above them.
+    expect(body.openItems.reduce((t, i) => t + i.open, 0)).toBe(body.aging.net);
   });
 
   it("GET .../receivables: 404s an unknown customer", async () => {
@@ -322,20 +324,26 @@ describe("customer routes", () => {
 
     type Summary = {
       aging: { customerId: string; unapplied: number; net: number };
-      openItems: { id: string; customerId: string; open: number }[];
+      openItems: { id: string; kind: string; open: number }[];
     };
 
     // The CHILD's page: only the child's own invoice, only the child's own on-account cash.
+    // Since #83 that cash is a ROW of its own (negative), not just a number folded into the strip —
+    // which is what makes the family-leak check stronger, not weaker: a leak would now show up as
+    // an extra row as well as a wrong total.
     const childRes = await receivablesRoute(getReq(`http://t/api/customers/${childId}/receivables`, viewer), withId(childId));
     expect(childRes.status).toBe(200);
     const childBody = await childRes.json() as Summary;
     expect(childBody.aging.customerId).toBe(childId);
     expect(childBody.aging.unapplied).toBe(100);
     expect(childBody.aging.net).toBe(400); // 500 open − 100 on account
-    expect(childBody.openItems).toHaveLength(1);
-    expect(childBody.openItems[0].id).toBe(childInvoice.id);
-    expect(childBody.openItems[0].customerId).toBe(childId);
-    expect(childBody.openItems[0].open).toBe(500);
+    expect(childBody.openItems).toHaveLength(2);
+    expect(childBody.openItems.find((i) => i.kind === "INVOICE")!.id).toBe(childInvoice.id);
+    expect(childBody.openItems.find((i) => i.kind === "INVOICE")!.open).toBe(500);
+    expect(childBody.openItems.find((i) => i.kind === "PAYMENT")!.open).toBe(-100);
+    expect(childBody.openItems.reduce((t, i) => t + i.open, 0)).toBe(childBody.aging.net);
+    // The parent's invoice is nowhere in the child's list.
+    expect(childBody.openItems.some((i) => i.id === parentInvoice.id)).toBe(false);
 
     // The PARENT's page: only the parent's own invoice, only the parent's own on-account cash —
     // NOT the child's, even though the parent is a family head.
@@ -345,9 +353,12 @@ describe("customer routes", () => {
     expect(parentBody.aging.customerId).toBe(parentId);
     expect(parentBody.aging.unapplied).toBe(50);
     expect(parentBody.aging.net).toBe(250); // 300 open − 50 on account
-    expect(parentBody.openItems).toHaveLength(1);
-    expect(parentBody.openItems[0].id).toBe(parentInvoice.id);
-    expect(parentBody.openItems[0].customerId).toBe(parentId);
-    expect(parentBody.openItems[0].open).toBe(300);
+    expect(parentBody.openItems).toHaveLength(2);
+    expect(parentBody.openItems.find((i) => i.kind === "INVOICE")!.id).toBe(parentInvoice.id);
+    expect(parentBody.openItems.find((i) => i.kind === "INVOICE")!.open).toBe(300);
+    expect(parentBody.openItems.find((i) => i.kind === "PAYMENT")!.open).toBe(-50);
+    expect(parentBody.openItems.reduce((t, i) => t + i.open, 0)).toBe(parentBody.aging.net);
+    // The child's invoice is nowhere in the parent's list — a family head rolls nothing up.
+    expect(parentBody.openItems.some((i) => i.id === childInvoice.id)).toBe(false);
   });
 });
