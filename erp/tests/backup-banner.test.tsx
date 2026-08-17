@@ -168,7 +168,38 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
     expect(next).toEqual({ health: null, lastFetchedAt: 0, forbidden: false, error: true });
 
     const markup = renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />);
-    expect(markup).toContain("Backup status could not be read");
+    expect(markup).toContain("System status could not be read");
+  });
+
+  /**
+   * Issue #121, owner ruling 2026-08-16 — reword the unknown-cause bar; do not silence it.
+   *
+   * `handle()` resolves the session OUTSIDE its try/catch, so in a database outage the health route
+   * fails BEFORE reaching its own `mustDo("manage_backups")`: the 403 that normally silences a
+   * non-admin never happens, and every signed-in user saw a bar naming BACKUPS and linking to an
+   * admin page they may not be able to open. The misattribution is the cost — someone chases a
+   * backup problem while the database is the actual fault.
+   *
+   * (The issue's own suggested direction — distinguish "cannot determine your permissions" from
+   * "status unavailable" — is not buildable: determining the permission needs the same database.)
+   */
+  it("the unknown-cause bar names neither backups nor a link the reader may not be able to use (#121)", async () => {
+    stubFetch(500, { error: "boom" });
+    const next = await advanceBannerState("/customers", INITIAL_BANNER_STATE, NOW);
+    const markup = renderToStaticMarkup(<BackupBannerView health={next.health} error={next.error} />);
+
+    expect(markup).toContain("System status could not be read");
+    expect(markup).toMatch(/database or the server may be unavailable/i);
+    expect(markup).not.toContain("href=");        // no admin link for a fault that may not be admin's
+    expect(markup.toLowerCase()).not.toContain("backup");
+  });
+
+  /** ...while a GENUINE staleness verdict keeps its specific message AND its link — the reword must
+   *  not have flattened the case where we do know it is backups and who can fix it. */
+  it("a real staleness verdict still names backups and links to the page", async () => {
+    const stale = { ...OK_HEALTH, state: "stale" as const, reason: "The newest backup is 40 hours old." };
+    const markup = renderToStaticMarkup(<BackupBannerView health={stale} />);
+    expect(markup).toContain("The newest backup is 40 hours old.");
     expect(markup).toContain('href="/admin/backups"');
   });
 

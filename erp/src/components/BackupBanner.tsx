@@ -102,10 +102,23 @@ export function BackupBannerView({
   error?: boolean;
 }) {
   if (error) {
+    // Issue #121, owner ruling 2026-08-16: reword, do not silence.
+    //
+    // `handle()` resolves the session OUTSIDE its try/catch (http.ts), so in a database outage this
+    // endpoint fails BEFORE reaching its own `mustDo("manage_backups")` — and the 403 that normally
+    // silences a non-admin never happens. Every signed-in user therefore saw this bar. The issue's
+    // own suggested direction (tell "cannot determine your permissions" apart from "status
+    // unavailable") is not buildable: determining the permission needs the same database that is
+    // down.
+    //
+    // So the bar stays — absence is failure, and a malformed deploy must not go silent — but it no
+    // longer NAMES backups or links to an admin page the reader may not be able to use. The real
+    // fault in this branch is unknown and, in the common case, is not backups at all: someone
+    // chasing a backup problem while the database is down is the actual cost of the old wording.
+    // Genuine staleness keeps its specific message and its link, below.
     return (
       <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
-        <span>⚠ Backup status could not be read.</span>
-        <Link href="/admin/backups" className="font-semibold underline">Open Backups</Link>
+        <span>⚠ System status could not be read — the database or the server may be unavailable.</span>
       </div>
     );
   }
@@ -118,11 +131,46 @@ export function BackupBannerView({
   );
 }
 
+/**
+ * Mounted banners that want telling when the backup state has certainly changed (#124).
+ *
+ * A module-level set rather than context: the banner lives in the SHELL and the thing that changes
+ * the state lives on a PAGE, so there is no common provider to hang context off without wrapping
+ * the whole app for one edge. A Set also means a remount cannot leave a stale subscriber behind.
+ */
+const invalidationListeners = new Set<() => void>();
+
+/**
+ * Tell the shell's staleness bar that its cached health is certainly out of date, and to refetch
+ * NOW rather than at the next navigation (#124).
+ *
+ * Called by the Backups page after a successful "Back up now". Without it the page panel flipped
+ * green while the red bar directly above it stayed red for up to `REFRESH_MS` — the two
+ * contradicting each other on one screen, which is precisely what teaches an operator to ignore the
+ * banner, the one thing this feature cannot afford. The ORDINARY polling throttle is untouched:
+ * this is an explicit "something happened" signal, not a shorter interval.
+ */
+export function invalidateBackupBanner(): void {
+  for (const listen of invalidationListeners) listen();
+}
+
 export function BackupBanner() {
   const pathname = usePathname();
   const [health, setHealth] = useState<BackupHealth | null>(null);
   const [error, setError] = useState(false);
   const stateRef = useRef<BannerFetchState>(INITIAL_BANNER_STATE);
+  // Bumped by an invalidation to re-run the effect below; the effect clears `lastFetchedAt` first,
+  // so the refetch is not swallowed by the throttle.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  useEffect(() => {
+    const onInvalidate = () => {
+      stateRef.current = { ...stateRef.current, lastFetchedAt: 0 };
+      setRefreshNonce((n) => n + 1);
+    };
+    invalidationListeners.add(onInvalidate);
+    return () => { invalidationListeners.delete(onInvalidate); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +183,7 @@ export function BackupBanner() {
     return () => {
       cancelled = true;
     };
-  }, [pathname]);
+  }, [pathname, refreshNonce]);
 
   return <BackupBannerView health={health} error={error} />;
 }

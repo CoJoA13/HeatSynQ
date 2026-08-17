@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gateDo } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { invalidateBackupBanner } from "@/components/BackupBanner";
 import type { ArchiveInfo, BackupsView } from "@/lib/backup-constants";
 
 const fmtBytes = (n: number) =>
@@ -15,10 +16,53 @@ const fmtBytes = (n: number) =>
 
 const fmtWhen = (iso: string) => new Date(iso).toLocaleString();
 
+/**
+ * Whether "Back up now" can be pressed, and what the tooltip says if not (#123).
+ *
+ * Hook-free and exported so tests/backups-page-state.test.ts can drive it directly — this repo has
+ * no DOM test environment, and the established answer is to split the DECISION out of the component
+ * (BackupBanner.tsx's `advanceBannerState`, bulk-grid.ts's `computeOrphanChurn`) rather than reach
+ * for one.
+ *
+ * §5.16: a control that cannot work is visible and DISABLED with a tooltip naming why — never
+ * hidden, and never enabled-but-doomed. On the practice copy the routes 403 with "Backups are
+ * managed on the production copy only…", and the page used to keep an enabled button over it.
+ *
+ * `refusal` is the server's own sentence from ANY 403 on the view endpoint, and keying on the
+ * status rather than on which CAUSE produced it is deliberate: `mustDo("manage_backups")` and
+ * `assertNotPracticeDatabase()` are both reasons this page's actions cannot work, so one branch
+ * handles both and the tooltip carries whichever sentence the server actually sent. Nothing here
+ * reads the practice flag — §8 forbids that in a client component, which is also why `nav.ts` is
+ * left alone and the nav entry stays (the ruling).
+ */
+export function runControlState(
+  gate: { disabled: boolean; title?: string }, running: boolean, refusal: string | null,
+): { disabled: boolean; title: string | undefined } {
+  // The refusal wins the TOOLTIP even when the gate is also closed: it is the more specific fact,
+  // and it is the one the operator can act on ("use the production copy") versus a generic
+  // permission line.
+  if (refusal !== null) return { disabled: true, title: refusal };
+  return { disabled: gate.disabled || running, title: gate.title };
+}
+
 export default function BackupsPage() {
   const [view, setView] = useState<BackupsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  /**
+   * The server's own sentence when the VIEW endpoint refuses this caller (#123) — set on any 403,
+   * cleared on a successful load.
+   *
+   * On the practice copy the routes 403 with "Backups are managed on the production copy only…",
+   * and the page went on rendering an enabled "Back up now" plus a `…` folder placeholder: a
+   * control that can never work, presented as available (§5.16). It keys on the 403 itself rather
+   * than on which CAUSE produced it, deliberately — `mustDo` and `assertNotPracticeDatabase` are
+   * both reasons this page's actions cannot work, so one path handles both and the tooltip carries
+   * whichever sentence the server actually sent. Nothing here reads the practice flag: §8 forbids
+   * that in a client component, and `nav.ts` is left alone for the same reason (the ruling keeps the
+   * nav entry).
+   */
+  const [refusal, setRefusal] = useState<string | null>(null);
   // The SHARED hook, never a hand-rolled /api/auth/me effect. Its own header names "reimplemented
   // rather than shared" as this repo's recurring defect shape, and it gets two things right that a
   // local copy reliably gets wrong: `permissions` stays `undefined` while in flight (so gateDo
@@ -30,11 +74,15 @@ export default function BackupsPage() {
   const load = useCallback(async () => {
     const v = await api<BackupsView>("/api/admin/backups");
     setView(v);
+    setRefusal(null);
     return v;
   }, []);
 
   useEffect(() => {
-    load().catch((e) => setError(e instanceof ApiError ? e.message : "Could not read the backup folder."));
+    load().catch((e) => {
+      if (e instanceof ApiError && e.status === 403) setRefusal(e.message);
+      setError(e instanceof ApiError ? e.message : "Could not read the backup folder.");
+    });
   }, [load]);
 
   const gate = gateDo(permissions, "manage_backups");
@@ -45,6 +93,11 @@ export default function BackupsPage() {
     try {
       await api<{ archive: ArchiveInfo }>("/api/admin/backups/run", { method: "POST" });
       await load();
+      // #124: the shell's staleness bar caches its health for REFRESH_MS, so without this the bar
+      // stayed RED directly above a panel that had just gone green — the two contradicting each
+      // other on one screen. The ordinary polling throttle is untouched; this is an explicit
+      // "something happened" signal.
+      invalidateBackupBanner();
     } catch (e) {
       // §5.13: refresh to server truth FIRST, then report — a reload after setError would wipe the
       // banner the operator needs to read.
@@ -57,6 +110,7 @@ export default function BackupsPage() {
 
   const health = view?.health;
   const green = health?.state === "ok";
+  const { disabled: runDisabled, title: runTitle } = runControlState(gate, running, refusal);
 
   return (
     <div className="p-6">
@@ -91,15 +145,19 @@ export default function BackupsPage() {
         <button
           type="button"
           onClick={backUpNow}
-          disabled={gate.disabled || running}
-          title={gate.title}
+          disabled={runDisabled}
+          title={runTitle}
           className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400"
         >
           {running ? "Backing up…" : "Back up now"}
         </button>
-        <span className="text-sm text-slate-600">
-          Backup folder: <code className="rounded bg-slate-100 px-1">{view?.folder ?? "…"}</code>
-        </span>
+        {/* #123: no `…` placeholder. When the folder is unknown because the route refused us, the
+            refusal above already says why — a lone ellipsis just reads as "still loading" forever. */}
+        {view?.folder && (
+          <span className="text-sm text-slate-600">
+            Backup folder: <code className="rounded bg-slate-100 px-1">{view.folder}</code>
+          </span>
+        )}
       </div>
 
       <p className="mb-4 text-sm text-slate-600">
