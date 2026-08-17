@@ -69,8 +69,14 @@ missing labels or stop documenting them.
 
 ## Group A — The invoice engine · **DONE 2026-08-17**, branch `group-a-invoice-engine`
 
-All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3095 tests / 182 files**
-(from 3080), `tsc`/`eslint`/`build` clean. Five commits, one per coherent defect surface.
+All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3104 tests / 182 files**
+(from 3080), `tsc`/`eslint`/`build` clean, E2E 23/23 — all re-run at each of THREE review rounds,
+never carried forward.
+
+**Two of those rounds found defects in the previous round's code**, both on the same `#61` pairing
+fallback: round 1 found the step-exact identity insufficient, round 2 found its replacement had
+become the mirror of the bug it fixed (erasing a sibling operation's revenue). Round 3 approved.
+That is round 1's lesson 4 playing out live — worth reading before the next group.
 
 Four went further than the issue said, and those differences are in HANDOFF §6: #61's fix is one
 identity rule covering *every* overridable kind (a retyped TAX line double-billed the same way), #64

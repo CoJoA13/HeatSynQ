@@ -866,6 +866,33 @@ describe("recalculateInvoice — the manual-line seam", () => {
     // operator, rather than silently swallowing B.
     expect(ops.map((l) => l.amount).sort((a, b) => a - b)).toEqual([40, 100]);
     expect(after.subtotal).toBe(140);
+    // ...and the $100 is genuinely B's REGENERATED line, not the override wearing B's amount — the
+    // one alternative shape those two numbers alone cannot rule out.
+    const hundred = ops.find((l) => l.amount === 100)!;
+    expect(hundred.priceSource).toBe("PART_PRICE");
+    expect(hundred.processStepCodeId).toBe(codes[1].id);
+    expect(ops.find((l) => l.amount === 40)!.priceSource).toBe("MANUAL");
+  });
+
+  it("warns that a typed price with no step code stands in for the whole part (review round 3)", async () => {
+    // The ruling's own limit, surfaced rather than guessed at: a tier-3 override covers every priced
+    // operation on its order line, INCLUDING work priced afterwards, and the stored state cannot
+    // tell that work apart from what the price was typed for. So it says so.
+    const fixture = await shippedOrder({ qty: 144 });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
+    await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+
+    const warnings = await asSystem(async () => invoiceWarnings(await getInvoice(invoice.id)));
+    expect(warnings.join(" ")).toMatch(/standing in for every priced operation/i);
+
+    // A typed price that DOES name its step code is an ordinary override of that one operation, and
+    // must not draw the warning.
+    const { invoice: priced } = await draftFixture({ qty: 144 });
+    await asSystem(() => replaceInvoiceLines(priced.id, priced.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "100.00") : toLineInput(l)))));
+    const none = await asSystem(async () => invoiceWarnings(await getInvoice(priced.id)));
+    expect(none.join(" ")).not.toMatch(/standing in for/i);
   });
 
   it("recomputes tax on a lines SAVE, not only on recalculate (#64)", async () => {

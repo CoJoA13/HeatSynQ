@@ -367,32 +367,16 @@ const ORDER_LINE_SELECT = {
 } satisfies Prisma.OrderLineSelect;
 
 /**
- * Tier-1 substitution (Phase 6 spec §5.3, rulings 4 + 8): the `PriceRowInput[]` for an order line
- * that carries a quote link — the linked quote line's LIVE `QuotePrice` rows with their LIVE
- * breaks, WHOLESALE. When the link is taken the part's rows are not fetched, not merged, not
- * fallen back to: a linked line with zero live rows returns `[]`, which the engine prices as
- * tier 3's needs-price — the link declared the agreement, and an empty agreement is a flag, not
- * permission to bill something else.
+ * The two INVARIANT asserts a stored quote link has to satisfy — that its target is live, and that
+ * it quotes the SAME part the order line does. Neither is an expected failure (plain Error → the
+ * handler's 500): §5.14 refuses deleting or re-pointing a quote line any order line references, and
+ * every stored link was judged at save time (quote-links.ts), so a dead or wrong-part target here is
+ * corrupt state. Falling back to part rows instead would be the silent re-price §7.5 exists to
+ * prevent.
  *
- * Reads run on the invoice transaction's OWN client (the #60 lesson): the eligibility the link
- * was judged under is order-entry's business; what matters HERE is that a concurrent quote edit
- * lands inside this Serializable transaction's read set, so SSI sees it.
- *
- * Shape rules, mirrored from `listPartPrices` (part-prices.ts) so tier 1 and tier 2 resolve
- * identically: GL comes from each row's STEP CODE (`glAccountId` + live account name, `?? ""` —
- * quote rows deliberately carry no GL columns, spec §4.1), rows order `position asc, id asc`,
- * breaks `threshold asc`, live-rows-only throughout — and every read here is keyed through the
- * LIVE parent just verified (the Task 4 dangling-grandchildren shape: live breaks can exist
- * under a soft-deleted row; keying breaks through the live rows is what keeps them unreachable).
- *
- * The two throws are INVARIANT asserts, not expected failures (plain Error → the handler's 500):
- * §5.14 refuses deleting or re-pointing a quote line any order line references, and every stored
- * link was judged at save time (quote-links.ts), so a dead or wrong-part target here is corrupt
- * state. Falling back to part rows instead would be the silent re-price §7.5 exists to prevent.
- *
- * Those two asserts live in `assertQuoteLinkSound` below, split out so a caller that only needs to
- * REFUSE corrupt state does not also fetch price rows it will discard (#96) — `quotePriceRowInputs`
- * follows it and does the pricing read.
+ * Split out of `quotePriceRowInputs` below (#96) so a caller that only needs to REFUSE corrupt state
+ * — the zero-net line the pricing loop skips — pays for one read rather than also fetching price
+ * rows it would discard. Returns the quote line, so the pricing path pays for one read as well.
  */
 async function assertQuoteLinkSound(
   tx: Db, ol: { id: string; partId: string; quoteLineId: string },
@@ -417,6 +401,26 @@ async function assertQuoteLinkSound(
   return quoteLine;
 }
 
+/**
+ * Tier-1 substitution (Phase 6 spec §5.3, rulings 4 + 8): the `PriceRowInput[]` for an order line
+ * that carries a quote link — the linked quote line's LIVE `QuotePrice` rows with their LIVE
+ * breaks, WHOLESALE. When the link is taken the part's rows are not fetched, not merged, not
+ * fallen back to: a linked line with zero live rows returns `[]`, which the engine prices as
+ * tier 3's needs-price — the link declared the agreement, and an empty agreement is a flag, not
+ * permission to bill something else.
+ *
+ * Reads run on the invoice transaction's OWN client (the #60 lesson): the eligibility the link
+ * was judged under is order-entry's business; what matters HERE is that a concurrent quote edit
+ * lands inside this Serializable transaction's read set, so SSI sees it.
+ *
+ * Shape rules, mirrored from `listPartPrices` (part-prices.ts) so tier 1 and tier 2 resolve
+ * identically: GL comes from each row's STEP CODE (`glAccountId` + live account name, `?? ""` —
+ * quote rows deliberately carry no GL columns, spec §4.1), rows order `position asc, id asc`,
+ * breaks `threshold asc`, live-rows-only throughout — and every read here is keyed through the
+ * LIVE parent `assertQuoteLinkSound` just verified (the Task 4 dangling-grandchildren shape: live
+ * breaks can exist under a soft-deleted row; keying breaks through the live rows is what keeps them
+ * unreachable).
+ */
 async function quotePriceRowInputs(
   tx: Db, ol: { id: string; partId: string; quoteLineId: string },
 ): Promise<PriceRowInput[]> {
@@ -977,6 +981,21 @@ export async function invoiceWarnings(detail: InvoiceDetail): Promise<string[]> 
       warnings.push(`Line ${l.position} · ${label} has no GL account`);
     }
   }
+  for (const l of detail.lines) {
+    // Review round 3, and the honest answer to a limit the ruling itself mandates. A typed price on
+    // the tier-3 "needs price" line carries NO step code, so it stands in for the WHOLE order line
+    // (§5.5 / the #61 ruling) — and it keeps standing in: a priced operation added to that part
+    // AFTERWARDS is covered by the typed figure and never bills on its own. That is the ruled
+    // behaviour, not a defect, and the stored state genuinely cannot tell "the work this price was
+    // typed for" from "work added since. So it is SURFACED rather than guessed at, which is the one
+    // thing the recalculate must not do silently.
+    if (l.kind === "OPERATION" && l.priceSource === "MANUAL" && l.processStepCodeId === null) {
+      const label = l.partNumber === "" ? l.description : `${l.partNumber} — ${l.description}`;
+      warnings.push(
+        `Line ${l.position} · ${label} is a typed price standing in for every priced operation on ` +
+        "this part — re-check it after any pricing change");
+    }
+  }
   return warnings;
 }
 
@@ -1330,8 +1349,12 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
         // whose step code merely no longer prices replaced ONE operation, so it takes one.
         const free = (operationKeysByOrderLine.get(m.orderLineId) ?? []).filter((k) => {
           if (isClaimed(k)) return false;
+          // Fails CLOSED: an operation whose identity cannot be read is not re-homed onto. Every key
+          // here comes from an OPERATION with a non-null `orderLineId`, for which `overrideKey` never
+          // returns null, so this is unreachable — but the permissive direction would silently
+          // resurrect the sibling-erasure round 2 closed, and that is not a trade worth taking.
           const derivedIdentity = identityByComputedKey.get(k);
-          return derivedIdentity === undefined || !alreadyBilled.has(derivedIdentity);
+          return derivedIdentity !== undefined && !alreadyBilled.has(derivedIdentity);
         });
         [slot, ...cover] = m.processStepCodeId === null ? free : free.slice(0, 1);
       }

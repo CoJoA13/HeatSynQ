@@ -112,7 +112,12 @@ line's quote link before the seam-#3 skip, so the rider path throws where the le
 
 ## Testing
 
-Every behavioural test was **RED-verified**, each failing for the filed reason before the fix:
+Every test that pins a BEHAVIOUR CHANGE was **RED-verified**. Characterization tests — ones that
+pin behaviour already shipped in an earlier round — are listed separately below and are NOT evidence
+that anything works; review round 2 was right to insist on the distinction, and round 3 on applying
+it to round 2's own tests.
+
+RED-verified, each failing for the filed reason before its fix:
 
 | Test | RED failure |
 |---|---|
@@ -143,6 +148,18 @@ missing entirely.
 A green-on-arrival test is worth keeping as a regression guard, but it must not be described as
 evidence the change works. Round 1's report did describe one that way; this corrects it.
 
+**Round 2 added three tests; only one was RED** (round 3's finding, and it is right):
+
+| Round-2 test | Status |
+|---|---|
+| `never re-homes an override onto a PRE-EXISTING sibling` | **RED** at `[40]` — B's $100 line missing entirely |
+| the partial-CREDIT re-tax | **characterization.** It exercises the save-seam re-tax round 1 shipped and round 2 did not touch. It documents an untested extension rather than proving a fix |
+| the gl-export "no step-code gap" assertion | **RED** — the narrowed branch did not exist before round 2 |
+
+**Round 3 added two**, both RED against round 3's own changes: the tier-3 stand-in warning, and the
+`priceSource`/step-code assertions on the sibling test (which round 3 noted the numbers alone could
+not distinguish from the override merely wearing B's amount).
+
 **Two of my own assertions were wrong rather than the code**, and were corrected rather than worked
 around: an "the override is not the last line" check that a two-line invoice satisfies trivially
 (replaced with the full kind/position shape), and a candidate-list check that an order with a live
@@ -160,9 +177,9 @@ tests are measuring.
 
 Re-run in full at every round, never carried forward:
 
-| Gate | Round 0 (`e8f3a47`) | Round 1 (`d7ee2bb`) | Round 2 |
+| Gate | Round 0 (`e8f3a47`) | Round 1 (`d7ee2bb`) | Round 2 (`db287a2`) | Round 3 |
 |---|---|---|---|
-| `npm test` | 3095 / 182 files | 3101 / 182 | **3103 / 182** |
+| `npm test` | 3095 / 182 files | 3101 / 182 | 3103 / 182 | **3104 / 182** |
 | `npx tsc --noEmit` | clean | clean | clean |
 | `npx eslint src tests` | clean | clean | clean |
 | `npm run build` | clean | clean | clean |
@@ -224,6 +241,25 @@ mutation is correctly sequenced before `totalsFromLines`; `taxOnLines` cannot se
 taxable kind); `divideRound` is sign-symmetric, so re-deriving a credit's tax returns the exact
 negation with no cent drift; and `PartPrice`/`QuotePrice` uniqueness means two computed operations
 can never collide on one identity.
+
+## Review round 3 — APPROVED
+
+Verdict: Spec Compliance ✅ / Task quality **Approved**. No Critical, and **no correctness,
+concurrency or data-integrity defect** in round 2's code. Round 3 re-derived each row of round 2's
+disposition table rather than trusting it, and confirmed by walking the cases: `previous` is genuinely
+pre-delete state; the discriminator is idempotent across consecutive recalculates (the override
+re-writes its OWN step code, so the identity it displaced never re-enters `alreadyBilled`); it blocks
+no legitimate re-home; a legacy double-billed invoice heals rather than freezing in; and no in-scope
+line can produce zero gaps.
+
+| Finding | Disposition |
+|---|---|
+| **A tier-3 (no-step-code) override absorbs operations priced onto its line AFTERWARDS** — the appeared-since guard is structurally inert in that branch | **Surfaced, not silently changed.** Round 3 calls this *plan-mandated*: `CLAUDE.md` says a no-step-code override "covers every qualifying operation", and newly priced work qualifies. The stored state genuinely cannot tell "the work this price was typed for" from "work added since", so a smarter heuristic would be a guess at money. `invoiceWarnings` now says so on the line itself, and the money question is filed for the owner rather than decided here. |
+| Round 2's "orphaned JSDoc — Fixed" is the one row that was not fixed; the block was mis-attached | **Fixed properly.** The tier-1 contract is back on `quotePriceRowInputs`; `assertQuoteLinkSound` has its own two-assert doc. Second round running that a disposition table over-claimed — recorded rather than quietly corrected. |
+| RED evidence missing for two of round 2's three tests, under a blanket claim | **Fixed** — the Testing section now separates RED-verified from characterization tests, per round. |
+| Stale gate figures in the binding docs (HANDOFF, the round-2 doc still said 3095) | **Fixed.** |
+| `derivedIdentity === undefined ||` is unreachable and fails permissive | **Fixed** — it now fails CLOSED. Unreachable either way, but the permissive direction would silently resurrect the sibling erasure round 2 closed. |
+| The sibling test's numbers cannot rule out one alternative shape | **Fixed** — it now asserts the $100 line is `PART_PRICE` and carries B's step code. |
 
 ## Known limits, stated rather than hidden
 
