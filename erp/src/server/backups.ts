@@ -168,6 +168,24 @@ export function integrityOk(
  */
 export const INTEGRITY_CONCURRENCY = 4;
 
+/*
+ * WHY THIS IS PER-TRAVERSAL AND NOT A MODULE-WIDE SEMAPHORE (owner ruling, 2026-08-17).
+ *
+ * A shared semaphore was tried and removed. It bounded the process more tightly, but every mechanism
+ * it needed to be correct — releasing a slot held by a wedged child, accounting for a timed-out
+ * child still alive, keeping the write path inside the same ceiling — generated a further defect in
+ * review, each fix creating the next. #118 asked for "a small concurrency limit, or cache results
+ * keyed on file metadata"; the limit below, plus the in-flight coalescing and the intact-only cache,
+ * deliver exactly that and delete the whole class of failures a shared slot can have, because there
+ * is no shared slot to exhaust, leak or bypass.
+ *
+ * What is given up, stated plainly: `backupsView` runs its health and listing reads concurrently and
+ * each gets its own budget, so a busy moment can reach roughly 8-12 concurrent checks rather than 4.
+ * On a 1-5 user shop (spec §3) — where the coalescer collapses repeat checks of the SAME archive,
+ * which is the common case the banner generates — that is a bounded, acceptable ceiling, and a far
+ * simpler one to reason about.
+ */
+
 /**
  * `Promise.all(items.map(fn))` with a ceiling on how many run at once. Results stay in INPUT order,
  * so callers can zip them back against `items` — the whole reason this returns an array rather than
@@ -229,31 +247,6 @@ export function clearIntegrityCache(): void {
 const integrityInFlight = new Map<string, Promise<boolean>>();
 
 /**
- * A MODULE-LEVEL ceiling on concurrent `gzip -t` processes (Codex, PR #131).
- *
- * `mapLimited` bounds one traversal, which is not the same thing: `backupsView` runs `backupHealth`
- * and `listArchives` concurrently, so each got its own budget — and every additional page load or
- * banner poll multiplied it again. The production-wide spike this exists to prevent needs a bound
- * that is shared across ALL callers, so it lives here rather than in any one array walk.
- */
-let integritySlotsFree = INTEGRITY_CONCURRENCY;
-const integrityWaiters: (() => void)[] = [];
-
-async function withIntegritySlot<T>(run: () => Promise<T>): Promise<T> {
-  if (integritySlotsFree === 0) await new Promise<void>((r) => integrityWaiters.push(r));
-  else integritySlotsFree -= 1;
-  try {
-    return await run();
-  } finally {
-    // Hand the slot straight to the next waiter rather than returning it to the pool and racing —
-    // the count only rises when nobody is queued.
-    const next = integrityWaiters.shift();
-    if (next) next();
-    else integritySlotsFree += 1;
-  }
-}
-
-/**
  * `integrityOk` memoized on (path, size, mtime) for `INTEGRITY_CACHE_TTL_MS`, coalesced while in
  * flight, and run under the module-level concurrency ceiling. `verify` is a PARAMETER rather than a
  * module lookup for the same reason `runBackupNow` takes `dumpBin` that way (§6.4): it lets a test
@@ -270,7 +263,7 @@ export async function verifyArchive(
   const running = integrityInFlight.get(key);
   if (running) return running;
 
-  const pending = withIntegritySlot(() => verify(fullPath))
+  const pending = verify(fullPath)
     .then((verdict) => {
       // ONLY "intact" is cached (Codex, PR #131). A non-zero `gzip` exit cannot be shown to mean
       // corruption rather than a transient I/O or access failure — see `integrityOk` — so caching it
@@ -425,10 +418,10 @@ const DEFAULT_KILL_GRACE_MS = 5_000;
 export function runBackupNow(
   opts: {
     dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
-    /** The archive verifier, a PARAMETER for the same reason `dumpBin` is (§6.4): the corrupt and
-     *  unverifiable branches are otherwise unreachable in a test, since the code writes the archive
-     *  itself and `gzip` will happily verify its own valid output. */
-    verify?: (p: string) => Promise<IntegrityVerdict>;
+    /** The archive verifier, a PARAMETER for the same reason `dumpBin` is (§6.4): the failure branch
+     *  is otherwise unreachable in a test, since the code writes the archive itself and `gzip` will
+     *  happily verify its own valid output. */
+    verify?: (p: string, timeoutMs?: number) => Promise<IntegrityVerdict>;
   } = {},
 ): Promise<ArchiveInfo> {
   if (inFlight) return inFlight;
@@ -439,7 +432,7 @@ export function runBackupNow(
 async function doBackup(
   opts: {
     dumpBin?: string; dumpArgs?: string[]; dir?: string; timeoutMs?: number; killGraceMs?: number;
-    verify?: (p: string) => Promise<IntegrityVerdict>;
+    verify?: (p: string, timeoutMs?: number) => Promise<IntegrityVerdict>;
   },
 ): Promise<ArchiveInfo> {
   const verify = opts.verify ?? integrityOk;
@@ -619,13 +612,17 @@ async function doBackup(
   // backup. Unlike the read paths, this is the WRITE path — there is no later re-check to recover
   // on, and claiming success for an unverified dump is the exact failure this feature exists to
   // prevent.
-  // Under the SHARED ceiling (Codex, PR #131). Calling `verify` directly started a fifth `gzip -t`
-  // beside four in-flight health/listing checks — so the module-wide limit was not actually shared
-  // by every production caller, and it was exceeded precisely while the host was already carrying
-  // this backup's own dump and compression load. `verifyArchive` cannot serve here: its cache is
-  // keyed on (path, size, mtime) and this file has just been written, so a fresh archive must be
-  // verified for real, never answered from a cache. The slot is the part that is shared.
-  if ((await withIntegritySlot(() => verify(finalPath))) !== "intact") {
+  // Verified with the WRITE-PATH deadline, not the banner's read-poll one (Codex, PR #131). A
+  // legitimate archive of a large database can take longer than `INTEGRITY_TIMEOUT_MS` to read, and
+  // here a timeout does not merely under-report: `fail()` DELETES the freshly completed archive and
+  // records the backup as failed, so a short deadline would make "Back up now" progressively
+  // unusable as the database grows. The nightly shell path has no verification deadline at all;
+  // this one exists only so a wedged volume cannot pin `inFlight` forever, which is why it matches
+  // the dump's own generous ceiling rather than the poll's.
+  //
+  // No cache here either — `verifyArchive`'s key is (path, size, mtime) and this file has just been
+  // written, so a fresh archive must be verified for real, never answered from a cache.
+  if ((await verify(finalPath, DEFAULT_DUMP_TIMEOUT_MS)) !== "intact") {
     return fail("the written archive failed its gzip integrity check.");
   }
 

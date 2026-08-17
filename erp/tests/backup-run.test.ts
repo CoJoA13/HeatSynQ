@@ -215,6 +215,26 @@ describe("runBackupNow", () => {
     expect((await readStatus(dir))?.ok).toBe(false);
   });
 
+  /**
+   * Codex, PR #131 — the WRITE path must not inherit the banner's short read-poll deadline.
+   *
+   * A legitimate archive of a large database can take longer than `INTEGRITY_TIMEOUT_MS` to read,
+   * and here a timeout does not merely under-report: `fail()` DELETES the freshly completed archive
+   * and records the backup as failed. A short deadline would therefore make "Back up now"
+   * progressively unusable as the database grows, while the nightly shell path — which has no
+   * verification deadline at all — kept working. The write path passes the dump's own generous
+   * ceiling instead.
+   */
+  it("verifies a fresh archive with the generous dump deadline, not the 60s read poll", async () => {
+    let seen: number | undefined;
+    await asSystem(() => runBackupNow({
+      dumpBin: FAKE, dir,
+      verify: async (_p, timeoutMs) => { seen = timeoutMs; return "intact" as const; },
+    }));
+    // Minutes, not the banner's seconds — the exact value is the dump ceiling.
+    expect(seen).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
   it("two concurrent clicks never clobber each other", async () => {
     const [a, b] = await Promise.all([run(), run()]);
     const names = new Set([a.name, b.name]);

@@ -291,14 +291,19 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
   });
 
   /**
-   * Codex, PR #131 — the ceiling has to be MODULE-LEVEL, not per traversal.
+   * The ceiling is PER-TRAVERSAL, by owner ruling (2026-08-17) — see the long note beside
+   * `INTEGRITY_CONCURRENCY`.
    *
-   * `mapLimited` bounds one array walk, which is not the same thing: `backupsView` runs
-   * `backupHealth` and `listArchives` concurrently so each got its own budget, and every extra page
-   * load or banner poll multiplied it again. The production-wide spike this exists to prevent needs
-   * a bound shared across ALL callers.
+   * A module-wide semaphore was tried and removed: every mechanism it needed to be correct (freeing
+   * a slot held by a wedged child, accounting for a timed-out child still alive, keeping the write
+   * path inside the same ceiling) generated a further defect in review, each fix creating the next.
+   * What remains is the original #118 ask — a small limit per traversal, plus in-flight coalescing —
+   * which cannot exhaust, leak or be bypassed because there is no shared slot at all.
+   *
+   * This pins the honest consequence rather than hiding it: independent callers each get their own
+   * budget, so the bound is per traversal and NOT global.
    */
-  it("never exceeds the ceiling across INDEPENDENT concurrent callers", async () => {
+  it("bounds each traversal independently — the honest limit after the semaphore was removed", async () => {
     let live = 0;
     let peak = 0;
     const verify = async () => {
@@ -308,14 +313,20 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
       return "intact" as const;
     };
 
-    // Three separate "requests", each verifying its own distinct files — the shape a page load
-    // plus two banner polls produces. Per-traversal limiting would let this reach 3x the ceiling.
-    await Promise.all([0, 1, 2].map((caller) =>
-      mapLimited(Array.from({ length: 8 }, (_, i) => `/c${caller}-${i}.gz`), 4,
-        (p) => verifyArchive(p, 1, 1, verify, 0))));
-
+    // ONE traversal is capped at the ceiling...
+    await mapLimited(Array.from({ length: 12 }, (_, i) => `/one-${i}.gz`), INTEGRITY_CONCURRENCY,
+      (p) => verifyArchive(p, 1, 1, verify, 0));
     expect(peak).toBeLessThanOrEqual(INTEGRITY_CONCURRENCY);
     expect(peak).toBeGreaterThan(1);
+
+    // ...and three concurrent traversals are capped at the ceiling EACH, which is the trade the
+    // ruling accepted for a 1-5 user shop. Asserted as a real bound, not left unstated.
+    clearIntegrityCache();
+    peak = 0;
+    await Promise.all([0, 1, 2].map((caller) =>
+      mapLimited(Array.from({ length: 8 }, (_, i) => `/c${caller}-${i}.gz`), INTEGRITY_CONCURRENCY,
+        (p) => verifyArchive(p, 1, 1, verify, 0))));
+    expect(peak).toBeLessThanOrEqual(INTEGRITY_CONCURRENCY * 3);
   });
 
   /**
