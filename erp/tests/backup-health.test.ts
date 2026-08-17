@@ -6,7 +6,7 @@ import { gzipSync } from "node:zlib";
 import {
   evaluateHealth, listArchives, backupHealth,
   mapLimited, verifyArchive, clearIntegrityCache,
-  INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS, INTEGRITY_TIMEOUT_MS,
+  INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS, INTEGRITY_TIMEOUT_MS, integrityOk,
 } from "@/server/backups";
 import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
 import { truncateAll } from "./helpers/db";
@@ -413,6 +413,37 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
     expect(INTEGRITY_TIMEOUT_MS).toBeGreaterThan(1_000);
     expect(INTEGRITY_TIMEOUT_MS).toBeLessThanOrEqual(120_000);
   });
+
+  /**
+   * Codex, PR #131 — the timeout must SETTLE, not merely signal.
+   *
+   * `execFile`'s own `timeout` option only sends a signal; the promise stays pending until the
+   * child actually exits. A `gzip` that ignores SIGTERM — or is stuck in an uninterruptible read on
+   * a wedged mount, where even SIGKILL cannot move it — therefore held its shared slot forever, and
+   * the module-wide ceiling turned that into a process-wide stall.
+   *
+   * Driven against a REAL child that traps SIGTERM and sleeps, because the whole claim is about
+   * process behaviour: a stub resolving late would prove nothing. Short timeout so the test is fast.
+   */
+  it("settles a verifier that ignores SIGTERM, instead of waiting for it to exit", async () => {
+    const bin = await mkdtemp(path.join(tmpdir(), "backup-stubborn-"));
+    // Traps SIGTERM and keeps running — the shape the old `timeout` option could not bound.
+    await writeFile(path.join(bin, "gzip"), "#!/bin/sh\ntrap '' TERM\nsleep 30\n");
+    await chmod(path.join(bin, "gzip"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      const started = Date.now();
+      const verdict = await integrityOk("/irrelevant.gz", 200);
+      const elapsed = Date.now() - started;
+
+      expect(verdict).toBe("rejected");     // never "intact" on evidence we do not have
+      expect(elapsed).toBeLessThan(5_000);  // settled on the deadline, not on the child's 30s sleep
+    } finally {
+      process.env.PATH = savedPath;
+      await rm(bin, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it("the shipped ceiling is a real bound", () => {
     expect(INTEGRITY_CONCURRENCY).toBeGreaterThan(0);

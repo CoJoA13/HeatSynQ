@@ -10,7 +10,6 @@
 import { readdir, stat, readFile, rename, unlink, writeFile, access } from "node:fs/promises";
 import { constants as FS, createReadStream, createWriteStream } from "node:fs";
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
 import { createGzip } from "node:zlib";
 import { pipeline } from "node:stream/promises";
 import { randomBytes } from "node:crypto";
@@ -24,8 +23,6 @@ import { getSetting } from "./settings";
 import { HttpError } from "./errors";
 import { auditBackupRun } from "./audit";
 import { assertNotPracticeDatabase } from "./practice-mode";
-
-const execFileAsync = promisify(execFile);
 
 export type HealthInputs = {
   /** Newest INTEGRITY-PASSING archive's mtime, or null if there is none. */
@@ -100,6 +97,11 @@ type IntegrityVerdict = "intact" | "rejected";
  */
 export const INTEGRITY_TIMEOUT_MS = 60_000;
 
+/** How long a timed-out verifier gets to die on SIGTERM before SIGKILL — the `DEFAULT_KILL_GRACE_MS`
+ *  shape from the dump path. The promise has already settled by then; this is only about not leaving
+ *  a process behind when one can still be killed. */
+export const INTEGRITY_KILL_GRACE_MS = 5_000;
+
 /**
  * `gzip -t`, spawned via argv and bounded. Returns a verdict rather than throwing — a corrupt
  * archive is a reportable fact about that file, not a failure of the listing.
@@ -118,13 +120,43 @@ export const INTEGRITY_TIMEOUT_MS = 60_000;
  * direction, since nothing may claim intact on evidence we do not have — and is re-checked on the
  * next read rather than pinning a possibly-healthy archive as CORRUPT for the TTL.
  */
-async function integrityOk(fullPath: string): Promise<IntegrityVerdict> {
-  try {
-    await execFileAsync("gzip", ["-t", fullPath], { timeout: INTEGRITY_TIMEOUT_MS });
-    return "intact";
-  } catch {
-    return "rejected";
-  }
+export function integrityOk(
+  fullPath: string, timeoutMs: number = INTEGRITY_TIMEOUT_MS,
+): Promise<IntegrityVerdict> {
+  return new Promise<IntegrityVerdict>((resolve) => {
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const settle = (verdict: IntegrityVerdict) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve(verdict);
+    };
+
+    const child = execFile("gzip", ["-t", fullPath], (err) => {
+      if (killTimer) clearTimeout(killTimer);
+      settle(err ? "rejected" : "intact");
+    });
+
+    const deadline = setTimeout(() => {
+      // SETTLE FIRST, then chase the child (Codex, PR #131). `execFile`'s own `timeout` option only
+      // SENDS a signal — the promise stays pending until the process actually exits, so a `gzip`
+      // ignoring SIGTERM, or stuck in an uninterruptible read on a wedged mount, held its slot
+      // forever and the ceiling I added turned that into a process-wide stall. Even SIGKILL cannot
+      // move a process in uninterruptible D-state, so waiting for exit can never be the guarantee
+      // here; releasing the slot is.
+      //
+      // This is deliberately the OPPOSITE of `doBackup`'s dump handling, which waits for the child's
+      // real `exit` before settling — there, a surviving `pg_dump` still holds a database snapshot
+      // and its locks, so reaping it IS the correctness requirement. A stray `gzip -t` holds no
+      // lock, writes nothing, and touches no shared state: the only thing that matters is that the
+      // app stops waiting on it.
+      settle("rejected");
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), INTEGRITY_KILL_GRACE_MS);
+      killTimer.unref?.();   // never hold the process open for a child we have already given up on
+    }, timeoutMs);
+  });
 }
 
 /**
@@ -587,7 +619,13 @@ async function doBackup(
   // backup. Unlike the read paths, this is the WRITE path — there is no later re-check to recover
   // on, and claiming success for an unverified dump is the exact failure this feature exists to
   // prevent.
-  if ((await verify(finalPath)) !== "intact") {
+  // Under the SHARED ceiling (Codex, PR #131). Calling `verify` directly started a fifth `gzip -t`
+  // beside four in-flight health/listing checks — so the module-wide limit was not actually shared
+  // by every production caller, and it was exceeded precisely while the host was already carrying
+  // this backup's own dump and compression load. `verifyArchive` cannot serve here: its cache is
+  // keyed on (path, size, mtime) and this file has just been written, so a fresh archive must be
+  // verified for real, never answered from a cache. The slot is the part that is shared.
+  if ((await withIntegritySlot(() => verify(finalPath))) !== "intact") {
     return fail("the written archive failed its gzip integrity check.");
   }
 
