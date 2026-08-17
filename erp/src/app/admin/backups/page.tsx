@@ -80,16 +80,27 @@ export default function BackupsPage() {
   // real "no grants" account and would permanently disable every control with no explanation.
   const { permissions, error: permError } = usePermissions();
 
+  // The 403 classification lives INSIDE `load`, not at one call site (Codex, PR #131). A grant can
+  // be revoked while this page is mounted — most plausibly during a long-running dump — and both
+  // the reload after a successful POST and the catch path's retry would then 403 with only the
+  // outer catch to see them. `refusal` would stay null, and the stale permission grant plus the
+  // previously loaded view would re-enable "Back up now" though every later request is forbidden.
+  // `usePermissions` is fetched once and cannot notice either. Classifying here means every reload
+  // caller — present and future — updates the latch without having to remember.
   const load = useCallback(async () => {
-    const v = await api<BackupsView>("/api/admin/backups");
-    setView(v);
-    setRefusal(null);
-    return v;
+    try {
+      const v = await api<BackupsView>("/api/admin/backups");
+      setView(v);
+      setRefusal(null);
+      return v;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) setRefusal(e.message);
+      throw e;
+    }
   }, []);
 
   useEffect(() => {
     load().catch((e) => {
-      if (e instanceof ApiError && e.status === 403) setRefusal(e.message);
       setError(e instanceof ApiError ? e.message : "Could not read the backup folder.");
     });
   }, [load]);

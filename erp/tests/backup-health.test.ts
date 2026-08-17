@@ -238,7 +238,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
 
   it("verifies once, then serves the cached verdict for an unchanged file", async () => {
     let calls = 0;
-    const verify = async () => { calls += 1; return true; };
+    const verify = async () => { calls += 1; return "intact" as const; };
 
     expect(await verifyArchive("/a.gz", 100, 1000, verify, 0)).toBe(true);
     expect(await verifyArchive("/a.gz", 100, 1000, verify, 1000)).toBe(true);
@@ -247,7 +247,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
 
   it("re-verifies when the file CHANGED — size or mtime moves the key", async () => {
     let calls = 0;
-    const verify = async () => { calls += 1; return true; };
+    const verify = async () => { calls += 1; return "intact" as const; };
 
     await verifyArchive("/a.gz", 100, 1000, verify, 0);
     await verifyArchive("/a.gz", 101, 1000, verify, 0); // grew
@@ -260,7 +260,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
   it("re-verifies an unchanged file once the TTL lapses, so bit rot is still caught", async () => {
     let ok = true;
     let calls = 0;
-    const verify = async () => { calls += 1; return ok; };
+    const verify = async () => { calls += 1; return ok ? ("intact" as const) : ("corrupt" as const); };
 
     expect(await verifyArchive("/a.gz", 100, 1000, verify, 0)).toBe(true);
     ok = false; // the file rots on disk without its size or mtime changing
@@ -272,7 +272,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
 
   it("caches a FAILED verdict too — a corrupt archive is not re-checked every poll either", async () => {
     let calls = 0;
-    const verify = async () => { calls += 1; return false; };
+    const verify = async () => { calls += 1; return "corrupt" as const; };
     expect(await verifyArchive("/bad.gz", 1, 1, verify, 0)).toBe(false);
     expect(await verifyArchive("/bad.gz", 1, 1, verify, 10)).toBe(false);
     expect(calls).toBe(1);
@@ -293,7 +293,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
       live += 1; peak = Math.max(peak, live);
       await new Promise((r) => setTimeout(r, 10));
       live -= 1;
-      return true;
+      return "intact" as const;
     };
 
     // Three separate "requests", each verifying its own distinct files — the shape a page load
@@ -317,7 +317,7 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
     const verify = async () => {
       calls += 1;
       await new Promise((r) => setTimeout(r, 20));
-      return true;
+      return "intact" as const;
     };
 
     const results = await Promise.all(
@@ -334,9 +334,40 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
     await expect(verifyArchive("/boom.gz", 1, 1, boom, 0)).rejects.toThrow(/exploded/);
 
     let calls = 0;
-    const ok = async () => { calls += 1; return true; };
+    const ok = async () => { calls += 1; return "intact" as const; };
     expect(await verifyArchive("/boom.gz", 1, 1, ok, 0)).toBe(true);
     expect(calls).toBe(1); // re-attempted, not stuck on the dead promise
+  });
+
+  /**
+   * Codex, PR #131 — an UNVERIFIABLE result must not be cached as corruption.
+   *
+   * `integrityOk` catches everything `gzip` can fail with, and a spawn/OS failure (EMFILE under
+   * load, a transient storage error, a momentary permission problem) says NOTHING about the
+   * archive. Caching that as `false` kept the health red and the table labelled CORRUPT for the
+   * full TTL after the system had already recovered.
+   */
+  it("does not cache an unverifiable result, so recovery is immediate", async () => {
+    let verdict: "intact" | "corrupt" | "unverifiable" = "unverifiable";
+    let calls = 0;
+    const verify = async () => { calls += 1; return verdict; };
+
+    // The attempt itself still answers false — nothing may claim intact on evidence we do not have.
+    expect(await verifyArchive("/flaky.gz", 5, 5, verify, 0)).toBe(false);
+    expect(calls).toBe(1);
+
+    // ...but the very next read re-checks rather than inheriting a verdict never actually reached.
+    verdict = "intact";
+    expect(await verifyArchive("/flaky.gz", 5, 5, verify, 1)).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("still caches a REAL corrupt verdict — that one gzip did reach", async () => {
+    let calls = 0;
+    const verify = async () => { calls += 1; return "corrupt" as const; };
+    expect(await verifyArchive("/rotten.gz", 7, 7, verify, 0)).toBe(false);
+    expect(await verifyArchive("/rotten.gz", 7, 7, verify, 5)).toBe(false);
+    expect(calls).toBe(1);
   });
 
   it("the shipped ceiling is a real bound", () => {

@@ -78,14 +78,28 @@ export function evaluateHealth(i: HealthInputs): BackupHealth {
   return { ...common, state: "ok", reason: `Last successful backup ${Math.floor(ageHours)} hours ago.` };
 }
 
-/** `gzip -t`, spawned via argv. Returns false rather than throwing — a corrupt archive is a
+/** A completed `gzip -t` verdict, or the fact that it could not be reached (Codex, PR #131).
+ *  `"unverifiable"` is NOT the same as corrupt: `gzip` failing to spawn or read (EMFILE under
+ *  load, a transient storage error, a momentary permission problem) says nothing about the file. */
+type IntegrityVerdict = "intact" | "corrupt" | "unverifiable";
+
+/** Did `gzip` actually RUN and reject the file, or did it never get to look?
+ *  A process that ran and exited non-zero carries a numeric `code`; a spawn/OS failure carries a
+ *  string errno like `ENOENT` or `EMFILE`. `execFile` also reports a killed process via `signal`,
+ *  which is likewise not a verdict about the archive. */
+function ranAndRejected(err: unknown): boolean {
+  const e = err as { code?: unknown; signal?: unknown } | null;
+  return typeof e?.code === "number" && !e.signal;
+}
+
+/** `gzip -t`, spawned via argv. Returns a verdict rather than throwing — a corrupt archive is a
  *  reportable fact about that file, not a failure of the listing. */
-async function integrityOk(fullPath: string): Promise<boolean> {
+async function integrityOk(fullPath: string): Promise<IntegrityVerdict> {
   try {
     await execFileAsync("gzip", ["-t", fullPath]);
-    return true;
-  } catch {
-    return false;
+    return "intact";
+  } catch (err) {
+    return ranAndRejected(err) ? "corrupt" : "unverifiable";
   }
 }
 
@@ -191,7 +205,7 @@ async function withIntegritySlot<T>(run: () => Promise<T>): Promise<T> {
  */
 export async function verifyArchive(
   fullPath: string, size: number, mtimeMs: number,
-  verify: (p: string) => Promise<boolean> = integrityOk,
+  verify: (p: string) => Promise<IntegrityVerdict> = integrityOk,
   now: number = Date.now(),
 ): Promise<boolean> {
   const key = `${fullPath}|${size}|${mtimeMs}`;
@@ -201,10 +215,19 @@ export async function verifyArchive(
   if (running) return running;
 
   const pending = withIntegritySlot(() => verify(fullPath))
-    .then((ok) => {
-      if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
-      integrityCache.set(key, { ok, at: now });
-      return ok;
+    .then((verdict) => {
+      // An UNVERIFIABLE result is never cached (Codex, PR #131). `gzip` failing to spawn or read —
+      // EMFILE under load, a transient storage error, a momentary permission problem — says nothing
+      // about the archive, and caching it as `false` would keep the health red and the table
+      // labelled CORRUPT for the full TTL after the system had already recovered. The caller still
+      // gets `false` for this attempt, which is the safe direction (nothing claims intact on
+      // evidence we do not have) — but the next read re-checks immediately instead of inheriting a
+      // verdict that was never reached.
+      if (verdict !== "unverifiable") {
+        if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
+        integrityCache.set(key, { ok: verdict === "intact", at: now });
+      }
+      return verdict === "intact";
     })
     .finally(() => { integrityInFlight.delete(key); });
   integrityInFlight.set(key, pending);
