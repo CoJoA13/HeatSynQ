@@ -439,8 +439,13 @@ change is deliberate. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-
 
 **Phase 5C (close + QBO export) follow-ups — GitHub issues #88–#93 (2026-08-10), all deferred, none
 blocking the 5C merge.** #88 the continuity chain goes stale when a NON-latest month is reopened
-(self-protecting — the forward close refuses on a nonzero variance and the export is event-based; the
-re-chaining policy is spec-silent, owner's call). #89 a freight/charge line finalized before its GL
+(self-protecting — the forward close refuses on a nonzero variance and the export is event-based).
+**RULED by the owner 2026-08-17: option (c), SURFACE A BROKEN-CHAIN FLAG** — `listClosePeriods` flags
+any closed month whose `beginningAr` no longer equals the prior month's `endingAr`, and the operator
+re-closes the affected months. Nothing is refused and nothing cascades automatically: this is the
+§5.14 "name the blocker" shape rather than a wall (option a would dead-end someone correcting an old
+month) and it keeps re-closing an explicit, audited act rather than a side effect (option b). Not yet
+built. #89 a freight/charge line finalized before its GL
 default reads clean in readiness but 500s the export (self-protecting via the Σdebit=Σcredit backstop;
 the fix is an invoice-attributed readiness gap, but there is no invoice detail page to anchor its
 fix-link). #90 the cosmetic follow-ups bundle. **#91 — RULED and DONE 2026-08-16 (`0b5ea81`, Group
@@ -661,10 +666,22 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    a PR body, or an issue. Owner's note: "not all of them are used anymore", and no rush — nothing
    was built against it.
 
-   **Fifteen distinct accounts appear:** 4401–4408, 4411–4414 (revenue), 5525 energy surcharge, 5620
-   freight, 5621 trucking. Some rows carry no GL# at all and three carry a literal `%` — consistent
-   with the retired-codes caveat, and harmless here since a step code's account is optional
-   (2026-07-30).
+   **Fifteen distinct accounts appear** — twelve revenue, plus one each for the energy surcharge,
+   freight and trucking. **The numbers themselves are deliberately NOT repeated here** (see the
+   2026-08-17 correction below); they are in the confidential PDF and in
+   `docs/company-confidential/2026-08-17-accounting-questions.md`. Some rows carry no GL# at all and
+   three carry a literal `%` — consistent with the retired-codes caveat, and harmless here since a
+   step code's account is optional (2026-07-30).
+
+   > **⚠️ Correction, 2026-08-17.** An earlier revision of this item — landed in `b56aa0f` (PR #129)
+   > — quoted the actual account numbers and their furnace-group mapping in full, directly beneath
+   > the rule forbidding exactly that, in a file committed to a **public** repository. The numbers are
+   > removed from the working file as of `1b6c26d`+. **Git history still contains them** (they are in
+   > the PR #129 diff and in every clone taken since), so this is containment, not a scrub — a true
+   > removal needs a history rewrite and force-push, which is the owner's call and was not taken
+   > unilaterally. Exposure is bare internal account numbers and furnace names: no customer data, no
+   > dollar figures, no credentials. **The rule stands and now has a worked example of how it gets
+   > broken — by an analysis paragraph that felt like reasoning rather than like data.**
 
    **⚠️ TWO FINDINGS THAT NEED THE OWNER BEFORE THIS CAN BE KEYED IN:**
 
@@ -676,8 +693,8 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       Keys → Process Code · Equipment · Group · Cost Center`, and the GL report's columns are
       exactly `GL# · Process Code · Eq Id · Gr Id · Cc Id` with `Eq Id` = 0 on all but two rows. So
       VS hangs the account on the **Standard Step**, keyed effectively on **(Process Code × Group)**
-      — Group being the furnace type, which is why `AnnealAtmos` appears under 4401 IQ, 4404 Bell
-      and 4411 Rotary.
+      — Group being the furnace type, which is why one atmosphere-anneal process code appears under
+      three different revenue accounts (the IQ, Bell and Rotary ones).
 
       **What that means here, and it is a business choice, not a technical block** (owner: "they may
       have multiple ways of doing depending on how the shop chooses"). HeatSynQ hangs one
@@ -692,10 +709,11 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       (Superseded framing kept below for the reasoning.)
 
       **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
-      Process Step Code.** The report's `Gr Id` column is what separates 4401 (IQ) / 4402 (Vacuum) /
-      4403 (Tip Up) / 4404 (Bell) / 4405 (Temper) / 4407 (Car Bot) / 4411 (Rotary) / 4412 (Pusher),
-      and the SAME process code lands in several: `AnnealAtmos` appears under 4401, 4404 and 4411;
-      `Normal Atmos` under 4401, 4404, 4405 and 4412; `SR Air` under 4403, 4405 and 4407. Our model
+      Process Step Code.** The report's `Gr Id` column is what separates the eight furnace-group
+      revenue accounts (IQ, Vacuum, Tip Up, Bell, Temper, Car Bot, Rotary, Pusher — numbers in the
+      confidential PDF, not here), and the SAME process code lands in several: the atmosphere-anneal
+      code spans three of them, the atmosphere-normalize code four, and the air stress-relieve code
+      three. Our model
       hangs ONE `glAccountId` off each `ProcessStepCode` (CLAUDE.md), so a single step code cannot
       reproduce that split. Either the step codes are defined per (process × equipment group) — which
       is how the shop already names them in practice, worth confirming — or the account has to be
