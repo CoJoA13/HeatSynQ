@@ -198,7 +198,28 @@ records what that leaves reachable rather than assuming it — **an UNSHIPPED li
 can still be removed.** The two guards never contradict each other, but §5.7 is therefore "one thing"
 for add/update and not quite for remove. Flagged rather than silently extended.
 
-**#125 — re-shipped serial warns.** **Derived, not stored** — the ruling asked whether live
+**#125 — re-shipped serial warns.** Landed in three passes; the final shape came out of Codex's
+three findings on PR #130 plus an owner ruling, and the reasoning is worth keeping.
+
+- **Keyed on (order line, serial text), NOT `orderSerialId`.** `replaceSerials` deletes and
+  recreates every `OrderSerial`, nulling the earlier `ShipperSerial.orderSerialId` — so an id-keyed
+  match lost the prior shipment entirely and the recreated serial went out again unwarned. My own
+  comment had *rationalised* that as correct ("a released row no longer refers to a serial anyone
+  can re-select"), which was simply wrong: the recreated serial is the same physical part. Scoping
+  to the LINE is also what makes the serial TEXT safe to match on — a line belongs to one order, one
+  customer, one part — which was the original objection to using it.
+- **Compares against EVERY other live shipment, and says "also appears on".** The first draft said
+  "has ALREADY shipped on …" and excluded only the current shipment, making the relation SYMMETRIC
+  and reversing history — re-reading the ORIGINAL ticket accused it of duplicating its own
+  successor. Bounding on an earlier `shipperNumber` fixed that and broke something else: packing-list
+  order records DOCUMENT creation, not when a serial was selected during an EDIT, so
+  `replaceShipperSerials` on an older ticket could newly add a serial a higher-numbered ticket
+  already held and the `lt` filter ignored it. **Distinguishing those needs a
+  `ShipperSerial.createdAt` column; the owner ruled for the symmetric wording instead.** Both
+  documents now carry an advisory that is true from either side — which is the right reading anyway,
+  since a duplicate involves both tickets — at no schema cost.
+
+**Derived, not stored** — the ruling asked whether live
 `ShipperSerial` rows joined to non-voided shippers already carry the fact, and they do, so the schema
 is untouched. Keyed on **`orderSerialId`** (the physical part instance within its order), never on
 the `serial` TEXT, which is unique only per line and would fire falsely across customers reusing a

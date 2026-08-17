@@ -323,14 +323,14 @@ describe("snapshot + release: order corrections after shipment references", () =
       expect(second.shipper.id).toBeTruthy();
       // §5.14 — the warning names its cause: the serial, the packing list, the date, and a link.
       expect(second.warnings).toContainEqual(
-        `Serial SN-1 has already shipped on Packing List ${first.shipperNumber} ` +
+        `Serial SN-1 also appears on Packing List ${first.shipperNumber} ` +
         `(2026-08-04) — see /shipping/${first.id}`);
     });
 
     it("says nothing about a serial shipping for the first time", async () => {
       const { order, s2 } = await shippedOnce();
       const second = await shipAgain(order, s2.id);
-      expect(second.warnings.filter((w) => w.includes("already shipped"))).toEqual([]);
+      expect(second.warnings.filter((w) => w.includes("also appears on"))).toEqual([]);
     });
 
     it("a VOIDED earlier shipment does not count as shipped", async () => {
@@ -338,37 +338,79 @@ describe("snapshot + release: order corrections after shipment references", () =
       await asSystem(() => voidShipper(first.id, "wrong truck"));
 
       const second = await shipAgain(order, s1.id);
-      expect(second.warnings.filter((w) => w.includes("already shipped"))).toEqual([]);
+      expect(second.warnings.filter((w) => w.includes("also appears on"))).toEqual([]);
     });
 
     it("does not warn about a serial against the shipment it is currently on", async () => {
       const { first } = await shippedOnce();
       // Re-reading the FIRST shipment must not accuse it of duplicating its own selection.
       const detail = await getShipper(first.id);
-      expect((await shipmentWarnings(prisma, detail)).filter((w) => w.includes("already shipped")))
+      expect((await shipmentWarnings(prisma, detail)).filter((w) => w.includes("also appears on")))
         .toEqual([]);
     });
 
     /**
-     * Codex, PR #130 (P2) — the relationship was SYMMETRIC, so the warning reversed history.
+     * Codex, PR #130 (three P2s) — and the owner's ruling on how to resolve the conflict between
+     * them (2026-08-16).
      *
-     * The query excluded only the CURRENT shipment and never established that a match predates it.
-     * So once SN-1 was re-shipped on PL 1001, re-reading the ORIGINAL PL 1000 warned that the serial
-     * "has already shipped on Packing List 1001" — accusing the first shipment of duplicating the
-     * second. The fix constrains matches to a genuinely EARLIER `shipperNumber`, which is the
-     * allocation sequence and therefore the reliable record of which selection came first (shipDate
-     * is operator-entered and can tie or be backdated).
+     * The first draft said "has ALREADY shipped on PL 1001" and excluded only the current shipment,
+     * which made the relation SYMMETRIC and reversed history: re-reading the ORIGINAL PL 1000
+     * accused it of duplicating its own successor. Bounding on an earlier `shipperNumber` fixed
+     * that — and immediately broke the third finding, because packing-list order records DOCUMENT
+     * creation, not when a serial was selected during an EDIT: `replaceShipperSerials` on an older
+     * ticket could newly add a serial a higher-numbered ticket already held, and the `lt` filter
+     * ignored it.
+     *
+     * True chronology would need a `ShipperSerial.createdAt` column. **Ruled instead: compare
+     * against every other live shipment and reword to "also appears on".** That sentence is true
+     * from either side, so both documents carrying the advisory is correct rather than a defect —
+     * both are involved in the duplication — and no schema change or chronology has to be
+     * maintained. It still names which shipment and when, which is what the original ruling
+     * required.
      */
-    it("never warns the ORIGINAL shipment about a LATER re-ship — the history is not reversed", async () => {
+    it("warns BOTH documents symmetrically — the sentence is true from either side", async () => {
       const { order, s1, first } = await shippedOnce();
       const second = await shipAgain(order, s1.id);
 
-      // The later shipment is warned, naming the earlier one.
+      // The re-selection names the other shipment...
       expect(second.warnings.some((w) => w.includes(`Packing List ${first.shipperNumber}`))).toBe(true);
-
-      // The earlier one is NOT — re-reading it must not claim it duplicated its own successor.
+      // ...and so does the original, because a duplicate genuinely involves both.
       const original = await shipmentWarnings(prisma, await getShipper(first.id));
-      expect(original.filter((w) => w.includes("already shipped"))).toEqual([]);
+      expect(original.some((w) => w.includes(`Packing List ${second.shipper.shipperNumber}`))).toBe(true);
+      // Never "already shipped" — that word is what made the symmetric case a lie.
+      expect(original.join(" ")).toContain("also appears on");
+      expect(original.join(" ").toLowerCase()).not.toContain("already shipped");
+    });
+
+    /**
+     * Codex, PR #130 (P2) — the identity must survive `replaceSerials`.
+     *
+     * `replaceSerials` DELETES and recreates every `OrderSerial`, and the earlier
+     * `ShipperSerial.orderSerialId` is nulled by snapshot + release. Keying the match on that id
+     * therefore lost the prior shipment entirely, so the recreated serial could be shipped again
+     * with no warning at all — and my own comment had rationalised it as correct ("a released row no
+     * longer refers to a serial anyone can re-select"), which was simply wrong: the recreated serial
+     * is the same physical part and IS selectable.
+     *
+     * Matched on (order line, serial text) instead, which survives the replace. Scoping to the LINE
+     * is also what makes the serial text safe to match on — a line belongs to one order, one
+     * customer, one part — which was the original objection to using it.
+     */
+    it("still warns after replaceSerials recreates the serial rows", async () => {
+      const { order, s1, first } = await shippedOnce();
+
+      // Recreate the order's serials with the SAME numbers; the shipment's rows are released.
+      await asSystem(() => replaceSerials(order.id, order.lines[0].id, [
+        { serial: "SN-1", description: "" },
+        { serial: "SN-2", description: "" },
+      ]));
+      const recreated = await prisma.orderSerial.findFirstOrThrow({
+        where: { lineId: order.lines[0].id, serial: "SN-1" },
+      });
+      expect(recreated.id).not.toBe(s1.id); // genuinely a new row
+
+      const second = await shipAgain(order, recreated.id);
+      expect(second.warnings.some((w) => w.includes(`Packing List ${first.shipperNumber}`))).toBe(true);
     });
 
     it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
@@ -381,7 +423,7 @@ describe("snapshot + release: order corrections after shipment references", () =
       // it; a warning computed only at creation is half-built (#50/#54).
       await asSystem(() => updateShipper(second.shipper.id, { comments: "re-ship" }));
       const after = await shipmentWarnings(prisma, await getShipper(second.shipper.id));
-      expect(after.filter((w) => w.includes("already shipped"))).toHaveLength(1);
+      expect(after.filter((w) => w.includes("also appears on"))).toHaveLength(1);
     });
   });
 
