@@ -145,12 +145,49 @@ const integrityCache = new Map<string, { ok: boolean; at: number }>();
  *  counts has to be able to start from a known state. */
 export function clearIntegrityCache(): void {
   integrityCache.clear();
+  integrityInFlight.clear();
 }
 
 /**
- * `integrityOk` memoized on (path, size, mtime) for `INTEGRITY_CACHE_TTL_MS`. `verify` is a
- * PARAMETER rather than a module lookup for the same reason `runBackupNow` takes `dumpBin` that way
- * (§6.4): it lets a test count real invocations without stubbing a child process.
+ * Verifications currently RUNNING, keyed identically to the settled cache (Codex, PR #131).
+ *
+ * The cache alone only coalesces work that has already FINISHED, so N overlapping checks of the same
+ * archive each started their own `gzip -t` — and the newest archive is exactly the file every
+ * `/health` poll looks at, so that was the most repeated cost in the app. Sharing the in-flight
+ * promise makes concurrent callers wait on ONE decompression instead of starting N.
+ */
+const integrityInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * A MODULE-LEVEL ceiling on concurrent `gzip -t` processes (Codex, PR #131).
+ *
+ * `mapLimited` bounds one traversal, which is not the same thing: `backupsView` runs `backupHealth`
+ * and `listArchives` concurrently, so each got its own budget — and every additional page load or
+ * banner poll multiplied it again. The production-wide spike this exists to prevent needs a bound
+ * that is shared across ALL callers, so it lives here rather than in any one array walk.
+ */
+let integritySlotsFree = INTEGRITY_CONCURRENCY;
+const integrityWaiters: (() => void)[] = [];
+
+async function withIntegritySlot<T>(run: () => Promise<T>): Promise<T> {
+  if (integritySlotsFree === 0) await new Promise<void>((r) => integrityWaiters.push(r));
+  else integritySlotsFree -= 1;
+  try {
+    return await run();
+  } finally {
+    // Hand the slot straight to the next waiter rather than returning it to the pool and racing —
+    // the count only rises when nobody is queued.
+    const next = integrityWaiters.shift();
+    if (next) next();
+    else integritySlotsFree += 1;
+  }
+}
+
+/**
+ * `integrityOk` memoized on (path, size, mtime) for `INTEGRITY_CACHE_TTL_MS`, coalesced while in
+ * flight, and run under the module-level concurrency ceiling. `verify` is a PARAMETER rather than a
+ * module lookup for the same reason `runBackupNow` takes `dumpBin` that way (§6.4): it lets a test
+ * count real invocations, and observe their concurrency, without stubbing a child process.
  */
 export async function verifyArchive(
   fullPath: string, size: number, mtimeMs: number,
@@ -160,10 +197,18 @@ export async function verifyArchive(
   const key = `${fullPath}|${size}|${mtimeMs}`;
   const hit = integrityCache.get(key);
   if (hit && now - hit.at < INTEGRITY_CACHE_TTL_MS) return hit.ok;
-  const ok = await verify(fullPath);
-  if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
-  integrityCache.set(key, { ok, at: now });
-  return ok;
+  const running = integrityInFlight.get(key);
+  if (running) return running;
+
+  const pending = withIntegritySlot(() => verify(fullPath))
+    .then((ok) => {
+      if (integrityCache.size >= INTEGRITY_CACHE_MAX) integrityCache.clear();
+      integrityCache.set(key, { ok, at: now });
+      return ok;
+    })
+    .finally(() => { integrityInFlight.delete(key); });
+  integrityInFlight.set(key, pending);
+  return pending;
 }
 
 export async function listArchives(dir: string = resolveBackupDir()): Promise<ArchiveInfo[]> {

@@ -92,12 +92,18 @@ export default function BackupsPage() {
     setError(null);
     try {
       await api<{ archive: ArchiveInfo }>("/api/admin/backups/run", { method: "POST" });
-      await load();
       // #124: the shell's staleness bar caches its health for REFRESH_MS, so without this the bar
       // stayed RED directly above a panel that had just gone green — the two contradicting each
       // other on one screen. The ordinary polling throttle is untouched; this is an explicit
       // "something happened" signal.
+      //
+      // Fired the instant the POST resolves, BEFORE the view refresh (Codex, PR #131). The backup
+      // has already happened by then, so the banner's cached health is already wrong — and if
+      // `load()` were to fail transiently we would fall into the catch, which retries it and can
+      // turn the panel green while never reaching an invalidation placed after it. That recreates
+      // the exact stale-red-over-green contradiction this is here to prevent.
       invalidateBackupBanner();
+      await load();
     } catch (e) {
       // §5.13: refresh to server truth FIRST, then report — a reload after setError would wipe the
       // banner the operator needs to read.

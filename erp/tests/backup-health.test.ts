@@ -278,6 +278,67 @@ describe("verifyArchive — the metadata + TTL cache (#118)", () => {
     expect(calls).toBe(1);
   });
 
+  /**
+   * Codex, PR #131 — the ceiling has to be MODULE-LEVEL, not per traversal.
+   *
+   * `mapLimited` bounds one array walk, which is not the same thing: `backupsView` runs
+   * `backupHealth` and `listArchives` concurrently so each got its own budget, and every extra page
+   * load or banner poll multiplied it again. The production-wide spike this exists to prevent needs
+   * a bound shared across ALL callers.
+   */
+  it("never exceeds the ceiling across INDEPENDENT concurrent callers", async () => {
+    let live = 0;
+    let peak = 0;
+    const verify = async () => {
+      live += 1; peak = Math.max(peak, live);
+      await new Promise((r) => setTimeout(r, 10));
+      live -= 1;
+      return true;
+    };
+
+    // Three separate "requests", each verifying its own distinct files — the shape a page load
+    // plus two banner polls produces. Per-traversal limiting would let this reach 3x the ceiling.
+    await Promise.all([0, 1, 2].map((caller) =>
+      mapLimited(Array.from({ length: 8 }, (_, i) => `/c${caller}-${i}.gz`), 4,
+        (p) => verifyArchive(p, 1, 1, verify, 0))));
+
+    expect(peak).toBeLessThanOrEqual(INTEGRITY_CONCURRENCY);
+    expect(peak).toBeGreaterThan(1);
+  });
+
+  /**
+   * Codex, PR #131 — the cache only coalesces work that has already FINISHED.
+   *
+   * N overlapping checks of the SAME archive each started their own `gzip -t`, and the newest
+   * archive is exactly what every `/health` poll looks at — the most repeated cost in the app.
+   */
+  it("coalesces concurrent checks of the SAME archive into one verification", async () => {
+    let calls = 0;
+    const verify = async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 20));
+      return true;
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => verifyArchive("/same.gz", 10, 10, verify, 0)));
+
+    expect(results).toEqual([true, true, true, true, true, true]);
+    expect(calls).toBe(1);
+  });
+
+  it("a failed in-flight verification is not left cached as pending", async () => {
+    // The in-flight entry must clear on rejection too, or one transient failure would wedge that
+    // archive's verdict for the life of the process.
+    const boom = async () => { throw new Error("gzip exploded"); };
+    await expect(verifyArchive("/boom.gz", 1, 1, boom, 0)).rejects.toThrow(/exploded/);
+
+    let calls = 0;
+    const ok = async () => { calls += 1; return true; };
+    expect(await verifyArchive("/boom.gz", 1, 1, ok, 0)).toBe(true);
+    expect(calls).toBe(1); // re-attempted, not stuck on the dead promise
+  });
+
   it("the shipped ceiling is a real bound", () => {
     expect(INTEGRITY_CONCURRENCY).toBeGreaterThan(0);
     expect(INTEGRITY_CONCURRENCY).toBeLessThan(16);
