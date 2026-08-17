@@ -135,6 +135,14 @@ task, not three, or the second and third will each be rewriting the first.
 
 ## Group B — A/R that does NOT need the accountant · **#83, #85, #86, #82, #79, #75**
 
+> **Owner ruling 2026-08-17: the credit-memo application UI lives in the CUSTOMER A/R SECTION**
+> (#75) — on the customer page, beside the open invoices it can pay down. That makes **#83 and #75
+> ONE task**, not two: #83 is what puts open credits and on-account cash into that list in the first
+> place, and #75 hangs the Apply action off the credit rows it adds. The invoice page and the
+> receipt-batch screen were both considered; the batch screen was rejected because a credit memo has
+> no receipt batch (it exists independently of any deposit), and the invoice page because nothing
+> there tells an operator a credit exists to apply.
+
 Clear defects and one undelivered deliverable. Nothing here waits on the meeting.
 
 - **#83 — The customer A/R section's open items exclude credits and on-account cash**, so the net above
