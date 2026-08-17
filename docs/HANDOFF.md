@@ -541,6 +541,34 @@ charges (tax is priced before manual lines load; `totalsFromLines` re-sums the s
 reversal-unaware — stuck *Partial shipped*, or negative `shippedTotals`); non-invoiced pairs are
 exposed, invoiced ones only incidentally protected by `refuseIfInvoiced`.
 
+**Three of those seven were RULED by the owner 2026-08-17, before round 2's Group A branch opened.**
+**#61 — the manual override WINS, silently.** Recalculate suppresses the overridden operation's
+regenerated twin (matched on `orderLineId` + `processStepCodeId`) and keeps the typed amount; the
+tax base follows the override, not the computed figure. **No new revert control** — the undo path
+already exists and is now a tested contract: remove the row, save, Recalculate, and the computed
+line returns. This ratifies what the grid already intended (`InvoiceDetail.tsx` stamps an
+amount-edit `MANUAL` *specifically* so Recalculate will not discard it); the alternative — recalc
+reverts every override — was rejected because an operator recalculating for an unrelated reason
+would silently lose an edit they made deliberately. **#62 — the GL account is defaulted
+SERVER-SIDE**, to the configured `otherChargeGlAccountId`, the same account `mapComputedLines`
+already assigns to engine-generated charges; the grid keeps rendering it read-only, now showing a
+real account. **No operator-facing GL picker**: the existing list route (`/api/admin/reference/
+glAccount`) is gated on `admin.view`, which an invoicing clerk must not hold, so a selector would
+have meant a new gated route to buy a split nobody has asked for — and ruling 15 (§5.15) already
+excludes `glAccount` from the open pick-list route on purpose. Revisit only if the accountant's
+Q-list comes back wanting charges split across accounts. **#63 — a $0 invoice is LEGITIMATE paper**
+(warranty, rework, no-charge), so the guard blocks the **empty line set**, not a zero total, and it
+blocks at **finalize** — a draft may be transiently emptied while the operator rebuilds it. That
+is exactly the integrity hole as filed: zero lines make finalize's `needsPrice` check vacuous, and
+the order lands INVOICED at $0 where it can never be re-billed.
+
+**Owner decision 2026-08-17 on the GL account numbers in git history: LEAVE THEM.** They were
+committed to this **public** repo in `b56aa0f` (my error, PR #129) directly beneath the rule in §7
+forbidding it, and stripped from the working file in `87e057b`. Account numbers carrying no
+balances and no customer names are low-value to an outsider, and a history rewrite would invalidate
+every SHA from `b56aa0f` forward. **The §7 rule stands unchanged** — never quote an account number
+into a commit, PR body or issue; this ruling forgives one past leak, it does not relax the rule.
+
 **Done at Phase 2A start (from the final review — "Task 0" items; see §4):** auth-context refactor (one session resolution per request), `HttpError` extracted to `src/server/errors.ts`, Prisma error-hygiene helper (P2002/P2025/P2003), settings audit values redacted, dotenv promo line silenced.
 
 **Deferred (fine to ride along):** health-route DB-down path; roles page deselect papercut; users page error banner doesn't clear on success; updateUser password truthy-check inconsistency; Shell loading indicator; settings page empty-blur cosmetic; searchAudit filter route tests; HistoryPanel changedFields unit test; session-row cleanup job (**sharpened 2026-08-02 by the PR #22 Codex review**: `getSessionUser` (`sessions.ts:28`) rejects an expired session but never deletes it, and nothing anywhere else reaps one, so `Session` grows a row per login for the life of the deployment — the dev DB held 144 rows for `admin` alone, 77 already expired. The E2E harness's own four-rows-per-run leak is closed on the 2C-3 branch, which is what made this visible; the general case is untouched. Open decision when it is picked up: a nightly `DELETE FROM "Session" WHERE "expiresAt" < now()` in the backup container that already runs in the prod profile, vs. an opportunistic delete inside `getSessionUser` — the latter adds a write to the hot path, so it is a real trade-off, not an obvious win); login rate limiting; backup alerting + backup-now button; SESSION_SECRET consumed by nothing yet; ~~`renameRole` to a soft-deleted role's name → 500 edge~~ (**closed by the Prisma 7 work** — `Role.name` is now unique only among live rows, so a soft-deleted role's name no longer occupies the constraint and renaming onto it just creates/renames cleanly; see §5.18).
@@ -839,10 +867,11 @@ Fedora-specific notes:
 ## 9. Kicking off the next piece of work (paste this into a fresh session)
 
 > **START HERE (owner, 2026-08-17): `docs/2026-08-17-backlog-round-2.md`** — round 1 is complete (14
-> closed); this groups **all 66 remaining issues** and is the current track. **Task 0 (~1h) first:** at
-> least three open issues (**#6**, **#10**, **#7**) describe mechanisms that no longer exist and should
-> close, and the five triage labels `docs/agents/triage-labels.md` documents **do not exist in the repo**
-> — only `wontfix` does, so `--add-label ready-for-agent` fails today. Then **A** invoice engine (#61–#64,
+> closed); this groups **all 66 remaining issues** and is the current track. **Task 0 is DONE
+> (2026-08-17):** **#6**, **#10** and **#7** were re-verified against the code and closed with their
+> evidence — all three described mechanisms that no longer exist — and the four missing triage labels
+> (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`) now exist, so
+> `--add-label ready-for-agent` works. **63 open.** Then **A** invoice engine (#61–#64,
 > #59, #60, #89, #96 — the acceptance month's own path, and #62+#89 are one defect from two ends) · **B**
 > A/R that needs no accountant (#83, #85, #86, #82, #79, #75) · **C** shipping/status integrity (#65 is
 > the real one) · **E** close + GL + tripwires (#88 is RULED — build the broken-chain flag) · **D**

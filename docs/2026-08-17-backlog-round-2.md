@@ -29,6 +29,17 @@ production code; and when consecutive review rounds keep finding defects in the 
 
 ---
 
+## Task 0 — DONE 2026-08-17 · **63 issues open**
+
+All three suspects were re-verified against the code and closed with their evidence: **#6** (ruling 14
+built in full — registry, service, nine `/blockers` route pairs, the sweep test), **#10** (revival-on-create
+was *removed*, not consolidated — partial unique indexes, §5.18), **#7** (§5.16 decided and adopted in
+**68 of 83** client files; the four exceptions are correct — `login` has no session, `Combobox` and
+`LogoPanel` take gating from their parents, and the audit page's only button is a search — so no
+surviving sweep). The four missing triage labels now exist. The original reasoning is kept below.
+
+<details><summary>Task 0 as originally scoped</summary>
+
 ## Task 0 — Triage the list before trusting it (~1 hour) · DO THIS FIRST
 
 Round 1's Task 0 existed because a dirty measurement makes every later estimate wrong. Same reasoning:
@@ -52,9 +63,23 @@ for screens that predate §5.16 — that is a different, smaller issue than the 
 repo** — only `wontfix` does. `gh issue edit --add-label ready-for-agent` fails today. Create the four
 missing labels or stop documenting them.
 
+</details>
+
 ---
 
 ## Group A — The invoice engine · **#61, #62, #64, #63, #89, #59, #60, #96**
+
+> **Three owner rulings, 2026-08-17, taken before this branch opened.**
+> **#61 — the manual override WINS, silently.** Recalculate suppresses the regenerated twin (match on
+> `orderLineId` + `processStepCodeId`) and keeps the typed amount; **tax follows the override**. No new
+> revert control — remove the row, save, Recalculate restores the computed line, and that path becomes a
+> tested contract. (Ratifies what `patchRow`'s `MANUAL` stamp already intended.)
+> **#62 — default the GL account SERVER-SIDE** to `otherChargeGlAccountId`; the grid stays read-only and
+> now shows a real account. **No operator GL picker** — the list route is `admin.view`-gated, which an
+> invoicing clerk must not hold, and ruling 15 excludes `glAccount` from the open pick-list route on
+> purpose. Revisit only if the accountant asks for charges split across accounts.
+> **#63 — a $0 invoice is legitimate paper** (warranty, rework, no-charge). Block the **empty line set**,
+> not a zero total, and block at **finalize** — a draft may be transiently emptied mid-rebuild.
 
 **The acceptance month's own path, and the highest-consequence group in the list.** Six of the eight are
 in `invoices.ts`, most in the `recalculateInvoice` / `replaceInvoiceLines` seam, so one branch and one
