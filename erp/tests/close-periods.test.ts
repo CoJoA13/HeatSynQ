@@ -102,6 +102,10 @@ async function makeDraftInvoiceDated(dateStr: string, total: number): Promise<{ 
     data: {
       kind: "INVOICE", status: "DRAFT", orderId: order.id, customerId: customer.id,
       invoiceDate: parseDateOnly(dateStr), total,
+      // One priced line: #63 refuses to finalize an invoice with NO lines at all, and this fixture
+      // exists to be finalized. `needsPrice` stays false, so the finalize still turns on the period
+      // guard alone — which is what the dangerous-direction test is measuring.
+      lines: { create: [{ position: 1, kind: "OPERATION", description: "Austemper", amount: total }] },
     },
   });
   return { invoiceId: invoice.id, orderId: order.id };

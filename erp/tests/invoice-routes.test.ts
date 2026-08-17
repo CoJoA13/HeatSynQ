@@ -104,12 +104,18 @@ async function draftInvoice(): Promise<{ invoice: InvoiceDetail; order: OrderDet
   return { invoice, order, customer };
 }
 
-/** A DRAFT invoice with zero lines — no part price is set up anywhere in this file, so a line
- *  would always carry `needsPrice`; zeroing the lines (through the service) lets `finalize`
- *  succeed without dragging pricing setup into every finalize/unlock/credit test. */
+/** A DRAFT invoice carrying ONE hand-typed line — no part price is set up anywhere in this file, so
+ *  the derived operation always carries `needsPrice`; replacing the lines with a manual charge
+ *  clears that without dragging pricing setup into every finalize/unlock/credit test.
+ *
+ *  This used to replace them with an EMPTY array. #63 now refuses to finalize an invoice with no
+ *  lines at all — an emptied invoice finalized into a $0 INVOICED order that could never be
+ *  re-billed — so the fixture does what an operator would actually do instead. */
 async function finalizableInvoice() {
   const fixture = await draftInvoice();
-  const invoice = await asSystem(() => replaceInvoiceLines(fixture.invoice.id, []));
+  const invoice = await asSystem(() => replaceInvoiceLines(fixture.invoice.id, [
+    { kind: "CHARGE", description: "Heat treat", amount: "100.00", priceSource: "MANUAL" },
+  ]));
   return { ...fixture, invoice };
 }
 
