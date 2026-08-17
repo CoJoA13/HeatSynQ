@@ -105,6 +105,12 @@ export default function BackupsPage() {
       invalidateBackupBanner();
       await load();
     } catch (e) {
+      // A FAILED attempt invalidates too (Codex, PR #131). `runBackupNow`'s `fail()` writes
+      // `ok:false` to the status file, so the health the banner is holding is now stale in the RED
+      // direction — and without this the page would render a red panel while the shell bar stayed
+      // HIDDEN on its cached green until the throttle lapsed. That is #124's contradiction pointing
+      // the other way, and the more dangerous direction of the two: a failure that does not surface.
+      invalidateBackupBanner();
       // §5.13: refresh to server truth FIRST, then report — a reload after setError would wipe the
       // banner the operator needs to read.
       await load().catch(() => {});

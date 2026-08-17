@@ -194,6 +194,26 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
     expect(markup.toLowerCase()).not.toContain("backup");
   });
 
+  /**
+   * Codex, PR #131 — the two bars must be DISTINGUISHABLE, not just differently worded.
+   *
+   * They are visually identical and the generic one deliberately carries no link, so "is the Open
+   * Backups link absent?" does not answer "is the staleness bar gone?" — an assertion written that
+   * way is satisfied by the generic error bar still being on screen. The E2E flow now locates each
+   * by its accessible name, so those names are a contract and are pinned here.
+   */
+  it("gives the two bars distinct accessible names", () => {
+    const stale = { ...OK_HEALTH, state: "stale" as const, reason: "The newest backup is 40 hours old." };
+    const staleMarkup = renderToStaticMarkup(<BackupBannerView health={stale} />);
+    const errorMarkup = renderToStaticMarkup(<BackupBannerView health={null} error />);
+
+    expect(staleMarkup).toContain('aria-label="Backup status"');
+    expect(errorMarkup).toContain('aria-label="System status"');
+    // Neither may answer to the other's name, or the E2E locators would cross over.
+    expect(staleMarkup).not.toContain('aria-label="System status"');
+    expect(errorMarkup).not.toContain('aria-label="Backup status"');
+  });
+
   /** ...while a GENUINE staleness verdict keeps its specific message AND its link — the reword must
    *  not have flattened the case where we do know it is backups and who can fix it. */
   it("a real staleness verdict still names backups and links to the page", async () => {

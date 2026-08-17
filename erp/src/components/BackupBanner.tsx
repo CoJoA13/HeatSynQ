@@ -117,14 +117,20 @@ export function BackupBannerView({
     // chasing a backup problem while the database is down is the actual cost of the old wording.
     // Genuine staleness keeps its specific message and its link, below.
     return (
-      <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
+      <div role="status" aria-label="System status"
+           className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
         <span>⚠ System status could not be read — the database or the server may be unavailable.</span>
       </div>
     );
   }
   if (!health || health.state === "ok") return null;
+  // The two bars carry DISTINCT labels (Codex, PR #131). They are visually identical and the
+  // generic one deliberately has no link, so "is the Open Backups link absent?" does not answer
+  // "is the staleness bar gone?" — an E2E assertion written that way is satisfied by the generic
+  // error bar. The labels also give each bar an accessible name, which it lacked.
   return (
-    <div className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
+    <div role="status" aria-label="Backup status"
+         className="flex items-center justify-center gap-3 bg-red-700 px-4 py-1.5 text-sm text-white">
       <span>⚠ {health.reason}</span>
       <Link href="/admin/backups" className="font-semibold underline">Open Backups</Link>
     </div>
