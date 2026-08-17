@@ -413,6 +413,24 @@ describe("snapshot + release: order corrections after shipment references", () =
       expect(second.warnings.some((w) => w.includes(`Packing List ${first.shipperNumber}`))).toBe(true);
     });
 
+    /**
+     * Codex, PR #130 (P2) — a VOIDED current shipment must derive no duplicate advisory.
+     *
+     * "Voided shipments do not count" was applied to the MATCHED side only: the other shipment is
+     * filtered on `deletedAt`, but the CURRENT one never was. So opening a voided packing list whose
+     * serial also sits on a live one still produced the warning — telling read-only history to fix
+     * something it cannot, and implicating a document that has already been withdrawn.
+     */
+    it("a VOIDED current shipment derives no duplicate warning at all", async () => {
+      const { order, s1, first } = await shippedOnce();
+      await shipAgain(order, s1.id); // a live shipment now also holds SN-1
+
+      await asSystem(() => voidShipper(first.id, "wrong truck"));
+
+      const voided = await shipmentWarnings(prisma, await getShipper(first.id));
+      expect(voided.filter((w) => w.includes("also appears on"))).toEqual([]);
+    });
+
     it("reaches an EDIT response too, not just creation — the #50/#54 surface", async () => {
       const { order, s1 } = await shippedOnce();
       const second = await shipAgain(order, s1.id);

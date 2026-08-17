@@ -1191,10 +1191,21 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
       }
     }
   }
-  warnings.push(...reshippedSerialWarnings(await otherShipmentsWith(db, detail.id,
-    shipSerials
-      .map((sr) => ({ lineId: sr.orderSerial?.lineId ?? sr.orderLineIdAtSave, serial: sr.serial }))
-      .filter((k) => k.lineId !== ""))));
+  // A VOIDED shipment derives none of this (Codex, PR #130). "Voided shipments do not count" was
+  // applied to the MATCHED side only — the other shipment is filtered on `deletedAt` inside
+  // `otherShipmentsWith` — but the CURRENT one never was, so opening a withdrawn packing list whose
+  // serial also sits on a live one still produced the advisory: telling read-only history to fix
+  // something it cannot, and implicating a document that has already been withdrawn.
+  if (detail.deletedAt === null) {
+    warnings.push(...reshippedSerialWarnings(await otherShipmentsWith(db, detail.id,
+      shipSerials
+        .map((sr) => ({ lineId: sr.orderSerial?.lineId ?? sr.orderLineIdAtSave, serial: sr.serial }))
+        // A row released BEFORE migration 20260806164109 carries neither a live join nor a line
+        // snapshot (`""` — the migration says so), so it has no identity to match on. There are no
+        // such rows in this deployment (the app has never been in production) and none can be
+        // created now, since every write since that migration populates the snapshot.
+        .filter((k) => k.lineId !== ""))));
+  }
   warnings.push(...overshipWarnings(detail));
   return warnings;
 }

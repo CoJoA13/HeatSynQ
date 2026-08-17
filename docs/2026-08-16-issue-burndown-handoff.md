@@ -219,21 +219,18 @@ three findings on PR #130 plus an owner ruling, and the reasoning is worth keepi
   documents now carry an advisory that is true from either side — which is the right reading anyway,
   since a duplicate involves both tickets — at no schema cost.
 
-**Derived, not stored** — the ruling asked whether live
-`ShipperSerial` rows joined to non-voided shippers already carry the fact, and they do, so the schema
-is untouched. Keyed on **`orderSerialId`** (the physical part instance within its order), never on
-the `serial` TEXT, which is unique only per line and would fire falsely across customers reusing a
-numbering scheme. Two wanted consequences: a RELEASED row is excluded (it no longer names anything
-re-selectable), and the current shipment is excluded by id, so re-reading a shipment never accuses it
-of duplicating its own selection. Voided shipments don't count. §5.14: the sentence names the serial,
-the packing list, the date, and links to it.
+**Derived, not stored** — the ruling asked whether live `ShipperSerial` rows joined to non-voided
+shippers already carry the fact, and they do, so the schema is untouched. Voided shipments don't
+count, on either side: the matched shipment is filtered on `deletedAt`, and a voided CURRENT
+shipment derives no duplicate warnings at all (it is read-only history and cannot be told to fix
+anything). §5.14: the sentence names the serial, the packing list, the date, and links to it.
 
 **A finding about the #50/#54 surface, since the ruling invoked it.** That lesson is usually read as
 "warnings live in `shipmentWarnings`" — but `createShipper` still builds its list **inline**, and
 deliberately so: its messages name the input just sent ("shipping 5 / 5.00 lbs exceeds the
 remaining …") where a later read can only speak of shipped-to-date. The two lists are not one
 function and should not be. What the lesson actually requires is that the **rule** behind any single
-warning live in one place — so creation calls the SAME `priorShipmentsOf` + `reshippedSerialWarnings`
+warning live in one place — so creation calls the SAME `otherShipmentsWith` + `reshippedSerialWarnings`
 helpers `shipmentWarnings` does, rather than carrying a second copy. Edits and the idempotent replay
 both arrive through `shipmentWarnings` via `shipperResponse`, so all three paths share one rule.
 Tested on creation, on an edit, and on all three silent cases.

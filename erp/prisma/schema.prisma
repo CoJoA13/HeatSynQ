@@ -1108,6 +1108,12 @@ model ShipperSerial {
 
   @@unique([shipperOrderId, orderSerialId])
   @@index([orderSerialId])
+  /// The SNAPSHOT half of the re-shipped-serial lookup (#125, Codex PR #130). That query runs on
+  /// EVERY shipment read and edit, and matches on the line snapshot + serial so a row released by
+  /// `replaceSerials` stays findable — without this it scanned the whole accumulated serial history
+  /// on each one. Composite in (line, serial) order because the line is the selective half and the
+  /// serial narrows within it.
+  @@index([orderLineIdAtSave, serial])
 }
 
 // ─── Phase 5A: pricing and invoicing (design spec §4.1–§4.5) ────────────────────────────────

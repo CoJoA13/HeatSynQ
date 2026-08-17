@@ -670,8 +670,14 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       (issue #125, `d4335c1`, burn-down Group C). A hard refusal would have needed a return/RMA
       concept that does not exist and could wedge a real shipment. The shipped fact is DERIVED from
       live `ShipperSerial` rows joined to non-voided shippers — no column added — keyed on
-      `orderSerialId`, never the serial text (unique only per line; matching text would fire falsely
-      across customers reusing a numbering scheme). Ping closed.
+      **(order line, serial text)**, which survives `replaceSerials` deleting and recreating the
+      `OrderSerial` rows (an `orderSerialId` key lost the prior shipment entirely and let the
+      recreated serial ship again unwarned). Scoping to the LINE is what makes the serial text safe:
+      a line belongs to one order, one customer, one part. The sentence says "**also appears on**",
+      not "already shipped" — it compares against every other live shipment rather than only earlier
+      ones, because packing-list order records document creation, not when a serial was selected
+      during an edit, and the neutral wording is honest on BOTH documents (owner ruling
+      2026-08-16, after three findings on PR #130). Ping closed.
    3. ~~The ticket's tear-off strip **overlaps the part table past ~8 extra multi-line part rows**~~ —
       **IN PHASE 7 SCOPE (spec approved 2026-08-12)**: the tear-off goes flow-based as ruling 3's
       column-widths guardrail (P7 spec §5.6).
@@ -777,9 +783,10 @@ and §4, then pick among:
    **#91, #125 and #126 are all DONE** — #91 in Group B (`0b5ea81`: the GL export nets to one signed
    column per `(account, side)`, decided WITHOUT waiting on the bookkeeper because a gross
    dual-column line risks importing 150 where 120 was meant), #125 and #126 in Group C
-   (`d4335c1` / `de9ed88`: the re-shipped-serial warning, DERIVED from live `ShipperSerial` rows
-   joined to non-voided shippers — no column added, keyed on `orderSerialId` and never the serial
-   text — and the order-line freeze, one guard mirroring `replaceCharges` read under the order
+   (`d4335c1` / `de9ed88` / `c7fc4d3`: the re-shipped-serial warning, DERIVED from live
+   `ShipperSerial` rows joined to non-voided shippers — no column added, keyed on **(order line,
+   serial text)** so it survives `replaceSerials`, worded "also appears on" and symmetric across
+   every other live shipment — and the order-line freeze, one guard mirroring `replaceCharges` read under the order
    claim, with the unlock → edit → re-finalize correction route tested end to end). The remaining
    two: **#123** disable the Backups page's own controls
    in practice mode while keeping the nav entry (`nav.ts` must NOT learn about practice mode — §8);
