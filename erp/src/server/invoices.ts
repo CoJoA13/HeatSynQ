@@ -389,10 +389,11 @@ const ORDER_LINE_SELECT = {
  * §5.14 refuses deleting or re-pointing a quote line any order line references, and every stored
  * link was judged at save time (quote-links.ts), so a dead or wrong-part target here is corrupt
  * state. Falling back to part rows instead would be the silent re-price §7.5 exists to prevent.
+ *
+ * Those two asserts live in `assertQuoteLinkSound` below, split out so a caller that only needs to
+ * REFUSE corrupt state does not also fetch price rows it will discard (#96) — `quotePriceRowInputs`
+ * follows it and does the pricing read.
  */
-/** The soundness half of the read below, on its own so a caller that only needs to REFUSE corrupt
- *  state does not also fetch price rows it will discard (#96). Returns the quote line, so the
- *  pricing path pays for exactly one read. */
 async function assertQuoteLinkSound(
   tx: Db, ol: { id: string; partId: string; quoteLineId: string },
 ): Promise<{ id: string; quote: { quoteNumber: number } }> {
@@ -1264,11 +1265,19 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     const otherChargeGl: GlRef = {
       glAccountId: deps.config.otherChargeGlAccountId, glAccountName: otherChargeGlName,
     };
-    // Manual lines survive a recalculate (§5.5). Read before the delete, re-created below — either
-    // in the slot of the derived line they override, or at the end if they override nothing.
-    const manual = await tx.invoiceLine.findMany({
-      where: { invoiceId: id, priceSource: "MANUAL" }, orderBy: { position: "asc" },
+    // The whole previous line set, read before the delete. `manual` is what survives a recalculate
+    // (§5.5), re-created below — either in the slot of the derived line it overrides, or at the end
+    // if it overrides nothing. The DERIVED identities matter too (review round 2): they are what
+    // tells an operation that has newly APPEARED from one that was already being billed in its own
+    // right, which is the difference between re-homing an override and stealing a sibling's slot.
+    const previous = await tx.invoiceLine.findMany({
+      where: { invoiceId: id }, orderBy: { position: "asc" },
     });
+    const manual = previous.filter((l) => l.priceSource === "MANUAL");
+    const alreadyBilled = new Set(
+      previous.filter((l) => l.priceSource !== "MANUAL")
+        .map((l) => overrideKey(l))
+        .filter((k): k is string => k !== null));
 
     // #61 (owner ruling 2026-08-17): pair each manual line with the derived line it overrides, by
     // order-side identity. An override REPLACES its twin in place; anything left over is an addition
@@ -1276,9 +1285,11 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
     // twin no longer exists at all (its order line stopped shipping, say) falls through to the
     // additions rather than vanishing.
     const computedKeyByIdentity = new Map<string, string>();
+    const identityByComputedKey = new Map<string, string>();
     const operationKeysByOrderLine = new Map<string, string[]>();
     for (const l of computed.lines) {
       const identity = overrideKey(l);
+      if (identity !== null) identityByComputedKey.set(l.key, identity);
       if (identity !== null && !computedKeyByIdentity.has(identity)) computedKeyByIdentity.set(identity, l.key);
       if (l.kind === "OPERATION" && l.orderLineId !== null) {
         operationKeysByOrderLine.set(l.orderLineId,
@@ -1299,18 +1310,29 @@ export async function recalculateInvoice(id: string): Promise<InvoiceDetail> {
       let slot = exact !== undefined && !isClaimed(exact) ? exact : undefined;
       let cover: string[] = [];
       if (slot === undefined && exact === undefined && m.kind === "OPERATION" && m.orderLineId !== null) {
-        // REVIEW ROUND 1 — a step-exact identity is not enough, and both misses double-billed
-        // exactly as the original #61 did. An operation can legitimately regenerate under a step
-        // code the override does not name: the operator typed into the tier-3 "needs price" line
-        // (which carries NO step code) and the shop has since priced the part, or a step code was
-        // retired and replaced. So an unmatched OPERATION override falls back to its ORDER LINE.
+        // REVIEW ROUND 1 — a step-exact identity is not enough, and the miss double-billed exactly
+        // as the original #61 did. An operation can legitimately regenerate under a step code the
+        // override does not name: the operator typed into the tier-3 "needs price" line (which
+        // carries NO step code) and the shop has since priced the part, or the operation's part
+        // price was retired and re-added under a different step code. So an unmatched OPERATION
+        // override falls back to its ORDER LINE.
         //
-        // How much it takes there is the careful part. A manual line with NO step code overrode a
-        // line that stood for the WHOLE order line, so it covers every operation that line now
-        // prices. One whose step code simply no longer exists replaced ONE operation, so it takes
-        // one — never quietly dropping a sibling operation's revenue, which would turn a double
-        // bill into an under-bill.
-        const free = (operationKeysByOrderLine.get(m.orderLineId) ?? []).filter((k) => !isClaimed(k));
+        // REVIEW ROUND 2 — and only onto an operation that has APPEARED SINCE. Re-homing onto any
+        // free operation traded the double bill for its mirror: on a line pricing steps A and B,
+        // with A overridden and then A's price retired, the override took B's slot and B's revenue
+        // vanished from customer paper. An operation that was ALREADY on the invoice as its own
+        // derived line is not the one this override replaced — it is a sibling, and it keeps its
+        // line. When nothing qualifies, the override rides as an addition where the operator can
+        // see it, which is the honest answer to an ambiguity rather than a guess at money.
+        //
+        // How much it takes is the remaining care. A manual line with NO step code overrode a line
+        // standing for the WHOLE order line, so it covers every operation that line now prices; one
+        // whose step code merely no longer prices replaced ONE operation, so it takes one.
+        const free = (operationKeysByOrderLine.get(m.orderLineId) ?? []).filter((k) => {
+          if (isClaimed(k)) return false;
+          const derivedIdentity = identityByComputedKey.get(k);
+          return derivedIdentity === undefined || !alreadyBilled.has(derivedIdentity);
+        });
         [slot, ...cover] = m.processStepCodeId === null ? free : free.slice(0, 1);
       }
       if (slot !== undefined) {

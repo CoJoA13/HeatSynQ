@@ -820,27 +820,52 @@ describe("recalculateInvoice — the manual-line seam", () => {
     expect(after.total).toBe(100);
   });
 
-  it("keeps a SECOND priced operation billed when only the first is overridden (#61's limit)", async () => {
-    // The guard against over-correcting: suppression is per-operation, so overriding one of two
-    // priced operations must not silently drop the other's revenue.
+  /** An order line priced under TWO operations, the first overridden to $40. Returns both, so a test
+   *  can then disturb one and assert the other survives. */
+  async function twoOperationsOneOverridden() {
     const gl = await prisma.glAccount.create({ data: { name: "4012", description: "Sales" } });
     const fixture = await shippedOrder({ qty: 100 });
-    for (const [i, name] of [["A", "Op A"], ["B", "Op B"]].entries()) {
+    const codes = [];
+    for (const [i, spec] of [["A", "Op A"], ["B", "Op B"]].entries()) {
       const code = await prisma.processStepCode.create({
-        data: { code: `TWO-${name[0]}`, name: name[1], glAccountId: gl.id } });
+        data: { code: `TWO-${spec[0]}`, name: spec[1], glAccountId: gl.id } });
       await asSystem(() => addPartPrice(fixture.part.id, {
         processStepCodeId: code.id, position: i + 1, unitPrice: "1.0000", pricePer: "EACH" }));
+      codes.push(code);
     }
     const { invoice } = await asSystem(() => createInvoice({ orderId: fixture.order.id }));
-    const ops0 = invoice.lines.filter((l) => l.kind === "OPERATION");
-    expect(ops0).toHaveLength(2);
-
+    const ops = invoice.lines.filter((l) => l.kind === "OPERATION");
+    expect(ops).toHaveLength(2);
     await asSystem(() => replaceInvoiceLines(invoice.id, invoice.lines.map((l) =>
-      (l.id === ops0[0].id ? overrideAmount(l, "40.00") : toLineInput(l)))));
+      (l.id === ops[0].id ? overrideAmount(l, "40.00") : toLineInput(l)))));
+    return { ...fixture, invoice, codes, gl };
+  }
+
+  it("keeps a SECOND priced operation billed when only the first is overridden (#61's limit)", async () => {
+    // Suppression is per-operation: overriding one of two priced operations must not drop the
+    // other's revenue. NOTE this exercises the step-EXACT path — the fallback below is separate.
+    const { invoice } = await twoOperationsOneOverridden();
+    const after = await asSystem(() => recalculateInvoice(invoice.id));
+    expect(after.lines.filter((l) => l.kind === "OPERATION")).toHaveLength(2);
+    expect(after.subtotal).toBe(140); // the $40 override + the untouched $100 operation
+  });
+
+  // Review round 2: the order-line fallback must not become the mirror of the bug it fixed. With a
+  // SIBLING operation on the same order line, re-homing the override onto it would erase that
+  // sibling's revenue from customer paper — a double bill traded for an under-bill.
+  it("never re-homes an override onto a PRE-EXISTING sibling operation (#61)", async () => {
+    const { invoice, part, codes } = await twoOperationsOneOverridden();
+    // The overridden operation stops being priced — its part-price row is retired. Operation B is
+    // untouched and was ALREADY on the invoice as its own derived line.
+    await prisma.partPrice.updateMany({
+      where: { partId: part.id, processStepCodeId: codes[0].id }, data: { deletedAt: new Date() } });
+
     const after = await asSystem(() => recalculateInvoice(invoice.id));
     const ops = after.lines.filter((l) => l.kind === "OPERATION");
-    expect(ops).toHaveLength(2);
-    expect(after.subtotal).toBe(140); // the $40 override + the untouched $100 operation
+    // B keeps its own line at its own price; the stale override rides as an addition, visible to the
+    // operator, rather than silently swallowing B.
+    expect(ops.map((l) => l.amount).sort((a, b) => a - b)).toEqual([40, 100]);
+    expect(after.subtotal).toBe(140);
   });
 
   it("recomputes tax on a lines SAVE, not only on recalculate (#64)", async () => {
@@ -861,6 +886,28 @@ describe("recalculateInvoice — the manual-line seam", () => {
     ]));
     expect(saved.taxTotal).toBe(6); // 4% of (100 + 50), without anyone pressing Recalculate
     expect(saved.total).toBe(156);
+  });
+
+  it("re-derives a partial CREDIT's tax proportionally on a lines save (#64 reaches credits)", async () => {
+    // Review round 2 named this as an untested extension: `createCredit` copies both `taxRate` and
+    // the negated lines, so editing a credit down to a partial amount now re-derives its tax instead
+    // of keeping the full copied figure. That is what an operator wants, and the arithmetic is
+    // sign-symmetric — but it was neither tested nor written down, so it is both now.
+    const taxGl = await prisma.glAccount.create({ data: { name: "2200", description: "Sales tax payable" } });
+    await asSystem(() => setBillingConfig({ salesTaxGlAccountId: taxGl.id, salesTaxRate: "0.040000" }));
+    const { order } = await pricedShippedOrder({ qty: 100, unitPrice: "1.0000", minimumCharge: null });
+    const { invoice } = await asSystem(() => createInvoice({ orderId: order.id }));
+    await asSystem(() => finalizeInvoice(invoice.id));
+
+    const credit = await asSystem(() => createCredit(invoice.id));
+    expect(credit.taxTotal).toBe(-4); // the full invoice's tax, negated and copied
+
+    // Credit only half the work.
+    const halved = await asSystem(() => replaceInvoiceLines(credit.id, credit.lines.map((l) =>
+      (l.kind === "OPERATION" ? overrideAmount(l, "-50.00") : toLineInput(l)))));
+    expect(halved.subtotal).toBe(-50);
+    expect(halved.taxTotal).toBe(-2); // 4% of -50, not the copied -4
+    expect(halved.total).toBe(-52);
   });
 
   it("leaves a manually overridden TAX line alone on a lines SAVE too (#64)", async () => {

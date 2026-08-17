@@ -523,9 +523,12 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
 
   // The cert charge's GL rides in from the config cert step code — it never lands on a line's
   // `processStepCodeId` (invoices.ts) — so resolve it once to attribute a null-GL CERT line.
-  let certStep: { id: string; code: string } | null = null;
+  let certStep: { id: string; code: string; glAccountId: string | null } | null = null;
   if (config.certChargeStepCodeId) {
-    const sc = await tx.processStepCode.findFirst({ where: { id: config.certChargeStepCodeId }, select: { id: true, code: true } });
+    const sc = await tx.processStepCode.findFirst({
+      where: { id: config.certChargeStepCodeId },
+      select: { id: true, code: true, glAccountId: true },
+    });
     if (sc) certStep = sc;
   }
 
@@ -535,9 +538,11 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
     where: { glAccountId: null, kind: { not: "TAX" }, invoice: inScopeInvoice },
     select: {
       kind: true, amount: true,
-      processStepCodeId: true, processStepCode: { select: { code: true } },
-      surchargeId: true, surcharge: { select: { name: true } },
-      // #89: the owning paper, for the two kinds whose gap is the frozen line rather than the config.
+      // The SOURCE's own account comes back too (review round 2): a source that already has one is
+      // not a config gap, and saying it is sends the operator to a screen with nothing to fix.
+      processStepCodeId: true, processStepCode: { select: { code: true, glAccountId: true } },
+      surchargeId: true, surcharge: { select: { name: true, glAccountId: true } },
+      // #89: the owning paper — the gap that is the frozen line itself rather than any config.
       invoiceId: true,
       invoice: { select: { kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
     },
@@ -549,7 +554,7 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
   for (const l of badLines) {
     if (cents(l.amount.toNumber()) === 0) continue; // $0 header (PART) — posts nothing
     // EVERY frozen null-GL line names its owning invoice (#89, widened in review round 1). The
-    // source-side gaps below say what to CONFIGURE, which repairs the next invoice; only re-raising
+    // source-side gaps below say what to CONFIGURE, which repairs the NEXT invoice; only re-raising
     // this paper repairs the snapshot `buildCurrentJournal` actually reads (§5.4). Attributing only
     // FREIGHT/CHARGE left two milder versions of the same dead end: an OPERATION/SURCHARGE/CERT line
     // frozen null whose step code or surcharge ALREADY has an account sent the operator to a screen
@@ -560,13 +565,23 @@ async function resolveReadiness(tx: Tx, bounds: MonthBounds): Promise<ReadinessG
       label: invoiceDocumentNumber(
         l.invoice.kind, l.invoice.creditNumber, l.invoice.order.orderNumber, prefix),
     });
+    // ...and a source-side gap ONLY where that source is genuinely unconfigured (review round 2).
+    // The line's null is frozen paper; the step code or surcharge behind it may well have been given
+    // an account since, and naming it then is a false statement about a screen with nothing to fix.
     if (l.processStepCodeId) {
-      stepCodesMissingGl.set(l.processStepCodeId, { id: l.processStepCodeId, code: l.processStepCode?.code ?? "" });
+      if (l.processStepCode?.glAccountId === null) {
+        stepCodesMissingGl.set(l.processStepCodeId, { id: l.processStepCodeId, code: l.processStepCode.code });
+      }
     } else if (l.surchargeId) {
-      surchargesMissingGl.set(l.surchargeId, { id: l.surchargeId, name: l.surcharge?.name ?? "" });
+      if (l.surcharge?.glAccountId === null) {
+        surchargesMissingGl.set(l.surchargeId, { id: l.surchargeId, name: l.surcharge.name });
+      }
     } else if (l.kind === "CERT") {
       hasCert = true; // when the cert step code is unset, `readinessGaps` names the missing config
-      if (certStep) stepCodesMissingGl.set(certStep.id, certStep); // else attribute to that step code
+      // else attribute to that step code — but again only if it is the thing actually missing.
+      if (certStep && certStep.glAccountId === null) {
+        stepCodesMissingGl.set(certStep.id, { id: certStep.id, code: certStep.code });
+      }
     } else if (l.kind === "FREIGHT") {
       hasFreight = true;
     } else if (l.kind === "CHARGE") {

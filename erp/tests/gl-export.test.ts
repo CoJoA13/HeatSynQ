@@ -661,6 +661,10 @@ describe("gl-export readiness", () => {
     const own = gaps.find((g) => g.kind === "invoice" && g.id === ref.invoiceId);
     expect(own).toBeDefined();
     expect(own!.label).toMatch(/unlock/i);
+    // Review round 2: and it must NOT also claim the step code has no GL account. It has one — that
+    // gap would point the operator at a screen with nothing to fix, which is the §5.14 dead end the
+    // whole invoice-attribution exists to avoid, one notch milder than the 500.
+    expect(gaps.some((g) => g.kind === "step-code")).toBe(false);
     await expect(asSystem(() => exportClose(period.id))).rejects.toThrow(/gap|readiness|export/i);
   });
 

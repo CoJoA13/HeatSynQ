@@ -562,12 +562,20 @@ the six were more than their issue said, and the differences are the part worth 
   still rides at the end (§5.5). **Review round 1 found the step-exact identity insufficient**, and
   the miss double-billed exactly as the original defect did: a derived operation can come back under
   a step code the override does not name — the operator typed into the tier-3 "needs price" line
-  (which carries NO step code) and the part has since been priced, or a step code was retired and
-  replaced. So an unmatched OPERATION override falls back to its ORDER LINE, and **how much it takes
-  there is the careful part**: one carrying no step code overrode a line standing for the whole order
-  line, so it covers every operation that line now prices; one whose step code merely no longer
-  exists takes ONE, so a sibling operation's revenue is never quietly dropped — turning a double bill
-  into an under-bill is not a fix. A test pins that limit.
+  (which carries NO step code) and the part has since been priced, or an operation's part price was
+  retired and re-added under a different code. (The step-code ROW cannot be soft-deleted underneath a
+  live override — `assertLineRefs` 400s on the preserved manual line first — so the reachable
+  mutation is always the price row, which is what the tests do.) An unmatched OPERATION override
+  therefore falls back to its ORDER LINE. **Review round 2 then found the fallback was the mirror of
+  the bug it fixed**: on a line pricing steps A and B, with A overridden and A's price then retired,
+  the override took B's slot and B's revenue vanished from customer paper — a double bill traded for
+  an under-bill. So it re-homes **only onto an operation that has APPEARED SINCE** (compared against
+  the invoice's previous derived identities, read before the delete); an operation already carrying
+  its own derived line is a sibling, and when nothing qualifies the override rides as an addition
+  where the operator can see it. How much it takes is the remaining care: no step code ⇒ every
+  qualifying operation on the line, a step code ⇒ exactly one. Both the round-1 and round-2 cases are
+  now tested. **The lesson is the project's own** (round 1's lesson 4): two successive rounds found
+  defects in the same fallback, each in the code written for the previous round.
 - **#64's fix is what makes #61's honest.** Tax is recomputed over the FINAL line set through
   `pricing.ts`'s new `taxOnLines`, which shares its taxable-kind list with `priceOrder` so the two
   cannot drift. Without it an overridden operation stayed taxed at the figure the operator overrode

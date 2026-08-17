@@ -100,12 +100,11 @@ export type ReadinessInput = {
   hasFreight: boolean; // any in-scope FREIGHT line with a null GL and a nonzero amount
   hasCharge: boolean; // any in-scope CHARGE line with a null GL and a nonzero amount
   hasCert: boolean; // any in-scope CERT line with a null GL and a nonzero amount
-  // #89: the invoices carrying a FROZEN null-GL FREIGHT/CHARGE line. The three flags above name the
-  // CONFIG to fix; this names the PAPER to fix, and the two are independent — configuring the
-  // default does nothing to an invoice already finalized without one, because `buildCurrentJournal`
-  // reads the line's snapshot, not the config (§5.4). Without this the export read clean and then
-  // 500'd on the same line. Step-code/surcharge/cert lines already over-report unconditionally via
-  // the maps below, so only these two kinds needed it.
+  // #89: the invoices carrying a FROZEN null-GL line, of ANY kind (widened in review round 1). The
+  // flags above and the maps below name the CONFIG to fix; this names the PAPER to fix, and the two
+  // are independent — configuring a default does nothing to an invoice already finalized without
+  // one, because `buildCurrentJournal` reads the line's snapshot, not the config (§5.4). Without
+  // this the export read clean and then 500'd on the same line.
   invoicesMissingGl: { id: string; label: string }[];
   stepCodesMissingGl: { id: string; code: string }[];
   surchargesMissingGl: { id: string; name: string }[];

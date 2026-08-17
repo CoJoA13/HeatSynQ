@@ -1,6 +1,8 @@
 # Round 2, Group A — implementer report
 
-**Branch:** `group-a-invoice-engine` · **Base:** `653be8c` · **Head:** `aab7f63` · **PR:** #133
+**Branch:** `group-a-invoice-engine` · **Base:** `653be8c` · **PR:** #133
+**Gate evidence below is re-run per round** — a fix round that reports the previous round's gates
+is reporting nothing (review round 2 caught exactly that here).
 
 Five implementation commits, one per coherent defect surface, plus the doc commits.
 
@@ -29,15 +31,30 @@ block recalculate used to carry.
 but the grid stamps `MANUAL` on ANY amount edit, so a retyped TAX line regenerated its derived twin
 the same way — two TAX lines, double tax. Fixing only operations would have left that live.
 
-**Corrected in review round 1 — the step-exact identity was not sufficient**, and the miss
-double-billed exactly as the original defect did. A derived operation can legitimately come back
-under a step code the override does not name: the operator typed into the tier-3 "needs price" line
-(which carries no step code at all) and the shop has since priced the part, or a step code was
-retired and replaced. An unmatched OPERATION override now falls back to its ORDER LINE. How much it
-takes there is deliberate: one carrying **no** step code overrode a line standing for the whole order
-line, so it covers every operation that line now prices; one whose step code merely no longer exists
-replaced ONE operation, so it takes one. Turning a double bill into an under-bill by dropping a
-sibling operation's revenue would not be a fix, and a test pins that limit.
+**This fallback took TWO review rounds to get right, and each round's defect was in the code written
+for the previous one** — the project's own recorded lesson, demonstrated on itself.
+
+*Round 1* found the step-exact identity insufficient: a derived operation can come back under a step
+code the override does not name — the operator typed into the tier-3 "needs price" line (which
+carries no step code) and the shop has since priced the part, or an operation's part price was
+retired and re-added under a different code. The miss double-billed exactly as the original defect
+did. Fix: an unmatched OPERATION override falls back to its ORDER LINE.
+
+*Round 2* found that fallback was the mirror of the bug it fixed. Taking any free operation meant
+that on a line pricing steps A and B, with A overridden and A's price then retired, the override took
+**B's** slot — B's revenue never reached the invoice and its line vanished from customer paper. A
+double bill traded for an under-bill. Fix: re-home **only onto an operation that has APPEARED
+SINCE**, compared against the invoice's previous derived identities (read before the delete). An
+operation already carrying its own derived line is a sibling, not the thing this override replaced;
+when nothing qualifies, the override rides as an addition where the operator can see it — the honest
+answer to a genuine ambiguity rather than a guess at money.
+
+How much it takes is the remaining care: no step code ⇒ every qualifying operation on the line (it
+stood for the whole line); a step code ⇒ exactly one.
+
+One reachability correction the review supplied: the step-code ROW cannot be soft-deleted underneath
+a live override — `assertLineRefs` → `assertRefExists` 400s on the preserved manual line first — so
+the reachable mutation is always the PART PRICE row, which is what the tests do.
 
 ### #64 — tax recomputed over the final set, sharing one taxable-kind list
 
@@ -114,6 +131,18 @@ Every behavioural test was **RED-verified**, each failing for the filed reason b
 #60 and #96 are green-by-construction against unmodified code paths, so both were verified by
 **stashing the fix, watching the test fail, restoring it, watching it pass**.
 
+Round 1 added five tests, of which **three were RED and two were green on arrival** — stated plainly
+because review round 2 was right to ask. The three: the two #61 step-code cases (`length 1 but got
+2`) and the save-seam tax (`expected 4 to be 6`). The two guards: the manually-overridden-TAX-on-save
+case, and "keeps a SECOND priced operation billed", which round 2 correctly identified as never
+entering the new fallback branch at all — its override has a live step code, so it pins the
+already-working exact-match path. Round 2's own test (`never re-homes an override onto a PRE-EXISTING
+sibling`) is the one that actually exercises it, and it was RED at `[40]` — operation B's $100 line
+missing entirely.
+
+A green-on-arrival test is worth keeping as a regression guard, but it must not be described as
+evidence the change works. Round 1's report did describe one that way; this corrects it.
+
 **Two of my own assertions were wrong rather than the code**, and were corrected rather than worked
 around: an "the override is not the last line" check that a two-line invoice satisfies trivially
 (replaced with the full kind/position shape), and a candidate-list check that an order with a live
@@ -129,13 +158,18 @@ tests are measuring.
 
 ## Gates
 
-| Gate | Result |
-|---|---|
-| `npm test` | **3095 passed / 182 files** (from 3080) |
-| `npx tsc --noEmit` | clean |
-| `npx eslint src tests` | clean |
-| `npm run build` | clean |
-| `npm run test:e2e` | **23/23**, watched to completion |
+Re-run in full at every round, never carried forward:
+
+| Gate | Round 0 (`e8f3a47`) | Round 1 (`d7ee2bb`) | Round 2 |
+|---|---|---|---|
+| `npm test` | 3095 / 182 files | 3101 / 182 | **3103 / 182** |
+| `npx tsc --noEmit` | clean | clean | clean |
+| `npx eslint src tests` | clean | clean | clean |
+| `npm run build` | clean | clean | clean |
+| `npm run test:e2e` | 23/23 | 23/23 | **23/23** |
+
+Each E2E run was watched to completion rather than reported from a launch. The build emits one
+pre-existing Next.js workspace-root/lockfile warning, unrelated to this branch.
 
 ## Docs updated in the same breath
 
@@ -165,6 +199,31 @@ The reviewer also confirmed, by reading rather than trusting the report: the can
 every `prisma.` in `invoices.ts` is outside a transaction; `taxOnLines` and `priceOrder` compute
 bit-identical bases; header totals cannot disagree with the TAX line; positions stay contiguous 1..n;
 and the three fixture changes touch nothing the affected tests were measuring.
+
+## Review round 2 — what it found, and what was done
+
+Verdict: Spec Compliance ❌ / Task quality **Needs fixes**, on one Important finding in the code
+round 1 wrote. Re-gated in full afterwards (table above).
+
+| Finding | Disposition |
+|---|---|
+| **The order-line fallback steals a pre-existing sibling's slot**, under-billing and erasing that operation from the paper — the mirror of the defect round 1 fixed | **Fixed.** Re-homing is now restricted to an operation that has appeared since, compared against the invoice's previous derived identities. RED-verified at `[40]` with the sibling's $100 line gone. |
+| Round 1's "limit" test never enters the fallback branch, so it pins nothing new | **Accepted and fixed.** Kept as a regression guard on the exact-match path, with a new test that genuinely exercises the fallback, and the report corrected to say which round-1 tests were green on arrival. |
+| The binding docs assert the guarantee the code broke (`CLAUDE.md`, HANDOFF §6) | **Fixed** — and this is the second round running that doc and code disagreed on this same rule. Both now describe what the code does. |
+| **No gate evidence for the fix commit itself** — the report still carried round 0's head SHA and numbers | **Fixed.** Gates are now a per-round table, re-run every round; a fix round reporting the previous round's gates reports nothing. |
+| The misleading source-side gap still fires alongside the new invoice gap | **Now actually fixed**, not merely mitigated: a step code or surcharge is named only when it genuinely lacks an account. Round 1's disposition table called this "Fixed" when it was not — corrected. |
+| Stale `invoicesMissingGl` docstring still says FREIGHT/CHARGE only | **Fixed.** |
+| "A step code retired and replaced" is not reachable as written (`assertRefExists` 400s first) | **Fixed** in the commit rationale, `CLAUDE.md`, HANDOFF and this report — the reachable mutation is the part-price row. |
+| Orphaned JSDoc above `assertQuoteLinkSound` | **Fixed.** |
+| The save-seam re-tax silently extends to CREDIT drafts, untested and undocumented | **Fixed** — a test now pins that a partial credit re-derives its tax proportionally (`-2`, not the copied `-4`), and it is written down. |
+
+Round 2 also verified by reading: `absorbed` is threaded through the write set, totals, tax base and
+parent wiring; cross-order-line absorption is impossible; iteration is deterministic and
+order-independent in total; `assertQuoteLinkSound` is a faithful extraction; the save-seam tax
+mutation is correctly sequenced before `totalsFromLines`; `taxOnLines` cannot self-feed (TAX is not a
+taxable kind); `divideRound` is sign-symmetric, so re-deriving a credit's tax returns the exact
+negation with no cent drift; and `PartPrice`/`QuotePrice` uniqueness means two computed operations
+can never collide on one identity.
 
 ## Known limits, stated rather than hidden
 
