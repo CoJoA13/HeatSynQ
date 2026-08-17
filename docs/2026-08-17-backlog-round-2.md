@@ -67,7 +67,18 @@ missing labels or stop documenting them.
 
 ---
 
-## Group A — The invoice engine · **#61, #62, #64, #63, #89, #59, #60, #96**
+## Group A — The invoice engine · **DONE 2026-08-17**, branch `group-a-invoice-engine`
+
+All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3095 tests / 182 files**
+(from 3080), `tsc`/`eslint`/`build` clean. Five commits, one per coherent defect surface.
+
+Four went further than the issue said, and those differences are in HANDOFF §6: #61's fix is one
+identity rule covering *every* overridable kind (a retyped TAX line double-billed the same way), #64
+is what makes #61 honest (tax follows the override), #62 had an unnamed second half in
+`invoiceWarnings`, and #89 needed BOTH gaps rather than a replacement. Three test fixtures that built
+line-less invoices had to gain a line — #63's guard is in the service, so they failed correctly.
+
+<details><summary>The rulings and the original issue-by-issue scoping</summary>
 
 > **Three owner rulings, 2026-08-17, taken before this branch opened.**
 > **#61 — the manual override WINS, silently.** Recalculate suppresses the regenerated twin (match on
@@ -111,6 +122,8 @@ saved with no account, the other lets readiness declare that fine. Fixing either
 
 **Note:** #61/#62/#64 all touch the manual-line handling in `recalculateInvoice`. Sequence them as one
 task, not three, or the second and third will each be rewriting the first.
+
+</details>
 
 ---
 
@@ -271,8 +284,9 @@ it twice. Cross-referenced to the question list.
 
 ## Recommended order
 
-**Task 0** (triage, ~1h) → **A** (invoice engine) → **B** (A/R, unblocked) → **C** (shipping/status) →
-**E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision) → **F** → **G**/**H** as filler.
+~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine)~~ → **B** (A/R, unblocked) ← **NEXT** →
+**C** (shipping/status) → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
+→ **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across
