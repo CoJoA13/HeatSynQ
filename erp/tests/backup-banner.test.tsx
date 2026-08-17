@@ -195,6 +195,35 @@ describe("BackupBanner (Phase 8C §6.4)", () => {
   });
 
   /**
+   * Codex, PR #131 — an explicit invalidation must clear the 403 LATCH, not just the throttle.
+   *
+   * `advanceBannerState` returns early whenever `forbidden` is set, so resetting only
+   * `lastFetchedAt` could not force anything. A user granted `manage_backups` MID-SESSION —
+   * `getSessionUser` reloads role permissions per request, so the grant is live at once — would
+   * reach the Backups page, run a backup, and still see no banner, because a latch set before the
+   * grant silently swallowed the refetch.
+   *
+   * This drives `advanceBannerState` directly with each state, which is what the component's
+   * invalidation handler produces: the latch-cleared state must fetch; the latch-kept one must not.
+   */
+  it("a latched 403 blocks a refetch until the latch is cleared", async () => {
+    const latched = { ...INITIAL_BANNER_STATE, forbidden: true, lastFetchedAt: 0 };
+
+    // As it was: throttle reset alone. `forbidden` short-circuits before any fetch.
+    stubFetch(200, OK_HEALTH);
+    const throttleOnly = await advanceBannerState("/customers", latched, NOW);
+    expect(throttleOnly).toBe(latched);            // same object — the documented no-op
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    // As the invalidation handler now leaves it: latch cleared, so the request actually goes.
+    stubFetch(200, OK_HEALTH);
+    const cleared = await advanceBannerState(
+      "/customers", { ...latched, forbidden: false }, NOW);
+    expect(global.fetch).toHaveBeenCalled();
+    expect(cleared.health).toEqual(OK_HEALTH);
+  });
+
+  /**
    * Codex, PR #131 — the two bars must be DISTINGUISHABLE, not just differently worded.
    *
    * They are visually identical and the generic one deliberately carries no link, so "is the Open

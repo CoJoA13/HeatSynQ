@@ -37,11 +37,20 @@ const fmtWhen = (iso: string) => new Date(iso).toLocaleString();
  */
 export function runControlState(
   gate: { disabled: boolean; title?: string }, running: boolean, refusal: string | null,
+  viewLoaded: boolean,
 ): { disabled: boolean; title: string | undefined } {
   // The refusal wins the TOOLTIP even when the gate is also closed: it is the more specific fact,
   // and it is the one the operator can act on ("use the production copy") versus a generic
   // permission line.
   if (refusal !== null) return { disabled: true, title: refusal };
+  // CLOSED WHILE THE VIEW IS UNRESOLVED (Codex, PR #131). `/api/auth/me` and the view request are
+  // independent, and on the practice copy the view one carries an EXTRA round trip
+  // (`assertNotPracticeDatabase`'s database-identity query) — so permissions routinely land first,
+  // leaving `gate` open with both `view` and `refusal` still null. The control flashed ENABLED in
+  // that window and would fire a POST that is refused by construction. `usePermissions` solves the
+  // same problem the same way (it holds controls disabled while `permissions` is undefined rather
+  // than flashing them open); this is that rule applied to the second async fact this page needs.
+  if (!viewLoaded) return { disabled: true, title: "Loading…" };
   return { disabled: gate.disabled || running, title: gate.title };
 }
 
@@ -122,7 +131,7 @@ export default function BackupsPage() {
 
   const health = view?.health;
   const green = health?.state === "ok";
-  const { disabled: runDisabled, title: runTitle } = runControlState(gate, running, refusal);
+  const { disabled: runDisabled, title: runTitle } = runControlState(gate, running, refusal, view !== null);
 
   return (
     <div className="p-6">

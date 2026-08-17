@@ -24,16 +24,16 @@ const open = { disabled: false, title: undefined };
 
 describe("runControlState — the Back up now gate (#123)", () => {
   it("is enabled with a grant, no refusal, and nothing running", () => {
-    expect(runControlState(open, false, null)).toEqual({ disabled: false, title: undefined });
+    expect(runControlState(open, false, null, true)).toEqual({ disabled: false, title: undefined });
   });
 
   it("disables and explains on the practice copy, using the server's own sentence", () => {
-    expect(runControlState(open, false, PRACTICE)).toEqual({ disabled: true, title: PRACTICE });
+    expect(runControlState(open, false, PRACTICE, true)).toEqual({ disabled: true, title: PRACTICE });
   });
 
   it("disables and explains on a permission refusal, through the SAME branch", () => {
     // One path for both causes: the page never asks WHICH 403 it got, only that it got one.
-    expect(runControlState({ disabled: true, title: "Requires manage_backups" }, false, NO_PERM))
+    expect(runControlState({ disabled: true, title: "Requires manage_backups" }, false, NO_PERM, true))
       .toEqual({ disabled: true, title: NO_PERM });
   });
 
@@ -41,20 +41,36 @@ describe("runControlState — the Back up now gate (#123)", () => {
     // The refusal is the more specific fact AND the actionable one — "use the production copy"
     // beats a generic permission line for someone who does hold the grant on the other copy.
     const closed = { disabled: true, title: "Requires manage_backups" };
-    expect(runControlState(closed, false, PRACTICE).title).toBe(PRACTICE);
+    expect(runControlState(closed, false, PRACTICE, true).title).toBe(PRACTICE);
   });
 
   it("keeps the pre-existing gate and in-flight behaviour when nothing has been refused", () => {
-    expect(runControlState({ disabled: true, title: "Requires manage_backups" }, false, null))
+    expect(runControlState({ disabled: true, title: "Requires manage_backups" }, false, null, true))
       .toEqual({ disabled: true, title: "Requires manage_backups" });
-    expect(runControlState(open, true, null)).toEqual({ disabled: true, title: undefined });
+    expect(runControlState(open, true, null, true)).toEqual({ disabled: true, title: undefined });
+  });
+
+  /**
+   * Codex, PR #131 — closed while the VIEW is unresolved.
+   *
+   * `/api/auth/me` and the view request are independent, and on the practice copy the view carries
+   * an extra round trip (`assertNotPracticeDatabase`'s database-identity query), so permissions
+   * routinely land first — leaving the gate open with both `view` and `refusal` still null. The
+   * control flashed ENABLED in that window and would fire a POST refused by construction.
+   */
+  it("stays disabled while the view is still loading, even with a grant and no refusal yet", () => {
+    expect(runControlState(open, false, null, false)).toEqual({ disabled: true, title: "Loading…" });
+  });
+
+  it("opens once the view resolves — the loading gate is a window, not a wall", () => {
+    expect(runControlState(open, false, null, true).disabled).toBe(false);
   });
 
   // Bite-proof: the pre-fix behaviour was "enabled regardless of the refusal", so a helper that
   // ignored `refusal` would still pass every case above that does not involve one. This pins that
   // the refusal ALONE — with a wide-open gate and nothing running — is what closes the control.
   it("a refusal alone closes the control, which is the whole bug", () => {
-    expect(runControlState(open, false, null).disabled).toBe(false);
-    expect(runControlState(open, false, PRACTICE).disabled).toBe(true);
+    expect(runControlState(open, false, null, true).disabled).toBe(false);
+    expect(runControlState(open, false, PRACTICE, true).disabled).toBe(true);
   });
 });

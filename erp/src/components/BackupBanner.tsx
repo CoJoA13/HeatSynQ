@@ -171,7 +171,15 @@ export function BackupBanner() {
 
   useEffect(() => {
     const onInvalidate = () => {
-      stateRef.current = { ...stateRef.current, lastFetchedAt: 0 };
+      // Clears the 403 LATCH as well as the throttle (Codex, PR #131). `advanceBannerState` returns
+      // early whenever `forbidden` is set, so resetting only `lastFetchedAt` could not force
+      // anything: a user granted `manage_backups` mid-session — `getSessionUser` reloads role
+      // permissions on every request, so the grant is live immediately — would reach the Backups
+      // page, run a backup, and still get no banner, because the latch from before the grant
+      // silently swallowed the refetch. An EXPLICIT invalidation means "something happened, go and
+      // look", which is exactly the case the latch's own reasoning (a 403 is a stable fact about
+      // the signed-in user) does not cover.
+      stateRef.current = { ...stateRef.current, lastFetchedAt: 0, forbidden: false };
       setRefreshNonce((n) => n + 1);
     };
     invalidationListeners.add(onInvalidate);

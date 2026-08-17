@@ -19,7 +19,12 @@ export async function run(page, shot, ctx) {
   // install the shell shows it, and without establishing that first, a race between the initial
   // health fetch and the backup could leave it never rendered — after which "it is gone" would be
   // an assertion about nothing.
+  // `waitFor`, not a bare `count()` (Codex, PR #131): `count()` returns immediately rather than
+  // auto-waiting, and the page payload and the shell's health request are independent — so the
+  // backup-folder text above can render just before the health response paints the banner, failing
+  // this flow intermittently on a UI that is perfectly correct.
   const staleBar = page.getByLabel("Backup status");
+  await staleBar.waitFor({ state: "visible", timeout: 15_000 });
   assert.equal(
     await staleBar.count(), 1,
     "the staleness bar is on screen before the backup (the #124 precondition)",
