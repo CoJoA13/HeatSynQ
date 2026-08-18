@@ -95,3 +95,38 @@ deliberately read-only).
 Cross-tab staleness: a mutation in tab B leaves tab A's banner stale — the module-level Set is
 per-tab, the same limitation as the `invalidateBackupBanner` precedent, which also does nothing
 about it. One line for the PR body.
+
+## Fix round (review verdict, 2026-08-18)
+
+**IMPORTANT — the /login reset overwritten by an in-flight fetch's commit (stale latch into the
+next session).** Confirmed: /login moved nothing the commit guard reads, and with `cancelled`
+hardwired false, a readiness fetch dispatched pre-logout resolved after the reset committed,
+passed `shouldCommitBannerFetch`, and re-latched `fetched: true` with the prior session's data —
+which the next signed-in user was shown all session with nothing re-arming it (the old
+`fetchedRef` code could not re-latch here). Fix: the /login branch bumps `generationRef.current`
+before the reset dispatch, so the stale resolve fails the generation check while the /login run's
+own (fetchless) reset commit carries the new generation and lands.
+
+**MINOR 3 — pin the wiring (pure seam found).** The effect's synchronous pre-dispatch half is now
+an exported hook-free helper, `beginSetupFetch(pathname, state, generation)` (SetupBanner.tsx) —
+it owns both load-bearing orderings: the dispatch-time latch burn (nav path) and the /login
+generation bump (finding 1). The effect calls it and parks `latched` in the ref; nothing was
+contorted. TDD: extracted first WITHOUT the bump (behavior-preserving), new tests watched RED,
+then the one-line bump → GREEN.
+
+| Case | Exact watched RED failure |
+|---|---|
+| `/login bumps the generation before the reset dispatch (review finding 1)` | `AssertionError: expected 3 to be 4 // Object.is equality` |
+| `the /login reset survives an in-flight fetch resolving after logout` (the full finding-1 sequence: dispatch-burn → /login reset commit → stale resolve must be dropped, latch stays re-armed) | `AssertionError: expected { …(2) } to deeply equal { data: null, fetched: false }` — the stale resolve committed `{ data, fetched: true }` over the reset, the reviewer's exact bug |
+
+Plus a green-from-birth pin that a plain navigation never moves the generation and the latch
+burns at dispatch (`burns the one-shot at dispatch time…`). The sequence test drives the
+component's exact wiring by hand — `beginSetupFetch` → `advanceSetupBannerState` →
+`shouldCommitBannerFetch(…, false)` — the same three calls the effect makes.
+
+**MINOR 2 — comment only.** `advanceSetupBannerState`'s failure branch now states the chosen
+direction: blanking a SHOWING banner on a failed invalidation-refetch is deliberate fail-safe
+(bars we can no longer vouch for come down; the re-arm self-heals on the next navigation).
+
+**Gates re-run:** vitest 32 passed (setup-banner 16, backup-banner 16); `tsc --noEmit` clean;
+`eslint src tests` clean.

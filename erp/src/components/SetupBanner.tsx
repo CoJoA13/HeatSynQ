@@ -56,7 +56,10 @@ export async function advanceSetupBannerState(
   } catch {
     // A transient failure — or the non-admin 403 — clears the banner and re-arms so the next
     // navigation retries. Cheap for non-admins: the route 403s at mustCan before
-    // installReadiness() ever runs, so the retry never spends an argon2.
+    // installReadiness() ever runs, so the retry never spends an argon2. Deliberately fail-safe
+    // even when an invalidation-triggered refetch fails with the banner SHOWING (a reachable case
+    // the old fetch-from-null-only code never had): blanking beats presenting bars we can no
+    // longer vouch for, and the re-arm self-heals it on the next navigation.
     return { data: null, fetched: false };
   }
 }
@@ -84,6 +87,37 @@ export function shouldSkipSetupInvalidation(data: Readiness | null, pwDismissed:
   if (!data) return false;
   const { showSetup, showPassword } = visibility(data, pwDismissed);
   return !showSetup && !showPassword;
+}
+
+/** The fetch effect's SYNCHRONOUS pre-dispatch half, hook-free so tests/setup-banner.test.tsx can
+ *  pin its ordering without mounting the component. Returns the generation the dispatched fetch
+ *  must commit under, and the state to park in the ref while it flies. Off /login with the
+ *  one-shot un-fired, the latch burns at DISPATCH time (the old `fetchedRef.current = true`
+ *  ordering, which a commit-time flag alone would lose): a navigation landing while the readiness
+ *  fetch is in flight re-runs the effect into the no-op branch instead of dispatching a second
+ *  argon2-backed fetch. The RESOLVED state later overwrites the marker — including re-arming it
+ *  on failure, the transient-retry behaviour. */
+export function beginSetupFetch(
+  pathname: string | null,
+  state: SetupBannerFetchState,
+  generation: { current: number },
+): { startedGeneration: number; latched: SetupBannerFetchState } {
+  if (pathname === "/login") {
+    // Bump the generation FIRST (Task 4 review, finding 1): a readiness fetch dispatched before
+    // the logout would otherwise resolve AFTER the /login reset commits and still pass the commit
+    // guard — /login moved nothing the guard reads, and `cancelled` is deliberately hardwired
+    // false in the component — silently re-latching `fetched: true` with the PRIOR session's
+    // data, which the NEXT signed-in user (possibly a different, non-admin one) would then be
+    // shown all session with nothing re-arming it. The old fetchedRef code could not re-latch
+    // here, and neither may this. The bump makes the stale resolve fail the guard; the /login
+    // run's own (fetchless) reset commit carries the new generation and still lands.
+    generation.current += 1;
+    return { startedGeneration: generation.current, latched: state };
+  }
+  if (!state.fetched) {
+    return { startedGeneration: generation.current, latched: { ...state, fetched: true } };
+  }
+  return { startedGeneration: generation.current, latched: state };
 }
 
 /** Pure presentational half, hook-free so tests/setup-banner.test.tsx can render it with
@@ -198,25 +232,18 @@ export function SetupBanner() {
     // Keying on pathname (rather than []) is what lets it appear after a client-side login — this
     // layout-mounted component is not remounted by /login → / — and refreshNonce is the explicit
     // invalidation channel (#110).
-    const startedGeneration = generationRef.current;
     const before = stateRef.current;
-    if (pathname !== "/login" && !before.fetched) {
-      // Burn the one-shot at DISPATCH time (the old `fetchedRef.current = true` ordering, which a
-      // commit-time flag alone would lose): a navigation landing while the readiness fetch is in
-      // flight re-runs this effect into the no-op branch instead of dispatching a second
-      // argon2-backed fetch. The resolved state below overwrites this marker — including
-      // re-arming it on failure, the transient-retry behaviour.
-      stateRef.current = { ...before, fetched: true };
-    }
+    const { startedGeneration, latched } = beginSetupFetch(pathname, before, generationRef);
+    stateRef.current = latched;
     advanceSetupBannerState(pathname, before).then((next) => {
-      // An invalidation that landed mid-flight wins (the imported guard, pinned in
-      // tests/backup-banner.test.tsx). `cancelled` is deliberately hardwired false, unlike
-      // BackupBanner: this component never unmounts, and a pathname re-run must not discard the
-      // in-flight one-shot result — the latch has already burned above, so a discard here would
-      // leave the banner blank for the rest of the session with nothing re-arming it (BackupBanner
-      // can afford the discard because its throttle re-fetches on a later navigation; this banner
-      // deliberately never does). Only an explicit invalidation — which re-arms AND refetches —
-      // makes a stale result safely discardable, and that is the generation check.
+      // A commit that started under a superseded generation is dropped (the imported guard,
+      // pinned in tests/backup-banner.test.tsx): an explicit invalidation bumped it mid-flight,
+      // or a /login reset did (beginSetupFetch). `cancelled` is deliberately hardwired false,
+      // unlike BackupBanner: this component never unmounts, and a pathname re-run must not
+      // discard the in-flight one-shot result — the latch has already burned above, so a discard
+      // here would leave the banner blank for the rest of the session with nothing re-arming it
+      // (BackupBanner can afford the discard because its throttle re-fetches on a later
+      // navigation; this banner deliberately never does).
       if (!shouldCommitBannerFetch(startedGeneration, generationRef.current, false)) return;
       stateRef.current = next;
       setData(next.data);
