@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
-import { gate } from "@/lib/permission-ui";
+import { gate, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { normalizeRequestNonce, submitWithConflictRetry } from "@/lib/idempotent-save";
@@ -295,6 +295,12 @@ export default function NewOrderPage() {
   // The quote-link preview fetch (/api/quotes/eligible) is gated orders.view server-side; the
   // re-pick CONTROL itself is gated on the save permission this form feeds (§5.16 — saveGate).
   const ordersViewGate = gate(perms, "orders.view");
+  // #44: Save & Print lands on /orders/[id]?print=1, where both the hub GET and the traveler
+  // POST require orders.view — a caller holding orders.create alone would create the order and
+  // then strand on a forbidden page without printing. So THAT button also needs orders.view
+  // (§5.16: visible, disabled, title naming the missing permission); plain Save keeps
+  // orders.create alone.
+  const savePrintGate: Gate = saveGate.disabled ? saveGate : ordersViewGate;
 
   // ---- mount-time fetches ----
 
@@ -985,8 +991,8 @@ export default function NewOrderPage() {
                         className="rounded bg-slate-800 px-4 py-2 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
                   {saving ? "Saving…" : "Save"}
                 </button>
-                <button type="button" onClick={() => void handleSave(true)} disabled={saving || saveGate.disabled}
-                        title={saveGate.title}
+                <button type="button" onClick={() => void handleSave(true)} disabled={saving || savePrintGate.disabled}
+                        title={savePrintGate.title}
                         className="rounded border border-slate-800 px-4 py-2 text-sm text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
                   Save &amp; Print
                 </button>
