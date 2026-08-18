@@ -4,7 +4,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo } from "@/lib/permission-ui";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
 import { swapAt } from "@/lib/reorder";
-import { useLatest } from "@/lib/use-latest";
+import { useSaveScope } from "@/lib/save-scope";
 
 // Local mirrors of src/server/part-prices.ts's PartPriceRow/PartBreakRow — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -68,16 +68,22 @@ export function PricingSection({
     return breakDrafts[priceId] ?? { threshold: "", price: "" };
   }
 
-  // Guards the list reload against an out-of-order response (src/lib/use-latest.ts) — this
-  // section funnels every mutation (add/edit/remove a row, reorder, add/edit/remove a break)
-  // through the same full-list `load()`, so a slower earlier reload landing after a faster later
-  // one would otherwise silently revert the screen past what the user just did.
-  const rowsLatest = useLatest();
-  const load = useCallback(async () => {
-    const t = rowsLatest.next();
-    const data = await api<PriceRow[]>(`/api/parts/${partId}/prices`);
-    if (rowsLatest.isCurrent(t)) { setRows(data); setRowsReady(true); }
-  }, [partId, rowsLatest]);
+  // Guards the list reload two ways (save-scope.ts, whose internal latest-gate replaced the
+  // bare useLatest ticket this section carried): overlapping reloads stay ordered — this section
+  // funnels every mutation through the same full-list `load()`, so a slower earlier reload
+  // landing after a faster later one would otherwise silently revert the screen past what the
+  // user just did — AND a reload's GET waits out the saves registered below, re-fetching if one
+  // is dispatched mid-fetch, so a §5.13 rollback reload can never revert a NEWER row's
+  // optimistic patch (#15's section-local analog). `load` never touches the error state, so it
+  // doubles as the no-clear rollback variant.
+  const saveScope = useSaveScope();
+  const load = useCallback(
+    () => saveScope.reload(
+      () => api<PriceRow[]>(`/api/parts/${partId}/prices`),
+      (data) => { setRows(data); setRowsReady(true); },
+    ),
+    [partId, saveScope],
+  );
   useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
 
   // F9: a failed step-code-options fetch reports through `onOptionsError` (the page's persistent
@@ -96,18 +102,23 @@ export function PricingSection({
     setRows((cur) => cur.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   }
   // Optimistic (mirrors InspectionsSection's saveRow): the row already shows the new value, so a
-  // failure has something to roll back. Roll back to server truth FIRST, then report why (§5.13)
-  // — load() before onError, never the other way around. Server messages (the LOT-with-breaks
-  // refusal, the duplicate-operation refusal) surface verbatim; no client re-paraphrasing.
+  // failure has something to roll back. The PATCH registers with saveScope at call time — no
+  // serial() queue here, so the round-trip itself is the registered save — and the §5.13
+  // rollback is fired detached (never awaited: the reload waits for every registered save,
+  // this one included, to settle before its GET dispatches). Server messages (the
+  // LOT-with-breaks refusal, the duplicate-operation refusal) surface verbatim; no client
+  // re-paraphrasing.
   async function saveRow(id: string, patch: Record<string, unknown>): Promise<boolean> {
     setRows((cur) => cur.map((r) => (r.id === id ? ({ ...r, ...patch } as PriceRow) : r)));
+    const put = api(`/api/parts/${partId}/prices/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    saveScope.begin(put);
     try {
-      await api(`/api/parts/${partId}/prices/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await put;
       onError(null);
       return true;
     } catch (e) {
-      await load().catch(() => {});
       onError((e as Error).message);
+      void load().catch(() => {});
       return false;
     }
   }
@@ -173,19 +184,20 @@ export function PricingSection({
   async function move(idx: number, dir: -1 | 1) {
     const reordered = swapAt(rows, idx, dir); // bounds check only — the buttons are already
     if (!reordered) return;                   // disabled at the ends of the list (belt + braces).
+    const put = api(`/api/parts/${partId}/prices/order`, {
+      method: "PUT",
+      body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
+    });
+    saveScope.begin(put);
     try {
-      await api(`/api/parts/${partId}/prices/order`, {
-        method: "PUT",
-        body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
-      });
+      await put;
       onError(null);
       await load();
     } catch (e) {
-      // Roll back to server truth FIRST, then report why (§5.13) — reload before setting the
-      // error, the saveRow() precedent above, so local rows never diverge from what the server
-      // actually has.
-      await load().catch(() => {});
+      // §5.13 rollback, detached — the saveRow() shape above. (The success path may await
+      // load(): by then the registered PUT has settled, so the reload cannot deadlock on it.)
       onError((e as Error).message);
+      void load().catch(() => {});
     }
   }
 
@@ -232,14 +244,17 @@ export function PricingSection({
     setRows((cur) => cur.map((r) => (r.id === priceId
       ? { ...r, breaks: r.breaks.map((b) => (b.id === breakId ? ({ ...b, ...patch } as PriceBreak) : b)) }
       : r)));
+    const put = api(`/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, {
+      method: "PATCH", body: JSON.stringify(patch) });
+    saveScope.begin(put);
     try {
-      await api(`/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, {
-        method: "PATCH", body: JSON.stringify(patch) });
+      await put;
       onError(null);
       return true;
     } catch (e) {
-      await load().catch(() => {});
+      // §5.13 rollback, detached — the saveRow() shape above.
       onError((e as Error).message);
+      void load().catch(() => {});
       return false;
     }
   }

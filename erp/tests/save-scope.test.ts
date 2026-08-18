@@ -10,7 +10,8 @@ import { makeSaveScope, type SaveScope } from "@/lib/save-scope";
 // makeLatestGate precedent), with a REAL clone of the pages' serial() per-key queue so the
 // detached-rollback contract is proven deadlock-free: a deadlock here is a test timeout.
 
-function deferred<T = void>() {
+type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
+function deferred<T = void>(): Deferred<T> {
   let resolve!: (v: T) => void;
   let reject!: (e: unknown) => void;
   const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
@@ -42,7 +43,7 @@ function makeHarness(scope: SaveScope, initial: Data) {
     return next;
   }
 
-  const gets: Array<ReturnType<typeof deferred<Data>>> = [];
+  const gets: Array<Deferred<Data>> = [];
   const fetchData = () => {
     const d = deferred<Data>();
     gets.push(d);
@@ -75,7 +76,7 @@ function makeHarness(scope: SaveScope, initial: Data) {
     save,
     load,
     /** Commit key=value server-side, then resolve the PUT — the order a real server answers in. */
-    commit(s: { put: ReturnType<typeof deferred> }, key: string, value: string) {
+    commit(s: { put: Deferred<void> }, key: string, value: string) {
       server[key] = value;
       s.put.resolve();
     },

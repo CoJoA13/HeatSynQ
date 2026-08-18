@@ -8,6 +8,7 @@ import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
+import { useSaveScope } from "@/lib/save-scope";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { SurchargeOverridesSection } from "./SurchargeOverridesSection";
 import { TemplateAssignmentsSection } from "./TemplateAssignmentsSection";
@@ -132,15 +133,34 @@ function CustomerDetail({ id }: { id: string }) {
   // customer field the user is actively editing (use-edit-guard.ts; the fix-wave notes-clobber
   // trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same shape).
   const editGuard = useEditGuard();
+  // Every optimistic save registers with this scope and every reload routes through it
+  // (save-scope.ts, issues #3/#15): a reload's GET waits out the registered save chains and
+  // re-fetches if a save is dispatched mid-fetch, so a §5.13 rollback (or any other reload) can
+  // never apply a payload that predates a newer save's optimistic value. The merge above
+  // protects only the focused field mid-typing; the scope protects every committed-but-unloaded
+  // value, the `addresses`/`contacts` rows included. Its internal latest-gate also orders
+  // overlapping reloads (a show-inactive toggle's refetch racing a rollback), which this page —
+  // alone among the detail pages — previously had nothing for.
+  const saveScope = useSaveScope();
 
-  const load = useCallback(async () => {
-    const [cust, addr, cont] = await Promise.all([
-      api<Customer>(`/api/customers/${id}`),
-      api<Address[]>(`/api/customers/${id}/addresses${showInactiveAddresses ? "?includeInactive=1" : ""}`),
-      api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
-    ]);
-    setC((cur) => editGuard.merge(cur, cust)); setAddresses(addr); setContacts(cont); setError(null);
-  }, [id, showInactiveAddresses, showInactiveContacts, editGuard]);
+  const fetchDetail = useCallback(() => Promise.all([
+    api<Customer>(`/api/customers/${id}`),
+    api<Address[]>(`/api/customers/${id}/addresses${showInactiveAddresses ? "?includeInactive=1" : ""}`),
+    api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
+  ]), [id, showInactiveAddresses, showInactiveContacts]);
+  const applyDetail = useCallback(([cust, addr, cont]: [Customer, Address[], Contact[]]) => {
+    setC((cur) => editGuard.merge(cur, cust)); setAddresses(addr); setContacts(cont);
+  }, [editGuard]);
+  const load = useCallback(
+    () => saveScope.reload(fetchDetail, (data) => { applyDetail(data); setError(null); }),
+    [saveScope, fetchDetail, applyDetail],
+  );
+  // The rollback variant skips load()'s setError(null): a rollback reload lands AFTER the
+  // failure it rolls back was reported, and must never clear that banner (§5.13).
+  const rollbackLoad = useCallback(
+    () => saveScope.reload(fetchDetail, applyDetail),
+    [saveScope, fetchDetail, applyDetail],
+  );
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
   const canDelete = gate(perms, "customers.delete");
   const canEdit = gate(perms, "customers.edit");
@@ -236,20 +256,26 @@ function CustomerDetail({ id }: { id: string }) {
   async function save(body: Partial<Customer>): Promise<boolean> {
     setC((cur) => (cur ? { ...cur, ...body } : cur));
     const key = Object.keys(body).sort().join(",");
-    return serial(key, async () => {
+    const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(body) });
         setError(null);
         return true;
       } catch (e) {
-        // Roll back to server truth first, then report why — load() clears the error on
-        // success, so setting the error before the reload lets that clear wipe it out
-        // before the user ever sees it.
-        await load().catch(() => {});
+        // §5.13 rollback, detached: report first, then fire rollbackLoad() WITHOUT awaiting it
+        // — awaiting from inside this queued fn deadlocks, since the reload waits for every
+        // registered save chain (this one included) to settle before its GET dispatches. The
+        // no-clear apply means the reload can never wipe this banner however late it lands, and
+        // the settle-defer means its payload postdates every save queued behind this one (#3).
         setError((e as Error).message);
+        void rollbackLoad().catch(() => {});
         return false;
       }
     });
+    // Registered at save call time, beside the optimistic set above: reloads defer to this
+    // save's whole chain and re-fetch if it was dispatched mid-fetch (save-scope.ts).
+    saveScope.begin(settled);
+    return settled;
   }
   // Parent selection needs one extra step beyond a plain save(): the header's "Division of X"
   // text and this row's own option list are both derived from OTHER customers' data, which a
@@ -387,15 +413,19 @@ function CustomerDetail({ id }: { id: string }) {
   }
   async function toggleContactFlag(ct: Contact, key: (typeof CONTACT_FLAGS)[number]["key"], value: boolean) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, [key]: value } : row)));
-    await serial(`contact:${ct.id}:${key}`, async () => {
+    const settled = serial(`contact:${ct.id}:${key}`, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
         setError(null);
       } catch (e) {
-        await load().catch(() => {});
+        // Detached no-clear rollback, the save() shape above (§5.13; #15's cross-key clobber —
+        // this GET must not revert a sibling row's in-flight optimistic toggle).
         setError((e as Error).message);
+        void rollbackLoad().catch(() => {});
       }
     });
+    saveScope.begin(settled);
+    await settled;
   }
   // Same optimistic-then-persist shape as save()/toggleContactFlag(), scoped to one address or
   // contact row rather than the customer itself — this is what gives existing address/contact
@@ -407,17 +437,20 @@ function CustomerDetail({ id }: { id: string }) {
   async function saveAddressField(a: Address, patch: Partial<Address>): Promise<boolean> {
     setAddresses((cur) => cur.map((row) => (row.id === a.id ? { ...row, ...patch } : row)));
     const key = `address:${a.id}:${Object.keys(patch).sort().join(",")}`;
-    return serial(key, async () => {
+    const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
         setError(null);
         return true;
       } catch (e) {
-        await load().catch(() => {});
+        // Detached no-clear rollback, the save() shape above (§5.13).
         setError((e as Error).message);
+        void rollbackLoad().catch(() => {});
         return false;
       }
     });
+    saveScope.begin(settled);
+    return settled;
   }
   // Changing an address's KIND needs the extra reload a scalar edit doesn't (same shape as
   // saveParent above): the server re-normalizes the default flag across both the kind being
@@ -430,15 +463,18 @@ function CustomerDetail({ id }: { id: string }) {
   async function saveContactField(ct: Contact, patch: Partial<Contact>) {
     setContacts((cur) => cur.map((row) => (row.id === ct.id ? { ...row, ...patch } : row)));
     const key = `contact:${ct.id}:${Object.keys(patch).sort().join(",")}`;
-    await serial(key, async () => {
+    const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify(patch) });
         setError(null);
       } catch (e) {
-        await load().catch(() => {});
+        // Detached no-clear rollback, the save() shape above (§5.13).
         setError((e as Error).message);
+        void rollbackLoad().catch(() => {});
       }
     });
+    saveScope.begin(settled);
+    await settled;
   }
 
   if (!c) return <div className="p-6">{error ?? permsError ?? optionsError ?? "Loading…"}</div>;
