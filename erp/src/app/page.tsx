@@ -28,7 +28,7 @@ type BoardRow = {
 };
 
 // The parts/page.tsx precedent: only the slice the customer filter picker needs.
-type CustomerOption = { id: string; code: string; name: string };
+type CustomerOption = { id: string; code: string; name: string; active: boolean };
 
 // Local mirror of src/server/saved-views.ts's SavedViewRow. `config` stays `unknown` — this file
 // never trusts it directly, only through board-columns.ts's normalizers.
@@ -92,9 +92,15 @@ export default function OrdersPage() {
   // Customer filter picker: fetched only once the caller is known to hold customers.view, never
   // left silently empty for someone who lacks it (§5.16 — a blocked control must say why). The
   // parts/page.tsx precedent, applied to a filter picker rather than an add-row.
+  // includeInactive=1 (#45, the rider-part picker precedent at orders/[id]/page.tsx): a saved
+  // view can filter on a customer made inactive SINCE it was saved — the orders query still
+  // applies that customerId, so without the inactive rows the select showed no matching option
+  // and the board (and its Excel export) stayed silently scoped to one customer. An inactive
+  // customer must remain a visible, NAMED filter choice.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers?includeInactive=1")
+      .then(setCustomers).catch((e) => setError((e as Error).message));
   }, [customersGate.allowed]);
 
   const queryString = buildOrderQuery(filters, sort);
@@ -320,7 +326,9 @@ export default function OrdersPage() {
                   disabled={!customersGate.allowed} title={customersGate.allowed ? undefined : customersGate.title}
                   className="rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100">
             <option value="">All customers</option>
-            {customers.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+            {customers.map((c) => (
+              <option key={c.id} value={c.id}>{c.code} · {c.name}{!c.active && " (inactive)"}</option>
+            ))}
           </select>
         </div>
 
