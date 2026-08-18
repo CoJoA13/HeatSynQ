@@ -76,3 +76,24 @@ consuming tickets minted by `latest.next()` — against `use-latest.ts`'s applie
 semantics (sound; the PR #22 whole-array rewind stays closed and queued runs still read the
 freshest ref). Two minors noted for awareness only (a self-healing draft-clear reveal window; the
 F7 swallow's invisibility at call sites), no action required.
+
+**Task 4 (#110, SetupBanner invalidation)** — implementer `6abc950`/`ee9f7cf`/`20a2e43` (report
+commit re-created in the Task 6 boundary split), 13-case RED table. Review (on the regenerated
+clean package after the contamination correction): **Spec ✅ except one item · Needs fixes** —
+one Important: the `/login` reset is silently overwritten by an in-flight fetch's commit (the
+`/login` path never bumps the generation, `cancelled` is hardwired false), and the new
+resolve-time `fetched: true` re-latches over the reset — the NEXT session (possibly a different,
+non-admin user) shows the prior session's readiness strip all session. The old code's unguarded
+`.then(setData)` shared the transient half but could never re-latch. Fix round dispatched to the
+implementer: the one-line `/login` generation bump, a pure-seam test pinning the sequence where
+cheap (reviewer minor 3), and the fail-toward-blank comment (minor 2). Reviewer confirmed the
+no-per-nav-argon2 invariant holds on every traced sequence, the skip-guard predicate cannot
+disagree with the render, the call-site set is complete, and minor 4 (a counted-kind DELETE
+skipped by the renders-nothing guard) is the brief's own ruling followed faithfully.
+
+**The concurrency incident (for the record):** Task 4's report commit (`cd9d9aa`, since split
+away) swept Task 6's nine staged files through the shared git index; Task 6's implementer split
+the tip into `20a2e43` + `b1b8dc6` (trees verified byte-identical to the pre-split tip), and the
+Task 4 review package — generated from the contaminated commit — was regenerated and the
+in-flight reviewer corrected. All implementers since commit with explicit pathspecs
+(`git commit -- <paths>`), which makes a shared-index sweep structurally impossible to repeat.
