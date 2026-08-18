@@ -69,3 +69,23 @@ Branch `group-e-close-gl`, base `ed55ffe`. Brief committed first (`62149da`).
     refuses skipped months at creation), so no test fixture change — the badge tests pin the flag.
   - Minor 2 accepted: O(n²) find/some over the in-memory rows — one row per closed month for the
     life of the shop; a Map is the shape if a heavier consumer ever appears.
+
+## Tasks 4+5 — #93 export audit journal + #90 minors bundle (bundled — same area)
+
+- **Implemented** `5749983` (report `2c12bb5`). #93: `summary` (side/frozen account/debit/credit)
+  on the export's create-audit; inert `SNAPSHOT_INCLUDE` entry → `undefined`; `SNAPSHOT_SELECT`
+  belt excluding the two Bytes columns. #90: 40P01 translation + retryability; P2002 retry made
+  OPT-IN (only `closePeriod` opts in); comment corrections (migrate diff verified empty); shared
+  `ReadinessGapKind`; `MIN/MAX_CLOSE_YEAR` across four sites; empty export → 400 BEFORE
+  `allocateNumber`; two no-changes recorded; E2E locator stabilized on a testid. Full suite
+  3197 green.
+- **Review round 1: Spec ✅ · Approved.** The risk item — allocation paths no longer retry ANY
+  P2002 — survived the reviewer's independent sweep: the three nonce writers replay in-attempt
+  (the P2002 never reaches the wrapper), every allocated number is serialized by the counter
+  claim, and no other unique constraint is reachable inside the eight allocating transactions.
+  Two minors:
+  - **Minor 1 fixed on-branch (controller):** `?year=10000` through the readiness route itself —
+    the only consumer of `period.ts`'s hand-built ceiling — now pinned (the other three sites
+    were already covered).
+  - Minor 2 accepted: the #93 test's exact-order assertion couples to `aggregateLines`'
+    insertion-order contract, which the register's side filter already relies on; commented.

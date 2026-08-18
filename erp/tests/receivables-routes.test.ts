@@ -1011,6 +1011,15 @@ describe("GET /api/receivables/close/readiness", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("400s year 10000 — period.ts's own MAX_CLOSE_YEAR ceiling, not a zod bound (#90)", async () => {
+    const viewer = await signInWith(["receivables.view"], "readiness-year-ceiling");
+    const res = await readinessRoute(
+      getReq("http://t/api/receivables/close/readiness?year=10000&month=7", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("year");
+  });
 });
 
 describe("GET /api/receivables/close/readiness/export", () => {
