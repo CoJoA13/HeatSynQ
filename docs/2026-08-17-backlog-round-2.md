@@ -202,7 +202,12 @@ Clear defects and one undelivered deliverable. Nothing here waits on the meeting
 
 ---
 
-## Group C — Shipping and order-status integrity · **COMPLETE 2026-08-18** · PR #141 open
+## Group C — Shipping and order-status integrity · **MERGED 2026-08-18** as `4cada64` (PR #141)
+
+**Five Codex rounds followed the three round-1 approvals** — nine findings, all fixed on-branch,
+two ending mechanism classes: cents BigInt end-to-end through the load split, and the printed-flag
+monotonic at its merge point. Mid-flight rulings #139 (freeze the pair — first slice landed on the
+PR) and #140 (coverage-precise removal) fold into Group E.
 
 All eight closed by the PR — #65, #52, #42, #41, #44, #45, #46, #51. Two migrations (the reversal's
 cleared-flag snapshot; print-time coverage + backfill). **Three task reviews, all Approved on
