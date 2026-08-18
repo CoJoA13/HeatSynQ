@@ -28,10 +28,15 @@ type Fields = { loadNumber: string; qty: string; weight: string };
  * missing.
  */
 export function LoadsSection({
-  orderId, loads, editGate, applyMutation, onError,
+  orderId, loads, travelerPrinted, editGate, applyMutation, onError,
 }: {
   orderId: string;
   loads: OrderLoad[];
+  /** #41: `OrderDetail.travelerPrinted` — order STATE, refreshed by every mutation response. The
+   *  reprint notice below derives from it so it shows the moment the editor renders (not only
+   *  after a loads save returns the server's own warning) and cannot be cleared by an unrelated
+   *  warning-less mutation wiping the page-level warnings banner. */
+  travelerPrinted: boolean;
   editGate: Gate;
   applyMutation: ApplyMutation;
   onError: (message: string | null) => void;
@@ -118,6 +123,15 @@ export function LoadsSection({
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Loads</h2>
+      {/* Persistent, not a mutation warning (#41): a stored traveler describes the loads as they
+          were at print time, so the operator must see this BEFORE editing, on every visit. The
+          per-save "print a fresh one" warning still lands in the page banner like every other
+          mutation warning. */}
+      {travelerPrinted && (
+        <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
+          A traveler has already printed — changes to these loads will need a fresh traveler.
+        </p>
+      )}
       {grid.orphanWarning && (
         <p className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">{grid.orphanWarning}</p>
       )}

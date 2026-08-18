@@ -579,7 +579,8 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       />
 
       <LoadsSection
-        orderId={id} loads={order.loads} editGate={editGate} applyMutation={applyMutation} onError={setError}
+        orderId={id} loads={order.loads} travelerPrinted={order.travelerPrinted}
+        editGate={editGate} applyMutation={applyMutation} onError={setError}
       />
 
       <section className="mb-6 rounded border bg-white p-4">
