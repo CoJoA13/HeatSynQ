@@ -78,6 +78,13 @@ export type ShipperDetail = {
    *  refusal stays the enforcement. Always null on a reversal document itself (a reversal cannot
    *  be reversed), so its Void stays enabled: voiding a reversal is the blessed undo. */
   reversedByShipperNumber: number | null;
+  /** The §5.7 invoice freeze, pre-worded (Codex PR #141 review): when any order on this shipment
+   *  carries a finalized invoice, this is `voidShipper`'s OWN refusal sentence
+   *  (`invoiceBlockMessage`, built server-side so UI title and server refusal cannot drift), else
+   *  null. The Void gate must show THIS before the reversal blocker — the same precedence
+   *  `voidShipper` enforces (`refuseIfInvoiced` first) — or an invoiced pair's disabled button
+   *  would send the operator at "void the reversal first", an action the server also refuses. */
+  invoiceVoidBlock: string | null;
   deletedAt: string | null;
   orders: ShipperOrderDetail[];
 };
@@ -295,7 +302,9 @@ const DETAIL_INCLUDE = {
 
 type DetailRow = Prisma.ShipperGetPayload<{ include: typeof DETAIL_INCLUDE }>;
 
-function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDetail {
+function toDetail(
+  row: DetailRow, shipped: Map<string, ShippedTotal>, invoiceVoidBlock: string | null,
+): ShipperDetail {
   return {
     id: row.id, shipperNumber: row.shipperNumber, bolNumber: row.bolNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
@@ -309,6 +318,7 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
     packageCount: row.packageCount, proNumber: row.proNumber, scacCode: row.scacCode,
     reversesShipperId: row.reversesShipperId,
     reversedByShipperNumber: row.reversedBy[0]?.shipperNumber ?? null,
+    invoiceVoidBlock,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     orders: row.orders.map((so) => ({
       id: so.id, orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,
@@ -362,7 +372,12 @@ export async function readShipperDetail(db: Db, id: string): Promise<ShipperDeta
   // single §5.1 derivation: the ids widened, the arithmetic untouched.
   const orderLineIds = row.orders.flatMap((o) => o.order.lines.map((l) => l.id));
   const shipped = await shippedTotals(db, orderLineIds);
-  return toDetail(row, shipped);
+  // The §5.7 freeze, pre-worded with `voidShipper`'s own sentence (see the type's doc comment) —
+  // `finalizedInvoicesFor` sorts by order number, so this names the same invoice the server's
+  // refusal would.
+  const [frozen] = await finalizedInvoicesFor(db, row.orders.map((o) => o.orderId));
+  return toDetail(row, shipped,
+    frozen ? invoiceBlockMessage(frozen, "This shipment cannot be voided") : null);
 }
 
 export async function getShipper(id: string): Promise<ShipperDetail> {

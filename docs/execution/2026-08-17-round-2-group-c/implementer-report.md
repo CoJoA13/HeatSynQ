@@ -406,3 +406,25 @@ sides remain test-pinned); 187 tests across the three affected files re-run gree
 clean. (2) float dust at the exact multi-line weight ceiling (~2×10⁻⁶ lb at a ten-billion-pound
 load) — recorded, no action: inherent to the codebase's existing float-weight handling and below
 any physical meaning. (3) the #41 same-visit residual is implementer-documented, by design.
+
+### Codex PR #141 review round — two P2s, both fixed on-branch
+
+1. **GIN index on `coveredOrderIds`** (migration `20260818041517_stored_document_covered_order_ids_gin`,
+   both DBs): `listDocumentsForOrder`'s array-membership match had no serving index on a permanent,
+   append-only table — the same growth shape the `orderId` index was added for.
+2. **The Void gate names the invoice freeze BEFORE the reversal blocker.** #65's disabled-with-title
+   button could send an invoiced pair's operator at "void the reversal first" — an action
+   `refuseIfInvoiced` also refuses. `ShipperDetail` now carries `invoiceVoidBlock`, pre-worded
+   server-side with `voidShipper`'s own refusal sentence (`invoiceBlockMessage` — title and refusal
+   cannot drift), and the gate mirrors the server's guard order. Pinned: the sentence appears on
+   BOTH sides of an invoiced pair, null without one; RED-verified against a nulled computation.
+
+**Gates on the fixed tree:** 3162 tests / 184 files · `tsc`/`eslint`/`build` clean · E2E **23/23** ·
+`migrate status` clean on both DBs.
+
+**Process note for the record:** the first E2E attempt on this tree wedged silently ~10 minutes in
+with 16/23 flows complete — every process idle at 0% CPU at once, NO stuck Postgres backend, and
+the flows exercising this diff already PASSED in-run. Consistent with a system suspend/resume
+killing the Playwright session, not a code hang. `close-month-end` had completed and self-cleaned
+(zero `ClosePeriod`/`GlExportBatch` debris — verified before touching anything), so the documented
+hand-DELETE was NOT needed; the tree was killed and the fresh re-run passed 23/23.

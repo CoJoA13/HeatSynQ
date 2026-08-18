@@ -888,6 +888,11 @@ model StoredDocument {
   // that is now the current definition.
   @@index([orderId])
   @@index([shipperId])
+  // #52 follow-up (Codex PR #141 review): `listDocumentsForOrder` matches whole-set paper with
+  // `coveredOrderIds: { has: orderId }`, and no scalar index can serve array membership — on this
+  // permanent, append-only table that scan grows with every whole-set ticket/BOL ever printed,
+  // the exact growth shape the orderId index above was added for. GIN, default array_ops.
+  @@index([coveredOrderIds], type: Gin)
   @@index([certId])
   @@index([invoiceId])
   @@index([customerId])

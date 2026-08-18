@@ -473,6 +473,26 @@ describe("voidShipper — reversal-aware (#65)", () => {
     expect((await getShipper(original.id)).reversedByShipperNumber).toBeNull();
   });
 
+  // Codex PR #141 review: on an invoiced pair the reversal-blocker title would send the operator
+  // at "void the reversal first" — an action `refuseIfInvoiced` ALSO refuses. So the detail
+  // carries the §5.7 freeze as `voidShipper`'s own refusal sentence, pre-worded server-side
+  // (`invoiceBlockMessage` — UI title and server refusal cannot drift), and the page shows it
+  // ahead of the reversal blocker, mirroring the server's guard order.
+  it("the detail carries the invoice-freeze sentence on both sides of an invoiced pair, null without one", async () => {
+    const { original, reversal } = await reversedPair();
+    expect((await getShipper(original.id)).invoiceVoidBlock).toBeNull();
+    expect((await getShipper(reversal.id)).invoiceVoidBlock).toBeNull();
+
+    const { shipper: invoiced } = await invoicedShipment();
+    const { shipper: invReversal } = await asSystem(() =>
+      reverseShipper(invoiced.id, { reason: "wrong parts loaded" }));
+    const block = (await getShipper(invoiced.id)).invoiceVoidBlock;
+    expect(block).toMatch(/^This shipment cannot be voided — Invoice \d+ is finalized/);
+    // The reversal document carries the SAME sentence — its own Void is refused identically, so
+    // the invoice message outranks "blessed undo" exactly as the server's guard order does.
+    expect((await getShipper(invReversal.id)).invoiceVoidBlock).toBe(block);
+  });
+
   // The pair-void lock shape (the shipper-reverse.test.ts claim-test technique): the competing
   // holder runs at Read Committed holding ONLY the ORIGINAL's Shipper row, so the only thing that
   // can make the reversal's void wait is `claimShipperRows` genuinely claiming the PAIR row — not
