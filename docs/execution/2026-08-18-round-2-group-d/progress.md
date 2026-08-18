@@ -90,6 +90,12 @@ cheap (reviewer minor 3), and the fail-toward-blank comment (minor 2). Reviewer 
 no-per-nav-argon2 invariant holds on every traced sequence, the skip-guard predicate cannot
 disagree with the render, the call-site set is complete, and minor 4 (a counted-kind DELETE
 skipped by the renders-nothing guard) is the brief's own ruling followed faithfully.
+**Fix round 1 (`537b0cf`) → Approved.** The `/login` branch now bumps the generation FIRST and
+the reset's own commit rides the bumped value (verified both halves + the double-bump edge);
+the synchronous pre-dispatch half became the exported hook-free `beginSetupFetch` owning both
+load-bearing orderings, with the finding's exact trace pinned RED-first (and the inverse pin:
+a plain navigation must NOT move the generation). All previously-verified invariants re-confirmed
+untouched. 32/32 banner tests, tsc/eslint clean.
 
 **The concurrency incident (for the record):** Task 4's report commit (`cd9d9aa`, since split
 away) swept Task 6's nine staged files through the shared git index; Task 6's implementer split
