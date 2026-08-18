@@ -202,7 +202,25 @@ Clear defects and one undelivered deliverable. Nothing here waits on the meeting
 
 ---
 
-## Group C — Shipping and order-status integrity · **#65, #52, #51, #41, #42, #44, #45, #46** · IN FLIGHT 2026-08-17 (`group-c-shipping-status`)
+## Group C — Shipping and order-status integrity · **COMPLETE 2026-08-18** · PR #141 open
+
+All eight closed by the PR — #65, #52, #42, #41, #44, #45, #46, #51. Two migrations (the reversal's
+cleared-flag snapshot; print-time coverage + backfill). **Three task reviews, all Approved on
+round 1** — a first for a group — with each round's findings fixed on-branch the same round. Gates
+on the final tree: **3161 tests / 184 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**.
+
+**What went past the issue text:**
+- **#65's review found the restore's claim-set assumption**, fixed by construction (the cleared
+  lines' orders are discovered and unioned into the claims) — and building that test surfaced that
+  a reversal's membership is protected only INCIDENTALLY today (the positive-line invariant), the
+  exact accidental-protection shape #65 existed to close. Recorded on #139.
+- **#42's guard covered a third door the issue never named** (`resplitLoads`), by sitting in
+  `splitLoads` itself; `replaceLoads` was already guarded and gained a pinning test.
+- **#52's backfill ORDER BY proved behaviorally un-pinnable** (the `(shipperId, position)` index
+  serves position order regardless; heap repositioning re-correlates) — pinned textually by
+  construction, the #122 lesson, with the measurement recorded beside it.
+- **Filed en route:** #139 (reversal-pair edit class, owner ruling wanted on explicit refusal),
+  #140 (removal guard's over-block, safe direction, owner call to loosen).
 
 > **Two owner rulings, 2026-08-17, taken at kickoff (recorded in spec §15).**
 > **#65 — void is reversal-aware.** Voiding the ORIGINAL of a live reversal pair is refused naming
@@ -352,9 +370,9 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ## Recommended order
 
 ~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ →
-~~**B** (A/R, merged `6bc45ea`)~~ → **C** (shipping/status) ← **NEXT, NOT STARTED — owner is holding
-here (2026-08-17)** → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
-→ **F** → **G**/**H** as filler.
+~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, PR #141 open 2026-08-18)~~ →
+**E** (close + GL + tripwires — now also #73 and #80, unparked from the accounting answers) ←
+**NEXT when asked** → **D** (stale-load, after the #31 decision) → **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across

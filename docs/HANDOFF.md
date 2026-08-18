@@ -985,9 +985,11 @@ Fedora-specific notes:
 > go-ahead the same day:** #70/#78/#76 closed with their evidence (#78's acceptance is a spec §15
 > amendment), #73/#80 unparked into **Group E** with `ready-for-agent`, #77 parked-low, #69 parked
 > (needs a third person), #71/#4/#8 remain owner calls. **Q12 is RATIFIED** — one step code per
-> process (~15–20), spec §15. **Group C is IN FLIGHT on branch `group-c-shipping-status`**
-> (started 2026-08-17 on the owner's instruction) with two kickoff rulings in spec §15: #65
-> void-is-reversal-aware, #52 persist-print-time-coverage.
+> process (~15–20), spec §15. **Group C is COMPLETE — PR #141 open (2026-08-18)**, branch
+> `group-c-shipping-status`: all eight (#65, #52, #42, #41, #44, #45, #46, #51), two kickoff
+> rulings in spec §15 (#65 void-is-reversal-aware, #52 persist-print-time-coverage), two
+> migrations, three reviews ALL Approved on round 1, gates 3161 tests / 184 files + E2E 23/23.
+> Filed en route: #139, #140. **Next when asked: Group E**, which now also carries #73 and #80.
 >
 > Round 1's own record stays at `docs/2026-08-16-issue-burndown-handoff.md` — read its closing
 > "outlives it" section before starting, especially lesson 4 (when each review round finds defects in
