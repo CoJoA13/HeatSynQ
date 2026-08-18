@@ -216,6 +216,13 @@ export function NewShipment() {
       ? `${selectedCustomer.code} · ${selectedCustomer.name} is on credit hold — saving requires the override_credit_hold action`
       : undefined;
 
+  // #51: the same latest-token gate the candidates fetch uses (`candidatesLatest`), on its own
+  // sequence — bumped by `addOrder`'s dispatch AND by `pickCustomer`, so an add-order response
+  // that lands after a customer switch is dropped instead of trusted by a stale-against-stale
+  // equality check. The server would still refuse the cross-customer save at the end; this keeps
+  // the panel from ever showing it.
+  const addOrderLatest = useLatest();
+
   function pickCustomer(id: string) {
     if (id === customerId) return;
     setCustomerId(id);
@@ -227,6 +234,10 @@ export function NewShipment() {
     setAddChoice("");
     setCreditHoldReason("");
     setError(null);
+    // #51: invalidate any add-order response still in flight — its closure captured the OLD
+    // customerId, so its own `od.customerId !== customerId` guard compares old against old and
+    // would append the previous customer's order into the panel this reset just cleared.
+    addOrderLatest.next();
   }
 
   // ---- add / remove orders ----
@@ -234,8 +245,10 @@ export function NewShipment() {
   async function addOrder() {
     if (!addChoice || addingOrder) return;
     setAddingOrder(true);
+    const t = addOrderLatest.next();
     try {
       const od = await api<OrderDetailLite>(`/api/orders/${addChoice}`);
+      if (!addOrderLatest.isCurrent(t)) return; // the customer changed while this was in flight
       if (od.customerId !== customerId) {
         setError(`Order #${od.orderNumber} belongs to another customer.`);
         return;
@@ -268,7 +281,9 @@ export function NewShipment() {
       setAddChoice("");
       setError(null);
     } catch (e) {
-      setError((e as Error).message);
+      // Ticket-gated like the success path (#51) — a superseded request's failure must not
+      // surface an error about a customer the operator has already left.
+      if (addOrderLatest.isCurrent(t)) setError((e as Error).message);
     } finally {
       setAddingOrder(false);
     }
