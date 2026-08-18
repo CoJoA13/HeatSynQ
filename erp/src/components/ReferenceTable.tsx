@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
+import { useLatest } from "@/lib/use-latest";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PasteGrid } from "@/components/PasteGrid";
@@ -43,10 +44,29 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const canDelete = gate(perms, "admin.delete");
   const canEdit = gate(perms, "admin.edit");
 
+  // Named `latest`, not `gate` — this file also imports `gate` from permission-ui for the
+  // held-permission checks below, and shadowing that binding with the stale-response gate would
+  // break every `gate(perms, ...)` call in this component (the customers/page.tsx hazard).
+  const latest = useLatest();
+  // F7 (customers/page.tsx precedent): ticket-gated on BOTH paths — a rapid Show-inactive
+  // toggle, or a handler refresh racing one, can land out of order (inactive rows painted under
+  // an unchecked box; a just-flipped flag visually reverting), and a superseded request's
+  // rejection must not overwrite fresh rows with a stale failure either. Cross-KIND safety is
+  // NOT this gate's job: it rests on the mount site remounting the component per kind via
+  // `key={kind}` (admin/reference/page.tsx) — a standing requirement for any future mount site.
   const load = useCallback(async () => {
-    setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
-  }, [kind, showInactive]);
-  useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+    const t = latest.next();
+    let data: Row[];
+    try {
+      data = await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+  }, [kind, showInactive, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   // A stale blocker list from another kind's row must not linger on screen once the admin
   // switches tables.

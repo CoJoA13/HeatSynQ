@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { useLatest } from "@/lib/use-latest";
 
 // Mirrors src/server/attachments.ts's AttachmentOwner/AttachmentMeta shape — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -46,11 +47,27 @@ export function AttachmentsSection({
   const basePath = `/api/${AREA_PATH[owner]}/${ownerId}/attachments`;
   const editTitle = canEdit ? undefined : `Requires ${EDIT_PERMISSION[owner]}`;
 
+  const latest = useLatest();
+  // F7 (customers/page.tsx precedent): ticket-gated on BOTH paths. `load` is the one funnel for
+  // the mount fetch and the upload/delete refreshes, and delete stays enabled during an upload,
+  // so two list GETs can overlap — the earlier snapshot landing last would hide a committed
+  // change ("uploaded but not listed", "deleted but still listed") — and a superseded request's
+  // rejection must not overwrite current state with a stale failure either. Deliberately no
+  // setError(null) on success here (§5.13): the handlers clear the banner themselves before
+  // dispatching their refresh, and a reload must never erase a failure reported after it started.
   const load = useCallback(async () => {
-    const data = await api<AttachmentRow[]>(basePath);
+    const t = latest.next();
+    let data: AttachmentRow[];
+    try {
+      data = await api<AttachmentRow[]>(basePath);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
     setRows(data);
-  }, [basePath]);
-  useEffect(() => { load().then(() => setError(null)).catch((e) => setError((e as Error).message)); }, [load]);
+  }, [basePath, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   async function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

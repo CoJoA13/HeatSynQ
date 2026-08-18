@@ -43,10 +43,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // A second, SEPARATE gate for the /api/auth/me fetch — deliberately not sharing sequence
+  // numbers with the search gate (`latest`, below): the two answer different questions, and a
+  // search dispatch must not orphan a me-response or vice versa.
+  const meLatest = useLatest();
+  // F7 (customers/page.tsx precedent): ticket-gated on BOTH paths. This effect refires on EVERY
+  // pathname change, so a superseded request's transient REJECTION landing after a newer
+  // success used to redirect a logged-in user to /login. A stale success is dropped, a stale
+  // rejection is swallowed; a CURRENT rejection keeps the redirect.
   useEffect(() => {
     if (pathname === "/login") return;
-    api<Me>("/api/auth/me").then(setMe).catch(() => router.push("/login"));
-  }, [pathname, router]);
+    const t = meLatest.next();
+    api<Me>("/api/auth/me")
+      .then((data) => { if (meLatest.isCurrent(t)) setMe(data); })
+      .catch(() => { if (meLatest.isCurrent(t)) router.push("/login"); });
+  }, [pathname, router, meLatest]);
 
   async function signOut() {
     setMe(null);
@@ -96,6 +107,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const term = query.trim();
     if (!term) {
+      // Bump the ticket so an in-flight search for the erased term cannot land after this clear
+      // and re-open the dropdown under an empty box — the debounce may already have fired, and
+      // selectResult/Enter clear the box mid-flight while navigating (Shell never remounts, so
+      // the stale response would otherwise re-open over the NEW page). A discarded ticket
+      // nothing will ever match: the makeLatestGate discipline.
+      latest.next();
       setResults(null);
       setOpen(false);
       setSearchError(null);
@@ -104,15 +121,23 @@ export function Shell({ children }: { children: React.ReactNode }) {
     const timer = setTimeout(() => { void runSearch(term); }, 250);
     debounceRef.current = timer;
     return () => clearTimeout(timer);
-  }, [query, runSearch]);
+  }, [query, runSearch, latest]);
 
   // Barcode scanners type digits then send Enter near-instantly — often faster than the 250ms
   // debounce window — so Enter cannot simply read whatever `results` happens to already hold. It
   // cancels any pending debounce timer and issues its own immediate, ticket-gated search, and
   // navigates on THAT response's `exactOrderId`. This is the scan path (task-12-brief.md).
+  // A deliberate close (Escape, blur) also discards any in-flight search: without the ticket
+  // bump, a late current-ticket response would re-open the dropdown the user just closed (same
+  // makeLatestGate discipline as the blank-query branch above).
+  function closeSearchDropdown() {
+    latest.next();
+    setOpen(false);
+  }
+
   async function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
-      setOpen(false);
+      closeSearchDropdown();
       return;
     }
     if (e.key !== "Enter") return;
@@ -178,7 +203,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { void onSearchKeyDown(e); }}
               onFocus={() => { if (results) setOpen(true); }}
-              onBlur={() => setOpen(false)}
+              onBlur={closeSearchDropdown}
               placeholder="Search orders, parts, customers… (scan a traveler barcode)"
               className="w-full max-w-xl rounded border px-3 py-1.5 text-sm"
             />
