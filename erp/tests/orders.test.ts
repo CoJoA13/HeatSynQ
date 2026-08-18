@@ -709,6 +709,73 @@ describe("createOrder: rejections", () => {
 
     expect(await prisma.order.count()).toBe(0);
   });
+
+  // #42: independently valid lines can SUM to a generated load no column can hold — `Load.qty`
+  // is a Postgres INTEGER and `Load.weight` a DECIMAL(12,2) — and the nested create then failed
+  // as an unmapped Postgres overflow, a 500, from inside the transaction. `splitLoads` itself now
+  // refuses (the MAX_LOADS shape) and `runSplitLoads` translates that into the field-anchored 400,
+  // so BOTH generated-load paths (this save and resplitLoads) are covered by one guard. The
+  // manual editor (replaceLoads) validates independently and was already bounded — its own
+  // LOAD_ITEM schema, pinned in order-loads.test.ts.
+  it("rejects a generated load past the Int4 qty ceiling with a 400 naming the load and the cap, and writes nothing", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // 215 lines × 10,000,000 pcs (each under LINE_QTY's own cap) = 2,150,000,000 — the issue's
+    // exact repro; the cap-less lead puts the whole total into one load.
+    const lines = [...Array(215)].map(() => ({ partId: noCap.id, qty: 10_000_000, weight: "1.00" }));
+    await expect(asSystem(() => createOrder({ customerId: customer.id, lines })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "Load 1's quantity 2,150,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities",
+      });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("rejects a generated load past the Decimal(12,2) weight ceiling with a 400 naming the load and the cap, and writes nothing", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // Two lines each at the exact per-line Decimal(12,2) maximum — individually valid, unstorable
+    // as one load's weight.
+    const lines = [
+      { partId: noCap.id, qty: 1, weight: "9999999999.99" },
+      { partId: noCap.id, qty: 1, weight: "9999999999.99" },
+    ];
+    await expect(asSystem(() => createOrder({ customerId: customer.id, lines })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "Load 1's weight 19,999,999,999.98 exceeds the database maximum 9,999,999,999.99 — check the line weights",
+      });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("accepts a generated load at exactly the qty and weight ceilings — the guard must not over-block", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // 214 × 10,000,000 + 7,483,647 = 2,147,483,647 exactly.
+    const qtyLines = [...Array(214)].map(() => ({ partId: noCap.id, qty: 10_000_000, weight: "1.00" }));
+    qtyLines.push({ partId: noCap.id, qty: 7_483_647, weight: "1.00" });
+    const { order: atQtyCap } = await asSystem(() => createOrder({ customerId: customer.id, lines: qtyLines }));
+    expect(atQtyCap.loads).toHaveLength(1);
+    expect(atQtyCap.loads[0].qty).toBe(2_147_483_647);
+
+    const { order: atWeightCap } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: noCap.id, qty: 1, weight: "9999999999.99" }],
+    }));
+    expect(atWeightCap.loads).toHaveLength(1);
+    expect(atWeightCap.loads[0].weight).toBe(9_999_999_999.99);
+  });
 });
 
 describe("createOrder: serials", () => {

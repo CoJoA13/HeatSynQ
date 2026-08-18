@@ -343,9 +343,10 @@ export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty
 }
 
 /**
- * `splitLoads` (fix-wave R2 finding 3) throws a plain `Error` when the split would exceed
- * `MAX_LOADS` — it lives in src/lib and has no server import, so it cannot throw `HttpError`
- * itself. This is the one seam that translates that refusal into the field-anchored 400 every
+ * `splitLoads` throws a plain `Error` when the split would exceed `MAX_LOADS` (fix-wave R2
+ * finding 3) or when a generated load would overflow `Load.qty`/`Load.weight`'s column ranges
+ * (#42) — it lives in src/lib and has no server import, so it cannot throw `HttpError`
+ * itself. This is the one seam that translates those refusals into the field-anchored 400 every
  * other boundary in this service uses, the same shape `parseDate` gives `parseDateOnly`'s plain
  * throw. Exported for order-loads.ts's `resplitLoads`, the only other caller of `splitLoads` — a
  * live loadQty/loadWeight cap can be edited down against an existing large order exactly as

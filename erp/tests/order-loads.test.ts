@@ -144,6 +144,23 @@ describe("replaceLoads", () => {
     expect(saved.loads[0].qty).toBe(2_147_483_647);
   });
 
+  // #42's manual-path half: `Load.weight` is a DECIMAL(12,2) — `decimalField(12, 2)` already
+  // bounds the manual editor to ten integer digits, so the overflow is refused at zod exactly
+  // like the Int4 qty above. Pinned here so the generated-path guard (splitLoads) and this one
+  // can never drift apart silently.
+  it("rejects a manual load weight past the Decimal(12,2) ceiling", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id);
+
+    await expect(asSystem(() => replaceLoads(order.id,
+      [{ loadNumber: 1, qty: 1, weight: "10000000000.00" }])))
+      .rejects.toBeInstanceOf(ZodError);
+    // The ceiling itself is still accepted.
+    const { order: saved } = await asSystem(() => replaceLoads(order.id,
+      [{ loadNumber: 1, qty: 1, weight: "9999999999.99" }]));
+    expect(saved.loads[0].weight).toBe(9_999_999_999.99);
+  });
+
   // Fix-wave R4 finding 4: `MAX_LOADS` was enforced only on the AUTO-SPLIT path (runSplitLoads,
   // orders.ts) — the manual bulk replace could set a load count no split would ever produce, one
   // INSERT per row inside a single Serializable transaction. Same cap, now on both doors.
@@ -380,6 +397,34 @@ describe("resplitLoads", () => {
       status: 400,
       message: "This split would produce 10001 loads (max 10,000) — check the part's load quantity",
     });
+  });
+
+  // #42: resplitLoads generates its loads through the same splitLoads guard createOrder uses, so
+  // an order whose line totals have grown past a destination-column ceiling (each line's own
+  // INTEGER column still fits — only the SUM does not) refuses with the field-anchored 400
+  // instead of an unmapped Postgres overflow 500, and leaves the existing loads untouched.
+  it("maps a re-split past the Int4 qty ceiling to the field-anchored 400 and leaves loads untouched", async () => {
+    const { customer, lead } = await fixture();
+    const order = await baseOrder(lead.id, customer.id); // 100 pcs → 40/40/20 under the 40 cap
+
+    // Raw prisma on purpose: three lines of 1,000,000,000 each are individually storable, and the
+    // per-line zod cap (LINE_QTY, 10,000,000) makes this state unreachable through one save — but
+    // an order grows line by line. The cap is removed so the re-split makes ONE load of the total.
+    await prisma.part.update({ where: { id: lead.id }, data: { loadQty: null } });
+    await prisma.orderLine.update({ where: { id: order.lines[0].id }, data: { qty: 1_000_000_000 } });
+    await prisma.orderLine.create({
+      data: { orderId: order.id, position: 2, partId: lead.id, qty: 1_000_000_000, weight: "1.00" },
+    });
+    await prisma.orderLine.create({
+      data: { orderId: order.id, position: 3, partId: lead.id, qty: 1_000_000_000, weight: "1.00" },
+    });
+
+    await expect(asSystem(() => resplitLoads(order.id))).rejects.toMatchObject({
+      status: 400,
+      message: "Load 1's quantity 3,000,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities",
+    });
+    const loads = await prisma.load.findMany({ where: { orderId: order.id }, orderBy: { loadNumber: "asc" } });
+    expect(loads.map((l) => l.qty)).toEqual([40, 40, 20]);
   });
 
   it("uses the part's LIVE loadQty cap, not whatever it was at order-creation time", async () => {

@@ -7,6 +7,8 @@
 // every value — including the rounding-absorbing last one — clean, and keeps the underlying cents
 // exactly summing to the total by construction.
 
+import { INT4_MAX } from "./order-constants";
+
 export type LoadSplit = { qty: number; weight: number };
 
 /** Fix-wave R2 finding 3: nothing else bounds how many loads a split can produce — a huge
@@ -15,6 +17,44 @@ export type LoadSplit = { qty: number; weight: number };
  *  analytically against the load COUNT before any allocation happens, not by letting the loop
  *  run and counting — the whole point is refusing before the memory is ever touched. */
 export const MAX_LOADS = 10_000;
+
+/** #42: `Load.weight`'s own column ceiling — DECIMAL(12,2) (schema.prisma), ten integer digits
+ *  and two fractional. The manual editor already refuses past it (`decimalField(12, 2)`,
+ *  order-loads.ts); this is the same bound for the GENERATED loads below. */
+export const LOAD_WEIGHT_MAX = 9_999_999_999.99;
+
+const fmtQty = (n: number) => n.toLocaleString("en-US");
+const fmtWeight = (n: number) =>
+  n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * #42: every load this module RETURNS must fit its destination columns — `Load.qty` is a
+ * Postgres INTEGER and `Load.weight` a DECIMAL(12,2). Independently valid lines can sum past
+ * either (215 lines of 10,000,000 pcs make one 2,150,000,000-pc load; two near-max line weights
+ * make one unstorable weight), and an unchecked load then failed at insert as an unmapped
+ * Postgres overflow — a 500, not a refusal. Checked on the OUTPUT loads rather than the input
+ * totals because the split itself can resolve an overflow (a capped split chunks an overflowing
+ * total into loads that each fit) or fail to (a large-enough cap still emits an unstorable
+ * load). Plain `Error`s, the MAX_LOADS shape — `runSplitLoads` (orders.ts) translates them into
+ * the field-anchored 400 for both generated-load callers (createOrder and resplitLoads).
+ */
+function assertLoadsFitColumns(loads: LoadSplit[]): LoadSplit[] {
+  for (const [i, load] of loads.entries()) {
+    if (load.qty > INT4_MAX) {
+      throw new Error(
+        `Load ${i + 1}'s quantity ${fmtQty(load.qty)} exceeds the database maximum ` +
+        `${fmtQty(INT4_MAX)} — check the line quantities`,
+      );
+    }
+    if (load.weight > LOAD_WEIGHT_MAX) {
+      throw new Error(
+        `Load ${i + 1}'s weight ${fmtWeight(load.weight)} exceeds the database maximum ` +
+        `${fmtWeight(LOAD_WEIGHT_MAX)} — check the line weights`,
+      );
+    }
+  }
+  return loads;
+}
 
 /**
  * Splits `totalQty`/`totalWeight` into loads honoring both `loadQty` and `loadWeight` caps
@@ -51,7 +91,7 @@ export function splitLoads(input: {
   const { totalQty, totalWeight, loadQty, loadWeight } = input;
 
   if (loadQty === null && loadWeight === null) {
-    return [{ qty: totalQty, weight: totalWeight }];
+    return assertLoadsFitColumns([{ qty: totalQty, weight: totalWeight }]);
   }
 
   const eachWeight = totalWeight / totalQty;
@@ -81,5 +121,5 @@ export function splitLoads(input: {
     loads.push({ qty, weight: (cumCents - priorCumCents) / 100 });
     priorCumCents = cumCents;
   }
-  return loads;
+  return assertLoadsFitColumns(loads);
 }

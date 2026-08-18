@@ -165,4 +165,44 @@ describe("splitLoads", () => {
         .toThrow("This split would produce 10001 loads (max 10,000) — check the part's load quantity");
     });
   });
+
+  // #42: the split's OUTPUT must fit the destination columns — `Load.qty` is a Postgres INTEGER
+  // (max 2,147,483,647) and `Load.weight` a DECIMAL(12,2) (max 9,999,999,999.99). Independently
+  // valid lines can sum past either (215 lines of 10,000,000 pcs; two near-max weights), and an
+  // unchecked load then failed at insert as an unmapped Postgres overflow — a 500. Checked per
+  // LOAD, not per total: a total that overflows unsplit is legal once a cap chunks it into loads
+  // that each fit.
+  describe("the column-range caps (#42)", () => {
+    it("refuses a load whose qty exceeds the Int4 ceiling, naming the load and the cap", () => {
+      expect(() => splitLoads({ totalQty: 2_150_000_000, totalWeight: 1000, loadQty: null, loadWeight: null }))
+        .toThrow("Load 1's quantity 2,150,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities");
+    });
+
+    it("refuses a load whose weight exceeds the Decimal(12,2) ceiling, naming the load and the cap", () => {
+      expect(() => splitLoads({ totalQty: 2, totalWeight: 19_999_999_999.98, loadQty: null, loadWeight: null }))
+        .toThrow("Load 1's weight 19,999,999,999.98 exceeds the database maximum 9,999,999,999.99 — check the line weights");
+    });
+
+    it("boundary: a load at exactly both ceilings passes untouched", () => {
+      const loads = splitLoads({
+        totalQty: 2_147_483_647, totalWeight: 9_999_999_999.99, loadQty: null, loadWeight: null,
+      });
+      expect(loads).toEqual([{ qty: 2_147_483_647, weight: 9_999_999_999.99 }]);
+    });
+
+    it("measures the LOAD, not the total: an overflowing total passes once a cap splits it into fitting loads", () => {
+      const loads = splitLoads({ totalQty: 2, totalWeight: 19_999_999_999.98, loadQty: 1, loadWeight: null });
+      expect(loads).toEqual([
+        { qty: 1, weight: 9_999_999_999.99 },
+        { qty: 1, weight: 9_999_999_999.99 },
+      ]);
+    });
+
+    it("a capped split whose individual loads still overflow is refused all the same", () => {
+      // 4 pcs at 7.5e9 lb each, capped 2/load → two loads of 15,000,000,000.00 lb — the cap is
+      // honored and the load STILL cannot be stored, so the guard has to look at the output.
+      expect(() => splitLoads({ totalQty: 4, totalWeight: 30_000_000_000, loadQty: 2, loadWeight: null }))
+        .toThrow("Load 1's weight 15,000,000,000.00 exceeds the database maximum 9,999,999,999.99 — check the line weights");
+    });
+  });
 });
