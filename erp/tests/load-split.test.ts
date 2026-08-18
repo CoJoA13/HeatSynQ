@@ -6,6 +6,11 @@ import { splitLoads, type LoadSplit } from "@/lib/load-split";
 // see load-split.ts's header comment on why the implementation stays in integer cents rather
 // than floating pounds until the final division.
 
+/** A weight literal → BigInt cents (the shape `splitLoads` takes since Codex PR #141 round 4). A
+ *  single literal is exact in a double (each fits DECIMAL(12,2)); only SUMS of many need
+ *  `lineTotals`' BigInt accumulation — which has its own end-to-end test in orders.test.ts. */
+const cents = (w: number) => BigInt(Math.round(w * 100));
+
 function sumQty(loads: LoadSplit[]): number {
   return loads.reduce((s, l) => s + l.qty, 0);
 }
@@ -15,12 +20,12 @@ function sumWeight(loads: LoadSplit[]): number {
 
 describe("splitLoads", () => {
   it("no caps set: a single load carries the totals unchanged", () => {
-    const loads = splitLoads({ totalQty: 500, totalWeight: 1234.56, loadQty: null, loadWeight: null });
+    const loads = splitLoads({ totalQty: 500, totalWeightCents: cents(1234.56), loadQty: null, loadWeight: null });
     expect(loads).toEqual([{ qty: 500, weight: 1234.56 }]);
   });
 
   it("qty cap only: 1,000 @ loadQty 300 → 300/300/300/100", () => {
-    const loads = splitLoads({ totalQty: 1000, totalWeight: 1000, loadQty: 300, loadWeight: null });
+    const loads = splitLoads({ totalQty: 1000, totalWeightCents: cents(1000), loadQty: 300, loadWeight: null });
     expect(loads).toEqual([
       { qty: 300, weight: 300 },
       { qty: 300, weight: 300 },
@@ -32,7 +37,7 @@ describe("splitLoads", () => {
   });
 
   it("weight cap only: 1,000 pcs @ 2.6 lb each, loadWeight 700 → floor(700/2.6) = 269/load", () => {
-    const loads = splitLoads({ totalQty: 1000, totalWeight: 2600, loadQty: null, loadWeight: 700 });
+    const loads = splitLoads({ totalQty: 1000, totalWeightCents: cents(2600), loadQty: null, loadWeight: 700 });
     expect(loads.map((l) => l.qty)).toEqual([269, 269, 269, 193]);
     expect(loads.map((l) => l.weight)).toEqual([699.4, 699.4, 699.4, 501.8]);
     expect(sumQty(loads)).toBe(1000);
@@ -40,7 +45,7 @@ describe("splitLoads", () => {
   });
 
   it("both caps set together: the tighter one wins (269 from weight, not loadQty's 300)", () => {
-    const loads = splitLoads({ totalQty: 1000, totalWeight: 2600, loadQty: 300, loadWeight: 700 });
+    const loads = splitLoads({ totalQty: 1000, totalWeightCents: cents(2600), loadQty: 300, loadWeight: 700 });
     expect(loads.map((l) => l.qty)).toEqual([269, 269, 269, 193]);
     expect(loads[0].qty).not.toBe(300);
     expect(sumQty(loads)).toBe(1000);
@@ -49,7 +54,7 @@ describe("splitLoads", () => {
 
   it("heavy-piece clamp: a piece heavier than loadWeight still gets its own load (never 0)", () => {
     // 3 pieces @ 900 lb each; loadWeight 700 < 900, so floor(700/900) = 0, clamped to 1/load.
-    const loads = splitLoads({ totalQty: 3, totalWeight: 2700, loadQty: null, loadWeight: 700 });
+    const loads = splitLoads({ totalQty: 3, totalWeightCents: cents(2700), loadQty: null, loadWeight: 700 });
     expect(loads).toEqual([
       { qty: 1, weight: 900 },
       { qty: 1, weight: 900 },
@@ -60,7 +65,7 @@ describe("splitLoads", () => {
   });
 
   it("exact multiple: 900 @ loadQty 300 → three equal loads, no trailing zero-qty load", () => {
-    const loads = splitLoads({ totalQty: 900, totalWeight: 2700, loadQty: 300, loadWeight: null });
+    const loads = splitLoads({ totalQty: 900, totalWeightCents: cents(2700), loadQty: 300, loadWeight: null });
     expect(loads).toEqual([
       { qty: 300, weight: 900 },
       { qty: 300, weight: 900 },
@@ -72,7 +77,7 @@ describe("splitLoads", () => {
   });
 
   it("multi-line order totals (mockup shape): 4,500 @ loadQty 336 → 14 loads, last takes the remainder", () => {
-    const loads = splitLoads({ totalQty: 4500, totalWeight: 9000, loadQty: 336, loadWeight: null });
+    const loads = splitLoads({ totalQty: 4500, totalWeightCents: cents(9000), loadQty: 336, loadWeight: null });
     expect(loads).toHaveLength(14); // ceil(4500 / 336)
     expect(loads.slice(0, 13).every((l) => l.qty === 336)).toBe(true);
     expect(loads[13].qty).toBe(4500 - 13 * 336);
@@ -82,18 +87,18 @@ describe("splitLoads", () => {
 
   it("weights sum exactly to the total in every case above — no floating-point drift", () => {
     const cases = [
-      { totalQty: 500, totalWeight: 1234.56, loadQty: null, loadWeight: null },
-      { totalQty: 1000, totalWeight: 1000, loadQty: 300, loadWeight: null },
-      { totalQty: 1000, totalWeight: 2600, loadQty: null, loadWeight: 700 },
-      { totalQty: 1000, totalWeight: 2600, loadQty: 300, loadWeight: 700 },
-      { totalQty: 3, totalWeight: 2700, loadQty: null, loadWeight: 700 },
-      { totalQty: 900, totalWeight: 2700, loadQty: 300, loadWeight: null },
-      { totalQty: 4500, totalWeight: 9000, loadQty: 336, loadWeight: null },
+      { totalQty: 500, totalWeightCents: cents(1234.56), loadQty: null, loadWeight: null },
+      { totalQty: 1000, totalWeightCents: cents(1000), loadQty: 300, loadWeight: null },
+      { totalQty: 1000, totalWeightCents: cents(2600), loadQty: null, loadWeight: 700 },
+      { totalQty: 1000, totalWeightCents: cents(2600), loadQty: 300, loadWeight: 700 },
+      { totalQty: 3, totalWeightCents: cents(2700), loadQty: null, loadWeight: 700 },
+      { totalQty: 900, totalWeightCents: cents(2700), loadQty: 300, loadWeight: null },
+      { totalQty: 4500, totalWeightCents: cents(9000), loadQty: 336, loadWeight: null },
     ];
     for (const c of cases) {
       const loads = splitLoads(c);
       expect(sumQty(loads)).toBe(c.totalQty);
-      expect(sumWeight(loads)).toBe(c.totalWeight);
+      expect(sumWeight(loads)).toBe(Number(c.totalWeightCents) / 100);
     }
   });
 
@@ -105,7 +110,7 @@ describe("splitLoads", () => {
   // cent (4 cents spent on 4 loads), leaving the fifth load to absorb totalCents(3) - used(4) =
   // -1 cent.
   it("counter-example: totalQty=5, totalWeight=0.03, loadWeight cap 0.01 never goes negative", () => {
-    const loads = splitLoads({ totalQty: 5, totalWeight: 0.03, loadQty: null, loadWeight: 0.01 });
+    const loads = splitLoads({ totalQty: 5, totalWeightCents: cents(0.03), loadQty: null, loadWeight: 0.01 });
     expect(loads.map((l) => l.qty)).toEqual([1, 1, 1, 1, 1]);
     expect(loads.every((l) => l.weight >= 0)).toBe(true);
     expect(sumQty(loads)).toBe(5);
@@ -116,28 +121,25 @@ describe("splitLoads", () => {
   });
 
   it("no load's weight is ever negative and no load exceeds its proportional share by more than a cent (property check over many odd ratios)", () => {
-    const cases: { totalQty: number; totalWeight: number; loadQty: number | null; loadWeight: number | null }[] = [];
+    const cases: { totalQty: number; totalWeightCents: bigint; loadQty: number | null; loadWeight: number | null }[] = [];
     for (let totalQty = 1; totalQty <= 23; totalQty++) {
-      for (let cents = 1; cents <= 47; cents++) {
-        cases.push({ totalQty, totalWeight: cents / 100, loadQty: Math.max(1, Math.floor(totalQty / 3)) || 1, loadWeight: null });
+      for (let totalCents = 1; totalCents <= 47; totalCents++) {
+        cases.push({ totalQty, totalWeightCents: BigInt(totalCents), loadQty: Math.max(1, Math.floor(totalQty / 3)) || 1, loadWeight: null });
       }
     }
     for (const c of cases) {
       const loads = splitLoads(c);
-      const perLoadQty = c.loadQty ?? c.totalQty;
-      const idealCentsPerLoad = (Math.round(c.totalWeight * 100) * perLoadQty) / c.totalQty;
       for (const l of loads) {
         expect(l.weight).toBeGreaterThanOrEqual(0);
       }
       // Every load's cents are within 1 cent of its ideal proportional share (cumulative
       // rounding's own guarantee) — checked on every load, not just the ones at perLoadQty.
       for (const l of loads) {
-        const idealForThisLoad = (Math.round(c.totalWeight * 100) * l.qty) / c.totalQty;
+        const idealForThisLoad = (Number(c.totalWeightCents) * l.qty) / c.totalQty;
         expect(Math.abs(Math.round(l.weight * 100) - idealForThisLoad)).toBeLessThanOrEqual(1);
       }
       expect(sumQty(loads)).toBe(c.totalQty);
-      expect(loads.reduce((s, l) => s + Math.round(l.weight * 100), 0)).toBe(Math.round(c.totalWeight * 100));
-      void idealCentsPerLoad;
+      expect(loads.reduce((s, l) => s + Math.round(l.weight * 100), 0)).toBe(Number(c.totalWeightCents));
     }
   });
 
@@ -146,22 +148,22 @@ describe("splitLoads", () => {
   // so unboundedly (the finding's own repro: 10,000,000 pcs at 1/load).
   describe("the 10,000-load cap", () => {
     it("throws instead of allocating 10,000,000 load objects, naming the count and the cap", () => {
-      expect(() => splitLoads({ totalQty: 10_000_000, totalWeight: 10_000_000, loadQty: 1, loadWeight: null }))
+      expect(() => splitLoads({ totalQty: 10_000_000, totalWeightCents: cents(10_000_000), loadQty: 1, loadWeight: null }))
         .toThrow("This split would produce 10000000 loads (max 10,000) — check the part's load quantity");
     });
 
     it("boundary: exactly 10,000 loads is allowed; 10,001 is refused", () => {
-      const atCap = splitLoads({ totalQty: 10_000, totalWeight: 10_000, loadQty: 1, loadWeight: null });
+      const atCap = splitLoads({ totalQty: 10_000, totalWeightCents: cents(10_000), loadQty: 1, loadWeight: null });
       expect(atCap).toHaveLength(10_000);
 
-      expect(() => splitLoads({ totalQty: 10_001, totalWeight: 10_001, loadQty: 1, loadWeight: null }))
+      expect(() => splitLoads({ totalQty: 10_001, totalWeightCents: cents(10_001), loadQty: 1, loadWeight: null }))
         .toThrow("This split would produce 10001 loads (max 10,000) — check the part's load quantity");
     });
 
     it("the weight-cap path is bounded the same way (loadQty derived from loadWeight, not just loadQty itself)", () => {
       // eachWeight 1, loadWeight cap 1 -> perLoadQty 1 -> same 10,001-load overflow, reached
       // through the OTHER cap this time.
-      expect(() => splitLoads({ totalQty: 10_001, totalWeight: 10_001, loadQty: null, loadWeight: 1 }))
+      expect(() => splitLoads({ totalQty: 10_001, totalWeightCents: cents(10_001), loadQty: null, loadWeight: 1 }))
         .toThrow("This split would produce 10001 loads (max 10,000) — check the part's load quantity");
     });
   });
@@ -174,24 +176,24 @@ describe("splitLoads", () => {
   // that each fit.
   describe("the column-range caps (#42)", () => {
     it("refuses a load whose qty exceeds the Int4 ceiling, naming the load and the cap", () => {
-      expect(() => splitLoads({ totalQty: 2_150_000_000, totalWeight: 1000, loadQty: null, loadWeight: null }))
+      expect(() => splitLoads({ totalQty: 2_150_000_000, totalWeightCents: cents(1000), loadQty: null, loadWeight: null }))
         .toThrow("Load 1's quantity 2,150,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities");
     });
 
     it("refuses a load whose weight exceeds the Decimal(12,2) ceiling, naming the load and the cap", () => {
-      expect(() => splitLoads({ totalQty: 2, totalWeight: 19_999_999_999.98, loadQty: null, loadWeight: null }))
+      expect(() => splitLoads({ totalQty: 2, totalWeightCents: cents(19_999_999_999.98), loadQty: null, loadWeight: null }))
         .toThrow("Load 1's weight 19,999,999,999.98 exceeds the database maximum 9,999,999,999.99 — check the line weights");
     });
 
     it("boundary: a load at exactly both ceilings passes untouched", () => {
       const loads = splitLoads({
-        totalQty: 2_147_483_647, totalWeight: 9_999_999_999.99, loadQty: null, loadWeight: null,
+        totalQty: 2_147_483_647, totalWeightCents: cents(9_999_999_999.99), loadQty: null, loadWeight: null,
       });
       expect(loads).toEqual([{ qty: 2_147_483_647, weight: 9_999_999_999.99 }]);
     });
 
     it("measures the LOAD, not the total: an overflowing total passes once a cap splits it into fitting loads", () => {
-      const loads = splitLoads({ totalQty: 2, totalWeight: 19_999_999_999.98, loadQty: 1, loadWeight: null });
+      const loads = splitLoads({ totalQty: 2, totalWeightCents: cents(19_999_999_999.98), loadQty: 1, loadWeight: null });
       expect(loads).toEqual([
         { qty: 1, weight: 9_999_999_999.99 },
         { qty: 1, weight: 9_999_999_999.99 },
@@ -201,7 +203,7 @@ describe("splitLoads", () => {
     it("a capped split whose individual loads still overflow is refused all the same", () => {
       // 4 pcs at 7.5e9 lb each, capped 2/load → two loads of 15,000,000,000.00 lb — the cap is
       // honored and the load STILL cannot be stored, so the guard has to look at the output.
-      expect(() => splitLoads({ totalQty: 4, totalWeight: 30_000_000_000, loadQty: 2, loadWeight: null }))
+      expect(() => splitLoads({ totalQty: 4, totalWeightCents: cents(30_000_000_000), loadQty: 2, loadWeight: null }))
         .toThrow("Load 1's weight 15,000,000,000.00 exceeds the database maximum 9,999,999,999.99 — check the line weights");
     });
 
@@ -214,7 +216,7 @@ describe("splitLoads", () => {
     // 2,329 equal loads, each exactly at the weight ceiling.
     it("prorates 2,329 ceiling-weight loads exactly — no float overflow inventing an overage", () => {
       const loads = splitLoads({
-        totalQty: 16_660_175_440, totalWeight: 23_289_999_999_976.71,
+        totalQty: 16_660_175_440, totalWeightCents: cents(23_289_999_999_976.71),
         loadQty: 7_153_360, loadWeight: null,
       });
       expect(loads).toHaveLength(2329);

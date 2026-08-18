@@ -118,8 +118,11 @@ export function DocumentsSection({
       // long the blob is pinned in memory either way.
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setError(null);
-      await load();
+      // BEFORE the list refresh (Codex PR #141 round 4): the POST above has already archived the
+      // traveler, so the printed fact is established even when the refresh GET below fails — the
+      // parent's monotonic flag must not ride on a read that can independently error.
       onPrinted?.();
+      await load();
     } catch (e) {
       setError((e as Error).message);
     } finally {

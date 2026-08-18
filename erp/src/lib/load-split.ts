@@ -23,20 +23,25 @@ const fmtQty = (n: number) => n.toLocaleString("en-US");
 const fmtWeight = (n: number) =>
   n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** `round(totalCents * cumQty / totalQty)` computed EXACTLY (Codex PR #141 round 3): the float
- *  product overflows 2^53 at large-but-legal scale — 2,329 ceiling-weight loads put it near 4e25 —
- *  and the lost precision shifted a cent between adjacent loads, pushing one a cent past
- *  DECIMAL(12,2) and turning a storable split into a refusal. BigInt keeps the product exact;
- *  `+ den/2` before the truncating division is round-half-up, exactly `Math.round`'s behaviour for
- *  the positive values this function ever sees, so every in-range split is bit-identical to the
- *  old arithmetic. The RESULT always fits a double again (`cumCents ≤ totalCents < 2^53`). */
-function roundedShareCents(totalCents: number, cumQty: number, totalQty: number): number {
-  // `BigInt(2)`, not a `2n` literal — tsconfig targets ES2017, which refuses BigInt literal
-  // syntax while the BigInt global itself is available (Next transpiles for the browsers; Node
-  // runs it natively either way).
+/** `round(totalCents * cumQty / totalQty)` computed EXACTLY (Codex PR #141 rounds 3 and 4): the
+ *  float product overflows 2^53 at large-but-legal scale — 2,329 ceiling-weight loads put it near
+ *  4e25 — and the lost precision shifted a cent between adjacent loads, pushing one a cent past
+ *  DECIMAL(12,2) and turning a storable split into a refusal. Round 4 then showed the INPUT had
+ *  the same disease (a float cents total loses cents past 2^53), so cents are BigInt end-to-end
+ *  now and this stays in BigInt too. `+ den/2` before the truncating division is round-half-up,
+ *  exactly `Math.round`'s behaviour for the positive values this function ever sees, so every
+ *  in-range split is bit-identical to the original float arithmetic.
+ *  (`BigInt(2)`, not a `2n` literal — tsconfig targets ES2017, which refuses BigInt literal
+ *  syntax while the BigInt global itself is available.) */
+function roundedShareCents(totalCents: bigint, cumQty: number, totalQty: number): bigint {
   const den = BigInt(totalQty);
-  return Number((BigInt(totalCents) * BigInt(cumQty) + den / BigInt(2)) / den);
+  return (totalCents * BigInt(cumQty) + den / BigInt(2)) / den;
 }
+
+/** A load's cents → the `weight: number` the rest of the system consumes. Any load that PASSES
+ *  `assertLoadsFitColumns` is at most 1e12 cents — exact in a double — so precision only blurs on
+ *  loads already past the ceiling, where the formatted refusal's far digits carry no meaning. */
+const centsToWeight = (c: bigint): number => Number(c) / 100;
 
 /**
  * #42: every load this module RETURNS must fit its destination columns — `Load.qty` is a
@@ -95,17 +100,22 @@ function assertLoadsFitColumns(loads: LoadSplit[]): LoadSplit[] {
  */
 export function splitLoads(input: {
   totalQty: number;
-  totalWeight: number;
+  /** EXACT total cents (Codex PR #141 round 4) — `lineTotals` (orders.ts) accumulates them in
+   *  BigInt because a float sum loses cents past 2^53 (~9,000 ceiling-weight lines), and a cent
+   *  lost before this function is a cent no arithmetic inside it can recover. */
+  totalWeightCents: bigint;
   loadQty: number | null;
   loadWeight: number | null;
 }): LoadSplit[] {
-  const { totalQty, totalWeight, loadQty, loadWeight } = input;
+  const { totalQty, totalWeightCents, loadQty, loadWeight } = input;
 
   if (loadQty === null && loadWeight === null) {
-    return assertLoadsFitColumns([{ qty: totalQty, weight: totalWeight }]);
+    return assertLoadsFitColumns([{ qty: totalQty, weight: centsToWeight(totalWeightCents) }]);
   }
 
-  const eachWeight = totalWeight / totalQty;
+  // An approximation is all this cap derivation needs (it converts a WEIGHT cap into a qty cap);
+  // the cents themselves never pass through this float.
+  const eachWeight = Number(totalWeightCents) / 100 / totalQty;
   const perLoadQty = Math.min(
     loadQty ?? Infinity,
     loadWeight ? Math.max(1, Math.floor(loadWeight / eachWeight)) : Infinity,
@@ -119,17 +129,18 @@ export function splitLoads(input: {
     );
   }
 
-  const totalCents = Math.round(totalWeight * 100);
   const loads: LoadSplit[] = [];
   let remainingQty = totalQty;
   let cumQty = 0;
-  let priorCumCents = 0;
+  let priorCumCents = BigInt(0);
   while (remainingQty > 0) {
     const qty = Math.min(perLoadQty, remainingQty);
     remainingQty -= qty;
     cumQty += qty;
-    const cumCents = remainingQty === 0 ? totalCents : roundedShareCents(totalCents, cumQty, totalQty);
-    loads.push({ qty, weight: (cumCents - priorCumCents) / 100 });
+    const cumCents = remainingQty === 0
+      ? totalWeightCents
+      : roundedShareCents(totalWeightCents, cumQty, totalQty);
+    loads.push({ qty, weight: centsToWeight(cumCents - priorCumCents) });
     priorCumCents = cumCents;
   }
   return assertLoadsFitColumns(loads);

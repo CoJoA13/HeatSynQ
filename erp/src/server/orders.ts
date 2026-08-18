@@ -342,10 +342,16 @@ async function resolveQuoteLinks(
  * select) rather than re-deriving it — every existing call site already satisfies the narrower
  * shape, so this is a widening, not a breaking change.
  */
-export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty: number; totalWeight: number } {
+export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty: number; totalWeightCents: bigint } {
   const totalQty = lines.reduce((sum, l) => sum + l.qty, 0);
-  const cents = lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
-  return { totalQty, totalWeight: cents / 100 };
+  // Each LINE's cents are exact in a double (a legal line weight fits DECIMAL(12,2) — at most
+  // 1e12 cents); the SUM is not — ~9,000 ceiling-weight lines push it past 2^53, and a cent lost
+  // here is a cent no downstream arithmetic can recover (Codex PR #141 round 4, the accumulation
+  // half of round 3's proration finding). So the sum is BigInt from the first add, and it STAYS
+  // cents all the way through `splitLoads` — the pipeline never round-trips through a float
+  // total again.
+  const cents = lines.reduce((sum, l) => sum + BigInt(Math.round(l.weight * 100)), BigInt(0));
+  return { totalQty, totalWeightCents: cents };
 }
 
 /**

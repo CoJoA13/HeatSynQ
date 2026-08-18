@@ -477,3 +477,25 @@ their weight:
 
 **Gates on the fixed tree:** 3165 tests / 184 files · `tsc`/`eslint`/`build` clean · E2E **23/23**,
 exit 0, watched to completion.
+
+### Codex PR #141 round 4 — three P2s, and the float class dies for good
+
+Round 4 found the ACCUMULATION half of round 3's proration finding: `lineTotals` summed cents in a
+JavaScript number, and ~9,000 ceiling-weight lines push that sum past 2^53 — a cent lost before
+`splitLoads` is a cent no downstream BigInt can recover. **Two consecutive rounds finding float
+defects in the same pipeline is round-1's lesson 4 — the design is the finding** — so instead of a
+third patch, cents are BigInt END-TO-END: `lineTotals` accumulates BigInt from the first add and
+`splitLoads` now TAKES `totalWeightCents: bigint` (both callers spread `lineTotals`, so the rename
+flowed through with zero call-site edits; the 27 test call sites converted to a `cents()` helper).
+Per-load weights convert back to numbers only at sizes the column check permits — exact in a
+double by construction. RED: the 9,010-ceiling-line pure pipeline test (orders.test.ts, running
+the real `lineTotals → splitLoads`) failed against the float accumulation, green after.
+
+Also fixed: **`onPrinted` fires from the successful POST**, before the list refresh that can
+independently fail (the monotonic printed-flag no longer rides on a read); and **both new array
+columns are `NOT NULL` in the database** (migration `20260818100718_array_columns_not_null`
+— defensive backfill + SET NOT NULL; `migrate diff` empty after, so Prisma accepts the shape),
+closing the raw-write hole between the client contract (required lists) and the DDL.
+
+**Gates:** 3166 tests / 184 files · `tsc`/`eslint`/`build` clean · `migrate status` clean on both
+DBs, zero drift · E2E **23/23**, exit 0, watched to completion.
