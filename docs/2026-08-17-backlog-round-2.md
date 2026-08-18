@@ -133,7 +133,7 @@ task, not three, or the second and third will each be rewriting the first.
 
 ---
 
-## Group B — A/R that does NOT need the accountant · **DONE 2026-08-17**, branch `group-b-ar`
+## Group B — A/R that does NOT need the accountant · **MERGED 2026-08-17** as `6bc45ea` (PR #135)
 
 All six closed — #83, #85, #86, #82, #79, #75. Two migrations (a `Terms` CHECK, and the invoice's
 frozen discount terms with a backfill). Three of the six were verified **in the browser** as well as
@@ -330,8 +330,9 @@ it twice. Cross-referenced to the question list.
 
 ## Recommended order
 
-~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ → ~~**B** (A/R)~~ →
-**C** (shipping/status) ← **NEXT** → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
+~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ →
+~~**B** (A/R, merged `6bc45ea`)~~ → **C** (shipping/status) ← **NEXT, NOT STARTED — owner is holding
+here (2026-08-17)** → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
 → **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
