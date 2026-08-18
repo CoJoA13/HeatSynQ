@@ -124,6 +124,20 @@ audited: two writers each channel), §5.16 disabled-with-reason on load failure 
 permission reason taking precedence, no affirmative empty-state from unverified data, the
 sweep's own gate untouched. The counts-line residue accepted as cosmetic-and-signposted.
 
+**Task 7 (rollback-drain + stale closures)** — implementer `1886d14`/`5a6acae`/`4f9bb41`/
+`b828184`, with the Task 2 R1 park-window lesson pre-applied in the drain's loop-until-stable
+(reviewer verified test 6 genuinely pins it). Review: **Needs fixes — the group's one CRITICAL,
+reviewer-REPRODUCED** (repro script run to a hang): the drain is awaited inside the queued fn,
+and a key's chain tail settles only after its own catch completes — so two different-key saves
+failing while overlapping mutually await each other's tails forever. No rollback, no error
+banner, both queues permanently wedged, any third failing key hangs too; the trigger (one
+network blip rejecting all in-flight fetches during two blur-saves) is ordinary use, and the
+pre-change code recovered independently — strictly worse than before. Fix round dispatched with
+the reviewer's direction (a) recommended: drain per-key REQUEST-settled signals (a request's
+settlement is its commit/failure; nothing about a sibling's catch needs to finish), which
+preserves the existing §5.13 error ordering exactly and makes the cycle structurally impossible;
+plus the mandatory two-keys-both-failing regression test RED-first, and the two comment minors.
+
 **Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
 implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
 tree modification). Review: **Spec ✅ · Approved (round 1)**. Every dispatch-named trap checked
