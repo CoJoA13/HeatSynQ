@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@/server/db";
 import { truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { closePeriod, preliminaryReport, reopenPeriod } from "@/server/close-periods";
+import { closePeriod, listClosePeriods, preliminaryReport, reopenPeriod } from "@/server/close-periods";
 import { finalizeInvoice } from "@/server/invoices";
 import { HttpError } from "@/server/errors";
 import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
@@ -230,6 +230,123 @@ describe("close/reopen lifecycle", () => {
     expect(reopened.reopenedAt).not.toBeNull();
     expect(reclosed.closedAt.getTime()).toBeGreaterThanOrEqual(reopened.reopenedAt!.getTime());
     expect(reclosed.closedAt.getTime()).toBeGreaterThan(first.closedAt.getTime());
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #88 (owner ruling 2026-08-17, option c): `listClosePeriods` FLAGS any CLOSED month whose frozen
+// `beginningAr` no longer equals the prior month's frozen `endingAr` — nothing refused, nothing
+// cascaded; the operator re-closes the flagged month to re-chain. Raw `prisma.closePeriod.create`
+// fixtures are legitimate here (the reports precedent): the flag is a PURE READ over frozen rows
+// (no claim, no audit, not Serializable — the Phase 8A rule, restated in the ruling), so these
+// tests need rows in arbitrary shapes, not the close lifecycle that produced them. The one
+// end-to-end test at the bottom drives the real closePeriod/reopenPeriod flow instead.
+// -------------------------------------------------------------------------------------------
+
+describe("listClosePeriods — the broken-chain flag (#88)", () => {
+  /** A frozen ClosePeriod row in an arbitrary shape. Flow figures are zeroed — the flag reads only
+   *  `beginningAr`/`endingAr`/`status`, and `listClosePeriods` never re-derives the schedule. */
+  async function rawClose(year: number, month: number, beginningAr: number, endingAr: number, status = "CLOSED") {
+    return prisma.closePeriod.create({
+      data: {
+        year, month, status, beginningAr, invoicedTotal: 0, creditTotal: 0, paymentTotal: 0,
+        discountTotal: 0, writeOffTotal: 0, endingAr, agingEndingAr: endingAr,
+      },
+    });
+  }
+  type Listed = Awaited<ReturnType<typeof listClosePeriods>>[number];
+  const item = (list: Listed[], year: number, month: number): Listed => {
+    const found = list.find((p) => p.year === year && p.month === month);
+    if (!found) throw new Error(`no listed period ${year}-${month}`);
+    return found;
+  };
+
+  it("an intact chain never flags, and priorEndingAr is populated (incl. the December→January rollover)", async () => {
+    await rawClose(2025, 12, 0, 100);
+    await rawClose(2026, 1, 100, 130);
+    const list = await listClosePeriods();
+    const dec = item(list, 2025, 12);
+    const jan = item(list, 2026, 1);
+    expect(dec.chainBroken).toBe(false); // genesis: begins at $0
+    expect(dec.priorEndingAr).toBeNull();
+    expect(jan.chainBroken).toBe(false); // 100 chains from December's 100 (year rollover)
+    expect(jan.priorEndingAr).toBe(100);
+  });
+
+  it("flags the NEXT month when the prior month's ending moved — the moved month itself does not flag", async () => {
+    // June re-closed with different figures (ending 150) AFTER July was closed chaining from the
+    // old ending (100): July flags; June itself is a clean genesis and does not.
+    await rawClose(2026, 6, 0, 150);
+    await rawClose(2026, 7, 100, 130);
+    const list = await listClosePeriods();
+    expect(item(list, 2026, 6).chainBroken).toBe(false);
+    expect(item(list, 2026, 7).chainBroken).toBe(true);
+    expect(item(list, 2026, 7).priorEndingAr).toBe(150);
+  });
+
+  it("flags a nonzero genesis (a first row that does not begin at $0)", async () => {
+    await rawClose(2026, 7, 50, 150);
+    const list = await listClosePeriods();
+    expect(item(list, 2026, 7).chainBroken).toBe(true);
+    expect(item(list, 2026, 7).priorEndingAr).toBeNull();
+  });
+
+  it("flags a closed row with a GAP before it, even when the figures happen to match", async () => {
+    // Rows for May and July, no June. July's beginning (100) equals MAY's ending — array adjacency
+    // would call that chained; the calendar rule sees June missing and flags the gap.
+    await rawClose(2026, 5, 0, 100);
+    await rawClose(2026, 7, 100, 130);
+    const list = await listClosePeriods();
+    expect(item(list, 2026, 5).chainBroken).toBe(false);
+    expect(item(list, 2026, 7).chainBroken).toBe(true);
+    expect(item(list, 2026, 7).priorEndingAr).toBeNull(); // no June row to read an ending from
+  });
+
+  it("a REOPENED row never flags itself, but its frozen ending still serves as its successor's prior", async () => {
+    // 2025: a CLOSED month chaining cleanly from a REOPENED prior's frozen last-close ending.
+    await rawClose(2025, 3, 0, 100, "REOPENED");
+    await rawClose(2025, 4, 100, 110);
+    // 2026: a REOPENED row that WOULD flag if CLOSED (earlier rows exist, no 2026-05 row, nonzero
+    // beginning) stays unflagged — its figures are explicitly pending; its amber badge already
+    // signals. Its successor still compares against its frozen ending and flags the mismatch.
+    await rawClose(2026, 6, 50, 100, "REOPENED");
+    await rawClose(2026, 7, 90, 120);
+    const list = await listClosePeriods();
+    expect(item(list, 2025, 3).chainBroken).toBe(false);
+    expect(item(list, 2025, 4).chainBroken).toBe(false);
+    expect(item(list, 2025, 4).priorEndingAr).toBe(100);
+    expect(item(list, 2026, 6).chainBroken).toBe(false);
+    expect(item(list, 2026, 7).chainBroken).toBe(true);
+    expect(item(list, 2026, 7).priorEndingAr).toBe(100);
+  });
+
+  it("the ruling's real flow: reopen + re-close July with new figures → August flags; re-close August → re-chained", async () => {
+    await makeFinalizedInvoiceDated("2026-07-05", 100);
+    await asSystem(() => closePeriod(2026, 7)); // July: 0 → 100
+    await makeFinalizedInvoiceDated("2026-08-05", 30);
+    await asSystem(() => closePeriod(2026, 8)); // August: 100 → 130
+    let list = await listClosePeriods();
+    expect(list.map((p) => p.chainBroken)).toEqual([false, false]);
+
+    // A missed July invoice surfaces: reopen July, add it, re-close (July now ends at 150).
+    const july = item(list, 2026, 7);
+    await asSystem(() => reopenPeriod(july.id, "missed a July invoice"));
+    await makeFinalizedInvoiceDated("2026-07-10", 50);
+    await asSystem(() => closePeriod(2026, 7));
+
+    // August's frozen beginning (100) no longer chains from July's new ending (150) — August flags,
+    // July does not, and nothing cascaded or was refused (the ruling: flag only).
+    list = await listClosePeriods();
+    expect(item(list, 2026, 7).chainBroken).toBe(false);
+    expect(item(list, 2026, 8).chainBroken).toBe(true);
+    expect(item(list, 2026, 8).priorEndingAr).toBe(150);
+
+    // The operator re-closes August to re-chain: beginning 150 + invoiced 30 = 180, flag clears.
+    await asSystem(() => closePeriod(2026, 8));
+    list = await listClosePeriods();
+    expect(list.map((p) => p.chainBroken)).toEqual([false, false]);
+    expect(item(list, 2026, 8).beginningAr).toBe(150);
+    expect(item(list, 2026, 8).endingAr).toBe(180);
   });
 });
 

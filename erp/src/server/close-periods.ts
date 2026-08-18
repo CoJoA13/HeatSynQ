@@ -83,6 +83,10 @@ export type PreliminaryReport = {
 };
 export type ClosePeriodListItem = ContinuitySchedule & {
   id: string; year: number; month: number; status: string; closedAt: string;
+  // #88 (owner ruling 2026-08-17, option c): does this CLOSED row still chain from the prior
+  // month's frozen ending? Flag only — nothing refused, nothing cascaded; re-closing re-chains.
+  chainBroken: boolean;
+  priorEndingAr: number | null; // the prior calendar month's frozen endingAr; null when no row
   exportBatches: { id: string; exportNumber: number; emittedAt: string; fileName: string }[];
 };
 
@@ -284,7 +288,8 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
  * isolation requirement, nothing to translate — matches `listBatches` (receipts.ts), not the
  * Serializable+lock shape below. `variance` is recomputed for display only (`endingAr -
  * agingEndingAr`, always 0 for a genuinely CLOSED row since `closePeriod` refuses a nonzero one) —
- * it is not a stored column.
+ * it is not a stored column, and neither is `chainBroken` (#88): both are derived per row from the
+ * one findMany, keeping this a pure read.
  */
 export async function listClosePeriods(): Promise<ClosePeriodListItem[]> {
   const rows = await prisma.closePeriod.findMany({
@@ -299,9 +304,32 @@ export async function listClosePeriods(): Promise<ClosePeriodListItem[]> {
   return rows.map((r) => {
     const endingAr = r.endingAr.toNumber();
     const agingEndingAr = r.agingEndingAr.toNumber();
+    const beginningAr = r.beginningAr.toNumber();
+    // #88 broken-chain flag (owner ruling 2026-08-17, option c): a CLOSED month whose frozen
+    // `beginningAr` no longer equals the prior month's frozen `endingAr` is flagged — the operator
+    // re-closes it to re-chain; nothing is refused and nothing cascades. Compared in integer cents
+    // (the file's shared rounding rule). The prior month is found by CALENDAR arithmetic (month − 1
+    // with year rollover), never by array adjacency — a gap month has no row, and adjacency would
+    // silently compare across the gap. The findMany above fetches EVERY row, so the lookup needs no
+    // second query and this stays the plain read it is (Phase 8A: no claim, no audit, not
+    // Serializable). A REOPENED prior still serves as the comparison base — its `endingAr` is its
+    // frozen last-close value, and its own amber badge already signals the pending reopen — but a
+    // REOPENED row is never flagged ITSELF: its figures are explicitly pending until re-closed.
+    // With no prior row at all, only a genesis close legitimately begins at $0 (`priorEndingAr`'s
+    // genesis rule above); an earlier row behind a missing prior month is a gap in the chain,
+    // flagged even when the figures happen to match across it.
+    const py = r.month === 1 ? r.year - 1 : r.year;
+    const pm = r.month === 1 ? 12 : r.month - 1;
+    const prior = rows.find((p) => p.year === py && p.month === pm);
+    const priorEndingAr = prior ? prior.endingAr.toNumber() : null;
+    const hasEarlier = rows.some((p) => p.year < r.year || (p.year === r.year && p.month < r.month));
+    const chainBroken = r.status === "CLOSED" && (priorEndingAr !== null
+      ? cents(beginningAr) !== cents(priorEndingAr)
+      : hasEarlier || cents(beginningAr) !== 0);
     return {
       id: r.id, year: r.year, month: r.month, status: r.status, closedAt: r.closedAt.toISOString(),
-      beginningAr: r.beginningAr.toNumber(), invoicedTotal: r.invoicedTotal.toNumber(),
+      chainBroken, priorEndingAr,
+      beginningAr, invoicedTotal: r.invoicedTotal.toNumber(),
       creditTotal: r.creditTotal.toNumber(), paymentTotal: r.paymentTotal.toNumber(),
       discountTotal: r.discountTotal.toNumber(), writeOffTotal: r.writeOffTotal.toNumber(),
       endingAr, agingEndingAr, variance: endingAr - agingEndingAr,

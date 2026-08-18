@@ -42,6 +42,10 @@ type ReadinessGap = { kind: string; id: string | null; label: string; href: stri
 type ExportBatchSummary = { id: string; exportNumber: number; emittedAt: string; fileName: string };
 type ClosePeriodListItem = ContinuitySchedule & {
   id: string; year: number; month: number; status: string; closedAt: string;
+  // #88: server-derived broken-chain flag — this CLOSED month's frozen beginning no longer equals
+  // the prior month's frozen ending. Flag only; the operator re-closes the month to re-chain.
+  chainBroken: boolean;
+  priorEndingAr: number | null;
   exportBatches: ExportBatchSummary[];
 };
 type ClosePeriodDetail = ContinuitySchedule & { id: string; year: number; month: number; status: string };
@@ -358,6 +362,11 @@ function ClosePeriodsScreen() {
                   <span className={`rounded px-1.5 py-0.5 text-xs ${p.status === "CLOSED" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
                     {p.status}
                   </span>{" "}
+                  {p.chainBroken && (
+                    <>
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800">CHAIN BROKEN</span>{" "}
+                    </>
+                  )}
                   <span className="text-slate-500">closed {new Date(p.closedAt).toLocaleString()}</span>
                 </div>
                 <div className="flex gap-2">
@@ -375,6 +384,14 @@ function ClosePeriodsScreen() {
               <p className="text-slate-600">
                 Beginning {p.beginningAr.toFixed(2)} · Ending {p.endingAr.toFixed(2)} · Variance {p.variance.toFixed(2)}
               </p>
+              {p.chainBroken && (
+                <p className="text-red-700">
+                  {/* priorEndingAr is null on a flagged genesis/gap row — the chain-from-zero
+                      baseline ($0) is the figure the beginning was expected to match there. */}
+                  Beginning {p.beginningAr.toFixed(2)} no longer matches the prior month&apos;s ending{" "}
+                  {(p.priorEndingAr ?? 0).toFixed(2)} — re-close this month to re-chain.
+                </p>
+              )}
               {p.exportBatches.length === 0 ? (
                 <p className="mt-1 text-slate-400">No export yet.</p>
               ) : (
