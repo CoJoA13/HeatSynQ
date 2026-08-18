@@ -118,9 +118,10 @@ const SURCHARGE_VIA_STEP_CODE = {
 
 /** BillingConfig is the singleton (§4.5): one row, never soft-deleted, no `deletedAt` column at
  *  all — so `liveWhere: {}` is required, for the same reason as above, and the row is always live.
- *  Its four FKs share one `blockerId` (the row's own `'singleton'` id), so a GL account used as
- *  more than one of the three billing accounts lists ONCE, which is what findBlockers' dedupe on
- *  `entityLabel:blockerId` gives us for free. */
+ *  Its seven registry entries (the six billing GL accounts + the cert-charge step code) share one
+ *  `blockerId` (the row's own `'singleton'` id), so a GL account used as more than one of the six
+ *  billing GL accounts lists ONCE, which is what findBlockers' dedupe on `entityLabel:blockerId`
+ *  gives us for free. */
 const BILLING_CONFIG_BLOCKER = {
   entityLabel: "Billing settings",
   detailPath: () => "/admin/billing",

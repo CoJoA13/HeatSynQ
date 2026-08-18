@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Prisma } from "../prisma/generated/prisma/client";
 import { prisma, truncateAll } from "./helpers/db";
-import { withDbErrors, translatePrisma } from "@/server/db-errors";
+import { withDbErrors, translatePrisma, retryOnSerializationConflict } from "@/server/db-errors";
 import { HttpError } from "@/server/errors";
 import { createRole, renameRole } from "@/server/roles";
 
@@ -43,6 +43,23 @@ describe("db error hygiene", () => {
       .toThrow(expect.objectContaining({ status: 409 }));
   });
 
+  // #90: a deadlock victim (SQLSTATE 40P01) is the same condition one notch over — the transaction
+  // was aborted, nothing was written, and a re-run is safe — so it gets the same 409 instead of
+  // escaping as a 500. Raw queries wrap it as P2010 exactly like 40001.
+  it("maps a raw query's deadlock failure (40P01) to 409, same as a serialization failure", async () => {
+    const rawDeadlock = new Prisma.PrismaClientKnownRequestError("Raw query failed. Code: `40P01`.", {
+      code: "P2010", clientVersion: "test",
+      meta: {
+        driverAdapterError: {
+          name: "DriverAdapterError",
+          cause: { originalCode: "40P01", kind: "TransactionWriteConflict" },
+        },
+      },
+    });
+    expect(() => translatePrisma(rawDeadlock, { entity: "Shipment" }))
+      .toThrow(expect.objectContaining({ status: 409 }));
+  });
+
   it("leaves a raw query failure that is not a serialization conflict alone", async () => {
     const otherRaw = new Prisma.PrismaClientKnownRequestError("Raw query failed. Code: `42703`.", {
       code: "P2010", clientVersion: "test",
@@ -67,5 +84,46 @@ describe("db error hygiene", () => {
     expect(rejected).toHaveLength(1);
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(HttpError);
     expect(await prisma.role.count({ where: { name: "Race" } })).toBe(1);
+  });
+});
+
+// #90: the retry wrapper's scope. A P2002 is only a losing-Serializable-writer shape at ONE call
+// site (closePeriod's year-month insert race); the allocation paths answer nonce P2002s by
+// in-attempt replay and never retry (#115), and constraint-name discrimination via `meta.target`
+// is unavailable on the driver-adapter stack (#40) — so the unique-conflict retry is a per-call
+// opt-in boolean, default off. Deadlock victims (40P01) join 40001 as always-retryable.
+describe("retryOnSerializationConflict scope (#90)", () => {
+  const p2002 = () => new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+    code: "P2002", clientVersion: "test", meta: { target: ["year", "month"] },
+  });
+  const rawDeadlock = () => new Prisma.PrismaClientKnownRequestError("Raw query failed. Code: `40P01`.", {
+    code: "P2010", clientVersion: "test",
+    meta: { driverAdapterError: { cause: { originalCode: "40P01" } } },
+  });
+
+  it("throws a P2002 on attempt 1 through the DEFAULT path — the unique retry is opt-in", async () => {
+    let calls = 0;
+    await expect(retryOnSerializationConflict(async () => { calls += 1; throw p2002(); }, 5))
+      .rejects.toMatchObject({ code: "P2002" });
+    expect(calls).toBe(1);
+  });
+
+  it("retries a P2002 up to `tries` through the opt-in path (closePeriod's year-month race)", async () => {
+    let calls = 0;
+    await expect(retryOnSerializationConflict(
+      async () => { calls += 1; throw p2002(); }, 3, { retryUniqueConflict: true },
+    )).rejects.toMatchObject({ code: "P2002" });
+    expect(calls).toBe(3);
+  });
+
+  it("absorbs a raw deadlock victim (40P01) when the re-run succeeds", async () => {
+    let calls = 0;
+    const result = await retryOnSerializationConflict(async () => {
+      calls += 1;
+      if (calls === 1) throw rawDeadlock();
+      return "ok";
+    });
+    expect(result).toBe("ok");
+    expect(calls).toBe(2);
   });
 });

@@ -8,7 +8,7 @@ import {
   mapLimited, verifyArchive, clearIntegrityCache,
   INTEGRITY_CONCURRENCY, INTEGRITY_CACHE_TTL_MS, INTEGRITY_TIMEOUT_MS, integrityOk,
 } from "@/server/backups";
-import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
+import { BACKUP_STATUS_FILENAME, RETENTION_STATUS_FILENAME } from "@/lib/backup-constants";
 import { truncateAll } from "./helpers/db";
 
 // `NOW` is a FIXED instant for the pure evaluateHealth cases. The filesystem describes below use
@@ -17,7 +17,7 @@ import { truncateAll } from "./helpers/db";
 const NOW = new Date();
 const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 3600_000);
 
-const base = { newestSuccessAt: hoursAgo(4), status: { lastRunAt: hoursAgo(4).toISOString(), ok: true, source: "nightly" as const, error: null }, staleHours: 36, now: NOW, folderError: null };
+const base = { newestSuccessAt: hoursAgo(4), status: { lastRunAt: hoursAgo(4).toISOString(), ok: true, source: "nightly" as const, error: null }, retention: null, staleHours: 36, now: NOW, folderError: null };
 
 describe("evaluateHealth — the owner's green rule (§6.4)", () => {
   it("is GREEN only when a recent success AND a clean last run AND a readable status coincide", () => {
@@ -78,6 +78,65 @@ describe("evaluateHealth — the owner's green rule (§6.4)", () => {
   });
 });
 
+/**
+ * Issue #132 — a retention failure was ERASED by the next manual "Back up now".
+ *
+ * The nightly script's retention failure writes `ok:false` into backup-status.json (#120), but the
+ * Node manual path overwrites that same file with `ok:true` on its next success — writeStatus is a
+ * four-field literal with NO read-merge, and read-merge is explicitly forbidden (backups.ts:5–9).
+ * So the indicator went green while retention stayed broken and old dumps kept accumulating.
+ *
+ * The fix is a SECOND, shell-only sidecar (retention-status.json) the Node writer never touches.
+ * These cases pin the evaluateHealth branch that reads it.
+ */
+describe("evaluateHealth — the retention sidecar (#132)", () => {
+  const retentionFail = {
+    lastRunAt: hoursAgo(20).toISOString(), ok: false,
+    error: "retention cleanup failed for: erp_*.sql.gz",
+  };
+
+  it("is RED on a readable failing sidecar, even though the main status is green", () => {
+    const h = evaluateHealth({ ...base, retention: retentionFail });
+    expect(h.state).toBe("failed");
+    // The message must say the DUMP succeeded — the last backup is fine, the CLEANUP is not — so
+    // nobody hunts a nonexistent dump problem (the #120 wording rule, carried over).
+    expect(h.reason).toMatch(/last backup succeeded/i);
+    expect(h.reason).toContain("erp_*.sql.gz");
+    expect(h.reason).toMatch(/old archives are accumulating/i);
+  });
+
+  it("reads as a full sentence when the sidecar carries no error detail", () => {
+    const h = evaluateHealth({ ...base, retention: { ...retentionFail, error: null } });
+    expect(h.state).toBe("failed");
+    // No dangling colon — mirror how the main !status.ok branch handles a null error.
+    expect(h.reason).toMatch(/retention cleanup is failing — old archives are accumulating\./);
+  });
+
+  it("is GREEN on a clean sidecar", () => {
+    const h = evaluateHealth({
+      ...base, retention: { lastRunAt: hoursAgo(20).toISOString(), ok: true, error: null },
+    });
+    expect(h.state).toBe("ok");
+  });
+
+  it("contributes NOTHING when absent — the documented exception to absence-is-failure", () => {
+    // The main status file's absence rule already covers "the nightly never ran"; the sidecar
+    // self-refreshes every night; and absence-as-failure would red every existing install for up
+    // to 24h mid-upgrade. See the evaluateHealth comment.
+    expect(evaluateHealth({ ...base, retention: null }).state).toBe("ok");
+  });
+
+  it("the main status's own failure outranks the sidecar — the operator hears about the dump first", () => {
+    const h = evaluateHealth({
+      ...base,
+      status: { lastRunAt: hoursAgo(1).toISOString(), ok: false, source: "nightly" as const, error: "pg_dump error" },
+      retention: retentionFail,
+    });
+    expect(h.state).toBe("failed");
+    expect(h.reason).toMatch(/last backup run failed/i);
+  });
+});
+
 describe("listArchives", () => {
   let dir: string;
   beforeEach(async () => { dir = await mkdtemp(path.join(tmpdir(), "hsq-backups-")); });
@@ -102,9 +161,10 @@ describe("listArchives", () => {
     expect(list.every((a) => a.sizeBytes > 0)).toBe(true);
   });
 
-  it("ignores the status file, temp dotfiles, and anything that is not an archive", async () => {
+  it("ignores the status file, the retention sidecar, temp dotfiles, and anything that is not an archive", async () => {
     await writeArchive("erp_2026-08-16_020000.sql.gz");
     await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), "{}");
+    await writeFile(path.join(dir, RETENTION_STATUS_FILENAME), "{}");
     await writeFile(path.join(dir, ".erp_2026-08-16_030000.sql.tmp"), "half a dump");
     await writeFile(path.join(dir, "notes.txt"), "hello");
     await mkdir(path.join(dir, "subdir"));
@@ -180,6 +240,52 @@ describe("backupHealth against a real folder", () => {
       lastRunAt: new Date().toISOString(), ok: true, source: "nightly", error: 42,
     }));
     expect((await backupHealth(dir)).state).toBe("unknown");
+  });
+
+  /**
+   * Issue #132 — THE SCENARIO THAT WAS IMPOSSIBLE TO EXPRESS BEFORE THE SIDECAR.
+   *
+   * The nightly's retention failure wrote ok:false into backup-status.json (#120), and the next
+   * manual "Back up now" overwrote that same file with ok:true — the indicator went green while
+   * retention stayed broken. With the failure recorded in the shell-only sidecar instead, a green
+   * main status can no longer erase it: this seeds exactly the post-overwrite folder state (fresh
+   * intact archive + green MANUAL main status + failing sidecar) and health must still be red.
+   */
+  it("keeps a retention failure RED past a green manual main status (#132)", async () => {
+    await writeFile(path.join(dir, "erp_2026-08-18_020000.sql.gz"), gzipSync(Buffer.from("-- ok\n")));
+    await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), JSON.stringify(
+      { lastRunAt: new Date().toISOString(), ok: true, source: "manual", error: null }));
+
+    // Control: with NO sidecar at all this folder reads green — absence contributes nothing.
+    expect((await backupHealth(dir)).state).toBe("ok");
+
+    await writeFile(path.join(dir, RETENTION_STATUS_FILENAME), JSON.stringify(
+      { lastRunAt: new Date().toISOString(), ok: false, error: "retention cleanup failed for: erp_*.sql.gz" }));
+    const h = await backupHealth(dir);
+    expect(h.state).toBe("failed");
+    expect(h.reason).toMatch(/retention/i);
+    expect(h.reason).toContain("erp_*.sql.gz");
+  });
+
+  /** The documented exception (#132): a sidecar that cannot be read contributes NOTHING — unlike
+   *  the main status file, whose absence/corruption reads red. See the evaluateHealth comment for
+   *  the three reasons. */
+  it("a corrupt or wrong-shaped sidecar contributes nothing — green stays green (#132)", async () => {
+    await writeFile(path.join(dir, "erp_2026-08-18_020000.sql.gz"), gzipSync(Buffer.from("-- ok\n")));
+    await writeFile(path.join(dir, BACKUP_STATUS_FILENAME), JSON.stringify(
+      { lastRunAt: new Date().toISOString(), ok: true, source: "nightly", error: null }));
+
+    await writeFile(path.join(dir, RETENTION_STATUS_FILENAME), "{ not json");
+    expect((await backupHealth(dir)).state).toBe("ok");
+
+    await writeFile(path.join(dir, RETENTION_STATUS_FILENAME), JSON.stringify({ hello: "world" }));
+    expect((await backupHealth(dir)).state).toBe("ok");
+
+    // A malformed field rejects the whole document (the parseStatus strictness precedent) — and a
+    // rejected sidecar contributes nothing, even one whose `ok` happens to be false.
+    await writeFile(path.join(dir, RETENTION_STATUS_FILENAME), JSON.stringify(
+      { lastRunAt: new Date().toISOString(), ok: false, error: 42 }));
+    expect((await backupHealth(dir)).state).toBe("ok");
   });
 });
 

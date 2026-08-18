@@ -4,7 +4,7 @@ import { runWithContext } from "@/server/context";
 import { createBatch, getBatch, addPayment, voidPayment, postBatch, reopenBatch, voidBatch, listBatches, type BatchDetail } from "@/server/receipts";
 import { applyPayment, voidApplication } from "@/server/applications";
 import { reopenPeriod, preliminaryReport } from "@/server/close-periods";
-import { parseDateOnly } from "@/lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "@/lib/business-days";
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding Payments. `enteredTotal`
@@ -150,6 +150,53 @@ describe("addPayment — live balance", () => {
 });
 
 // -------------------------------------------------------------------------------------------
+// #73 (owner answer Q16, 2026-08-17: "No, not yet" — payments post after the deposit is in
+// hand): a future `receivedDate` is refused at the SOLE writer of the column (`addPaymentInTx`;
+// there is no updatePayment, and voidPayment only stamps `deletedAt`). Today and the past stay
+// legal — the guard is strictly "not the future", never a staleness window.
+// -------------------------------------------------------------------------------------------
+
+describe("addPayment — refuses a future received date (#73)", () => {
+  it("400s tomorrow with the exact message, and writes nothing", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await expect(asSystem(() => addPayment(batch.id, {
+      ...paymentInput(customer, paymentType, 100),
+      receivedDate: formatDateOnly(addDays(todayDateOnly(), 1)),
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "The received date must be on or before today — payments are entered after the deposit is in hand",
+    });
+    expect(await prisma.payment.count()).toBe(0);
+  });
+
+  it("accepts today — the boundary is on-or-before, not strictly-before", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const after = await asSystem(() => addPayment(batch.id, {
+      ...paymentInput(customer, paymentType, 100),
+      receivedDate: formatDateOnly(todayDateOnly()),
+    }));
+    expect(after.payments).toHaveLength(1);
+    expect(after.payments[0].receivedDate).toBe(formatDateOnly(todayDateOnly()));
+  });
+
+  it("accepts yesterday — the ordinary after-the-deposit entry", async () => {
+    const batch = await openBatch();
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    const yesterday = formatDateOnly(addDays(todayDateOnly(), -1));
+    const after = await asSystem(() => addPayment(batch.id, {
+      ...paymentInput(customer, paymentType, 100), receivedDate: yesterday,
+    }));
+    expect(after.payments).toHaveLength(1);
+    expect(after.payments[0].receivedDate).toBe(yesterday);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // Fix #11 (Round 4 correction-path): the batch detail must carry each payment's LIVE applications
 // so the UI can list them — and offer a void — without a second endpoint. `invoiceDocumentNumber`
 // is the prefix + order-number rule; a voided application drops out without disturbing the payment.
@@ -226,6 +273,96 @@ describe("postBatch — locks payment entry", () => {
       where: { entity: "receiptBatch", entityId: batch.id, action: "update" } });
     expect((entry!.before as Record<string, unknown>).status).toBe("OPEN");
     expect((entry!.after as Record<string, unknown>).status).toBe("POSTED");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #80 (owner answer Q18, 2026-08-17: refusing is the safer default): posting a batch whose
+// NON-NULL controlTotal does not foot against the live payment sum is refused under the batch
+// claim, with a message naming both figures and the difference (shown as its absolute value —
+// over vs under is readable from the two figures). Null controlTotal posts freely (balance is
+// defined 0), and voided payments never count — every sum in this file filters `deletedAt: null`.
+// `controlTotal` is immutable (createBatch is its only writer; the batch header has no edit
+// path), so the refusal names the two ways out (§5.14): enter the missing payments, or void and
+// re-key.
+// -------------------------------------------------------------------------------------------
+
+describe("postBatch — refuses an un-footed control total (#80)", () => {
+  it("refuses an under-entered batch, naming control, entered and the difference — and stays OPEN", async () => {
+    const batch = await openBatch("500.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      status: 400,
+      message: "This batch does not balance — control total 500.00, payments entered 300.00 " +
+        "(difference 200.00). Enter the missing payments, or void this batch and re-key it " +
+        "with the correct control total.",
+    });
+    expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.status).toBe("OPEN");
+  });
+
+  it("refuses an over-entered batch — absolute difference, and the remedy flips to void-the-extra", async () => {
+    const batch = await openBatch("100.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("control total 100.00, payments entered 300.00 (difference 200.00)"),
+    });
+    // Over-entered wants the extra payment voided, not more payments keyed (review r1 minor).
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      message: expect.stringContaining("Void the extra payment,"),
+    });
+  });
+
+  it("posts when the batch foots to the cent", async () => {
+    const batch = await openBatch("300.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 200)));
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+
+    const posted = await asSystem(() => postBatch(batch.id));
+    expect(posted.status).toBe("POSTED");
+  });
+
+  it("posts freely with no control total — balance is defined 0", async () => {
+    const batch = await openBatch(null);
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+
+    const posted = await asSystem(() => postBatch(batch.id));
+    expect(posted.status).toBe("POSTED");
+  });
+
+  it("refuses a batch that footed and then had a payment VOIDED — the voided payment never counts", async () => {
+    const batch = await openBatch("300.00");
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 200)));
+    const footed = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 100)));
+    expect(footed.balance).toBe(0); // it foots right now
+
+    const hundred = footed.payments.find((p) => p.amount === 100)!;
+    await asSystem(() => voidPayment(batch.id, hundred.id, "mis-keyed"));
+
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("control total 300.00, payments entered 200.00 (difference 100.00)"),
+    });
+  });
+
+  it("refuses an EMPTY batch with a non-null control total", async () => {
+    const batch = await openBatch("500.00");
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("control total 500.00, payments entered 0.00 (difference 500.00)"),
+    });
   });
 });
 

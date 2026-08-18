@@ -233,7 +233,12 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
     creditInvoice: { select: { id: true, kind: true, creditNumber: true, order: { select: { orderNumber: true } } } },
   },
   closePeriod: undefined,
-  glExportBatch: { postings: true }, // the export's audit trail is its batch + the postings it emitted
+  // Create-only model (#93): `exportClose` is its ONLY writer, and `auditedCreate` writes its
+  // `data` argument verbatim — it never calls `snapshot()`, so an include here is unreachable (a
+  // `{ postings: true }` entry sat inert for a phase). The create payload is self-contained by
+  // construction (the five scalars + the emitted summary journal); if an update/soft-delete path
+  // ever appears, SNAPSHOT_SELECT below already keeps the file/register bytes out of its snapshots.
+  glExportBatch: undefined,
   // Phase 6. A quote's lines, price rows, and breaks are edited through the parent document
   // (array-replace, the invoice-lines shape) — the quote-level diff is only meaningful with the
   // whole tree included. Live rows only (the partPrice precedent: a soft-deleted child would
@@ -346,6 +351,17 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   documentTemplateVersion: {
     id: true, templateId: true, versionNumber: true, status: true, config: true,
     logoMimeType: true, publishedAt: true, publishedById: true, createdAt: true, updatedAt: true,
+  },
+  // #93, the storedDocument precedent: `file` and `register` are bytes columns (a whole CSV and a
+  // whole PDF), and the model is create-only today (`auditedCreate` never calls snapshot(), so this
+  // entry is currently unreached) — defined anyway so the exclusion already exists the moment an
+  // update/soft-delete path appears, rather than being something a future phase has to remember.
+  // Every scalar except the two bytes columns; relations omitted (postings are the batch's own
+  // per-event ledger, unbounded by transaction volume — exactly what an audit row must not carry).
+  glExportBatch: {
+    id: true, exportNumber: true, closePeriodId: true, periodEnd: true, emittedAt: true,
+    emittedById: true, fileName: true, fileContentType: true, registerContentType: true,
+    createdAt: true, updatedAt: true,
   },
 };
 

@@ -21,6 +21,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { api } from "@/lib/fetcher";
 import { todayDateOnly } from "@/lib/business-days";
+import { MIN_CLOSE_YEAR, MAX_CLOSE_YEAR, type ReadinessGapKind } from "@/lib/gl-constants";
 import { ReceivablesNav } from "../ReceivablesNav";
 
 // ---------------------------------------------------------------------------------------------
@@ -38,10 +39,16 @@ type PreliminaryReport = {
   year: number; month: number; schedule: ContinuitySchedule;
   unpostedBatchCount: number; alreadyClosed: boolean;
 };
-type ReadinessGap = { kind: string; id: string | null; label: string; href: string };
+// `kind` is the SHARED union from src/lib/gl-constants.ts (#90) — the one place a client component
+// may import it from (never src/server/**), so this mirror can no longer drift from the server's.
+type ReadinessGap = { kind: ReadinessGapKind; id: string | null; label: string; href: string };
 type ExportBatchSummary = { id: string; exportNumber: number; emittedAt: string; fileName: string };
 type ClosePeriodListItem = ContinuitySchedule & {
   id: string; year: number; month: number; status: string; closedAt: string;
+  // #88: server-derived broken-chain flag — this CLOSED month's frozen beginning no longer equals
+  // the prior month's frozen ending. Flag only; the operator re-closes the month to re-chain.
+  chainBroken: boolean;
+  priorEndingAr: number | null;
   exportBatches: ExportBatchSummary[];
 };
 type ClosePeriodDetail = ContinuitySchedule & { id: string; year: number; month: number; status: string };
@@ -95,7 +102,7 @@ function ClosePeriodsScreen() {
   const initial = defaultPeriod();
   const [year, setYear] = useState(() => {
     const y = Number(searchParams.get("year"));
-    return Number.isInteger(y) && y >= 2000 ? y : initial.year;
+    return Number.isInteger(y) && y >= MIN_CLOSE_YEAR && y <= MAX_CLOSE_YEAR ? y : initial.year;
   });
   const [month, setMonth] = useState(() => {
     const m = Number(searchParams.get("month"));
@@ -351,13 +358,20 @@ function ClosePeriodsScreen() {
             : !closeDoGate.allowed ? closeDoGate.title
               : p.status !== "CLOSED" ? "Already reopened" : undefined;
           return (
-            <div key={p.id} className="mb-3 rounded border p-3 text-sm last:mb-0">
+            // data-testid: the E2E flow's `periodRow` keys on it (#90) — the old xpath
+            // `ancestor::div[contains(@class,'p-3')]` broke on any padding retune.
+            <div key={p.id} data-testid="closed-period-row" className="mb-3 rounded border p-3 text-sm last:mb-0">
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <span className="font-medium">{periodLabel(p.year, p.month)}</span>{" "}
                   <span className={`rounded px-1.5 py-0.5 text-xs ${p.status === "CLOSED" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>
                     {p.status}
                   </span>{" "}
+                  {p.chainBroken && (
+                    <>
+                      <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800">CHAIN BROKEN</span>{" "}
+                    </>
+                  )}
                   <span className="text-slate-500">closed {new Date(p.closedAt).toLocaleString()}</span>
                 </div>
                 <div className="flex gap-2">
@@ -375,6 +389,24 @@ function ClosePeriodsScreen() {
               <p className="text-slate-600">
                 Beginning {p.beginningAr.toFixed(2)} · Ending {p.endingAr.toFixed(2)} · Variance {p.variance.toFixed(2)}
               </p>
+              {p.chainBroken && (
+                <p className="text-red-700">
+                  {/* Three flagged shapes, each named with its real way out (§5.14): a moved prior
+                      ending re-closes THIS month; a gap must close the MISSING month first (this
+                      month's re-close would 409 on the skipped-month rule); a nonzero genesis has
+                      no prior at all — its beginning should be the 0.00 chain baseline. */}
+                  {p.priorEndingAr !== null ? (
+                    <>Beginning {p.beginningAr.toFixed(2)} no longer matches the prior month&apos;s ending{" "}
+                      {p.priorEndingAr.toFixed(2)} — re-close this month to re-chain.</>
+                  ) : closedPeriods.some((q) => q.year < p.year || (q.year === p.year && q.month < p.month)) ? (
+                    <>Beginning {p.beginningAr.toFixed(2)} does not chain — the month before this one has
+                      no close on record; close the missing month first, then re-close this one.</>
+                  ) : (
+                    <>Beginning {p.beginningAr.toFixed(2)} does not chain — this is the first closed month,
+                      so its beginning should be 0.00; re-close this month to re-chain.</>
+                  )}
+                </p>
+              )}
               {p.exportBatches.length === 0 ? (
                 <p className="mt-1 text-slate-400">No export yet.</p>
               ) : (

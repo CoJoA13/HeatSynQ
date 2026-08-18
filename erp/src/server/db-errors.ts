@@ -22,17 +22,20 @@ function readableFkField(err: Prisma.PrismaClientKnownRequestError): string | un
 }
 
 /**
- * A serialization failure raised by a RAW query does not arrive as P2034. Prisma wraps anything a
- * `$queryRaw` throws as P2010 ("Raw query failed") and leaves the Postgres SQLSTATE inside the
- * driver adapter's own error, so the P2034 branch below never sees it and it would escape as a
- * 500. The condition is identical — 40001, the transaction was aborted, nothing was written — so
- * it gets the identical answer. Reached by `workingRevision`'s `SELECT … FOR UPDATE`
- * (part-process-steps.ts), the one raw query in the app that can lose a serialization race.
+ * A retryable transaction abort raised by a RAW query does not arrive as P2034. Prisma wraps
+ * anything a `$queryRaw` throws as P2010 ("Raw query failed") and leaves the Postgres SQLSTATE
+ * inside the driver adapter's own error, so the P2034 branch below never sees it and it would
+ * escape as a 500. Two SQLSTATEs qualify (#90): 40001 (serialization failure) and 40P01 (deadlock
+ * detected — the victim Postgres shoots to break a lock cycle). The condition is identical either
+ * way — the transaction was aborted, nothing was written, a re-run is safe — so both get the
+ * identical answer. Reached by `workingRevision`'s `SELECT … FOR UPDATE` (part-process-steps.ts)
+ * and by any raw row claim that loses a race the ordered-claim rules didn't foresee.
  */
-function isRawSerializationFailure(err: Prisma.PrismaClientKnownRequestError): boolean {
+function isRawRetryableFailure(err: Prisma.PrismaClientKnownRequestError): boolean {
   if (err.code !== "P2010") return false;
   const meta = err.meta as { driverAdapterError?: { cause?: { originalCode?: unknown } } } | undefined;
-  return meta?.driverAdapterError?.cause?.originalCode === "40001";
+  const code = meta?.driverAdapterError?.cause?.originalCode;
+  return code === "40001" || code === "40P01";
 }
 
 /**
@@ -75,8 +78,9 @@ export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
     // combined effect no serial order could produce — which is exactly how the hierarchy guard
     // in customers.ts stops two reciprocal parent updates from forming a cycle. Nothing is
     // wrong with the request itself and nothing was written, so the honest answer is "that
-    // collided with another change, send it again", not a 500.
-    if (err.code === "P2034" || isRawSerializationFailure(err)) {
+    // collided with another change, send it again", not a 500. A raw-query deadlock victim
+    // (40P01) is the same condition and gets the same 409 (#90).
+    if (err.code === "P2034" || isRawRetryableFailure(err)) {
       throw new HttpError(409,
         `Another change to that ${opts.entity.toLowerCase()} was saved at the same time — please try again`);
     }
@@ -99,33 +103,43 @@ export async function withDbErrors<T>(opts: DbErrorOpts, fn: () => Promise<T>): 
 }
 
 /**
- * The two RAW Prisma failures a *fresh* transaction can absorb by simply re-running: a serialization
- * failure (P2034, or the raw-query 40001 Prisma wraps as P2010) and a unique-constraint violation
- * (P2002). Both are the shapes a losing Serializable writer takes when a concurrent transaction
- * committed the row its own snapshot could not see — a re-run gets a snapshot that DOES see it and
- * takes the other branch. Detected on the raw error, so `retryOnSerializationConflict` must sit
- * INSIDE `withDbErrors` (which would otherwise have already turned these into an `HttpError`).
+ * The RAW Prisma failures a *fresh* transaction can absorb by simply re-running. Always retryable:
+ * a serialization failure or deadlock abort (P2034, or the raw-query 40001/40P01 Prisma wraps as
+ * P2010) — the shapes a losing Serializable writer takes when a concurrent transaction committed
+ * the row its own snapshot could not see; a re-run gets a snapshot that DOES see it and takes the
+ * other branch. A unique-constraint violation (P2002) is retryable ONLY when the caller opted in
+ * (#90): the one call site where a P2002 is that same losing-writer shape is `closePeriod`'s
+ * year-month insert race — the allocation paths answer their nonce P2002s by in-attempt replay and
+ * never retry (#115), and constraint-name discrimination via `meta.target` is unavailable on the
+ * driver-adapter stack (#40), so a boolean per call site is the honest scope. Detected on the raw
+ * error, so `retryOnSerializationConflict` must sit INSIDE `withDbErrors` (which would otherwise
+ * have already turned these into an `HttpError`).
  */
-function isRetryableConflict(err: unknown): boolean {
+function isRetryableConflict(err: unknown, retryUniqueConflict: boolean): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
-  return err.code === "P2034" || err.code === "P2002" || isRawSerializationFailure(err);
+  if (err.code === "P2002") return retryUniqueConflict;
+  return err.code === "P2034" || isRawRetryableFailure(err);
 }
 
 /**
- * Re-run `run` when it fails with a retryable serialization/unique conflict (above), up to `tries`
- * attempts, then let the last failure escape (to `withDbErrors`, which translates it). Wrap the RAW
+ * Re-run `run` when it fails with a retryable conflict (above), up to `tries` attempts, then let
+ * the last failure escape (to `withDbErrors`, which translates it). Wrap the RAW
  * `prisma.$transaction` — each `run()` must open its own transaction so the retry gets a new snapshot.
  * The month-end close (close-periods.ts) uses it: two concurrent Serializable closes serialize on the
  * month advisory lock, and the loser unblocks with a snapshot fixed BEFORE the winner committed (the
  * blocking `lockMonth` SELECT takes the snapshot before the lock is granted), so its `findFirst`
- * misses the just-committed row and its insert collides — the retry re-runs, sees the row, and updates.
+ * misses the just-committed row and its insert collides — the retry re-runs, sees the row, and
+ * updates. That collision is a P2002, which is why `closePeriod` alone passes
+ * `{ retryUniqueConflict: true }`; every other caller takes the default (P2002 escapes on attempt 1).
  */
-export async function retryOnSerializationConflict<T>(run: () => Promise<T>, tries = 5): Promise<T> {
+export async function retryOnSerializationConflict<T>(
+  run: () => Promise<T>, tries = 5, opts: { retryUniqueConflict?: boolean } = {},
+): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await run();
     } catch (err) {
-      if (attempt >= tries || !isRetryableConflict(err)) throw err;
+      if (attempt >= tries || !isRetryableConflict(err, opts.retryUniqueConflict ?? false)) throw err;
     }
   }
 }
@@ -164,7 +178,10 @@ export const ALLOCATION_TRIES = 10;
  * gets a fresh snapshot. Sits INSIDE `withDbErrors` (which would otherwise have already translated
  * the raw error) and OUTSIDE `prisma.$transaction`, exactly as `close-periods.ts` does.
  *
- * A business refusal (`HttpError`) is not retryable and surfaces on the first attempt.
+ * A business refusal (`HttpError`) is not retryable and surfaces on the first attempt. So does a
+ * P2002 (the default `retryUniqueConflict: false`, #90): the unique conflicts allocation callers
+ * can hit — a duplicate `clientRequestId` nonce — are answered by in-attempt replay inside the
+ * save itself, never by re-running the whole transaction (#115).
  */
 export async function retryAllocation<T>(run: () => Promise<T>): Promise<T> {
   return retryOnSerializationConflict(run, ALLOCATION_TRIES);

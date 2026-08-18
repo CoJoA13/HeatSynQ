@@ -71,6 +71,10 @@ export type ShipperDetail = {
   freightClass: string; freightDescription: string;
   packageCount: number | string | null;
   proNumber: string; scacCode: string;
+  /** Set when this shipment IS a reversal (§5.6) — with `reversesShipperNumber`, the #139 freeze
+   *  banner/titles name the original it mirrors. */
+  reversesShipperId: string | null;
+  reversesShipperNumber: number | null;
   /** The LIVE reversal pointing at this shipment, if any (#65): its packing-list number. Void
    *  renders disabled naming it (§5.16); the server's `voidShipper` refusal is the enforcement.
    *  Always null on a reversal document itself, so a reversal's own Void stays enabled — voiding
@@ -133,6 +137,15 @@ const DOC_KIND_LABELS: Record<string, string> = { SHIPPER: "Shipping ticket", BO
  *  what the permission grid would otherwise allow — the order hub `voidLocked` precedent. */
 function voidLocked(g: Gate, voided: boolean): Gate {
   return voided ? { allowed: false, disabled: true, title: "Shipment is voided" } : g;
+}
+
+/** #139 freeze-the-pair (owner ruling 2026-08-18): while a reversal pair is live, every edit door
+ *  is refused server-side (`claimLiveShipper`'s guard) — the controls say so up front (§5.16),
+ *  carrying the server's own sentence as their title. Void and print stay on their own gates:
+ *  voiding the reversal is the blessed undo, and a reprint/BOL on a reversed original must keep
+ *  working. */
+function pairLocked(g: Gate, freeze: string | null): Gate {
+  return freeze !== null ? { allowed: false, disabled: true, title: freeze } : g;
 }
 
 /** The stored-documents list (spec §11) — `GET /api/shippers/[id]/documents` (Task 14; no other
@@ -243,7 +256,17 @@ export function ShipmentDetail({ id }: { id: string }) {
   const auditGate = gate(perms, "admin.view");
   const docsGate = gate(perms, "shipping.view");
   const voided = (shipper?.deletedAt ?? null) !== null;
-  const editGate = voidLocked(gate(perms, "shipping.edit"), voided);
+  // #139: the pair freeze, worded exactly as `claimLiveShipper`'s refusals so title and server
+  // sentence cannot drift. The reversal side freezes whenever `reversesShipperId` is set (the
+  // server refuses ALWAYS — mirror paper); the original's side follows `reversedByShipperNumber`,
+  // which is live-filtered, so a void + reload clears the freeze for free.
+  const pairFreeze = shipper === null ? null
+    : shipper.reversesShipperId !== null
+      ? `This is a reversal of Packing List ${shipper.reversesShipperNumber ?? "?"} — a reversal is machine-generated mirror paper; void it and re-reverse instead of editing it`
+      : shipper.reversedByShipperNumber !== null
+        ? `This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first, then edit, then re-reverse`
+        : null;
+  const editGate = voidLocked(pairLocked(gate(perms, "shipping.edit"), pairFreeze), voided);
   // §5.4 extended to shipment extension (owner ruling 2026-08-06): adding orders and replacing
   // lines on a HELD customer's shipment needs override_credit_hold + a reason. NewShipment's own
   // shape — a disabled control says why, an allowed override renders the reason field.
@@ -564,6 +587,11 @@ export function ShipmentDetail({ id }: { id: string }) {
         <p className="mb-3 rounded bg-red-50 p-2 text-sm font-medium text-red-700">
           Voided — {voidReason ?? "see History for the reason"}
         </p>
+      )}
+      {/* #139: the pair freeze named once at the top, on top of every disabled control's title —
+          hidden on a voided document, whose own banner already says why everything is locked. */}
+      {!voided && pairFreeze !== null && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">{pairFreeze}</p>
       )}
       {/* The credit-hold refusal (spec §5.4) only actually gates a NEW shipment's own creation
           (createShipper) — nothing on this existing-shipment edit page triggers that check today.

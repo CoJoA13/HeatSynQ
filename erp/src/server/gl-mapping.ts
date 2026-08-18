@@ -1,4 +1,4 @@
-import type { JournalSide, PostingSourceType } from "@/lib/gl-constants";
+import type { JournalSide, PostingSourceType, ReadinessGapKind } from "@/lib/gl-constants";
 
 export type JournalLine = {
   side: JournalSide;
@@ -75,7 +75,7 @@ export function reverseLines(lines: JournalLine[]): JournalLine[] {
 }
 
 export type ReadinessGap = {
-  kind: "step-code" | "surcharge" | "payment-type" | "plant-default" | "invoice";
+  kind: ReadinessGapKind; // the shared client-safe union (gl-constants.ts) Close.tsx types against
   id: string | null;
   label: string;
   href: string;

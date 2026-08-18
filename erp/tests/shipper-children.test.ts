@@ -7,7 +7,7 @@ import { storeDocument } from "@/server/documents";
 import {
   createShipper, updateShipper, addOrderToShipper, removeOrderFromShipper,
   replaceShipperLines, replaceShipperContainers, replaceShipperSerials,
-  overshipWarnings, listShippers, exportShippers, shipmentsForOrder,
+  overshipWarnings, listShippers, exportShippers, shipmentsForOrder, reverseShipper,
   type ShipperDetail, type ShipperOrderDetail,
 } from "@/server/shippers";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
@@ -283,6 +283,47 @@ describe("removeOrderFromShipper", () => {
       { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [first.orderId, second.orderId] },
       Buffer.from("%PDF-1.4 t")));
     await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toThrow(/already printed/i);
+  });
+
+  // #140 (owner ruling 2026-08-18): a whole-set document blocks a removal only when its RECORDED
+  // coverage (`coveredOrderIds`, #52) actually NAMES the order — never by treating `orderId: null`
+  // as covering the shipment's current membership wholesale.
+  it("an order added after a whole-set print removes freely — the recorded coverage excludes it (#140)", async () => {
+    const { shipper, first, second, customer } = await twoOrderShipment();
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [first.orderId, second.orderId] },
+      Buffer.from("%PDF-1.4 t")));
+    const late = await orderForCustomer(customer);
+    const grown = await addOrderToShipper(shipper.id, late.id);
+    const soLate = grown.orders.find((so) => so.orderId === late.id)!;
+    const after = await removeOrderFromShipper(shipper.id, soLate.id);
+    expect(after.orders.map((o) => o.orderId)).toEqual([first.orderId, second.orderId]);
+  });
+
+  it("a whole-set print still blocks exactly the orders its coverage names (#140)", async () => {
+    const { shipper, first, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [second.orderId] },
+      Buffer.from("%PDF-1.4 t")));
+    await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toThrow(/already printed/i);
+    // ...while the sibling the coverage does NOT name removes freely under the same document.
+    await expect(removeOrderFromShipper(shipper.id, first.id)).resolves.toBeTruthy();
+  });
+
+  // Interplay with #139: on a pair-live shipment the freeze (inside `claimLiveShipper`) fires
+  // BEFORE the printed-paper guard — the pair is the operative blocker, and its refusal names the
+  // correction that actually unblocks (void the reversal), not one the freeze would still refuse.
+  it("on a pair-live shipment the #139 freeze fires before the printed-paper guard", async () => {
+    const { shipper, first, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [first.orderId, second.orderId] },
+      Buffer.from("%PDF-1.4 t")));
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(shipper.id, { reason: "returned" }));
+    await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toMatchObject({
+      status: 400,
+      message: `This shipment has been reversed by Packing List ${reversal.shipperNumber} — void the reversal first, then edit, then re-reverse`,
+    });
   });
 
   it("404s for a shipperOrderId that belongs to a different shipment", async () => {

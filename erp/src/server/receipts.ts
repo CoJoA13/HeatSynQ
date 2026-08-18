@@ -7,7 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { allocateNumber, getSetting } from "./settings";
-import { parseDateOnly, formatDateOnly } from "../lib/business-days";
+import { parseDateOnly, formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { paymentOnAccount, type ApplicationLite } from "./ar-balances";
 import { assertPeriodOpen } from "./period-locks";
 import type { ReceiptBatchStatusValue, ApplicationTypeValue } from "../lib/ar-constants";
@@ -211,13 +211,16 @@ export async function listBatches(filter: BatchFilter = {}): Promise<BatchListRo
 
 async function claimBatch(
   tx: Db, id: string,
-): Promise<{ id: string; status: string; deletedAt: Date | null } | null> {
+): Promise<{ id: string; status: string; controlTotal: Prisma.Decimal | null; deletedAt: Date | null } | null> {
   await tx.$queryRaw`SELECT "id" FROM "ReceiptBatch" WHERE "id" = ${id} FOR UPDATE`;
-  return tx.receiptBatch.findFirst({ where: { id }, select: { id: true, status: true, deletedAt: true } });
+  return tx.receiptBatch.findFirst({
+    where: { id }, select: { id: true, status: true, controlTotal: true, deletedAt: true } });
 }
 
 /** The claim plus the ordinary "not found" liveness check every mutator needs before it acts. */
-async function claimLiveBatch(tx: Db, id: string): Promise<{ id: string; status: string }> {
+async function claimLiveBatch(
+  tx: Db, id: string,
+): Promise<{ id: string; status: string; controlTotal: Prisma.Decimal | null }> {
   const batch = await claimBatch(tx, id);
   if (!batch || batch.deletedAt !== null) throw new HttpError(404, "Receipt batch not found");
   return batch;
@@ -330,6 +333,13 @@ async function addPaymentInTx(tx: Db, batchId: string, data: z.infer<typeof ADD_
   if (!paymentType) throw new HttpError(404, "Payment type not found"); // unreachable after assertRefExists
 
   const receivedDate = parseDate(data.receivedDate, "Received date");
+  // #73 (owner answer Q16: "No, not yet" — payments post after the deposit is in hand): a future
+  // receivedDate is refused at this, the column's SOLE writer (there is no updatePayment;
+  // voidPayment only stamps deletedAt). One clock sample, compared date-only — the
+  // `createCredit`/`todayDateOnly` precedent (invoices.ts).
+  if (receivedDate.getTime() > todayDateOnly().getTime()) {
+    throw new HttpError(400, "The received date must be on or before today — payments are entered after the deposit is in hand");
+  }
   const reference = data.reference ?? "";
   const notes = data.notes ?? "";
 
@@ -428,6 +438,31 @@ export async function voidPayment(
 async function postBatchInTx(tx: Db, id: string): Promise<BatchDetail> {
   const batch = await claimLiveBatch(tx, id);
   if (batch.status === "POSTED") throw new HttpError(400, "already posted");
+
+  // #80 (owner answer Q18: refusing is the safer default): a NON-NULL controlTotal must foot
+  // against the live payment sum before the batch posts. `controlTotal` is read off the claimed
+  // row and the sum is taken under that same claim — `addPayment`/`voidPayment` claim this row
+  // too, so the figure cannot move mid-check. Integer cents, `toBatchDetail`'s own arithmetic;
+  // voided payments never count (every sum in this file filters `deletedAt: null`). A null
+  // controlTotal posts freely — balance is defined 0 (file header). The message names the two
+  // ways out (§5.14): controlTotal is immutable (createBatch is its only writer; the batch
+  // header has no edit path), and the FIRST clause matches the direction — under-entered wants
+  // the missing payments keyed, over-entered wants the extra payment voided (no re-key needed).
+  // The difference prints as its absolute value beside both figures.
+  if (batch.controlTotal !== null) {
+    const controlCents = cents(batch.controlTotal.toNumber());
+    const payments = await tx.payment.findMany({
+      where: { batchId: id, deletedAt: null }, select: { amount: true } });
+    const enteredCents = payments.reduce((sum, p) => sum + cents(p.amount.toNumber()), 0);
+    if (enteredCents !== controlCents) {
+      const remedy = enteredCents > controlCents ? "Void the extra payment" : "Enter the missing payments";
+      throw new HttpError(400,
+        `This batch does not balance — control total ${(controlCents / 100).toFixed(2)}, ` +
+        `payments entered ${(enteredCents / 100).toFixed(2)} ` +
+        `(difference ${(Math.abs(controlCents - enteredCents) / 100).toFixed(2)}). ` +
+        `${remedy}, or void this batch and re-key it with the correct control total.`);
+    }
+  }
 
   // §4.1: posting a batch makes its payments live CASH-journal paper effective at each payment's
   // `receivedDate`, so posting is refused if ANY of them falls in a CLOSED period. Read under the

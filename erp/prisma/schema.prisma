@@ -124,7 +124,7 @@ model GlAccount {
   processStepCodes   ProcessStepCode[]
   surcharges         Surcharge[]
   invoiceLines       InvoiceLine[]
-  // Three separate FKs from BillingConfig to this one model, so each needs a NAME — Prisma
+  // Six separate FKs from BillingConfig to this one model, so each needs a NAME — Prisma
   // cannot disambiguate them otherwise (the Customer.parentId/CustomerHierarchy precedent).
   billingSalesTax    BillingConfig[]   @relation("BillingSalesTaxGl")
   billingFreight     BillingConfig[]   @relation("BillingFreightGl")

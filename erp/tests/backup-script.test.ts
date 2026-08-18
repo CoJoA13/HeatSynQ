@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, chmodSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
+import { BACKUP_STATUS_FILENAME, RETENTION_STATUS_FILENAME } from "@/lib/backup-constants";
 
 /**
  * Phase 8C Task 8 review, finding #1 — scripts/backup.sh's compress step was unguarded:
@@ -70,6 +70,10 @@ function runScript(): ReturnType<typeof spawnSync> {
 
 function statusOf(d: string): { ok: boolean; error: string | null } {
   return JSON.parse(readFileSync(path.join(d, BACKUP_STATUS_FILENAME), "utf8"));
+}
+
+function retentionStatusOf(d: string): { lastRunAt: string; ok: boolean; error: string | null } {
+  return JSON.parse(readFileSync(path.join(d, RETENTION_STATUS_FILENAME), "utf8"));
 }
 
 describe("scripts/backup.sh — compress-step failure (Task 8 review finding #1)", () => {
@@ -168,6 +172,36 @@ describe("scripts/backup.sh — retention failure (#120)", () => {
     expect(statusOf(dir).ok).toBe(true);
     expect(statusOf(dir).error).toBeNull();
   });
+
+  /**
+   * Issue #132 — the main status alone cannot HOLD a retention failure: the app's next manual
+   * "Back up now" overwrites backup-status.json whole (no read-merge, by design), erasing it. So
+   * the script additionally records retention's outcome in the shell-only sidecar, which the Node
+   * writer never touches. The #120 main-status behavior above is UNCHANGED — the sidecar is
+   * additional evidence, not a replacement.
+   */
+  it("a failing prune also writes the retention sidecar ok:false, naming the failing pattern (#132)", () => {
+    installFailingFind();
+    const result = runScript();
+    expect(result.status).not.toBe(0);
+
+    const retention = retentionStatusOf(dir);
+    expect(retention.ok).toBe(false);
+    expect(retention.error).toContain("erp_*.sql.gz"); // the pattern the operator has to go look at
+    expect(Date.parse(retention.lastRunAt)).not.toBeNaN();
+
+    // The main status still flips red too (#120) — the sidecar replaced nothing.
+    expect(statusOf(dir).ok).toBe(false);
+  });
+
+  it("a clean run writes the retention sidecar ok:true — it self-refreshes every night (#132)", () => {
+    const result = runScript();
+    expect(result.status).toBe(0);
+    const retention = retentionStatusOf(dir);
+    expect(retention.ok).toBe(true);
+    expect(retention.error).toBeNull();
+    expect(Date.parse(retention.lastRunAt)).not.toBeNaN();
+  });
 });
 
 // P1 (whole-branch review, Minor) — the status filename is duplicated with nothing enforcing
@@ -180,5 +214,14 @@ describe("scripts/backup.sh — status filename drift guard (P1)", () => {
   it("backup.sh's hardcoded status filename literal matches BACKUP_STATUS_FILENAME", () => {
     const scriptText = readFileSync(SCRIPT, "utf8");
     expect(scriptText).toContain(`STATUS="$DIR/${BACKUP_STATUS_FILENAME}"`);
+  });
+
+  // The same drift class for the #132 sidecar: sh cannot import a TS constant, so a silent rename
+  // on either side would make the app read "no sidecar" forever — which here is the DANGEROUS
+  // direction (a sidecar that cannot be found contributes nothing, i.e. green), unlike the main
+  // status file's safe red. This guard is therefore load-bearing, not cosmetic.
+  it("backup.sh's hardcoded retention sidecar literal matches RETENTION_STATUS_FILENAME", () => {
+    const scriptText = readFileSync(SCRIPT, "utf8");
+    expect(scriptText).toContain(`RETENTION_STATUS="$DIR/${RETENTION_STATUS_FILENAME}"`);
   });
 });

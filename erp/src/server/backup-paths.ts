@@ -12,7 +12,7 @@
 // via argv and no string ever reaches a shell.
 import path from "node:path";
 import { HttpError } from "./errors";
-import { BACKUP_STATUS_FILENAME, isArchiveName } from "@/lib/backup-constants";
+import { BACKUP_STATUS_FILENAME, RETENTION_STATUS_FILENAME, isArchiveName } from "@/lib/backup-constants";
 
 /** The container path both writers agree on (§6.4). Host side is the `./backups` bind-mount. */
 export const DEFAULT_BACKUP_DIR = "/backups";
@@ -55,6 +55,11 @@ export function archivePath(dir: string, name: string): string {
 
 export function statusPath(dir: string): string {
   return path.join(dir, BACKUP_STATUS_FILENAME);
+}
+
+/** The shell-only retention sidecar's path (#132) — statusPath's mirror. */
+export function retentionStatusPath(dir: string): string {
+  return path.join(dir, RETENTION_STATUS_FILENAME);
 }
 
 const pad = (n: number, width = 2) => String(n).padStart(width, "0");

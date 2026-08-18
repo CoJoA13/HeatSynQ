@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveBackupDir, archivePath, statusPath, stampFor, manualArchiveName, tempNameFor,
+  resolveBackupDir, archivePath, statusPath, retentionStatusPath, stampFor, manualArchiveName,
+  tempNameFor,
 } from "@/server/backup-paths";
-import { isArchiveName, archiveSourceOf, DEFAULT_STALE_HOURS } from "@/lib/backup-constants";
+import {
+  isArchiveName, archiveSourceOf, DEFAULT_STALE_HOURS, RETENTION_STATUS_FILENAME,
+} from "@/lib/backup-constants";
 import { HttpError } from "@/server/errors";
 
 describe("backup archive names", () => {
@@ -98,5 +101,12 @@ describe("archivePath", () => {
 
   it("puts the status file in the same folder", () => {
     expect(statusPath("/backups")).toBe("/backups/backup-status.json");
+  });
+
+  it("puts the retention sidecar in the same folder, and it is structurally not an archive (#132)", () => {
+    expect(retentionStatusPath("/backups")).toBe("/backups/retention-status.json");
+    // Fails isArchiveName, so listing ignores it and archivePath refuses it — no allowlist needed.
+    expect(isArchiveName(RETENTION_STATUS_FILENAME)).toBe(false);
+    expect(() => archivePath("/backups", RETENTION_STATUS_FILENAME)).toThrow(HttpError);
   });
 });
