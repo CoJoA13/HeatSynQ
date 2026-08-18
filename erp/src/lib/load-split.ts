@@ -7,6 +7,8 @@
 // every value — including the rounding-absorbing last one — clean, and keeps the underlying cents
 // exactly summing to the total by construction.
 
+import { INT4_MAX, LOAD_WEIGHT_MAX } from "./order-constants";
+
 export type LoadSplit = { qty: number; weight: number };
 
 /** Fix-wave R2 finding 3: nothing else bounds how many loads a split can produce — a huge
@@ -15,6 +17,60 @@ export type LoadSplit = { qty: number; weight: number };
  *  analytically against the load COUNT before any allocation happens, not by letting the loop
  *  run and counting — the whole point is refusing before the memory is ever touched. */
 export const MAX_LOADS = 10_000;
+
+
+const fmtQty = (n: number) => n.toLocaleString("en-US");
+const fmtWeight = (n: number) =>
+  n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** `round(totalCents * cumQty / totalQty)` computed EXACTLY (Codex PR #141 rounds 3 and 4): the
+ *  float product overflows 2^53 at large-but-legal scale — 2,329 ceiling-weight loads put it near
+ *  4e25 — and the lost precision shifted a cent between adjacent loads, pushing one a cent past
+ *  DECIMAL(12,2) and turning a storable split into a refusal. Round 4 then showed the INPUT had
+ *  the same disease (a float cents total loses cents past 2^53), so cents are BigInt end-to-end
+ *  now and this stays in BigInt too. `+ den/2` before the truncating division is round-half-up,
+ *  exactly `Math.round`'s behaviour for the positive values this function ever sees, so every
+ *  in-range split is bit-identical to the original float arithmetic.
+ *  (`BigInt(2)`, not a `2n` literal — tsconfig targets ES2017, which refuses BigInt literal
+ *  syntax while the BigInt global itself is available.) */
+function roundedShareCents(totalCents: bigint, cumQty: number, totalQty: number): bigint {
+  const den = BigInt(totalQty);
+  return (totalCents * BigInt(cumQty) + den / BigInt(2)) / den;
+}
+
+/** A load's cents → the `weight: number` the rest of the system consumes. Any load that PASSES
+ *  `assertLoadsFitColumns` is at most 1e12 cents — exact in a double — so precision only blurs on
+ *  loads already past the ceiling, where the formatted refusal's far digits carry no meaning. */
+const centsToWeight = (c: bigint): number => Number(c) / 100;
+
+/**
+ * #42: every load this module RETURNS must fit its destination columns — `Load.qty` is a
+ * Postgres INTEGER and `Load.weight` a DECIMAL(12,2). Independently valid lines can sum past
+ * either (215 lines of 10,000,000 pcs make one 2,150,000,000-pc load; two near-max line weights
+ * make one unstorable weight), and an unchecked load then failed at insert as an unmapped
+ * Postgres overflow — a 500, not a refusal. Checked on the OUTPUT loads rather than the input
+ * totals because the split itself can resolve an overflow (a capped split chunks an overflowing
+ * total into loads that each fit) or fail to (a large-enough cap still emits an unstorable
+ * load). Plain `Error`s, the MAX_LOADS shape — `runSplitLoads` (orders.ts) translates them into
+ * the field-anchored 400 for both generated-load callers (createOrder and resplitLoads).
+ */
+function assertLoadsFitColumns(loads: LoadSplit[]): LoadSplit[] {
+  for (const [i, load] of loads.entries()) {
+    if (load.qty > INT4_MAX) {
+      throw new Error(
+        `Load ${i + 1}'s quantity ${fmtQty(load.qty)} exceeds the database maximum ` +
+        `${fmtQty(INT4_MAX)} — check the line quantities`,
+      );
+    }
+    if (load.weight > LOAD_WEIGHT_MAX) {
+      throw new Error(
+        `Load ${i + 1}'s weight ${fmtWeight(load.weight)} exceeds the database maximum ` +
+        `${fmtWeight(LOAD_WEIGHT_MAX)} — check the line weights`,
+      );
+    }
+  }
+  return loads;
+}
 
 /**
  * Splits `totalQty`/`totalWeight` into loads honoring both `loadQty` and `loadWeight` caps
@@ -44,17 +100,22 @@ export const MAX_LOADS = 10_000;
  */
 export function splitLoads(input: {
   totalQty: number;
-  totalWeight: number;
+  /** EXACT total cents (Codex PR #141 round 4) — `lineTotals` (orders.ts) accumulates them in
+   *  BigInt because a float sum loses cents past 2^53 (~9,000 ceiling-weight lines), and a cent
+   *  lost before this function is a cent no arithmetic inside it can recover. */
+  totalWeightCents: bigint;
   loadQty: number | null;
   loadWeight: number | null;
 }): LoadSplit[] {
-  const { totalQty, totalWeight, loadQty, loadWeight } = input;
+  const { totalQty, totalWeightCents, loadQty, loadWeight } = input;
 
   if (loadQty === null && loadWeight === null) {
-    return [{ qty: totalQty, weight: totalWeight }];
+    return assertLoadsFitColumns([{ qty: totalQty, weight: centsToWeight(totalWeightCents) }]);
   }
 
-  const eachWeight = totalWeight / totalQty;
+  // An approximation is all this cap derivation needs (it converts a WEIGHT cap into a qty cap);
+  // the cents themselves never pass through this float.
+  const eachWeight = Number(totalWeightCents) / 100 / totalQty;
   const perLoadQty = Math.min(
     loadQty ?? Infinity,
     loadWeight ? Math.max(1, Math.floor(loadWeight / eachWeight)) : Infinity,
@@ -68,18 +129,19 @@ export function splitLoads(input: {
     );
   }
 
-  const totalCents = Math.round(totalWeight * 100);
   const loads: LoadSplit[] = [];
   let remainingQty = totalQty;
   let cumQty = 0;
-  let priorCumCents = 0;
+  let priorCumCents = BigInt(0);
   while (remainingQty > 0) {
     const qty = Math.min(perLoadQty, remainingQty);
     remainingQty -= qty;
     cumQty += qty;
-    const cumCents = remainingQty === 0 ? totalCents : Math.round((totalCents * cumQty) / totalQty);
-    loads.push({ qty, weight: (cumCents - priorCumCents) / 100 });
+    const cumCents = remainingQty === 0
+      ? totalWeightCents
+      : roundedShareCents(totalWeightCents, cumQty, totalQty);
+    loads.push({ qty, weight: centsToWeight(cumCents - priorCumCents) });
     priorCumCents = cumCents;
   }
-  return loads;
+  return assertLoadsFitColumns(loads);
 }

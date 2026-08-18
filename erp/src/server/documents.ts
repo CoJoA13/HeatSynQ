@@ -39,11 +39,20 @@ export const AREA_FOR_KIND: Record<DocumentKind, Area> = {
  * duty `loadNumber` already does for a `TRAVELER`: which one order's ticket this is, with `null`
  * meaning the whole shipment's set. That asymmetry is the design (spec §4.3), not something to
  * "tighten" toward `shipperId`-only.
+ *
+ * Whole-shipment paper — a whole-set `SHIPPER` ticket, a `BOL` — additionally carries
+ * `coveredOrderIds`: the member order ids its render actually covered, recorded at print time
+ * (#52, owner ruling 2026-08-17). REQUIRED on exactly those two variants so a whole-set store
+ * cannot forget it (the compile-enforced half of the rule; the column default is the DB half).
+ * Membership stays editable after a print, and `listDocumentsForOrder` below reads this recorded
+ * coverage, never the shipment's current membership. A per-order ticket's covered order is its
+ * own `orderId`, so that variant records no list.
  */
 export type DocumentOwner =
   | { kind: "TRAVELER"; orderId: string; loadNumber: number | null }
-  | { kind: "SHIPPER"; shipperId: string; orderId: string | null }
-  | { kind: "BOL"; shipperId: string }
+  | { kind: "SHIPPER"; shipperId: string; orderId: string }
+  | { kind: "SHIPPER"; shipperId: string; orderId: null; coveredOrderIds: string[] }
+  | { kind: "BOL"; shipperId: string; coveredOrderIds: string[] }
   | { kind: "CERT"; certId: string }
   | { kind: "INVOICE"; invoiceId: string }
   | { kind: "CREDIT"; invoiceId: string }
@@ -74,18 +83,23 @@ function ownerColumns(owner: DocumentOwner): {
   orderId: string | null; shipperId: string | null; certId: string | null; invoiceId: string | null;
   customerId: string | null; quoteId: string | null;
   loadNumber: number | null;
+  coveredOrderIds: string[];
 } {
   const none = {
     orderId: null, shipperId: null, certId: null, invoiceId: null, customerId: null, quoteId: null,
-    loadNumber: null,
+    loadNumber: null, coveredOrderIds: [] as string[],
   };
   switch (owner.kind) {
     case "TRAVELER":
       return { ...none, kind: "TRAVELER", orderId: owner.orderId, loadNumber: owner.loadNumber };
     case "SHIPPER":
-      return { ...none, kind: "SHIPPER", orderId: owner.orderId, shipperId: owner.shipperId };
+      // The whole set records its print-time coverage (#52); one order's ticket is covered by
+      // its own `orderId` and records none.
+      return owner.orderId === null
+        ? { ...none, kind: "SHIPPER", shipperId: owner.shipperId, coveredOrderIds: owner.coveredOrderIds }
+        : { ...none, kind: "SHIPPER", orderId: owner.orderId, shipperId: owner.shipperId };
     case "BOL":
-      return { ...none, kind: "BOL", shipperId: owner.shipperId };
+      return { ...none, kind: "BOL", shipperId: owner.shipperId, coveredOrderIds: owner.coveredOrderIds };
     case "CERT":
       return { ...none, kind: "CERT", certId: owner.certId };
     case "INVOICE":
@@ -195,10 +209,14 @@ export async function listDocumentsForOrder(orderId: string, viewer?: PermUser):
         // kind→owner CHECK), so the invoice appears on its order's hub through this join, the same
         // shape the cert branch above uses (P5A spec §10).
         { invoice: { orderId } },
-        // Whole-shipment paper only (`orderId: null` — the BOL, a whole-set ticket): a SIBLING
-        // order's own ticket also matches the bare relation (its shipperId is this shipment's),
-        // and it is not this order's paper (round-4 finding).
-        { orderId: null, shipper: { orders: { some: { orderId } } } },
+        // Whole-shipment paper only (`orderId: null` — the BOL, a whole-set ticket): listed by
+        // the coverage the print RECORDED (#52), never by the shipment's CURRENT membership —
+        // an order added after the print is not on that paper, while an at-print member keeps
+        // listing it even if later released. A sibling order's own ticket carries its `orderId`,
+        // so it can never match this branch (the round-4 finding, preserved). A row with EMPTY
+        // coverage matches no order at all — the honest failure mode for a row nothing recorded
+        // coverage for; `listDocumentsForShipper`'s shipperId-keyed list still shows the paper.
+        { orderId: null, coveredOrderIds: { has: orderId } },
       ],
     },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],

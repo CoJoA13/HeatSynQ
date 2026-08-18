@@ -67,6 +67,9 @@ export type OrderCharge = { id: string; position: number; description: string; a
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
+  /** #46: carried unconditionally under orders.view (the board precedent) — rendered as plain
+   *  text without customers.view, as the customer link with it. */
+  customer: { code: string; name: string };
   poNumber: string; vsOrderNumber: string; customerJobNo: string;
   /** The values RESOLVED AND FROZEN at save (spec §6.1) — shown and edited here as stored, never
    *  re-derived from the part/customer chain (that only runs inside createOrder). */
@@ -220,7 +223,15 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     const res = await run();
     if (!mutations.accept(ticket)) return;
     const { order: fresh, warnings: w } = unwrapMutation(res);
-    setOrder(fresh);
+    // `travelerPrinted` merges MONOTONICALLY (Codex PR #141 round 5): a mutation dispatched
+    // before a traveler print commits can resolve after it, carrying a snapshot computed when the
+    // flag was still false — and a whole-detail swap would un-print it until reload. The fact
+    // only ever goes false → true (stored documents never delete, spec §5.6), so preserving a
+    // local true is exact under EVERY response ordering — the fixpoint the per-callback timing
+    // fixes could not reach.
+    setOrder((prev) => (prev?.travelerPrinted && !fresh.travelerPrinted
+      ? { ...fresh, travelerPrinted: true }
+      : fresh));
     setWarnings(w);
   }, [mutations]);
 
@@ -386,7 +397,9 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       );
       const match = rows.find((r) => String(r.orderNumber) === typed && r.id !== order.id);
       if (!match) {
-        setError(`No order #${typed} found for ${customer ? `${customer.code} · ${customer.name}` : "this customer"}.`);
+        // order.customer, not the customers.view-gated fetch (#46) — the refusal names the
+        // customer for every caller who can use this control at all.
+        setError(`No order #${typed} found for ${order.customer.code} · ${order.customer.name}.`);
         return;
       }
       await applyMutation(() => api<OrderMutationResult>(
@@ -418,13 +431,19 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">
           Order #{order.orderNumber}
-          {customer && (
-            <span className="ml-3 text-base font-normal text-slate-500">
+          {/* #46: the identity comes from OrderDetail itself (orders.view — the board precedent),
+              never from the customers.view-gated fetch above, so the order is identified for
+              every caller who can read it at all. Only the LINK stays behind customers.view —
+              the page it leads to is gated on that. */}
+          <span className="ml-3 text-base font-normal text-slate-500">
+            {customersGate.allowed ? (
               <Link href={`/customers/${order.customerId}`} className="text-blue-700 underline">
-                {customer.code} · {customer.name}
+                {order.customer.code} · {order.customer.name}
               </Link>
-            </span>
-          )}
+            ) : (
+              <>{order.customer.code} · {order.customer.name}</>
+            )}
+          </span>
         </h1>
         <button onClick={voidAction} disabled={voidGate.disabled} title={voidGate.title}
                 className="rounded border border-red-600 px-3 py-1.5 text-sm text-red-600 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
@@ -579,7 +598,8 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       />
 
       <LoadsSection
-        orderId={id} loads={order.loads} editGate={editGate} applyMutation={applyMutation} onError={setError}
+        orderId={id} loads={order.loads} travelerPrinted={order.travelerPrinted}
+        editGate={editGate} applyMutation={applyMutation} onError={setError}
       />
 
       <section className="mb-6 rounded border bg-white p-4">
@@ -604,7 +624,12 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       <DocumentsSection
         orderId={id} loads={order.loads} voided={voided} viewGate={gate(perms, "orders.view")}
         autoPrint={autoPrint}
+        // Codex PR #141 round 3: a first print must reach the #41 loads-editor warning in the
+        // SAME visit. `travelerPrinted` is monotonic (stored documents never delete — spec §5.6),
+        // so a local flip is exact; no refetch needed.
+        onPrinted={() => setOrder((o) => (o === null ? o : { ...o, travelerPrinted: true }))}
       />
+
 
       <CertificationsSection
         orderId={id} loads={order.loads} certRequired={order.certRequired} certScope={order.certScope}

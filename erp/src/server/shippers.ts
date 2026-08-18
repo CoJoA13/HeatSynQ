@@ -7,7 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { allocateNumber, getSetting } from "./settings";
-import { claimOrdersInOrder } from "./order-locks";
+import { claimOrdersInOrder, sortedClaimIds } from "./order-locks";
 import { finalizedInvoicesFor, invoiceBlockMessage } from "./invoice-guards";
 import { listAddresses } from "./customer-addresses";
 import { renderPdf, renderSheetGroups, jpegDataUri, pngDataUri } from "./pdf/render";
@@ -73,6 +73,18 @@ export type ShipperDetail = {
   /** Set when this shipment is a reversing shipment (§5.6): the id of the shipment it reverses.
    *  Its lines carry negative qty/weight, and a credit is built from it. */
   reversesShipperId: string | null;
+  /** The LIVE reversing shipment pointing AT this one, if any (#65): its packing-list number, so
+   *  the shipment page can render Void disabled naming the blocker (§5.16) — `voidShipper`'s own
+   *  refusal stays the enforcement. Always null on a reversal document itself (a reversal cannot
+   *  be reversed), so its Void stays enabled: voiding a reversal is the blessed undo. */
+  reversedByShipperNumber: number | null;
+  /** The §5.7 invoice freeze, pre-worded (Codex PR #141 review): when any order on this shipment
+   *  carries a finalized invoice, this is `voidShipper`'s OWN refusal sentence
+   *  (`invoiceBlockMessage`, built server-side so UI title and server refusal cannot drift), else
+   *  null. The Void gate must show THIS before the reversal blocker — the same precedence
+   *  `voidShipper` enforces (`refuseIfInvoiced` first) — or an invoiced pair's disabled button
+   *  would send the operator at "void the reversal first", an action the server also refuses. */
+  invoiceVoidBlock: string | null;
   deletedAt: string | null;
   orders: ShipperOrderDetail[];
 };
@@ -237,6 +249,15 @@ function auditPayload(args: {
 const DETAIL_INCLUDE = {
   customer: { select: { code: true, name: true, creditHold: true } },
   carrier: { select: { name: true } },
+  // #65: the live reversal pointing at this shipment, for `reversedByShipperNumber`. At most one
+  // can exist in honest data (a second full reversal fails the below-zero guard), but the query
+  // stays deterministic anyway: lowest packing-list number first, matching `voidShipper`'s refusal.
+  reversedBy: {
+    where: { deletedAt: null },
+    orderBy: { shipperNumber: "asc" },
+    take: 1,
+    select: { shipperNumber: true },
+  },
   orders: {
     orderBy: { position: "asc" },
     include: {
@@ -281,7 +302,9 @@ const DETAIL_INCLUDE = {
 
 type DetailRow = Prisma.ShipperGetPayload<{ include: typeof DETAIL_INCLUDE }>;
 
-function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDetail {
+function toDetail(
+  row: DetailRow, shipped: Map<string, ShippedTotal>, invoiceVoidBlock: string | null,
+): ShipperDetail {
   return {
     id: row.id, shipperNumber: row.shipperNumber, bolNumber: row.bolNumber,
     customerId: row.customerId, customerCode: row.customer.code, customerName: row.customer.name,
@@ -294,6 +317,8 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
     freightClass: row.freightClass, freightDescription: row.freightDescription,
     packageCount: row.packageCount, proNumber: row.proNumber, scacCode: row.scacCode,
     reversesShipperId: row.reversesShipperId,
+    reversedByShipperNumber: row.reversedBy[0]?.shipperNumber ?? null,
+    invoiceVoidBlock,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     orders: row.orders.map((so) => ({
       id: so.id, orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,
@@ -347,7 +372,12 @@ export async function readShipperDetail(db: Db, id: string): Promise<ShipperDeta
   // single §5.1 derivation: the ids widened, the arithmetic untouched.
   const orderLineIds = row.orders.flatMap((o) => o.order.lines.map((l) => l.id));
   const shipped = await shippedTotals(db, orderLineIds);
-  return toDetail(row, shipped);
+  // The §5.7 freeze, pre-worded with `voidShipper`'s own sentence (see the type's doc comment) —
+  // `finalizedInvoicesFor` sorts by order number, so this names the same invoice the server's
+  // refusal would.
+  const [frozen] = await finalizedInvoicesFor(db, row.orders.map((o) => o.orderId));
+  return toDetail(row, shipped,
+    frozen ? invoiceBlockMessage(frozen, "This shipment cannot be voided") : null);
 }
 
 export async function getShipper(id: string): Promise<ShipperDetail> {
@@ -719,6 +749,22 @@ async function claimShipperRow(tx: Prisma.TransactionClient, id: string): Promis
   await tx.$queryRaw`SELECT "id" FROM "Shipper" WHERE "id" = ${id} FOR UPDATE`;
 }
 
+/** The `claimOrdersInOrder` shape applied to Shipper rows (#65): deduplicated, ascending, ONE
+ *  `SELECT … WHERE id = ANY(…) ORDER BY "id" FOR UPDATE` statement — two voids racing a reversal
+ *  pair from opposite ends therefore cannot ABBA, because neither ever holds one pair row while
+ *  waiting on the other (a loop of `claimShipperRow` calls, even a sorted loop, reopens that
+ *  window between statements; `EXPLAIN` places `LockRows` above `Sort`, so the single statement
+ *  locks in the sorted sequence). Used by `voidShipper` for the target + its discovered pair,
+ *  uniformly AFTER `claimOrdersInOrder` — the same fixed order (Order rows first, then the
+ *  entity's own rows) every mutator in this file shares, so no new ABBA window opens against
+ *  them either. Single-row mutators keep `claimShipperRow` above; only the pair-touching void
+ *  needs the set form. */
+async function claimShipperRows(tx: Prisma.TransactionClient, ids: string[]): Promise<void> {
+  const sorted = sortedClaimIds(ids);
+  if (sorted.length === 0) return;
+  await tx.$queryRaw`SELECT "id" FROM "Shipper" WHERE "id" = ANY(${sorted}) ORDER BY "id" FOR UPDATE`;
+}
+
 /** Claims the shipment and everything it spans, in the ONE fixed order every mutator shares, then
  *  404s on missing OR voided — a voided shipment is read-only (the P3 voided-order shape):
  *
@@ -757,9 +803,14 @@ async function findShipperOrder(tx: Prisma.TransactionClient, shipperId: string,
 }
 
 /** Every order currently on the shipment, as a plain id array — the "everyAffectedOrderId" set
- *  every mutator below claims through `claimOrdersInOrder` before it reads or writes anything. */
+ *  every mutator below claims through `claimOrdersInOrder` before it reads or writes anything.
+ *  Position-ordered (#52 review round 1, minor 2): claims re-sort and recomputes dedup, so the
+ *  ordering costs nothing there, and it makes stored `coveredOrderIds` uniformly the order the
+ *  paper itself prints in — matching the backfill's stated contract. */
 async function shipperOrderIds(tx: Prisma.TransactionClient, shipperId: string): Promise<string[]> {
-  const rows = await tx.shipperOrder.findMany({ where: { shipperId }, select: { orderId: true } });
+  const rows = await tx.shipperOrder.findMany({
+    where: { shipperId }, select: { orderId: true }, orderBy: { position: "asc" },
+  });
   return rows.map((r) => r.orderId);
 }
 
@@ -1617,8 +1668,67 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
   if (!why) throw new HttpError(400, "A reason is required to void a shipment");
 
   await withDbErrors({ entity: "Shipper" }, () => prisma.$transaction(async (tx) => {
-    const { orderIds } = await claimLiveShipper(tx, id);
+    // The `claimLiveShipper` sequence, widened to the PAIR (#65): a void is the one mutator whose
+    // guards and writes span BOTH shipper rows of a reversal pair (the blocker reads the
+    // reversal's liveness; the restore writes the original's lines), so both rows are claimed in
+    // ONE sorted statement — two voids racing the pair from opposite ends serialize instead of
+    // ABBA-deadlocking. Steps: pre-claim stub reads (target + discovered pair ids — the
+    // `claimLiveShipper` shape, nothing acted on below is trusted from them), the order claims,
+    // `claimShipperRows` over the pair, then the liveness re-read off rows this transaction holds.
+    // A reversal committing between the stub read and the claim is invisible to this Serializable
+    // snapshot, but not to SSI: both paths run Serializable and rw-conflict through the Order rows
+    // and the reversal predicate read, so the loser aborts with 40001 → `withDbErrors`' honest 409.
+    const stub = await tx.shipper.findFirst({
+      where: { id }, select: { id: true, reversesShipperId: true, reversalClearedLineIds: true },
+    });
+    if (!stub) throw new HttpError(404, "Shipment not found");
+    const pairIds = stub.reversesShipperId !== null
+      ? [stub.reversesShipperId]
+      : (await tx.shipper.findMany({
+          where: { reversesShipperId: id, deletedAt: null }, select: { id: true },
+        })).map((r) => r.id);
+    // #65 review round 1 (Important): the restore below writes the ORIGINAL's `lineComplete` flags
+    // by `reversalClearedLineIds`, so the orders those cleared lines belong to are DISCOVERED here
+    // and unioned into the claim set, never assumed to still sit on the reversal's own
+    // `ShipperOrder` rows. No explicit guard pins a reversal's membership — today
+    // `removeOrderFromShipper` on a reversal happens to be refused by the at-least-one-positive-
+    // line survivor invariant (every reversal line is negative), which is INCIDENTAL protection of
+    // exactly the kind #65 itself existed to close (#139 records the class) — so the void is
+    // correct by construction instead of by that accident. Cleared ids are immutable and a
+    // `ShipperLine` never re-parents, so this stub read can only match rows that die before the
+    // claim — harmless (`claimOrdersInOrder` dedups; the restore re-reads under the claim). The
+    // union flows through `refuseIfInvoiced` (a flag restore is a shipment-side write on that
+    // order, so §5.7's conservatism applies to it too) and the final recompute alike.
+    const clearedOrderIds = stub.reversesShipperId === null || stub.reversalClearedLineIds.length === 0
+      ? []
+      : (await tx.shipperLine.findMany({
+          where: { id: { in: stub.reversalClearedLineIds } },
+          select: { shipperOrder: { select: { orderId: true } } },
+        })).map((l) => l.shipperOrder.orderId);
+    const orderIds = [...new Set([...await shipperOrderIds(tx, id), ...clearedOrderIds])];
+    await claimOrdersInOrder(tx, orderIds);
+    await claimShipperRows(tx, [id, ...pairIds]);
+    const shipper = await tx.shipper.findFirst({ where: { id } });
+    if (!shipper || shipper.deletedAt !== null) throw new HttpError(404, "Shipment not found");
+
+    // §5.7 stays FIRST: an invoiced pair is refused with the invoice-naming message on BOTH sides
+    // — unlock is its correction route, and the reversal blocker below must never shadow that.
     await refuseIfInvoiced(tx, orderIds, "This shipment cannot be voided");
+
+    // #65 blocker: the original of a LIVE reversal cannot void. INVARIANT: with every live
+    // reversal fully covered by its live original, Σ(live originals) − Σ(live reversals) ≥ 0 per
+    // line by construction — reversal CREATION checks below-zero once, and this blocker is what
+    // makes the net ledger non-negative GLOBALLY (voiding the original would drop its positives
+    // from `shippedTotals` while the reversal's negatives stayed live). Re-read under the claim;
+    // §5.14's name-the-blocker shape, ordered so two live reversals would name the same one.
+    const liveReversal = await tx.shipper.findFirst({
+      where: { reversesShipperId: id, deletedAt: null },
+      select: { shipperNumber: true }, orderBy: { shipperNumber: "asc" },
+    });
+    if (liveReversal) {
+      throw new HttpError(400,
+        `This shipment has been reversed by Packing List ${liveReversal.shipperNumber} — void the reversal first`);
+    }
 
     await auditedSoftDelete("shipper", id, why, tx);
 
@@ -1627,6 +1737,48 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
       await auditedSoftDelete("cert", cert.id, why, tx);
     }
 
+    // #65 restore — voiding a reversal is the blessed undo, and this is the MIRROR of
+    // `reverseShipperInTx` step 6b's clear: restore `lineComplete: true` on exactly the original's
+    // lines THIS reversal cleared (`reversalClearedLineIds`, its immutable at-creation snapshot),
+    // through the audited path onto the original's own history with the void reason. The original's
+    // row is already claimed (pair claim above); skipped when the original is itself voided
+    // (pre-fix corrupt data only — its lines total nothing, so restoring flags on them would be
+    // noise on a dead document). Lines replaced since the reversal simply don't match (their ids
+    // died — the human re-decided) and legacy pre-#65 reversals carry [], so both restore nothing;
+    // filtering to `lineComplete: false` keeps the no-op-audit-entry discipline (step 6b's own).
+    if (shipper.reversesShipperId !== null && shipper.reversalClearedLineIds.length > 0) {
+      const original = await tx.shipper.findFirst({
+        where: { id: shipper.reversesShipperId }, select: { id: true, deletedAt: true },
+      });
+      // Corrupt-data belt (Codex PR #141 round 2): if ANOTHER live reversal of the same original
+      // still stands, restoring would re-mark flags that reversal semantically owns — so skip, and
+      // let the recompute below derive from the still-cleared flags (honest PARTIAL_SHIPPED while
+      // a live reversal stands). Unreachable through the product since reverseShipperInTx's 3b
+      // refusal (at most one live reversal per original, enforced); this branch exists for data
+      // that predates it. The target is already soft-deleted above, so this live query never
+      // matches the reversal being voided.
+      const siblingReversal = original === null ? null : await tx.shipper.findFirst({
+        where: { reversesShipperId: original.id, deletedAt: null }, select: { id: true },
+      });
+      if (original !== null && original.deletedAt === null && siblingReversal === null) {
+        const toRestore = (await tx.shipperLine.findMany({
+          where: { id: { in: shipper.reversalClearedLineIds }, lineComplete: false },
+          select: { id: true },
+        })).map((l) => l.id);
+        if (toRestore.length > 0) {
+          await auditedUpdate("shipper", original.id, () => tx.shipperLine.updateMany({
+            where: { id: { in: toRestore } }, data: { lineComplete: true },
+          }), { tx, reason: why });
+        }
+      }
+    }
+
+    // The claim set is the target's own orders UNIONED with the cleared lines' orders (discovered
+    // pre-claim above), so the restore's writes and this recompute stay covered even when the
+    // reversal's membership was edited after creation (#139) — an order added to the ORIGINAL
+    // after the reversal was neither cleared nor restored, and stays out. Invoiced orders never
+    // reach here (`refuseIfInvoiced` above, over the same union), so the two-arg recompute
+    // settles every affected order on its flag-derived value as it always has.
     await recomputeOrderStatus(tx, orderIds);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }
@@ -1667,7 +1819,7 @@ type ReverseShipperInput = z.infer<typeof REVERSE_SHIPPER>;
  *  IN this payload — it lands in the audit entry and prints on no piece of paper. Every negated line
  *  travels with the live part identity captured off the original's snapshot columns. */
 function reverseAuditPayload(args: {
-  shipperNumber: number; reason: string;
+  shipperNumber: number; reason: string; reversalClearedLineIds: string[];
   original: { id: string; shipperNumber: number };
   customer: { id: string; code: string; name: string };
   shipDate: Date;
@@ -1681,6 +1833,7 @@ function reverseAuditPayload(args: {
     reversesShipperId: args.original.id,
     reversesShipperNumber: args.original.shipperNumber,
     reason: args.reason,
+    reversalClearedLineIds: args.reversalClearedLineIds,
     customerId: args.customer.id, customerCode: args.customer.code, customerName: args.customer.name,
     shipDate: formatDateOnly(args.shipDate),
     orders: args.orders.map((o) => ({
@@ -1732,6 +1885,23 @@ async function reverseShipperInTx(
   if (original.reversesShipperId !== null) {
     throw new HttpError(400, "That shipment is itself a reversal — reverse the original shipment instead");
   }
+  // 3b. AT MOST ONE live reversal per original — enforced, not incidental (Codex PR #141 round 2;
+  //     the first slice of the 2026-08-18 freeze-the-pair ruling, #139). A second full reversal of
+  //     the same original is never honest paper (it un-ships the same goods twice), and the
+  //     below-zero guard below only catches it INCIDENTALLY — another live shipment's quantity on
+  //     the same lines lets it through, whereupon the second reversal snapshots [] (the flags were
+  //     already cleared) and the void-restore's semantics break: voiding the FIRST reversal would
+  //     restore flags the still-live second reversal semantically owns. This refusal is what makes
+  //     `reversalClearedLineIds` exact. Read under the claim (original's row is locked above).
+  const priorReversal = await tx.shipper.findFirst({
+    where: { reversesShipperId: id, deletedAt: null },
+    select: { shipperNumber: true }, orderBy: { shipperNumber: "asc" },
+  });
+  if (priorReversal) {
+    throw new HttpError(400,
+      `This shipment has already been reversed by Packing List ${priorReversal.shipperNumber} — ` +
+      "void that reversal first");
+  }
   for (const so of original.orders) {
     const order = ordersById.get(so.orderId);
     if (!order || order.deletedAt !== null) {
@@ -1776,10 +1946,17 @@ async function reverseShipperInTx(
   // 6. Create the reversal — negated lines, `reversesShipperId` set, `lineComplete: false`. Snapshot
   //    columns are copied from the original's own snapshots (the paper's part identity), so the
   //    reversal never has to re-read an order-side line that a correction may since have released.
+  //    `completeLineIds` — the original's lines step 6b is about to un-mark — is computed HERE so it
+  //    can also be STORED on the reversal row at creation (#65, `reversalClearedLineIds`): an
+  //    immutable snapshot of exactly which flags THIS reversal cleared, which is what lets
+  //    `voidShipper`'s restore (the blessed undo) put back precisely those flags and no others. No
+  //    edit-path bookkeeping — a line replaced since simply stops matching and restores nothing.
+  const completeLineIds = original.orders.flatMap((so) =>
+    so.lines.filter((l) => l.lineComplete).map((l) => l.id));
   const reversal = await auditedCreate(
     "shipper",
     reverseAuditPayload({
-      shipperNumber, reason: why,
+      shipperNumber, reason: why, reversalClearedLineIds: completeLineIds,
       original: { id: original.id, shipperNumber: original.shipperNumber },
       customer: { id: original.customerId, code: original.customer.code, name: original.customer.name },
       shipDate,
@@ -1801,6 +1978,7 @@ async function reverseShipperInTx(
         route: original.route,
         comments: original.comments,
         reversesShipperId: original.id,
+        reversalClearedLineIds: completeLineIds,
         orders: {
           create: original.orders.map((so, oi) => ({
             orderId: so.orderId,
@@ -1832,8 +2010,7 @@ async function reverseShipperInTx(
   //     under the claim already held on the original Shipper row (step 2), through the audited path
   //     onto the original's own history. Only when a line is actually complete, so a reversal of a
   //     never-completed partial shipment writes no no-op audit entry (recompute's own discipline).
-  const completeLineIds = original.orders.flatMap((so) =>
-    so.lines.filter((l) => l.lineComplete).map((l) => l.id));
+  //     `completeLineIds` is computed at step 6, where it is also stored on the reversal row (#65).
   if (completeLineIds.length > 0) {
     await auditedUpdate("shipper", original.id, () => tx.shipperLine.updateMany({
       where: { id: { in: completeLineIds } }, data: { lineComplete: false },
@@ -2082,8 +2259,14 @@ export async function printShippingTickets(
       buildShippingTicketDefinitions(data, docType, resolved.config, logoDataUri));
 
     // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    // A whole-set print records `shipmentOrderIds` as its coverage (#52): the same Serializable-
+    // snapshot read the render itself consumed (see the docType comment above), so the recorded
+    // set is exactly the orders the stored paper describes — no re-read, no new claim.
     const doc = await storeDocument(tx,
-      { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf, resolved.versionId);
+      orderId === undefined
+        ? { kind: "SHIPPER", shipperId, orderId: null, coveredOrderIds: shipmentOrderIds }
+        : { kind: "SHIPPER", shipperId, orderId },
+      pdf, resolved.versionId);
     return {
       documentId: doc.id, shipperNumber: shipper.shipperNumber,
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
@@ -2198,7 +2381,8 @@ export async function printBol(
     // voided-state re-read below is only trustworthy under that lock.
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
-    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    const memberOrderIds = await shipperOrderIds(tx, shipperId);
+    await claimOrdersInOrder(tx, memberOrderIds);
     await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
@@ -2235,7 +2419,10 @@ export async function printBol(
     const pdf = await renderPdf(buildBolDefinition(data, resolved.config, logoDataUri));
 
     // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
-    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf, resolved.versionId);
+    // `memberOrderIds` is the recorded coverage (#52): the same Serializable-snapshot read whose
+    // orders `readBolData` printed (the printShippingTickets reasoning) — no re-read, no new claim.
+    const doc = await storeDocument(tx,
+      { kind: "BOL", shipperId, coveredOrderIds: memberOrderIds }, pdf, resolved.versionId);
     return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }

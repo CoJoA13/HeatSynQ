@@ -56,7 +56,7 @@ const KIND_LABELS: Record<string, string> = {
  * blob, so there is nothing lost by revoking it on the same delay either way.
  */
 export function DocumentsSection({
-  orderId, loads, voided, viewGate, autoPrint,
+  orderId, loads, voided, viewGate, autoPrint, onPrinted,
 }: {
   orderId: string;
   loads: OrderLoad[];
@@ -65,6 +65,11 @@ export function DocumentsSection({
   /** True when the hub was reached from Save & Print (`?print=1`) — prints once, then never again
    *  for this page instance. */
   autoPrint: boolean;
+  /** Called after a print successfully archives (Codex PR #141 round 3) — the parent's
+   *  `travelerPrinted` state is stale the moment a first print lands, and without this the #41
+   *  loads-editor warning waits for a reload or an unrelated mutation to appear. Optional: the
+   *  section is self-contained everywhere a parent doesn't carry that state. */
+  onPrinted?: () => void;
 }) {
   const [docs, setDocs] = useState<StoredDocument[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -113,13 +118,17 @@ export function DocumentsSection({
       // long the blob is pinned in memory either way.
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
       setError(null);
+      // BEFORE the list refresh (Codex PR #141 round 4): the POST above has already archived the
+      // traveler, so the printed fact is established even when the refresh GET below fails — the
+      // parent's monotonic flag must not ride on a read that can independently error.
+      onPrinted?.();
       await load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setPrinting(false);
     }
-  }, [orderId, load]);
+  }, [orderId, load, onPrinted]);
 
   // Save & Print (src/app/orders/new/page.tsx) saves, then lands here with `?print=1`. Honored
   // exactly ONCE — and the one-shot lives in the URL, not only in a ref.

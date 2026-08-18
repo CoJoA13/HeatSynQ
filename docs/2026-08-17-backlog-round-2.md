@@ -202,7 +202,36 @@ Clear defects and one undelivered deliverable. Nothing here waits on the meeting
 
 ---
 
-## Group C — Shipping and order-status integrity · **#65, #52, #51, #41, #42, #44, #45, #46**
+## Group C — Shipping and order-status integrity · **COMPLETE 2026-08-18** · PR #141 open
+
+All eight closed by the PR — #65, #52, #42, #41, #44, #45, #46, #51. Two migrations (the reversal's
+cleared-flag snapshot; print-time coverage + backfill). **Three task reviews, all Approved on
+round 1** — a first for a group — with each round's findings fixed on-branch the same round. Gates
+on the final tree: **3161 tests / 184 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**.
+
+**What went past the issue text:**
+- **#65's review found the restore's claim-set assumption**, fixed by construction (the cleared
+  lines' orders are discovered and unioned into the claims) — and building that test surfaced that
+  a reversal's membership is protected only INCIDENTALLY today (the positive-line invariant), the
+  exact accidental-protection shape #65 existed to close. Recorded on #139.
+- **#42's guard covered a third door the issue never named** (`resplitLoads`), by sitting in
+  `splitLoads` itself; `replaceLoads` was already guarded and gained a pinning test.
+- **#52's backfill ORDER BY proved behaviorally un-pinnable** (the `(shipperId, position)` index
+  serves position order regardless; heap repositioning re-correlates) — pinned textually by
+  construction, the #122 lesson, with the measurement recorded beside it.
+- **Filed en route:** #139 (reversal-pair edit class, owner ruling wanted on explicit refusal),
+  #140 (removal guard's over-block, safe direction, owner call to loosen).
+
+> **Two owner rulings, 2026-08-17, taken at kickoff (recorded in spec §15).**
+> **#65 — void is reversal-aware.** Voiding the ORIGINAL of a live reversal pair is refused naming
+> the reversal (§5.14 shape; keeps the net ledger ≥ 0 by construction). Voiding the REVERSAL is the
+> blessed undo: it restores the `lineComplete` flags the reversal itself cleared — recorded at
+> reversal time, so a human's re-decision in between is respected — and recomputes status. Invoiced
+> pairs stay behind `refuseIfInvoiced`; unlock is their correction route.
+> **#52 — persist print-time coverage.** A whole-set ticket/BOL records which orders it covered at
+> print; the order hub lists only paper that actually named the order. Membership stays editable
+> after a print (freeze-membership was considered and rejected — the printed paper is not falsified
+> by a later addition; print a fresh BOL).
 
 **#65 is the one that matters**; the rest are papercuts that share the same screens.
 
@@ -250,7 +279,14 @@ Fix them as one sweep with one idiom. Fixing them one at a time is how the class
 
 ---
 
-## Group E — Close, GL export and concurrency tripwires · **#88, #93, #90, #132, #95**
+## Group E — Close, GL export and concurrency tripwires · **#88, #93, #90, #132, #95** + unparked **#73, #80** + ruled **#139, #140**
+
+**Four late additions, all with rulings or answers in hand:** #73 (Q16 — build the `receivedDate ≤
+today` guard) and #80 (Q18 — posting refuses when a batch doesn't foot) from the accounting
+answers; #139 (**freeze the pair** — any edit to either side of a live reversal pair refused; the
+second-reversal creation guard already landed on PR #141, the edit-mutator guards remain) and #140
+(**coverage-precise removal block** — refuse only when printed paper names the order) from the
+2026-08-18 rulings. All four are `ready-for-agent`.
 
 - **#88 — RULED by the owner 2026-08-17: option (c), surface a broken-chain flag.** `listClosePeriods`
   flags any closed month whose `beginningAr` no longer equals the prior month's `endingAr`; the operator
@@ -315,11 +351,12 @@ Low individual value, but cheap in a batch and they are what the office actually
 
 ---
 
-## PARKED — the answers are BACK (2026-08-17) · awaiting the owner's go-ahead
+## PARKED — the answers are BACK (2026-08-17) · **ACTIONED same day on the owner's go-ahead**
 
 The annotated question list answered most of these the same day this file was written (HANDOFF §7
-item 2). **Still do not action them unprompted** — the dispositions below are the bookkeeper's
-answers mapped to issues, and turning any of them into work (or a close) is the owner's call.
+item 2), and the owner said go: **#70, #78, #76 are CLOSED** with their evidence (#78's acceptance
+is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for-agent`), #69 and
+#77 stay parked as below. **Q12 is RATIFIED** (spec §15): one step code per process.
 
 | # | Was waiting on | Answer 2026-08-17 → disposition |
 |---|---|---|
@@ -340,9 +377,9 @@ answers mapped to issues, and turning any of them into work (or a close) is the 
 ## Recommended order
 
 ~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ →
-~~**B** (A/R, merged `6bc45ea`)~~ → **C** (shipping/status) ← **NEXT, NOT STARTED — owner is holding
-here (2026-08-17)** → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
-→ **F** → **G**/**H** as filler.
+~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, PR #141 open 2026-08-18)~~ →
+**E** (close + GL + tripwires — now also #73 and #80, unparked from the accounting answers) ←
+**NEXT when asked** → **D** (stale-load, after the #31 decision) → **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across

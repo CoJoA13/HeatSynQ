@@ -9,7 +9,9 @@ import {
   updateOrder, addLine, updateLine, removeLine,
   replaceContainers, replaceSerials, replaceCharges,
   voidOrder, linkOrder, unlinkOrder, getLockedRevision,
+  lineTotals,
 } from "@/server/orders";
+import { splitLoads } from "@/lib/load-split";
 import { updateStep, getRevision, getRevisions } from "@/server/part-process-steps";
 import { applyPayment, applyCredit, voidApplication } from "@/server/applications";
 import { unlockInvoice, createCredit, finalizeInvoice } from "@/server/invoices";
@@ -149,6 +151,23 @@ describe("createOrder: the two-line sibling order", () => {
     const fetched = await getOrder(order.id);
     expect(fetched.lines[0].part.serializationRequired).toBe(false);
     expect(fetched.lines[1].part.serializationRequired).toBe(true);
+  });
+
+  // #46: the hub header must identify the order's customer under orders.view ALONE — the board
+  // already shows exactly this pair (BoardRow.customerCode/customerName) under orders.view, so
+  // hiding it on the hub behind the unrelated customers.view grant left an otherwise fully
+  // readable order unidentified. OrderDetail carries the identity unconditionally (the customer
+  // was already joined for the board); the hub renders it as plain text without customers.view
+  // and as the customer link with it.
+  it("carries the customer's code and name on OrderDetail, from both createOrder and getOrder", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    expect(order.customer).toEqual({ code: "ACME", name: "Acme Gear" });
+
+    const fetched = await getOrder(order.id);
+    expect(fetched.customer).toEqual({ code: "ACME", name: "Acme Gear" });
   });
 
   // Task 4 wiring: createOrder freezes resolveCertSettings's answer onto the order row (spec
@@ -708,6 +727,73 @@ describe("createOrder: rejections", () => {
     expect((overQty as ZodError).issues[0].path).toEqual(["containers", 0, "qty"]);
 
     expect(await prisma.order.count()).toBe(0);
+  });
+
+  // #42: independently valid lines can SUM to a generated load no column can hold — `Load.qty`
+  // is a Postgres INTEGER and `Load.weight` a DECIMAL(12,2) — and the nested create then failed
+  // as an unmapped Postgres overflow, a 500, from inside the transaction. `splitLoads` itself now
+  // refuses (the MAX_LOADS shape) and `runSplitLoads` translates that into the field-anchored 400,
+  // so BOTH generated-load paths (this save and resplitLoads) are covered by one guard. The
+  // manual editor (replaceLoads) validates independently and was already bounded — its own
+  // LOAD_ITEM schema, pinned in order-loads.test.ts.
+  it("rejects a generated load past the Int4 qty ceiling with a 400 naming the load and the cap, and writes nothing", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // 215 lines × 10,000,000 pcs (each under LINE_QTY's own cap) = 2,150,000,000 — the issue's
+    // exact repro; the cap-less lead puts the whole total into one load.
+    const lines = [...Array(215)].map(() => ({ partId: noCap.id, qty: 10_000_000, weight: "1.00" }));
+    await expect(asSystem(() => createOrder({ customerId: customer.id, lines })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "Load 1's quantity 2,150,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities",
+      });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("rejects a generated load past the Decimal(12,2) weight ceiling with a 400 naming the load and the cap, and writes nothing", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // Two lines each at the exact per-line Decimal(12,2) maximum — individually valid, unstorable
+    // as one load's weight.
+    const lines = [
+      { partId: noCap.id, qty: 1, weight: "9999999999.99" },
+      { partId: noCap.id, qty: 1, weight: "9999999999.99" },
+    ];
+    await expect(asSystem(() => createOrder({ customerId: customer.id, lines })))
+      .rejects.toMatchObject({
+        status: 400,
+        message: "Load 1's weight 19,999,999,999.98 exceeds the database maximum 9,999,999,999.99 — check the line weights",
+      });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("accepts a generated load at exactly the qty and weight ceilings — the guard must not over-block", async () => {
+    const { customer, code } = await fixture();
+    const noCap = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NC-1", name: "No-cap part", eachWeight: "1.0000" },
+    });
+    await giveSteps(noCap.id, code.id);
+
+    // 214 × 10,000,000 + 7,483,647 = 2,147,483,647 exactly.
+    const qtyLines = [...Array(214)].map(() => ({ partId: noCap.id, qty: 10_000_000, weight: "1.00" }));
+    qtyLines.push({ partId: noCap.id, qty: 7_483_647, weight: "1.00" });
+    const { order: atQtyCap } = await asSystem(() => createOrder({ customerId: customer.id, lines: qtyLines }));
+    expect(atQtyCap.loads).toHaveLength(1);
+    expect(atQtyCap.loads[0].qty).toBe(2_147_483_647);
+
+    const { order: atWeightCap } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: noCap.id, qty: 1, weight: "9999999999.99" }],
+    }));
+    expect(atWeightCap.loads).toHaveLength(1);
+    expect(atWeightCap.loads[0].weight).toBe(9_999_999_999.99);
   });
 });
 
@@ -2457,5 +2543,24 @@ describe("getLockedRevision", () => {
   it("404s an unknown order id", async () => {
     await expect(asSystem(() => getLockedRevision("nope")))
       .rejects.toMatchObject({ status: 404, message: "Order not found" });
+  });
+});
+
+// Codex PR #141 round 4 (after round 3 made the PRORATION exact): `lineTotals` itself accumulated
+// cents in a JavaScript number, and ~9,000 ceiling-weight lines push that sum past 2^53 — a cent
+// lost at accumulation is a cent no downstream BigInt can recover, and the shifted cent turned a
+// storable split into a refusal exactly as round 3's defect did. Two consecutive rounds finding
+// float defects in the same pipeline is round-1's lesson 4 (the design is the finding), so cents
+// are BigInt END-TO-END now: this pure test runs the real accumulate → split pipeline at the
+// scale where the number sum genuinely loses precision. No DB.
+describe("lineTotals → splitLoads: cents stay exact end-to-end (pure)", () => {
+  it("9,010 ceiling-weight qty-1 lines split into 9,010 exact ceiling loads", () => {
+    const lines = Array.from({ length: 9_010 }, () => ({ qty: 1, weight: 9_999_999_999.99 }));
+    const loads = splitLoads({ ...lineTotals(lines), loadQty: 1, loadWeight: null });
+    expect(loads).toHaveLength(9_010);
+    for (const load of loads) {
+      expect(load.qty).toBe(1);
+      expect(load.weight).toBe(9_999_999_999.99);
+    }
   });
 });

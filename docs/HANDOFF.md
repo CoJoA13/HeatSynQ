@@ -777,7 +777,9 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    list; the chart-export ask stands), and **Q13** (explicitly cannot be settled without a third
    person the bookkeeper named; costs nothing parked — the discount has never been taken). The A/R
    policy answers (Q14–Q22) and what they unpark are recorded against the round-2 backlog's PARKED
-   table — five of the ten parked issues now have answers awaiting the owner's go-ahead.
+   table. **ACTIONED 2026-08-17 on the owner's go-ahead:** #70 and #78 closed (current behavior
+   confirmed; #78's acceptance is a spec §15 amendment), #76 closed not-planned (finance charges
+   unused), #73 and #80 unparked into Group E with `ready-for-agent`, #69/#77 stay parked.
 3. ~~The office's go-to report list.~~ **Effectively CLOSED by Phase 8A** — the five native reports + the two homed ones were built to the owner's list; extras are cheap additions now the platform exists.
 4. GL account list for operations, surcharges, payment types. **PARTIALLY DELIVERED 2026-08-16** —
    the owner supplied Visual Shop's own *General Ledger Report* (process code → GL#, 3 pages).
@@ -832,10 +834,10 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       "No" — nobody reads revenue-by-furnace.** Their QBO item-list export corroborates it
       independently: every heat-treat service already posts to a single income account, so the
       by-furnace split died at the QuickBooks door years ago and only Visual Shop's own reports
-      ever showed it. That resolves the business choice to **one step code per process (~15–20
-      codes), one revenue account** — pending only the owner's ratification, since this question
-      was framed as owner + bookkeeper together. If ratified, the chart-keying task shrinks to a
-      short afternoon.
+      ever showed it. **RATIFIED by the owner 2026-08-17 (spec §15): one step code per process
+      (~15–20 codes), one revenue account.** The chart-keying task is now a short afternoon; the
+      only accounts still owed are Q8's balance-sheet list (the bookkeeper asked back "all, or
+      what VS invoicing uses?" — answer: what invoicing/A-R touches).
       (Superseded framing kept below for the reasoning.)
 
       **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
@@ -979,12 +981,18 @@ Fedora-specific notes:
 > were PARKED on the accounting meeting** (#69, #70, #73, #78, #80, #76, #77, #71, #4, #8) — **and
 > the answers came back the same day 2026-08-17** (the annotated question list + a QBO item-list
 > export, §7 item 2; transcription appended to
-> `docs/company-confidential/2026-08-17-accounting-questions.md`). Five now have answers awaiting
-> the owner's go-ahead — #70 and #78 confirm current behavior (closable), #73 and #80 became
-> build-the-guard/build-the-refusal, #76 became don't-build — #77 stays parked-low (wanted only if
-> late fees are pursued), #69 stays parked (needs a third person), #71/#4/#8 remain owner calls.
-> **Do not action any of them until the owner says so** — the dispositions are recorded in the
-> round-2 backlog's PARKED table.
+> `docs/company-confidential/2026-08-17-accounting-questions.md`). **Actioned on the owner's
+> go-ahead the same day:** #70/#78/#76 closed with their evidence (#78's acceptance is a spec §15
+> amendment), #73/#80 unparked into **Group E** with `ready-for-agent`, #77 parked-low, #69 parked
+> (needs a third person), #71/#4/#8 remain owner calls. **Q12 is RATIFIED** — one step code per
+> process (~15–20), spec §15. **Group C is COMPLETE — PR #141 open (2026-08-18)**, branch
+> `group-c-shipping-status`: all eight (#65, #52, #42, #41, #44, #45, #46, #51), two kickoff
+> rulings in spec §15 (#65 void-is-reversal-aware, #52 persist-print-time-coverage), two
+> migrations, three reviews ALL Approved on round 1, gates 3161 tests / 184 files + E2E 23/23.
+> Filed en route: #139, #140 — **both RULED 2026-08-18** (freeze the pair; coverage-precise
+> removal block; spec §15) with #139's first slice — the second-reversal creation guard, a Codex
+> round-2 finding whose bypass was RED-proven — landed on the PR itself. **Next when asked:
+> Group E**, which now carries #73, #80, #139 and #140 alongside its own five.
 >
 > Round 1's own record stays at `docs/2026-08-16-issue-burndown-handoff.md` — read its closing
 > "outlives it" section before starting, especially lesson 4 (when each review round finds defects in

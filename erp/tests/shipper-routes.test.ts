@@ -526,7 +526,7 @@ describe("shipper routes", () => {
     expect(await empty.json()).toEqual([]);
 
     const bol = await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, Buffer.from("%PDF-1.4 bol")));
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [order.id] }, Buffer.from("%PDF-1.4 bol")));
 
     const withDoc = await shipperDocumentsRoute(getReq(url, viewer), withParams({ id: shipper.id }));
     expect(withDoc.status).toBe(200);

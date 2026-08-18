@@ -38,3 +38,6 @@ docs/samples/screen-index.csv
 # company's chart of accounts is internal financial structure, so it must never reach a commit, a
 # PR body, or an issue. The whole directory is ignored so a future drop needs no new rule.
 docs/company-confidential/
+
+# a vitest run started from the repo root (wrong cwd — erp/ is the app) drops a cache dir here
+node_modules/

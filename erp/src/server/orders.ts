@@ -62,6 +62,12 @@ export type OrderChargeDetail = {
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
+  /** #46: the order's own identifying data, carried UNCONDITIONALLY under this DTO's own gate
+   *  (orders.view) — the board already exposes exactly this pair (BoardRow.customerCode/
+   *  customerName) under orders.view alone, so the hub must not hide it behind the unrelated
+   *  customers.view grant. The hub renders it as plain text without customers.view (no link —
+   *  the customer PAGE stays gated) and as the customer link with it. */
+  customer: { code: string; name: string };
   poNumber: string; vsOrderNumber: string; customerJobNo: string;
   receivedDate: string; requestDate: string; targetDate: string | null;
   status: OrderStatus; notes: string; linkGroupId: string | null;
@@ -336,16 +342,23 @@ async function resolveQuoteLinks(
  * select) rather than re-deriving it — every existing call site already satisfies the narrower
  * shape, so this is a widening, not a breaking change.
  */
-export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty: number; totalWeight: number } {
+export function lineTotals(lines: { qty: number; weight: number }[]): { totalQty: number; totalWeightCents: bigint } {
   const totalQty = lines.reduce((sum, l) => sum + l.qty, 0);
-  const cents = lines.reduce((sum, l) => sum + Math.round(l.weight * 100), 0);
-  return { totalQty, totalWeight: cents / 100 };
+  // Each LINE's cents are exact in a double (a legal line weight fits DECIMAL(12,2) — at most
+  // 1e12 cents); the SUM is not — ~9,000 ceiling-weight lines push it past 2^53, and a cent lost
+  // here is a cent no downstream arithmetic can recover (Codex PR #141 round 4, the accumulation
+  // half of round 3's proration finding). So the sum is BigInt from the first add, and it STAYS
+  // cents all the way through `splitLoads` — the pipeline never round-trips through a float
+  // total again.
+  const cents = lines.reduce((sum, l) => sum + BigInt(Math.round(l.weight * 100)), BigInt(0));
+  return { totalQty, totalWeightCents: cents };
 }
 
 /**
- * `splitLoads` (fix-wave R2 finding 3) throws a plain `Error` when the split would exceed
- * `MAX_LOADS` — it lives in src/lib and has no server import, so it cannot throw `HttpError`
- * itself. This is the one seam that translates that refusal into the field-anchored 400 every
+ * `splitLoads` throws a plain `Error` when the split would exceed `MAX_LOADS` (fix-wave R2
+ * finding 3) or when a generated load would overflow `Load.qty`/`Load.weight`'s column ranges
+ * (#42) — it lives in src/lib and has no server import, so it cannot throw `HttpError`
+ * itself. This is the one seam that translates those refusals into the field-anchored 400 every
  * other boundary in this service uses, the same shape `parseDate` gives `parseDateOnly`'s plain
  * throw. Exported for order-loads.ts's `resplitLoads`, the only other caller of `splitLoads` — a
  * live loadQty/loadWeight cap can be edited down against an existing large order exactly as
@@ -487,6 +500,8 @@ function auditPayload(args: {
 }
 
 const DETAIL_INCLUDE = {
+  // #46: the hub header's identity line — see OrderDetail.customer's comment.
+  customer: { select: { code: true, name: true } },
   lines: {
     orderBy: { position: "asc" },
     include: {
@@ -531,6 +546,7 @@ function toDetail(
 ): OrderDetail {
   return {
     id: row.id, orderNumber: row.orderNumber, customerId: row.customerId,
+    customer: row.customer,
     poNumber: row.poNumber, vsOrderNumber: row.vsOrderNumber,
     receivedDate: formatDateOnly(row.receivedDate),
     requestDate: formatDateOnly(row.requestDate),

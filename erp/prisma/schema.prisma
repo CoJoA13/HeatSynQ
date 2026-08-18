@@ -855,6 +855,12 @@ model StoredDocument {
   quote             Quote?                   @relation(fields: [quoteId], references: [id])
   kind              DocumentKind
   loadNumber        Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
+  // #52 (owner ruling 2026-08-17): whole-shipment paper (a BOL, a whole-set SHIPPER ticket —
+  // `shipperId` set, `orderId` null) records HERE which member orders its render actually covered
+  // at print time; `listDocumentsForOrder` reads this, never the shipment's editable current
+  // membership. Per-order tickets and every other kind stay `[]`. NOT an owner column — the
+  // kind→owner CHECK below is deliberately untouched, the `templateVersionId` precedent.
+  coveredOrderIds   String[]                 @default([])
   // Phase 7 (spec §4.2): the exact PUBLISHED template version that produced this print — render
   // metadata stamped by every post-Phase-7 print; pre-existing rows stay null. NOT an owner
   // column: the kind→owner CHECK below is deliberately untouched by Phase 7 — its arms govern
@@ -882,6 +888,11 @@ model StoredDocument {
   // that is now the current definition.
   @@index([orderId])
   @@index([shipperId])
+  // #52 follow-up (Codex PR #141 review): `listDocumentsForOrder` matches whole-set paper with
+  // `coveredOrderIds: { has: orderId }`, and no scalar index can serve array membership — on this
+  // permanent, append-only table that scan grows with every whole-set ticket/BOL ever printed,
+  // the exact growth shape the orderId index above was added for. GIN, default array_ops.
+  @@index([coveredOrderIds], type: Gin)
   @@index([certId])
   @@index([invoiceId])
   @@index([customerId])
@@ -1017,6 +1028,13 @@ model Shipper {
   reversesShipperId  String?
   reverses           Shipper?         @relation("ShipperReversal", fields: [reversesShipperId], references: [id])
   reversedBy         Shipper[]        @relation("ShipperReversal")
+  /// #65: the ORIGINAL shipment's ShipperLine ids whose `lineComplete` this reversal cleared at
+  /// creation (`reverseShipperInTx` step 6b's `completeLineIds`), written ONCE when the reversal
+  /// row is created — an immutable snapshot, no edit-path bookkeeping. `voidShipper` reads it when
+  /// the reversal is voided (the blessed undo) to restore those flags on the original. Always []
+  /// on a non-reversal; [] on a reversal that cleared nothing, and on pre-#65 reversals (which
+  /// restore nothing — dev/practice data only, the shop is not live).
+  reversalClearedLineIds String[]     @default([])
   deletedAt          DateTime? // voided; reason in the audit entry, void_shipper
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt

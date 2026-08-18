@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
-import { createShipper, reverseShipper, type ShipperDetail } from "@/server/shippers";
+import { createShipper, reverseShipper, voidShipper, type ShipperDetail } from "@/server/shippers";
 import { shippedTotals } from "@/server/ship-ledger";
 import { addPartPrice } from "@/server/part-prices";
 import { createInvoice, finalizeInvoice, unlockInvoice } from "@/server/invoices";
@@ -183,10 +183,82 @@ describe("reverseShipper", () => {
     expect(allReleased).toEqual([]);
   });
 
-  it("refuses to drive a line below zero", async () => {
+  // #65: the reversal row records WHICH original lines its step 6b cleared, at creation — the
+  // immutable snapshot voidShipper's restore reads when the reversal is voided (the blessed undo).
+  it("records the original line ids whose lineComplete it cleared on its own row (#65)", async () => {
     const { shipper } = await shippedFixture({ qty: 100 });
-    await asSystem(() => reverseShipper(shipper.id, { reason: "first" }));
-    await expect(asSystem(() => reverseShipper(shipper.id, { reason: "second" })))
+    const originalLineId = shipper.orders[0].lines[0].id;
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(shipper.id, { reason: "returned" }));
+    const row = await prisma.shipper.findUniqueOrThrow({
+      where: { id: reversal.id }, select: { reversalClearedLineIds: true },
+    });
+    expect(row.reversalClearedLineIds).toEqual([originalLineId]);
+  });
+
+  it("records [] when the reversed shipment had no complete lines to clear (#65)", async () => {
+    const { order } = await savedOrder({ qty: 100 });
+    const { shipper } = await createShipper(oneOrderInput(order, false), { canOverrideCreditHold: false });
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(shipper.id, { reason: "returned" }));
+    const row = await prisma.shipper.findUniqueOrThrow({
+      where: { id: reversal.id }, select: { reversalClearedLineIds: true },
+    });
+    expect(row.reversalClearedLineIds).toEqual([]);
+  });
+
+  // Codex PR #141 round 2 + the freeze-the-pair ruling (2026-08-18): at most ONE live reversal
+  // per original, ENFORCED at creation. Before this guard a double-reverse was refused only
+  // INCIDENTALLY, by the below-zero arithmetic — and a second live shipment's quantity on the
+  // same line let it straight through, whereupon the second reversal snapshotted [] (the flags
+  // were already cleared by the first) and voiding the FIRST restored flags the still-live second
+  // semantically owned. This test builds exactly that bypass, so without the guard it does not
+  // merely get the wrong message — the second reversal SUCCEEDS.
+  it("refuses a second reversal of an already-reversed original, naming the first", async () => {
+    const { order, shipper } = await shippedFixture({ qty: 100 });
+    // The bypass quantity: a second live shipment on the same line keeps net ≥ 0 through a
+    // second reversal of S1 (over-ship is a warning, not a refusal).
+    await createShipper(oneOrderInput(order, false), { canOverrideCreditHold: false });
+    const { shipper: r1 } = await asSystem(() => reverseShipper(shipper.id, { reason: "wrong parts" }));
+
+    await expect(asSystem(() => reverseShipper(shipper.id, { reason: "again" }))).rejects.toMatchObject({
+      status: 400,
+      message: `This shipment has already been reversed by Packing List ${r1.shipperNumber} — void that reversal first`,
+    });
+
+    // The refusal's own correction flow works: void the first, and the original reverses again.
+    await asSystem(() => voidShipper(r1.id, "mistaken reversal"));
+    const { shipper: r2 } = await asSystem(() => reverseShipper(shipper.id, { reason: "correct this time" }));
+    expect(r2.reversesShipperId).toBe(shipper.id);
+  });
+
+  // The below-zero guard stays, as the belt spec §5.6 requires — with at-most-one-live-reversal
+  // enforced, no PRODUCT path reaches it any more (every live reversal cancels against its own
+  // live original, which #65's blocker keeps live), so it is pinned against the state the #139
+  // edit hole could produce: a live negative line NOT paired through `reversesShipperId` (raw
+  // fixture — the product never builds one; that is the point of a belt).
+  it("refuses to drive a line below zero", async () => {
+    const { order, shipper } = await shippedFixture({ qty: 100 });
+    const so = await prisma.shipperOrder.findFirstOrThrow({
+      where: { shipperId: shipper.id }, select: { id: true } });
+    const rogue = await prisma.shipper.create({
+      data: { shipperNumber: 999_998, customerId: order.customerId, shipDate: new Date("2026-08-04") },
+      select: { id: true },
+    });
+    const rogueSo = await prisma.shipperOrder.create({
+      data: { shipperId: rogue.id, orderId: order.id, sequence: 99, position: 1 }, select: { id: true } });
+    const line = await prisma.shipperLine.findFirstOrThrow({
+      where: { shipperOrderId: so.id }, select: { orderLineId: true, partNumber: true, orderedQty: true, orderedWeight: true } });
+    await prisma.shipperLine.create({
+      data: {
+        shipperOrderId: rogueSo.id, orderLineId: line.orderLineId, position: 1,
+        qty: -60, weight: "-150.00", lineComplete: false,
+        partNumber: line.partNumber, partName: "", partDescription: "",
+        orderedQty: line.orderedQty, orderedWeight: line.orderedWeight,
+      },
+    });
+    // Net on the line is now 100 − 60 = 40; reversing S1 would subtract 100 → −60.
+    await expect(asSystem(() => reverseShipper(shipper.id, { reason: "drive it under" })))
       .rejects.toThrow(/below zero/i);
   });
 
