@@ -807,12 +807,23 @@ async function claimLiveShipper(
   // lazy first-print `bolNumber` write — by construction. A reversal is refused ALWAYS, live
   // original or not: it is machine-generated mirror paper, an operator edit of one is never
   // honest, and the unconditional refusal covers corrupt pre-#65 data in the safe direction.
-  // LOCK ARGUMENT (order-locks.ts's "guarded state must be locked with the claimed row" rule,
-  // satisfied transitively): the counterpart's liveness lives on a different row, but every
-  // writer that CHANGES pair-liveness claims THIS row too — `reverseShipperInTx` claims the
-  // original via `claimShipperRow` before creating its reversal, and `voidShipper` claims BOTH
-  // pair rows via `claimShipperRows` — so both reads below, taken after the claim above, are
-  // serialized against creation and void at ANY isolation. Do NOT widen this into a pair claim.
+  // LOCK ARGUMENT, per direction — the doors run Serializable with their snapshot fixed at the
+  // stub read above, so the claim gives mutual exclusion but does NOT refresh what the reads
+  // below can see (the Phase 4 print-vs-void lesson). Three cases:
+  //   1. Target IS a reversal: the state is `reversesShipperId` on the claimed row itself —
+  //      sound at any isolation.
+  //   2. vs `voidShipper` of the counterpart (pair going DEAD): a stale read still sees the
+  //      reversal live and refuses an edit that could have proceeded — conservative, safe.
+  //   3. vs `reverseShipperInTx` (pair going LIVE): the `liveReversal` read below can miss a
+  //      just-committed reversal. The header/membership/line doors are closed by SSI — they
+  //      write rows the creation READ (the original's Shipper header, its ShipperOrder set, its
+  //      ShipperLine rows), completing the rw-cycle with the predicate read below, so the door
+  //      aborts 40001→409. `replaceShipperContainers`/`replaceShipperSerials` write rows the
+  //      creation never reads, so one may commit after the reversal — ACCEPTED BY DESIGN: the
+  //      outcome is serial-equivalent to editing BEFORE the reversal existed (legal), and the
+  //      reversal clones lines only, so its paper and the pair's mirror/ledger invariants are
+  //      identical either way. "Frozen from that moment" means commit order — the
+  //      publish-by-immutability precedent (§5.1). Do NOT widen this into a pair claim.
   if (shipper.reversesShipperId !== null) {
     const original = await tx.shipper.findFirst({
       where: { id: shipper.reversesShipperId }, select: { shipperNumber: true },
