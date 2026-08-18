@@ -13,12 +13,13 @@
 // truth, discard the block's draft (bumpReset remounts it), then show the error. Every mutating
 // call on this page answers with the ENTIRE fresh CertDetail, so all of them share ONE monotonic
 // mutation-ticket sequence (`useMutationGate`, fix-wave R4 finding 6).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
@@ -222,19 +223,42 @@ export function CertDetail({ id }: { id: string }) {
 
   // ---- Notes: optimistic blur-save PATCH (ShipmentDetail.tsx `patchHeader` precedent) ----
 
+  // Per-key request queue (Task 7 — the InvoiceDetail.tsx `serial` shape, which this page never
+  // received): without it, two overlapping PATCHes to the same notes field (an ordinary
+  // double-blur) can commit out of order server-side and leave the database holding the opposite
+  // of the last thing the UI showed. Readings saves join the same queue under per-block keys
+  // below, so two blocks still save in parallel while each block serializes with itself — and a
+  // failing save can drain the OTHER keys' chains before its §5.13 rollback load. `serial` is a
+  // useCallback (unlike its siblings' plain functions) because `saveReadings` lists it as a dep.
+  const queue = useRef<Map<string, Promise<unknown>>>(new Map());
+  const serial = useCallback(function run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = queue.current.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    queue.current.set(key, next.catch(() => {}));
+    return next;
+  }, []);
+
   /** Optimistic: the field shows the typed value immediately; a rejection rolls back to server
    *  truth FIRST and only then reports why (§5.13 — a reload after the error is set would clear
    *  it, since the initial-load effect resets `error` on success but `load` itself never does). */
   async function patchNotes(patch: { freeform?: string; internalNotes?: string }): Promise<void> {
     setCert((cur) => (cur ? { ...cur, ...patch } : cur));
-    try {
-      await applyMutation(() => api<CertDetailData>(
-        `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
-      setError(null);
-    } catch (e) {
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    const key = Object.keys(patch).sort().join(",");
+    return serial(key, async () => {
+      try {
+        await applyMutation(() => api<CertDetailData>(
+          `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        setError(null);
+      } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight save before the
+        // rollback GET — served before a sibling key's save commits, the newest-ticket GET would
+        // revert that sibling's committed write on screen. Own key excluded: this catch runs
+        // INSIDE its own chain, so awaiting the tail deadlocks (drain-queue.ts has the story).
+        await drainOtherKeys(queue.current, key);
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
   }
 
   // Blur-save guard and focused-field tracking are both `editGuard`'s (use-edit-guard.ts): the
@@ -244,21 +268,29 @@ export function CertDetail({ id }: { id: string }) {
   // ---- Readings: non-optimistic per-requirement save (merge semantics — only the named
   // requirement's readings are replaced; every other requirement is untouched server-side) ----
 
+  // Queued per BLOCK (`readings:` prefixed so requirement-id keys can never collide with the
+  // notes-field key space): two blocks still save in parallel, each block serializes with
+  // itself, and the failure drain below covers every other key — notes and sibling blocks alike.
   const saveReadings = useCallback(async (requirementId: string, readings: ReadingPayload[]) => {
-    try {
-      await applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
-        method: "PUT", body: JSON.stringify({ requirements: [{ id: requirementId, readings }] }),
-      }));
-      setError(null);
-      bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
-    } catch (e) {
-      // Rollback-then-report (§5.13): server truth back into state, the block's draft discarded,
-      // and only THEN the error — so the report survives the reload.
-      await load().catch(() => {});
-      bumpReset(requirementId);
-      setError((e as Error).message);
-    }
-  }, [id, applyMutation, load, bumpReset]);
+    const key = `readings:${requirementId}`;
+    return serial(key, async () => {
+      try {
+        await applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
+          method: "PUT", body: JSON.stringify({ requirements: [{ id: requirementId, readings }] }),
+        }));
+        setError(null);
+        bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
+      } catch (e) {
+        // Rollback-then-report (§5.13): drain the other keys' in-flight saves (Task 7 — never
+        // our own chain, which this catch runs inside), server truth back into state, the
+        // block's draft discarded, and only THEN the error — so the report survives the reload.
+        await drainOtherKeys(queue.current, key);
+        await load().catch(() => {});
+        bumpReset(requirementId);
+        setError((e as Error).message);
+      }
+    });
+  }, [id, serial, applyMutation, load, bumpReset]);
 
   // ---- Print: the ShipmentDetail.tsx `printDoc` pipeline (popup handling and error surfacing
   // shared shape; the x-print-warnings decode there is shipment-specific and has no counterpart

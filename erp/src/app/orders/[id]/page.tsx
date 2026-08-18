@@ -19,6 +19,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { LIGHT_DOT_CLASS, LIGHT_LABELS, type TrafficLight } from "@/lib/traffic-light";
@@ -326,6 +327,13 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         setError(null);
         return true;
       } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight save before the
+        // rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen (its own response then drops as
+        // older-ticketed). Own key excluded: this catch runs INSIDE its own chain, so awaiting
+        // the tail deadlocks. Same-key corrections need no drain — a same-key response
+        // re-applies through the accept gate (drain-queue.ts carries the full story).
+        await drainOtherKeys(queue.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;

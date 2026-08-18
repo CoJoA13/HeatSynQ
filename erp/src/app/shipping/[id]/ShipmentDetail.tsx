@@ -16,6 +16,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
@@ -482,6 +483,12 @@ export function ShipmentDetail({ id }: { id: string }) {
         setError(null);
         return true;
       } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight save before the
+        // rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen (its own response then drops as
+        // older-ticketed). Own key excluded: this catch runs INSIDE its own chain, so awaiting
+        // the tail deadlocks (drain-queue.ts carries the full story).
+        await drainOtherKeys(queue.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;
