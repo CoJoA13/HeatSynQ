@@ -68,4 +68,11 @@ Both implementer deviations verified sound by the reviewer (InspectionsSection `
 `rowsLatest` subsumed by the scope's strictly-stronger gate). **Approved after fix round 1.**
 
 **Task 3 (#23 + step-codes page)** — implementer `a6e875e`/`e751a1d`/`0516b69`, RED watched on
-the leaf's stale-drop cases. Review: pending.
+the leaf's stale-drop cases. Review: **Spec ✅ · Approved (round 1)**, zero fixes. The reviewer
+traced #23's five-step stale sequence closed end-to-end (including the pre-effect flush window),
+verified recon §B's queue-hold invariant survived the refactor (the blocker GET is still awaited
+inside the queued run), and proof-checked the one deliberate deviation — `codesRefGate.accept()`
+consuming tickets minted by `latest.next()` — against `use-latest.ts`'s applied-monotonic
+semantics (sound; the PR #22 whole-array rewind stays closed and queued runs still read the
+freshest ref). Two minors noted for awareness only (a self-healing draft-clear reveal window; the
+F7 swallow's invisibility at call sites), no action required.
