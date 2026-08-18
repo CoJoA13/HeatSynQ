@@ -24,7 +24,7 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { useMutationGate } from "@/lib/use-latest";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -107,11 +107,16 @@ function InvoiceDocumentsList({ invoiceId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch
+  // (the ShipmentDocumentsList shape).
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/invoices/${invoiceId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [invoiceId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/invoices/${invoiceId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [invoiceId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;

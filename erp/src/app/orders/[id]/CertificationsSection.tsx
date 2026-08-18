@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import type { OrderLoad } from "./page";
 
@@ -66,15 +67,36 @@ export function CertificationsSection({
   createGate: Gate;
 }) {
   const [rows, setRows] = useState<CertRow[]>([]);
+  // A `loaded` flag distinct from "the array is empty" (HANDOFF §5.15, the InvoicesSection shape):
+  // rows=[] before the first fetch lands must not render every "Create cert for Load N" button —
+  // a click there is a guaranteed-400 double create once the real rows arrive.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState<number | null>(null);
 
   const allowed = viewGate.allowed;
+  // §5.13 stale-gate, the InvoicesSection shape, both paths (F7): mount races createForLoad's
+  // refresh, and a superseded response — success or rejection — must touch nothing.
+  const latest = useLatest();
   const load = useCallback(async () => {
     if (!allowed) return;
-    setRows(await api<CertRow[]>(`/api/orders/${orderId}/certs`));
-  }, [orderId, allowed]);
-  useEffect(() => { load().then(() => setError(null)).catch((e) => setError((e as Error).message)); }, [load]);
+    const t = latest.next();
+    let data: CertRow[];
+    try {
+      data = await api<CertRow[]>(`/api/orders/${orderId}/certs`);
+    } catch (e) {
+      if (latest.isCurrent(t)) {
+        setError((e as Error).message);
+        setLoaded(true);
+      }
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+    setError(null);
+    setLoaded(true);
+  }, [orderId, allowed, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   async function createForLoad(loadNumber: number) {
     setCreating(loadNumber);
@@ -106,7 +128,10 @@ export function CertificationsSection({
   // orphan. Flagged by name; the voided case is deliberately excluded (see the header comment).
   const orphans = liveLoadCerts.filter((r) => r.loadNumber !== null && !currentLoadNumbers.has(r.loadNumber));
   const uncovered = loads.filter((l) => !coveredLoadNumbers.has(l.loadNumber));
-  const showLoadGap = certRequired && certScope === "LOAD";
+  // Trustworthy only once the load actually succeeded (the InvoicesSection `hasLiveInvoice`
+  // rule): an empty `coveredLoadNumbers` after a failed or never-completed fetch says nothing
+  // about which loads are actually covered.
+  const showLoadGap = loaded && !error && certRequired && certScope === "LOAD";
 
   return (
     <section className="mb-6 rounded border bg-white p-4">
@@ -140,11 +165,11 @@ export function CertificationsSection({
         </div>
       )}
 
-      {rows.length === 0 ? (
+      {loaded && !error && rows.length === 0 ? (
         <p className="text-sm text-slate-500">
           {certRequired ? "No certifications yet." : "None — this order does not require a certification."}
         </p>
-      ) : (
+      ) : rows.length > 0 ? (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-slate-500">
@@ -174,7 +199,7 @@ export function CertificationsSection({
             ))}
           </tbody>
         </table>
-      )}
+      ) : null}
     </section>
   );
 }

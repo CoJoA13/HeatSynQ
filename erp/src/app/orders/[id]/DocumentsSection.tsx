@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import type { OrderLoad } from "./page";
 
 /** Mirrors `DocumentMeta` (src/server/documents.ts, Phase 4 Task 3) — a local type, not an
@@ -78,10 +79,24 @@ export function DocumentsSection({
   const [printing, setPrinting] = useState(false);
   const [loadChoice, setLoadChoice] = useState("");
 
+  // §5.13 stale-gate, the InvoicesSection shape, both paths (F7): the mount fetch races print's
+  // post-archive refresh (auto-print makes both routinely in flight), and a superseded response —
+  // success or rejection — must touch nothing.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    setDocs(await api<StoredDocument[]>(`/api/orders/${orderId}/documents`));
-  }, [orderId]);
-  useEffect(() => { load().then(() => setError(null)).catch((e) => setError((e as Error).message)); }, [load]);
+    const t = latest.next();
+    let data: StoredDocument[];
+    try {
+      data = await api<StoredDocument[]>(`/api/orders/${orderId}/documents`);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setDocs(data);
+    setError(null);
+  }, [orderId, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   // Printing is disabled on a voided order (spec §5c: new prints refused, stored prints stay
   // readable), and on a caller without orders.view — disabled with a tooltip, never hidden (§5.16).

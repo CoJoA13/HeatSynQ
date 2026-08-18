@@ -18,7 +18,7 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { useMutationGate } from "@/lib/use-latest";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
@@ -105,11 +105,16 @@ function resultsGateFor(perms: string[] | undefined, voided: boolean, printed: b
 function CertDocumentsList({ certId, viewGate, refresh }: { certId: string; viewGate: Gate; refresh: number }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch
+  // (the ShipmentDocumentsList shape).
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/certs/${certId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [certId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/certs/${certId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [certId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;

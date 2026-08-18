@@ -78,12 +78,17 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const allowed = viewGate.allowed;
+  // §5.13 stale-gate, both paths (F7), the ShipmentDocumentsList shape — with the ticket taken at
+  // the TOP of the effect, before the early-return clear, so clearing the selection also
+  // invalidates any in-flight response (it must not repaint the just-cleared list).
+  const latest = useLatest();
   useEffect(() => {
+    const t = latest.next();
     if (!allowed || !customerId) { setDocs([]); return; }
     api<StoredDoc[]>(`/api/receivables/statements/documents?customerId=${customerId}`)
-      .then((d) => { setDocs(d); setErr(null); })
-      .catch((e) => setErr((e as Error).message));
-  }, [customerId, allowed, refresh]);
+      .then((d) => { if (latest.isCurrent(t)) { setDocs(d); setErr(null); } })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [customerId, allowed, refresh, latest]);
 
   if (!viewGate.allowed) {
     return <p className="text-sm text-slate-500">{viewGate.title ?? "You do not have permission to view statements."}</p>;
@@ -165,8 +170,10 @@ function StatementsScreen() {
   const latest = useLatest();
 
   const loadPreview = useCallback(async () => {
-    if (!viewAllowed || !customerId) { setPreview(null); setLoaded(false); return; }
+    // Ticket BEFORE the clear branch (§5.13 stale-gate): clearing the selection must also
+    // invalidate an in-flight preview, or it lands afterwards and repaints the cleared pane.
     const t = latest.next();
+    if (!viewAllowed || !customerId) { setPreview(null); setLoaded(false); return; }
     // The previous preview describes the PREVIOUS inputs, so it goes stale the moment any of them
     // change — clearing `loaded` here rather than leaving the old one on screen while a new request
     // is in flight. Without this the confirm dialog could say "the preview above shows this

@@ -161,11 +161,15 @@ function ShipmentDocumentsList({ shipperId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch.
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/shippers/${shipperId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [shipperId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/shippers/${shipperId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [shipperId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -399,15 +403,20 @@ export function ShipmentDetail({ id }: { id: string }) {
   // shipment. `GET /api/orders` excludes voided orders unless includeVoided=1 is passed (orders.ts
   // `boardWhere`), so nothing extra is needed here for that half.
   const onShipmentOrderIds = shipper ? shipper.orders.map((o) => o.orderId).join(",") : "";
+  // §5.13 stale-gate, the NewShipment #51 `candidatesLatest` shape, both paths (F7): re-runs on
+  // every add/remove order, so a slow earlier response must not clobber a newer order-set's list.
+  const addableLatest = useLatest();
   useEffect(() => {
+    const t = addableLatest.next();
     if (!customerId || !ordersGate.allowed) return;
     api<OrderOption[]>(`/api/orders?customerId=${customerId}&status=OPEN,PARTIAL_SHIPPED`)
       .then((rows) => {
+        if (!addableLatest.isCurrent(t)) return;
         const already = new Set(onShipmentOrderIds ? onShipmentOrderIds.split(",") : []);
         setAddableOrders(rows.filter((r) => !already.has(r.id)));
       })
-      .catch((e) => addLoadError(`Could not load orders available to add: ${(e as Error).message}`));
-  }, [customerId, ordersGate.allowed, onShipmentOrderIds, addLoadError]);
+      .catch((e) => { if (addableLatest.isCurrent(t)) addLoadError(`Could not load orders available to add: ${(e as Error).message}`); });
+  }, [customerId, ordersGate.allowed, onShipmentOrderIds, addableLatest, addLoadError]);
 
   // Per-order catalogs — refetched wholesale whenever the order-id SET on this shipment changes
   // (add/remove order), never incrementally patched: a rare, deliberate action, so the simplicity
