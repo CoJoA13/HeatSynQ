@@ -452,3 +452,28 @@ Group E) and #140 coverage-precise removal block (→ Group E); both issues comm
 `ready-for-agent`, spec §15 rows added.
 
 **Gates on the fixed tree:** 3164 tests / 184 files · `tsc`/`eslint` clean · E2E **23/23**, exit 0 (watched to completion).
+
+### Codex PR #141 round 3 — two P2s, both fixed on-branch
+
+Both were this group's own disclosed minors, returned with concrete constructions that changed
+their weight:
+
+1. **The cumulative weight proration overflowed 2^53 at large-but-legal scale** — Codex's
+   construction (2,329 equal loads exactly at the DECIMAL(12,2) ceiling) put
+   `totalCents * cumQty` near 4e25, and the lost precision shifted a cent between adjacent loads,
+   pushing one past the ceiling and REFUSING a split every load of which is storable (the
+   over-block direction the boundary tests forbid). RED-verified: the construction failed against
+   the float arithmetic as predicted. Fixed with `roundedShareCents` — BigInt product,
+   round-half-up matching `Math.round` exactly for positive values, so every in-range split is
+   bit-identical (all 19 prior load-split pins unchanged). Trap for the record: the tsconfig's
+   ES2017 target refuses BigInt LITERAL syntax (`2n`) while the BigInt global works — the helper
+   uses `BigInt(2)`.
+2. **The #41 same-visit residual is closed** — the "by design" acceptance was pragmatic, not
+   principled: print-then-edit-in-one-visit is exactly the dangerous path the warning exists for.
+   `DocumentsSection` gained an optional `onPrinted` callback; the order hub flips
+   `travelerPrinted` locally on it (monotonic fact — stored documents never delete, spec §5.6 — so
+   the local flip is exact, no refetch). No vitest seam for the click-flow wiring (the batch's
+   #44/#45/#51 position); the E2E pass covers it.
+
+**Gates on the fixed tree:** 3165 tests / 184 files · `tsc`/`eslint`/`build` clean · E2E **23/23**,
+exit 0, watched to completion.

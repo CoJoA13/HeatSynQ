@@ -204,5 +204,24 @@ describe("splitLoads", () => {
       expect(() => splitLoads({ totalQty: 4, totalWeight: 30_000_000_000, loadQty: 2, loadWeight: null }))
         .toThrow("Load 1's weight 15,000,000,000.00 exceeds the database maximum 9,999,999,999.99 — check the line weights");
     });
+
+    // Codex PR #141 round 3: at large-but-legal scale the cumulative proration's float product
+    // (`totalCents * cumQty` ≈ 4e25 here) overflowed JavaScript's safe-integer range, and the lost
+    // precision shifted a cent between adjacent loads — pushing one load a cent past
+    // DECIMAL(12,2) and REFUSING a split every load of which is storable (a false refusal, the
+    // over-block direction the boundary tests exist to forbid). The cumulative arithmetic is now
+    // exact (BigInt, round-half-up matching Math.round); this construction is the finding's own:
+    // 2,329 equal loads, each exactly at the weight ceiling.
+    it("prorates 2,329 ceiling-weight loads exactly — no float overflow inventing an overage", () => {
+      const loads = splitLoads({
+        totalQty: 16_660_175_440, totalWeight: 23_289_999_999_976.71,
+        loadQty: 7_153_360, loadWeight: null,
+      });
+      expect(loads).toHaveLength(2329);
+      for (const load of loads) {
+        expect(load.qty).toBe(7_153_360);
+        expect(load.weight).toBe(9_999_999_999.99);
+      }
+    });
   });
 });

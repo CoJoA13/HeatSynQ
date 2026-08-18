@@ -23,6 +23,21 @@ const fmtQty = (n: number) => n.toLocaleString("en-US");
 const fmtWeight = (n: number) =>
   n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/** `round(totalCents * cumQty / totalQty)` computed EXACTLY (Codex PR #141 round 3): the float
+ *  product overflows 2^53 at large-but-legal scale — 2,329 ceiling-weight loads put it near 4e25 —
+ *  and the lost precision shifted a cent between adjacent loads, pushing one a cent past
+ *  DECIMAL(12,2) and turning a storable split into a refusal. BigInt keeps the product exact;
+ *  `+ den/2` before the truncating division is round-half-up, exactly `Math.round`'s behaviour for
+ *  the positive values this function ever sees, so every in-range split is bit-identical to the
+ *  old arithmetic. The RESULT always fits a double again (`cumCents ≤ totalCents < 2^53`). */
+function roundedShareCents(totalCents: number, cumQty: number, totalQty: number): number {
+  // `BigInt(2)`, not a `2n` literal — tsconfig targets ES2017, which refuses BigInt literal
+  // syntax while the BigInt global itself is available (Next transpiles for the browsers; Node
+  // runs it natively either way).
+  const den = BigInt(totalQty);
+  return Number((BigInt(totalCents) * BigInt(cumQty) + den / BigInt(2)) / den);
+}
+
 /**
  * #42: every load this module RETURNS must fit its destination columns — `Load.qty` is a
  * Postgres INTEGER and `Load.weight` a DECIMAL(12,2). Independently valid lines can sum past
@@ -113,7 +128,7 @@ export function splitLoads(input: {
     const qty = Math.min(perLoadQty, remainingQty);
     remainingQty -= qty;
     cumQty += qty;
-    const cumCents = remainingQty === 0 ? totalCents : Math.round((totalCents * cumQty) / totalQty);
+    const cumCents = remainingQty === 0 ? totalCents : roundedShareCents(totalCents, cumQty, totalQty);
     loads.push({ qty, weight: (cumCents - priorCumCents) / 100 });
     priorCumCents = cumCents;
   }

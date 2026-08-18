@@ -616,7 +616,12 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       <DocumentsSection
         orderId={id} loads={order.loads} voided={voided} viewGate={gate(perms, "orders.view")}
         autoPrint={autoPrint}
+        // Codex PR #141 round 3: a first print must reach the #41 loads-editor warning in the
+        // SAME visit. `travelerPrinted` is monotonic (stored documents never delete — spec §5.6),
+        // so a local flip is exact; no refetch needed.
+        onPrinted={() => setOrder((o) => (o === null ? o : { ...o, travelerPrinted: true }))}
       />
+
 
       <CertificationsSection
         orderId={id} loads={order.loads} certRequired={order.certRequired} certScope={order.certScope}
