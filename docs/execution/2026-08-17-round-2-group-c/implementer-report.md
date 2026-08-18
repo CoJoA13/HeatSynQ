@@ -82,8 +82,9 @@ red-verifications, which all ran as mutations of that committed state.
 - `npx tsc --noEmit` — clean.
 - `npx eslint src tests` — clean.
 - `npx prisma migrate status` — no pending migrations on `erp` or `erp_test`.
-- `npm run test:e2e` — run (UI touched; CLAUDE.md owner instruction) even though the group brief
-  schedules a group-end run; result recorded in the final task message / progress ledger.
+- `npm run test:e2e` — **all 23 flows passed** (exit 0), including `void-shipment`,
+  `ship-partial-then-complete` and `multi-order-shipment`. Run now because the change touches UI
+  (CLAUDE.md owner instruction); the group brief's group-end run still applies after later tasks.
 
 ### Deviations from the brief
 
