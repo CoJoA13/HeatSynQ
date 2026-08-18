@@ -228,8 +228,9 @@ export function CertDetail({ id }: { id: string }) {
   // double-blur) can commit out of order server-side and leave the database holding the opposite
   // of the last thing the UI showed. Readings saves join the same queue under per-block keys
   // below, so two blocks still save in parallel while each block serializes with itself — and a
-  // failing save can drain the OTHER keys' chains before its §5.13 rollback load. `serial` is a
-  // useCallback (unlike its siblings' plain functions) because `saveReadings` lists it as a dep.
+  // failing save drains the OTHER keys' in-flight requests before its §5.13 rollback load.
+  // `serial` is a useCallback (unlike its siblings' plain functions) because `saveReadings`
+  // lists it as a dep.
   const queue = useRef<Map<string, Promise<unknown>>>(new Map());
   const serial = useCallback(function run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = queue.current.get(key) ?? Promise.resolve();
@@ -237,24 +238,36 @@ export function CertDetail({ id }: { id: string }) {
     queue.current.set(key, next.catch(() => {}));
     return next;
   }, []);
+  // Per-key REQUEST-settled signals for the failure drains below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
 
   /** Optimistic: the field shows the typed value immediately; a rejection rolls back to server
    *  truth FIRST and only then reports why (§5.13 — a reload after the error is set would clear
    *  it, since the initial-load effect resets `error` on success but `load` itself never does). */
   async function patchNotes(patch: { freeform?: string; internalNotes?: string }): Promise<void> {
     setCert((cur) => (cur ? { ...cur, ...patch } : cur));
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<CertDetailData>(
+        const req = applyMutation(() => api<CertDetailData>(
           `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
       } catch (e) {
-        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight save before the
-        // rollback GET — served before a sibling key's save commits, the newest-ticket GET would
-        // revert that sibling's committed write on screen. Own key excluded: this catch runs
-        // INSIDE its own chain, so awaiting the tail deadlocks (drain-queue.ts has the story).
-        await drainOtherKeys(queue.current, key);
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's save commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen. Drains the request-settled
+        // SIGNALS above, never the queue tails (fix round 1 — mutual deadlock; drain-queue.ts
+        // has the story).
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
       }
@@ -275,16 +288,19 @@ export function CertDetail({ id }: { id: string }) {
     const key = `readings:${requirementId}`;
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
+        const req = applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
           method: "PUT", body: JSON.stringify({ requirements: [{ id: requirementId, readings }] }),
         }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
         bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
       } catch (e) {
-        // Rollback-then-report (§5.13): drain the other keys' in-flight saves (Task 7 — never
-        // our own chain, which this catch runs inside), server truth back into state, the
-        // block's draft discarded, and only THEN the error — so the report survives the reload.
-        await drainOtherKeys(queue.current, key);
+        // Rollback-then-report (§5.13): drain the other keys' in-flight requests (Task 7 — the
+        // request-settled SIGNALS above, never the queue tails: fix round 1's mutual deadlock),
+        // server truth back into state, the block's draft discarded, and only THEN the error —
+        // so the report survives the reload.
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         bumpReset(requirementId);
         setError((e as Error).message);

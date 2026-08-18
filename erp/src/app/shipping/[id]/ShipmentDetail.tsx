@@ -461,6 +461,13 @@ export function ShipmentDetail({ id }: { id: string }) {
     queue.current.set(key, next.catch(() => {}));
     return next;
   }
+  // Per-key REQUEST-settled signals for the failure drain below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
 
   type HeaderPatch = {
     shipToAddressId?: string | null; shipDate?: string; carrierId?: string | null;
@@ -475,20 +482,24 @@ export function ShipmentDetail({ id }: { id: string }) {
    *  clear it, since `load()` resets `error` to null on success). */
   async function patchHeader(patch: HeaderPatch): Promise<boolean> {
     setShipper((cur) => (cur ? { ...cur, ...patch } : cur));
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<ShipperMutationResult>(
+        const req = applyMutation(() => api<ShipperMutationResult>(
           `/api/shippers/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
         return true;
       } catch (e) {
-        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight save before the
-        // rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
         // would revert that sibling's committed write on screen (its own response then drops as
-        // older-ticketed). Own key excluded: this catch runs INSIDE its own chain, so awaiting
-        // the tail deadlocks (drain-queue.ts carries the full story).
-        await drainOtherKeys(queue.current, key);
+        // older-ticketed). Drains the request-settled SIGNALS above, never the queue tails
+        // (fix round 1 — mutual deadlock; drain-queue.ts carries the full story).
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;
