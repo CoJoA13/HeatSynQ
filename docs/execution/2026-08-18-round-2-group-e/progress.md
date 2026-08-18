@@ -52,3 +52,20 @@ Branch `group-e-close-gl`, base `ed55ffe`. Brief committed first (`62149da`).
     under case pins OPEN); a sub-millisecond midnight-straddle flake window in the tomorrow test
     (same class as the suite's existing today-based tests); UI `max` staleness across UTC
     midnight on an unrefreshed page (server is the authority).
+
+## Task 3 — #88 broken-chain flag
+
+- **Implemented** `81ff93d` (report `8cc7732`). `chainBroken` + `priorEndingAr` derived in-memory
+  over the one existing `findMany` (calendar-arithmetic prior, cents comparison, REOPENED rows
+  never flagged themselves); red badge + sentence in Close.tsx. Six new tests including the
+  ruling's real reopen/re-close flow through the actual services (flag raises at 0→150, clears on
+  re-close). Targeted gates 77 green, tsc/eslint clean.
+- **Review round 1: Spec ✅ · Approved.** Two minors.
+  - **Minor 1 fixed on-branch (controller):** the flagged-row sentence named an action the server
+    would 409 in the gap case ("re-close this month" — the skipped-month rule refuses it) and
+    cited a "prior month's ending 0.00" that doesn't exist there. Now three-way (§5.14): moved
+    prior ending → re-close this month; gap → close the missing month first; nonzero genesis →
+    beginning should be 0.00. Both null-prior shapes are corruption-only corners (the close
+    refuses skipped months at creation), so no test fixture change — the badge tests pin the flag.
+  - Minor 2 accepted: O(n²) find/some over the in-memory rows — one row per closed month for the
+    life of the shop; a Map is the shape if a heavier consumer ever appears.

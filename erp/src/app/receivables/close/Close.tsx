@@ -386,10 +386,20 @@ function ClosePeriodsScreen() {
               </p>
               {p.chainBroken && (
                 <p className="text-red-700">
-                  {/* priorEndingAr is null on a flagged genesis/gap row — the chain-from-zero
-                      baseline ($0) is the figure the beginning was expected to match there. */}
-                  Beginning {p.beginningAr.toFixed(2)} no longer matches the prior month&apos;s ending{" "}
-                  {(p.priorEndingAr ?? 0).toFixed(2)} — re-close this month to re-chain.
+                  {/* Three flagged shapes, each named with its real way out (§5.14): a moved prior
+                      ending re-closes THIS month; a gap must close the MISSING month first (this
+                      month's re-close would 409 on the skipped-month rule); a nonzero genesis has
+                      no prior at all — its beginning should be the 0.00 chain baseline. */}
+                  {p.priorEndingAr !== null ? (
+                    <>Beginning {p.beginningAr.toFixed(2)} no longer matches the prior month&apos;s ending{" "}
+                      {p.priorEndingAr.toFixed(2)} — re-close this month to re-chain.</>
+                  ) : closedPeriods.some((q) => q.year < p.year || (q.year === p.year && q.month < p.month)) ? (
+                    <>Beginning {p.beginningAr.toFixed(2)} does not chain — the month before this one has
+                      no close on record; close the missing month first, then re-close this one.</>
+                  ) : (
+                    <>Beginning {p.beginningAr.toFixed(2)} does not chain — this is the first closed month,
+                      so its beginning should be 0.00; re-close this month to re-chain.</>
+                  )}
                 </p>
               )}
               {p.exportBatches.length === 0 ? (
