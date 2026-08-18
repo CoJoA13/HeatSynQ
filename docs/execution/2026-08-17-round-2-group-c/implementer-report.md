@@ -106,3 +106,36 @@ no new direct status writes; `refuseIfInvoiced` covers invoiced pairs on both si
 adjacent hole the brief flags (editing a reversed original's lines can drive the net ledger
 negative — out of #65's scope) is filed as
 [#139](https://github.com/CoJoA13/HeatSynQ/issues/139).
+
+### Review round 1 (task-reviewer) + fix wave
+
+**Verdict: Spec Compliance ✅ · Task quality Approved.** Zero Critical. The reviewer independently
+confirmed the isolation story (at Read Committed the pair lock + fresh re-read still catch a racing
+reversal, so the SSI comment covers only Serializable's fixed-snapshot window — a coverage wish,
+correctly a comment), judged the double-reversal edge unreachable in honest data and benign on
+corrupt data (pair-2's cleared ids are computed against already-cleared flags; the
+`lineComplete: false` filter makes any overlap a no-op), and verified the human's-re-decision
+semantics do what spec §15 ruled.
+
+**One Important finding, fixed on-branch the same round:** the restore/recompute claim-set comment
+assumed a reversal's membership is immutable, and nothing enforces that explicitly. The fix widens
+`voidShipper`'s claim set **by construction**: the cleared lines' order ids are discovered
+pre-claim and unioned into the order claims, `refuseIfInvoiced`, and the recompute — so the restore
+is covered under any membership shape, with no dependence on how the reversal got that way.
+
+**What building the regression test taught:** there is NO product path that shrinks a reversal's
+membership today — `removeOrderFromShipper` on a reversal is refused by the
+at-least-one-positive-line survivor invariant (`shippers.ts` ~1088), because every reversal line is
+negative. That protection is INCIDENTAL (the guard exists for an unrelated document invariant), the
+same accidental-protection shape #65 itself existed to close, so the union stays and the test pins
+the union against a directly-shrunk membership (raw deletes — the state any future relaxation of
+that unrelated guard would produce). Recorded on #139, whose class covers both sides of the pair.
+
+**Also from the review's minors:** the restore-audit test now asserts CONTENT, not existence — the
+entry's before/after snapshots must show the flag flipping (`lineComplete` false → true).
+
+**RED verification of the fix wave:** the union test was watched to fail against a
+deliberately-dropped union (order B stuck PARTIAL_SHIPPED — the exact stale-status hazard); the
+audit-content assertions were watched to fail against a wrong-direction restore
+(`lineComplete: false`), each then reverted. Green: 33/33 across both shipper test files,
+`tsc`/`eslint` clean.

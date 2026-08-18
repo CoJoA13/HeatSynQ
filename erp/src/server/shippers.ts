@@ -1659,7 +1659,7 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
     // snapshot, but not to SSI: both paths run Serializable and rw-conflict through the Order rows
     // and the reversal predicate read, so the loser aborts with 40001 → `withDbErrors`' honest 409.
     const stub = await tx.shipper.findFirst({
-      where: { id }, select: { id: true, reversesShipperId: true },
+      where: { id }, select: { id: true, reversesShipperId: true, reversalClearedLineIds: true },
     });
     if (!stub) throw new HttpError(404, "Shipment not found");
     const pairIds = stub.reversesShipperId !== null
@@ -1667,7 +1667,25 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
       : (await tx.shipper.findMany({
           where: { reversesShipperId: id, deletedAt: null }, select: { id: true },
         })).map((r) => r.id);
-    const orderIds = await shipperOrderIds(tx, id);
+    // #65 review round 1 (Important): the restore below writes the ORIGINAL's `lineComplete` flags
+    // by `reversalClearedLineIds`, so the orders those cleared lines belong to are DISCOVERED here
+    // and unioned into the claim set, never assumed to still sit on the reversal's own
+    // `ShipperOrder` rows. No explicit guard pins a reversal's membership — today
+    // `removeOrderFromShipper` on a reversal happens to be refused by the at-least-one-positive-
+    // line survivor invariant (every reversal line is negative), which is INCIDENTAL protection of
+    // exactly the kind #65 itself existed to close (#139 records the class) — so the void is
+    // correct by construction instead of by that accident. Cleared ids are immutable and a
+    // `ShipperLine` never re-parents, so this stub read can only match rows that die before the
+    // claim — harmless (`claimOrdersInOrder` dedups; the restore re-reads under the claim). The
+    // union flows through `refuseIfInvoiced` (a flag restore is a shipment-side write on that
+    // order, so §5.7's conservatism applies to it too) and the final recompute alike.
+    const clearedOrderIds = stub.reversesShipperId === null || stub.reversalClearedLineIds.length === 0
+      ? []
+      : (await tx.shipperLine.findMany({
+          where: { id: { in: stub.reversalClearedLineIds } },
+          select: { shipperOrder: { select: { orderId: true } } },
+        })).map((l) => l.shipperOrder.orderId);
+    const orderIds = [...new Set([...await shipperOrderIds(tx, id), ...clearedOrderIds])];
     await claimOrdersInOrder(tx, orderIds);
     await claimShipperRows(tx, [id, ...pairIds]);
     const shipper = await tx.shipper.findFirst({ where: { id } });
@@ -1725,11 +1743,12 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
       }
     }
 
-    // The claim set is the TARGET's own orders, which covers the restore too: the restored lines
-    // belong to orders the reversal mirrored, and those are exactly the reversal's own
-    // `ShipperOrder` set (an order added to the ORIGINAL after the reversal was neither cleared
-    // nor restored). Invoiced orders never reach here (`refuseIfInvoiced` above), so the two-arg
-    // recompute settles every affected order on its flag-derived value as it always has.
+    // The claim set is the target's own orders UNIONED with the cleared lines' orders (discovered
+    // pre-claim above), so the restore's writes and this recompute stay covered even when the
+    // reversal's membership was edited after creation (#139) — an order added to the ORIGINAL
+    // after the reversal was neither cleared nor restored, and stays out. Invoiced orders never
+    // reach here (`refuseIfInvoiced` above, over the same union), so the two-arg recompute
+    // settles every affected order on its flag-derived value as it always has.
     await recomputeOrderStatus(tx, orderIds);
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
 }

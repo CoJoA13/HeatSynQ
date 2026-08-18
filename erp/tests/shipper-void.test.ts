@@ -307,14 +307,61 @@ describe("voidShipper — reversal-aware (#65)", () => {
   });
 
   // The restore is the MIRROR of the clear: an audited update on the ORIGINAL's own history,
-  // carrying the void reason (the step-6b shape, reversed).
+  // carrying the void reason (the step-6b shape, reversed) — and the CONTENT rule (§5 conventions:
+  // assert the diff, not just that an entry exists): the before/after snapshots must actually show
+  // the flag flipping, or a stale-diff bug could hide behind a green existence check.
   it("the restore lands as an audited update on the original carrying the void reason", async () => {
     const { original, reversal } = await reversedPair();
+    const originalLineId = original.orders[0].lines[0].id;
     await asSystem(() => voidShipper(reversal.id, "mistaken reversal"));
     const entry = await prisma.auditLog.findFirst({
       where: { entity: "shipper", entityId: original.id, action: "update" }, orderBy: { at: "desc" },
     });
     expect(entry?.reason).toBe("mistaken reversal");
+
+    type Snap = { orders?: { lines?: { id: string; lineComplete: boolean }[] }[] } | null;
+    const lineIn = (snap: Snap) =>
+      snap?.orders?.flatMap((o) => o.lines ?? []).find((l) => l.id === originalLineId);
+    expect(lineIn(entry?.before as Snap)?.lineComplete).toBe(false);
+    expect(lineIn(entry?.after as Snap)?.lineComplete).toBe(true);
+  });
+
+  // #65 review round 1 (Important): the restore must not assume the cleared lines' orders still
+  // sit on the reversal's own `ShipperOrder` rows. No product path shrinks a reversal's membership
+  // TODAY — `removeOrderFromShipper` on a reversal is refused, but only INCIDENTALLY, by the
+  // at-least-one-positive-line survivor invariant (every reversal line is negative), the same
+  // accidental-protection shape #65 itself existed to close (#139 records the class). So the void
+  // DISCOVERS the cleared lines' orders and unions them into its claim/recompute set, and this
+  // test pins that by shrinking the membership directly (raw deletes — the state any future
+  // relaxation of that unrelated guard would produce), not through a mutator.
+  it("restores and recomputes an order no longer on the reversal's membership at void time", async () => {
+    const { order: orderA, customer } = await savedOrder();
+    const partB = await makePart(customer.id);
+    await giveSteps(partB.id);
+    const { order: orderB } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: partB.id, qty: 10, weight: "25.00" }],
+    }));
+    const { shipper: original } = await createShipper(
+      twoOrderInput(customer.id, orderA, orderB), { canOverrideCreditHold: false });
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(original.id, { reason: "wrong parts loaded" }));
+
+    // Shrink the reversal's membership to order A only. B's cleared flag stays cleared on the
+    // ORIGINAL, so B sits PARTIAL_SHIPPED going into the void.
+    const soB = reversal.orders.find((so) => so.orderId === orderB.id)!;
+    await prisma.shipperLine.deleteMany({ where: { shipperOrderId: soB.id } });
+    await prisma.shipperOrder.delete({ where: { id: soB.id } });
+    expect((await getOrder(orderB.id)).status).toBe("PARTIAL_SHIPPED");
+
+    claimOrdersInOrderMock.mockClear();
+    await asSystem(() => voidShipper(reversal.id, "mistaken reversal"));
+
+    // Both orders return to SHIPPED — including B, whose ShipperOrder row the reversal no longer
+    // carries — and B's id was genuinely in the void's claim (the union, not luck: the restore
+    // write alone would flip the flag without the claim, but the recompute would never reach B).
+    expect((await getOrder(orderA.id)).status).toBe("SHIPPED");
+    expect((await getOrder(orderB.id)).status).toBe("SHIPPED");
+    expect(claimOrdersInOrderMock.mock.calls.at(-1)![1]).toContain(orderB.id);
   });
 
   // The other half of the issue: voiding the original of a live pair dropped its positive lines
