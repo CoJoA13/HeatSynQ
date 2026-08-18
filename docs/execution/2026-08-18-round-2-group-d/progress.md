@@ -137,6 +137,16 @@ the reviewer's direction (a) recommended: drain per-key REQUEST-settled signals 
 settlement is its commit/failure; nothing about a sibling's catch needs to finish), which
 preserves the existing §5.13 error ordering exactly and makes the cycle structurally impossible;
 plus the mandatory two-keys-both-failing regression test RED-first, and the two comment minors.
+**Fix round 1 (`0f36986`/`1ca99df`) → Approved.** Direction (a) at all five dispatch sites
+(CertDetail's two included); the reviewer re-verified with an INDEPENDENT clone (two-key mutual,
+three-key, and stale-signal re-save traces all pass), confirmed the drain's dependency graph is
+acyclic by construction, and separately proved the "close it fully" alternative (registering
+queued saves at enqueue time) would recreate the deadlock. **Accepted residual, recorded here so
+it outlives the task report:** a same-key save QUEUED behind an unsettled request carries no
+signal yet, so a concurrent different-key failure's rollback GET can theoretically race its
+commit — requires a same-key double-blur + a concurrent failure + a one-microtask landing gap +
+server-side reordering; vastly narrower than the original hole, and closing it re-introduces the
+tail-shaped dependency that deadlocked. §5.13 ordering byte-identical on all four catches.
 
 **Task 8 (admin sweep + TemplateEditor)** — implementer `c88503e`/`3f9629c`/`77a6255`. Review:
 **Spec ✅ · Approved (round 1)**. The TemplateEditor data-loss fix traced correct through both
