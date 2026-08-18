@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
-import { buildStatement, printStatement, runStatements } from "@/server/statements";
+import { buildStatement, printStatement, runStatements, printStatementsPerDivision } from "@/server/statements";
 import { getDocument } from "@/server/documents";
 import { parseDateOnly, formatDateOnly, addDays } from "@/lib/business-days";
 import type { Customer } from "../prisma/generated/prisma/client";
@@ -243,6 +243,121 @@ describe("buildStatement — family roll-up", () => {
     const parentOnly = await buildStatement(parent.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false });
     expect(parentOnly.openItems).toHaveLength(1);
     expect(parentOnly.totalDue).toBe(100);
+  });
+});
+
+// #85. "Combined or per-division" (spec §3 ruling 10) is offered as a CHOICE on the statements
+// screen, but unchecking "Combine family" sent exactly one request for the parent — which
+// `buildStatement` correctly answered with the parent alone. The divisions were silently omitted:
+// the advertised option produced strictly less than the combined one, rather than a statement each.
+describe("printStatementsPerDivision — the per-division choice (#85)", () => {
+  it("archives ONE statement per live family member, each scoped to its own activity", async () => {
+    const parent = await makeCustomer();
+    const a = await prisma.customer.create({ data: { code: `${parent.code}-A`, name: "Division A", parentId: parent.id } });
+    const b = await prisma.customer.create({ data: { code: `${parent.code}-B`, name: "Division B", parentId: parent.id } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(a.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(b.id, { total: 300, dueDate: back(5) });
+
+    const printed = await asSystem(() => printStatementsPerDivision(parent.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+
+    // Before the fix this produced ONE document, for the parent only.
+    expect(printed.map((p) => p.customerId).sort()).toEqual([parent.id, a.id, b.id].sort());
+
+    // Each is a real archived STATEMENT owned by ITS member, scoped to that member's own activity.
+    for (const entry of printed) {
+      expect(entry.error).toBeNull();
+      const stored = await getDocument(entry.documentId!);
+      expect(stored.kind).toBe("STATEMENT");
+      expect(stored.customerId).toBe(entry.customerId);
+    }
+    const totals = new Map(printed.map((p) => [p.customerId, p.totalDue]));
+    expect(totals.get(parent.id)).toBe(100);
+    expect(totals.get(a.id)).toBe(200);
+    expect(totals.get(b.id)).toBe(300);
+  });
+
+  // Review round 4: each member is its own committed transaction, so one member failing must not
+  // discard the members already archived. Throwing reported the whole run as failed, the screen
+  // cleared its list, the committed documents became unreachable, and a retry duplicated them.
+  it("returns PARTIAL results when one member fails, keeping the archived ones reachable", async () => {
+    const parent = await makeCustomer();
+    const good = await prisma.customer.create({
+      data: { code: `${parent.code}-OK`, name: "Good Division", parentId: parent.id } });
+    const bad = await prisma.customer.create({
+      data: { code: `${parent.code}-BAD`, name: "Bad Division", parentId: parent.id } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(good.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(bad.id, { total: 300, dueDate: back(5) });
+
+    // Break exactly ONE member's print, deterministically. Each member gets its own
+    // `prisma.$transaction`, so failing the SECOND one fails exactly one member and leaves the
+    // first already committed — which is the whole point of the finding. Plain property
+    // save/restore (CLAUDE.md forbids `vi.spyOn` on a Prisma MODEL delegate because `mockRestore`
+    // corrupts the shared singleton; this is the client's own method, restored in `finally`).
+    const original = prisma.$transaction;
+    let printed: Awaited<ReturnType<typeof printStatementsPerDivision>>;
+    let call = 0;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (prisma as any).$transaction = (...args: unknown[]) => {
+        call += 1;
+        if (call === 2) return Promise.reject(new Error("render failed for this member"));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (original as any).apply(prisma, args);
+      };
+      printed = await asSystem(() => printStatementsPerDivision(parent.id, {
+        asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+      }));
+    } finally {
+      prisma.$transaction = original;
+    }
+
+    // Every member is reported, and the ones that succeeded carry their document.
+    // Every member is reported — the run does not vanish because one member failed.
+    expect(printed).toHaveLength(3);
+    const ok = printed.filter((r) => r.error === null);
+    const failed = printed.filter((r) => r.error !== null);
+    expect(ok).toHaveLength(2);
+    expect(failed).toHaveLength(1);
+    // The successes keep their documents (reachable, so a retry is not the only way back to them)…
+    for (const r of ok) {
+      expect(r.documentId).not.toBeNull();
+      expect((await getDocument(r.documentId!)).customerId).toBe(r.customerId);
+    }
+    // …and the failure says which member and why, instead of the whole run reporting as failed.
+    expect(failed[0].documentId).toBeNull();
+    // REDACTED: the thrown Error was not an HttpError, so its raw text must not reach the client —
+    // this route returns 200 with the message in the BODY, which would walk around `handle`'s
+    // HttpError-only discipline and could carry Prisma diagnostics or server paths (round 5).
+    expect(failed[0].error).toBe("Printing failed — see the server log");
+    expect(failed[0].error).not.toMatch(/render failed/i);
+    expect([parent.id, good.id, bad.id]).toContain(failed[0].customerId);
+  });
+
+  it("excludes a soft-deleted division, and a childless customer gets exactly its own", async () => {
+    const parent = await makeCustomer();
+    const live = await prisma.customer.create({ data: { code: `${parent.code}-L`, name: "Live", parentId: parent.id } });
+    const gone = await prisma.customer.create({
+      data: { code: `${parent.code}-X`, name: "Closed", parentId: parent.id, deletedAt: new Date() } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(live.id, { total: 200, dueDate: back(5) });
+    await finalizedInvoice(gone.id, { total: 999, dueDate: back(5) });
+
+    const family = await asSystem(() => printStatementsPerDivision(parent.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+    expect(family.map((p) => p.customerId).sort()).toEqual([parent.id, live.id].sort());
+
+    const alone = await makeCustomer();
+    await finalizedInvoice(alone.id, { total: 50, dueDate: back(5) });
+    const single = await asSystem(() => printStatementsPerDivision(alone.id, {
+      asOf: ASOF, combineFamily: false, assessFinanceCharges: false,
+    }));
+    expect(single).toHaveLength(1);
+    expect(single[0].customerId).toBe(alone.id);
   });
 });
 

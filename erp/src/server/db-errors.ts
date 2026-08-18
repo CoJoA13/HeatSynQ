@@ -35,6 +35,33 @@ function isRawSerializationFailure(err: Prisma.PrismaClientKnownRequestError): b
   return meta?.driverAdapterError?.cause?.originalCode === "40001";
 }
 
+/**
+ * The hand-written DB CHECKs whose violation is a real, explainable OUTCOME rather than a bug, with
+ * the message to say so. Every one of these is a last-line backstop behind a service validation, so
+ * reaching it means two writers raced past that validation — the caller's request was not wrong, it
+ * simply lost. A 409 "try again" is the honest answer; letting Postgres' raw constraint text escape
+ * as a 500 is not (both reviewers of PR #135 raised this).
+ *
+ * Deliberately a NAMED allowlist, not a "does the message contain 'check constraint'" sniff: a CHECK
+ * nobody has thought about should still surface loudly as a 500, because it means an invariant broke
+ * in a way no one has reasoned about yet.
+ */
+const CHECK_MESSAGES: Record<string, string> = {
+  Terms_discount_pair_check:
+    "Those terms were changed at the same time by someone else — an early-pay discount needs both a "
+    + "percent and a day count. Please re-open the row and try again",
+};
+
+/** The violated CHECK's name, when this error is one of the allowlisted ones. Postgres reports the
+ *  constraint in `meta.constraint` on a native failure and only inside the message text on the
+ *  driver-adapter path (the #40 shape), so both are read. */
+function violatedCheckConstraint(err: Prisma.PrismaClientKnownRequestError): string | null {
+  const constraint = (err.meta as { constraint?: unknown } | undefined)?.constraint;
+  if (typeof constraint === "string" && constraint in CHECK_MESSAGES) return constraint;
+  const text = `${err.message} ${JSON.stringify(err.meta ?? {})}`;
+  return Object.keys(CHECK_MESSAGES).find((name) => text.includes(name)) ?? null;
+}
+
 /** Translate the Prisma failures that are expected business outcomes, not bugs. */
 export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
@@ -57,6 +84,8 @@ export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
       const field = readableFkField(err);
       throw new HttpError(400, field ? `That ${field} does not exist` : "That reference does not exist");
     }
+    const check = violatedCheckConstraint(err);
+    if (check) throw new HttpError(409, CHECK_MESSAGES[check]);
   }
   throw err;
 }

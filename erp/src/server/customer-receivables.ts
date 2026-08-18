@@ -23,17 +23,41 @@
  * those two functions' existing family-resolving behavior — which Tasks 10/13's callers rely on —
  * stays untouched.
  */
+import { Prisma } from "../../prisma/generated/prisma/client";
+import { todayDateOnly, formatDateOnly } from "../lib/business-days";
+import { prisma } from "./db";
 import { customerOwnAgingRow, type AgingRow } from "./aging";
-import { openInvoicesForCustomer, type OpenInvoiceRow } from "./applications";
+import { openItemsForCustomer, type CustomerOpenItem } from "./applications";
 
-export type CustomerReceivablesSummary = { aging: AgingRow; openItems: OpenInvoiceRow[] };
+export type CustomerReceivablesSummary = { aging: AgingRow; openItems: CustomerOpenItem[] };
 
-/** Both reads are scoped to the SAME single customer id — never a family — so the open-items table
- *  and the net/aging strip always describe the same invoice set and reconcile with each other. */
+/**
+ * Both reads are scoped to the SAME single customer id — never a family — so the open-items table
+ * and the net/aging strip always describe the same set.
+ *
+ * Fix round 2 (#83): they now describe the same KINDS as well. The strip has always folded open
+ * credits and on-account cash into `unapplied`/`net`, while the table listed finalized invoices
+ * alone — so the number above it could not be arrived at from the rows in it, and a customer
+ * holding nothing but a credit read a negative net over the words "No open invoices".
+ * `openItemsForCustomer` composes all three kinds, credits and cash NEGATIVE, so the rows SUM to
+ * the net.
+ *
+ * And they are read from ONE RepeatableRead snapshot (the `agingReport` precedent named in
+ * CLAUDE.md's reports rule): reconciliation is the whole point of this pair, so a commit landing
+ * between two autocommit reads must not be able to break it. Still a pure read — no claim, no
+ * write, not Serializable.
+ */
 export async function customerReceivablesSummary(customerId: string): Promise<CustomerReceivablesSummary> {
-  const [aging, openItems] = await Promise.all([
-    customerOwnAgingRow(customerId),
-    openInvoicesForCustomer(customerId),
-  ]);
-  return { aging, openItems };
+  // ONE as-of, sampled once and handed to BOTH halves (review round 1). They each defaulted to
+  // "today" independently, which is nearly always the same instant but is not the same VALUE — and
+  // more importantly the open-items read applied no cut at all, so a post-dated receipt showed up as
+  // a row the strip did not count. Same moment, same cuts, or the sum stops meaning anything.
+  const asOf = todayDateOnly();
+  return prisma.$transaction(async (tx) => {
+    const [aging, openItems] = await Promise.all([
+      customerOwnAgingRow(customerId, formatDateOnly(asOf), tx),
+      openItemsForCustomer(customerId, tx, asOf),
+    ]);
+    return { aging, openItems };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }

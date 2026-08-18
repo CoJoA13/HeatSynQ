@@ -253,6 +253,12 @@ model Terms {
   // (discountPercent + discountDays) = no early-pay discount. `discountPercent` is a monthly-style
   // percent (2 = 2%, the discountField(5, 2) convention), NOT a 0.02 fraction.
   netDays         Int        @default(30)
+  /// The discount PAIR is all-or-nothing, and that is enforced by a hand-written DB CHECK —
+  /// `Terms_discount_pair_check`, in `20260817121616_terms_discount_pair_check` (Prisma's schema
+  /// language has no check constraints, the `Application_source_check` precedent; keep this comment
+  /// and that SQL in step by hand). The service validations are the friendly error; the CHECK is
+  /// what two concurrent PATCHes cannot talk their way past, since each read its merged view of the
+  /// row before the other committed (#82).
   discountPercent Decimal?   @db.Decimal(5, 2)
   discountDays    Int?
   active          Boolean    @default(true)
@@ -1269,6 +1275,18 @@ model Invoice {
   // Snapshots of what the paper says — read unconditionally (§5.4)
   poNumber            String           @default("")
   termsName           String           @default("")
+  /// The NUMBERS behind `termsName`, frozen at finalize alongside `dueDate` (#79). `termsName` has
+  /// always snapshotted the label; the early-pay discount kept reading the customer's CURRENT terms
+  /// relation, so reassigning a customer retroactively changed what invoices already sent them were
+  /// worth — removing a discount the paper offered, or granting one it never did. An invoice is
+  /// frozen paper (§5.4), so it carries its own figures. Null on a DRAFT (nothing is issued yet) and
+  /// on a CREDIT (which offers no early-pay discount), and null means "no discount" exactly as a
+  /// null `Terms` pair does. Precisely: null UNTIL FIRST FINALIZE — `unlockInvoice` clears
+  /// `finalizedAt` but deliberately leaves this pair (and `dueDate`) standing, and a re-finalize
+  /// overwrites both from the terms in force then. `netDays` is deliberately NOT duplicated here — `dueDate` already
+  /// freezes its only effect.
+  termsDiscountPercent Decimal?        @db.Decimal(5, 2)
+  termsDiscountDays    Int?
   billTo              String           @default("") // rendered multi-line address block
   shipTo              String           @default("")
   materialName        String           @default("") // lead part

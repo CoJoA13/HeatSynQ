@@ -13,6 +13,7 @@ import { GET as agingRoute } from "@/app/api/receivables/aging/route";
 import { GET as agingExportRoute } from "@/app/api/receivables/aging/export/route";
 import { GET as statementsRoute, POST as printStatementRoute } from "@/app/api/receivables/statements/route";
 import { POST as runStatementsRoute } from "@/app/api/receivables/statements/run/route";
+import { POST as divisionStatementsRoute } from "@/app/api/receivables/statements/divisions/route";
 import { GET as statementDocumentsRoute } from "@/app/api/receivables/statements/documents/route";
 import { GET as preliminaryRoute } from "@/app/api/receivables/close/preliminary/route";
 import { GET as listCloseRoute, POST as closeRoute } from "@/app/api/receivables/close/route";
@@ -500,6 +501,84 @@ describe("POST /api/receivables/statements/run", () => {
     expect(res.status).toBe(200);
     const body = await res.json() as { customerId: string; documentId: string }[];
     expect(body.length).toBeGreaterThan(0);
+  });
+});
+
+// #136 (owner ruling 2026-08-17: a parent-only statement is never wanted). The screen picks the
+// print path too, but from a customer list that has been wrong three different ways across review —
+// active-only, not yet loaded, stale. The server is the authoritative answer, so a stale client can
+// only ever produce this refusal, never a silently parent-only run.
+describe("POST /api/receivables/statements — the un-combined guard (#136)", () => {
+  it("refuses an un-combined print for a customer WITH divisions, and allows every other shape", async () => {
+    const parent = await invoicedCustomer();
+    const viewer = await signInWith(["receivables.view"], "stmt-guard-viewer");
+    const body = (extra: Record<string, unknown> = {}) => ({ customerId: parent.id, asOf: "2026-08-08", ...extra });
+
+    // No divisions yet — the ordinary single print is legitimate and still streams its PDF.
+    const alone = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body()), withParams({}));
+    expect(alone.status).toBe(200);
+
+    await prisma.customer.create({ data: { code: "GUARDDIV", name: "Division", parentId: parent.id } });
+
+    // Now it has one: un-combined would answer with the parent alone, omitting the division.
+    const refused = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body()), withParams({}));
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error?: string }).error).toMatch(/use Print per division/i);
+
+    // Combined is still fine — that one genuinely includes the divisions.
+    const combined = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body({ combineFamily: true })),
+      withParams({}));
+    expect(combined.status).toBe(200);
+  });
+
+  it("still prints a DIVISION's own statement un-combined — it has no divisions of its own", async () => {
+    const parent = await invoicedCustomer();
+    const division = await prisma.customer.create({
+      data: { code: "GUARDCHILD", name: "Child", parentId: parent.id } });
+    const viewer = await signInWith(["receivables.view"], "stmt-guard-child");
+    const res = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer,
+        { customerId: division.id, asOf: "2026-08-08" }), withParams({}));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("POST /api/receivables/statements/divisions (#85)", () => {
+  it("401s, 403s without receivables.create, then archives one statement per family member", async () => {
+    const parent = await invoicedCustomer();
+    const division = await prisma.customer.create({
+      data: { code: "DIVSTMT", name: "Division", parentId: parent.id },
+    });
+    const payload = { customerId: parent.id, asOf: "2026-08-08" };
+
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", undefined, payload), withParams({}),
+    )).status).toBe(401);
+
+    // BOTH grants are required (review round 2). `create` because each call archives documents...
+    const viewOnly = await signInWith(["receivables.view"], "stmt-div-wrong");
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", viewOnly, payload), withParams({}),
+    )).status).toBe(403);
+
+    // ...and `view` because the response carries every member's code, name and TOTAL DUE. Permissions
+    // resolve independently, so create-without-view is reachable, and it was a disclosure path.
+    const createOnly = await signInWith(["receivables.create"], "stmt-div-create-only");
+    expect((await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", createOnly, payload), withParams({}),
+    )).status).toBe(403);
+
+    const creator = await signInWith(["receivables.view", "receivables.create"], "stmt-div-creator");
+    const res = await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", creator, payload), withParams({}),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { customerId: string; documentId: string }[];
+    // The parent AND the division — before #85 the screen sent one request and got the parent only.
+    expect(body.map((r) => r.customerId).sort()).toEqual([parent.id, division.id].sort());
   });
 });
 

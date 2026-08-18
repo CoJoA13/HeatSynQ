@@ -6,6 +6,7 @@ import { readAudit } from "@/server/audit";
 import { pasteReference } from "@/server/paste";
 import { REFERENCE_KINDS } from "@/lib/reference-constants";
 import { HttpError } from "@/server/errors";
+import { withDbErrors } from "@/server/db-errors";
 
 describe("flat reference tables", () => {
   beforeEach(async () => await truncateAll());
@@ -252,6 +253,44 @@ describe("terms: netDays + early-pay discount", () => {
       const row = (await listReference("terms")).find((r) => r.id === id);
       expect(Number(row?.discountPercent)).toBe(2);
       expect(row?.discountDays).toBe(10);
+    });
+
+    // #82. Everything above is the FRIENDLY error, and it is not enough on its own: it reads the
+    // stored row before the row-locking update at the default isolation level, so two concurrent
+    // PATCHes can each validate against the same stale view — one clearing both halves, the other
+    // changing one half against the old other — and whichever commits second leaves exactly the
+    // broken pair these checks exist to prevent. The DB CHECK is the layer both transactions share
+    // and neither can talk its way past. Exercised the only way a constraint can be: by going AROUND
+    // the service, which is what a losing racer effectively does.
+    it("refuses a broken discount pair at the DATABASE, not only in the service (#82)", async () => {
+      const id = await seed210();
+      await expect(prisma.terms.update({ where: { id }, data: { discountPercent: null } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+      await expect(prisma.terms.update({ where: { id }, data: { discountDays: null } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+      // Refused, not half-applied.
+      const row = (await listReference("terms")).find((r) => r.id === id);
+      expect(Number(row?.discountPercent)).toBe(2);
+      expect(row?.discountDays).toBe(10);
+
+      // Clearing BOTH is legal and stays legal — the constraint guards the pairing, not the feature.
+      await prisma.terms.update({ where: { id }, data: { discountPercent: null, discountDays: null } });
+      // ...and a row cannot be CREATED broken either, which no service check covered.
+      await expect(prisma.terms.create({ data: { name: "Half a discount", netDays: 30, discountDays: 10 } }))
+        .rejects.toThrow(/Terms_discount_pair_check/);
+    });
+
+    // Review round 2: reaching the CHECK means two writers raced past the service validation — the
+    // loser's request was not wrong, it lost. That deserves a 409 "try again", not Postgres' raw
+    // constraint text escaping as a 500 (`handle` rethrows anything that is not an HttpError).
+    it("surfaces a CHECK violation as an explainable 409, not a raw 500 (#82)", async () => {
+      const id = await seed210();
+      await expect(withDbErrors({ entity: "Terms" }, () =>
+        prisma.terms.update({ where: { id }, data: { discountPercent: null } })))
+        .rejects.toMatchObject({
+          status: 409,
+          message: expect.stringMatching(/needs both a percent and a day count/i),
+        });
     });
 
     it("allows clearing both halves of the pair together", async () => {

@@ -10,6 +10,7 @@ import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type Application
 import { assertPeriodOpen } from "./period-locks";
 import { getSetting } from "./settings";
 import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
+import { invoiceDocumentNumber } from "../lib/invoice-constants";
 
 // -------------------------------------------------------------------------------------------
 // Task 7 (P5B §4.1/§4.2): the single cash write path. Every reduction of an invoice's open
@@ -63,6 +64,21 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 // -------------------------------------------------------------------------------------------
 
 type DiscountTerms = { discountPercent: Prisma.Decimal | null; discountDays: number | null };
+
+/** The discount terms an invoice was ISSUED under, read off its own frozen columns (#79).
+ *
+ *  These used to come from `invoice.customer.terms` — the customer's terms RIGHT NOW — so moving a
+ *  customer between terms rewrote what invoices already in their hands were worth: an invoice sent
+ *  under `2/10 Net 30` lost its discount, and one sent under plain `Net 30` gained one it never
+ *  offered. An invoice is frozen paper (§5.4); `termsName` always snapshotted the label, and these
+ *  are the numbers behind it. A null pair means "no early-pay discount", exactly as it does on
+ *  `Terms` — there is deliberately no fallback to the live relation, because a fallback is how the
+ *  retroactive read would creep back in. */
+function issuedTerms(invoice: {
+  termsDiscountPercent: Prisma.Decimal | null; termsDiscountDays: number | null;
+}): DiscountTerms {
+  return { discountPercent: invoice.termsDiscountPercent, discountDays: invoice.termsDiscountDays };
+}
 
 /** Pure over already-read state — one definition shared by the public `discountAvailable` (which
  *  reads that state) and the DISCOUNT guard inside `applyPayment` (which already holds it under the
@@ -118,7 +134,8 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
     where: { id: invoiceId },
     select: {
       invoiceDate: true, total: true,
-      customer: { select: { terms: { select: { discountPercent: true, discountDays: true } } } },
+      // #79: the invoice's OWN frozen pair, never the customer's current terms relation.
+      termsDiscountPercent: true, termsDiscountDays: true,
       applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
     },
   });
@@ -126,7 +143,7 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
   // will refuse (#81 / Codex PR #129).
   return remainingDiscountFor(
-    invoice.customer.terms, invoice.invoiceDate, payment.receivedDate,
+    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate,
     invoice.total.toNumber(), invoice.applications.map(toLite));
 }
 
@@ -232,6 +249,130 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
   return openInvoicesForCustomerIds([customer.id]);
 }
 
+/**
+ * ONE customer's complete open items — finalized invoices, open CREDIT memos, and on-account cash
+ * (#83). The customer A/R section listed finalized invoices ALONE while the net above it folded in
+ * credits and unapplied cash (`customerOwnAgingRow`), so the figure printed above the table could
+ * not be arrived at from the rows in it: a customer holding nothing but a $200 credit read
+ * "-$200.00" over the words "No open invoices".
+ *
+ * Credits and payments are NEGATIVE here, exactly as they reduce the net, so the rows SUM to it —
+ * the same composition `buildStatement` makes for the printed document (§8, "open credits ... and
+ * on-account as negatives"), and on the same bases: `invoiceOpenBalance` / `creditRemaining` /
+ * `paymentOnAccount` from `ar-balances`, never re-derived here. Settled items drop out; a $0 row is
+ * not an open item.
+ *
+ * `db` threads the caller's transaction so the items and the aging strip can be read from ONE
+ * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent — and `asOfDate`
+ * MUST be the one that strip used, or the two describe different moments and stop reconciling.
+ * Scoped to the
+ * single customer, NEVER the family: `openInvoicesForPayer` deliberately answers the other question
+ * for the batch-apply screen and must keep doing so.
+ */
+export type CustomerOpenItem = {
+  kind: "INVOICE" | "CREDIT" | "PAYMENT";
+  /** The invoice id, the credit's invoice id, or the payment id — what an apply action acts on. */
+  id: string;
+  documentNumber: string;
+  date: string;
+  dueDate: string | null;
+  /** As raised: the invoice/credit total, or the payment's full amount. */
+  original: number;
+  /** Signed the way it moves the net: positive for an invoice, negative for a credit or cash. */
+  open: number;
+};
+
+export async function openItemsForCustomer(
+  customerId: string, db: Prisma.TransactionClient = prisma, asOfDate: Date = todayDateOnly(),
+): Promise<CustomerOpenItem[]> {
+  const customer = await db.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: { id: true },
+  });
+  if (!customer) throw new HttpError(404, "Customer not found");
+  const prefix = await getSetting("invoice_number_prefix", db);
+
+  // POINT-IN-TIME, matching `readSnapshotIn`/`bucketAging` cut for cut (review round 1). Nothing
+  // stops a post-dated receipt — the receipt form takes a bare date — and the aging strip ignores
+  // one, so an unfiltered read here put a row in the table that the net above it did not count. The
+  // worse half was the APPLICATION: `appliedDate` follows the payment's `receivedDate`, so a
+  // post-dated settlement reduced the table's invoice while the strip still showed it fully open,
+  // and a full one produced an empty table reading "Nothing open — this customer is settled" beneath
+  // a net of the entire receivable. Three cuts, because the strip applies three.
+  const liveAsOf = { deletedAt: null, appliedDate: { lte: asOfDate } };
+  // HALF-OPEN on `finalizedAt`, inclusive on the rest. `finalizedAt` is a bare `DateTime` carrying a
+  // TIME OF DAY while `asOfDate` is midnight, so an inclusive `lte` would drop everything finalized
+  // since midnight TODAY — while `bucketAging` compares date-only and includes it. CLAUDE.md
+  // documents this exact trap for the GL export's month bound; it is the same bug one scope down.
+  // `receivedDate`/`appliedDate` are `@db.Date`, so they stay inclusive.
+  const finalizedThrough = addDays(asOfDate, 1);
+  const invoices = await db.invoice.findMany({
+    where: {
+      customerId: customer.id, deletedAt: null, status: "FINALIZED",
+      finalizedAt: { lt: finalizedThrough }, // not yet finalized as of this date never appears
+    },
+    select: {
+      id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,
+      order: { select: { orderNumber: true } },
+      applications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
+      creditApplications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
+    },
+    orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
+  });
+
+  const items: CustomerOpenItem[] = [];
+  for (const inv of invoices) {
+    const total = inv.total.toNumber();
+    if (inv.kind === "INVOICE") {
+      const open = invoiceOpenBalance(total, inv.applications.map(toLite));
+      if (cents(open) <= 0) continue; // settled — not an open item
+      items.push({
+        kind: "INVOICE", id: inv.id,
+        documentNumber: invoiceDocumentNumber("INVOICE", null, inv.order.orderNumber, prefix),
+        date: formatDateOnly(inv.invoiceDate),
+        dueDate: inv.dueDate ? formatDateOnly(inv.dueDate) : null,
+        original: total, open,
+      });
+      continue;
+    }
+    // A CREDIT is drawn down through `creditApplications` (the applications that spend it), never
+    // through `applications` (which would be reductions OF it, and a credit has none). A credit
+    // carries no due date — `aging.ts`'s own rule.
+    const remaining = creditRemaining(total, inv.creditApplications.map(toLite));
+    if (cents(remaining) <= 0) continue;
+    items.push({
+      kind: "CREDIT", id: inv.id,
+      documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.order.orderNumber, prefix),
+      date: formatDateOnly(inv.invoiceDate), dueDate: null,
+      original: total, open: -remaining, // `creditRemaining` is already positive
+    });
+  }
+
+  const payments = await db.payment.findMany({
+    where: { customerId: customer.id, deletedAt: null, receivedDate: { lte: asOfDate } },
+    select: {
+      id: true, amount: true, reference: true, receivedDate: true,
+      applications: { where: { ...liveAsOf, type: "PAYMENT" }, select: { amount: true } },
+    },
+    orderBy: [{ receivedDate: "asc" }, { id: "asc" }],
+  });
+  for (const pay of payments) {
+    const amount = pay.amount.toNumber();
+    // The SAME on-account basis `bucketAging` folds into `aging.unapplied` — a payment's cash less
+    // what it has actually settled — so these rows and the strip above them reconcile by
+    // construction rather than by coincidence.
+    const applied = pay.applications.reduce((sum, a) => sum + a.amount.toNumber(), 0);
+    const onAccount = paymentOnAccount(amount, [{ amount: applied, type: "PAYMENT", deletedAt: null }]);
+    if (cents(onAccount) <= 0) continue;
+    items.push({
+      kind: "PAYMENT", id: pay.id,
+      documentNumber: pay.reference !== "" ? pay.reference : "Payment on account",
+      date: formatDateOnly(pay.receivedDate), dueDate: null,
+      original: amount, open: -onAccount,
+    });
+  }
+  return items;
+}
+
 // -------------------------------------------------------------------------------------------
 // applyPayment — one call, one claim, many lines. See THE CLAIM above.
 // -------------------------------------------------------------------------------------------
@@ -251,7 +392,10 @@ type ApplyLine = ApplyInput["lines"][number];
 
 const INVOICE_CLAIM_SELECT = {
   id: true, total: true, invoiceDate: true, kind: true, status: true, deletedAt: true,
-  customer: { select: { terms: { select: { discountPercent: true, discountDays: true } } } },
+  // #79: frozen at finalize, read here — `applyPayment` caps the DISCOUNT line independently of
+  // `discountAvailable`, so both sides have to read the same frozen pair or the save would still let
+  // through a discount the paper never offered.
+  termsDiscountPercent: true, termsDiscountDays: true,
   order: { select: { orderNumber: true } },
   applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
 } satisfies Prisma.InvoiceSelect;
@@ -436,7 +580,7 @@ function resolveReason(
     // per-call offer. `discountSoFarCents` then adds this request's own accepted lines on top, so
     // the cap holds both WITHIN one payload and ACROSS separate calls.
     const elig = remainingDiscountFor(
-      invoice.customer.terms, invoice.invoiceDate, receivedDate,
+      issuedTerms(invoice), invoice.invoiceDate, receivedDate,
       invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");

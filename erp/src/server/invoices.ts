@@ -115,7 +115,14 @@ export type InvoiceCreateResult = { invoice: InvoiceDetail; warnings: string[]; 
 const DETAIL_INCLUDE = {
   // `terms` is read here (not a second query) so `finalizeInvoiceInTx` can compute `dueDate` off the
   // SAME row this transaction already claimed via `claimInvoiceRow` — no new lock (Task 3/§4.3).
-  customer: { select: { code: true, name: true, terms: { select: { netDays: true } } } },
+  // `netDays` drives `dueDate` at finalize; the discount pair is frozen onto the invoice there too
+  // (#79), so the claim reads all three from the customer's terms in one go.
+  customer: {
+    select: {
+      code: true, name: true,
+      terms: { select: { name: true, netDays: true, discountPercent: true, discountDays: true } },
+    },
+  },
   order: { select: { orderNumber: true } },
   lines: { orderBy: { position: "asc" } },
 } satisfies Prisma.InvoiceInclude;
@@ -1541,12 +1548,42 @@ async function finalizeInvoiceInTx(tx: Db, id: string): Promise<InvoiceDetail> {
   // its own `invoiceDate` instead), so the write below is INVOICE-only.
   const netDays = invoice.customer.terms?.netDays ?? null;
   const dueDate = netDays === null ? null : addDays(invoice.invoiceDate, netDays);
+  // #79: freeze the early-pay pair alongside `dueDate`, and for the same reason. `termsName` has
+  // always snapshotted the LABEL, but the discount kept reading the customer's CURRENT terms — so
+  // reassigning a customer rewrote what invoices already in their hands were worth, in both
+  // directions. An invoice is frozen paper (§5.4), so it carries its own numbers from here.
+  // INVOICE-only, exactly like `dueDate`: a CREDIT offers no early-pay discount.
+  //
+  // The LABEL is re-stamped from those same terms (review round 2). `termsName` is written at CREATE
+  // and is editable on a draft, while `dueDate` and the pair are derived at FINALIZE — so the paper
+  // could say "2/10 Net 30" over a null pair, promising a discount `applyPayment` would refuse, or
+  // say "Net 30" while quietly granting one. Finalize is the moment the paper is issued, so the
+  // label and the money are stamped from ONE source there.
+  //
+  // ALWAYS, including blank when the customer has no terms (reversed in review round 3). Round 2
+  // kept the label in the no-terms case to protect operator-typed text, and that exception produced
+  // the exact bug it was added to prevent: a draft created under `2/10 Net 30` whose customer's
+  // terms are then cleared kept the INHERITED label over a null pair — paper promising a discount
+  // `applyPayment` refuses. Nothing in the stored state distinguishes an inherited label from a
+  // typed one, so a conditional could only ever guess; the label follows the terms, full stop.
+  //
+  // The cost, stated rather than hidden: a hand-typed label on an invoice for a customer with no
+  // terms record is cleared at finalize. Assigning terms to the customer is the fix that also makes
+  // every future invoice right. Restoring the typed label would need real state — an
+  // `Invoice.termsId`, or a "was edited" flag set by `updateInvoice` — which is a schema change for
+  // a case this shop may never hit; PR #135's thread has it if it ever does.
+  const issuedTerms = invoice.customer.terms ?? null;
+  const issuedDiscount = {
+    termsDiscountPercent: issuedTerms?.discountPercent ?? null,
+    termsDiscountDays: issuedTerms?.discountDays ?? null,
+    termsName: issuedTerms?.name ?? "",
+  };
   await auditedUpdate("invoice", id,
     () => tx.invoice.update({
       where: { id },
       data: {
         status: "FINALIZED", finalizedAt: now, finalizedById: actor.id,
-        ...(invoice.kind === "INVOICE" ? { dueDate } : {}),
+        ...(invoice.kind === "INVOICE" ? { dueDate, ...issuedDiscount } : {}),
       },
     }), { tx });
   // Only an INVOICE owns the order's status (§5.2): finalizing one writes INVOICED. A CREDIT is a

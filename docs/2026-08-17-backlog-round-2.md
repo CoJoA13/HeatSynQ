@@ -67,7 +67,7 @@ missing labels or stop documenting them.
 
 ---
 
-## Group A — The invoice engine · **DONE 2026-08-17**, branch `group-a-invoice-engine`
+## Group A — The invoice engine · **MERGED 2026-08-17** as `1c1fc77` (PR #133)
 
 All eight closed — #61, #62, #64, #63, #89, #59, #60, #96. Gates: **3104 tests / 182 files**
 (from 3080), `tsc`/`eslint`/`build` clean, E2E 23/23 — all re-run at each of THREE review rounds,
@@ -133,7 +133,45 @@ task, not three, or the second and third will each be rewriting the first.
 
 ---
 
-## Group B — A/R that does NOT need the accountant · **#83, #85, #86, #82, #79, #75**
+## Group B — A/R that does NOT need the accountant · **DONE 2026-08-17**, branch `group-b-ar`
+
+All six closed — #83, #85, #86, #82, #79, #75. Two migrations (a `Terms` CHECK, and the invoice's
+frozen discount terms with a backfill). Three of the six were verified **in the browser** as well as
+in tests, because they are UI deliverables: the completed open-items table, a real credit
+application, and the per-division print.
+
+**What went past the issue text:**
+- **#79 needed a BACKFILL, which the issue did not mention.** Freezing the terms without one would
+  have silently withdrawn the discount from every invoice already sent. The migration copies each
+  finalized invoice's customer's current terms — precisely what those invoices compute today.
+- **#79 has two read sites, not one.** `discountAvailable` feeds the screen, but `applyPayment` caps
+  the DISCOUNT line independently, so fixing only the first would have left the SAVE granting a
+  discount the screen refused to offer.
+- **#86 was a one-word omission with a silent failure mode**: a negative rate is not stored and
+  rejected loudly, it makes `financeCharge` return a negative that the `> 0` gate collapses to null,
+  so the customer just stops being charged.
+- **#83 and #75 are one task** (owner ruling), and the pair are now read from ONE RepeatableRead
+  snapshot — reconciliation is the whole point, so it should not depend on two autocommit reads
+  landing either side of a commit.
+
+<details><summary>The rulings and the original issue-by-issue scoping</summary>
+
+> **Two more owner rulings, 2026-08-17, taken during review.** **A credit applies only within ONE
+> customer** — the picker lists that customer's own open invoices and not the family's. `applyCredit`
+> permits a cross-family application and one reconciles correctly on both pages, so this is a
+> deliberate UI scope, not a limitation: the section is single-customer by design after a fix round
+> closed a real family-leak bug there. **A PARENT-ONLY statement is never wanted** (#136), which is
+> what makes the print-path fix permanent: the single-print route now REFUSES an un-combined print
+> for a customer with divisions, so the screen can no longer pick the wrong path from a list that is
+> stale, unloaded, or active-only — the three ways review found it wrong.
+>
+> **Owner ruling 2026-08-17: the credit-memo application UI lives in the CUSTOMER A/R SECTION**
+> (#75) — on the customer page, beside the open invoices it can pay down. That makes **#83 and #75
+> ONE task**, not two: #83 is what puts open credits and on-account cash into that list in the first
+> place, and #75 hangs the Apply action off the credit rows it adds. The invoice page and the
+> receipt-batch screen were both considered; the batch screen was rejected because a credit memo has
+> no receipt batch (it exists independently of any deposit), and the invoice page because nothing
+> there tells an operator a credit exists to apply.
 
 Clear defects and one undelivered deliverable. Nothing here waits on the meeting.
 
@@ -151,6 +189,8 @@ Clear defects and one undelivered deliverable. Nothing here waits on the meeting
   the *basis* question — Q13 decides the percentage of what, this decides which percentage. Build it.
 - **#75 — Credit-memo application has no UI.** `applyCredit` and its route exist and are tested, but
   nothing calls them, so a finalized credit can only sit on account. Spec §3 ruling 5 is a deliverable.
+
+</details>
 
 ---
 
@@ -290,8 +330,8 @@ it twice. Cross-referenced to the question list.
 
 ## Recommended order
 
-~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine)~~ → **B** (A/R, unblocked) ← **NEXT** →
-**C** (shipping/status) → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
+~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ → ~~**B** (A/R)~~ →
+**C** (shipping/status) ← **NEXT** → **E** (close + GL + tripwires) → **D** (stale-load, after the #31 decision)
 → **F** → **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.

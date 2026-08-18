@@ -24,7 +24,14 @@ import { ReceivablesNav } from "../ReceivablesNav";
 // component pulling from there drags node:async_hooks and Prisma into the browser bundle).
 // ---------------------------------------------------------------------------------------------
 
-type CustomerOption = { id: string; code: string; name: string };
+type CustomerOption = { id: string; code: string; name: string; parentId: string | null; active: boolean };
+/** What `POST .../statements/divisions` returns — one entry per printed family member (#85). */
+type PerDivisionResult = {
+  customerId: string; customerCode: string; customerName: string;
+  /** Null when that member's statement FAILED — `error` says why. Each member is its own committed
+   *  transaction, so one failing must not hide the ones already archived (review round 4). */
+  documentId: string | null; totalDue: number | null; error: string | null;
+};
 
 type AgingRow = {
   customerId: string; customerCode: string; customerName: string;
@@ -133,10 +140,23 @@ function StatementsScreen() {
   // Customer/family options — fetched only once the caller is known to hold customers.view
   // (§5.16), never left silently empty on failure — the AgingReport.tsx precedent.
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  // Whether the family lookup actually SUCCEEDED — not merely "the array is empty" (§5.15). Which
+  // print path is correct depends on whether the selected customer has divisions, and this list is
+  // the only thing that knows. While it is pending, failed, or never fetched (no `customers.view`),
+  // an empty array is indistinguishable from "no divisions" — and printing on that assumption
+  // silently archives the parent alone, which is the omission #85 exists to fix.
+  const [familyKnown, setFamilyKnown] = useState(false);
   const customersAllowed = customersGate.allowed;
   useEffect(() => {
     if (!customersAllowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    // `includeInactive=1` because BOTH service halves define the family by `deletedAt: null`,
+    // not by `active` (review round 1). A parent whose divisions are merely deactivated —
+    // how a dormant division that still owes money is parked — otherwise never switched the
+    // button, so unchecking "Combine family" silently printed the parent alone: #85's exact
+    // symptom, unfixed for that family, while the COMBINED print included those divisions.
+    api<CustomerOption[]>("/api/customers?includeInactive=1")
+      .then((rows) => { setCustomers(rows); setFamilyKnown(true); })
+      .catch((e) => setError((e as Error).message)); // leaves familyKnown false — see below
   }, [customersAllowed]);
 
   // ---- Preview (GET, build-only — the route's own "a preview" comment) ----
@@ -147,6 +167,13 @@ function StatementsScreen() {
   const loadPreview = useCallback(async () => {
     if (!viewAllowed || !customerId) { setPreview(null); setLoaded(false); return; }
     const t = latest.next();
+    // The previous preview describes the PREVIOUS inputs, so it goes stale the moment any of them
+    // change — clearing `loaded` here rather than leaving the old one on screen while a new request
+    // is in flight. Without this the confirm dialog could say "the preview above shows this
+    // customer's statement" over a preview built for a different customer, as-of date, or
+    // finance-charge choice, and then print with the new ones (review round 8). The print button is
+    // gated on `loaded`, so it waits for the matching answer instead of guessing.
+    setLoaded(false);
     const query = `customerId=${encodeURIComponent(customerId)}&asOf=${encodeURIComponent(asOf)}` +
       `&combineFamily=${combineFamily}&assessFinanceCharges=${assessFinanceCharges}`;
     let data: StatementPreview;
@@ -196,6 +223,47 @@ function StatementsScreen() {
     }
   }
 
+  // ---- Print per division (#85) ----
+  // Unchecking "Combine family" on a PARENT used to send one request for the parent alone, so the
+  // divisions were silently omitted and the advertised choice produced strictly less than the
+  // combined one. This prints one statement per family member. It returns a LIST rather than a PDF
+  // (N documents cannot be one blob), so it reports like "Run for everyone" does instead of opening
+  // a tab — the archived statements are in Documents below, each under its own customer.
+  const [perDivision, setPerDivision] = useState<PerDivisionResult[] | null>(null);
+  // A family HEAD (some other customer names it as parent) printed un-combined. A division printed
+  // un-combined is already correct — it is its own statement — so only the head switches behaviour.
+  const familyMembers = customerId === "" ? [] : customers.filter((c) => c.parentId === customerId);
+  const perDivisionMode = !combineFamily && familyMembers.length > 0;
+
+  async function printPerDivision() {
+    // The preview below shows the PARENT's statement only — `buildStatement` with combineFamily
+    // false is a single customer by definition — while this archives one document per member.
+    // Naming them and confirming is the disclosure that gap needs (review round 1): the operator
+    // must not approve a parent-only preview and silently create child paper they never saw.
+    const members = [customerId, ...familyMembers.map((c) => c.id)];
+    const names = familyMembers.map((c) => `${c.code}${c.active ? "" : " (inactive)"}`).join(", ");
+    if (!confirm(
+      `Print ${members.length} statements as of ${asOf} — this customer plus its divisions `
+      + `(${names})?\n\nThe preview above shows this customer's statement only; each division's `
+      + "is archived and listed with a link once printed.",
+    )) return;
+    setPrinting(true);
+    setPrintError(null);
+    setPerDivision(null);
+    try {
+      const printed = await api<PerDivisionResult[]>("/api/receivables/statements/divisions", {
+        method: "POST",
+        body: JSON.stringify({ customerId, asOf, assessFinanceCharges }),
+      });
+      setPerDivision(printed);
+      setDocsRefresh((n) => n + 1);
+    } catch (e) {
+      setPrintError((e as Error).message);
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   // ---- Run for everyone with a balance ----
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -219,9 +287,16 @@ function StatementsScreen() {
     }
   }
 
+  // Per-division printing archives N documents, so it needs `receivables.create` — the same grant
+  // its endpoint now requires. Without this a view-only user saw an ENABLED button, confirmed a
+  // multi-document print, and got a 403: §5.16 says a control the user cannot use is disabled and
+  // says why, never offered and then refused.
   const printTitle = !viewGate.allowed ? viewGate.title
     : !customerId ? "Pick a customer first"
-      : printing ? "Printing…" : undefined;
+      : !familyKnown ? "Checking whether this customer has divisions…"
+        : !loaded ? "Loading this customer's statement…"
+          : perDivisionMode && !runGate.allowed ? runGate.title
+            : printing ? "Printing…" : undefined;
   const runTitle = !runGate.allowed ? runGate.title : running ? "Running…" : undefined;
 
   // §5.16: a caller without receivables.view sees the page saying why, never a silently empty one.
@@ -245,6 +320,34 @@ function StatementsScreen() {
       )}
       {printError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{printError}</p>}
       {runError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{runError}</p>}
+      {perDivision && (
+        <div className={`mb-3 rounded p-2 text-sm ${perDivision.some((r) => r.error !== null)
+          ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-800"}`}>
+          <p className="mb-1">
+            Printed {perDivision.filter((r) => r.error === null).length} of {perDivision.length}
+            {" "}statements — one per division.
+          </p>
+          {/* Each result links to ITS OWN archived PDF: the Documents table below is filtered to the
+              selected parent, so without these the children's statements would be unreachable from
+              this screen (and an inactive child's doubly so). */}
+          <ul className="list-inside list-disc">
+            {perDivision.map((r) => (
+              <li key={r.customerId} className={r.error === null ? undefined : "text-red-700"}>
+                <span className="font-mono">{r.customerCode}</span> {r.customerName}
+                {r.error === null ? (
+                  <>
+                    {" "}— {(r.totalDue ?? 0).toFixed(2)} due —{" "}
+                    <a href={`/api/documents/${r.documentId}`} target="_blank" rel="noreferrer"
+                       className="text-blue-700 underline">open PDF</a>
+                  </>
+                ) : (
+                  <> — not printed: {r.error}</>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {runResult && (
         <p className="mb-3 rounded bg-emerald-50 p-2 text-sm text-emerald-800">
           {runResult.length === 0
@@ -263,7 +366,13 @@ function StatementsScreen() {
                     onChange={(e) => setCustomerId(e.target.value)}
                     className="mt-1 block rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100">
               <option value="">Select…</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+              {/* Inactive customers are LISTED (a deactivated division can still owe money, and its
+                  statement has to be reachable) but marked, so the list stays honest. */}
+              {customers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} · {c.name}{c.active ? "" : " (inactive)"}
+                </option>
+              ))}
             </select>
           </label>
           <label className="block">
@@ -279,9 +388,13 @@ function StatementsScreen() {
             <input type="checkbox" checked={assessFinanceCharges} onChange={(e) => setAssessFinanceCharges(e.target.checked)} />
             Assess finance charges
           </label>
-          <button onClick={() => void printSingle()} disabled={printTitle !== undefined} title={printTitle}
+          {/* A family head printed UN-combined is the per-division choice, and it prints one
+              statement per member (#85). Every other case — a division, a standalone customer, or
+              "Combine family" checked — is the ordinary single print. */}
+          <button onClick={() => void (perDivisionMode ? printPerDivision() : printSingle())}
+                  disabled={printTitle !== undefined} title={printTitle}
                   className="rounded bg-slate-800 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
-            {printing ? "Printing…" : "Print"}
+            {printing ? "Printing…" : perDivisionMode ? "Print per division" : "Print"}
           </button>
           <button onClick={() => void runForEveryone()} disabled={runTitle !== undefined} title={runTitle}
                   className="rounded border bg-white px-3 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-400">

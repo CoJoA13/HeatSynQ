@@ -333,7 +333,7 @@ export async function buildStatement(customerId: string, opts: StatementOpts): P
 
 async function printStatementInTx(
   tx: Db, customerId: string, opts: StatementOpts, settings: InvoicePrintSettings,
-): Promise<{ documentId: string; pdf: Buffer }> {
+): Promise<{ documentId: string; pdf: Buffer; data: StatementData }> {
   const data = await buildStatementInTx(tx, customerId, opts, settings);
 
   // §5.2 resolution on THIS Serializable transaction at its isolation — correct by §5.1
@@ -352,7 +352,9 @@ async function printStatementInTx(
   const pdf = await renderPdf(buildStatementDefinition(data, resolved.config, logoDataUri));
   // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
   const doc = await storeDocument(tx, { kind: "STATEMENT", customerId }, pdf, resolved.versionId);
-  return { documentId: doc.id, pdf };
+  // `data` rides back for callers that report on what they printed (`printStatementsPerDivision`
+  // lists each member's Total Due) — it is already built here, so nothing is re-read to get it.
+  return { documentId: doc.id, pdf, data };
 }
 
 /** Render, archive and return the statement PDF (spec §8). A reprint of a STORED document is the
@@ -417,6 +419,100 @@ export async function runStatements(
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     ));
     results.push({ customerId: row.customerId, documentId });
+  }
+  return results;
+}
+
+/**
+ * Does this customer have live divisions? The single-print route asks before honouring an
+ * UN-COMBINED print, so the server — not an asynchronously-populated client list — decides which
+ * print path is legitimate (#136, owner ruling 2026-08-17: a parent-only statement is never wanted).
+ *
+ * Three review rounds hit the client-side version of this decision: the list was `active`-only, then
+ * it might not have loaded, then it could be stale. All three had the same shape — a client choosing
+ * a path from data it might not have. This is the seam that closes it, because a stale list can now
+ * only produce a refusal, never a silently parent-only statement.
+ */
+export async function hasLiveDivisions(customerId: string, db: Prisma.TransactionClient = prisma): Promise<boolean> {
+  const child = await db.customer.findFirst({
+    where: { parentId: customerId, deletedAt: null }, select: { id: true },
+  });
+  return child !== null;
+}
+
+export type PerDivisionStatement = {
+  customerId: string; customerCode: string; customerName: string;
+  /** Null when this member's statement FAILED — `error` then says why (review round 4). */
+  documentId: string | null; totalDue: number | null; error: string | null;
+};
+
+/**
+ * The PER-DIVISION half of "combined or per-division" (spec §3 ruling 10) — one archived statement
+ * for the parent AND one for each live division, each scoped to its own activity (#85).
+ *
+ * Unchecking "Combine family" used to send exactly ONE request, for the parent, which
+ * `buildStatement` correctly answered with the parent alone: the divisions were silently omitted,
+ * so the advertised per-division option produced strictly LESS than the combined one rather than a
+ * statement each. The choice is real now.
+ *
+ * Shaped exactly like `runStatements` above — settings read ONCE outside, then one Serializable
+ * print transaction per member — because it is the same act at a different scope, and two different
+ * print loops would be two things to keep in step. A customer with no children yields exactly its
+ * own statement, so the caller never has to ask whether this one is a family head. Unlike
+ * `runStatements` it does NOT skip a settled member: the operator asked for this family's
+ * statements by name, and a division that owes nothing still gets the paper saying so.
+ */
+export async function printStatementsPerDivision(
+  customerId: string, opts: StatementOpts,
+): Promise<PerDivisionStatement[]> {
+  const asOf = opts.asOf ?? formatDateOnly(todayDateOnly());
+  const parent = await prisma.customer.findFirst({
+    where: { id: customerId, deletedAt: null }, select: CUSTOMER_REF_SELECT,
+  });
+  if (!parent) throw new HttpError(404, "Customer not found");
+  // LIVE children only — the same filter `buildStatement`'s own family roll-up applies, so the two
+  // halves of the choice cover exactly the same set of customers.
+  const children = await prisma.customer.findMany({
+    where: { parentId: parent.id, deletedAt: null }, select: CUSTOMER_REF_SELECT, orderBy: { code: "asc" },
+  });
+
+  const settings = await invoicePrintSettings(); // OUTSIDE every per-member print transaction below
+  const results: PerDivisionStatement[] = [];
+  for (const member of [parent, ...children]) {
+    // `combineFamily: false` for every member, INCLUDING the parent — the whole point is that each
+    // one reports its own activity. A parent printed `true` here would double-count its divisions.
+    const printOpts: StatementOpts = { asOf, combineFamily: false, assessFinanceCharges: opts.assessFinanceCharges };
+    try {
+      const printed = await withDbErrors({ entity: "Statement" }, () => prisma.$transaction(
+        (tx) => printStatementInTx(tx, member.id, printOpts, settings),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ));
+      results.push({
+        customerId: member.id, customerCode: member.code, customerName: member.name,
+        documentId: printed.documentId, totalDue: printed.data.totalDue, error: null,
+      });
+    } catch (err) {
+      // PARTIAL RESULTS, not an all-or-nothing throw (review round 4). Each member is its own
+      // committed transaction — a statement is an archived document, and one member's render
+      // failing does not un-archive the members already written. Throwing here reported the whole
+      // run as failed, the screen cleared its list, and the already-archived documents became
+      // unreachable; a retry then duplicated them. Making it atomic is the wrong direction: it
+      // would mean holding N Serializable transactions open across N PDF renders.
+      // REDACTED unless it is an `HttpError` (review round 5). `handle` only ever exposes
+      // `HttpError`/validation text; everything else becomes a bare 500 precisely so raw exceptions
+      // — Prisma diagnostics, queries, server paths — never reach a client. This route returns 200
+      // with the message INSIDE the body, which would have walked straight around that. An
+      // HttpError's message is written to be read by an operator; anything else is logged here and
+      // reported generically.
+      if (!(err instanceof HttpError)) {
+        console.error(`[statements] per-division print failed for ${member.code}:`, err);
+      }
+      results.push({
+        customerId: member.id, customerCode: member.code, customerName: member.name,
+        documentId: null, totalDue: null,
+        error: err instanceof HttpError ? err.message : "Printing failed — see the server log",
+      });
+    }
   }
   return results;
 }

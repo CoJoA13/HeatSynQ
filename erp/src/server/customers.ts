@@ -47,7 +47,12 @@ const num = (d: Prisma.Decimal | null) => (d === null ? null : d.toNumber());
 // comment on decimalField (src/server/decimal-field.ts) and the matching comment on the schema
 // fields themselves.
 const creditLimitField = decimalField(12, 2);
-const financeChargeRateField = decimalField(6, 4);
+// `nonnegative` matches `BillingConfig.financeChargeRate`, which this column OVERRIDES per customer
+// (`financeChargeRateFor`) — so without it a negative override beat a perfectly valid plant rate,
+// and `financeCharge`'s `computed > 0` gate then collapsed the negative result to null. The customer
+// silently stopped being charged finance charges at all, which is the opposite of what typing a
+// negative number looks like it should do (#86).
+const financeChargeRateField = decimalField(6, 4, { min: "nonnegative" });
 // Decimal(9, 6): 3 integer digits, 6 fractional (max 999.999999) — matches BillingConfig's own
 // salesTaxRate column and Surcharge.rate, the two other Decimal(9,6) rate columns in this schema.
 const salesTaxRateField = decimalField(9, 6, { min: "nonnegative" });
