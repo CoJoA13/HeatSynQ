@@ -16,9 +16,12 @@ import { randomBytes } from "node:crypto";
 import path from "node:path";
 import {
   type ArchiveInfo, type BackupHealth, type BackupStatusFile, type BackupsView,
+  type RetentionStatusFile,
   archiveSourceOf, isArchiveName,
 } from "@/lib/backup-constants";
-import { archivePath, resolveBackupDir, statusPath, manualArchiveName, tempNameFor } from "./backup-paths";
+import {
+  archivePath, resolveBackupDir, statusPath, retentionStatusPath, manualArchiveName, tempNameFor,
+} from "./backup-paths";
 import { getSetting } from "./settings";
 import { HttpError } from "./errors";
 import { auditBackupRun } from "./audit";
@@ -29,6 +32,9 @@ export type HealthInputs = {
   newestSuccessAt: Date | null;
   /** null means missing OR unparseable OR wrong-shaped — all three read red (§6.2). */
   status: BackupStatusFile | null;
+  /** The SHELL-ONLY retention sidecar (#132). null means missing OR unreadable — which, unlike the
+   *  main status, contributes NOTHING (see the branch in evaluateHealth for why). */
+  retention: RetentionStatusFile | null;
   staleHours: number;
   now: Date;
   /** Non-null when the folder could not even be read. */
@@ -60,6 +66,26 @@ export function evaluateHealth(i: HealthInputs): BackupHealth {
     return {
       ...common, state: "failed",
       reason: `The last backup run failed${i.status.error ? `: ${i.status.error}` : "."}`,
+    };
+  }
+  // The retention sidecar (#132) — written ONLY by scripts/backup.sh, which is WHY it can survive
+  // the manual path's whole-file overwrite of the main status: `writeStatus` is a no-read-merge
+  // single overwrite by design (see the module header), so no field INSIDE backup-status.json could
+  // ever hold a retention failure past the next manual success. A readable ok:false reads red even
+  // though the run above was green.
+  //
+  // ABSENCE OR CORRUPTION OF THE SIDECAR CONTRIBUTES NOTHING — a deliberate, documented exception
+  // to the file-level absence-is-failure rule (§6.2), for three reasons: (1) the MAIN status file's
+  // absence rule already covers "the nightly never ran", so a missing sidecar adds no information
+  // absence-as-failure would surface; (2) the sidecar self-refreshes every night, so a real
+  // retention failure is re-recorded within 24h even if the file is lost; (3) reading absence as
+  // failure would turn the light red on every existing install for up to 24h mid-upgrade, before
+  // the first post-upgrade nightly writes the file.
+  if (i.retention && !i.retention.ok) {
+    return {
+      ...common, state: "failed",
+      reason: "The last backup succeeded, but the nightly retention cleanup is failing" +
+        `${i.retention.error ? `: ${i.retention.error}` : ""} — old archives are accumulating.`,
     };
   }
   if (!i.newestSuccessAt) {
@@ -336,6 +362,32 @@ export async function readStatus(dir: string): Promise<BackupStatusFile | null> 
   }
 }
 
+/** parseStatus's shape discipline for the retention sidecar (#132): tolerant of unknown fields,
+ *  whole-file reject on a wrong-shaped one. Here a rejected file contributes NOTHING rather than
+ *  reading red — the documented exception, stated in full at evaluateHealth's retention branch. */
+function parseRetentionStatus(raw: string): RetentionStatusFile | null {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    if (typeof v !== "object" || v === null) return null;
+    const o = v as Record<string, unknown>;
+    if (typeof o.lastRunAt !== "string" || Number.isNaN(Date.parse(o.lastRunAt))) return null;
+    if (typeof o.ok !== "boolean") return null;
+    if (o.error !== undefined && o.error !== null && typeof o.error !== "string") return null;
+    const error = typeof o.error === "string" ? o.error : null;
+    return { lastRunAt: o.lastRunAt, ok: o.ok, error };
+  } catch {
+    return null;
+  }
+}
+
+export async function readRetentionStatus(dir: string): Promise<RetentionStatusFile | null> {
+  try {
+    return parseRetentionStatus(await readFile(retentionStatusPath(dir), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /** The newest archive that actually passes `gzip -t`. Walks newest-first and stops at the first
  *  intact one, so the common case costs a single integrity check — this is what the shell bar's
  *  cheap endpoint calls, rather than verifying the whole folder. */
@@ -362,14 +414,16 @@ export async function backupHealth(dir: string = resolveBackupDir()): Promise<Ba
   const staleHours = await getSetting("backup_stale_hours");
   let newestSuccessAt: Date | null = null;
   let status: BackupStatusFile | null = null;
+  let retention: RetentionStatusFile | null = null;
   let folderError: string | null = null;
   try {
     newestSuccessAt = await newestIntactAt(dir);
     status = await readStatus(dir);
+    retention = await readRetentionStatus(dir);
   } catch (err) {
     folderError = err instanceof Error ? err.message : String(err);
   }
-  return evaluateHealth({ newestSuccessAt, status, staleHours, now: new Date(), folderError });
+  return evaluateHealth({ newestSuccessAt, status, retention, staleHours, now: new Date(), folderError });
 }
 
 /** The full page payload. Deliberately separate from backupHealth(): the page verifies EVERY

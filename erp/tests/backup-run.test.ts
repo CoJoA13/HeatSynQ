@@ -3,8 +3,8 @@ import { mkdtemp, rm, readdir, readFile, writeFile, mkdir, chmod } from "node:fs
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
-import { runBackupNow, listArchives, readStatus } from "@/server/backups";
-import { MANUAL_ARCHIVE_RE, BACKUP_STATUS_FILENAME } from "@/lib/backup-constants";
+import { runBackupNow, listArchives, readStatus, backupHealth } from "@/server/backups";
+import { MANUAL_ARCHIVE_RE, BACKUP_STATUS_FILENAME, RETENTION_STATUS_FILENAME } from "@/lib/backup-constants";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 
@@ -233,6 +233,37 @@ describe("runBackupNow", () => {
     }));
     // Minutes, not the banner's seconds — the exact value is the dump ceiling.
     expect(seen).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
+  /**
+   * Issue #132 — the exact failure mode, end to end through the REAL manual writer.
+   *
+   * The nightly's retention failure used to live only in backup-status.json, and a later manual
+   * "Back up now" overwrote that file whole with ok:true (writeStatus is a four-field literal with
+   * NO read-merge — read-merge is forbidden by design, §6.4/backups.ts:5–9). Green light, broken
+   * retention. The fix records retention in a shell-only sidecar the Node path never touches: this
+   * proves the manual success path leaves the sidecar byte-identical AND that health stays red
+   * even though the manual run legitimately turned the MAIN status green.
+   */
+  it("a successful manual backup never touches the retention sidecar — retention stays red (#132)", async () => {
+    const sidecarPath = path.join(dir, RETENTION_STATUS_FILENAME);
+    const sidecarBytes = JSON.stringify(
+      { lastRunAt: "2026-08-18T02:00:00Z", ok: false, error: "retention cleanup failed for: erp_*.sql.gz" },
+      null, 2);
+    await writeFile(sidecarPath, sidecarBytes);
+
+    const info = await run();
+    expect(info.integrityOk).toBe(true);
+
+    // The manual writer DID overwrite the main status green — that part is by design...
+    expect(await readStatus(dir)).toMatchObject({ ok: true, source: "manual", error: null });
+    // ...but the sidecar is byte-for-byte untouched...
+    expect(await readFile(sidecarPath, "utf8")).toBe(sidecarBytes);
+    // ...so the indicator still tells the truth about retention.
+    const h = await backupHealth(dir);
+    expect(h.state).toBe("failed");
+    expect(h.reason).toMatch(/retention/i);
+    expect(h.reason).toContain("erp_*.sql.gz");
   });
 
   it("two concurrent clicks never clobber each other", async () => {

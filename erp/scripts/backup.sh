@@ -10,6 +10,12 @@
 set -e
 DIR="${BACKUP_DIR:-/backups}"
 STATUS="$DIR/backup-status.json"
+# Issue #132: retention's outcome ALSO goes in a shell-only sidecar, because the main status file
+# cannot hold it — the app's manual "Back up now" overwrites $STATUS whole (no read-merge, by
+# design), so a green manual run ERASED a standing retention failure and the light went green while
+# old dumps kept accumulating. Nothing but this script ever writes the sidecar, and this script
+# re-attempts retention every night, so the sidecar is always the nightly's own latest verdict.
+RETENTION_STATUS="$DIR/retention-status.json"
 
 write_status() {   # $1 = true|false, $2 = error message (may be empty)
   tmp="$STATUS.$$.tmp"
@@ -26,6 +32,16 @@ write_status() {   # $1 = true|false, $2 = error message (may be empty)
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
     "$([ -n "$msg" ] && printf '"%s"' "$msg" || echo null)" > "$tmp"
   mv "$tmp" "$STATUS"
+}
+
+write_retention_status() {   # $1 = true|false, $2 = error message (may be empty)
+  # Same sanitization and temp-then-rename as write_status, for the same reasons.
+  tmp="$RETENTION_STATUS.$$.tmp"
+  msg=$(printf '%s' "$2" | tr -d '"\\' | tr '\n\r\t' '   ')
+  printf '{\n  "lastRunAt": "%s",\n  "ok": %s,\n  "error": %s\n}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
+    "$([ -n "$msg" ] && printf '"%s"' "$msg" || echo null)" > "$tmp"
+  mv "$tmp" "$RETENTION_STATUS"
 }
 
 STAMP=$(date +%Y-%m-%d_%H%M%S)
@@ -82,12 +98,19 @@ prune 'before-restore-*.sql.gz' +30
 # Orphaned temps from a crashed dump would otherwise accumulate forever.
 prune '.erp_*.sql.tmp' +1
 
+# The sidecar is written FIRST in both branches, deliberately: under `set -e` a failing sidecar
+# write then aborts before the main status can go green, which fails toward red — the reverse order
+# could leave a fresh green main status behind a run that exited non-zero. Main-status behavior and
+# exit codes are otherwise exactly the #120 shape: the sidecar is additional evidence, not a
+# replacement.
 if [ -n "$RETENTION_ERR" ]; then
   # The archive is KEPT: a retention failure is no reason to throw away a good backup, which is
   # precisely why this reports rather than aborting earlier.
+  write_retention_status false "retention cleanup failed for: $RETENTION_ERR"
   write_status false "the dump succeeded but retention cleanup failed for: $RETENTION_ERR"
   echo "backup wrote erp_${STAMP}.sql.gz but retention FAILED for: $RETENTION_ERR" >&2
   exit 1
 fi
+write_retention_status true ""
 write_status true ""
 echo "backup complete: erp_${STAMP}.sql.gz"

@@ -12,6 +12,14 @@ export const DEFAULT_STALE_HOURS = 36;
  *  which is what removes any need for the sh script to read-merge JSON. */
 export const BACKUP_STATUS_FILENAME = "backup-status.json";
 
+/** Written ONLY by scripts/backup.sh — the SHELL-ONLY retention sidecar (#132). The nightly's
+ *  retention failure used to live solely in backup-status.json, which the app's manual "Back up
+ *  now" overwrites whole (writeStatus is a no-read-merge single overwrite, by design — §6.4), so a
+ *  green manual run ERASED a standing retention failure. A separate file the Node writer never
+ *  touches makes that impossible by construction. It fails isArchiveName and matches none of the
+ *  script's prune globs, so listing and pruning ignore it structurally. */
+export const RETENTION_STATUS_FILENAME = "retention-status.json";
+
 /** Nightly, written by scripts/backup.sh:  erp_2026-08-16_020000.sql.gz */
 export const NIGHTLY_ARCHIVE_RE = /^erp_\d{4}-\d{2}-\d{2}_\d{6}\.sql\.gz$/;
 /** On-demand, written by the app. The random suffix is what makes a manual click and the nightly
@@ -64,5 +72,12 @@ export type BackupStatusFile = {
   lastRunAt: string;
   ok: boolean;
   source: BackupSource;
+  error: string | null;
+};
+
+/** The retention sidecar's shape (#132). No `source` — the nightly script is its ONLY writer. */
+export type RetentionStatusFile = {
+  lastRunAt: string;
+  ok: boolean;
   error: string | null;
 };
