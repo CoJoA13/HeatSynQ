@@ -62,6 +62,12 @@ export type OrderChargeDetail = {
 
 export type OrderDetail = {
   id: string; orderNumber: number; customerId: string;
+  /** #46: the order's own identifying data, carried UNCONDITIONALLY under this DTO's own gate
+   *  (orders.view) — the board already exposes exactly this pair (BoardRow.customerCode/
+   *  customerName) under orders.view alone, so the hub must not hide it behind the unrelated
+   *  customers.view grant. The hub renders it as plain text without customers.view (no link —
+   *  the customer PAGE stays gated) and as the customer link with it. */
+  customer: { code: string; name: string };
   poNumber: string; vsOrderNumber: string; customerJobNo: string;
   receivedDate: string; requestDate: string; targetDate: string | null;
   status: OrderStatus; notes: string; linkGroupId: string | null;
@@ -488,6 +494,8 @@ function auditPayload(args: {
 }
 
 const DETAIL_INCLUDE = {
+  // #46: the hub header's identity line — see OrderDetail.customer's comment.
+  customer: { select: { code: true, name: true } },
   lines: {
     orderBy: { position: "asc" },
     include: {
@@ -532,6 +540,7 @@ function toDetail(
 ): OrderDetail {
   return {
     id: row.id, orderNumber: row.orderNumber, customerId: row.customerId,
+    customer: row.customer,
     poNumber: row.poNumber, vsOrderNumber: row.vsOrderNumber,
     receivedDate: formatDateOnly(row.receivedDate),
     requestDate: formatDateOnly(row.requestDate),

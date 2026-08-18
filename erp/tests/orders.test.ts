@@ -151,6 +151,23 @@ describe("createOrder: the two-line sibling order", () => {
     expect(fetched.lines[1].part.serializationRequired).toBe(true);
   });
 
+  // #46: the hub header must identify the order's customer under orders.view ALONE — the board
+  // already shows exactly this pair (BoardRow.customerCode/customerName) under orders.view, so
+  // hiding it on the hub behind the unrelated customers.view grant left an otherwise fully
+  // readable order unidentified. OrderDetail carries the identity unconditionally (the customer
+  // was already joined for the board); the hub renders it as plain text without customers.view
+  // and as the customer link with it.
+  it("carries the customer's code and name on OrderDetail, from both createOrder and getOrder", async () => {
+    const { customer, lead, rider } = await fixture();
+    const { order } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: mockupLines(lead.id, rider.id),
+    }));
+    expect(order.customer).toEqual({ code: "ACME", name: "Acme Gear" });
+
+    const fetched = await getOrder(order.id);
+    expect(fetched.customer).toEqual({ code: "ACME", name: "Acme Gear" });
+  });
+
   // Task 4 wiring: createOrder freezes resolveCertSettings's answer onto the order row (spec
   // §6.1's detailed chain behaviour is cert-resolution.test.ts's job — this only pins that
   // createOrder actually CALLS the resolver and that customerJobNo/customerContainerId, §3.22's
