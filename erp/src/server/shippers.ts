@@ -788,9 +788,14 @@ async function findShipperOrder(tx: Prisma.TransactionClient, shipperId: string,
 }
 
 /** Every order currently on the shipment, as a plain id array — the "everyAffectedOrderId" set
- *  every mutator below claims through `claimOrdersInOrder` before it reads or writes anything. */
+ *  every mutator below claims through `claimOrdersInOrder` before it reads or writes anything.
+ *  Position-ordered (#52 review round 1, minor 2): claims re-sort and recomputes dedup, so the
+ *  ordering costs nothing there, and it makes stored `coveredOrderIds` uniformly the order the
+ *  paper itself prints in — matching the backfill's stated contract. */
 async function shipperOrderIds(tx: Prisma.TransactionClient, shipperId: string): Promise<string[]> {
-  const rows = await tx.shipperOrder.findMany({ where: { shipperId }, select: { orderId: true } });
+  const rows = await tx.shipperOrder.findMany({
+    where: { shipperId }, select: { orderId: true }, orderBy: { position: "asc" },
+  });
   return rows.map((r) => r.orderId);
 }
 

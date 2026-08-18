@@ -192,6 +192,14 @@ describe("the coveredOrderIds backfill (#52 migration)", () => {
 
   it("backfills whole-set SHIPPER/BOL rows with current membership, leaving scoped rows alone", async () => {
     const { shipper, orderA, orderB } = await twoOrderShipment();
+    // De-correlate position order from heap/scan order (#52 review round 1, minor 1): move
+    // orderB AHEAD of orderA by position. Updating B is what makes this discriminating — the
+    // UPDATE writes B's new row version to the heap's END, so an un-ordered `array_agg` scans
+    // [A, B] while position order is [B, A]. (Repositioning A instead would re-correlate the two:
+    // A's updated version lands last in the heap, right where its new position puts it.)
+    const soB = await prisma.shipperOrder.findFirstOrThrow({
+      where: { shipperId: shipper.id, orderId: orderB.id }, select: { id: true } });
+    await prisma.shipperOrder.update({ where: { id: soB.id }, data: { position: 0 } });
     const legacy = (kind: "SHIPPER" | "BOL", orderId: string | null, marker: string) =>
       prisma.storedDocument.create({
         data: { kind, shipperId: shipper.id, orderId, fileData: new Uint8Array(pdf(marker)) },
@@ -209,14 +217,21 @@ describe("the coveredOrderIds backfill (#52 migration)", () => {
     const start = sql.indexOf('UPDATE "StoredDocument"');
     expect(start).toBeGreaterThan(-1);
     const update = sql.slice(start);
+    // The position-ordering clause is pinned TEXTUALLY, by construction (the #122
+    // vitest-collection lesson: when simulation cannot discriminate, guard the artifact itself).
+    // Measured 2026-08-18: stripping the clause still passed the behavioral assertions below even
+    // with heap order de-correlated from position order, because the (shipperId, position) unique
+    // index serves the subquery in position order anyway — the clause guards against PLAN changes
+    // (a seq scan on a bigger table), which no small-fixture test can force deterministically.
+    expect(update).toContain('ORDER BY so."position"');
     await prisma.$executeRawUnsafe(update);
 
     const coverage = async (id: string) => (await prisma.storedDocument.findUniqueOrThrow({
       where: { id }, select: { coveredOrderIds: true } })).coveredOrderIds;
-    // twoOrderShipment seats orderA at position 1, orderB at position 2 — the backfill orders by
-    // ticket position, the order the paper itself prints in.
-    expect(await coverage(wholeSet.id)).toEqual([orderA.id, orderB.id]);
-    expect(await coverage(bol.id)).toEqual([orderA.id, orderB.id]);
+    // orderB now sits at position 0 (repositioned above), orderA at 1 — the backfill orders by
+    // ticket position, the order the paper itself prints in, so B leads despite A's earlier row.
+    expect(await coverage(wholeSet.id)).toEqual([orderB.id, orderA.id]);
+    expect(await coverage(bol.id)).toEqual([orderB.id, orderA.id]);
     expect(await coverage(perOrder.id)).toEqual([]);
 
     // And backfilled paper lists exactly as freshly-printed paper does.

@@ -241,3 +241,24 @@ deliberately untouched: `removeOrderFromShipper`'s printed-paper guard (shippers
 ANY whole-set document as covering the removal target — current-membership-derived, but in the
 OVER-blocking (safe) direction, and pinned by an existing test. Loosening a refusal is an owner
 call — filed as **#140** with the precise `coveredOrderIds`-based fix sketched.
+
+### #52 review round 1 (task-reviewer) + minors fix wave
+
+**Verdict: Spec Compliance ✅ · Task quality Approved.** Zero Critical, zero Important. The reviewer
+independently traced both print paths end-to-end and confirmed the coverage-read-vs-render-read
+identity (one Serializable-snapshot read feeds both the render and the recorded set, on both paths,
+re-derived together on every `retryAllocation` attempt), confirmed the deleted relation branch had
+no other consumer, and verified the `DocumentOwner` split covers every whole-set store site.
+
+**Both minors fixed on-branch:** (1) `shipperOrderIds` is now position-ordered, so stored coverage
+uniformly matches the backfill's "order the paper prints in" contract (claims re-sort, recomputes
+dedup — costs nothing). (2) The backfill pin got a strengthening odyssey worth recording: the
+reviewer asked for a fixture whose insertion order diverges from position order, but measurement
+showed the clause is NOT behaviorally discriminable on a small fixture at all — repositioning via
+UPDATE re-correlates heap order with position order, and even with heap order genuinely
+de-correlated the `(shipperId, position)` unique index serves the subquery in position order
+without any ORDER BY. So the clause is pinned **textually, by construction** (the #122
+vitest-collection lesson), with the measurement recorded beside it; the de-correlated fixture is
+kept as the stronger behavioral base. RED: the textual pin fails deterministically against a
+stripped clause (watched); the fixture change was watched green-before/green-after with the reason
+understood. Green: 109 tests across the five affected files, `tsc`/`eslint` clean.
