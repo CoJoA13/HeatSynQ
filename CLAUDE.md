@@ -125,7 +125,12 @@ stored** — the archive is the evidence — which is what lets `backup-status.j
 overwrite that `sh` can write. The two writers **never share a filename** (`erp_<stamp>` vs
 `erp_manual_<stamp>_<rand>`), so no cross-process lock exists or is needed; both match the script's one
 `-mtime +30` prune. The indicator is green ONLY on a recent integrity-passing archive **and** a clean last
-run **and** a readable status file — **absence is failure**, so a missing status file reads red. Backups
+run **and** a readable status file — **absence is failure**, so a missing status file reads red. One
+deliberate exception (#132): retention health rides a **shell-only sidecar** (`retention-status.json`,
+written every nightly run that reaches the prune, never by the Node manual path — which is what keeps a
+"Back up now" from clearing a standing retention failure), and the sidecar's **absence contributes
+nothing** — the main status file's absence rule already covers never-ran, and the sidecar self-refreshes
+nightly. Backups
 are **production-only**: `assertNotPracticeDatabase` (the `assertPracticeDatabase` mirror in
 `practice-mode.ts`) refuses the routes, and compose denies `app-practice` both the env and the mount. The
 suite must **never shell out to a host `pg_dump`** — CI's major is older than the server and pg_dump

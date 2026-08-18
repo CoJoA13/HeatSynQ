@@ -89,3 +89,21 @@ Branch `group-e-close-gl`, base `ed55ffe`. Brief committed first (`62149da`).
     were already covered).
   - Minor 2 accepted: the #93 test's exact-order assertion couples to `aggregateLines`'
     insertion-order contract, which the register's side filter already relies on; commented.
+
+## Task 6 — #132 retention sidecar
+
+- **Implemented** `3f879e9` (report `6c5bc76`). Shell-only `retention-status.json` (written every
+  nightly run that reaches the prune, sidecar-FIRST for fail-toward-red under `set -e`); tolerant
+  reader; one `evaluateHealth` branch (main failure outranks retention; retention outranks
+  staleness); absence/corruption contributes nothing, three reasons stated in the comment. Full
+  suite 3210 green.
+- **Review round 1: Spec ✅ · Approved.** The shell semantics survived the deliberate 8C-style
+  hard reading: sanitization parity, atomic rename, `set -e` ordering verified, and — the
+  reviewer's own finding — `RETENTION_ERR` is built from fixed glob literals only, so the
+  sidecar's JSON has NO reachable corruption path from script output. Three minors:
+  - **Minor 1 fixed on-branch (controller):** CLAUDE.md's Backups paragraph gained the one
+    sidecar sentence (shell-only writer, absence-contributes-nothing exception) so the
+    absence-is-failure prose no longer contradicts the code.
+  - Minor 2 recorded as a design assumption: a standing ok:false sidecar has no writer to clear
+    it if the nightly were ever decommissioned — unreachable in the shipped deploy.
+  - Minor 3 (cosmetic type inconsistency in a test helper) accepted.
