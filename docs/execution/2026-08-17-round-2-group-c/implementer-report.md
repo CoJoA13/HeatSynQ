@@ -262,3 +262,131 @@ vitest-collection lesson), with the measurement recorded beside it; the de-corre
 kept as the stronger behavioral base. RED: the textual pin fails deterministically against a
 stripped clause (watched); the fixture change was watched green-before/green-after with the reason
 understood. Green: 109 tests across the five affected files, `tsc`/`eslint` clean.
+
+## #42 + the five UI papercuts
+
+Six issues, six commits, in the briefed order: `51a7fdc` (#42), `30473ac` (#41), `2781b79` (#44),
+`426ae8e` (#45), `cec48be` (#46), `884302a` (#51).
+
+### Per-issue: what and where
+
+**#42 (server, TDD).** The guard lives in `splitLoads` itself (`src/lib/load-split.ts`) — the
+brief left placement to the implementer, and this is the ONE seam both generated-load callers
+share: `createOrder` (orders.ts ~803/~841 today; the issue's :654 ref had moved) and
+`resplitLoads` (order-loads.ts), which the issue did not name but which generates loads the
+identical way. `assertLoadsFitColumns` checks every OUTPUT load — both return paths, the no-caps
+single load included — against `Load.qty`'s INTEGER ceiling (`INT4_MAX`, imported from the
+client-safe `order-constants` leaf) and `Load.weight`'s DECIMAL(12,2) ceiling (a new exported
+`LOAD_WEIGHT_MAX`), throwing the plain-`Error`-translated-by-`runSplitLoads` shape MAX_LOADS
+already uses; the 400 names the offending load, its value, and the real cap ("Load 1's quantity
+2,150,000,000 exceeds the database maximum 2,147,483,647 — check the line quantities"). Checked
+per LOAD, not per total, deliberately: a capped split that chunks an overflowing total into
+fitting loads is legal (pinned), and a capped split whose individual loads still overflow is
+refused (pinned). **`replaceLoads` was checked as instructed and validates independently — it
+was ALREADY guarded**: qty by `LOAD_ITEM`'s `.max(INT4_MAX)` (order-loads.ts:56, fix-wave R4
+finding 3, existing test) and weight by `decimalField(12, 2)` (order-loads.ts:57) — the weight
+half had no pinning test, so one was added beside the existing qty one (green from birth, by
+design). No new code on the manual path.
+
+**#41 (UI, P1).** `LoadsSection` now takes `travelerPrinted` (from `OrderDetail`, which the page
+already held — the issue's exact gap: computed at orders.ts:413-era, typed on the client, never
+passed at the :527-era call site, now page.tsx ~581) and renders a persistent amber notice from
+that STATE — visible the moment the editor renders, refreshed by every mutation response, and
+untouchable by the page-level warnings banner an unrelated warning-less mutation clears. The
+server's per-save "print a fresh one" warning is unchanged (different text, so the E2E flow's
+exact-string locator cannot strict-mode collide — verified against
+`e2e/flows/loads-after-print.mjs:65`). Known edge, unchanged by design: printing a traveler from
+DocumentsSection does not itself refresh `order`, so within that same visit the notice appears on
+the next refresh/mutation; on any open or reload of a printed order — the issue's complaint — it
+shows immediately.
+
+**#44 (UI).** `orders/new/page.tsx`: Save & Print now takes `savePrintGate` — `saveGate` when
+orders.create is missing (its refusal stays primary), else `ordersViewGate`, which the page
+already computed. §5.16 exactly: visible, disabled, title naming the missing permission
+("Requires orders.view"). Plain Save keeps `orders.create` alone. Refs had moved (:794 → ~989).
+
+**#45 (UI).** `app/page.tsx:95-98`-era fetch now passes `includeInactive=1` (the brief's chosen
+option; the hub's parts-picker precedent), `CustomerOption` gains `active`, and inactive options
+render the standing `" (inactive)"` suffix (ten existing precedents, e.g.
+customers/[id]/page.tsx:535) — a saved view's inactive customer is a visible, NAMED filter, and
+the board and its export are never silently scoped.
+
+**#46 (UI+API, TDD on the DTO).** `OrderDetail` (server + client types) carries
+`customer: { code, name }` unconditionally — `DETAIL_INCLUDE` gains the two-column select on the
+join the detail read already made. The hub header renders it from `order.customer`: linked when
+`customers.view` is held (board precedent), plain text when not; the customers.view-gated fetch
+survives solely for standing order notes. Also switched: `linkAction`'s "No order #N found
+for …" refusal, which named the customer only for customers.view holders — same hiding, same
+two-line fix.
+
+**#51 (UI).** `NewShipment.tsx` `addOrder`: a ticket is taken on a new `addOrderLatest`
+(`useLatest`, the component's own `candidatesLatest` pattern) before the fetch; `pickCustomer`
+bumps the sequence on every switch; the response path AND the catch are ticket-gated. The stale
+response that used to pass the old-vs-old `od.customerId !== customerId` check is dropped before
+it can append the previous customer's order to the panel the switch just cleared.
+
+### RED verification
+
+| Test | RED evidence (watched before implementing) |
+|---|---|
+| load-split: qty past Int4 ceiling refused | Failed — no throw, overflowing load returned |
+| load-split: weight past Decimal(12,2) ceiling refused | Failed — same |
+| load-split: capped split whose loads still overflow refused | Failed — same |
+| load-split: boundary at exactly both ceilings passes | Green from birth — pins non-over-blocking |
+| load-split: measures the LOAD, not the total | Green from birth — pins the per-load check |
+| createOrder: qty overflow → 400 naming load+cap, writes nothing | Failed with the unmapped **P2020 / 22003 "numeric field overflow"** — the issue's exact 500, reproduced |
+| createOrder: weight overflow → 400, writes nothing | Failed with the same P2020 |
+| createOrder: save at exactly both ceilings succeeds | Green from birth — pins non-over-blocking end to end |
+| resplitLoads: overflow → 400, loads untouched | Failed with the same P2020 |
+| replaceLoads: manual weight past Decimal(12,2) rejected | Green from birth **by design** — pins the already-guarded manual path against drift |
+| LoadsSection: notice on first render when printed (#41) | Failed — notice absent pre-fix |
+| LoadsSection: no notice when unprinted (#41) | Green from birth — negative control |
+| OrderDetail carries customer code/name (#46) | Failed — `order.customer` undefined pre-fix |
+
+### Vitest seams — which issues have none, and why
+
+- **#41**: the RENDER seam turned out reachable after all — `renderToStaticMarkup` on the client
+  component (initial hook state is all the notice depends on), the practice-banner.test.tsx
+  precedent — so the task-note's "vitest can't reach it" was half right: the render is pinned
+  (`tests/loads-section.test.tsx`), the page WIRING (passing the prop) is E2E's. No API-side
+  field: `travelerPrinted` was already on OrderDetail with existing tests (orders.test.ts:1086+).
+- **#44**: no seam — pure client gating; `gate()` itself is covered by permission-ui.test.ts, and
+  the flows exercise the entry page. Vitest cannot observe a button's disabled/title wiring.
+- **#45**: no seam — a fetch-URL change plus option rendering; `listCustomers({ includeInactive })`
+  is already pinned (customers.test.ts:192-194).
+- **#46**: the DTO shape is vitest-pinned (both createOrder's response and getOrder's read); the
+  header's linked-vs-plain branch is client rendering, E2E's.
+- **#51**: no seam — an async race inside a client component's handler closure;
+  `makeLatestGate`'s drop-the-stale-ticket mechanism is covered by tests/use-latest.test.ts.
+
+### Gate results (run after all six commits)
+
+- `npm test` — **184 files, 3161 tests, all passed** (403s).
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests` — clean (exit 0).
+- `npm run test:e2e` — **all 23 flows passed** (exit 0), including `loads-after-print` (the flow
+  most directly over #41's screen), `order-entry-full`, `board-search-scan`,
+  `multi-order-shipment` and `ship-partial-then-complete` (over #51's component), against the
+  DEV db. Clean exit — no ClosePeriod debris.
+
+### Deviations from the brief / issue text
+
+1. **#42's guard sits in `splitLoads`, not at the two call sites** — placement the brief
+   explicitly delegated. One seam covers `createOrder` AND `resplitLoads` (which the issue's
+   saveNewOrder/replaceLoads framing missed as a third door), and the pure lib gets pure tests.
+2. **#42 on `replaceLoads`: verified already-guarded, so no code** — reported as the brief asked;
+   the manual weight bound gained its missing pin test.
+3. **#41 gained a vitest render test** despite the task note that vitest couldn't reach it.
+4. **#46 also fixes `linkAction`'s refusal message** (same hiding, two lines) beyond the header
+   the issue named.
+5. **#45 labels inactive options "(inactive)"** — the issue demanded visibility only; the suffix
+   is the codebase's standing idiom for exactly this.
+
+### Issue-ref drift (all refs were from 2026-08-03; every premise held)
+
+orders.ts:654 → ~841 (nested loads create) with `runSplitLoads` at ~803; LINE_QTY at :157 (not
+:116), lines array still unbounded (`z.array(LINE).min(1)`, :205); orders/[id]/page.tsx:527 →
+~581 (LoadsSection call), :404 → ~419-427 (header), gate at :227, the includeInactive precedent
+at :256; orders/new/page.tsx:794 → ~989 (Save & Print), saveGate at :294; app/page.tsx:98 →
+:95-98. No issue was found already-fixed; all six defects were live (and #42's two overflow
+repros produced the predicted unmapped P2020 in RED).
