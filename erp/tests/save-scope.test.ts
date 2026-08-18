@@ -114,7 +114,10 @@ describe("makeSaveScope — the rollback clobber traces", () => {
     expect(h.state.error).toBe("PUT failed");
 
     // The rollback GET must be withheld while save#2 is in flight — answering any GET dispatched
-    // now would carry pre-v1 truth (X: "v0") and clobber the optimistic v2.
+    // now would carry pre-v1 truth (X: "v0") and clobber the optimistic v2. The explicit zero
+    // pins the settle-defer itself (a dispatch-then-drop implementation would also keep X intact,
+    // but would show a pending GET here); the drain loop stays as belt.
+    expect(h.pendingGets()).toBe(0);
     while (h.pendingGets()) h.answerGet();
     await flush();
     expect(h.state.data.X).toBe("v2");
@@ -186,6 +189,43 @@ describe("makeSaveScope — the rollback clobber traces", () => {
     expect(h.state.data.X).toBe("v0"); // server truth restored
     expect(h.state.error).toBe("PUT failed"); // still on screen
     await expect(s1.settled).resolves.toBe(false);
+  });
+
+  // Task 2 review finding R1: the settle-wait park is itself a save window. A reload parked on
+  // allSettled must not treat a save that BEGAN during the park as already seen — the epoch is
+  // captured before the park, so the intervening bump forces the loop to re-wait (now including
+  // the new save's chain) and re-fetch, instead of applying a payload that predates its commit.
+  it("a save beginning during the settle-wait park is waited out too", async () => {
+    const scope = makeSaveScope();
+    const h = makeHarness(scope, { A: "a0", B: "b0" });
+
+    const s1 = h.save("A", "a1");
+    await flush(); // PUT#A in flight — any reload now parks on A's chain
+    const r = h.load();
+    await flush();
+    expect(h.pendingGets()).toBe(0); // parked, nothing dispatched
+
+    const s2 = h.save("B", "b1"); // begins DURING the park: optimistic apply + epoch bump
+    expect(h.state.data.B).toBe("b1");
+
+    h.commit(s1, "A", "a1"); // A settles → the park resumes; B is still uncommitted
+    await flush();
+    // Whatever GET the resumed iteration dispatched was issued before B committed — its payload
+    // (B: "b0") must be withheld, not applied.
+    while (h.pendingGets()) { h.answerGet(); await flush(); }
+    expect(h.state.data.B).toBe("b1");
+
+    h.commit(s2, "B", "b1");
+    await expect(s2.settled).resolves.toBe(true);
+    await flush(); // the re-wait now includes B's chain; with B settled, the re-fetch dispatches
+    h.server.stamp = "fresh";
+    expect(h.pendingGets()).toBe(1);
+    h.answerGet();
+    await flush();
+
+    expect(h.state.data.B).toBe("b1");
+    expect(h.state.data.stamp).toBe("fresh"); // the reload genuinely completed with fresh truth
+    await r;
   });
 });
 

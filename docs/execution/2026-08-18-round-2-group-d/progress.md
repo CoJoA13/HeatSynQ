@@ -54,4 +54,18 @@ into the brief:
 
 ## Task verdicts
 
-(one entry per task as reviews land)
+**Task 2 (#3 + #15, save-scope helper + adoptions)** — implementer `dc00c5c`/`02a3da5`/`cf72267`,
+RED watched on all four brief traces. Review: **Spec ✅ · Needs fixes**, one Important —
+**plan-mandated (the brief's own algorithm)**: the epoch was captured AFTER the settle-wait, so a
+save beginning while the reload was parked on `allSettled` was counted as already seen, and the
+resumed GET could apply a payload predating its commit — the group's own clobber class through a
+narrower window. Controller ruling: fix, not ratify. Fixed on-branch with the missing test
+watched RED first (`Expected "b1", Received "b0"` through the parked window), the one-line
+capture move, and the brief's algorithm corrected in place with an amendment note. The review's
+two actionable minors also landed (the explicit `pendingGets()===0` settle-defer pin; the
+sibling-save-clears-banner note is the pages' design, pinned by the ordinary-failure case).
+Both implementer deviations verified sound by the reviewer (InspectionsSection `move` in-spirit;
+`rowsLatest` subsumed by the scope's strictly-stronger gate). **Approved after fix round 1.**
+
+**Task 3 (#23 + step-codes page)** — implementer `a6e875e`/`e751a1d`/`0516b69`, RED watched on
+the leaf's stale-drop cases. Review: pending.

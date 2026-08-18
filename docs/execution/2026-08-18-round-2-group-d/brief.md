@@ -50,11 +50,13 @@ settle-deferred rollback reload**, one shared pure helper.
   **call** time: bumps a monotonic epoch and registers the save's queue-chain promise until it
   settles.
 - `reload(fetch, apply): Promise<...>` — the guarded load used by mount/effect/success-path
-  callers AND scheduled rollbacks. Algorithm (bindable): take an internal latest-gate ticket; loop:
-  `await Promise.allSettled(pending)`; capture `e = epoch`; `data = await fetch()`; if the ticket
+  callers AND scheduled rollbacks. Algorithm (bindable — **as corrected by the Task 2 review**,
+  which caught the original ordering here capturing the epoch after the settle-wait and thereby
+  leaving the park itself an unguarded save window): take an internal latest-gate ticket; loop:
+  capture `e = epoch`; `await Promise.allSettled(pending)`; `data = await fetch()`; if the ticket
   is superseded → return without applying; if `epoch !== e` → loop again (a save intervened
-  mid-fetch; its commit may postdate our read); else `apply(data)`. Terminates because the epoch
-  advances only on user actions.
+  during the wait or mid-fetch; its commit may postdate our read); else `apply(data)`. Terminates
+  because the epoch advances only on user actions.
 - Rollback call sites invoke `reload` **without awaiting it from inside the queued fn**
   (fire-and-forget from the catch, after `setError`) — that detachment is what avoids the same-key
   deadlock while the settle-defer guarantees the GET postdates every dispatched save, so the

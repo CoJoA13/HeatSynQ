@@ -15,12 +15,12 @@
 //    it settles.
 //  - `reload(fetchData, apply)` is the guarded load every caller (mount, success-path refresh,
 //    rollback) routes through. It takes an internal latest-gate ticket at call time — before any
-//    await, the use-latest.ts dispatch rule — then loops: wait for every registered save to
-//    settle, capture the epoch, fetch; a superseded ticket returns without applying (on the
+//    await, the use-latest.ts dispatch rule — then loops: capture the epoch, wait for every
+//    registered save to settle, fetch; a superseded ticket returns without applying (on the
 //    rejection path too — the F7 rule: a stale failure must not surface either); a moved epoch
-//    means a save was dispatched mid-fetch, so its commit may postdate the read, and the loop
-//    re-waits and re-fetches instead of applying a payload that would undo it. Terminates
-//    because the epoch advances only on user actions.
+//    means a save was dispatched during the wait or mid-fetch, so its commit may postdate the
+//    read, and the loop re-waits and re-fetches instead of applying a payload that would undo
+//    it. Terminates because the epoch advances only on user actions.
 //
 // The rollback contract this yields: a failing save reports its error, then fires the reload
 // WITHOUT awaiting it — awaiting from inside the settling save deadlocks against the settle-wait
@@ -58,8 +58,13 @@ export function makeSaveScope(): SaveScope {
     reload: async (fetchData, apply) => {
       const ticket = gate.next();
       for (;;) {
-        await Promise.allSettled([...pending]);
+        // The epoch is captured BEFORE the settle-wait: the park is itself a save window (Task 2
+        // review R1), and a save beginning while we sit on allSettled is not in this iteration's
+        // snapshot — capturing after the park would count its bump as already seen and let the
+        // GET apply a payload that predates its commit. Captured first, the bump fails the
+        // epoch check below and the next iteration's snapshot picks the new chain up.
         const seen = epoch;
+        await Promise.allSettled([...pending]);
         let data;
         try {
           data = await fetchData();
