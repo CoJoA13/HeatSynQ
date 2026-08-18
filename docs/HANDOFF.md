@@ -755,6 +755,29 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
    - **The toolkit is QuickBooks DESKTOP documentation** (`File → Utilities → Import → Excel Files`, Pro/Premier 2008 / Enterprise 8.0, dated 2008-09-30), while every note in this project — the spec included — says **Online**. IIF is Desktop-only, so the two products give completely different answers. **Settle Desktop vs Online before anything else in this item**; if it is Desktop, the "QBO" wording throughout the docs needs correcting, not just the plan.
 
    Nothing is built against either assumption yet, so this cost nothing — but it is exactly the kind of thing the prime directive exists for. The full question list for that conversation is `docs/company-confidential/2026-08-17-accounting-questions.md` (22 questions, each paired with what the software does today).
+
+   **ANSWERED 2026-08-17, same day — the question list came back hand-annotated by the bookkeeper**
+   (scan + their QuickBooks item-list export, both in `docs/company-confidential/` —
+   `2026-08-17-before-parallel-run-annotated.pdf`, `2026-08-17-qbo-products-services-list.csv`; the
+   per-question transcription is appended to the question list itself). The critical-path answers:
+   the product is **QuickBooks ONLINE** — circled twice on the returned sheet, and the item-list
+   export is QBO's own format, so correct the earlier "may be Desktop" hedge — and **the month's
+   journal entry is KEYED BY HAND** ("I have been keying it in by hand"), so **no import format
+   needs building at all** (IIF, connector and CSV are all moot; the stored posting-register PDF is
+   directly usable — "QBs can read PDF files. Even scanned PDFs"). The file should carry account
+   **NAMES**; the bookkeeper lumped every heat-treat service into ONE income account years ago and
+   can either accommodate our names or supply a list — the item-list export IS the income side of
+   that list. Also settled: **sales tax is not charged and won't be** (Q6 — the export's tax
+   exclusion is moot in practice, not merely acceptable); **early-pay discounts net straight
+   against revenue** (Q7); **finance charges are effectively unused** (Q19; Q5 instead asks for a
+   card-processing-fee account, since card payments arrive through QuickBooks). Still open from
+   this conversation: **Q3** (the annotation reads as "the bookkeeper keys A/R transactions into
+   QuickBooks directly during the parallel run, remittance attached" — confirm that reading),
+   **Q8** (they asked back "all, or what VS invoicing uses?" — send the what-invoicing-touches
+   list; the chart-export ask stands), and **Q13** (explicitly cannot be settled without a third
+   person the bookkeeper named; costs nothing parked — the discount has never been taken). The A/R
+   policy answers (Q14–Q22) and what they unpark are recorded against the round-2 backlog's PARKED
+   table — five of the ten parked issues now have answers awaiting the owner's go-ahead.
 3. ~~The office's go-to report list.~~ **Effectively CLOSED by Phase 8A** — the five native reports + the two homed ones were built to the owner's list; extras are cheap additions now the platform exists.
 4. GL account list for operations, surcharges, payment types. **PARTIALLY DELIVERED 2026-08-16** —
    the owner supplied Visual Shop's own *General Ledger Report* (process code → GL#, 3 pages).
@@ -804,6 +827,15 @@ The dev upgrade was verified by exact per-table row counts before and after (ide
       or one code per process with a single account, which is fewer codes and loses revenue-by-
       furnace. **The step code is what prints on the invoice line**, so either naming is honest
       paper. Owner's call; nothing is blocked on it.
+
+      **The bookkeeper's answer landed 2026-08-17 (Q12 on the returned question list): a bare
+      "No" — nobody reads revenue-by-furnace.** Their QBO item-list export corroborates it
+      independently: every heat-treat service already posts to a single income account, so the
+      by-furnace split died at the QuickBooks door years ago and only Visual Shop's own reports
+      ever showed it. That resolves the business choice to **one step code per process (~15–20
+      codes), one revenue account** — pending only the owner's ratification, since this question
+      was framed as owner + bookkeeper together. If ratified, the chart-keying task shrinks to a
+      short afternoon.
       (Superseded framing kept below for the reasoning.)
 
       **VS keys the revenue account by EQUIPMENT GROUP, not by process code — HeatSynQ keys it by
@@ -943,9 +975,16 @@ Fedora-specific notes:
 > where they exceeded the issues, and what THREE review rounds found, is in §6. **55 open. NEXT: B** —
 > A/R that needs no accountant (#83, #85, #86, #82, #79, #75) · **C** shipping/status integrity (#65 is
 > the real one) · **E** close + GL + tripwires (#88 is RULED — build the broken-chain flag) · **D**
-> stale-load class (decide **#31** first) · **F**/**G**/**H** infra, documents, polish. **Ten issues are
-> PARKED on the accounting meeting** (#69, #70, #73, #78, #80, #76, #77, #71, #4, #8) — do not start
-> them; the question list is `docs/company-confidential/2026-08-17-accounting-questions.md`.
+> stale-load class (decide **#31** first) · **F**/**G**/**H** infra, documents, polish. **Ten issues
+> were PARKED on the accounting meeting** (#69, #70, #73, #78, #80, #76, #77, #71, #4, #8) — **and
+> the answers came back the same day 2026-08-17** (the annotated question list + a QBO item-list
+> export, §7 item 2; transcription appended to
+> `docs/company-confidential/2026-08-17-accounting-questions.md`). Five now have answers awaiting
+> the owner's go-ahead — #70 and #78 confirm current behavior (closable), #73 and #80 became
+> build-the-guard/build-the-refusal, #76 became don't-build — #77 stays parked-low (wanted only if
+> late fees are pursued), #69 stays parked (needs a third person), #71/#4/#8 remain owner calls.
+> **Do not action any of them until the owner says so** — the dispositions are recorded in the
+> round-2 backlog's PARKED table.
 >
 > Round 1's own record stays at `docs/2026-08-16-issue-burndown-handoff.md` — read its closing
 > "outlives it" section before starting, especially lesson 4 (when each review round finds defects in

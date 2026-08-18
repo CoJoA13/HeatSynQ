@@ -16,6 +16,14 @@ an accountant, and parks everything that does.
 > export is a journal entry. And the toolkit is **Desktop** documentation while every note here assumes
 > **Online**. Nothing is built against either assumption, so nothing here is invalidated — but do not
 > build an import format until Q1 is answered.
+>
+> **ANSWERED later the same day (2026-08-17)** — the question list came back hand-annotated by the
+> bookkeeper, with their QuickBooks item-list export alongside (HANDOFF §7 item 2; the transcription
+> is appended to the question list itself). **QuickBooks ONLINE, and the journal entry is KEYED BY
+> HAND — no import format ever needs building.** Q12 is "No" (nobody reads revenue-by-furnace, so
+> the step-code decision collapses to ~15–20 codes pending owner ratification), sales tax is not
+> charged, discounts net straight against revenue. The PARKED table below now carries each item's
+> answer — **actioning them still waits on the owner**.
 
 ## Read first
 
@@ -307,24 +315,25 @@ Low individual value, but cheap in a batch and they are what the office actually
 
 ---
 
-## PARKED — waiting on the accounting meeting · **#69, #70, #73, #78, #80, #76, #77, #71, #4, #8**
+## PARKED — the answers are BACK (2026-08-17) · awaiting the owner's go-ahead
 
-**Do not start these.** Each needs an answer that is being asked for; building one first means building
-it twice. Cross-referenced to the question list.
+The annotated question list answered most of these the same day this file was written (HANDOFF §7
+item 2). **Still do not action them unprompted** — the dispositions below are the bookkeeper's
+answers mapped to issues, and turning any of them into work (or a close) is the owner's call.
 
-| # | Waiting on |
-|---|---|
-| **#69** | Q13 — discount basis (open balance / amount paid / original total) |
-| **#79** | *partially* — the snapshot fix is buildable now (Group B); only the basis waits |
-| **#73** | Q16 — does the shop ever enter post-dated payments |
-| **#70** | Q17 — statements to credit-balance customers |
-| **#80** | Q18 — should posting refuse when a batch doesn't foot |
-| **#78** | Q22 — how exactly must a past aging report reproduce (design-sized either way) |
-| **#76** | Q19 — are finance charges actually charged, is anyone exempt |
-| **#77** | Q20 — bad-debt write-off process |
-| **#71** | owner — family roll-up on a parent customer's page |
-| **#4** | owner — a contact flagged for document delivery with no email: reject, or allow-and-never-deliver |
-| **#8** | owner — spec §9 says destructive actions require a reason; only `deleteCustomer` collects one |
+| # | Was waiting on | Answer 2026-08-17 → disposition |
+|---|---|---|
+| **#69** | Q13 — discount basis | **still open** — the bookkeeper explicitly cannot settle it alone (a third person must be included). The discount has never been taken by any customer, so parking stays free |
+| **#79** | the basis half only | the built snapshot fix is independently endorsed — Q14: *"(my opinion only) terms should follow the invoice"*. The basis half still waits on Q13 |
+| **#73** | Q16 — post-dated payments | **"No, not yet"** — payments post after receipt/deposit → build the guard |
+| **#70** | Q17 — credit-balance statements | **confirmed as built** (checkmark) → closable |
+| **#80** | Q18 — refuse an un-footed batch post | **refuse** (checkmark on "refusing is the safer default") → build it |
+| **#78** | Q22 — past-aging reproducibility | **current behavior accepted** (checkmark on "the report reflects current status") → closable, the design-sized work is NOT needed |
+| **#76** | Q19 — finance charges / exemptions | **"Not really"** charged → the exemption screen buys nothing; closable |
+| **#77** | Q20 — bad-debt write-offs | QuickBooks handles them today; a path is wanted only if late fees are pursued → stays parked, low |
+| **#71** | owner — family roll-up | informed by Q21 (*"combined"* underlined — no reason seen to divide a family) but still the owner's call |
+| **#4** | owner — delivery contact with no email | unchanged — owner call |
+| **#8** | owner — delete reasons (spec §9) | unchanged — owner call |
 
 ---
 
