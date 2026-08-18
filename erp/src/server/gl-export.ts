@@ -164,6 +164,14 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
         `GL export batch is unbalanced (debit ${debitCents} != credit ${creditCents} cents) — refusing to persist`);
     }
 
+    // #90: an empty delta is a no-op, and recording one used to burn a permanent export number and
+    // persist an indistinguishable empty batch row (header-only CSV, empty register PDF) per click.
+    // Refuse BEFORE `allocateNumber`, so "consumes no number when the save fails" holds and the
+    // batch list stays a list of exports that actually moved something.
+    if (lines.length === 0) {
+      throw new HttpError(400, "Nothing to export — this period has no unexported postings");
+    }
+
     const exportNumber = await allocateNumber("gl_export_batch_number_next", tx);
     const fileName = `gl-${period.year}-${String(period.month).padStart(2, "0")}.csv`;
     const periodEndStr = formatDateOnly(periodEnd);
@@ -187,7 +195,17 @@ export async function exportClose(closePeriodId: string): Promise<ExportedBatch>
 
     const batch = await auditedCreate(
       "glExportBatch",
-      { exportNumber, closePeriodId, periodEnd, fileName, postingCount: lines.length },
+      {
+        exportNumber, closePeriodId, periodEnd, fileName, postingCount: lines.length,
+        // #93: the audit row carries the emitted SUMMARY journal — the same aggregated
+        // (account, side) lines the CSV and register print, bounded by 2 × chart size, never by
+        // transaction volume. `glAccountName` is the frozen account-number string the CSV itself
+        // prints. The per-event lines live on `GlPosting`; the file/register BYTES stay out of
+        // the audit row entirely.
+        summary: summaryLines.map((l) => ({
+          side: l.side, account: l.glAccountName, debit: l.debit, credit: l.credit,
+        })),
+      },
       () => tx.glExportBatch.create({
         data: {
           exportNumber, closePeriodId, periodEnd, fileName,

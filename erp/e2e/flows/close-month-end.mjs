@@ -73,13 +73,13 @@ async function waitForCount(locator, min, timeoutMs = 15000) {
   }
 }
 
-/** The closed-period row for `label` ("August 2026") — Close.tsx renders it as a `<div class="...
- *  rounded border p-3 ...">` holding a `<span class="font-medium">` with the period label, a
- *  SIBLING of the "Period"/"Continuity schedule" sections (which use `p-4`, not `p-3`) — the
- *  `ancestor::table[1]` "nearest matching ancestor" precedent, applied to a `div`. */
+/** The closed-period row for `label` ("August 2026") — keyed on Close.tsx's
+ *  `data-testid="closed-period-row"` (#90; the old `ancestor::div[contains(@class,'p-3')]` xpath
+ *  broke on any padding retune), narrowed to the row whose `<span class="font-medium">` holds the
+ *  period label. */
 function periodRow(page, label) {
-  return page.locator("span.font-medium", { hasText: label })
-    .locator("xpath=ancestor::div[contains(@class,'p-3')][1]");
+  return page.locator('[data-testid="closed-period-row"]')
+    .filter({ has: page.locator("span.font-medium", { hasText: label }) });
 }
 
 /**

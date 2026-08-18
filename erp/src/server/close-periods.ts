@@ -245,7 +245,10 @@ export async function preliminaryReport(year: number, month: number): Promise<Pr
  * place — clearing the stale reopen note). Refuses if the roll-forward disagrees with the aging
  * (variance ≠ 0) or if the prior month is not closed. Exactly ONE `lockMonth` (Task 4's invariant).
  * Serializable + `retryOnSerializationConflict` — SSI backstops the posting side, the retry absorbs
- * the two-close conflict (see the file header).
+ * the two-close conflict (see the file header). This is the ONE call site that opts into the P2002
+ * retry (#90): the losing close's `findFirst` misses the just-committed row and its INSERT collides
+ * on `@@unique([year, month])` — the re-run sees the row and updates it in place. Everywhere else
+ * (allocation paths, `reopenPeriod`) a P2002 is not that shape and escapes on attempt 1.
  */
 export async function closePeriod(year: number, month: number): Promise<ClosePeriodDetail> {
   const { endStr } = monthBounds(year, month);
@@ -277,7 +280,7 @@ export async function closePeriod(year: number, month: number): Promise<ClosePer
             () => tx.closePeriod.create({ data }), { tx });
       return { id: row.id, year, month, status: "CLOSED", ...schedule };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-  }));
+  }, 5, { retryUniqueConflict: true })); // tries stays the default 5; the opt-in is the point
 }
 
 /**

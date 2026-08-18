@@ -21,6 +21,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { api } from "@/lib/fetcher";
 import { todayDateOnly } from "@/lib/business-days";
+import { MIN_CLOSE_YEAR, MAX_CLOSE_YEAR, type ReadinessGapKind } from "@/lib/gl-constants";
 import { ReceivablesNav } from "../ReceivablesNav";
 
 // ---------------------------------------------------------------------------------------------
@@ -38,7 +39,9 @@ type PreliminaryReport = {
   year: number; month: number; schedule: ContinuitySchedule;
   unpostedBatchCount: number; alreadyClosed: boolean;
 };
-type ReadinessGap = { kind: string; id: string | null; label: string; href: string };
+// `kind` is the SHARED union from src/lib/gl-constants.ts (#90) — the one place a client component
+// may import it from (never src/server/**), so this mirror can no longer drift from the server's.
+type ReadinessGap = { kind: ReadinessGapKind; id: string | null; label: string; href: string };
 type ExportBatchSummary = { id: string; exportNumber: number; emittedAt: string; fileName: string };
 type ClosePeriodListItem = ContinuitySchedule & {
   id: string; year: number; month: number; status: string; closedAt: string;
@@ -99,7 +102,7 @@ function ClosePeriodsScreen() {
   const initial = defaultPeriod();
   const [year, setYear] = useState(() => {
     const y = Number(searchParams.get("year"));
-    return Number.isInteger(y) && y >= 2000 ? y : initial.year;
+    return Number.isInteger(y) && y >= MIN_CLOSE_YEAR && y <= MAX_CLOSE_YEAR ? y : initial.year;
   });
   const [month, setMonth] = useState(() => {
     const m = Number(searchParams.get("month"));
@@ -355,7 +358,9 @@ function ClosePeriodsScreen() {
             : !closeDoGate.allowed ? closeDoGate.title
               : p.status !== "CLOSED" ? "Already reopened" : undefined;
           return (
-            <div key={p.id} className="mb-3 rounded border p-3 text-sm last:mb-0">
+            // data-testid: the E2E flow's `periodRow` keys on it (#90) — the old xpath
+            // `ancestor::div[contains(@class,'p-3')]` broke on any padding retune.
+            <div key={p.id} data-testid="closed-period-row" className="mb-3 rounded border p-3 text-sm last:mb-0">
               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <span className="font-medium">{periodLabel(p.year, p.month)}</span>{" "}

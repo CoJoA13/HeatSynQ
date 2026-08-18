@@ -213,7 +213,7 @@ async function periodFor(year: number, month: number): Promise<{ id: string }> {
 }
 
 describe("gl-export delta", () => {
-  it("first export posts a balanced batch; a re-run is an empty no-op", async () => {
+  it("first export posts a balanced batch; a no-op re-run is refused before a number is consumed (#90)", async () => {
     const gl = await seedGlDefaults();
     await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
     await asSystem(() => closePeriod(2026, 7));
@@ -226,8 +226,15 @@ describe("gl-export delta", () => {
     expect(first.postings.length).toBeGreaterThan(0);
     expect(first.postings.every((p) => !p.isReversal)).toBe(true);
 
-    const second = await asSystem(() => exportClose(period.id));
-    expect(second.postings.length).toBe(0); // idempotent no-op
+    // #90: an empty delta used to persist an indistinguishable empty batch row (header-only CSV,
+    // empty register) and burn a permanent export number per click. Now it 400s BEFORE
+    // `allocateNumber`, preserving "consumes no number when the save fails".
+    const counterBefore = await prisma.setting.findUniqueOrThrow({ where: { key: "gl_export_batch_number_next" } });
+    await expect(asSystem(() => exportClose(period.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/nothing to export/i) });
+    expect(await prisma.glExportBatch.count()).toBe(1); // no empty batch row persisted
+    const counterAfter = await prisma.setting.findUniqueOrThrow({ where: { key: "gl_export_batch_number_next" } });
+    expect(counterAfter.value).toEqual(counterBefore.value); // the refusal precedes the allocation
   });
 
   it("stores a non-empty posting-register PDF with a stable page marker (Task 7)", async () => {
@@ -278,9 +285,10 @@ describe("gl-export delta", () => {
     const net = delta.postings.reduce((s, p) => s + (p.debit - p.credit), 0);
     expect(Math.round(net * 100)).toBe(0); // a balanced reversal
 
-    // A further re-export with nothing changed is empty again (the reversal itself is now prior).
-    const again = await asSystem(() => exportClose(period.id));
-    expect(again.postings.length).toBe(0);
+    // A further re-export with nothing changed is refused (#90) — the reversal itself is now prior,
+    // so the delta is empty and no batch row or number is spent recording that.
+    await expect(asSystem(() => exportClose(period.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/nothing to export/i) });
   });
 
   it("a reopen -> re-finalize WITHIN the month with a changed account emits reverse-then-repost, not a no-op", async () => {
@@ -316,9 +324,10 @@ describe("gl-export delta", () => {
     const net = delta.postings.reduce((s, p) => s + (p.debit - p.credit), 0);
     expect(Math.round(net * 100)).toBe(0);
 
-    // A further re-export with nothing changed is empty again (the reverse+repost is now the prior net).
-    const again = await asSystem(() => exportClose(period.id));
-    expect(again.postings.length).toBe(0);
+    // A further re-export with nothing changed is refused (#90) — the reverse+repost is now the
+    // prior net, so the delta is empty.
+    await expect(asSystem(() => exportClose(period.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/nothing to export/i) });
   });
 
   it("re-exporting an earlier month after a later one closed leaves the later month untouched", async () => {
@@ -356,9 +365,10 @@ describe("gl-export delta", () => {
     });
     expect(augRowsNow.map((r) => r.sourceId).sort()).toEqual(augPostingIds);
     expect(augRowsNow.every((r) => !r.isReversal)).toBe(true);
-    // And the August invoice's own posting was NOT reversed by the July re-export.
-    const augReExport = await asSystem(() => exportClose(august.id));
-    expect(augReExport.postings.length).toBe(0);
+    // And the August invoice's own posting was NOT reversed by the July re-export: August's delta
+    // is empty, which since #90 surfaces as the nothing-to-export refusal rather than an empty batch.
+    await expect(asSystem(() => exportClose(august.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/nothing to export/i) });
   });
 
   it("exporting a later month FIRST does not vacuum or double-post an earlier month's events", async () => {
@@ -414,8 +424,11 @@ describe("gl-export delta", () => {
     const july = await periodFor(2026, 7);
     const august = await periodFor(2026, 8);
 
-    const julyOut = await asSystem(() => exportClose(july.id));
-    expect(julyOut.postings.some((p) => p.sourceId === inv.invoiceId)).toBe(false);
+    // July holds NOTHING once the invoice recognizes by finalizedAt — since #90 an empty delta is
+    // the nothing-to-export refusal, which is itself the proof the invoice is out of July's scope
+    // (an invoiceDate scoping would have emitted it here and this line would fail).
+    await expect(asSystem(() => exportClose(july.id)))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/nothing to export/i) });
 
     const augOut = await asSystem(() => exportClose(august.id));
     expect(augOut.postings.some((p) => p.sourceId === inv.invoiceId)).toBe(true);
@@ -546,6 +559,41 @@ describe("gl-export summary file (ruling 9) and provenance (change D)", () => {
     );
     const batch = await prisma.glExportBatch.findUniqueOrThrow({ where: { id: out.batchId } });
     expect(batch.emittedById).toBe(user.id);
+  });
+});
+
+describe("gl-export create-audit payload (#93)", () => {
+  it("records the emitted summary journal on the glExportBatch create-audit row", async () => {
+    const gl = await seedGlDefaults();
+    await makeFinalizedInvoiceDated(gl, "2026-07-05", 100);
+    await makeFinalizedInvoiceDated(gl, "2026-07-20", 50);
+    await asSystem(() => closePeriod(2026, 7));
+    const period = await periodFor(2026, 7);
+
+    const out = await asSystem(() => exportClose(period.id));
+
+    // `auditedCreate` writes its `data` argument verbatim as the audit `after` (it never runs
+    // SNAPSHOT_INCLUDE), so what the row carries is exactly what `exportClose` hands it: the five
+    // scalars plus — #93 — the aggregated (account, side) SUMMARY journal the CSV and register
+    // print. Never the per-event lines and never the file/register bytes.
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entity: "glExportBatch", action: "create", entityId: out.batchId },
+    });
+    const after = entry.after as {
+      postingCount: number;
+      summary: { side: string; account: string; debit: number; credit: number }[];
+    };
+    // Two invoices collapse to ONE A/R line and ONE revenue line (first-occurrence order: each
+    // invoice pushes A/R before revenue, so A/R is always first). `account` is the frozen account
+    // number string the CSV itself prints.
+    expect(after.summary).toEqual([
+      { side: "SALES", account: "1200-AR", debit: 150, credit: 0 },
+      { side: "SALES", account: "4010-REV", debit: 0, credit: 150 },
+    ]);
+    expect(after.postingCount).toBe(4); // the per-event count stays alongside the summary
+    const dr = after.summary.reduce((s, l) => s + Math.round(l.debit * 100), 0);
+    const cr = after.summary.reduce((s, l) => s + Math.round(l.credit * 100), 0);
+    expect(dr).toBe(cr); // the audited journal balances, same as the batch it describes
   });
 });
 

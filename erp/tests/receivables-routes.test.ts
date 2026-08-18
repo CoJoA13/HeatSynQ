@@ -703,6 +703,17 @@ describe("GET /api/receivables/close/preliminary", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("400s a year above 9999 (the shared MAX_CLOSE_YEAR bound, #90)", async () => {
+    const viewer = await signInWith(["receivables.view"], "close-prelim-yr-max");
+    const res = await preliminaryRoute(
+      getReq("http://t/api/receivables/close/preliminary?year=10000&month=7", viewer), withParams({}),
+    );
+    expect(res.status).toBe(400);
+    // The refusal must be the designed bound naming the year — before #90 a five-digit year 400'd
+    // only by luck, downstream, on the garbage date string it produced (message naming `asOf`).
+    expect(((await res.json()) as { error?: string }).error).toMatch(/year/i);
+  });
 });
 
 describe("POST /api/receivables/close", () => {
@@ -736,6 +747,16 @@ describe("POST /api/receivables/close", () => {
       bodyReq("http://t/api/receivables/close", "POST", closer, { year: 26, month: 7 }), withParams({}),
     );
     expect(res.status).toBe(400);
+  });
+
+  it("400s a year above 9999 (the shared MAX_CLOSE_YEAR bound, #90)", async () => {
+    const closer = await signInWith(["receivables.edit", "action.close_ar_period"], "close-post-yr-max");
+    const res = await closeRoute(
+      bodyReq("http://t/api/receivables/close", "POST", closer, { year: 10000, month: 7 }), withParams({}),
+    );
+    expect(res.status).toBe(400);
+    // Must be the designed zod bound naming the year, not a lucky downstream date-parse failure.
+    expect(((await res.json()) as { error?: string }).error).toMatch(/year/i);
   });
 });
 
