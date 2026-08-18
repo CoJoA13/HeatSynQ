@@ -72,7 +72,14 @@ export default function RolesPage() {
       try {
         await api(`/api/admin/roles/${roleId}`, { method: "PUT", body: JSON.stringify({ permissions: next }) });
         await load();
-      } catch (e) { setError((e as Error).message); }
+      } catch (e) {
+        // The surcharges catch shape (§5.13: reload, then report): the reload also re-lands
+        // rolesRef, so a PUT that committed before its load() failed cannot leave the next
+        // queued toggle composing from a pre-PUT snapshot — the server-side revert this queue
+        // exists to stop (Task 8 review, minor 1).
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
     };
     saveQueue.current = saveQueue.current.then(run, run);
     return saveQueue.current;

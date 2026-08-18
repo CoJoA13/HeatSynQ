@@ -138,6 +138,19 @@ settlement is its commit/failure; nothing about a sibling's catch needs to finis
 preserves the existing §5.13 error ordering exactly and makes the cycle structurally impossible;
 plus the mandatory two-keys-both-failing regression test RED-first, and the two comment minors.
 
+**Task 8 (admin sweep + TemplateEditor)** — implementer `c88503e`/`3f9629c`/`77a6255`. Review:
+**Spec ✅ · Approved (round 1)**. The TemplateEditor data-loss fix traced correct through both
+settle sequences including the edges (the reapplyStashed no-bump proven safe; the templates
+deselect-bump and users Promise.all tear fix noted as beyond-the-letter improvements inside
+scope). Three minors: (1) roles' toggle catch lacked the surcharges rollback-reload — in-class
+(the PUT-ok/load-failed window leaves `rolesRef` composing the next toggle from a pre-PUT
+snapshot) — **controller-applied on-branch** with the precedent's exact shape; (2)
+**plan-mandated, for the owner's eyes in the PR body:** after an intervened 409, the next Save
+silently overwrites the other editor's version (the brief ordered freshen-plus-skip-banner,
+consistent with apply()'s pre-existing conflict-dismissal semantics — acceptable in a 1–5-user
+shop, recorded); (3) resolveSaveSettle pins a naming contract more than behavior — sanctioned
+by §0's no-per-page-harness rule, noted for calibration.
+
 **Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
 implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
 tree modification). Review: **Spec ✅ · Approved (round 1)**. Every dispatch-named trap checked
