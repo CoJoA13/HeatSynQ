@@ -1,10 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
+import { resolveFieldBlockerPanel } from "@/lib/field-blocker-panel";
 import { STEP_FIELD_TYPES, type StepFieldType } from "@/lib/step-field-constants";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 
@@ -27,6 +29,17 @@ export default function StepCodesPage() {
   // nothing consumed it — a field-def delete/type-change refusal showed only a count, no
   // discoverable blockers (spec §5.14). `defId`/`label` name the field the refusal named.
   const [fieldBlocked, setFieldBlocked] = useState<{ defId: string; label: string; list: Blocker[] } | null>(null);
+  // What the user has actually typed into a field-def Label/Unit input but not yet blurred, keyed
+  // by `${codeId}.${fieldIdx}.${column}` — composed with the server value at render time
+  // (`draftValue`), never written into `codes`/`codesRef` (the surcharges/page.tsx textDrafts
+  // pattern). Writing keystrokes into `codes` meant a load landing mid-word clobbered the typing,
+  // and — worse — the half-typed text sat in `codesRef`, which every queued field op composes its
+  // ENTIRE whole-array PUT from at run time, so an unrelated control's save could persist it.
+  // Cleared on selection change and when the field's own blur-save settles.
+  const [textDrafts, setTextDrafts] = useState<Record<string, string>>({});
+  function draftValue(key: string, serverValue: string): string {
+    return Object.hasOwn(textDrafts, key) ? textDrafts[key] : serverValue;
+  }
   const { permissions: perms, error: permsError } = usePermissions();
 
   // Gated per the permission each route actually enforces (part-fields.tsx / ReferenceTable.tsx
@@ -43,17 +56,50 @@ export default function StepCodesPage() {
   // Mirrors `codes` for the save queue to read at RUN time. A queued transform must see the field
   // set as it is when its turn comes, not as it was when the user clicked — see enqueueFieldOp.
   const codesRef = useRef<Code[]>([]);
+  // Named `latest`, not `gate` — this file also imports `gate` from permission-ui, and shadowing
+  // that binding would break every `gate(perms, ...)` call (the customers/page.tsx hazard); the
+  // same reasoning names `fieldBlockerGate` below.
+  const latest = useLatest();
+  // The codesRef landing (the surcharges/page.tsx rowsRef question, its Task 7 comment): the ref
+  // exists to hand a QUEUED run the freshest server truth, not to gate what the user sees, so a
+  // superseded load must still be allowed to land it — but landing on ARRIVAL order lets an older
+  // fetch resolving after a newer one rewind the ref to a PRE-mutation field set, and the next
+  // queued field op composes its ENTIRE array from the ref at run time (enqueueFieldOp), so it
+  // would persist the reverted set server-side — the PR #22 clobber reopened. The write is
+  // therefore applied-monotonic on the load ticket (makeMutationGate semantics): an early
+  // finisher of a superseded load still lands, an out-of-order straggler is dropped.
+  const codesRefGate = useMutationGate();
   const load = useCallback(async () => {
-    const [c, g] = await Promise.all([
-      api<Code[]>("/api/admin/step-codes?includeInactive=1"),
-      api<Gl[]>("/api/admin/reference/glAccount"),
-    ]);
-    setCodes(c); codesRef.current = c; setGls(g);
-  }, []);
+    const ticket = latest.next();
+    try {
+      const [c, g] = await Promise.all([
+        api<Code[]>("/api/admin/step-codes?includeInactive=1"),
+        api<Gl[]>("/api/admin/reference/glAccount"),
+      ]);
+      if (codesRefGate.accept(ticket)) codesRef.current = c;
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setCodes(c); setGls(g);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not surface an error over
+      // state a newer load has already refreshed — only a current load's failure reaches the
+      // caller's own handling.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest, codesRefGate]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
-  // A stale blocker panel from a previously selected code must not linger once selection moves on.
-  useEffect(() => { setBlocked(null); setFieldBlocked(null); }, [selected]);
+  // A stale blocker panel — and any in-progress Label/Unit typing — from a previously selected
+  // code must not linger once selection moves on. The gate bump is the load-bearing half of the
+  // #23 fix: it invalidates, at ISSUE time, a field-blocker GET still in flight for the old
+  // selection (the fetch itself is ticketed in `save`); without it the panel painted inside the
+  // NEW code's card naming the OLD code's field. `fieldBlockerGate` is referentially stable, so
+  // listing it never re-runs the effect.
+  const fieldBlockerGate = useLatest();
+  useEffect(() => {
+    setBlocked(null); setFieldBlocked(null); setTextDrafts({});
+    fieldBlockerGate.next();
+  }, [selected, fieldBlockerGate]);
 
   const current = codes.find((c) => c.id === selected) ?? null;
 
@@ -101,14 +147,17 @@ export default function StepCodesPage() {
         const message = (e as Error).message;
         setError(message);
         if (fieldCtx && e instanceof ApiError && e.status === 400 && isFieldGuardMessage(message)) {
-          try {
-            const list = await api<Blocker[]>(`/api/admin/step-codes/field-defs/${fieldCtx.defId}/blockers`);
-            setFieldBlocked({ defId: fieldCtx.defId, label: fieldCtx.label, list });
-          } catch {
-            // The plain error text above already explains the refusal; a failed blocker-list fetch
-            // just means no panel this time, not a worse error to report.
-            setFieldBlocked(null);
-          }
+          // Ticketed through the leaf (#23): the selection-change effect bumps the gate, so a
+          // blocker list resolving — or failing — after the user moved to another code lands as
+          // `undefined` and touches nothing; the panel state belongs to the new selection now.
+          // No bump is needed at this save's own clears (success path / else branch): the queue
+          // holds while this GET is awaited, so the selection change is the only racer.
+          const panel = await resolveFieldBlockerPanel(
+            fieldBlockerGate,
+            () => api<Blocker[]>(`/api/admin/step-codes/field-defs/${fieldCtx.defId}/blockers`),
+            fieldCtx,
+          );
+          if (panel !== undefined) setFieldBlocked(panel);
         } else {
           setFieldBlocked(null);
         }
@@ -146,19 +195,6 @@ export default function StepCodesPage() {
       }
       setError((e as Error).message);
     }
-  }
-
-  // Optimistic local edit for a field-def row (label/unit typing), mirroring part-fields.tsx's
-  // `editLocal` — the array index is a stable key while the user is only editing text, since add/
-  // remove/reorder always go straight to the server and reload rather than mutating locally.
-  function editFieldLocal(codeId: string, fieldIdx: number, patch: Partial<Field>) {
-    setCodes((cur) => {
-      const next = cur.map((c) => (
-        c.id !== codeId ? c : { ...c, fields: c.fields.map((f, i) => (i === fieldIdx ? { ...f, ...patch } : f)) }
-      ));
-      codesRef.current = next;
-      return next;
-    });
   }
 
   // Every field op replaces the whole field-def set, id-preserving — each field carries its own
@@ -220,22 +256,27 @@ export default function StepCodesPage() {
 
   function blurSaveLabel(codeId: string, fieldIdx: number, value: string) {
     const key = `${codeId}.${fieldIdx}.label`;
+    const clearDraft = () => setTextDrafts((d) => { const n = { ...d }; delete n[key]; return n; });
     const before = focused.current[key];
     const label = value.trim();
-    if (label === before?.trim()) return;
+    if (label === before?.trim()) { clearDraft(); return; }
     if (!label) {
       void load().catch(() => {});
       setError("Field label is required");
+      clearDraft();
       return;
     }
-    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, label } : f)));
+    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, label } : f)))
+      .finally(clearDraft);
   }
 
   function blurSaveUnit(codeId: string, fieldIdx: number, value: string) {
     const key = `${codeId}.${fieldIdx}.unit`;
+    const clearDraft = () => setTextDrafts((d) => { const n = { ...d }; delete n[key]; return n; });
     const before = focused.current[key];
-    if (value === before) return;
-    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, unit: value || null } : f)));
+    if (value === before) { clearDraft(); return; }
+    void enqueueFieldOp(codeId, (fields) => fields.map((f, i) => (i === fieldIdx ? { ...f, unit: value || null } : f)))
+      .finally(clearDraft);
   }
 
   return (
@@ -305,9 +346,10 @@ export default function StepCodesPage() {
                 {current.fields.map((f, i) => (
                   <tr key={f.id ?? i} className="border-t">
                     <td className="py-1">
-                      <input value={f.label} disabled={canEdit.disabled} title={canEdit.title}
+                      <input value={draftValue(`${current.id}.${i}.label`, f.label)}
+                             disabled={canEdit.disabled} title={canEdit.title}
                              onFocus={(e) => noteFocus(`${current.id}.${i}.label`, e.target.value)}
-                             onChange={(e) => editFieldLocal(current.id, i, { label: e.target.value })}
+                             onChange={(e) => setTextDrafts((d) => ({ ...d, [`${current.id}.${i}.label`]: e.target.value }))}
                              onBlur={(e) => blurSaveLabel(current.id, i, e.target.value)}
                              className="w-full rounded border px-2 py-1 disabled:bg-slate-100" />
                     </td>
@@ -326,9 +368,10 @@ export default function StepCodesPage() {
                       </select>
                     </td>
                     <td>
-                      <input value={f.unit ?? ""} disabled={canEdit.disabled} title={canEdit.title}
+                      <input value={draftValue(`${current.id}.${i}.unit`, f.unit ?? "")}
+                             disabled={canEdit.disabled} title={canEdit.title}
                              onFocus={(e) => noteFocus(`${current.id}.${i}.unit`, e.target.value)}
-                             onChange={(e) => editFieldLocal(current.id, i, { unit: e.target.value })}
+                             onChange={(e) => setTextDrafts((d) => ({ ...d, [`${current.id}.${i}.unit`]: e.target.value }))}
                              onBlur={(e) => blurSaveUnit(current.id, i, e.target.value)}
                              className="w-20 rounded border px-2 py-1 disabled:bg-slate-100" />
                     </td>
