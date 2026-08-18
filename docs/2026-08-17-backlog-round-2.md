@@ -202,7 +202,18 @@ Clear defects and one undelivered deliverable. Nothing here waits on the meeting
 
 ---
 
-## Group C — Shipping and order-status integrity · **#65, #52, #51, #41, #42, #44, #45, #46**
+## Group C — Shipping and order-status integrity · **#65, #52, #51, #41, #42, #44, #45, #46** · IN FLIGHT 2026-08-17 (`group-c-shipping-status`)
+
+> **Two owner rulings, 2026-08-17, taken at kickoff (recorded in spec §15).**
+> **#65 — void is reversal-aware.** Voiding the ORIGINAL of a live reversal pair is refused naming
+> the reversal (§5.14 shape; keeps the net ledger ≥ 0 by construction). Voiding the REVERSAL is the
+> blessed undo: it restores the `lineComplete` flags the reversal itself cleared — recorded at
+> reversal time, so a human's re-decision in between is respected — and recomputes status. Invoiced
+> pairs stay behind `refuseIfInvoiced`; unlock is their correction route.
+> **#52 — persist print-time coverage.** A whole-set ticket/BOL records which orders it covered at
+> print; the order hub lists only paper that actually named the order. Membership stays editable
+> after a print (freeze-membership was considered and rejected — the printed paper is not falsified
+> by a later addition; print a fresh BOL).
 
 **#65 is the one that matters**; the rest are papercuts that share the same screens.
 
@@ -315,11 +326,12 @@ Low individual value, but cheap in a batch and they are what the office actually
 
 ---
 
-## PARKED — the answers are BACK (2026-08-17) · awaiting the owner's go-ahead
+## PARKED — the answers are BACK (2026-08-17) · **ACTIONED same day on the owner's go-ahead**
 
 The annotated question list answered most of these the same day this file was written (HANDOFF §7
-item 2). **Still do not action them unprompted** — the dispositions below are the bookkeeper's
-answers mapped to issues, and turning any of them into work (or a close) is the owner's call.
+item 2), and the owner said go: **#70, #78, #76 are CLOSED** with their evidence (#78's acceptance
+is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for-agent`), #69 and
+#77 stay parked as below. **Q12 is RATIFIED** (spec §15): one step code per process.
 
 | # | Was waiting on | Answer 2026-08-17 → disposition |
 |---|---|---|
