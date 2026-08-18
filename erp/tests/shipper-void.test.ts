@@ -3,7 +3,8 @@ import { prisma, truncateAll, seedOrderGatePrereqs } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import {
-  createShipper, voidShipper, reverseShipper, removeOrderFromShipper, type ShipperDetail,
+  createShipper, voidShipper, reverseShipper, removeOrderFromShipper, getShipper,
+  type ShipperDetail,
 } from "@/server/shippers";
 import { storeDocument, getDocument } from "@/server/documents";
 import { addPartPrice } from "@/server/part-prices";
@@ -409,6 +410,19 @@ describe("voidShipper — reversal-aware (#65)", () => {
     await expect(asSystem(() => voidShipper(reversal.id, "x"))).rejects.toMatchObject({
       status: 400, message: expect.stringMatching(invoiceRefusal),
     });
+  });
+
+  // The detail's §5.16 signal: the shipment page renders Void disabled-with-title (naming the
+  // blocker) for an original with a live reversal — `voidShipper`'s refusal above stays the
+  // enforcement; this flag is the UI's honesty.
+  it("the detail carries the live reversal's packing-list number, cleared once the reversal voids", async () => {
+    const { original, reversal } = await reversedPair();
+    expect((await getShipper(original.id)).reversedByShipperNumber).toBe(reversal.shipperNumber);
+    // The reversal document itself always carries null (a reversal cannot be reversed), so its
+    // own Void button stays enabled — voiding a reversal is the blessed undo.
+    expect((await getShipper(reversal.id)).reversedByShipperNumber).toBeNull();
+    await asSystem(() => voidShipper(reversal.id, "mistaken reversal"));
+    expect((await getShipper(original.id)).reversedByShipperNumber).toBeNull();
   });
 
   // The pair-void lock shape (the shipper-reverse.test.ts claim-test technique): the competing

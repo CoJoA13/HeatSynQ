@@ -73,6 +73,11 @@ export type ShipperDetail = {
   /** Set when this shipment is a reversing shipment (§5.6): the id of the shipment it reverses.
    *  Its lines carry negative qty/weight, and a credit is built from it. */
   reversesShipperId: string | null;
+  /** The LIVE reversing shipment pointing AT this one, if any (#65): its packing-list number, so
+   *  the shipment page can render Void disabled naming the blocker (§5.16) — `voidShipper`'s own
+   *  refusal stays the enforcement. Always null on a reversal document itself (a reversal cannot
+   *  be reversed), so its Void stays enabled: voiding a reversal is the blessed undo. */
+  reversedByShipperNumber: number | null;
   deletedAt: string | null;
   orders: ShipperOrderDetail[];
 };
@@ -237,6 +242,15 @@ function auditPayload(args: {
 const DETAIL_INCLUDE = {
   customer: { select: { code: true, name: true, creditHold: true } },
   carrier: { select: { name: true } },
+  // #65: the live reversal pointing at this shipment, for `reversedByShipperNumber`. At most one
+  // can exist in honest data (a second full reversal fails the below-zero guard), but the query
+  // stays deterministic anyway: lowest packing-list number first, matching `voidShipper`'s refusal.
+  reversedBy: {
+    where: { deletedAt: null },
+    orderBy: { shipperNumber: "asc" },
+    take: 1,
+    select: { shipperNumber: true },
+  },
   orders: {
     orderBy: { position: "asc" },
     include: {
@@ -294,6 +308,7 @@ function toDetail(row: DetailRow, shipped: Map<string, ShippedTotal>): ShipperDe
     freightClass: row.freightClass, freightDescription: row.freightDescription,
     packageCount: row.packageCount, proNumber: row.proNumber, scacCode: row.scacCode,
     reversesShipperId: row.reversesShipperId,
+    reversedByShipperNumber: row.reversedBy[0]?.shipperNumber ?? null,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
     orders: row.orders.map((so) => ({
       id: so.id, orderId: so.orderId, orderNumber: so.order.orderNumber, sequence: so.sequence,

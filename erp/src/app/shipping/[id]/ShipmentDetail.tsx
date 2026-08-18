@@ -70,7 +70,13 @@ export type ShipperDetail = {
   freightTerms: FreightTermsValue;
   freightClass: string; freightDescription: string;
   packageCount: number | string | null;
-  proNumber: string; scacCode: string; deletedAt: string | null;
+  proNumber: string; scacCode: string;
+  /** The LIVE reversal pointing at this shipment, if any (#65): its packing-list number. Void
+   *  renders disabled naming it (§5.16); the server's `voidShipper` refusal is the enforcement.
+   *  Always null on a reversal document itself, so a reversal's own Void stays enabled — voiding
+   *  a reversal is the blessed undo. */
+  reversedByShipperNumber: number | null;
+  deletedAt: string | null;
   orders: ShipperOrder[];
 };
 
@@ -244,9 +250,16 @@ export function ShipmentDetail({ id }: { id: string }) {
     ? { allowed: false, disabled: true,
         title: `${shipper?.customerCode} · ${shipper?.customerName} is on credit hold — adding orders or changing lines requires the override_credit_hold action` }
     : editGate;
+  // #65: an original with a live reversal cannot void (the server refuses, naming the reversal) —
+  // the button says so up front (§5.16, disabled with the blocker as its title, never hidden). A
+  // reversal document's own `reversedByShipperNumber` is always null, so its Void stays enabled:
+  // voiding a reversal is the blessed undo.
   const voidGate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
-    : gateDo(perms, "void_shipper");
+    : shipper != null && shipper.reversedByShipperNumber !== null
+      ? { allowed: false, disabled: true,
+          title: `This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first` }
+      : gateDo(perms, "void_shipper");
 
   // Ticket printing (Task 18; spec §9's POST /api/shippers/[id]/print). Gated shipping.view like
   // the route; a voided shipment refuses NEW prints while stored ones stay downloadable (§5.6), so
