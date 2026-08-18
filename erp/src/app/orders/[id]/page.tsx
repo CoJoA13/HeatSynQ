@@ -223,7 +223,15 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     const res = await run();
     if (!mutations.accept(ticket)) return;
     const { order: fresh, warnings: w } = unwrapMutation(res);
-    setOrder(fresh);
+    // `travelerPrinted` merges MONOTONICALLY (Codex PR #141 round 5): a mutation dispatched
+    // before a traveler print commits can resolve after it, carrying a snapshot computed when the
+    // flag was still false — and a whole-detail swap would un-print it until reload. The fact
+    // only ever goes false → true (stored documents never delete, spec §5.6), so preserving a
+    // local true is exact under EVERY response ordering — the fixpoint the per-callback timing
+    // fixes could not reach.
+    setOrder((prev) => (prev?.travelerPrinted && !fresh.travelerPrinted
+      ? { ...fresh, travelerPrinted: true }
+      : fresh));
     setWarnings(w);
   }, [mutations]);
 

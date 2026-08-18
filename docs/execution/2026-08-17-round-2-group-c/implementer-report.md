@@ -499,3 +499,17 @@ closing the raw-write hole between the client contract (required lists) and the 
 
 **Gates:** 3166 tests / 184 files · `tsc`/`eslint`/`build` clean · `migrate status` clean on both
 DBs, zero drift · E2E **23/23**, exit 0, watched to completion.
+
+### Codex PR #141 round 5 — one P2, the #41 chain's fixpoint
+
+A mutation dispatched before a traveler print commits can resolve after `onPrinted`, carrying a
+detail snapshot computed while the flag was still false — and `applyMutation`'s whole-detail swap
+un-printed it until reload. Fixed at the MERGE POINT: `travelerPrinted` merges monotonically in
+`applyMutation` (the fact only ever goes false → true — stored documents never delete, §5.6), which
+is exact under EVERY response ordering — the fixpoint the per-callback timing fixes of rounds 3–4
+could not reach. Rounds 3→4→5 chased two chains (float arithmetic; the #41 state wiring) and both
+now end at fixpoints rather than patches — the convergence rule applied. The state-wiring chain is
+also a live instance of Group D's #31 stale-load class, worth citing when #31 is decided.
+
+**Gates:** 3166 tests / 184 files · `tsc`/`eslint`/`build` clean · E2E **23/23**, exit 0, watched.
+No vitest seam reaches the client merge (the batch's standing position); the E2E pass covers it.
