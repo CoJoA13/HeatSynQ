@@ -67,3 +67,39 @@ half the one-liner relies on.
    which means print's post-archive refresh now also clears the error banner on success where
    before only the mount path did. This is the processes/page.tsx-blessed §5.13 success-clear,
    ticket-gated; print's own failure path never calls `load`, so no live failure is erased by it.
+
+## Fix round 1 (review Important — CertificationsSection error conflation)
+
+**Finding.** `showLoadGap = loaded && !error` conflated two error sources: `createForLoad`'s catch
+writes the SAME shared `error` and does not reload, so a transient POST failure (network blip,
+500) permanently hid the §4.1 gap line and every "Create cert for Load N" button — before Task 6
+they stayed visible and a second click succeeded. A behavior change outside the raced window, and
+against §5.16 (disabled-with-reason, never hidden). The same conflation hit the empty-state copy's
+`!error` gate.
+
+**Choice: option (a), split the channels** — a new `loadError` state owned exclusively by `load()`
+(set on its gated failure path, cleared on its gated success), with `error` reverting to
+createForLoad's channel alone. Why (a) over (b): option (b)'s "buttons disabled while an error is
+set" would let a createForLoad failure disable its own retry button — with no reload in its catch,
+nothing would ever clear the error, so the retry the finding says to preserve would be dead until
+a page reload. (InvoicesSection does live with that shape for its single Create button, but this
+section's pre-existing second-click retry is exactly what the review flags as regressed.) Split
+channels keep the retry fully live: a create failure hides and disables nothing.
+
+**The minor, folded in.** `showLoadGap` is now gated on `loaded` alone: after a failed MOUNT (or
+refresh) load the gap block renders with its create buttons DISABLED and titled "Could not confirm
+which loads already have a cert — reload the page to try again" (permission reason takes
+precedence when `createGate` is itself the blocker) — nothing re-triggers `load` (its deps are
+fixed for the page's life), so disabled-with-reason is the honest state, not showing nothing.
+`loadError` renders in its own red banner beside `error`'s; the empty-state copy's gate is
+`loaded && !loadError`.
+
+**Known cosmetic residue (deliberate, noted for the reviewer):** under a failed mount load the gap
+line's counts read "· 0 certs" from the empty rows — directly beneath the red loadError banner and
+above buttons whose disabled reason says coverage could not be confirmed, so the state is named
+twice before the count could mislead; restyling the counts line for the error case would be scope
+creep. Under a failed REFRESH the rows (and counts) are the last successful load's — stale but
+real, buttons disabled with the same reason.
+
+**Gates.** `npx tsc --noEmit` exit 0; `npx eslint src/app/orders/[id]/CertificationsSection.tsx`
+exit 0.
