@@ -1,9 +1,10 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { AREAS, CRUD_ACTIONS, SPECIAL_ACTIONS } from "@/lib/permission-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
 
 type Role = { id: string; name: string; permissions: string[]; userCount: number };
 
@@ -20,11 +21,33 @@ export default function RolesPage() {
   const canEdit = gate(perms, "admin.edit");
   const canDelete = gate(perms, "admin.delete");
 
+  // Mirrors `roles` for save-time reads: a queued toggle must compose its payload from the
+  // FRESHEST known role, not the one captured when the checkbox was clicked (the
+  // step-codes/page.tsx `codesRef` precedent).
+  const rolesRef = useRef<Role[]>([]);
+  const latest = useLatest();
+  // The rolesRef landing (the step-codes/page.tsx codesRefGate shape): the ref exists to hand a
+  // QUEUED run the freshest server truth, not to gate what the user sees, so a superseded load
+  // must still be allowed to land it — but landing on ARRIVAL order lets an older fetch resolving
+  // after a newer one rewind the ref to a PRE-mutation permission set, and the next queued toggle
+  // composes its ENTIRE array from the ref at run time, so it would persist the reverted set
+  // server-side. The write is therefore applied-monotonic on the load ticket (makeMutationGate
+  // semantics): an early finisher of a superseded load still lands, a straggler is dropped.
+  const rolesRefGate = useMutationGate();
   const load = useCallback(async () => {
-    const data = await api<Role[]>("/api/admin/roles");
-    setRoles(data);
-    setSelected((cur) => (cur ? data.find((r) => r.id === cur.id) ?? null : null));
-  }, []);
+    const ticket = latest.next();
+    try {
+      const data = await api<Role[]>("/api/admin/roles");
+      if (rolesRefGate.accept(ticket)) rolesRef.current = data;
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setRoles(data);
+      setSelected((cur) => (cur ? data.find((r) => r.id === cur.id) ?? null : null));
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not clobber current state.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest, rolesRefGate]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   async function create() {
@@ -32,12 +55,27 @@ export default function RolesPage() {
       setNewName(""); await load(); } catch (e) { setError((e as Error).message); }
   }
 
-  async function toggle(permission: string) {
-    if (!selected) return;
-    const has = selected.permissions.includes(permission);
-    const next = has ? selected.permissions.filter((p) => p !== permission) : [...selected.permissions, permission];
-    try { await api(`/api/admin/roles/${selected.id}`, { method: "PUT", body: JSON.stringify({ permissions: next }) });
-      await load(); } catch (e) { setError((e as Error).message); }
+  // One at a time, composed inside the queued run (the surcharges/page.tsx saveQueue shape): each
+  // PUT carries the role's ENTIRE permission array, so composing from click-time state let two
+  // quick checks overlap — checking box A then box B before A's round trip landed made PUT#B
+  // replace the array WITHOUT A, silently reverting the first grant server-side. The queued run
+  // looks the role up from `rolesRef` at its OWN turn — after the previous save's load() has
+  // landed the ref — so overlapping toggles accumulate instead of clobbering.
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+
+  function toggle(roleId: string, permission: string): Promise<void> {
+    const run = async () => {
+      const role = rolesRef.current.find((r) => r.id === roleId);
+      if (!role) return;
+      const has = role.permissions.includes(permission);
+      const next = has ? role.permissions.filter((p) => p !== permission) : [...role.permissions, permission];
+      try {
+        await api(`/api/admin/roles/${roleId}`, { method: "PUT", body: JSON.stringify({ permissions: next }) });
+        await load();
+      } catch (e) { setError((e as Error).message); }
+    };
+    saveQueue.current = saveQueue.current.then(run, run);
+    return saveQueue.current;
   }
 
   async function remove(role: Role) {
@@ -97,7 +135,7 @@ export default function RolesPage() {
                         <td key={key} className="px-2 text-center">
                           <input type="checkbox" checked={selected.permissions.includes(key)}
                                  disabled={canEdit.disabled} title={canEdit.title}
-                                 onChange={() => toggle(key)} />
+                                 onChange={() => void toggle(selected.id, key)} />
                         </td>
                       );
                     })}
@@ -113,7 +151,7 @@ export default function RolesPage() {
                   <label key={key} className="flex items-center gap-2">
                     <input type="checkbox" checked={selected.permissions.includes(key)}
                            disabled={canEdit.disabled} title={canEdit.title}
-                           onChange={() => toggle(key)} />
+                           onChange={() => void toggle(selected.id, key)} />
                     {s.replaceAll("_", " ")}
                   </label>
                 );

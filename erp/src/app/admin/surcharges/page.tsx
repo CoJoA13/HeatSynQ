@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate, gateDo } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { useLatest } from "@/lib/use-latest";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { percentToDecimal, decimalToPercentText } from "@/lib/surcharge-percent";
 import {
   buildSurchargeBody as buildBody,
@@ -85,21 +85,33 @@ export default function SurchargesPage() {
   // `codesRef` precedent).
   const rowsRef = useRef<Surcharge[]>([]);
   const latest = useLatest();
+  // The rowsRef landing is applied-monotonic on the load ticket (makeMutationGate semantics, the
+  // step-codes/page.tsx codesRefGate shape): the ref exists to hand a QUEUED run the freshest
+  // server truth, not to gate what the user sees, so a superseded load must still be allowed to
+  // land it (the Task 7 intent, preserved — an early-arriving superseded response still lands) —
+  // but the old unconditional write was ARRIVAL-ordered while tickets are dispatch-ordered, so an
+  // older fetch resolving after a newer one rewound the ref to a PRE-mutation row set, and the
+  // next queued save composed its whole-row PUT from that reverted row. A late arrival that would
+  // regress a newer applied one is now dropped.
+  const rowsRefGate = useMutationGate();
   const load = useCallback(async () => {
     const ticket = latest.next();
-    const [r, g, sc] = await Promise.all([
-      api<Surcharge[]>("/api/admin/surcharges?includeInactive=1"),
-      api<Gl[]>("/api/admin/reference/glAccount"),
-      api<StepCodeOption[]>("/api/picklists/processStepCode"),
-    ]);
-    // rowsRef always takes this fetch's result, ticket or no: it exists to hand a QUEUED run the
-    // freshest server truth, not to gate what the user sees, so a superseded load must still land
-    // it (Task 7 re-review — a save queued between a superseded load and the load that supersedes
-    // it was composing from the PRE-save row instead). Only the rendered state below is gated.
-    rowsRef.current = r;
-    if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
-    setRows(r); setGls(g); setStepCodeOptions(sc);
-  }, [latest]);
+    try {
+      const [r, g, sc] = await Promise.all([
+        api<Surcharge[]>("/api/admin/surcharges?includeInactive=1"),
+        api<Gl[]>("/api/admin/reference/glAccount"),
+        api<StepCodeOption[]>("/api/picklists/processStepCode"),
+      ]);
+      if (rowsRefGate.accept(ticket)) rowsRef.current = r;
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setRows(r); setGls(g); setStepCodeOptions(sc);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not surface an error over
+      // state a newer load has already refreshed.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest, rowsRefGate]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   // A stale blocker panel — and any in-progress typing/kind draft — from a previously selected
@@ -115,10 +127,10 @@ export default function SurchargesPage() {
   // save #1; the click starts save #2 before #1 has returned. Serializing the requests is only
   // half of it: `save`/`toggleStepCode` below look their row up from `rowsRef.current` INSIDE the
   // queued run, not at call time, so save #2 composes against the row as it stands on ITS OWN
-  // turn — after `rowsRef.current` has been updated by save #1's `load()` fetch (or a later one
-  // still, if another load's fetch landed after it; `load()` writes the ref unconditionally on
-  // every completed fetch, never gated by the `useLatest` ticket that guards only the rendered
-  // state, so a queued run is never left composing from a pre-save ref — Task 7 re-review) —
+  // turn — after `rowsRef.current` has been updated by save #1's `load()` fetch (or a newer one
+  // still: the ref lands applied-monotonic on the load ticket, `rowsRefGate` above, so a queued
+  // run is never left composing from a pre-save ref and an out-of-order straggler can no longer
+  // rewind it — Task 7 re-review, tightened by Task 8) —
   // instead of the stale snapshot that existed when the click first fired. Shared by both
   // functions because they must serialize against EACH OTHER too: a rate edit and a step-code
   // toggle fired in quick succession are exactly as ordinary an overlap as two field saves.
@@ -237,18 +249,33 @@ export default function SurchargesPage() {
    *  confirm-guarded (`removeRow` above). The established `confirm()` idiom, worded plainly since
    *  the change is audited and therefore recoverable (re-entering the override on the customer
    *  recreates it), including for a live (non-deleted) customer reached from this admin panel. */
+  // Orders overlapping clears' blocker refetches (makeLatestGate, the step-codes fieldBlockerGate
+  // shape): the ticket is taken BEFORE the DELETE — the DELETE itself changes what the correct
+  // panel is, so a second clear must supersede the first's still-in-flight refetch from that
+  // moment, not from when its own refetch dispatches.
+  const blockerRefetchGate = useLatest();
   async function clearCustomerOverride(customerId: string, surchargeId: string, customerName: string, surchargeName: string) {
     if (!confirm(`Clear "${customerName}"'s override for "${surchargeName}"? They will bill at the plant rate instead.`)) {
       return;
     }
+    const ticket = blockerRefetchGate.next();
     try {
       await api(`/api/customers/${customerId}/surcharges`, {
         method: "DELETE", body: JSON.stringify({ surchargeId }),
       });
       setError(null);
+    } catch (e) {
+      // The DELETE's own failure is a mutation report, not a stale fetch — surfaced regardless.
+      setError((e as Error).message);
+      return;
+    }
+    try {
       const list = await api<Blocker[]>(`/api/admin/surcharges/${surchargeId}/blockers`);
+      if (!blockerRefetchGate.isCurrent(ticket)) return; // a newer clear owns the panel now
       if (list.length) { setBlocked((b) => (b ? { ...b, list } : b)); } else { setBlocked(null); }
     } catch (e) {
+      // F7: a superseded refetch's rejection must not clobber the newer clear's outcome.
+      if (!blockerRefetchGate.isCurrent(ticket)) return;
       setError((e as Error).message);
     }
   }
@@ -313,18 +340,22 @@ export default function SurchargesPage() {
 
             <label className="mb-2 block text-sm">
               Name
-              <input value={current.name} disabled={canEdit.disabled} title={canEdit.title}
+              {/* Routed through textDrafts exactly like rate/amount/minimumAmount/position — Name
+                  was the ONE text field still edited optimistically into rows/rowsRef, so
+                  mid-typing text sat in the ref and leaked into OTHER saves' whole-row PUT bodies
+                  (buildSurchargeBody falls back to row.name). */}
+              <input value={draftValue(`${current.id}.name`, current.name)}
+                     disabled={canEdit.disabled} title={canEdit.title}
                      onFocus={(e) => noteFocus(`${current.id}.name`, e.target.value)}
-                     onChange={(e) => setRows((cur) => {
-                       const next = cur.map((r) => (r.id === current.id ? { ...r, name: e.target.value } : r));
-                       rowsRef.current = next; return next;
-                     })}
+                     onChange={(e) => setTextDrafts((d) => ({ ...d, [`${current.id}.name`]: e.target.value }))}
                      onBlur={(e) => {
-                       const before = focused.current[`${current.id}.name`];
+                       const key = `${current.id}.name`;
+                       const clearDraft = () => setTextDrafts((d) => { const n = { ...d }; delete n[key]; return n; });
+                       const before = focused.current[key];
                        const name = e.target.value.trim();
-                       if (name === before?.trim()) return;
-                       if (!name) { void load().catch(() => {}); setError("Name is required"); return; }
-                       void save(current.id, { name });
+                       if (name === before?.trim()) { clearDraft(); return; }
+                       if (!name) { void load().catch(() => {}); setError("Name is required"); clearDraft(); return; }
+                       void save(current.id, { name }).finally(clearDraft);
                      }}
                      className="ml-2 w-full rounded border px-2 py-1 disabled:bg-slate-100" />
             </label>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate, gateDo } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 // Client-safe: the contract registry is pure declarations (spec §5.3 — the editor imports it),
 // no src/server import. `contractFor(dt).name` is the single source of truth for each docType's
@@ -52,31 +53,59 @@ export default function TemplatesPage() {
   const consequentialDisabled = canEdit.disabled || editTemplates.disabled;
   const consequentialTitle = canEdit.disabled ? canEdit.title : editTemplates.title;
 
+  // Rows-list gate (the surcharges/page.tsx load shape): refresh()/createTemplate/removeTemplate
+  // refire load() with the buttons un-disabled, so overlapping list loads used to land in
+  // arrival order.
+  const rowsLatest = useLatest();
   const load = useCallback(async () => {
-    setRows(await api<ListRow[]>("/api/templates"));
-  }, []);
+    const ticket = rowsLatest.next();
+    try {
+      const data = await api<ListRow[]>("/api/templates");
+      if (!rowsLatest.isCurrent(ticket)) return; // a slower, now-superseded load lost the race
+      setRows(data);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not clobber current state.
+      if (!rowsLatest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [rowsLatest]);
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
 
+  // ONE shared gate for EVERY writer of `detail` — the selection effect below and loadDetail (the
+  // post-mutation refresh path). loadDetail used to be ungated: publish A then click B, and
+  // loadDetail(A)'s late response repainted A's pane under B's highlighted row — "always targets
+  // the open detail's id" was only true at dispatch time, not response time. On the shared gate a
+  // newer selection automatically invalidates any in-flight post-mutation detail refresh.
+  const detailLatest = useLatest();
   const loadDetail = useCallback(async (id: string) => {
-    setDetail(await api<Detail>(`/api/templates/${id}`));
-  }, []);
-  // §5.13 stale-gate (the QuoteDetail precedent): selecting A then B before A's detail lands must
-  // not let A's response overwrite B — every lifecycle/rename/delete handler acts on `detail.id`,
-  // so a stale adopt would aim publish/rename/DELETE at the wrong template. Only the latest
-  // selection's response is adopted; an abandoned effect instance's response and error are ignored,
-  // and success never clears the error banner (§5.13 — a reload must not erase a live failure). The
-  // post-mutation refresh path keeps using `loadDetail` (it always targets the open detail's id).
+    const ticket = detailLatest.next();
+    try {
+      const d = await api<Detail>(`/api/templates/${id}`);
+      if (!detailLatest.isCurrent(ticket)) return; // selection moved on — the pane is theirs now
+      setDetail(d);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded refresh's rejection must not clobber current state.
+      if (!detailLatest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [detailLatest]);
+  // §5.13 stale-gate: selecting A then B before A's detail lands must not let A's response
+  // overwrite B — every lifecycle/rename/delete handler acts on `detail.id`, so a stale adopt
+  // would aim publish/rename/DELETE at the wrong template. Ticketed on the SAME gate as loadDetail
+  // (replacing the old effect-scoped `stale` flag) so the two writers of `detail` order against
+  // each other; success never clears the error banner (§5.13 — a reload must not erase a live
+  // failure), and deselecting bumps the gate so an in-flight detail fetch cannot repaint a pane
+  // the user just closed.
   useEffect(() => {
     setBlocked(null);
     setRenaming("");
+    const ticket = detailLatest.next();
     if (selected === null) { setDetail(null); return; }
     setDetail(null);
-    let stale = false;
     api<Detail>(`/api/templates/${selected}`)
-      .then((d) => { if (!stale) setDetail(d); })
-      .catch((e) => { if (!stale) setError((e as Error).message); });
-    return () => { stale = true; };
-  }, [selected]);
+      .then((d) => { if (detailLatest.isCurrent(ticket)) setDetail(d); })
+      .catch((e) => { if (detailLatest.isCurrent(ticket)) setError((e as Error).message); });
+  }, [selected, detailLatest]);
 
   // Every mutation reloads BOTH the list (badges/counts) and the open detail (lifecycle state),
   // then reports on failure — rolling back to server truth first is unnecessary here because

@@ -4,6 +4,7 @@ import { api } from "@/lib/fetcher";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
 import { gateDo } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
@@ -37,10 +38,27 @@ export default function UsersPage() {
   // route.ts) requires this same special action — disabled with a tooltip, never hidden (§5.16).
   const manageUsersGate = gateDo(perms, "manage_users");
 
+  // Ticket-gated load (the surcharges/page.tsx load shape): patch()/create() refire this per row
+  // interaction, so overlapping loads used to land in arrival order — a toggled checkbox visibly
+  // reverted while the server held the new value. ONE ticket covers BOTH fetches (Promise.all),
+  // so users and roles can never tear across two loads' snapshots either.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    setUsers(await api<User[]>("/api/admin/users"));
-    setRoles(await api<Role[]>("/api/admin/roles"));
-  }, []);
+    const ticket = latest.next();
+    try {
+      const [u, r] = await Promise.all([
+        api<User[]>("/api/admin/users"),
+        api<Role[]>("/api/admin/roles"),
+      ]);
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setUsers(u); setRoles(r);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not surface an error over
+      // state a newer load has already refreshed.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   async function create() {
