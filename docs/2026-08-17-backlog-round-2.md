@@ -284,7 +284,28 @@ Fix them as one sweep with one idiom. Fixing them one at a time is how the class
 
 ---
 
-## Group E — Close, GL export and concurrency tripwires · **#88, #93, #90, #132, #95** + unparked **#73, #80** + ruled **#139, #140**
+## Group E — Close, GL export and concurrency tripwires · **MERGED as `2d9247c` (PR #142, squash, 2026-08-18)**
+
+All nine closed by the PR — #88, #93, #90, #132, #95, unparked #73/#80, ruled #139/#140 — with
+**no schema migration anywhere in the group**. Seven implementation tasks, seven task reviews,
+**all Approved on round 1 with zero implementer fix-rounds** (five controller minors on-branch);
+gates on the final tree **3212 tests / 185 files**, `tsc`/`eslint`/`build` clean, E2E **23/23**,
+CI green on the first run, and **Codex posted no review** (a first). Ledger:
+`docs/execution/2026-08-18-round-2-group-e/`.
+
+**What went past the issue text:**
+- **#139's lock argument was the brief's own flaw** (the review's one Important): the six doors'
+  Serializable snapshots fix at the stub read, so the pair check is stale-read-prone. Controller
+  ruling, recorded: the four ledger-relevant doors are closed DETERMINISTICALLY by SSI, and the
+  container/serial window is **accepted as commit-order semantics** (serial-equivalent to
+  edit-before-reverse; the reversal clones lines only) on the §5.1 publish precedent. The
+  deterministic close is named in the PR body if the letter is ever wanted.
+- **#90's P2002 scoping was independently swept** across all eight allocating transactions — the
+  nonce writers replay in-attempt, every number is serialized by the counter claim, nothing else
+  reachable carries a unique.
+- **#132's sidecar survived the deliberate 8C-style shell reading** — `RETENTION_ERR` is built
+  from fixed glob literals, so the sidecar JSON has no reachable corruption path.
+- **#95's two downgrades were both watched RED** (both-commit orphans) before restore.
 
 **Four late additions, all with rulings or answers in hand:** #73 (Q16 — build the `receivedDate ≤
 today` guard) and #80 (Q18 — posting refuses when a batch doesn't foot) from the accounting
@@ -382,9 +403,10 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ## Recommended order
 
 ~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ →
-~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, PR #141 open 2026-08-18)~~ →
-**E** (close + GL + tripwires — now also #73 and #80, unparked from the accounting answers) ←
-**NEXT when asked** → **D** (stale-load, after the #31 decision) → **F** → **G**/**H** as filler.
+~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, merged `4cada64`)~~ →
+~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
+**D** (stale-load — **OPENS with the #31 owner decision**) ← **NEXT when asked** → **F** →
+**G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across
