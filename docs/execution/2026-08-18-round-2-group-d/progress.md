@@ -117,6 +117,12 @@ InvoicesSection precedent actually keeps the control rendered and disables it wi
 (§5.16). Fix round dispatched: split the load-failure channel from the create-failure channel,
 or follow InvoicesSection literally, folding in the disabled-with-reason treatment for the
 failed-mount case. The commit-boundary split was independently verified byte-identical.
+**Fix round 1 (`a54b648`) → Approved.** Option (a) — split channels — with the implementer's
+rationale verified on its merits (option (b) would have let a create failure disable its own
+retry with nothing ever clearing it). `loadError` owned exclusively by the gated load (grep-
+audited: two writers each channel), §5.16 disabled-with-reason on load failure with the
+permission reason taking precedence, no affirmative empty-state from unverified data, the
+sweep's own gate untouched. The counts-line residue accepted as cosmetic-and-signposted.
 
 **Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
 implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
