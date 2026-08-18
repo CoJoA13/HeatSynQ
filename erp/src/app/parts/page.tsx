@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { PasteGrid } from "@/components/PasteGrid";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PART_PASTE_COLUMNS } from "@/lib/part-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -75,6 +76,8 @@ export default function PartsPage() {
       // eachWeight is sent as the string the user typed — the service's decimalField zod
       // schema accepts a decimal string directly, no client-side parseFloat needed.
       await api("/api/parts", { method: "POST", body: JSON.stringify(draft) });
+      // #110: the first part completes a banner readiness step (#124/#131 ordering: before load()).
+      invalidateSetupBanner();
       setDraft({ customerId: "", partNumber: "", eachWeight: "" });
       setError(null);
       await load();
@@ -156,7 +159,9 @@ export default function PartsPage() {
       </table>
 
       {pasting && (
-        <PasteGrid endpoint="/api/parts/paste" columns={[...PART_PASTE_COLUMNS]} onDone={load} />
+        // #110: PasteGrid fires onDone only after a successful POST.
+        <PasteGrid endpoint="/api/parts/paste" columns={[...PART_PASTE_COLUMNS]}
+                   onDone={() => { invalidateSetupBanner(); void load(); }} />
       )}
     </div>
   );

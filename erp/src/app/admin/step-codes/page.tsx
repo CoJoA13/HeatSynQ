@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { resolveFieldBlockerPanel } from "@/lib/field-blocker-panel";
 import { STEP_FIELD_TYPES, type StepFieldType } from "@/lib/step-field-constants";
 import { gate } from "@/lib/permission-ui";
@@ -170,6 +171,8 @@ export default function StepCodesPage() {
   async function add() {
     try {
       await api("/api/admin/step-codes", { method: "POST", body: JSON.stringify(draft) });
+      // #110: the first step code completes the banner's `stepCodes` readiness step (#124/#131 ordering: before load()).
+      invalidateSetupBanner();
       setDraft({ code: "", name: "" }); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
   }

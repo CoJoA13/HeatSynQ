@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { GateNotice } from "@/lib/report-ui";
@@ -39,6 +40,11 @@ export function SetupChecklist() {
     setError(null);
     try {
       await api<unknown>("/api/setup/state", { method: "PUT", body: JSON.stringify(body) });
+      // #110: the shell banner fetches readiness once per session, and a confirm/dismiss moves
+      // that signal — fired the instant the PUT resolves, BEFORE the follow-up load (the
+      // #124/#131 ordering: the server state has certainly changed by now, and a transiently
+      // failing load() must not skip the signal). Success path only: a failed PUT writes nothing.
+      invalidateSetupBanner();
       load();
     } catch (e) {
       setError((e as Error).message);
