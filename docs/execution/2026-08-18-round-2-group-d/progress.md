@@ -120,4 +120,11 @@ failed-mount case. The commit-boundary split was independently verified byte-ide
 
 **Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
 implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
-tree modification). Review: pending.
+tree modification). Review: **Spec ✅ · Approved (round 1)**. Every dispatch-named trap checked
+out at the cited lines (mousedown-preventDefault keeps selectResult alive past the blur-bump;
+the two Shell gates share no sequence; HistoryPanel's loading-status early return means stale
+entries never render under a new heading; ReferenceTable's always-resolving load closes a
+remove() misattribution the brief didn't even ask for). The AttachmentsSection
+no-clear-on-success deviation ruled §5.13-correct. Three minors: two accepted trades noted for
+the record; the third (a handler-side `setError(null)` still lets a delete's success clear a
+concurrent upload failure) added to the Task 9 filing list.

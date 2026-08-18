@@ -24,6 +24,9 @@ Four files share one shape-family: a secondary fetch reports into a channel anot
   clears `error`, so a superseded search failure's banner persists over fresh rows (the file's own
   F7 comment calls that state a bug). Note the trade before fixing: clearing on load success
   opens the narrow add()-failure-wipe window the detail page accepted (its :229–235).
+- `src/components/AttachmentsSection.tsx:101` (post-Task-5 line) — the Task 5 review's minor 3:
+  the handler-side `setError(null)` on delete success still wipes a concurrent upload's failure
+  banner (Task 5's load-side deviation closed only the reload half of that window).
 
 ## 2. Missing in-flight guards on mutation controls (the `togglingActive` family)
 
