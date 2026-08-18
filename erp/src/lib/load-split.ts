@@ -7,7 +7,7 @@
 // every value — including the rounding-absorbing last one — clean, and keeps the underlying cents
 // exactly summing to the total by construction.
 
-import { INT4_MAX } from "./order-constants";
+import { INT4_MAX, LOAD_WEIGHT_MAX } from "./order-constants";
 
 export type LoadSplit = { qty: number; weight: number };
 
@@ -18,10 +18,6 @@ export type LoadSplit = { qty: number; weight: number };
  *  run and counting — the whole point is refusing before the memory is ever touched. */
 export const MAX_LOADS = 10_000;
 
-/** #42: `Load.weight`'s own column ceiling — DECIMAL(12,2) (schema.prisma), ten integer digits
- *  and two fractional. The manual editor already refuses past it (`decimalField(12, 2)`,
- *  order-loads.ts); this is the same bound for the GENERATED loads below. */
-export const LOAD_WEIGHT_MAX = 9_999_999_999.99;
 
 const fmtQty = (n: number) => n.toLocaleString("en-US");
 const fmtWeight = (n: number) =>

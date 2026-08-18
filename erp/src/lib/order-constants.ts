@@ -24,3 +24,10 @@ export const ORDER_STATUS_LABELS: Record<OrderStatusValue, string> = {
 // second can hit the other in the temporal dead zone and throw at import. A zero-import leaf
 // (the `errors.ts`/`order-locks.ts` precedent) can never be on the wrong side of that.
 export const INT4_MAX = 2_147_483_647;
+
+/** `Load.weight`'s own column ceiling — DECIMAL(12,2) (schema.prisma): ten integer digits, two
+ *  fractional. Stated ONCE, here beside `INT4_MAX` (#42 review round 1, minor 1): the generated-
+ *  load guard (`load-split.ts`) reads this constant, and the manual editor's `decimalField(12, 2)`
+ *  (order-loads.ts) encodes the same fact structurally — both sides are test-pinned, so a schema
+ *  widening that forgets one of them goes red rather than silently drifting. */
+export const LOAD_WEIGHT_MAX = 9_999_999_999.99;

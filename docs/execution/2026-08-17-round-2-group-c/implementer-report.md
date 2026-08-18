@@ -390,3 +390,19 @@ orders.ts:654 → ~841 (nested loads create) with `runSplitLoads` at ~803; LINE_
 at :256; orders/new/page.tsx:794 → ~989 (Save & Print), saveGate at :294; app/page.tsx:98 →
 :95-98. No issue was found already-fixed; all six defects were live (and #42's two overflow
 repros produced the predicted unmapped P2020 in RED).
+
+### #42 + UI papercuts review round 1 (task-reviewer) + minors disposition
+
+**Verdict: Spec Compliance ✅ · Task quality Approved.** Zero Critical, zero Important — the third
+Approved-on-round-1 verdict of the group. The reviewer independently confirmed the #42 guard covers
+every generated-load door with no bypass (`splitLoads`' both return paths; the only two `Load`
+writers are fed by the guarded seam or the already-guarded zod parse), the §5.16 shape keeps the
+primary refusal primary, #46 exposes exactly the board's `{code, name}` pair and nothing wider, and
+#51's sibling scan found the component's other async paths already `useLatest`-gated.
+
+**Minors:** (1) the twice-stated weight cap is consolidated — `LOAD_WEIGHT_MAX` moved to
+`order-constants.ts` beside `INT4_MAX`, stated once with the drift argument in its comment (both
+sides remain test-pinned); 187 tests across the three affected files re-run green, `tsc`/`eslint`
+clean. (2) float dust at the exact multi-line weight ceiling (~2×10⁻⁶ lb at a ten-billion-pound
+load) — recorded, no action: inherent to the codebase's existing float-weight handling and below
+any physical meaning. (3) the #41 same-visit residual is implementer-documented, by design.
