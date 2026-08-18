@@ -279,7 +279,14 @@ Fix them as one sweep with one idiom. Fixing them one at a time is how the class
 
 ---
 
-## Group E — Close, GL export and concurrency tripwires · **#88, #93, #90, #132, #95**
+## Group E — Close, GL export and concurrency tripwires · **#88, #93, #90, #132, #95** + unparked **#73, #80** + ruled **#139, #140**
+
+**Four late additions, all with rulings or answers in hand:** #73 (Q16 — build the `receivedDate ≤
+today` guard) and #80 (Q18 — posting refuses when a batch doesn't foot) from the accounting
+answers; #139 (**freeze the pair** — any edit to either side of a live reversal pair refused; the
+second-reversal creation guard already landed on PR #141, the edit-mutator guards remain) and #140
+(**coverage-precise removal block** — refuse only when printed paper names the order) from the
+2026-08-18 rulings. All four are `ready-for-agent`.
 
 - **#88 — RULED by the owner 2026-08-17: option (c), surface a broken-chain flag.** `listClosePeriods`
   flags any closed month whose `beginningAr` no longer equals the prior month's `endingAr`; the operator

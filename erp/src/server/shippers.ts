@@ -1750,7 +1750,17 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
       const original = await tx.shipper.findFirst({
         where: { id: shipper.reversesShipperId }, select: { id: true, deletedAt: true },
       });
-      if (original !== null && original.deletedAt === null) {
+      // Corrupt-data belt (Codex PR #141 round 2): if ANOTHER live reversal of the same original
+      // still stands, restoring would re-mark flags that reversal semantically owns — so skip, and
+      // let the recompute below derive from the still-cleared flags (honest PARTIAL_SHIPPED while
+      // a live reversal stands). Unreachable through the product since reverseShipperInTx's 3b
+      // refusal (at most one live reversal per original, enforced); this branch exists for data
+      // that predates it. The target is already soft-deleted above, so this live query never
+      // matches the reversal being voided.
+      const siblingReversal = original === null ? null : await tx.shipper.findFirst({
+        where: { reversesShipperId: original.id, deletedAt: null }, select: { id: true },
+      });
+      if (original !== null && original.deletedAt === null && siblingReversal === null) {
         const toRestore = (await tx.shipperLine.findMany({
           where: { id: { in: shipper.reversalClearedLineIds }, lineComplete: false },
           select: { id: true },
@@ -1874,6 +1884,23 @@ async function reverseShipperInTx(
   if (!original || original.deletedAt !== null) throw new HttpError(404, "Shipment not found");
   if (original.reversesShipperId !== null) {
     throw new HttpError(400, "That shipment is itself a reversal — reverse the original shipment instead");
+  }
+  // 3b. AT MOST ONE live reversal per original — enforced, not incidental (Codex PR #141 round 2;
+  //     the first slice of the 2026-08-18 freeze-the-pair ruling, #139). A second full reversal of
+  //     the same original is never honest paper (it un-ships the same goods twice), and the
+  //     below-zero guard below only catches it INCIDENTALLY — another live shipment's quantity on
+  //     the same lines lets it through, whereupon the second reversal snapshots [] (the flags were
+  //     already cleared) and the void-restore's semantics break: voiding the FIRST reversal would
+  //     restore flags the still-live second reversal semantically owns. This refusal is what makes
+  //     `reversalClearedLineIds` exact. Read under the claim (original's row is locked above).
+  const priorReversal = await tx.shipper.findFirst({
+    where: { reversesShipperId: id, deletedAt: null },
+    select: { shipperNumber: true }, orderBy: { shipperNumber: "asc" },
+  });
+  if (priorReversal) {
+    throw new HttpError(400,
+      `This shipment has already been reversed by Packing List ${priorReversal.shipperNumber} — ` +
+      "void that reversal first");
   }
   for (const so of original.orders) {
     const order = ordersById.get(so.orderId);

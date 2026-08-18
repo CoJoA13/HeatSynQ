@@ -989,7 +989,10 @@ Fedora-specific notes:
 > `group-c-shipping-status`: all eight (#65, #52, #42, #41, #44, #45, #46, #51), two kickoff
 > rulings in spec §15 (#65 void-is-reversal-aware, #52 persist-print-time-coverage), two
 > migrations, three reviews ALL Approved on round 1, gates 3161 tests / 184 files + E2E 23/23.
-> Filed en route: #139, #140. **Next when asked: Group E**, which now also carries #73 and #80.
+> Filed en route: #139, #140 — **both RULED 2026-08-18** (freeze the pair; coverage-precise
+> removal block; spec §15) with #139's first slice — the second-reversal creation guard, a Codex
+> round-2 finding whose bypass was RED-proven — landed on the PR itself. **Next when asked:
+> Group E**, which now carries #73, #80, #139 and #140 alongside its own five.
 >
 > Round 1's own record stays at `docs/2026-08-16-issue-burndown-handoff.md` — read its closing
 > "outlives it" section before starting, especially lesson 4 (when each review round finds defects in

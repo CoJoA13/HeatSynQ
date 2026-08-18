@@ -428,3 +428,27 @@ the flows exercising this diff already PASSED in-run. Consistent with a system s
 killing the Playwright session, not a code hang. `close-month-end` had completed and self-cleaned
 (zero `ClosePeriod`/`GlExportBatch` debris — verified before touching anything), so the documented
 hand-DELETE was NOT needed; the tree was killed and the fresh re-run passed 23/23.
+
+### Codex PR #141 round 2 — the double-reversal finding, plus two owner rulings
+
+**The finding (P2, real, RED-proven):** the #65 review had judged two live reversals of one
+original "unreachable in honest data" via the below-zero guard — Codex constructed the bypass: a
+sibling live shipment's quantity on the same line keeps the arithmetic ≥ 0 through a SECOND
+reversal of the same original, which then snapshots `[]` (the flags were already cleared), and
+voiding the FIRST reversal restores flags the still-live second semantically owns. The RED run
+proved it: with the new guard disabled, the second reversal genuinely SUCCEEDED.
+
+**The fix follows the owner's same-day freeze-the-pair ruling (#139, spec §15):** at most ONE live
+reversal per original, ENFORCED at creation — `reverseShipperInTx` step 3b refuses a second
+reversal naming the first ("void that reversal first") — plus a corrupt-data belt in the restore
+(skip when another live reversal of the original still stands; recompute still runs, honest
+PARTIAL_SHIPPED). The old "refuses to drive a line below zero" test converted to pin the new guard
+with the bypass fixture (it now proves the guard, not the arithmetic accident), and the below-zero
+belt got its own direct pin via a raw negative-line fixture — with the invariant enforced, no
+product path reaches that guard any more, which is exactly why it stays as spec §5.6's belt.
+
+**Rulings recorded the same round:** #139 freeze-the-pair (edit-mutator guards on both sides →
+Group E) and #140 coverage-precise removal block (→ Group E); both issues commented, relabeled
+`ready-for-agent`, spec §15 rows added.
+
+**Gates on the fixed tree:** 3164 tests / 184 files · `tsc`/`eslint` clean · E2E **23/23**, exit 0 (watched to completion).

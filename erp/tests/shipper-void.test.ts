@@ -473,6 +473,31 @@ describe("voidShipper — reversal-aware (#65)", () => {
     expect((await getShipper(original.id)).reversedByShipperNumber).toBeNull();
   });
 
+  // Codex PR #141 round 2, the corrupt-data belt: two live reversals of one original are refused
+  // at CREATION now (shipper-reverse.test.ts pins the guard), so this state is hand-built raw —
+  // what a database predating that guard could hold. Voiding one reversal must NOT restore flags
+  // the OTHER still semantically owns; the recompute still runs and derives from the cleared
+  // flags — honest PARTIAL_SHIPPED while a live reversal of the original stands.
+  it("with two live reversals of one original (pre-guard data), voiding one restores nothing", async () => {
+    const { order, original, reversal } = await reversedPair();
+    // A bare live Shipper row pointing at the same original is all the belt reads
+    // (`reversesShipperId` + `deletedAt`); children are irrelevant to it.
+    await prisma.shipper.create({
+      data: {
+        shipperNumber: 999_999, customerId: original.customerId,
+        shipDate: new Date("2026-08-04"), reversesShipperId: original.id,
+      },
+      select: { id: true },
+    });
+
+    await asSystem(() => voidShipper(reversal.id, "mistaken reversal"));
+
+    const originalLineId = original.orders[0].lines[0].id;
+    expect((await prisma.shipperLine.findUniqueOrThrow({ where: { id: originalLineId } })).lineComplete)
+      .toBe(false);
+    expect((await getOrder(order.id)).status).toBe("PARTIAL_SHIPPED");
+  });
+
   // Codex PR #141 review: on an invoiced pair the reversal-blocker title would send the operator
   // at "void the reversal first" — an action `refuseIfInvoiced` ALSO refuses. So the detail
   // carries the §5.7 freeze as `voidShipper`'s own refusal sentence, pre-worded server-side
