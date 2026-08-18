@@ -303,7 +303,7 @@ describe("postBatch — refuses an un-footed control total (#80)", () => {
     expect((await prisma.receiptBatch.findUnique({ where: { id: batch.id } }))!.status).toBe("OPEN");
   });
 
-  it("refuses an over-entered batch — the difference is the absolute value, the figures say which way", async () => {
+  it("refuses an over-entered batch — absolute difference, and the remedy flips to void-the-extra", async () => {
     const batch = await openBatch("100.00");
     const customer = await makeCustomer();
     const paymentType = await makePaymentType();
@@ -312,6 +312,10 @@ describe("postBatch — refuses an un-footed control total (#80)", () => {
     await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
       status: 400,
       message: expect.stringContaining("control total 100.00, payments entered 300.00 (difference 200.00)"),
+    });
+    // Over-entered wants the extra payment voided, not more payments keyed (review r1 minor).
+    await expect(asSystem(() => postBatch(batch.id))).rejects.toMatchObject({
+      message: expect.stringContaining("Void the extra payment,"),
     });
   });
 

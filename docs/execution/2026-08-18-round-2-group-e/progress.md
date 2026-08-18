@@ -36,3 +36,19 @@ Branch `group-e-close-gl`, base `ed55ffe`. Brief committed first (`62149da`).
     unchanged and pinned. Owner-taste; noted for the PR body. (2) `?? "?"` fallback reachable
     only via test-only hard deletes; matches file idiom.
   - E2E owed at group end (UI touched: ShipmentDetail gate + banner) — scheduled in the brief.
+
+## Task 2 — #73 future received dates + #80 un-footed batch posts
+
+- **Implemented** `685417a` (report `f3d8e8e`). Guard at the sole `receivedDate` writer with one
+  clock sample; foot check off the claimed row's `controlTotal` in `toBatchDetail`'s own integer
+  cents; UI `max` on the date input. Targeted gates 136 green, tsc/eslint clean.
+- **Review round 1: Spec ✅ · Approved.** Sole-writer, same-claim, timezone (UTC-midnight both
+  sides; west-of-UTC evening entry accepted) and SSI read-set-only-widens arguments all
+  independently verified. Four minors, none blocking.
+  - **Minor 1 fixed on-branch (controller):** the remedy sentence was under-entry-shaped even for
+    an over-entered batch — first clause now direction-aware ("Void the extra payment" vs "Enter
+    the missing payments"), pinned by the over-entered test.
+  - Minors 2–4 accepted as-is: refusal-only assertions on three #80 cases (one code path, the
+    under case pins OPEN); a sub-millisecond midnight-straddle flake window in the tomorrow test
+    (same class as the suite's existing today-based tests); UI `max` staleness across UTC
+    midnight on an unrefreshed page (server is the authority).
