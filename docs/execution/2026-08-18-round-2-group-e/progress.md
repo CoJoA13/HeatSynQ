@@ -107,3 +107,25 @@ Branch `group-e-close-gl`, base `ed55ffe`. Brief committed first (`62149da`).
   - Minor 2 recorded as a design assumption: a standing ok:false sidecar has no writer to clear
     it if the nightly were ever decommissioned — unreachable in the shipped deploy.
   - Minor 3 (cosmetic type inconsistency in a test helper) accepted.
+
+## Task 7 — #95 SSI tripwires
+
+- **Implemented** `3873f69` (report `90315c5`). Tests only: `tests/quote-delete-races.test.ts` —
+  deleteCustomer↔createQuote (gate on `quote_number_next`; the #115 retry converges the raced
+  loser to the clean 400, so the assertions pin the data invariant + the unmoved counter) and
+  deletePart↔attachPart (gate on the Quote row; no retry wrapper, 409 asserted + invariant). Both
+  downgrades WATCHED red (customers.ts:464 / parts.ts:325 pinned to Read Committed → both-commit
+  orphan), restores verified by grep of the committed tree. The immutability dependency
+  (quotes.ts:1277 re-point refusal; `assignsFk` conditional-Serializable) recorded in the file.
+- **Review round 1: Spec ✅ · Approved.** Two minors, both accepted as-is: a
+  pathologically-slow-machine window where Test A degrades to lost coverage (never a false red —
+  the safe direction); gates rely on the client-default Read Committed exactly like the
+  `template-assignments` precedent (harden together if ever).
+
+## Group verdict tally
+
+Seven tasks, seven reviews, **all Approved on round 1** — one plan-mandated Important (Task 1's
+lock-argument overclaim, resolved by controller ruling + comment rewrite) and four cheap minors
+fixed on-branch by the controller (direction-aware foot remedy; three-way chain sentence;
+readiness-route ceiling test; CLAUDE.md sidecar sentence). Remaining minors recorded above,
+none blocking.
