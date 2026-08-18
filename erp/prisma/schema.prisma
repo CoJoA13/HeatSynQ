@@ -1017,6 +1017,13 @@ model Shipper {
   reversesShipperId  String?
   reverses           Shipper?         @relation("ShipperReversal", fields: [reversesShipperId], references: [id])
   reversedBy         Shipper[]        @relation("ShipperReversal")
+  /// #65: the ORIGINAL shipment's ShipperLine ids whose `lineComplete` this reversal cleared at
+  /// creation (`reverseShipperInTx` step 6b's `completeLineIds`), written ONCE when the reversal
+  /// row is created — an immutable snapshot, no edit-path bookkeeping. `voidShipper` reads it when
+  /// the reversal is voided (the blessed undo) to restore those flags on the original. Always []
+  /// on a non-reversal; [] on a reversal that cleared nothing, and on pre-#65 reversals (which
+  /// restore nothing — dev/practice data only, the shop is not live).
+  reversalClearedLineIds String[]     @default([])
   deletedAt          DateTime? // voided; reason in the audit entry, void_shipper
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
