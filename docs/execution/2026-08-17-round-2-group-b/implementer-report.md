@@ -285,6 +285,24 @@ three different ways (active-only list, list not loaded, list stale); with the s
 stale client can only produce a refusal, never a silently parent-only run. The client-side gates stay
 as best-effort UX, not as the guarantee.
 
+## Review round 8 — a double-click that spends the credit twice
+
+| Finding | Disposition |
+|---|---|
+| **P1 — double-submit applies a credit TWICE.** `disabled={saving}` is not a guard: `setSaving(true)` only schedules a render, so two clicks in one tick both pass and both POST. `applyCredit` serializes them and treats each as legitimate, so a $100 credit takes $200 off the receivable | **Fixed** — a `useRef` single-flight flipped BEFORE the first `await`, cleared in `finally`. Wrong money from an ordinary double-click, so it is fixed regardless of review round; the stop-reviewing rule exempts exactly this. |
+| **P2 — the preview could describe different inputs than the print used.** `loaded` stayed true across a customer / as-of / finance-charge change | **Fixed** — `loadPreview` clears `loaded` on entry and the print button waits for the matching answer. Fixed rather than filed because it is two lines in a file already open for the P1. |
+
+**Stated, not implied: the ref is not an idempotency key.** Two browser tabs or a network retry would
+still produce two legitimate applications. This codebase has that pattern (`clientRequestId` on
+orders and shippers) but `Application` has no such column, so a real key is a schema change. The ref
+closes the reported case completely; the residual is the same exposure the existing batch-apply
+screen already carries.
+
+**One E2E run hung**, not failed, on `close-month-end` — 27 minutes at 0.4% CPU with the dev server
+answering 200. Investigated rather than retried blindly: `close-month-end.mjs` never touches either
+file this round changed, the dev database held no debris, and a clean re-run passed 23/23. Recorded
+as a flake with the evidence, not as a pass.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute

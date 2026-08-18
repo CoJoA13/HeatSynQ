@@ -167,6 +167,13 @@ function StatementsScreen() {
   const loadPreview = useCallback(async () => {
     if (!viewAllowed || !customerId) { setPreview(null); setLoaded(false); return; }
     const t = latest.next();
+    // The previous preview describes the PREVIOUS inputs, so it goes stale the moment any of them
+    // change — clearing `loaded` here rather than leaving the old one on screen while a new request
+    // is in flight. Without this the confirm dialog could say "the preview above shows this
+    // customer's statement" over a preview built for a different customer, as-of date, or
+    // finance-charge choice, and then print with the new ones (review round 8). The print button is
+    // gated on `loaded`, so it waits for the matching answer instead of guessing.
+    setLoaded(false);
     const query = `customerId=${encodeURIComponent(customerId)}&asOf=${encodeURIComponent(asOf)}` +
       `&combineFamily=${combineFamily}&assessFinanceCharges=${assessFinanceCharges}`;
     let data: StatementPreview;
@@ -287,8 +294,9 @@ function StatementsScreen() {
   const printTitle = !viewGate.allowed ? viewGate.title
     : !customerId ? "Pick a customer first"
       : !familyKnown ? "Checking whether this customer has divisions…"
-        : perDivisionMode && !runGate.allowed ? runGate.title
-          : printing ? "Printing…" : undefined;
+        : !loaded ? "Loading this customer's statement…"
+          : perDivisionMode && !runGate.allowed ? runGate.title
+            : printing ? "Printing…" : undefined;
   const runTitle = !runGate.allowed ? runGate.title : running ? "Running…" : undefined;
 
   // §5.16: a caller without receivables.view sees the page saying why, never a silently empty one.

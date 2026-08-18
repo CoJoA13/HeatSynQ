@@ -13,7 +13,7 @@
 // that a customer holding only a credit read a negative net over the words "No open invoices".
 // Applying a credit happens here too (#75, owner ruling 2026-08-17): this is the one screen showing
 // a credit and the invoices it could pay down side by side.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
@@ -185,6 +185,13 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
   const [invoiceId, setInvoiceId] = useState("");
   const [amount, setAmount] = useState("");
   const [saving, setSaving] = useState(false);
+  // SYNCHRONOUS single-flight. `disabled={saving}` is not one: `setSaving(true)` schedules a render,
+  // so two clicks landing in the same tick both pass the check and both POST. `applyCredit`
+  // serializes them but treats each as legitimate, so with enough remaining on both sides the credit
+  // applies TWICE and the receivable drops by double the intended amount — real money, from a
+  // double-click. A ref flips before the first `await` and is therefore already set when the second
+  // handler runs.
+  const inFlight = useRef(false);
   // The APPLY's own failure, kept here rather than in the section's `error`. That one gates the
   // whole summary (`loaded && !error && summary`), so routing a rejected amount into it unmounted
   // this very form — taking away the only control that could clear it and leaving a page reload as
@@ -206,6 +213,8 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
   }
 
   async function submit() {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setSaving(true);
     try {
       await api("/api/receivables/credit-applications", {
@@ -218,6 +227,7 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
     } catch (e) {
       setApplyError((e as Error).message); // stays open, with the amount the operator typed
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   }
