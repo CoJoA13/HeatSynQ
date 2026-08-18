@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { handle, requireUser, HttpError } from "@/server/http";
 import { mustCan } from "@/server/permissions";
-import { buildStatement, printStatement } from "@/server/statements";
+import { buildStatement, printStatement, hasLiveDivisions } from "@/server/statements";
 import { getDocument, resolveDocumentFilename } from "@/server/documents";
 import { contentDispositionValue } from "@/server/content-disposition";
 
@@ -37,6 +37,16 @@ const PRINT = z.object({
 export const POST = handle(async (req) => {
   mustCan(requireUser(), "receivables", "view");
   const body = PRINT.parse(await req.json());
+  // #136 (owner ruling 2026-08-17: a parent-only statement is never wanted). An UN-combined print of
+  // a customer WITH divisions is the per-division choice, and answering it here with the parent
+  // alone silently omits every division — #85's original symptom. The screen also picks the right
+  // path, but it does so from a customer list that has been wrong three different ways across review
+  // (active-only, not yet loaded, stale), so the authoritative answer belongs on this side: a stale
+  // client can now only produce this refusal, never a quietly incomplete statement run.
+  if (body.combineFamily !== true && await hasLiveDivisions(body.customerId)) {
+    throw new HttpError(409,
+      "That customer has divisions — use Print per division, or tick Combine family");
+  }
   const printed = await printStatement(body.customerId, {
     asOf: body.asOf,
     combineFamily: body.combineFamily ?? false,

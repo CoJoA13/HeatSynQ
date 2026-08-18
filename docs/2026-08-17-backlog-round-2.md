@@ -156,6 +156,15 @@ application, and the per-division print.
 
 <details><summary>The rulings and the original issue-by-issue scoping</summary>
 
+> **Two more owner rulings, 2026-08-17, taken during review.** **A credit applies only within ONE
+> customer** — the picker lists that customer's own open invoices and not the family's. `applyCredit`
+> permits a cross-family application and one reconciles correctly on both pages, so this is a
+> deliberate UI scope, not a limitation: the section is single-customer by design after a fix round
+> closed a real family-leak bug there. **A PARENT-ONLY statement is never wanted** (#136), which is
+> what makes the print-path fix permanent: the single-print route now REFUSES an un-combined print
+> for a customer with divisions, so the screen can no longer pick the wrong path from a list that is
+> stale, unloaded, or active-only — the three ways review found it wrong.
+>
 > **Owner ruling 2026-08-17: the credit-memo application UI lives in the CUSTOMER A/R SECTION**
 > (#75) — on the customer page, beside the open invoices it can pay down. That makes **#83 and #75
 > ONE task**, not two: #83 is what puts open credits and on-account cash into that list in the first

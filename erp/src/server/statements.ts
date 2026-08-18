@@ -423,6 +423,23 @@ export async function runStatements(
   return results;
 }
 
+/**
+ * Does this customer have live divisions? The single-print route asks before honouring an
+ * UN-COMBINED print, so the server — not an asynchronously-populated client list — decides which
+ * print path is legitimate (#136, owner ruling 2026-08-17: a parent-only statement is never wanted).
+ *
+ * Three review rounds hit the client-side version of this decision: the list was `active`-only, then
+ * it might not have loaded, then it could be stale. All three had the same shape — a client choosing
+ * a path from data it might not have. This is the seam that closes it, because a stale list can now
+ * only produce a refusal, never a silently parent-only statement.
+ */
+export async function hasLiveDivisions(customerId: string, db: Prisma.TransactionClient = prisma): Promise<boolean> {
+  const child = await db.customer.findFirst({
+    where: { parentId: customerId, deletedAt: null }, select: { id: true },
+  });
+  return child !== null;
+}
+
 export type PerDivisionStatement = {
   customerId: string; customerCode: string; customerName: string;
   /** Null when this member's statement FAILED — `error` then says why (review round 4). */

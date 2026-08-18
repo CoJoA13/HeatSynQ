@@ -266,6 +266,25 @@ form stayed mounted with the amount preserved and "That exceeds the invoice's op
 beside it, corrected to $100 in place, and watched it apply — invoice settled, credit drawn down
 500 → 400, error cleared, rows still summing to the net.
 
+## Two owner rulings closed the last open questions (2026-08-17)
+
+**No finalized invoices exist in HeatSynQ**, confirmed by the owner. Visual Shop's invoices never
+enter it — the spec pins *"Migration: None — start empty"* and there is no import path — so all four
+backfill migrations are **no-ops today**. They are correct if ever needed and do nothing now, which
+is why the six migrations on this branch are left as they are rather than squashed: surgery on
+applied migrations to tidy the history of statements that do nothing is a bad trade.
+
+**A credit applies within ONE customer** (Codex's round-1 P2, resolved as built). The service permits
+a cross-family application and one reconciles correctly on both customers' pages; the picker's scope
+is a deliberate UI choice, since a prior fix round closed a real family-leak bug in this section.
+
+**A parent-only statement is never wanted** (#136). That makes the print-path fix permanent rather
+than another client-side patch: `POST /api/receivables/statements` now **refuses** an un-combined
+print for a customer with live divisions. Three review rounds found the client-side decision wrong in
+three different ways (active-only list, list not loaded, list stale); with the server authoritative, a
+stale client can only produce a refusal, never a silently parent-only run. The client-side gates stay
+as best-effort UX, not as the guarantee.
+
 ## Known limits, stated rather than hidden
 
 - **#79's backfill uses the customer's CURRENT terms**, because that is what those invoices compute

@@ -504,6 +504,48 @@ describe("POST /api/receivables/statements/run", () => {
   });
 });
 
+// #136 (owner ruling 2026-08-17: a parent-only statement is never wanted). The screen picks the
+// print path too, but from a customer list that has been wrong three different ways across review —
+// active-only, not yet loaded, stale. The server is the authoritative answer, so a stale client can
+// only ever produce this refusal, never a silently parent-only run.
+describe("POST /api/receivables/statements — the un-combined guard (#136)", () => {
+  it("refuses an un-combined print for a customer WITH divisions, and allows every other shape", async () => {
+    const parent = await invoicedCustomer();
+    const viewer = await signInWith(["receivables.view"], "stmt-guard-viewer");
+    const body = (extra: Record<string, unknown> = {}) => ({ customerId: parent.id, asOf: "2026-08-08", ...extra });
+
+    // No divisions yet — the ordinary single print is legitimate and still streams its PDF.
+    const alone = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body()), withParams({}));
+    expect(alone.status).toBe(200);
+
+    await prisma.customer.create({ data: { code: "GUARDDIV", name: "Division", parentId: parent.id } });
+
+    // Now it has one: un-combined would answer with the parent alone, omitting the division.
+    const refused = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body()), withParams({}));
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error?: string }).error).toMatch(/use Print per division/i);
+
+    // Combined is still fine — that one genuinely includes the divisions.
+    const combined = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer, body({ combineFamily: true })),
+      withParams({}));
+    expect(combined.status).toBe(200);
+  });
+
+  it("still prints a DIVISION's own statement un-combined — it has no divisions of its own", async () => {
+    const parent = await invoicedCustomer();
+    const division = await prisma.customer.create({
+      data: { code: "GUARDCHILD", name: "Child", parentId: parent.id } });
+    const viewer = await signInWith(["receivables.view"], "stmt-guard-child");
+    const res = await printStatementRoute(
+      bodyReq("http://t/api/receivables/statements", "POST", viewer,
+        { customerId: division.id, asOf: "2026-08-08" }), withParams({}));
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("POST /api/receivables/statements/divisions (#85)", () => {
   it("401s, 403s without receivables.create, then archives one statement per family member", async () => {
     const parent = await invoicedCustomer();
