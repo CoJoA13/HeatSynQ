@@ -19,6 +19,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useMutationGate, useLatest } from "@/lib/use-latest";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid } from "@/lib/bulk-grid";
+import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import {
   RECEIPT_BATCH_STATUS_LABELS, APPLICATION_TYPE_LABELS,
@@ -664,7 +665,10 @@ export function BatchDetail({ id }: { id: string }) {
           </label>
           <label className="block">
             Received date
-            <input type="date" value={payReceivedDate} disabled={!createPaymentGate.allowed} title={createPaymentGate.title}
+            {/* #73: the server refuses a future receivedDate (payments post after the deposit is
+                in hand) — `max` keeps the picker honest up front. */}
+            <input type="date" value={payReceivedDate} max={formatDateOnly(todayDateOnly())}
+                   disabled={!createPaymentGate.allowed} title={createPaymentGate.title}
                    onChange={(e) => setPayReceivedDate(e.target.value)}
                    className="mt-1 block rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100" />
           </label>
