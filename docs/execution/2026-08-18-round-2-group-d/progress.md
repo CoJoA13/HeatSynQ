@@ -97,3 +97,21 @@ the tip into `20a2e43` + `b1b8dc6` (trees verified byte-identical to the pre-spl
 Task 4 review package — generated from the contaminated commit — was regenerated and the
 in-flight reviewer corrected. All implementers since commit with explicit pathspecs
 (`git commit -- <paths>`), which makes a shared-index sweep structurally impossible to repeat.
+
+**Task 6 (the nine-site ungated-load sweep)** — implementer `b1b8dc6`/`6ace27d`. Review:
+**Spec ❌ on one site · Needs fixes** — eight of nine adoptions verified exact, complete, and
+regression-free (including the hardest: the processes template gate covering the rename
+bookkeeping, with the removed dead catches proven dead; and the Statements
+deselection-invalidates-in-flight pair, with the moved `next()` proven exclusive to
+`loadPreview`). The one Important: CertificationsSection's `showLoadGap = loaded && !error`
+conjunct — the `!error` half was the implementer's addition beyond the brief's `loaded`-only
+gate — hides the §4.1 gap line and every create button unrecoverably after a transient CREATE
+failure (the create's catch writes the same shared `error` and never reloads), where the cited
+InvoicesSection precedent actually keeps the control rendered and disables it with a reason
+(§5.16). Fix round dispatched: split the load-failure channel from the create-failure channel,
+or follow InvoicesSection literally, folding in the disabled-with-reason treatment for the
+failed-mount case. The commit-boundary split was independently verified byte-identical.
+
+**Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
+implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
+tree modification). Review: pending.
