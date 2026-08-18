@@ -1667,7 +1667,7 @@ type ReverseShipperInput = z.infer<typeof REVERSE_SHIPPER>;
  *  IN this payload — it lands in the audit entry and prints on no piece of paper. Every negated line
  *  travels with the live part identity captured off the original's snapshot columns. */
 function reverseAuditPayload(args: {
-  shipperNumber: number; reason: string;
+  shipperNumber: number; reason: string; reversalClearedLineIds: string[];
   original: { id: string; shipperNumber: number };
   customer: { id: string; code: string; name: string };
   shipDate: Date;
@@ -1681,6 +1681,7 @@ function reverseAuditPayload(args: {
     reversesShipperId: args.original.id,
     reversesShipperNumber: args.original.shipperNumber,
     reason: args.reason,
+    reversalClearedLineIds: args.reversalClearedLineIds,
     customerId: args.customer.id, customerCode: args.customer.code, customerName: args.customer.name,
     shipDate: formatDateOnly(args.shipDate),
     orders: args.orders.map((o) => ({
@@ -1776,10 +1777,17 @@ async function reverseShipperInTx(
   // 6. Create the reversal — negated lines, `reversesShipperId` set, `lineComplete: false`. Snapshot
   //    columns are copied from the original's own snapshots (the paper's part identity), so the
   //    reversal never has to re-read an order-side line that a correction may since have released.
+  //    `completeLineIds` — the original's lines step 6b is about to un-mark — is computed HERE so it
+  //    can also be STORED on the reversal row at creation (#65, `reversalClearedLineIds`): an
+  //    immutable snapshot of exactly which flags THIS reversal cleared, which is what lets
+  //    `voidShipper`'s restore (the blessed undo) put back precisely those flags and no others. No
+  //    edit-path bookkeeping — a line replaced since simply stops matching and restores nothing.
+  const completeLineIds = original.orders.flatMap((so) =>
+    so.lines.filter((l) => l.lineComplete).map((l) => l.id));
   const reversal = await auditedCreate(
     "shipper",
     reverseAuditPayload({
-      shipperNumber, reason: why,
+      shipperNumber, reason: why, reversalClearedLineIds: completeLineIds,
       original: { id: original.id, shipperNumber: original.shipperNumber },
       customer: { id: original.customerId, code: original.customer.code, name: original.customer.name },
       shipDate,
@@ -1801,6 +1809,7 @@ async function reverseShipperInTx(
         route: original.route,
         comments: original.comments,
         reversesShipperId: original.id,
+        reversalClearedLineIds: completeLineIds,
         orders: {
           create: original.orders.map((so, oi) => ({
             orderId: so.orderId,
@@ -1832,8 +1841,7 @@ async function reverseShipperInTx(
   //     under the claim already held on the original Shipper row (step 2), through the audited path
   //     onto the original's own history. Only when a line is actually complete, so a reversal of a
   //     never-completed partial shipment writes no no-op audit entry (recompute's own discipline).
-  const completeLineIds = original.orders.flatMap((so) =>
-    so.lines.filter((l) => l.lineComplete).map((l) => l.id));
+  //     `completeLineIds` is computed at step 6, where it is also stored on the reversal row (#65).
   if (completeLineIds.length > 0) {
     await auditedUpdate("shipper", original.id, () => tx.shipperLine.updateMany({
       where: { id: { in: completeLineIds } }, data: { lineComplete: false },

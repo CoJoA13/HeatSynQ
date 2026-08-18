@@ -183,6 +183,30 @@ describe("reverseShipper", () => {
     expect(allReleased).toEqual([]);
   });
 
+  // #65: the reversal row records WHICH original lines its step 6b cleared, at creation — the
+  // immutable snapshot voidShipper's restore reads when the reversal is voided (the blessed undo).
+  it("records the original line ids whose lineComplete it cleared on its own row (#65)", async () => {
+    const { shipper } = await shippedFixture({ qty: 100 });
+    const originalLineId = shipper.orders[0].lines[0].id;
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(shipper.id, { reason: "returned" }));
+    const row = await prisma.shipper.findUniqueOrThrow({
+      where: { id: reversal.id }, select: { reversalClearedLineIds: true },
+    });
+    expect(row.reversalClearedLineIds).toEqual([originalLineId]);
+  });
+
+  it("records [] when the reversed shipment had no complete lines to clear (#65)", async () => {
+    const { order } = await savedOrder({ qty: 100 });
+    const { shipper } = await createShipper(oneOrderInput(order, false), { canOverrideCreditHold: false });
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(shipper.id, { reason: "returned" }));
+    const row = await prisma.shipper.findUniqueOrThrow({
+      where: { id: reversal.id }, select: { reversalClearedLineIds: true },
+    });
+    expect(row.reversalClearedLineIds).toEqual([]);
+  });
+
   it("refuses to drive a line below zero", async () => {
     const { shipper } = await shippedFixture({ qty: 100 });
     await asSystem(() => reverseShipper(shipper.id, { reason: "first" }));
