@@ -6,10 +6,13 @@ import { createOrder, type OrderDetail } from "@/server/orders";
 import { setSetting } from "@/server/settings";
 import {
   createShipper, voidShipper, printShippingTickets, readShippingTicketData, ticketSettings,
+  addOrderToShipper,
   type ShipperDetail,
 } from "@/server/shippers";
 import { buildShippingTicketDefinition, type TicketData } from "@/server/pdf/shipping-ticket";
-import { getDocument, listDocumentsForShipper, VOIDED_PRINT } from "@/server/documents";
+import {
+  getDocument, listDocumentsForOrder, listDocumentsForShipper, VOIDED_PRINT,
+} from "@/server/documents";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
 import { POST as printRoute } from "@/app/api/shippers/[id]/print/route";
@@ -327,6 +330,56 @@ describe("printShippingTickets", () => {
     // and a NEW document landed against a voided shipment.
     await expect(printCall).rejects.toMatchObject({ status: 409 });
     expect(await listDocumentsForShipper(shipper.id)).toEqual([]);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #52 — a whole-set ticket covers what it PRINTED, not the shipment's current membership.
+// Membership stays editable after a print (owner ruling 2026-08-17): the printed paper is not
+// falsified by a later addition — the newcomer's coverage comes from a fresh whole-set print.
+// -------------------------------------------------------------------------------------------
+
+describe("printShippingTickets — whole-set print-time coverage (#52)", () => {
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
+
+  it("an order added after a whole-set print does not list that ticket; at-print members still do", async () => {
+    const { shipper, orderA, orderB, customer } = await twoOrderShipment();
+    const { documentId } = await asSystem(() => printShippingTickets(shipper.id));
+
+    const orderC = await orderFor(customer, { poNumber: "PO-C", qty: 4, weight: "48.00" });
+    await asSystem(() => addOrderToShipper(shipper.id, orderC.id));
+
+    expect((await listDocumentsForOrder(orderA.id)).map((d) => d.id)).toContain(documentId);
+    expect((await listDocumentsForOrder(orderB.id)).map((d) => d.id)).toContain(documentId);
+    // The defect (#52): deriving coverage from CURRENT membership listed this pre-add whole-set
+    // ticket — paper with no sheet for order C — on order C's hub.
+    expect((await listDocumentsForOrder(orderC.id)).map((d) => d.id)).not.toContain(documentId);
+  });
+
+  it("a fresh whole-set print after the add covers the newcomer", async () => {
+    const { shipper, orderA, customer } = await twoOrderShipment();
+    await asSystem(() => printShippingTickets(shipper.id));
+    const orderC = await orderFor(customer, { poNumber: "PO-C", qty: 4, weight: "48.00" });
+    await asSystem(() => addOrderToShipper(shipper.id, orderC.id));
+
+    const second = await asSystem(() => printShippingTickets(shipper.id));
+    expect((await listDocumentsForOrder(orderC.id)).map((d) => d.id)).toContain(second.documentId);
+    expect((await listDocumentsForOrder(orderA.id)).map((d) => d.id)).toContain(second.documentId);
+  });
+
+  it("a whole-set print stores exactly the member order ids; a per-order print stores none", async () => {
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    const wholeSet = await asSystem(() => printShippingTickets(shipper.id));
+    expect((await prisma.storedDocument.findUniqueOrThrow({
+      where: { id: wholeSet.documentId }, select: { coveredOrderIds: true },
+    })).coveredOrderIds.slice().sort()).toEqual([orderA.id, orderB.id].sort());
+
+    // A per-order ticket's covered order IS the row's own `orderId` (spec §4.3's sub-scope) — it
+    // records no coverage list, and its sibling-exclusion listing (round-4 finding) is untouched.
+    const perOrder = await asSystem(() => printShippingTickets(shipper.id, orderA.id));
+    expect(await prisma.storedDocument.findUniqueOrThrow({
+      where: { id: perOrder.documentId }, select: { orderId: true, coveredOrderIds: true },
+    })).toMatchObject({ orderId: orderA.id, coveredOrderIds: [] });
   });
 });
 

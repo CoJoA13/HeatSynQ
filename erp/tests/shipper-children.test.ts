@@ -269,17 +269,19 @@ describe("removeOrderFromShipper", () => {
   });
 
   it("refuses to remove an order once the BOL has printed — the BOL names its order number permanently", async () => {
-    const { shipper, second } = await twoOrderShipment();
-    await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, Buffer.from("%PDF-1.4 b")));
+    const { shipper, first, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [first.orderId, second.orderId] },
+      Buffer.from("%PDF-1.4 b")));
     await expect(removeOrderFromShipper(shipper.id, second.id))
       .rejects.toThrow(/already printed|void the shipment/i);
   });
 
   it("treats a whole-set ticket print as covering every order on the shipment", async () => {
-    const { shipper, second } = await twoOrderShipment();
-    await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, Buffer.from("%PDF-1.4 t")));
+    const { shipper, first, second } = await twoOrderShipment();
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [first.orderId, second.orderId] },
+      Buffer.from("%PDF-1.4 t")));
     await expect(removeOrderFromShipper(shipper.id, second.id)).rejects.toThrow(/already printed/i);
   });
 

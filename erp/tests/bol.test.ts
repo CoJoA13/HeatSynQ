@@ -5,10 +5,13 @@ import { runWithContext } from "@/server/context";
 import { createOrder, type OrderDetail } from "@/server/orders";
 import {
   createShipper, voidShipper, printShippingTickets, printBol, readBolData, bolSettings,
+  addOrderToShipper,
   type ShipperDetail,
 } from "@/server/shippers";
 import { buildBolDefinition, type BolData } from "@/server/pdf/bol";
-import { getDocument, listDocumentsForShipper, VOIDED_PRINT } from "@/server/documents";
+import {
+  getDocument, listDocumentsForOrder, listDocumentsForShipper, VOIDED_PRINT,
+} from "@/server/documents";
 import type { Customer } from "../prisma/generated/prisma/client";
 
 import { POST as printRoute } from "@/app/api/shippers/[id]/print/route";
@@ -336,6 +339,58 @@ describe("printBol", () => {
 
   it("404s a shipment that does not exist", async () => {
     await expect(asSystem(() => printBol("nope"))).rejects.toThrow(/not found/i);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #52 — a whole-shipment document covers what it PRINTED, not the shipment's current membership.
+// Membership stays editable after a print (owner ruling 2026-08-17): the printed paper is not
+// falsified by a later addition — the newcomer's coverage comes from printing a fresh BOL.
+// -------------------------------------------------------------------------------------------
+
+describe("printBol — print-time coverage (#52)", () => {
+  beforeEach(async () => { await truncateAll(); await seedOrderGatePrereqs(); });
+
+  it("an order added after a BOL print does not list that BOL; at-print members still do", async () => {
+    const { shipper, orderA, orderB, customer } = await twoOrderShipment();
+    const { documentId } = await asSystem(() => printBol(shipper.id));
+
+    const orderC = await orderFor(customer, { poNumber: "PO-C", qty: 4, weight: "48.00" });
+    await asSystem(() => addOrderToShipper(shipper.id, orderC.id));
+
+    expect((await listDocumentsForOrder(orderA.id)).map((d) => d.id)).toContain(documentId);
+    expect((await listDocumentsForOrder(orderB.id)).map((d) => d.id)).toContain(documentId);
+    // The defect (#52): deriving coverage from CURRENT membership listed this pre-add BOL —
+    // paper that does not mention order C — on order C's hub.
+    expect((await listDocumentsForOrder(orderC.id)).map((d) => d.id)).not.toContain(documentId);
+  });
+
+  it("a fresh BOL print after the add covers the newcomer", async () => {
+    const { shipper, orderA, customer } = await twoOrderShipment();
+    await asSystem(() => printBol(shipper.id));
+    const orderC = await orderFor(customer, { poNumber: "PO-C", qty: 4, weight: "48.00" });
+    await asSystem(() => addOrderToShipper(shipper.id, orderC.id));
+
+    const second = await asSystem(() => printBol(shipper.id));
+    expect((await listDocumentsForOrder(orderC.id)).map((d) => d.id)).toContain(second.documentId);
+    expect((await listDocumentsForOrder(orderA.id)).map((d) => d.id)).toContain(second.documentId);
+  });
+
+  it("stores exactly the member order ids at print, and never rewrites already-stored paper", async () => {
+    const coverage = async (id: string) => (await prisma.storedDocument.findUniqueOrThrow({
+      where: { id }, select: { coveredOrderIds: true } })).coveredOrderIds;
+
+    const { shipper, orderA, orderB, customer } = await twoOrderShipment();
+    const first = await asSystem(() => printBol(shipper.id));
+    expect((await coverage(first.documentId)).slice().sort()).toEqual([orderA.id, orderB.id].sort());
+
+    const orderC = await orderFor(customer, { poNumber: "PO-C", qty: 4, weight: "48.00" });
+    await asSystem(() => addOrderToShipper(shipper.id, orderC.id));
+    const second = await asSystem(() => printBol(shipper.id));
+    expect((await coverage(second.documentId)).slice().sort())
+      .toEqual([orderA.id, orderB.id, orderC.id].sort());
+    // The first print is frozen paper — the membership edit rewrote nothing already stored.
+    expect((await coverage(first.documentId)).slice().sort()).toEqual([orderA.id, orderB.id].sort());
   });
 });
 

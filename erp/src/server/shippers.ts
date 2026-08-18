@@ -2212,8 +2212,14 @@ export async function printShippingTickets(
       buildShippingTicketDefinitions(data, docType, resolved.config, logoDataUri));
 
     // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
+    // A whole-set print records `shipmentOrderIds` as its coverage (#52): the same Serializable-
+    // snapshot read the render itself consumed (see the docType comment above), so the recorded
+    // set is exactly the orders the stored paper describes — no re-read, no new claim.
     const doc = await storeDocument(tx,
-      { kind: "SHIPPER", shipperId, orderId: orderId ?? null }, pdf, resolved.versionId);
+      orderId === undefined
+        ? { kind: "SHIPPER", shipperId, orderId: null, coveredOrderIds: shipmentOrderIds }
+        : { kind: "SHIPPER", shipperId, orderId },
+      pdf, resolved.versionId);
     return {
       documentId: doc.id, shipperNumber: shipper.shipperNumber,
       orderNumber: orderId === undefined ? null : data[0].orderNumber, pdf,
@@ -2328,7 +2334,8 @@ export async function printBol(
     // voided-state re-read below is only trustworthy under that lock.
     const stub = await tx.shipper.findFirst({ where: { id: shipperId }, select: { id: true } });
     if (!stub) throw new HttpError(404, "Shipment not found");
-    await claimOrdersInOrder(tx, await shipperOrderIds(tx, shipperId));
+    const memberOrderIds = await shipperOrderIds(tx, shipperId);
+    await claimOrdersInOrder(tx, memberOrderIds);
     await claimShipperRow(tx, shipperId);
 
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId } });
@@ -2365,7 +2372,10 @@ export async function printBol(
     const pdf = await renderPdf(buildBolDefinition(data, resolved.config, logoDataUri));
 
     // `resolved.versionId` is the §5.2 stamp: exactly which template version produced the paper.
-    const doc = await storeDocument(tx, { kind: "BOL", shipperId }, pdf, resolved.versionId);
+    // `memberOrderIds` is the recorded coverage (#52): the same Serializable-snapshot read whose
+    // orders `readBolData` printed (the printShippingTickets reasoning) — no re-read, no new claim.
+    const doc = await storeDocument(tx,
+      { kind: "BOL", shipperId, coveredOrderIds: memberOrderIds }, pdf, resolved.versionId);
     return { documentId: doc.id, bolNumber, shipperNumber: shipper.shipperNumber, pdf };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable })));
 }

@@ -214,8 +214,9 @@ describe("voidShipper", () => {
     const bytes = Buffer.from("%PDF-1.4 ticket");
     // storeDocument directly — printShippingTickets arrives in Task 18, and the refusal-to-reprint
     // assertion lives there with it. This task owns only the survival half.
-    const doc = await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, bytes));
+    const doc = await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [shipper.orders[0].orderId] },
+      bytes));
     await asSystem(() => voidShipper(shipper.id, "wrong truck"));
     expect(Buffer.compare((await getDocument(doc.id)).fileData, bytes)).toBe(0);
   });

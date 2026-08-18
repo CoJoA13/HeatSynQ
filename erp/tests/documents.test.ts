@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
@@ -83,7 +84,8 @@ async function orderWithAllKinds() {
   const cert = await prisma.cert.create({ data: { orderId: orderA.id, scope: "ORDER" } });
   const traveler = await prisma.$transaction((tx) =>
     storeDocument(tx, { kind: "TRAVELER", orderId: orderA.id, loadNumber: null }, pdf("t")));
-  const bol = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+  const bol = await prisma.$transaction((tx) =>
+    storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("b")));
   const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
   return { shipper, orderA, orderB, cert, traveler, bol, certDoc };
 }
@@ -94,7 +96,8 @@ describe("storeDocument / listDocumentsForOrder", () => {
   // Brief step 1, test 1.
   it("lists a multi-order shipment's BOL on every order it covers", async () => {
     const { shipper, orderA, orderB } = await twoOrderShipment();
-    await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("bol")));
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("bol")));
     expect((await listDocumentsForOrder(orderA.id)).map((d) => d.kind)).toEqual(["BOL"]);
     expect((await listDocumentsForOrder(orderB.id)).map((d) => d.kind)).toEqual(["BOL"]);
   });
@@ -103,8 +106,9 @@ describe("storeDocument / listDocumentsForOrder", () => {
     const { shipper, orderA, orderB } = await twoOrderShipment();
     await prisma.$transaction((tx) =>
       storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: orderA.id }, pdf("a")));
-    await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("all")));
+    await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [orderA.id, orderB.id] },
+      pdf("all")));
 
     expect(await listDocumentsForOrder(orderA.id)).toHaveLength(2); // its own ticket + the whole set
     const bDocs = await listDocumentsForOrder(orderB.id);
@@ -150,7 +154,8 @@ describe("storeDocument / listDocumentsForOrder", () => {
       kind: "SHIPPER", orderId: orderA.id, shipperId: shipper.id, certId: null, loadNumber: null,
     });
 
-    const bol = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    const bol = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id] }, pdf("b")));
     expect(bol).toMatchObject({ kind: "BOL", orderId: null, shipperId: shipper.id, certId: null, loadNumber: null });
 
     const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
@@ -160,18 +165,78 @@ describe("storeDocument / listDocumentsForOrder", () => {
   it("404s a missing order", async () => {
     await expect(listDocumentsForOrder("nope")).rejects.toMatchObject({ status: 404 });
   });
+
+  // #52's honest failure mode: a whole-set row whose coverage was never recorded (a corrupt or
+  // hand-made row — no write path produces one) lists for NO order, never for "whatever the
+  // membership happens to be today". The paper is not lost: the shipment page's own
+  // shipperId-keyed list still shows it.
+  it("a whole-set row with empty coverage lists for no order, but stays on the shipment's own list", async () => {
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    const bare = await prisma.storedDocument.create({
+      data: { kind: "SHIPPER", shipperId: shipper.id, orderId: null, fileData: new Uint8Array(pdf("bare")) },
+      select: { id: true },
+    });
+    expect((await listDocumentsForOrder(orderA.id)).map((d) => d.id)).not.toContain(bare.id);
+    expect((await listDocumentsForOrder(orderB.id)).map((d) => d.id)).not.toContain(bare.id);
+    expect((await listDocumentsForShipper(shipper.id)).map((d) => d.id)).toContain(bare.id);
+  });
+});
+
+// #52's migration backfill, pinned: a whole-set document row that PREDATES the coverage column
+// (inserted here in the legacy shape, coverage left to the column default) is backfilled with its
+// shipment's CURRENT member order ids — the best available approximation for paper whose true
+// at-print set was never recorded — by the UPDATE in the migration itself, executed verbatim from
+// the migration file so this pin cannot drift from what `migrate deploy` actually ran.
+describe("the coveredOrderIds backfill (#52 migration)", () => {
+  beforeEach(truncateAll);
+
+  it("backfills whole-set SHIPPER/BOL rows with current membership, leaving scoped rows alone", async () => {
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    const legacy = (kind: "SHIPPER" | "BOL", orderId: string | null, marker: string) =>
+      prisma.storedDocument.create({
+        data: { kind, shipperId: shipper.id, orderId, fileData: new Uint8Array(pdf(marker)) },
+        select: { id: true },
+      });
+    const wholeSet = await legacy("SHIPPER", null, "ws");
+    const bol = await legacy("BOL", null, "b");
+    const perOrder = await legacy("SHIPPER", orderA.id, "po");
+
+    const sql = readFileSync(new URL(
+      "../prisma/migrations/20260817234046_stored_document_covered_order_ids/migration.sql",
+      import.meta.url), "utf8");
+    // The backfill is the file's LAST statement; anchoring on the statement head (not the bare
+    // word, which the migration's own comments use) slices exactly it.
+    const start = sql.indexOf('UPDATE "StoredDocument"');
+    expect(start).toBeGreaterThan(-1);
+    const update = sql.slice(start);
+    await prisma.$executeRawUnsafe(update);
+
+    const coverage = async (id: string) => (await prisma.storedDocument.findUniqueOrThrow({
+      where: { id }, select: { coveredOrderIds: true } })).coveredOrderIds;
+    // twoOrderShipment seats orderA at position 1, orderB at position 2 — the backfill orders by
+    // ticket position, the order the paper itself prints in.
+    expect(await coverage(wholeSet.id)).toEqual([orderA.id, orderB.id]);
+    expect(await coverage(bol.id)).toEqual([orderA.id, orderB.id]);
+    expect(await coverage(perOrder.id)).toEqual([]);
+
+    // And backfilled paper lists exactly as freshly-printed paper does.
+    expect((await listDocumentsForOrder(orderB.id)).map((d) => d.id))
+      .toEqual(expect.arrayContaining([wholeSet.id, bol.id]));
+  });
 });
 
 describe("listDocumentsForShipper / listDocumentsForCert", () => {
   beforeEach(truncateAll);
 
   it("lists a shipment's SHIPPER and BOL documents, newest first, without a cert document leaking in", async () => {
-    const { shipper } = await twoOrderShipment();
+    const { shipper, orderA, orderB } = await twoOrderShipment();
     const { cert } = await oneCert();
 
-    const ticket = await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("s")));
-    const bol = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    const ticket = await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [orderA.id, orderB.id] },
+      pdf("s")));
+    const bol = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("b")));
     await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
 
     const docs = await listDocumentsForShipper(shipper.id);
@@ -181,9 +246,10 @@ describe("listDocumentsForShipper / listDocumentsForCert", () => {
 
   it("lists a cert's own documents only", async () => {
     const { cert } = await oneCert();
-    const { shipper } = await twoOrderShipment();
+    const { shipper, orderA, orderB } = await twoOrderShipment();
     const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
-    await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("b")));
 
     const docs = await listDocumentsForCert(cert.id);
     expect(docs.map((d) => d.id)).toEqual([certDoc.id]);
@@ -316,10 +382,11 @@ describe("GET /api/documents/[docId] gates on the owning entity's area", () => {
   beforeEach(truncateAll);
 
   it("a shipping.view-only session can fetch a SHIPPER document and gets 403 on a CERT one", async () => {
-    const { shipper } = await twoOrderShipment();
+    const { shipper, orderA, orderB } = await twoOrderShipment();
     const { cert } = await oneCert();
-    const ticket = await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("s")));
+    const ticket = await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [orderA.id, orderB.id] },
+      pdf("s")));
     const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
     const cookie = await signInWith(["shipping.view"]);
 
@@ -334,10 +401,11 @@ describe("GET /api/documents/[docId] gates on the owning entity's area", () => {
   });
 
   it("a certs.view-only session can fetch a CERT document and gets 403 on a BOL one", async () => {
-    const { shipper } = await twoOrderShipment();
+    const { shipper, orderA, orderB } = await twoOrderShipment();
     const { cert } = await oneCert();
     const certDoc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "CERT", certId: cert.id }, pdf("c")));
-    const bol = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    const bol = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("b")));
     const cookie = await signInWith(["certs.view"]);
 
     const certRes = await documentRoute(
@@ -384,9 +452,10 @@ describe("GET /api/documents/[docId] names the download with a friendly filename
   });
 
   it("names a whole-set SHIPPER ticket download by the shipper's packing-list number", async () => {
-    const { shipper } = await twoOrderShipment();
-    const doc = await prisma.$transaction((tx) =>
-      storeDocument(tx, { kind: "SHIPPER", shipperId: shipper.id, orderId: null }, pdf("s")));
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    const doc = await prisma.$transaction((tx) => storeDocument(tx,
+      { kind: "SHIPPER", shipperId: shipper.id, orderId: null, coveredOrderIds: [orderA.id, orderB.id] },
+      pdf("s")));
     const cookie = await signInWith(["shipping.view"]);
     const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
     expect(res.headers.get("content-disposition")).toBe(`inline; filename="ticket-${shipper.shipperNumber}.pdf"`);
@@ -403,8 +472,9 @@ describe("GET /api/documents/[docId] names the download with a friendly filename
   });
 
   it("names a BOL download by the shipper's packing-list number", async () => {
-    const { shipper } = await twoOrderShipment();
-    const doc = await prisma.$transaction((tx) => storeDocument(tx, { kind: "BOL", shipperId: shipper.id }, pdf("b")));
+    const { shipper, orderA, orderB } = await twoOrderShipment();
+    const doc = await prisma.$transaction((tx) =>
+      storeDocument(tx, { kind: "BOL", shipperId: shipper.id, coveredOrderIds: [orderA.id, orderB.id] }, pdf("b")));
     const cookie = await signInWith(["shipping.view"]);
     const res = await documentRoute(req(`http://t/api/documents/${doc.id}`, "GET", cookie), withParams({ docId: doc.id }));
     expect(res.headers.get("content-disposition")).toBe(`inline; filename="bol-${shipper.shipperNumber}.pdf"`);
