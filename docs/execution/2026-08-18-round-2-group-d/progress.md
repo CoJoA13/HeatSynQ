@@ -161,6 +161,26 @@ consistent with apply()'s pre-existing conflict-dismissal semantics — acceptab
 shop, recorded); (3) resolveSaveSettle pins a naming contract more than behavior — sanctioned
 by §0's no-per-page-harness rule, noted for calibration.
 
+## Group tally
+
+Seven implementation tasks, seven reviews: **four Approved on round 1** (3, 5, 8 — plus 2's
+verdict was Needs-fixes only for the brief's own flaw), **three fix rounds, all approved on
+round 1 of the fix** (2: the plan-mandated epoch-capture ordering, controller-fixed; 4: the
+`/login` re-latch; 7: the reviewer-reproduced mutual drain deadlock — the group's one Critical).
+Two controller-applied minors on-branch (the save-scope settle-defer pin; the roles toggle
+rollback-reload). One concurrency incident, self-repaired and made structurally unrepeatable
+(explicit-pathspec commits). No schema migration anywhere in the group.
+
+## Gates (final tree `8e9bbec`, all watched to completion 2026-08-18)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3249 passed / 189 files** (main was 3212/185 — +37 tests, +4 files) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npm run test:e2e` | **23/23 flows** (self-managed dev server, DEV db) |
+
 **Task 5 (shared components: Shell ×2, HistoryPanel, AttachmentsSection, ReferenceTable)** —
 implementer `13bf9a3`/`061a21b` (explicit-pathspec discipline held under a live concurrent
 tree modification). Review: **Spec ✅ · Approved (round 1)**. Every dispatch-named trap checked
