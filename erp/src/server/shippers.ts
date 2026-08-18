@@ -73,6 +73,10 @@ export type ShipperDetail = {
   /** Set when this shipment is a reversing shipment (§5.6): the id of the shipment it reverses.
    *  Its lines carry negative qty/weight, and a credit is built from it. */
   reversesShipperId: string | null;
+  /** The reversed original's packing-list number when this document IS a reversal (#139) — the
+   *  shipment page's freeze banner/titles name the pair from the reversal side too (§5.16);
+   *  `claimLiveShipper`'s refusal stays the enforcement. */
+  reversesShipperNumber: number | null;
   /** The LIVE reversing shipment pointing AT this one, if any (#65): its packing-list number, so
    *  the shipment page can render Void disabled naming the blocker (§5.16) — `voidShipper`'s own
    *  refusal stays the enforcement. Always null on a reversal document itself (a reversal cannot
@@ -258,6 +262,10 @@ const DETAIL_INCLUDE = {
     take: 1,
     select: { shipperNumber: true },
   },
+  // #139: the original this document reverses, for `reversesShipperNumber` — deliberately NOT
+  // live-filtered (unlike `reversedBy` above): a reversal is frozen regardless of its original's
+  // liveness, so the pair must stay named even over corrupt pre-#65 data.
+  reverses: { select: { shipperNumber: true } },
   orders: {
     orderBy: { position: "asc" },
     include: {
@@ -317,6 +325,7 @@ function toDetail(
     freightClass: row.freightClass, freightDescription: row.freightDescription,
     packageCount: row.packageCount, proNumber: row.proNumber, scacCode: row.scacCode,
     reversesShipperId: row.reversesShipperId,
+    reversesShipperNumber: row.reverses?.shipperNumber ?? null,
     reversedByShipperNumber: row.reversedBy[0]?.shipperNumber ?? null,
     invoiceVoidBlock,
     deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
@@ -775,7 +784,8 @@ async function claimShipperRows(tx: Prisma.TransactionClient, ids: string[]): Pr
  *     (addOrderToShipper's incoming order — same single ordered statement, so two adds racing
  *     different incoming orders still cannot ABBA);
  *  3. `claimShipperRow` — the Shipper's own row, AFTER the order claims (see its comment);
- *  4. only then the liveness re-read, off a row this transaction actually holds.
+ *  4. only then the liveness re-read, off a row this transaction actually holds;
+ *  5. the #139 pair freeze — see the inline comment.
  *
  *  Returns the fresh shipper row, the shipment's own order ids (the `recomputeOrderStatus` set),
  *  and every claimed Order row so callers can read scalars without a second round trip. */
@@ -789,6 +799,40 @@ async function claimLiveShipper(
   await claimShipperRow(tx, id);
   const shipper = await tx.shipper.findFirst({ where: { id } });
   if (!shipper || shipper.deletedAt !== null) throw new HttpError(404, "Shipment not found");
+
+  // #139 freeze-the-pair (owner ruling 2026-08-18, spec §15): while a reversal pair is live, ANY
+  // edit to EITHER document is refused naming the pair. This chokepoint is exactly the six edit
+  // doors, so the guard here exempts `reverseShipperInTx` (step 6b writes the original's
+  // `lineComplete` flags), `voidShipper`'s restore, and both print paths — including `printBol`'s
+  // lazy first-print `bolNumber` write — by construction. A reversal is refused ALWAYS, live
+  // original or not: it is machine-generated mirror paper, an operator edit of one is never
+  // honest, and the unconditional refusal covers corrupt pre-#65 data in the safe direction.
+  // LOCK ARGUMENT (order-locks.ts's "guarded state must be locked with the claimed row" rule,
+  // satisfied transitively): the counterpart's liveness lives on a different row, but every
+  // writer that CHANGES pair-liveness claims THIS row too — `reverseShipperInTx` claims the
+  // original via `claimShipperRow` before creating its reversal, and `voidShipper` claims BOTH
+  // pair rows via `claimShipperRows` — so both reads below, taken after the claim above, are
+  // serialized against creation and void at ANY isolation. Do NOT widen this into a pair claim.
+  if (shipper.reversesShipperId !== null) {
+    const original = await tx.shipper.findFirst({
+      where: { id: shipper.reversesShipperId }, select: { shipperNumber: true },
+    });
+    throw new HttpError(400,
+      `This is a reversal of Packing List ${original?.shipperNumber ?? "?"} — a reversal is ` +
+      "machine-generated mirror paper; void it and re-reverse instead of editing it");
+  }
+  // The `voidShipper` blocker's exact read shape, ordered so two live reversals (pre-guard data)
+  // would name the same one on every attempt.
+  const liveReversal = await tx.shipper.findFirst({
+    where: { reversesShipperId: id, deletedAt: null },
+    select: { shipperNumber: true }, orderBy: { shipperNumber: "asc" },
+  });
+  if (liveReversal) {
+    throw new HttpError(400,
+      `This shipment has been reversed by Packing List ${liveReversal.shipperNumber} — ` +
+      "void the reversal first, then edit, then re-reverse");
+  }
+
   return { shipper, orderIds, claimed };
 }
 
@@ -1040,8 +1084,8 @@ async function renumberShipperOrderPositions(tx: Prisma.TransactionClient, shipp
  * its own (spec §4.2), so removal HARD-deletes the row — and frees its `sequence`, which is
  * exactly the hazard spec §5.5 was tightened for (2026-08-04, Task 2 review): a later shipment of
  * that same order would then be handed a number already printed on a customer's paperwork. Refused
- * outright once a shipping ticket exists for this order — either its own (`orderId` = this order)
- * or a whole-set print (`orderId: null`, which covers every order on the shipment) — naming the
+ * outright once a shipping ticket exists NAMING this order — either its own (`orderId` = this
+ * order) or a whole-set print whose recorded `coveredOrderIds` include it (#140) — naming the
  * document and pointing at the correct fix: void the shipment instead, which keeps every sequence
  * claimed forever (spec §5.6) rather than freeing one back into circulation.
  *
@@ -1076,12 +1120,18 @@ export async function removeOrderFromShipper(id: string, shipperOrderId: string)
         "instead of removing its last order.");
     }
 
-    // Any shipment-owned paper naming this order: its own ticket (`orderId` = this order), a
-    // whole-set ticket, or the BOL (both `orderId: null` — the BOL lists every covered order
-    // number permanently, round-6 finding). CERT documents never carry `shipperId` (the DB
-    // CHECK) and get their own guard just below.
+    // Any shipment-owned paper NAMING this order: its own ticket (`orderId` = this order), or a
+    // whole-set document — ticket or BOL, `orderId: null` — whose RECORDED coverage names it
+    // (`coveredOrderIds`, the same branch `listDocumentsForOrder` reads; #140, owner ruling
+    // 2026-08-18). An order added after a whole-set print is not on that paper and removes
+    // freely; pre-#52 backfilled rows over-cover (current-at-migration membership), the safe
+    // direction. CERT documents never carry `shipperId` (the DB CHECK) and get their own guard
+    // just below.
     const printed = await tx.storedDocument.findFirst({
-      where: { shipperId: id, OR: [{ orderId: target.orderId }, { orderId: null }] },
+      where: {
+        shipperId: id,
+        OR: [{ orderId: target.orderId }, { orderId: null, coveredOrderIds: { has: target.orderId } }],
+      },
       select: { id: true },
     });
     if (printed) {
@@ -1690,11 +1740,11 @@ export async function voidShipper(id: string, reason: string): Promise<void> {
     // #65 review round 1 (Important): the restore below writes the ORIGINAL's `lineComplete` flags
     // by `reversalClearedLineIds`, so the orders those cleared lines belong to are DISCOVERED here
     // and unioned into the claim set, never assumed to still sit on the reversal's own
-    // `ShipperOrder` rows. No explicit guard pins a reversal's membership — today
-    // `removeOrderFromShipper` on a reversal happens to be refused by the at-least-one-positive-
-    // line survivor invariant (every reversal line is negative), which is INCIDENTAL protection of
-    // exactly the kind #65 itself existed to close (#139 records the class) — so the void is
-    // correct by construction instead of by that accident. Cleared ids are immutable and a
+    // `ShipperOrder` rows. Since #139, `claimLiveShipper`'s pair freeze refuses every edit door on
+    // a reversal EXPLICITLY (no longer just incidentally via the at-least-one-positive-line
+    // survivor invariant), so no product path shrinks a reversal's membership — but data written
+    // before that guard could already hold the shrunk shape, so the void stays correct by
+    // construction instead of leaning on the freeze. Cleared ids are immutable and a
     // `ShipperLine` never re-parents, so this stub read can only match rows that die before the
     // claim — harmless (`claimOrdersInOrder` dedups; the restore re-reads under the claim). The
     // union flows through `refuseIfInvoiced` (a flag restore is a shipment-side write on that

@@ -4,6 +4,8 @@ import { runWithContext } from "@/server/context";
 import { createOrder, getOrder, type OrderDetail } from "@/server/orders";
 import {
   createShipper, voidShipper, reverseShipper, removeOrderFromShipper, getShipper,
+  updateShipper, addOrderToShipper, replaceShipperLines, replaceShipperContainers,
+  replaceShipperSerials, printBol,
   type ShipperDetail,
 } from "@/server/shippers";
 import { storeDocument, getDocument } from "@/server/documents";
@@ -328,13 +330,12 @@ describe("voidShipper — reversal-aware (#65)", () => {
   });
 
   // #65 review round 1 (Important): the restore must not assume the cleared lines' orders still
-  // sit on the reversal's own `ShipperOrder` rows. No product path shrinks a reversal's membership
-  // TODAY — `removeOrderFromShipper` on a reversal is refused, but only INCIDENTALLY, by the
-  // at-least-one-positive-line survivor invariant (every reversal line is negative), the same
-  // accidental-protection shape #65 itself existed to close (#139 records the class). So the void
-  // DISCOVERS the cleared lines' orders and unions them into its claim/recompute set, and this
-  // test pins that by shrinking the membership directly (raw deletes — the state any future
-  // relaxation of that unrelated guard would produce), not through a mutator.
+  // sit on the reversal's own `ShipperOrder` rows. Since #139, `removeOrderFromShipper` on a
+  // reversal is refused EXPLICITLY (`claimLiveShipper`'s pair freeze — no longer just incidentally
+  // by the at-least-one-positive-line survivor invariant), so no product path shrinks a reversal's
+  // membership at all. The void still DISCOVERS the cleared lines' orders and unions them into its
+  // claim/recompute set, and this test pins that by shrinking the membership directly (raw deletes
+  // — the state data written before the freeze could already hold), not through a mutator.
   it("restores and recomputes an order no longer on the reversal's membership at void time", async () => {
     const { order: orderA, customer } = await savedOrder();
     const partB = await makePart(customer.id);
@@ -553,5 +554,141 @@ describe("voidShipper — reversal-aware (#65)", () => {
 
     // ...and the restore then ran to completion under the claim it waited for.
     expect((await getOrder(order.id)).status).toBe("SHIPPED");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// #139 — freeze the pair (owner ruling 2026-08-18, spec §15). While a reversal pair is live, ANY
+// edit to EITHER document is refused naming the pair: the original's refusal says void the
+// reversal first; the reversal's says it is machine-generated mirror paper. The guard sits inside
+// `claimLiveShipper` — the one chokepoint exactly the six edit doors share — so `voidShipper`
+// (the blessed undo), `reverseShipperInTx` (step 6b writes the original's flags), and both print
+// paths (including `printBol`'s lazy first-print number write) stay exempt by construction.
+// ---------------------------------------------------------------------------------------------
+describe("edit doors — freeze the pair (#139)", () => {
+  beforeEach(async () => {
+    await truncateAll();
+    await seedOrderGatePrereqs();
+  });
+
+  const originalFrozen = (reversalNumber: number) =>
+    `This shipment has been reversed by Packing List ${reversalNumber} — void the reversal first, then edit, then re-reverse`;
+  const reversalFrozen = (originalNumber: number) =>
+    `This is a reversal of Packing List ${originalNumber} — a reversal is machine-generated mirror paper; void it and re-reverse instead of editing it`;
+
+  /** A TWO-order original (so a remove would otherwise succeed — never shadowed by the last-order
+   *  guard), reversed into a live pair, plus a spare same-customer order an add would otherwise
+   *  accept: every door below fails ONLY because of the freeze. */
+  async function editablePair(): Promise<{
+    original: ShipperDetail; reversal: ShipperDetail;
+    orderA: OrderDetail; orderB: OrderDetail; spare: OrderDetail;
+  }> {
+    const { order: orderA, customer } = await savedOrder();
+    const partB = await makePart(customer.id);
+    await giveSteps(partB.id);
+    const { order: orderB } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: partB.id, qty: 10, weight: "25.00" }],
+    }));
+    const partC = await makePart(customer.id);
+    await giveSteps(partC.id);
+    const { order: spare } = await asSystem(() => createOrder({
+      customerId: customer.id, lines: [{ partId: partC.id, qty: 10, weight: "25.00" }],
+    }));
+    const { shipper: original } = await createShipper(
+      twoOrderInput(customer.id, orderA, orderB), { canOverrideCreditHold: false });
+    const { shipper: reversal } = await asSystem(() =>
+      reverseShipper(original.id, { reason: "wrong parts loaded" }));
+    return { original, reversal, orderA, orderB, spare };
+  }
+
+  /** The six edit doors against one shipment id, each with a payload that would otherwise be
+   *  accepted — so a rejection can only be the freeze's. */
+  function sixDoors(shipperId: string, so: { id: string }, order: OrderDetail, spareId: string) {
+    return [
+      ["updateShipper", () => updateShipper(shipperId, { comments: "carrier called ahead" })],
+      ["addOrderToShipper", () => addOrderToShipper(shipperId, spareId)],
+      ["removeOrderFromShipper", () => removeOrderFromShipper(shipperId, so.id)],
+      ["replaceShipperLines", () => replaceShipperLines(shipperId, so.id, [
+        { orderLineId: order.lines[0].id, qty: 1, weight: "1.00", lineComplete: false },
+      ])],
+      ["replaceShipperContainers", () => replaceShipperContainers(shipperId, so.id, [])],
+      ["replaceShipperSerials", () => replaceShipperSerials(shipperId, so.id, [])],
+    ] as const;
+  }
+
+  it("refuses every edit door on the ORIGINAL of a live pair, naming the reversal", async () => {
+    const { original, reversal, orderA, spare } = await editablePair();
+    const soA = original.orders.find((so) => so.orderId === orderA.id)!;
+    for (const [door, run] of sixDoors(original.id, soA, orderA, spare.id)) {
+      await expect(asSystem(run), door).rejects.toMatchObject({
+        status: 400, message: originalFrozen(reversal.shipperNumber),
+      });
+    }
+  });
+
+  it("refuses every edit door on the REVERSAL — machine-generated mirror paper", async () => {
+    const { original, reversal, orderA, spare } = await editablePair();
+    const soA = reversal.orders.find((so) => so.orderId === orderA.id)!;
+    for (const [door, run] of sixDoors(reversal.id, soA, orderA, spare.id)) {
+      await expect(asSystem(run), door).rejects.toMatchObject({
+        status: 400, message: reversalFrozen(original.shipperNumber),
+      });
+    }
+  });
+
+  // The ruling's whole correction flow, end to end: the freeze never strands a shipment — void
+  // the reversal (the blessed undo), edit, re-reverse.
+  it("correction flow: reverse → edit refused → void reversal → edit succeeds → re-reverse succeeds", async () => {
+    const { original, reversal, orderA } = await editablePair();
+    const soA = original.orders.find((so) => so.orderId === orderA.id)!;
+    const edit = () => replaceShipperLines(original.id, soA.id, [
+      { orderLineId: orderA.lines[0].id, qty: 5, weight: "12.50", lineComplete: true },
+    ]);
+
+    await expect(asSystem(edit)).rejects.toMatchObject({ status: 400 });
+
+    await asSystem(() => voidShipper(reversal.id, "reversal cut against the wrong quantities"));
+
+    const after = await asSystem(edit);
+    expect(after.orders.find((so) => so.orderId === orderA.id)!.lines[0].qty).toBe(5);
+
+    const { shipper: second } = await asSystem(() =>
+      reverseShipper(original.id, { reason: "returned again" }));
+    expect(second.reversesShipperId).toBe(original.id);
+  });
+
+  // A reversal is frozen ALWAYS, not just while the original lives: no product path voids the
+  // original under a live reversal (voidShipper refuses), so the corrupt pre-#65 state is forced
+  // raw — the unconditional refusal is the safe direction for data like it.
+  it("a reversal stays frozen even when its original is voided (corrupt pre-#65 data)", async () => {
+    const { original, reversal } = await editablePair();
+    await prisma.shipper.update({ where: { id: original.id }, data: { deletedAt: new Date() } });
+    await expect(asSystem(() => updateShipper(reversal.id, { comments: "x" })))
+      .rejects.toMatchObject({ status: 400, message: reversalFrozen(original.shipperNumber) });
+  });
+
+  // The deliberate exemption the chokepoint buys: `printBol` bypasses `claimLiveShipper`, and its
+  // lazy first-print `bolNumber` allocation is a number write, not an operator edit — it must
+  // keep working on a reversed original.
+  it("printBol on a reversed original still succeeds and allocates its number", async () => {
+    const { original } = await editablePair();
+    const { bolNumber, pdf } = await asSystem(() => printBol(original.id));
+    expect(bolNumber).toBeGreaterThan(0);
+    expect(pdf.length).toBeGreaterThan(0);
+    expect((await prisma.shipper.findUniqueOrThrow({ where: { id: original.id } })).bolNumber)
+      .toBe(bolNumber);
+  });
+
+  // The detail names the pair from BOTH sides for the UI freeze (§5.16 — disabled says why):
+  // `reversesShipperNumber` is the reversal side's half; `reversedByShipperNumber` (live-filtered)
+  // the original's, clearing on void + reload so the UI gate follows server truth for free.
+  it("the detail carries the pair's numbers from both sides", async () => {
+    const { original, reversal } = await editablePair();
+    const rev = await getShipper(reversal.id);
+    expect(rev.reversesShipperId).toBe(original.id);
+    expect(rev.reversesShipperNumber).toBe(original.shipperNumber);
+    const orig = await getShipper(original.id);
+    expect(orig.reversesShipperNumber).toBeNull();
+    expect(orig.reversedByShipperNumber).toBe(reversal.shipperNumber);
   });
 });
