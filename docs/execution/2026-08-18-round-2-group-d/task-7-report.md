@@ -93,3 +93,74 @@ Run from `erp/`:
   tick-set mid-run clobber and error-channel displacement stay filed as issues (Task 9).
 - **E2E:** not run here per the task's explicit gate list (Group D runs the mandatory
   `npm run test:e2e` at the branch level before merge — these are UI files, so that run matters).
+
+## Fix round 1 — review CRITICAL: mutual rollback deadlock
+
+**The finding.** The round-1 drain awaited the `serial()` queue's chain TAILS from inside the
+queued fn — and a key's stored tail settles only after its own catch (drain included) completes.
+Two saves on different keys both failing while overlapping (one network blip rejecting both
+in-flight PATCHes — ordinary use) put each catch awaiting the other's tail: a reproducible
+circular wait. Consequences confirmed against the reviewer's repro
+(`scratchpad/mutual-drain.mjs`, run first: `DEADLOCK: neither catch ever reached its rollback
+load / setError`): no rollback, no error banner (§5.13 violated outright), both keys' queues
+permanently wedged, and a third key's failing save hanging behind the wedged tails. Strictly
+worse than the pre-Task-7 code, whose catches recovered independently.
+
+**The fix (the reviewer's direction (a) — error ordering preserved exactly).** Each page keeps a
+second map beside the queue: per-key REQUEST-settled signals, registered at dispatch
+(`inFlight.current.set(key, req.then(noop, noop))` beside the `await req`) and settling when the
+request itself settles — before the catch's recovery work begins. `drainOtherKeys` consumes THAT
+map. Correctness is preserved because the rollback GET must postdate sibling COMMITS, and a
+request's settlement IS its commit/failure — nothing about a sibling's recovery (its own drain,
+rollback, banner) needs to have finished; no cycle is possible because a signal never depends on
+a drain. The helper's algorithm is unchanged (it was always map-agnostic); its doc now states the
+signals contract and forbids the tail map, and the parameter is renamed `signals`. Verified
+end-to-end with a fixed-wiring clone of the repro (`scratchpad/mutual-drain-fixed.mjs`, which
+also adds the review's third-key case): `OK: all rollbacks ran — no mutual deadlock, no wedged
+queue`.
+
+**Per-change:**
+
+| File | Change | Line refs (post-fix) |
+|------|--------|----------------------|
+| `erp/src/lib/drain-queue.ts` | Doc rewritten to the signals contract (never the tail map — the deadlock named); param renamed `signals`; starvation note added beside the termination note (minor 2: the wait is bounded only by user actions — the save-scope reload's own acceptance) | whole-file doc, :44–58 (unchanged algorithm) |
+| `erp/tests/drain-queue.test.ts` | The required regression (RED first, watched — see below) + suite language aligned to signals; test 6 kept/adapted (a save dispatched during the wait registers a fresh signal and is waited out); "skips own key" re-documented as a contract pin the helper must not depend on | :80–125 (mutual case), :29–36, :117–135 |
+| `erp/src/app/orders/[id]/page.tsx` | `inFlight` signal map; signal registered at dispatch in `saveOrder`; catch drains `inFlight.current`; composite-key one-liner (minor 1) | :311–317 (map), :328–330 (key comment), :336 (signal), :347 (drain) |
+| `erp/src/app/invoicing/[id]/InvoiceDetail.tsx` | Same | :551–557 (map), :563–565 (key comment), :570 (signal), :580 (drain) |
+| `erp/src/app/shipping/[id]/ShipmentDetail.tsx` | Same (`patchHeader`) | :464–470 (map), :485–487 (key comment), :492 (signal), :502 (drain) |
+| `erp/src/app/certs/[id]/CertDetail.tsx` | Same, at BOTH dispatch sites (`patchNotes` + `saveReadings`); queue comment updated ("drains … in-flight requests") | :241–247 (map), :261/:270 (notes signal/drain), :294/:303 (readings signal/drain) |
+
+**RED table (fix round).** The mutual-failure regression was written with its harness draining
+the chain-tail map — the exact round-1 page wiring — and watched RED (`rollbacks` stayed `[]`
+after flushes: the deadlock surfaces as a failed assertion, not a timeout). The harness's drain
+target was then flipped to the signals map (the fixed wiring, which is what the committed test
+pins), and the case went green with the other six. 7/7 green after the page adoptions.
+
+| Case | Pins |
+|------|------|
+| mutual failure across two keys — both drains resolve, both rollbacks dispatch, both errors report | the CRITICAL: no mutual deadlock, both chain tails settle (later saves aren't wedged) |
+
+**Gates (fix round), from `erp/`:** `npx vitest run tests/drain-queue.test.ts
+tests/use-latest.test.ts` — 2 files, 14 passed · `npx tsc --noEmit` — exit 0 · `npx eslint` on
+the six touched files — exit 0. Full suite NOT run (a run was in progress in another process,
+per the coordinator).
+
+**Reviewer-attention (fix round):**
+
+- **Round 1's "residual, accepted" note is superseded.** The microtask argument there leaned on
+  drain-resolution and ticket-take sharing one cascade; under the signals contract the honest
+  statement is narrower: a sibling save whose request DISPATCHES after the drain's final
+  snapshot but before the rollback GET's ticket is not waited out — it is instead safe by ticket
+  order whenever its dispatch follows the load's (`mutations.next()` is shared and monotonic, so
+  its response re-applies through the accept gate), and the loop-until-stable pass catches the
+  orderings where its registration lands before the final snapshot. The one theoretically
+  unclosed interleaving — a QUEUED sibling save whose fn runs in the microtask gap between the
+  drain's final check and `load()`'s ticket, AND whose PATCH the server then commits after
+  serving the later-sent GET — requires a queued-behind-a-failing-sibling save plus server-side
+  reordering, and is vastly narrower than either the original hole or anything round 1 shipped.
+  Closing it fully would mean waiting on undispatched queued saves, which is exactly the
+  tail-shaped dependency that deadlocked. Judged accepted-by-construction of direction (a);
+  flagged here rather than silently dropped.
+- The success path never clears a key's settled signal from the map — deliberate: a settled
+  promise is a no-op for `allSettled`, and deleting entries would only add bookkeeping to the
+  hot path.
