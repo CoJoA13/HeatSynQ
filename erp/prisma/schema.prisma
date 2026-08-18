@@ -855,6 +855,12 @@ model StoredDocument {
   quote             Quote?                   @relation(fields: [quoteId], references: [id])
   kind              DocumentKind
   loadNumber        Int? // TRAVELER only: null = full set (one sheet-set per load in one PDF)
+  // #52 (owner ruling 2026-08-17): whole-shipment paper (a BOL, a whole-set SHIPPER ticket —
+  // `shipperId` set, `orderId` null) records HERE which member orders its render actually covered
+  // at print time; `listDocumentsForOrder` reads this, never the shipment's editable current
+  // membership. Per-order tickets and every other kind stay `[]`. NOT an owner column — the
+  // kind→owner CHECK below is deliberately untouched, the `templateVersionId` precedent.
+  coveredOrderIds   String[]                 @default([])
   // Phase 7 (spec §4.2): the exact PUBLISHED template version that produced this print — render
   // metadata stamped by every post-Phase-7 print; pre-existing rows stay null. NOT an owner
   // column: the kind→owner CHECK below is deliberately untouched by Phase 7 — its arms govern
