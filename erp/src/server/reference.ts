@@ -265,7 +265,14 @@ async function normalizeEndingStatementDefaultOnUpdate(
     const current = await tx.endingStatement.findFirst({
       where: { id, deletedAt: null }, select: { active: true },
     });
-    if (!current) return; // no such live row — the update() below raises the real error
+    // #99: a row soft-deleted (or missing) at entry never reaches here — the live-row guard at
+    // the top of updateReference's transaction already 404'd it. Null now means a concurrent
+    // delete committed between that guard and this locked re-read (visible at Read Committed);
+    // returning skips the demote-scan, and the flag write below lands on a dead row no live
+    // read ever sees — the at-most-one-LIVE-default invariant holds either way. (The update()
+    // below does NOT 404 a soft-deleted id — it finds rows by bare id — which is exactly why
+    // the guard exists.)
+    if (!current) return;
     if (data.active !== true && !current.active) {
       throw new HttpError(400, "An inactive ending statement cannot be the default");
     }
@@ -344,7 +351,11 @@ async function assertDiscountPairAfterUpdate(
   const current = await tx.terms.findFirst({
     where: { id }, select: { discountPercent: true, discountDays: true },
   });
-  if (!current) return; // No such row — the update() below raises the real (404-shaped) error.
+  // #99: an id that was missing at entry never reaches here — updateReference's live-row guard
+  // already 404'd it (this bare-id read sees soft-deleted rows, so null means hard-missing
+  // only). Null now takes a mid-transaction hard delete, which only tests perform; the update()
+  // below then raises the real (404-shaped) P2025 error.
+  if (!current) return;
   const percent = "discountPercent" in patch ? patch.discountPercent : current.discountPercent;
   const days = "discountDays" in patch ? patch.discountDays : current.discountDays;
   if ((percent != null) !== (days != null)) {
@@ -363,6 +374,16 @@ export async function updateReference(kind: string, id: string, input: Record<st
   const assignsFk = links.some((link) => data[link.column] != null);
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
     prisma.$transaction(async (tx) => {
+      // #99: the update() below finds rows by BARE id, so without this guard a soft-deleted row
+      // updates and 200s — a "promote the deleted row to default" even used to stick a flag on a
+      // dead row. First statement of the transaction, before the link asserts and both
+      // normalizers, and ON this tx (the #60 rule — a read defaulting to the top-level singleton
+      // escapes the caller's snapshot AND its Serializable read-set). The message matches
+      // db-errors.ts's P2025 mapping so soft-deleted and hard-missing present identically.
+      const alive = await delegate(kind, tx).findFirst({
+        where: { id, deletedAt: null }, select: { id: true },
+      });
+      if (!alive) throw new HttpError(404, `${REFERENCE_LABELS[kind].singular} not found`);
       for (const link of links) {
         const value = data[link.column];
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
