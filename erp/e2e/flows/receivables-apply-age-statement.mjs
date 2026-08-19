@@ -258,12 +258,15 @@ export async function run(page, shot, ctx) {
   assert.match((await netBalance.textContent()) ?? "", /270\.00/,
     "the customer A/R section must open on the same 270.00 net the aging report and statement showed");
 
-  const invoiceRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
-  await invoiceRow.waitFor({ state: "visible", timeout: 15000 });
-  assert.equal((await invoiceRow.locator("td").nth(5).textContent()).trim(), "470.00",
+  // `arInvoiceRow`, not `invoiceRow`: that name is already taken at the top of this function by the
+  // /invoicing section's row. Same function scope, so the duplicate was a parse error that took the
+  // WHOLE flow down (see the fix-round note in task-4-report.md).
+  const arInvoiceRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
+  await arInvoiceRow.waitFor({ state: "visible", timeout: 15000 });
+  assert.equal((await arInvoiceRow.locator("td").nth(5).textContent()).trim(), "470.00",
     "the open-items row must carry the invoice's live open balance");
 
-  await invoiceRow.getByRole("button", { name: "Write off", exact: true }).click();
+  await arInvoiceRow.getByRole("button", { name: "Write off", exact: true }).click();
   const writeOffAmount = receivables.getByLabel("Amount to write off", { exact: true });
   // Owner ruling 2026-08-19: editable, defaulting to the FULL open balance. Asserting the DEFAULT
   // (rather than typing over it) is what pins that half of the ruling.
