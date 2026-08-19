@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
+import { invalidateHistory } from "@/components/HistoryPanel";
 
 type SpecLink = { id: string; specificationId: string; specificationName: string };
 type SpecOption = { id: string; name: string; active: boolean };
@@ -59,6 +60,7 @@ export function SpecsSection({
       });
       setDraft("");
       onError(null);
+      invalidateHistory(); // #14 item 1 — success path, before the follow-up load
       await load();
     } catch (e) { onError((e as Error).message); }
   }
@@ -66,6 +68,7 @@ export function SpecsSection({
     try {
       await api(`/api/parts/${partId}/specifications/${linkId}`, { method: "DELETE" });
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }

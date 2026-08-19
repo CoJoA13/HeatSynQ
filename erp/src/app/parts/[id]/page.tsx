@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
@@ -123,6 +123,10 @@ function PartDetail({ id }: { id: string }) {
       try {
         await api(`/api/parts/${id}`, { method: "PATCH", body: JSON.stringify(body) });
         setError(null);
+        // #14 item 1, on the success path the instant the PATCH resolves (the #124/#131
+        // ordering): the History panel below refetches, so an edit made while staying on this
+        // page shows up without a reload.
+        invalidateHistory();
         return true;
       } catch (e) {
         // §5.13 rollback, detached: report first, then fire rollbackLoad() WITHOUT awaiting it

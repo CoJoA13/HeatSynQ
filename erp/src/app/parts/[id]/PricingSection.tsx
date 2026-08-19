@@ -5,6 +5,7 @@ import { gate, gateDo } from "@/lib/permission-ui";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
 import { swapAt } from "@/lib/reorder";
 import { useSaveScope } from "@/lib/save-scope";
+import { invalidateHistory } from "@/components/HistoryPanel";
 
 // Local mirrors of src/server/part-prices.ts's PartPriceRow/PartBreakRow — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -115,6 +116,7 @@ export function PricingSection({
     try {
       await put;
       onError(null);
+      invalidateHistory(); // #14 item 1 — success path, the instant the save resolves
       return true;
     } catch (e) {
       onError((e as Error).message);
@@ -168,6 +170,7 @@ export function PricingSection({
     try {
       await api(`/api/parts/${partId}/prices/${id}`, { method: "DELETE" });
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }
@@ -192,6 +195,7 @@ export function PricingSection({
     try {
       await put;
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) {
       // §5.13 rollback, detached — the saveRow() shape above. (The success path may await
@@ -224,6 +228,7 @@ export function PricingSection({
       });
       setAddCodeId("");
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) {
       onError((e as Error).message);
@@ -250,6 +255,7 @@ export function PricingSection({
     try {
       await put;
       onError(null);
+      invalidateHistory(); // #14 item 1
       return true;
     } catch (e) {
       // §5.13 rollback, detached — the saveRow() shape above.
@@ -289,6 +295,7 @@ export function PricingSection({
       });
       setBreakDrafts((cur) => ({ ...cur, [priceId]: { threshold: "", price: "" } }));
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }
@@ -296,6 +303,7 @@ export function PricingSection({
     try {
       await api(`/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, { method: "DELETE" });
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }

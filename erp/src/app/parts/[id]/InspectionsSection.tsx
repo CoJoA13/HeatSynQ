@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { useSaveScope } from "@/lib/save-scope";
+import { invalidateHistory } from "@/components/HistoryPanel";
 
 type InspRow = {
   id: string; inspectionCodeId: string; inspectionCodeName: string;
@@ -101,6 +102,7 @@ export function InspectionsSection({
     try {
       await put;
       onError(null);
+      invalidateHistory(); // #14 item 1 — success path, the instant the save resolves
       return true;
     } catch (e) {
       onError((e as Error).message);
@@ -124,6 +126,7 @@ export function InspectionsSection({
     try {
       await api(`/api/parts/${partId}/inspections/${id}`, { method: "DELETE" });
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }
@@ -145,6 +148,7 @@ export function InspectionsSection({
     try {
       await put;
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) {
       // §5.13 rollback, detached — the saveRow() shape above. (The success path may await
@@ -187,6 +191,7 @@ export function InspectionsSection({
       });
       setDraft(emptyDraft);
       onError(null);
+      invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
   }
