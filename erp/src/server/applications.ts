@@ -311,7 +311,21 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
  * the same composition `buildStatement` makes for the printed document (§8, "open credits ... and
  * on-account as negatives"), and on the same bases: `invoiceOpenBalance` / `creditRemaining` /
  * `paymentOnAccount` from `ar-balances`, never re-derived here. Settled items drop out; a $0 row is
- * not an open item.
+ * not an open item — with ONE deliberate exception, below.
+ *
+ * **The written-off invoice is retained (#77, owner ruling 2026-08-19).** An invoice closed by a
+ * STANDALONE (null-payment) write-off would otherwise vanish from this table the instant it was
+ * written off — and this table is the only anchor its undo has: `voidApplication` works on a
+ * null-payment row, but `BatchDetail` lists applications per PAYMENT, so a mis-keyed bad-debt
+ * write-off would be uncorrectable outside SQL. So such an invoice stays listed, flagged by a
+ * non-empty `writeOffs`, and the screen that wrote it off can undo it (§5.14: a block must name a
+ * route out of itself). The retained row's `open` is ZERO, so it contributes nothing to the sum and
+ * #83's reconciliation invariant is untouched.
+ *
+ * Scoped to null-payment write-offs on purpose: a RESIDUAL write-off (one sourced from a payment)
+ * is already reachable from its receipt batch, so retaining those too would park every invoice ever
+ * settled with a residual in a table headed "Open items" forever, to duplicate a control that
+ * already exists elsewhere.
  *
  * `db` threads the caller's transaction so the items and the aging strip can be read from ONE
  * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent — and `asOfDate`
@@ -331,6 +345,18 @@ export type CustomerOpenItem = {
   original: number;
   /** Signed the way it moves the net: positive for an invoice, negative for a credit or cash. */
   open: number;
+  /** The STANDALONE (null-payment) write-offs live against this invoice — the flag the row renders
+   *  and the handle its Void control acts on. Always empty for a CREDIT or PAYMENT row. */
+  writeOffs: OpenItemWriteOff[];
+};
+
+/** One standalone write-off, as the A/R section needs it: the `Application` id `voidApplication`
+ *  takes, plus what the operator needs to recognize which one they are undoing. */
+export type OpenItemWriteOff = {
+  id: string;
+  amount: number;
+  appliedDate: string;
+  reason: string | null;
 };
 
 export async function openItemsForCustomer(
@@ -364,7 +390,13 @@ export async function openItemsForCustomer(
     select: {
       id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,
       order: { select: { orderNumber: true } },
-      applications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
+      // `id`/`reason`/`appliedDate`/`paymentId` beyond the `toLite` trio: the standalone write-offs
+      // this row carries are picked out of the SAME list the balance is derived from, so the flag and
+      // the balance can never describe different sets (and no second query is needed).
+      applications: {
+        where: liveAsOf,
+        select: { id: true, amount: true, type: true, deletedAt: true, reason: true, appliedDate: true, paymentId: true },
+      },
       creditApplications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
     },
     orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
@@ -375,13 +407,21 @@ export async function openItemsForCustomer(
     const total = inv.total.toNumber();
     if (inv.kind === "INVOICE") {
       const open = invoiceOpenBalance(total, inv.applications.map(toLite));
-      if (cents(open) <= 0) continue; // settled — not an open item
+      const writeOffs: OpenItemWriteOff[] = inv.applications
+        .filter((a) => a.type === "WRITE_OFF" && a.paymentId === null)
+        .map((a) => ({
+          id: a.id, amount: a.amount.toNumber(),
+          appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
+        }));
+      // Settled AND never standalone-written-off — not an open item, and nothing here to undo.
+      // A written-off invoice is retained at zero instead (#77; see the header block).
+      if (cents(open) <= 0 && writeOffs.length === 0) continue;
       items.push({
         kind: "INVOICE", id: inv.id,
         documentNumber: invoiceDocumentNumber("INVOICE", null, inv.order.orderNumber, prefix),
         date: formatDateOnly(inv.invoiceDate),
         dueDate: inv.dueDate ? formatDateOnly(inv.dueDate) : null,
-        original: total, open,
+        original: total, open, writeOffs,
       });
       continue;
     }
@@ -395,6 +435,7 @@ export async function openItemsForCustomer(
       documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.order.orderNumber, prefix),
       date: formatDateOnly(inv.invoiceDate), dueDate: null,
       original: total, open: -remaining, // `creditRemaining` is already positive
+      writeOffs: [], // a credit memo is never written off — only an invoice is
     });
   }
 
@@ -419,6 +460,7 @@ export async function openItemsForCustomer(
       documentNumber: pay.reference !== "" ? pay.reference : "Payment on account",
       date: formatDateOnly(pay.receivedDate), dueDate: null,
       original: amount, open: -onAccount,
+      writeOffs: [], // cash on account is not an invoice
     });
   }
   return items;
@@ -901,6 +943,152 @@ export async function applyCredit(input: { creditInvoiceId: string; invoiceId: s
   const data = APPLY_CREDIT.parse(input);
   await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
     (tx) => applyCreditInTx(tx, data),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
+}
+
+// -------------------------------------------------------------------------------------------
+// writeOffInvoice — the STANDALONE bad-debt write-off (#77). Spec §3 ruling 1 calls for write-offs
+// in BOTH flavors — a small residual and a wholly uncollectable invoice — but `applyPayment` is the
+// only path that ever wrote one and it requires a `paymentId`. An operator could write off a
+// residual from an existing receipt panel and nothing else: a wholly uncollectable invoice had no
+// path short of fabricating a receipt. The schema and the tightened `Application_source_check`
+// already PERMIT a WRITE_OFF with a null `paymentId` (no schema change, no migration); this is the
+// writer that was missing.
+//
+// THE CLAIM. `applyCredit` is the closest sibling (one target invoice, no payment row), but the
+// claim is `voidApplicationInTx`'s SINGLE-invoice shape — there is no second guarded balance here,
+// because the source of a write-off is the shop's own P&L, not another row:
+//   1. An UNLOCKED stub read for `orderId`/`kind`/`status`/`deletedAt` — refusing an untargetable
+//      row NOW, so no lock is ever taken for one that can never be written off (`orderId` never
+//      changes once an invoice exists, so it is safe to CLAIM on; everything else is re-read below).
+//   2. `claimOrder(tx, stub.orderId)` — the order behind the invoice, the fixed lock order every
+//      A/R mutation takes (orders, then invoice rows).
+//   3. The invoice row itself `FOR UPDATE`. The guarded balance is derived from the `Application`
+//      rows keyed to the invoice, so THIS is the lock that serializes concurrent write-offs (and a
+//      write-off against a concurrent payment) — never the isolation level.
+//   4. Re-validate kind/status/deletedAt UNDER the claim: a concurrent `unlockInvoice` (back to
+//      DRAFT) or `discardInvoice` committing between the stub and the claim must not let a write-off
+//      settle now-editable or discarded paper.
+// Then the over-application guard against the live open balance, then `assertPeriodOpen` — under
+// the claims, before the write. Serializable, pairing with the period lock's SSI backstop (see
+// `writeOffInvoice` below).
+//
+// THE DATE IS TODAY, never operator-chosen (controller call, matching `applyCredit`). A backdate
+// into an OPEN prior month would silently move that month's aging buckets and roll-forward, and
+// `assertPeriodOpen` would permit it — the guard only refuses a CLOSED month. We decline the
+// capability rather than guard it.
+//
+// THE GL QUESTION DOES NOT EXIST: 5C ruling 3 pinned ONE write-off account
+// (`BillingConfig.writeOffGlAccountId`) and explicitly ruled the residual-vs-bad-debt split out, so
+// this posts DR write-off / CR A/R identically to a residual one. `gl-export.ts`, `close-periods.ts`,
+// `aging.ts` and `statements.ts` all read `Application` without ever consulting `paymentId`, so none
+// of them needs a change (pinned by tests, not assumed — tests/write-offs.test.ts).
+// -------------------------------------------------------------------------------------------
+
+const WRITE_OFF = z.object({
+  invoiceId: z.string().min(1),
+  amount: decimalField(12, 2, { required: true, min: "positive" }),
+  // Optional in the SCHEMA so that a missing reason and a whitespace-only one produce the SAME
+  // refusal from `resolveReason`'s wording below, rather than a zod field error for one and the
+  // house message for the other. §4.1 requires the reason; this is where it is required.
+  reason: z.string().max(4000).optional(),
+}).strict();
+
+type WriteOffInput = z.infer<typeof WRITE_OFF>;
+
+async function writeOffInvoiceInTx(tx: Db, data: WriteOffInput): Promise<void> {
+  // The reason rule, verbatim from `resolveReason`'s WRITE_OFF arm — the two flavors of write-off
+  // must read identically to the operator, so the wording is shared deliberately (a test pins it on
+  // both sides).
+  const why = (data.reason ?? "").trim();
+  if (!why) throw new HttpError(400, "a write-off needs a reason");
+
+  // (1) UNLOCKED stub read — learn the order to claim, and refuse an untargetable row before taking
+  // any lock. Its kind/status/deletedAt verdict is NOT trusted for the write; it is re-made under
+  // the claim below.
+  const stub = await tx.invoice.findFirst({
+    where: { id: data.invoiceId },
+    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+  });
+  if (!stub || stub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (stub.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a write-off applies to an invoice");
+  }
+  if (stub.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can be written off");
+  }
+
+  // (2) The order, then (3) the invoice row — the fixed lock order, single-invoice shape.
+  await claimOrder(tx, stub.orderId);
+  await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${data.invoiceId} FOR UPDATE`;
+
+  const invoice = await tx.invoice.findFirstOrThrow({
+    where: { id: data.invoiceId },
+    select: {
+      kind: true, status: true, deletedAt: true, total: true,
+      order: { select: { orderNumber: true } },
+      applications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT },
+    },
+  });
+
+  // (4) Re-validate under the claim, with the SAME checks the stub pass ran.
+  if (invoice.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (invoice.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a write-off applies to an invoice");
+  }
+  if (invoice.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can be written off");
+  }
+
+  // (5) Over-application: Σ applications must never exceed the invoice total. The message is the
+  // one `applyPaymentInTx`/`applyCreditInTx` already use, so a refused amount reads the same
+  // wherever the operator is standing.
+  const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite)));
+  if (cents(data.amount) > openCents) {
+    throw new HttpError(400, `That exceeds the invoice's open balance of ${openCents / 100}`);
+  }
+
+  // (6) §4.1: a write-off is cash-journal paper effective at `appliedDate` (today), so it is refused
+  // into a CLOSED period. Under the order/invoice claims, before the audited create.
+  const appliedDate = todayDateOnly();
+  await assertPeriodOpen(tx, appliedDate);
+  const auditData = {
+    type: "WRITE_OFF", invoiceId: data.invoiceId, invoiceOrderNumber: invoice.order.orderNumber,
+    // Stated explicitly: the null payment is the FACT that distinguishes this row from the residual
+    // write-off `applyPayment` writes, and the audit entry is where that has to be legible.
+    paymentId: null, amount: data.amount, reason: why, appliedDate: formatDateOnly(appliedDate),
+  };
+  await auditedCreate("application", auditData, () => tx.application.create({
+    data: {
+      invoiceId: data.invoiceId, amount: data.amount, type: "WRITE_OFF", reason: why,
+      paymentId: null, appliedDate,
+    },
+    select: { id: true },
+  }), { tx });
+}
+
+/**
+ * `writeOffInvoice` (#77) — write off all or part of a finalized invoice's open balance with no
+ * payment behind it. Gated `receivables.create` + the `write_off` special action by its route; every
+ * other guard lives here.
+ *
+ * **STANDING INVARIANT: this transaction runs Serializable.** The period lock is a predicate — an
+ * un-closed month has NO `ClosePeriod` row — so `assertPeriodOpen`'s advisory lock cannot stop a
+ * close that commits AFTER this transaction's snapshot is fixed (which happens at the stub read,
+ * before the period read). Only Postgres SSI aborts that phantom cycle, and only while BOTH sides
+ * are Serializable. Downgrade this to Read Committed and the period lock silently breaks — the
+ * dangerous-direction test in tests/write-offs.test.ts goes red if anyone does.
+ *
+ * `tx` is optional and exists for exactly one caller: the discriminating concurrency test passes a
+ * manually-opened (Read Committed) transaction so the INVOICE-ROW claim, not SSI, is what serializes
+ * a competing write-off — the `applyPayment` precedent directly above.
+ */
+export async function writeOffInvoice(input: unknown, tx?: Prisma.TransactionClient): Promise<void> {
+  const data = WRITE_OFF.parse(input);
+  if (tx) { await writeOffInvoiceInTx(tx, data); return; }
+  await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
+    (fresh) => writeOffInvoiceInTx(fresh, data),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   ));
 }

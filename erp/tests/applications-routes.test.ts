@@ -6,6 +6,7 @@ import { parseDateOnly } from "@/lib/business-days";
 import { GET as discountRoute, POST as applyRoute } from "@/app/api/receivables/applications/route";
 import { DELETE as voidRoute } from "@/app/api/receivables/applications/[id]/route";
 import { POST as applyCreditRoute } from "@/app/api/receivables/credit-applications/route";
+import { POST as writeOffRoute } from "@/app/api/receivables/write-offs/route";
 
 const noParams = { params: Promise.resolve({}) };
 const withParams = (p: Record<string, string>) => ({ params: Promise.resolve(p) });
@@ -358,5 +359,65 @@ describe("credit-applications route", () => {
       creditInvoiceId: credit.invoiceId, invoiceId: inv.invoiceId, amount: 300,
     }), noParams);
     expect(res.status).toBe(401);
+  });
+});
+
+// The standalone bad-debt write-off (#77). Unlike the apply route — which peeks at its body for a
+// WRITE_OFF line because it also carries PAYMENT/DISCOUNT ones — this route writes nothing else, so
+// BOTH `receivables.create` and the `write_off` special action are required unconditionally. The
+// service's own guards (claims, over-application, reason, period) are exercised in
+// tests/write-offs.test.ts; these four cases are the gate.
+describe("write-offs route", () => {
+  const url = "http://t/api/receivables/write-offs";
+
+  it("POST refuses an unauthenticated caller (401)", async () => {
+    const inv = await finalizedInvoice(1000);
+    const res = await writeOffRoute(bodyReq(url, "POST", undefined, {
+      invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable",
+    }), noParams);
+    expect(res.status).toBe(401);
+    expect(await prisma.application.count()).toBe(0);
+  });
+
+  it("POST refuses receivables.create WITHOUT action.write_off (403)", async () => {
+    const cookie = await signInWith(["receivables.create"], "swo-no-special");
+    const inv = await finalizedInvoice(1000);
+    const res = await writeOffRoute(bodyReq(url, "POST", cookie, {
+      invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable",
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count()).toBe(0);
+  });
+
+  it("POST refuses action.write_off WITHOUT receivables.create (403)", async () => {
+    const cookie = await signInWith(["receivables.view", "action.write_off"], "swo-no-create");
+    const inv = await finalizedInvoice(1000);
+    const res = await writeOffRoute(bodyReq(url, "POST", cookie, {
+      invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable",
+    }), noParams);
+    expect(res.status).toBe(403);
+    expect(await prisma.application.count()).toBe(0);
+  });
+
+  it("POST writes off the balance for a session holding BOTH (200)", async () => {
+    const cookie = await signInWith(["receivables.create", "action.write_off"], "swo-both");
+    const inv = await finalizedInvoice(1000);
+    const res = await writeOffRoute(bodyReq(url, "POST", cookie, {
+      invoiceId: inv.invoiceId, amount: 1000, reason: "customer in liquidation",
+    }), noParams);
+    expect(res.status).toBe(200);
+    const app = await prisma.application.findFirstOrThrow({ where: { invoiceId: inv.invoiceId } });
+    expect(app.type).toBe("WRITE_OFF");
+    expect(app.paymentId).toBeNull(); // the standalone flavor — no receipt was fabricated
+  });
+
+  // The #8 lesson, applied at birth rather than found later: a literal `null` body must reach zod
+  // and come back as a 400, never a TypeError escaping the handler as a 500.
+  it("POST answers a null JSON body with a 400, not a 500", async () => {
+    const cookie = await signInWith(["receivables.create", "action.write_off"], "swo-null-body");
+    const res = await writeOffRoute(new Request(url, {
+      method: "POST", headers: { cookie, "content-type": "application/json" }, body: "null",
+    }), noParams);
+    expect(res.status).toBe(400);
   });
 });
