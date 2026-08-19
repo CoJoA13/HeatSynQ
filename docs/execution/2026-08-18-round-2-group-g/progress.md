@@ -35,7 +35,18 @@ One implementation task, one review — **Approved on round 1, zero implementer 
 not-reproducible, owner ruling). No schema migration; no executable-code change anywhere in
 the group.
 
-## Gates (final tree `c1d66c0`, 2026-08-18)
+## Codex round (PR #151, 2026-08-18)
+
+One P2, **verified real and accepted** (`2629207`): the header's "a new field is safe"
+over-claimed — a new COLUMN field backfills `visible: true, width: null`, so
+`assertWidthBudgets` counts its `defaultWidth` against the table total, and a published config
+already near `tableBudget` would hit the width refusal at print. The amendment states the
+exactly-sufficient rule: a backfilled column contributes exactly `defaultWidth` (a stored
+config cannot carry an override for a field that predates it), so a column addition must raise
+its table's `tableBudget` by at least that amount in the same change (`"*"` counts 0).
+Replied + resolved per the loop.
+
+## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 
 | Gate | Result |
 |---|---|
