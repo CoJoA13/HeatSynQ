@@ -385,6 +385,26 @@ describe("readQuotePdfData", () => {
     expect(dataN.lines[0].prices[0].amount).toBeNull();       // LB basis unknown — omitted, never $0
   });
 
+  it("rounds the qty × each-weight products to the Decimal(10,4) grain — 3 × 0.1 prints exactly 0.3 (#100 item 5)", async () => {
+    await asSystem(() => setSetting("company_name", "CSI Support Inc."));
+    const customer = await makeCustomer();
+    const quotedBy = await makeQuotedBy();
+    const step = await makeStep("Anneal");
+    const quote = await asSystem(() => createQuote({
+      customerId: customer.id, quotedById: quotedBy.id,
+      lines: [{
+        partNumberText: "FLT-1", quotedQty: 3, eachWeight: "0.1",
+        prices: [{ processStepCodeId: step.id, unitPrice: "1.0000", pricePer: "LB" }],
+      }],
+    }));
+    const data = await readQuotePdfData(prisma, quote.id);
+    // 3 × 0.1 is 0.30000000000000004 in bare float math — the payload must carry the
+    // Decimal(10,4)-grain value, exactly.
+    expect(data.lines[0].totalLbs).toBe(0.3);
+    // The engine's LB basis (shippedWeight) is rounded at the same grain; $1.00/lb over it.
+    expect(data.lines[0].prices[0].amount).toBe(0.3);
+  });
+
   it("omits every amount for unlimited and no-qty lines", async () => {
     await asSystem(() => setSetting("company_name", "CSI Support Inc."));
     const customer = await makeCustomer();

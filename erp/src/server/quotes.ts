@@ -1104,6 +1104,11 @@ async function assertLinkedLinesUntouched(
 const decEq = (a: Prisma.Decimal | null, b: number | null): boolean =>
   a === null ? b === null : b !== null && a.toNumber() === b;
 
+/** Round to the schema's Decimal(10,4) grain (#100 item 5): the qty × each-weight products fed
+ *  to the PDF payload and the pricing engine's LB basis are bare float math (3 × 0.1 =
+ *  0.30000000000000004), while every stored weight lives at four decimal places. */
+const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+
 /** Only the columns whose values actually changed — an untouched kept row gets NO write, so the
  *  audit diff never shows churn an operator didn't make (the linkOrder "identical value: skip"
  *  rule, applied field-by-field). */
@@ -1627,7 +1632,7 @@ function indicativeAmounts(line: QuoteLineDetail): (number | null)[] {
       partNumber: line.partNumber, partName: line.partName, partDescription: line.partDescription,
       eachWeight: line.eachWeight ?? 0,
       shippedQty: line.quotedQty!,
-      shippedWeight: line.eachWeight === null ? 0 : line.quotedQty! * line.eachWeight,
+      shippedWeight: line.eachWeight === null ? 0 : round4(line.quotedQty! * line.eachWeight),
       prices: rows,
     }],
     surcharges: [], charges: [], freight: null, cert: null, tax: null,
@@ -1705,7 +1710,7 @@ export async function readQuotePdfData(
       partNumber: line.partNumber, partName: line.partName, partDescription: line.partDescription,
       eachWeight: line.eachWeight,
       totalLbs: line.quotedQty !== null && line.eachWeight !== null
-        ? line.quotedQty * line.eachWeight : null,
+        ? round4(line.quotedQty * line.eachWeight) : null,
       material: line.material,
       prices: line.prices.map((p, i) => ({
         stepName: p.stepName, notes: p.notes,
