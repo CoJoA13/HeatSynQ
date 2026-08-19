@@ -6,33 +6,19 @@ import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest } from "@/lib/use-latest";
 import { swapAt } from "@/lib/reorder";
-import { LIGHT_LABELS, LIGHT_DOT_CLASS, type TrafficLight } from "@/lib/traffic-light";
-import { ORDER_STATUSES, ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
+import { type OrderStatusValue } from "@/lib/order-constants";
 import {
   BOARD_COLUMNS, defaultViewConfig, normalizeViewConfig, buildOrderQuery,
   type ColumnDef, type ColumnKey, type ColumnState, type BoardFilters, type SortState, type ViewConfig,
 } from "@/lib/board-columns";
-
-// Local mirror of src/server/orders.ts's BoardRow — not imported from src/server/** (CLAUDE.md
-// "Constraints that will bite you": a client component pulling from there drags node:async_hooks
-// and Prisma into the browser bundle). Dates arrive pre-formatted as "yyyy-mm-dd" strings
-// (`formatDateOnly` runs server-side before `NextResponse.json`), so there is nothing left to
-// parse or slice here — they are already display-ready.
-type BoardRow = {
-  id: string; orderNumber: number; customerCode: string; customerName: string;
-  leadPartNumber: string; poNumber: string; vsOrderNumber: string;
-  qty: number; weight: number;
-  receivedDate: string; requestDate: string; targetDate: string | null;
-  status: OrderStatusValue; voided: boolean; light: TrafficLight;
-  loadCount: number; linked: boolean;
-};
-
-// The parts/page.tsx precedent: only the slice the customer filter picker needs.
-type CustomerOption = { id: string; code: string; name: string; active: boolean };
-
-// Local mirror of src/server/saved-views.ts's SavedViewRow. `config` stays `unknown` — this file
-// never trusts it directly, only through board-columns.ts's normalizers.
-type SavedViewRow = { id: string; name: string; config: unknown; isDefault: boolean; updatedAt: string };
+// The presentational split (#33's bounded slice): the four components render what this page's
+// state says and report every interaction back up through props — all state, fetching, and the
+// use-latest/viewsReady discipline stay HERE. The row/option types each component displays are
+// declared beside the component that renders them and imported back for this page's state.
+import { SavedViewsBar, type SavedViewRow } from "./board-parts/SavedViewsBar";
+import { FilterBar, type CustomerOption } from "./board-parts/FilterBar";
+import { ColumnPicker } from "./board-parts/ColumnPicker";
+import { BoardTable, type BoardRow } from "./board-parts/BoardTable";
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -144,10 +130,6 @@ export default function OrdersPage() {
     const key = col.sortKey;
     setSort((prev) => (prev.sort === key ? { sort: key, dir: prev.dir === "asc" ? "desc" : "asc" } : { sort: key, dir: "asc" }));
   }
-  function sortArrow(col: ColumnDef): string {
-    if (!col.sortKey || sort.sort !== col.sortKey) return "";
-    return sort.dir === "asc" ? " ▲" : " ▼";
-  }
 
   function toggleColumnVisible(key: ColumnKey) {
     setColumns((prev) => prev.map((c) => (c.key === key ? { ...c, visible: !c.visible } : c)));
@@ -212,35 +194,6 @@ export default function OrdersPage() {
     } catch (e) { setError((e as Error).message); }
   }
 
-  function renderCell(row: BoardRow, key: ColumnKey) {
-    switch (key) {
-      case "orderNumber": return <span className="font-mono text-blue-700 underline">{row.orderNumber}</span>;
-      case "customer": return `${row.customerCode} · ${row.customerName}`;
-      case "leadPart": return row.leadPartNumber;
-      case "po": return row.poNumber;
-      case "qty": return row.qty;
-      case "weight": return row.weight;
-      case "received": return row.receivedDate;
-      case "request": return row.requestDate;
-      case "target": return row.targetDate ?? "";
-      case "lightStatus":
-        return row.voided ? "Voided" : (
-          <span className="inline-flex items-center gap-1.5">
-            <span className={`inline-block h-2.5 w-2.5 rounded-full ${LIGHT_DOT_CLASS[row.light]}`} />
-            <span>{LIGHT_LABELS[row.light]}</span>
-            <span className="text-slate-400">· {ORDER_STATUS_LABELS[row.status]}</span>
-          </span>
-        );
-      case "loads": return row.loadCount;
-      case "linked":
-        return row.linked
-          ? <span className="rounded bg-blue-100 px-1 text-xs text-blue-800">linked</span>
-          : null;
-      case "vsNumber": return row.vsOrderNumber;
-      default: return null;
-    }
-  }
-
   const visibleDefs: ColumnDef[] = columns
     .filter((c) => c.visible)
     .map((c) => BOARD_COLUMNS.find((d) => d.key === c.key))
@@ -260,168 +213,44 @@ export default function OrdersPage() {
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
       )}
 
-      <div className="mb-3 flex flex-wrap items-center gap-3 rounded border bg-white p-2 text-sm">
-        <label className="flex items-center gap-1">
-          View:
-          <select value={selectedViewId} onChange={(e) => applyView(e.target.value)}
-                  className="rounded border px-2 py-1">
-            <option value="">Default board</option>
-            {savedViews.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        </label>
-        {selectedViewId && (
-          <label className="flex items-center gap-1">
-            <input type="checkbox"
-                   checked={savedViews.find((v) => v.id === selectedViewId)?.isDefault ?? false}
-                   onChange={(e) => setSelectedDefault(e.target.checked)} />
-            Set as default
-          </label>
-        )}
-        <button onClick={() => setSaveOpen(true)} className="text-blue-700 underline">Save view</button>
-        <button onClick={deleteSelectedView} disabled={!selectedViewId}
-                className="text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
-          Delete view
-        </button>
-      </div>
+      <SavedViewsBar
+        savedViews={savedViews}
+        selectedViewId={selectedViewId}
+        saveOpen={saveOpen}
+        saveName={saveName}
+        saveDefault={saveDefault}
+        onApplyView={applyView}
+        onSetSelectedDefault={setSelectedDefault}
+        onOpenSave={() => setSaveOpen(true)}
+        onDeleteView={deleteSelectedView}
+        onSaveNameChange={setSaveName}
+        onSaveDefaultChange={setSaveDefault}
+        onSaveView={saveView}
+        onCancelSave={() => { setSaveOpen(false); setSaveName(""); setSaveDefault(false); }}
+      />
 
-      {saveOpen && (
-        <div className="mb-3 flex flex-wrap items-center gap-3 rounded border border-slate-300 bg-slate-50 p-3 text-sm">
-          <input value={saveName} onChange={(e) => setSaveName(e.target.value)}
-                 placeholder="View name" className="rounded border px-2 py-1" />
-          <label className="flex items-center gap-1">
-            <input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)} />
-            Set as default
-          </label>
-          <button onClick={saveView} className="rounded bg-slate-800 px-3 py-1 text-white">Save</button>
-          <button onClick={() => { setSaveOpen(false); setSaveName(""); setSaveDefault(false); }}
-                  className="text-slate-600">
-            Cancel
-          </button>
-        </div>
-      )}
-
-      <div className="mb-3 flex flex-wrap items-end gap-4 rounded border bg-white p-2 text-sm">
-        <div>
-          <label className="block text-xs text-slate-500">Search</label>
-          <input value={filters.search} onChange={(e) => updateFilters({ search: e.target.value })}
-                 placeholder="Order #, PO, VS #, lead part, customer"
-                 className="w-64 rounded border px-2 py-1" />
-        </div>
-
-        <fieldset>
-          <legend className="block text-xs text-slate-500">Status</legend>
-          <div className="flex flex-wrap gap-2">
-            {ORDER_STATUSES.map((s) => (
-              <label key={s} className="flex items-center gap-1">
-                <input type="checkbox" checked={filters.status.includes(s)} onChange={() => toggleStatus(s)} />
-                {ORDER_STATUS_LABELS[s]}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <div>
-          <label className="block text-xs text-slate-500">Customer</label>
-          <select value={filters.customerId} onChange={(e) => updateFilters({ customerId: e.target.value })}
-                  disabled={!customersGate.allowed} title={customersGate.allowed ? undefined : customersGate.title}
-                  className="rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100">
-            <option value="">All customers</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>{c.code} · {c.name}{!c.active && " (inactive)"}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs text-slate-500">Received</label>
-          <div className="flex items-center gap-1">
-            <input type="date" value={filters.receivedFrom} onChange={(e) => updateFilters({ receivedFrom: e.target.value })}
-                   className="rounded border px-2 py-1" />
-            <span>&ndash;</span>
-            <input type="date" value={filters.receivedTo} onChange={(e) => updateFilters({ receivedTo: e.target.value })}
-                   className="rounded border px-2 py-1" />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs text-slate-500">Request</label>
-          <div className="flex items-center gap-1">
-            <input type="date" value={filters.requestFrom} onChange={(e) => updateFilters({ requestFrom: e.target.value })}
-                   className="rounded border px-2 py-1" />
-            <span>&ndash;</span>
-            <input type="date" value={filters.requestTo} onChange={(e) => updateFilters({ requestTo: e.target.value })}
-                   className="rounded border px-2 py-1" />
-          </div>
-        </div>
-
-        <label className="flex items-center gap-1">
-          <input type="checkbox" checked={filters.includeVoided}
-                 onChange={(e) => updateFilters({ includeVoided: e.target.checked })} />
-          Include voided
-        </label>
-
-        <a href={`/api/orders/export${queryString ? `?${queryString}` : ""}`} className="text-blue-700 underline">
-          Export to Excel
-        </a>
-
-        <button onClick={() => setColumnsOpen((o) => !o)} className="text-blue-700 underline">
-          {columnsOpen ? "Hide columns" : "Columns"}
-        </button>
-      </div>
+      <FilterBar
+        filters={filters}
+        customers={customers}
+        customersGate={customersGate}
+        queryString={queryString}
+        columnsOpen={columnsOpen}
+        onUpdateFilters={updateFilters}
+        onToggleStatus={toggleStatus}
+        onToggleColumnsOpen={() => setColumnsOpen((o) => !o)}
+      />
 
       {columnsOpen && (
-        <div className="mb-3 max-w-sm rounded border border-slate-300 bg-slate-50 p-3 text-sm">
-          <div className="mb-2 font-medium">Show / reorder columns</div>
-          {columns.map((c, i) => {
-            const def = BOARD_COLUMNS.find((d) => d.key === c.key);
-            if (!def) return null;
-            return (
-              <div key={c.key} className="flex items-center gap-2 border-b py-1 last:border-b-0">
-                <input type="checkbox" checked={c.visible} onChange={() => toggleColumnVisible(c.key)} />
-                <span className="flex-1">{def.label}</span>
-                <button type="button" disabled={i === 0} onClick={() => moveColumn(i, -1)}
-                        className="text-xs text-slate-600 disabled:text-slate-300">
-                  ↑
-                </button>
-                <button type="button" disabled={i === columns.length - 1} onClick={() => moveColumn(i, 1)}
-                        className="text-xs text-slate-600 disabled:text-slate-300">
-                  ↓
-                </button>
-              </div>
-            );
-          })}
-        </div>
+        <ColumnPicker columns={columns} onToggleVisible={toggleColumnVisible} onMove={moveColumn} />
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full rounded border bg-white text-sm">
-          <thead>
-            <tr className="border-b text-left">
-              {visibleDefs.map((col) => (
-                <th key={col.key} className={col.sortKey ? "cursor-pointer select-none p-2" : "p-2"}
-                    onClick={col.sortKey ? () => toggleSort(col) : undefined}>
-                  {col.label}{sortArrow(col)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={visibleDefs.length || 1} className="p-4 text-center text-slate-500">
-                  No orders match these filters.
-                </td>
-              </tr>
-            )}
-            {rows.map((row) => (
-              <tr key={row.id} onClick={() => router.push(`/orders/${row.id}`)}
-                  className={`cursor-pointer border-t hover:bg-slate-50 ${row.voided ? "text-slate-400" : ""}`}>
-                {visibleDefs.map((col) => <td key={col.key} className="p-2">{renderCell(row, col.key)}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <BoardTable
+        rows={rows}
+        visibleDefs={visibleDefs}
+        sort={sort}
+        onToggleSort={toggleSort}
+        onOpenOrder={(id) => router.push(`/orders/${id}`)}
+      />
     </div>
   );
 }
