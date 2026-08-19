@@ -50,11 +50,11 @@ Each flow writes numbered checkpoint screenshots and a `video.webm` to
    container. The production image is a pruned standalone build that doesn't ship `src/`
    (only `prisma/`, `.next/standalone`, `.next/static`, `public`, `prisma.config.ts`, and
    `node_modules` survive the trace), and `prisma/seed.ts` imports `../src/server/permissions`
-   — that import has nothing to resolve to inside the container. (`tsx` and `dotenv` themselves
-   *are* in the pruned image now, as production dependencies Prisma 7 needs at container start
-   too — verified by running `npm run db:seed` inside a built image, which gets past module
-   resolution for both before failing on the `src/` import above. Don't be misled by that into
-   thinking seeding works in-container — it doesn't.) From a machine with network access
+   — that import has nothing to resolve to inside the container. (`dotenv` *is* in the pruned
+   image, as a production dependency Prisma 7 needs at container start — but `tsx` is dev-only
+   and pruned away; container start doesn't need it, and an in-container `npm run db:seed` dies
+   on `tsx: not found` before it would even reach the `src/` import above. Either way, seeding
+   does not work in-container.) From a machine with network access
    to the db (e.g. the box itself, since `db` publishes 5432):
    `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp" npm run db:seed`
    (match host/credentials to whatever you set in step 1).
@@ -71,10 +71,12 @@ database identity (`practiceMode()`), so a mis-set flag can't touch production.
 2. `docker compose --profile practice up -d --build` — the `app-practice` service migrates
    `erp_practice` on start and serves it at http://<server>:8080/ with a PRACTICE banner and
    watermarked documents. (Leaving out this step means the prod bring-up is unchanged.)
-3. First population: seed the representative demo slice once, pointed at the practice DB —
+3. First population: seed the representative demo slice once, pointed at the practice DB. Same
+   constraint as the production seed above — run it from a checkout with dependencies installed,
+   never from inside the container (the pruned image ships neither `tsx` nor `src/`, so
+   `npm run db:seed:demo` cannot run there):
    `DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_practice" npm run db:seed:demo`
-   (or run `npm run db:seed:demo` inside the `app-practice` container, whose `DATABASE_URL` already
-   points there). Thereafter, "Reset practice data" on the `/practice` page re-seeds it in-app.
+   Thereafter, "Reset practice data" on the `/practice` page re-seeds it in-app.
 4. Access practice in a **separate browser profile** from production: the two use distinct session
    cookies (`erp_practice_session` vs `erp_session`), so they no longer clash on a shared host.
 
