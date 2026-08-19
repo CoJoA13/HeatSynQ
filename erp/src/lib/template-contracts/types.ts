@@ -22,6 +22,20 @@
  * missing section/field entries re-inserted at their contract position — so a version stored
  * before a knob existed keeps rendering identically as contracts grow. The parse result is always
  * a COMPLETE `TemplateConfig`; no consumer ever reaches for a contract default at render time.
+ *
+ * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103). LOOSENING is safe: a
+ * new knob, field, or section, a widened enum, a raised budget, or flipping removable false→true
+ * are all absorbed by the defaults and the backfill — pinned by the synthetic contract-growth
+ * cases in `tests/template-contracts.test.ts`. TIGHTENING is NOT: a new lock or removable→false,
+ * a removed or renamed field key, a narrowed enum, or a lowered `tableBudget` breaks paper the
+ * shop has already published, because immutable PUBLISHED configs are re-validated at print-time
+ * dereference (`template-assignments.ts` `dereference` → `validateConfig`) with no catch on the
+ * print path — a previously-valid old config simply stops printing, refusing along the two-kinds
+ * split above: `TemplateConfigError` → 500 for rule tightenings, `ZodError` → 400 for shape
+ * tightenings. If a tightening is ever genuinely required, the two sanctioned shapes are:
+ * validate a stored config against the contract version it was PUBLISHED under, or make
+ * print-time dereference degrade gracefully (log + contract defaults for the offending elements)
+ * rather than throw.
  */
 import { z } from "zod";
 
@@ -525,6 +539,8 @@ function assertWidthBudgets(contract: TemplateContract, sections: SectionConfig[
  * rule violations; returns a complete `TemplateConfig` otherwise. The registry-facing
  * `validateConfig(docType, json)` lives in ./index.ts — the registry imports the contract
  * modules, which import this file, so the docType lookup cannot live here without a cycle.
+ * This battery runs at print time against immutable PUBLISHED configs — before tightening any
+ * rule it enforces, read the evolution warning in this file's header (#103).
  */
 export function validateContractConfig(contract: TemplateContract, json: unknown): TemplateConfig {
   const parsed = configSchema(contract).parse(json);

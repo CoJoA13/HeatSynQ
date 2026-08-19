@@ -339,8 +339,9 @@ describe("buildStatementDefinition — pageFooter knob and continuation band", (
   });
 
   it("a many-item statement overflows LETTER, repeats its identity, and lands aging + total on the last page", async () => {
-    // 60 open items — well clear of the two-pass boundary counts (~40, ~61) where the raised-margin
-    // reflow can leave a spurious blank trailing page (the investigate-first finding, reported).
+    // 60 open items — a clean mid-range fixture, well clear of this fixture's verified boundary
+    // counts (77/78 and 122–124), where the raised margin legitimately spills the final Total Due
+    // block onto its own page (#102, closed not-reproducible 2026-08-18).
     const openItems = Array.from({ length: 60 }, (_, i) => ({
       documentNumber: `7 - ${72000 + i}`, date: "2026-06-29", dueDate: "2026-06-29", kind: "INVOICE" as const, original: 1000, open: 400,
     }));
