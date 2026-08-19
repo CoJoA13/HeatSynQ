@@ -26,10 +26,10 @@ describe("permission resolution", () => {
 
   it("DENY beats GRANT when both exist", () => {
     const u = user([], [
-      { permission: "ar.view", mode: "GRANT" },
-      { permission: "ar.view", mode: "DENY" },
+      { permission: "receivables.view", mode: "GRANT" },
+      { permission: "receivables.view", mode: "DENY" },
     ]);
-    expect(can(u, "ar", "view")).toBe(false);
+    expect(can(u, "receivables", "view")).toBe(false);
   });
 
   it("no role means only overrides apply", () => {
@@ -41,13 +41,14 @@ describe("permission resolution", () => {
   it("ALL_PERMISSIONS covers areas × actions plus specials", () => {
     expect(ALL_PERMISSIONS).toContain("orders.view");
     expect(ALL_PERMISSIONS).toContain("action.close_ar_period");
-    // 13 areas (Phase 5B adds "receivables") × 4 CRUD actions + 13 specials (Phase 8C adds
-    // "manage_backups" on top of Phase 5B's "write_off").
-    expect(ALL_PERMISSIONS.length).toBe(13 * 4 + 13);
+    // 12 areas (#72 retires "ar", which Phase 5B's "receivables" superseded) × 4 CRUD actions
+    // + 13 specials (Phase 8C adds "manage_backups" on top of Phase 5B's "write_off").
+    expect(ALL_PERMISSIONS.length).toBe(12 * 4 + 13);
   });
 
-  it("has a receivables area and a write_off special action", () => {
+  it("has a receivables area and a write_off special action — and no vestigial ar area (#72)", () => {
     expect(AREAS).toContain("receivables");
+    expect(AREAS).not.toContain("ar");
     expect(SPECIAL_ACTIONS).toContain("write_off");
   });
 

@@ -1,8 +1,10 @@
 // Pure constants only — no server-only imports. Safe to import from client components.
 // (src/server/permissions.ts re-exports these so existing server-side imports keep working.)
+// "ar" was retired by #72: vestigial since Phase 5B's "receivables" superseded it (no route ever
+// checked it), and its seeded grant rows are purged by 20260819003000_remove_ar_permission_area.
 export const AREAS = [
   "orders", "parts", "processes", "customers", "quotes", "certs",
-  "shipping", "invoicing", "ar", "reports", "templates", "admin",
+  "shipping", "invoicing", "reports", "templates", "admin",
   "receivables",
 ] as const;
 export const CRUD_ACTIONS = ["view", "create", "edit", "delete"] as const;
