@@ -200,6 +200,10 @@ function StatementsScreen() {
   // modified later". The whole component then loses its memoization, which `eslint src` reports as
   // an ERROR ("Compilation Skipped: Existing memoization could not be preserved") — measured, both
   // ways, on this file. The comparison is what makes it a new value; do not simplify it away.
+  //
+  // It is the ALIAS alone that trips it, independent of how `printControlTitle` is shaped: probed
+  // four ways, an object-taking signature with this same comparison lints CLEAN, and passing
+  // `viewGate.allowed` directly reds it whichever signature is in use (review round 1).
   const viewAllowed = viewGate.allowed === true;
 
   // `?customerId=` preselects — the customer page's "Statement" link (ReceivablesSection.tsx)
@@ -284,6 +288,12 @@ function StatementsScreen() {
       // Not at the top of `loadPreview` either: this callback re-runs on every keystroke in the
       // as-of field, and blanking a good preview there would flash the pane empty on each one.
       // Round 8 deliberately cleared only `loaded` up there, and that stays true.
+      //
+      // LOAD-BEARING AND UNPINNED — nothing in the suite would catch its removal. The gate is
+      // correct only because this line runs, and `tests/statements-screen.test.ts` drives the pure
+      // `printControlTitle`, which cannot observe this wiring; there is no DOM environment to
+      // mount the component in and assert it. Drop `setPreview(null)` and all ten gate tests stay
+      // GREEN while the reported defect returns exactly as filed.
       if (latest.isCurrent(t)) { setError((e as Error).message); setPreview(null); setLoaded(true); }
       return;
     }
@@ -402,8 +412,9 @@ function StatementsScreen() {
   // parent-only statement. That is exactly what lets the family gate fall open on `"unknown"`
   // (#137 defect 2): a permanent lockout becomes an occasional, self-describing 409.
   //
-  // Scalar FIELDS, not the two `Gate` objects — "a pure function over plain args", and the same
-  // React Compiler constraint documented on `viewAllowed` above.
+  // Scalar FIELDS rather than the two `Gate` objects: a pure function over plain args, driven
+  // directly in the node-only test env. A preference, not a requirement — the React Compiler
+  // constraint is on `viewAllowed`'s derivation above and is independent of this signature.
   const printTitle = printControlTitle({
     viewAllowed, viewTitle: viewGate.title, customerId, familyLookup, loaded, preview,
     perDivisionMode, runAllowed: runGate.allowed, runTitle: runGate.title, printing,

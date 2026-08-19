@@ -74,16 +74,16 @@ a null preview beats the per-division and printing branches (each of which was E
 ## Deviations and judgement calls (all deliberate — please check these first)
 
 1. **`preview === null`, not `error`** — brief-sanctioned; rationale above and in the code.
-2. **The gate takes scalar FIELDS, not the two `Gate` objects.** Measured, both ways, on this file:
-   passing `viewAllowed` — which is also a `loadPreview` `useCallback` dependency — into a call the
-   React Compiler cannot see into makes it report that dependency as "may be modified later" and
-   **skip optimizing the whole component**, which `npx eslint src` treats as an ERROR
-   (`react-hooks/preserve-manual-memoization`). The backups precedent never hits this because its
-   `useCallback` has `[]` deps. Bisected to the single argument.
-3. **`const viewAllowed = viewGate.allowed === true;`** — for the same reason: it must be a *fresh*
-   primitive, not an alias into the object `gate()` builds during render. This looks like an
-   incantation, so it carries a comment saying what re-reds if it is simplified away. Verified in
-   both directions.
+2. **The gate takes scalar FIELDS, not the two `Gate` objects.** ~~Forced by the React Compiler.~~
+   **Corrected in fix round 1** — see the note at the end of this report. The scalar signature is a
+   *preference* (a pure function over plain args, driven directly in the node-only env); it is not
+   a compiler requirement, and my original comment and this entry both overstated it. The genuine,
+   reproduced constraint is deviation 3 alone.
+3. **`const viewAllowed = viewGate.allowed === true;`** — the real constraint: it must be a *fresh*
+   primitive, not an alias into the object `gate()` builds during render, or the component loses
+   its memoization and `eslint src` errors. This looks like an incantation, so it carries a comment
+   saying what re-reds if it is simplified away. Verified in both directions, and re-probed
+   independently in review (below).
 4. **Added the effect-scoped `let stale` cleanup to the customer-options effect.** It previously had
    neither a ticket nor a flag, and the tri-state made it a three-setter fetch-into-state where a
    stale rejection reporting `"unknown"` over a fresh `"known"` would open the gate on a list we
@@ -128,7 +128,42 @@ green: `statements-screen` (10), `statements` (17), `receivables-routes` (43).
 - **No HANDOFF/spec edit made.** This is a defect fix that amends no decision or convention; the
   §15 decision log and HANDOFF backlog line for #137 belong to the group close-out. Flagging it so
   the controller confirms rather than assumes.
-- The React Compiler constraint in deviations 2–3 is a real, reproducible trap for any future
-  client component that both memoizes on a gate field and passes it to an extracted pure gate. It
-  is documented in-file; the controller may judge it worth a line in CLAUDE.md's client-state
-  paragraph at close-out.
+- The React Compiler constraint in deviation 3 is a real, reproducible trap for any future client
+  component that derives a memo dependency from a `gate()` result. It is documented in-file; the
+  controller may judge it worth a line in CLAUDE.md's client-state paragraph at close-out.
+
+## Fix round 1 — review response
+
+**Verdict: Spec ✅ · Approved, zero Important findings.** Two Minors, both comment-only, both
+applied in the commit carrying this note. No behavior change; no test changed; no source line moved.
+
+1. **A documented constraint that does not exist (`Statements.tsx` ~:405).** My comment justified
+   the scalar signature with "the same React Compiler constraint documented on `viewAllowed`". The
+   reviewer probed four ways via `eslint --stdin` and disproved it: committed form clean; alias
+   `viewGate.allowed` → 2 errors; **an object-taking signature keeping
+   `viewAllowed = viewGate.allowed === true` → CLEAN**; object signature + alias → the same 2
+   errors. The trigger is the **alias alone, independent of the signature** — and the cited
+   `runControlState` precedent itself takes a gate-shaped object. My bisect had varied one thing
+   and generalised from it; the reviewer varied both and found the real boundary.
+
+   The comment now calls the scalar signature a preference and points at `viewAllowed` for the
+   actual constraint, and the note at ~:196 records the four-way probe so the boundary is written
+   down where it applies. Deviation 2 above is corrected in the same terms. Worth stating plainly:
+   this repo's comments are read as fact, and a wrong reason in one is a defect in its own right.
+
+2. **The fix-1 wiring was unpinned (`Statements.tsx` ~:287).** The gate is correct only because the
+   catch clears `preview`, and nothing tests that: the pure-function split cannot observe the
+   wiring and there is no DOM env. Removing `setPreview(null)` would leave all ten gate tests green
+   and restore the reported defect exactly. That line now carries a comment saying so, naming what
+   would *not* catch it. (A genuine pin needs a DOM environment this repo deliberately does not
+   have — out of scope here, and not something to add for one line.)
+
+**Recorded, no action needed** (reviewer's own notes): the defect-1/2 RED was structural (all ten
+cases failed on `printControlTitle is not a function`), but no case is vacuous — deleting the
+`preview === null` branch, reverting the family branch to a boolean, or moving the branch past
+either neighbour each reds a specific test. The `stale` race needs StrictMode's double-invoke to be
+reachable in practice. The 409's "use Print per division" half is unreachable for the caller the
+gate now opens (wording only). The decision not to touch HANDOFF/spec §15 was confirmed correct.
+
+**Re-run after the comment edits**: `tests/statements-screen.test.ts` 10/10, `npx tsc --noEmit`
+and `npx eslint src tests` both carrying only Tasks 1/3's concurrent in-tree work (detail above).
