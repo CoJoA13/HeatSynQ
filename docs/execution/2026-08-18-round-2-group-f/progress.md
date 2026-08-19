@@ -18,4 +18,18 @@ no-filter run gets visibly slow or memory-heavy).
 
 ## Task verdicts
 
-(one entry per task as reviews land)
+**Task 1 (#111, single-flight the practice reset)** — implementer `a2633de`, RED watched on the
+join semantics. Review: **Spec ✅ · Approved (round 1)**, zero fixes. The reviewer verified the
+`??=`-with-`.finally` composition yields all four semantics from one expression (join,
+clear-on-resolve, clear-on-reject, sync-throw-leaves-clear), traced that a joiner still gets its
+per-caller 403 and cannot double-run the flight, and checked every factual claim in the
+round-4-defense comment true against the repo (host-port bind, CMD, no cluster, pg-pool's
+default 10). One no-action minor (the async-wrapper promise identity nuance).
+
+**Task 2 (#40, driver-adapter constraint shapes)** — implementer `50ed054`/`cc1697e`. RED-watching
+surfaced a **latent crash in the old translator** (a string `meta.target` hit
+`TypeError: .join is not a function` through the cast) — fixed and pinned. Review: **Spec ✅ ·
+Approved (round 1)**. The adversarial legacy-first pin (both shapes present, disagreeing) and the
+delete-direction FK semantics were singled out as correct; the honest restatement of the
+retry-scope comment verified coherent. One synthetic-only minor (empty-string targets slipping
+the hardening) — **controller-applied on-branch** (`9c6ab52`), 16/16 green after.
