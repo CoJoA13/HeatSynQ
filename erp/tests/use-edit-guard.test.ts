@@ -188,6 +188,26 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
     expect(g.mergeRows(cur, incoming)).toBe(incoming);
   });
 
+  it("a disappeared row RELEASES the slot: a same-id row re-entering later merges clean", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    // r1 vanishes (soft-deleted, or hidden by a show-inactive toggle's refetch): lands as-is,
+    // and once this payload applies the cell's input unmounts with no React blur — only
+    // guard-REGISTERED focus/blur replaces the slot (checkboxes, selects, and buttons never
+    // touch it), so the guard must release the registration itself.
+    const afterDelete = [{ id: "r2", name: "N2", street: "S2" }];
+    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
+    // The same id re-enters the payload (reactivation / includeInactive refetch — supported
+    // flows, not a hard recreate): merges clean…
+    const reappeared = [{ id: "r1", name: "BACK", street: "S1" }, ...afterDelete];
+    expect(g.mergeRows(afterDelete, reappeared)).toBe(reappeared);
+    // …and STAYS clean on the next refresh. Without the release, r1.name ("BACK") compared
+    // against the stale at-focus snapshot ("n1") reads as dirty-since-focus and blocks server
+    // truth on every merge indefinitely.
+    const fresh = [{ id: "r1", name: "NEWER", street: "S1" }, ...afterDelete];
+    expect(g.mergeRows(reappeared, fresh)).toBe(fresh);
+  });
+
   it("the focused row missing locally: the payload lands as-is (nothing to preserve)", () => {
     const g = makeEditGuard();
     g.onFocusCell("r9", "name")(ev("x"));

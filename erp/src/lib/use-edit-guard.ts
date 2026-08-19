@@ -39,9 +39,11 @@
 // `merge`'s array counterpart: the incoming array lands wholesale UNLESS that one cell is
 // dirty-since-focus, in which case it keeps its local text inside the incoming row of the same
 // id. A focused row deleted server-side takes the payload as-is — there is no row left to carry
-// the cell, and resurrecting one would show data the server no longer has. One slot still serves
-// both variants — the DOM has one focused element, so a cell registration and a scalar
-// registration displace each other.
+// the cell, and resurrecting one would show data the server no longer has — and RELEASES the
+// slot: the unmounting input never blurs through React, and soft-delete means the same id can
+// re-enter the payload later (reactivation, an includeInactive refetch) and must merge clean.
+// One slot still serves both variants — the DOM has one focused element, so a cell registration
+// and a scalar registration displace each other.
 import { useState } from "react";
 
 type EditableElement = HTMLInputElement | HTMLTextAreaElement;
@@ -72,8 +74,9 @@ export type EditGuard = {
    *  UNLESS the focused cell (registered via `onFocusCell`) is dirty-since-focus, in which case
    *  that ONE cell keeps its local value inside the incoming row of the same id — reorders,
    *  insertions, and every sibling field/row refresh. A focused row absent from the payload
-   *  (deleted server-side) takes the payload as-is. Route EVERY set-rows-from-server through
-   *  this on pages whose cells register with `onFocusCell`. */
+   *  (deleted server-side) takes the payload as-is and releases the slot — its input is about
+   *  to unmount with no React blur, and the same id can re-enter a later payload. Route EVERY
+   *  set-rows-from-server through this on pages whose cells register with `onFocusCell`. */
   mergeRows: <R extends { id: string }>(cur: R[], incoming: R[]) => R[];
 };
 
@@ -123,11 +126,22 @@ export function makeEditGuard(): EditGuard {
       if (f.cell === null) return incoming;
       const { rowId, field } = f.cell;
       const incomingRow = incoming.find((r) => r.id === rowId);
-      // The focused row deleted server-side, or the field unknown to the payload: land as-is —
-      // there is no row left to carry the cell, and resurrecting one would show data the server
-      // no longer has. (The slot stays registered; the unmounting input never blurs through
-      // React, and the next focus or blur anywhere replaces it.)
-      if (!incomingRow || !(field in incomingRow)) return incoming;
+      if (!incomingRow) {
+        // The focused row deleted server-side: land as-is — there is no row left to carry the
+        // cell, and resurrecting one would show data the server no longer has — and RELEASE the
+        // slot. Once this payload applies, the cell's input unmounts without a React blur, and
+        // only guard-REGISTERED focus/blur replaces the slot (checkboxes, selects, and buttons
+        // never touch it) — so a stale registration would survive until the next guarded field
+        // is entered. Soft-delete is exactly what lets the same id LEAVE and RE-ENTER the
+        // visible payload (reactivation, an includeInactive refetch): a re-entering row must
+        // merge clean, not read as dirty against this dead snapshot forever.
+        focused = { key: null, cell: null, atFocus: "" };
+        return incoming;
+      }
+      // The field unknown to the payload's row shape: land as-is (nothing comparable to
+      // preserve). The row — and its input — are still live, so the registration stays for the
+      // blur no-op guard.
+      if (!(field in incomingRow)) return incoming;
       const curRow = cur.find((r) => r.id === rowId);
       if (!curRow) return incoming;
       const local = (curRow as Record<string, unknown>)[field];
