@@ -102,6 +102,19 @@ describe("rowsAfterSave", () => {
     expect(rowsAfterSave(server, atSave, current)).toEqual([row("f1", "a")]);
   });
 
+  // Review round 1 (Minor): every fixture above keeps server/atSave/current in one shared array
+  // order, so a positional (index-keyed) merge would pass all of them. `sort` is server metadata,
+  // so the fresh fetch may legitimately come back RE-SORTED while an edit is in flight — the kept
+  // value must follow its fieldId, not its position. (Verified to catch the positional variant:
+  // an index-keyed merge hands f2's in-flight value to whichever row lands at its old index.)
+  it("keys the merge by fieldId, not position, when the server re-sorts the rows", () => {
+    const atSave = [row("f1", "a", { sort: 0 }), row("f2", "b", { sort: 1 })];
+    const current = [row("f1", "a", { sort: 0 }), row("f2", "typed", { sort: 1 })];
+    const server = [row("f2", "b", { sort: 0 }), row("f1", "a", { sort: 1 })];
+    expect(rowsAfterSave(server, atSave, current))
+      .toEqual([row("f2", "typed", { sort: 0 }), row("f1", "a", { sort: 1 })]);
+  });
+
   it("handles an empty server list and an empty draft", () => {
     expect(rowsAfterSave([], [], [])).toEqual([]);
     expect(rowsAfterSave([row("f1", "x")], [], [])).toEqual([row("f1", "x")]);
