@@ -1,7 +1,7 @@
 import { prisma } from "./db";
 import { currentActor } from "./context";
 import { HttpError } from "./errors";
-import type { Prisma } from "../../prisma/generated/prisma/client";
+import { Prisma } from "../../prisma/generated/prisma/client";
 
 export type AuditableModel =
   | "user" | "role" | "setting"
@@ -437,6 +437,51 @@ export function redact(value: unknown): Prisma.InputJsonValue | undefined {
 // compiler enumerate every caller instead of trusting each one to opt in.
 type Db = typeof prisma | Prisma.TransactionClient;
 
+/**
+ * Claims the audited row FOR UPDATE before the before-snapshot (issue #9). Without it, the
+ * before-snapshot → doIt → after-snapshot sequence is an open window: a CONCURRENT committed
+ * write to the same row lands inside the after-snapshot, so each entry's diff absorbs the other
+ * edit's field — history then attributes one operator's change to the other. Claiming the row
+ * first means whoever gets there first holds it until commit, and the loser's ENTIRE snapshot
+ * window sees a settled row. This is a row lock, so it guards at ANY caller isolation
+ * (CLAUDE.md's row-locks rule — never "simplify" it into a plain read).
+ *
+ * FOR NO KEY UPDATE, deliberately NOT FOR UPDATE — the strength is load-bearing. A non-key
+ * UPDATE (every audited mutation: scalar patches, deletedAt stamps) takes FOR NO KEY UPDATE on
+ * its row, and a foreign key's RI trigger probes the row a new FK value REFERENCES with FOR KEY
+ * SHARE — which conflicts with FOR UPDATE and with nothing weaker. Claiming FOR UPDATE therefore
+ * ADDS a conflict the mutation itself never had: two customers concurrently re-parenting onto
+ * each other (customers.test.ts's reciprocal-cycle test) each claimed their own row, then each
+ * UPDATE's RI probe of the OTHER row blocked on the other's claim — an ABBA deadlock through
+ * Postgres's own trigger that no claim ordering can prevent (the probe isn't ours to reorder),
+ * costing a deadlock_timeout stall per collision. Measured during this fix; FOR NO KEY UPDATE
+ * reproduces the mutation's own lock exactly, so writers of the SAME row still mutually exclude
+ * (NO KEY UPDATE conflicts with itself — the #9 guard) while RI probes pass as they always did.
+ *
+ * Deadlock surface is otherwise UNCHANGED: the mutation inside doIt takes this same row lock in
+ * this same tx anyway — the claim only acquires it EARLIER. The families that already claim
+ * their row before snapshotting (order/invoice/quote/template/revision) re-lock a row their tx
+ * already holds a stronger FOR UPDATE claim on — a no-op. Serializable callers see a locking
+ * read whose 40001 their existing retry wrappers already handle. `auditedCreate` needs no
+ * claim: it has no before-snapshot and its row is fresh. A missing id locks nothing and throws
+ * nothing — the snapshot's null / updateMany's count 0 keep reporting that case exactly as
+ * before.
+ *
+ * Never string-interpolate unvalidated input into SQL: `model` is compiler-constrained to the
+ * AuditableModel union and re-validated at runtime against SNAPSHOT_INCLUDE's own key set
+ * (`Record<AuditableModel, …>` — its keys ARE the model list) before the identifier is inlined
+ * via Prisma.raw; the id rides as an ordinary bound parameter. The table name is the model key
+ * with its first letter uppercased — no @@map exists in schema.prisma, so the Prisma model name
+ * IS the table name (pinned by tests/snapshot-order-sweep.test.ts's mapping test). `setting` is
+ * nominally in the union but never reaches these helpers (auditSettingChange is its sanctioned
+ * path; its PK is `key`, so snapshot()'s own `where: { id }` would refuse it first anyway).
+ */
+async function claimAuditedRow(model: AuditableModel, id: string, db: Db): Promise<void> {
+  if (!Object.hasOwn(SNAPSHOT_INCLUDE, model)) throw new Error(`Not an auditable model: ${model}`);
+  const table = model.charAt(0).toUpperCase() + model.slice(1);
+  await db.$queryRaw`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${id} FOR NO KEY UPDATE`;
+}
+
 async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
   const client = db[model] as unknown as {
@@ -515,6 +560,7 @@ export async function auditedUpdate<T>(
   opts: { tx: Prisma.TransactionClient; reason?: string },
 ): Promise<T> {
   const db = opts.tx;
+  await claimAuditedRow(model, id, db);
   const before = await snapshot(model, id, db);
   const result = await doIt();
   const after = await snapshot(model, id, db);
@@ -544,6 +590,7 @@ export async function auditedSoftDelete(
   model: AuditableModel, id: string, reason: string | undefined, tx: Prisma.TransactionClient,
 ): Promise<void> {
   const db = tx;
+  await claimAuditedRow(model, id, db);
   const before = await snapshot(model, id, db);
   const client = db[model] as unknown as {
     updateMany: (a: {
