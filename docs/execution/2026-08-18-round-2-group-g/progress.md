@@ -101,9 +101,25 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   a field's `label: null`/`width: null` is a sentinel the builders and the width check resolve
   live — the two header paragraphs now agree.
 
-Replied + resolved per the loop, all rounds. Standing note: from here the stop-reviewing
-ruling applies in full — further prose-nuance findings triage to the ledger/issue rather than
-another push cycle (correctness-of-fact findings excepted).
+- **Round 8** (one P2, **triaged** — the first under the full stop-reviewing rule): it
+  re-litigated round 5's taxonomy (whether a new visible field may sit under SAFE when the
+  render change is disclosed and conditioned on intent). No factual defect — both facts are
+  stated in the text — so it was replied-to with the disposition, resolved, and recorded here
+  with **no push** (a push would have re-triggered review round 9 on an unchanged paragraph).
+  If the header is ever revised, consider a third heading for disclosed-intentional paper
+  changes.
+
+Replied + resolved per the loop, all rounds. From round 6 the stop-reviewing ruling applied —
+rounds 6 and 7 were taken under its correctness-of-fact exception (round 6 completed the
+defaults family with its fixpoint; round 7 fixed a pre-existing header contradiction), round 8
+was the first pure-taxonomy finding and was triaged.
+
+## Merge (2026-08-18)
+
+Squash-merged as `5c54730` (PR #151); #103 auto-closed COMPLETED, #102 had closed not-planned
+at kickoff. Final head `af282ff`: CI green (`ci` 12m8s, `docker` 2m0s), zero unresolved
+threads, eight Codex rounds dispositioned (ten P2s: eight accepted after code-verification,
+one half-rejected on evidence — the cert-bundle catch it cited does not exist — one triaged).
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 

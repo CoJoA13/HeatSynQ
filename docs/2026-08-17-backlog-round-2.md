@@ -379,13 +379,21 @@ unfixed before arming the tripwire.
 
 ---
 
-## Group G — Documents and templates · **#102, #103**
+## Group G — Documents and templates · **#102, #103** — **MERGED `5c54730` (PR #151, 2026-08-18)**
 
-- **#102** — `render.ts`'s two-pass leaves a spurious blank trailing page at boundary overflow counts
-  (observed n=40, n=61 for the statement). Cosmetic, shared infra, affects every document type.
-- **#103** — a future contract *tightening* would make an old immutable PUBLISHED config throw at print.
-  Verified a NON-issue today; filed so it is not rediscovered the hard way. Read before evolving a
-  template contract.
+- **#102** — **closed not-reproducible-at-HEAD at kickoff (owner ruling).** Recon swept n=1..160
+  across 12 geometry variants (controller re-verified independently): ZERO blank trailing pages,
+  and pdfmake's layout makes one structurally impossible for house builders. The reported n=40/61
+  show nothing; the real boundary counts (77/78, 122–124) are legitimate Total-Due spill —
+  recorded on the issue with the don't-re-report distinction and a revisit trigger. The stale
+  test comment stating the bug as fact was corrected in the PR.
+- **#103** — shipped as the note, at the chokepoint — then **eight Codex rounds** (ten P2s: eight
+  accepted after verification, one half-rejected on evidence, one triaged under the
+  stop-reviewing ruling's first live application) distilled it into two closed principles:
+  **"additive" is a SEMANTIC test** (every stored config stays valid AND keeps rendering the same
+  paper) and **contract defaults are immutable IN EFFECT once published against** (a stored
+  config pins only what it explicitly stores). Round 7 also fixed a pre-existing §5.3 header
+  contradiction. Prose-only PR; gates unchanged.
 
 ---
 
@@ -433,9 +441,9 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, merged `4cada64`)~~ →
 ~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
 ~~**D** (stale-load, merged `c0b795e`)~~ →
-~~**F** (infra, merged `b5a2069`)~~ →
-**G**/**H** as filler ← **NEXT when asked** (either; the Group-D-filed #144–#149 are
-H-territory additions).
+~~**F** (infra, merged `b5a2069`)~~ → ~~**G** (documents/templates, merged `5c54730`)~~ →
+**H** as filler ← **NEXT when asked** (the Group-D-filed #144–#149 are H-territory additions —
+fold them in or run as H2, controller's call at kickoff).
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across
