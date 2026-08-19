@@ -456,7 +456,11 @@ export function InvoiceDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<InvoiceMutationResult>(`/api/invoices/${id}`);
-    if (mutations.accept(ticket)) { setInvoice((cur) => editGuard.merge(cur, res.invoice)); setWarnings(res.warnings); }
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3 fixpoint).
+    if (mutations.accept(ticket)) {
+      setInvoice(editGuard.applyPayload(res.invoice));
+      setWarnings(res.warnings);
+    }
     return res.invoice;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -467,7 +471,7 @@ export function InvoiceDetail({ id }: { id: string }) {
     const ticket = mutations.next();
     const res = await run();
     if (!mutations.accept(ticket)) return;
-    setInvoice((cur) => editGuard.merge(cur, res.invoice));
+    setInvoice(editGuard.applyPayload(res.invoice));
     setWarnings(res.warnings);
   }, [mutations, editGuard]);
 

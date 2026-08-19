@@ -67,7 +67,10 @@ export function InvoicingList() {
   const candidatesLatest = useLatest();
   // Ticket-gated on BOTH the success and the rejection path (issues #5/#15 — a stale response
   // must never overwrite a newer one, in either direction). No `.catch(() => {})` anywhere.
-  const loadCandidates = useCallback(async () => {
+  // Returns the candidate order ids it just APPLIED (null when it failed or was superseded, so
+  // nothing was applied): createInvoices prunes `ticked` against exactly the list this load put
+  // on screen, and cannot read it from `candidates` state — its updater closure is stale.
+  const loadCandidates = useCallback(async (): Promise<Set<string> | null> => {
     const t = candidatesLatest.next();
     let data: InvoiceCandidate[];
     try {
@@ -77,12 +80,13 @@ export function InvoicingList() {
         setCandidatesError((e as Error).message);
         setCandidatesLoaded(true);
       }
-      return;
+      return null;
     }
-    if (!candidatesLatest.isCurrent(t)) return;
+    if (!candidatesLatest.isCurrent(t)) return null;
     setCandidates(data);
     setCandidatesError(null);
     setCandidatesLoaded(true);
+    return new Set(data.map((c) => c.orderId));
   }, [candidatesLatest]);
   useEffect(() => { void loadCandidates(); }, [loadCandidates]);
 
@@ -102,12 +106,18 @@ export function InvoicingList() {
   const [invoicesError, setInvoicesError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  // #144: the picker fetch gets its OWN banner, never `invoicesError` — that channel is cleared
+  // by every successful list load (so a picker failure vanished on the next filter change) and
+  // its banner labels whatever lands in it "Could not load invoices", misnaming a picker failure.
+  // The NewShipment `loadError` precedent: never auto-cleared — nothing retries the picker, so
+  // nothing can honestly clear it.
+  const [customersError, setCustomersError] = useState<string | null>(null);
 
   // Customer filter picker: fetched only once the caller is known to hold customers.view, never
   // left silently empty for someone who lacks it (§5.16) — the ShippingList precedent.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setInvoicesError((e as Error).message));
+    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setCustomersError((e as Error).message));
   }, [customersGate.allowed]);
 
   function updateFilters(patch: Partial<Filters>) {
@@ -165,8 +175,27 @@ export function InvoicingList() {
     // §5.13: roll back to server truth FIRST, then report why. Reloading both lists before
     // setting the per-order failures means a succeeded order's row is never left stranded in
     // "Ready to invoice" for even a moment after the server has already moved it into "Invoices".
-    await Promise.all([loadCandidates(), loadInvoicesRef.current()]);
-    setTicked(new Set(failures.keys()));
+    const [applied] = await Promise.all([loadCandidates(), loadInvoicesRef.current()]);
+    // #145: the checkboxes deliberately stay enabled during the run, so a tick added WHILE it
+    // was in flight must survive it — the functional update keeps every failure ticked (the
+    // failed rows stay selected beside their per-row errors, as before) plus any current tick
+    // that was not part of this run's click-time `orderIds` snapshot; ticks for orders the run
+    // processed successfully clear exactly as before. The whole post-run set — failures
+    // included — is then intersected with the candidate ids the reload just applied (Codex
+    // round 1, PR #154): a tick whose order left the list mid-run (invoiced by another
+    // session) would otherwise be a phantom — no row renders its checkbox or its per-row
+    // error, yet ticked.size keeps Create enabled and re-POSTs an order the operator cannot
+    // see. When the reload failed or was superseded there is no freshly applied list to prune
+    // against, and the rows still on screen (checkboxes included) are the stale ones — keeping
+    // the un-pruned set stays consistent with what renders. The prune lives HERE, not at every
+    // candidates load: only the post-run update owns reconciling ticks against a list it knows
+    // just changed.
+    const ran = new Set(orderIds);
+    setTicked((prev) => {
+      const next = new Set(failures.keys());
+      for (const id of prev) if (!ran.has(id)) next.add(id);
+      return applied === null ? next : new Set([...next].filter((id) => applied.has(id)));
+    });
     setCreateErrors(failures);
     setCreating(false);
   }
@@ -246,6 +275,11 @@ export function InvoicingList() {
         {invoicesError && (
           <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">
             Could not load invoices: {invoicesError}
+          </p>
+        )}
+        {customersError && (
+          <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
+            Could not load the customer filter: {customersError}
           </p>
         )}
 

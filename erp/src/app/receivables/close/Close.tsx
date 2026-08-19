@@ -316,7 +316,12 @@ function ClosePeriodsScreen() {
       {/* ---- Readiness ---- */}
       <section className="mb-6 rounded border bg-white p-4">
         <h2 className="mb-2 font-medium">GL-export readiness</h2>
-        {readinessGaps.length === 0 ? (
+        {/* #147 — every consumer of `readinessGaps` gates on `loaded && !error`, never `loaded`
+            alone: the load catch sets `loaded = true` and leaves the PRIOR month's gaps in
+            state, so after a failed month-switch neither the affirmative all-clear nor a stale
+            gap list may render (the banner at the top is what reports the failure). */}
+        {!loaded && !error && <p className="text-sm text-slate-500">Loading…</p>}
+        {loaded && !error && (readinessGaps.length === 0 ? (
           <p className="text-sm text-emerald-700">No GL account gaps for this period — ready to export once closed.</p>
         ) : (
           <>
@@ -331,7 +336,7 @@ function ClosePeriodsScreen() {
               Export gap list to Excel
             </a>
           </>
-        )}
+        ))}
       </section>
 
       {/* ---- Closed periods ---- */}
@@ -347,13 +352,17 @@ function ClosePeriodsScreen() {
           // fetch the Close button's own variance check reads) — a historical row's gap count
           // would need its own readiness fetch, which this screen deliberately doesn't do N times
           // over. Any real gap on a non-selected row still surfaces: `exportClose` refuses (409)
-          // and the message lands in the error banner.
-          const gapCount = isSelected ? readinessGaps.length : 0;
+          // and the message lands in the error banner. #147 — for the selected row it is UNKNOWN
+          // (null) until the fetch lands, and unknown again after it fails: the load catch keeps
+          // the prior month's gaps in state, so `loaded` alone would gate this Export on a stale
+          // count either way.
+          const gapCount = !isSelected ? 0 : loaded && !error ? readinessGaps.length : null;
           const exportTitle = !editGate.allowed ? editGate.title
             : !exportDoGate.allowed ? exportDoGate.title
               : p.status !== "CLOSED" ? "Must be closed (not reopened) to export"
-                : gapCount > 0 ? `${gapCount} GL account gap${gapCount === 1 ? "" : "s"} must be resolved first`
-                  : exportingId === p.id ? "Exporting…" : undefined;
+                : gapCount === null ? (loaded ? "GL-export readiness could not be loaded" : "Loading…")
+                  : gapCount > 0 ? `${gapCount} GL account gap${gapCount === 1 ? "" : "s"} must be resolved first`
+                    : exportingId === p.id ? "Exporting…" : undefined;
           const reopenTitle = !editGate.allowed ? editGate.title
             : !closeDoGate.allowed ? closeDoGate.title
               : p.status !== "CLOSED" ? "Already reopened" : undefined;

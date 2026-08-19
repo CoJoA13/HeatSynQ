@@ -46,6 +46,12 @@ export function ShippingList() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // #144: the picker fetch gets its OWN banner, never the shared `error` that `load()`'s success
+  // clears (the NewShipment `loadError` precedent) — a broken customer filter must stay reported
+  // while the list itself keeps loading fine. Never auto-cleared: nothing retries the picker, so
+  // nothing can honestly clear it. (No accumulator — unlike NewShipment, exactly one fetch
+  // reports here.)
+  const [customersError, setCustomersError] = useState<string | null>(null);
 
   const customersGate = gate(perms, "customers.view");
   const createGate = gate(perms, "shipping.create");
@@ -55,7 +61,7 @@ export function ShippingList() {
   // precedent, applied to this screen's own customer filter.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setCustomersError((e as Error).message));
   }, [customersGate.allowed]);
 
   function updateFilters(patch: Partial<Filters>) {
@@ -98,6 +104,11 @@ export function ShippingList() {
 
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
+      {customersError && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
+          Could not load the customer filter: {customersError}
+        </p>
       )}
 
       <div className="mb-3 flex flex-wrap items-end gap-4 rounded border bg-white p-2 text-sm">

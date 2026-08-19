@@ -62,6 +62,14 @@ export function PricingSection({
   const [codesReady, setCodesReady] = useState(false);
   const [addCodeId, setAddCodeId] = useState("");
   const [addingRow, setAddingRow] = useState(false);
+  // #145: the `addingRow` shape ported to the section's other three fire-a-request buttons — a
+  // second click faster than the round trip otherwise issues a second unordered request (a
+  // duplicate break POST, a double DELETE). One boolean per operation kind (the literal addingRow
+  // port): every button of that kind disables for the one-request window, which also sidesteps
+  // the scalar-id race where a second target's start forgets the first's in-flight state.
+  const [addingBreak, setAddingBreak] = useState(false);
+  const [removingBreak, setRemovingBreak] = useState(false);
+  const [removingRow, setRemovingRow] = useState(false);
   // Per-row "add a break" draft, keyed by price row id — a card's own nested table gets its own
   // add-row, so one shared draft (the old flat section's shape) would leak text typed under one
   // operation's breaks into another's the moment either was submitted.
@@ -179,12 +187,15 @@ export function PricingSection({
   }
 
   async function removeRow(id: string) {
+    if (removingRow) return; // one at a time (#145, the addRow guard's shape)
+    setRemovingRow(true);
     try {
       await api(`/api/parts/${partId}/prices/${id}`, { method: "DELETE" });
       onError(null);
       invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
+    finally { setRemovingRow(false); }
   }
 
   // Fix-wave 1, finding 1: computes the full new order client-side and sends it as ONE call to
@@ -312,7 +323,8 @@ export function PricingSection({
   }
   async function addBreak(priceId: string) {
     const draft = draftFor(priceId);
-    if (!draft.threshold || !draft.price) return;
+    if (!draft.threshold || !draft.price || addingBreak) return; // one at a time (#145)
+    setAddingBreak(true);
     try {
       await api(`/api/parts/${partId}/prices/${priceId}/breaks`, {
         method: "POST", body: JSON.stringify({ threshold: draft.threshold, price: draft.price }),
@@ -322,14 +334,18 @@ export function PricingSection({
       invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
+    finally { setAddingBreak(false); }
   }
   async function removeBreak(priceId: string, breakId: string) {
+    if (removingBreak) return; // one at a time (#145)
+    setRemovingBreak(true);
     try {
       await api(`/api/parts/${partId}/prices/${priceId}/breaks/${breakId}`, { method: "DELETE" });
       onError(null);
       invalidateHistory(); // #14 item 1
       await load();
     } catch (e) { onError((e as Error).message); }
+    finally { setRemovingBreak(false); }
   }
 
   return (
@@ -375,7 +391,9 @@ export function PricingSection({
                           className="text-xs disabled:cursor-not-allowed disabled:text-slate-300">
                     ↓
                   </button>
-                  <button type="button" onClick={() => removeRow(row.id)} disabled={disabled} title={title}
+                  <button type="button" onClick={() => removeRow(row.id)}
+                          disabled={disabled || removingRow}
+                          title={removingRow ? "Removing…" : title}
                           className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
                     Remove operation
                   </button>
@@ -442,7 +460,9 @@ export function PricingSection({
                                className="w-24 rounded border px-1 py-0.5 text-right read-only:bg-slate-50" />
                       </td>
                       <td className="text-right">
-                        <button onClick={() => removeBreak(row.id, b.id)} disabled={disabled} title={title}
+                        <button onClick={() => removeBreak(row.id, b.id)}
+                                disabled={disabled || removingBreak}
+                                title={removingBreak ? "Removing…" : title}
                                 className="text-xs text-red-600 disabled:cursor-not-allowed disabled:text-slate-400">
                           delete
                         </button>
@@ -461,8 +481,8 @@ export function PricingSection({
                        onChange={(e) => setBreakDraft(row.id, "price", e.target.value)}
                        className="w-24 rounded border px-2 py-1 text-sm" />
                 <button onClick={() => addBreak(row.id)}
-                        disabled={disabled || !draftFor(row.id).threshold || !draftFor(row.id).price}
-                        title={title}
+                        disabled={disabled || !draftFor(row.id).threshold || !draftFor(row.id).price || addingBreak}
+                        title={addingBreak ? "Adding…" : title}
                         className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
                   Add break
                 </button>

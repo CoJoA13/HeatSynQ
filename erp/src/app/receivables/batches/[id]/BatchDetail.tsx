@@ -367,7 +367,8 @@ export function BatchDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<BatchDetailData>(`/api/receivables/batches/${id}`);
-    if (mutations.accept(ticket)) setBatch((cur) => editGuard.merge(cur, res));
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3 fixpoint).
+    if (mutations.accept(ticket)) setBatch(editGuard.applyPayload(res));
     return res;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -378,7 +379,7 @@ export function BatchDetail({ id }: { id: string }) {
     const ticket = mutations.next();
     const res = await run();
     if (!mutations.accept(ticket)) return;
-    setBatch((cur) => editGuard.merge(cur, res));
+    setBatch(editGuard.applyPayload(res));
   }, [mutations, editGuard]);
 
   const posted = batch?.status === "POSTED";
@@ -727,7 +728,17 @@ export function BatchDetail({ id }: { id: string }) {
                       <td colSpan={8}>
                         <ApplyPanel payment={p} moneyGate={moneyGate} writeOffGate={writeOffGate}
                                     voidApplicationGate={voidApplicationGate}
-                                    onApplied={() => { void load(); }} onError={setError} />
+                                    onApplied={() => {
+                                      // #146 — the outer `load` rethrows (only its mount effect
+                                      // catches), so a network blip HERE after a successful
+                                      // apply was an unhandled rejection + a silently stale
+                                      // page. Reported the way voidBatchAction's own second
+                                      // try/catch does; wording is generic because both
+                                      // apply() and voidApplicationAction() fire this.
+                                      load().catch((e) => setError(
+                                        `The operation succeeded, but the page could not be refreshed — reload to see the current state. (${(e as Error).message})`,
+                                      ));
+                                    }} onError={setError} />
                       </td>
                     </tr>
                   )}

@@ -146,7 +146,17 @@ export function Quotes() {
   // ---------------------------------------------------------------------------------------
   const reloadAll = useCallback(async () => { await Promise.all([loadWorklist(), loadList()]); }, [loadWorklist, loadList]);
 
+  // #145 (the processes/templates togglingActive precedent, per row): <input type="date"> fires
+  // onChange per segment, so without an in-flight guard two unordered PATCHes for the SAME quote
+  // can persist the EARLIER pick. Keyed by quote id — a Set, not a scalar, because different
+  // rows' bumps are independent and a scalar would forget row A's in-flight PATCH the moment row
+  // B started — and checked per row at the one render site, which serves BOTH worklist sections:
+  // the same quote can sit in each, so the row-id key disables both of its renders for free.
+  const [bumpingIds, setBumpingIds] = useState<Set<string>>(new Set());
+
   async function bumpFollowUp(row: QuoteRowData, value: string) {
+    if (bumpingIds.has(row.id)) return; // belt to the disabled input's braces
+    setBumpingIds((cur) => new Set(cur).add(row.id));
     // Optimistic in both sections (the same quote may sit in each — §5.4); rolled back to server
     // truth FIRST on failure, then reported (§5.13).
     setWorklist((cur) => (cur === null ? cur : {
@@ -168,6 +178,8 @@ export function Quotes() {
     } catch (e) {
       await reloadAll();
       setError((e as Error).message);
+    } finally {
+      setBumpingIds((cur) => { const next = new Set(cur); next.delete(row.id); return next; });
     }
   }
 
@@ -283,9 +295,11 @@ export function Quotes() {
                 <td className="p-2">{r.expiryDate}</td>
                 <td className="p-2">
                   {/* Bump follow-up: a date picker that PATCHes the quote (ruling 11), gated
-                      quotes.edit with the §5.16 tooltip. Clearing the date is legal (null). */}
+                      quotes.edit with the §5.16 tooltip. Clearing the date is legal (null).
+                      Disabled while this row's own PATCH is in flight (#145). */}
                   <input type="date" value={r.followUpDate ?? ""}
-                         disabled={editGate.disabled} title={editGate.title}
+                         disabled={editGate.disabled || bumpingIds.has(r.id)}
+                         title={bumpingIds.has(r.id) ? "Saving…" : editGate.title}
                          aria-label={`Quote ${r.quoteNumber} follow-up date`}
                          onChange={(e) => void bumpFollowUp(r, e.target.value)}
                          className="rounded border px-1 py-0.5 disabled:cursor-not-allowed disabled:bg-slate-100" />

@@ -18,6 +18,7 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useEditGuard } from "@/lib/use-edit-guard";
 import { useMutationGate } from "@/lib/use-latest";
 import { drainOtherKeys } from "@/lib/drain-queue";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
@@ -198,12 +199,23 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   // clobber each other.
   const mutations = useMutationGate();
 
+  // Every set-of-`order`-from-server (load()'s refresh — the §5.13 rollback path included — and
+  // applyMutation's response apply below) routes through `editGuard.applyPayload`/
+  // `editGuard.capturePayload`, so a response landing
+  // mid-typing never resets the Overview/Notes field the user is actively editing
+  // (use-edit-guard.ts — the #149 adoption; the parts/[id]/page.tsx shape). The classic trigger
+  // here is an onChange-saving date input's PATCH resolving while the user has already moved on
+  // to typing in PO/VS/job # or Notes — the whole-detail swap used to eat those keystrokes.
+  const editGuard = useEditGuard();
+
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const o = await api<OrderDetail>(`/api/orders/${id}`);
-    if (mutations.accept(ticket)) setOrder(o);
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3
+    // fixpoint): a dropped stale payload is never applied, so it is never noted either.
+    if (mutations.accept(ticket)) setOrder(editGuard.applyPayload(o));
     return o;
-  }, [id, mutations]);
+  }, [id, mutations, editGuard]);
   useEffect(() => {
     load().then(() => setError(null)).catch((e) => setError((e as Error).message));
   }, [load]);
@@ -229,12 +241,24 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     // flag was still false — and a whole-detail swap would un-print it until reload. The fact
     // only ever goes false → true (stored documents never delete, spec §5.6), so preserving a
     // local true is exact under EVERY response ordering — the fixpoint the per-callback timing
-    // fixes could not reach.
-    setOrder((prev) => (prev?.travelerPrinted && !fresh.travelerPrinted
-      ? { ...fresh, travelerPrinted: true }
-      : fresh));
+    // fixes could not reach. The #149 focused-field preserve composes OVER that adjustment:
+    // `next` is the incoming server detail (flag-corrected), and the captured session's merge
+    // then keeps only the one text field the user is actively editing — a boolean is never
+    // under a text cursor, so the two preserves cannot collide.
+    // The one composed site: the updater derives `next` FROM prev (the monotonic boolean
+    // preserve above), so it cannot be a plain applyPayload — capturePayload takes the same
+    // capture+note at dispatch (against the PRE-ternary `fresh`, which is exact: the ternary
+    // only ever alters `travelerPrinted`, a boolean never registered with the guard) and the
+    // updater merges `next` with that captured session (use-edit-guard.ts, round 3).
+    const captured = editGuard.capturePayload(fresh);
+    setOrder((prev) => {
+      const next = prev?.travelerPrinted && !fresh.travelerPrinted
+        ? { ...fresh, travelerPrinted: true }
+        : fresh;
+      return captured.merge(prev, next);
+    });
     setWarnings(w);
-  }, [mutations]);
+  }, [mutations, editGuard]);
 
   const customersGate = gate(perms, "customers.view");
   const partsGate = gate(perms, "parts.view");
@@ -325,6 +349,10 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       "poNumber" | "vsOrderNumber" | "customerJobNo" | "receivedDate" | "requestDate" | "targetDate" | "notes"
       | "certRequired" | "certScope">>,
   ): Promise<boolean> {
+    // The optimistic patch needs no editGuard apply (the customers/parts save() shape): it
+    // spreads over `cur`, touching only the just-blurred field (or an unfocusable date input's),
+    // so the focused sibling's in-flight text is untouched by construction. The merges guard the
+    // SERVER-detail applies — applyMutation's response and the rollback load() below.
     setOrder((cur) => (cur ? { ...cur, ...patch } : cur));
     // A multi-field patch's composite key would NOT serialize against its constituent
     // single-field keys — latent only: every caller PATCHes one field per save.
@@ -352,18 +380,20 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     });
   }
 
-  // Blur-save guard (customers/[id]/page.tsx precedent): a text field that saved unconditionally
-  // on blur would PATCH (and audit) every simple tab-through even when nothing changed.
-  const focusedValue = useRef("");
-  const noteFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    focusedValue.current = e.target.value;
-  };
+  // Blur-save guard and focused-field tracking are both `editGuard`'s (use-edit-guard.ts — the
+  // #149 adoption; this page carried the pre-guard `focusedValue` ref the guard itself grew out
+  // of). The no-op half is unchanged: only fields the user actually changed reach the network,
+  // still diffing the blur value against the at-focus snapshot. What's new is registering WHICH
+  // OrderDetail property is under the cursor, which is what lets load()'s and applyMutation's
+  // merges above preserve the field mid-typing when a response lands (the parts/[id]/
+  // IdentitySection.tsx noteFocus shape). The onChange-saving date inputs register nothing —
+  // they are the clobber TRIGGER, not the target; their behavior is unchanged.
+  const noteFocus = (key: keyof OrderDetail & string) => editGuard.onFocusField(key);
   function onBlurSave(
     e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
     commit: (value: string) => void,
   ) {
-    if (e.target.value === focusedValue.current) return;
-    commit(e.target.value);
+    editGuard.onBlurSave(e, commit);
   }
 
   // ---- Void / Link / Unlink: non-optimistic (customers/[id]/page.tsx `call()` precedent) ----
@@ -491,14 +521,14 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
           <label className="block">
             PO number
-            <input value={order.poNumber} onFocus={noteFocus} readOnly={!editGate.allowed} title={editGate.title}
+            <input value={order.poNumber} onFocus={noteFocus("poNumber")} readOnly={!editGate.allowed} title={editGate.title}
                    onChange={(e) => setOrder({ ...order, poNumber: e.target.value })}
                    onBlur={(e) => onBlurSave(e, (poNumber) => void saveOrder({ poNumber }))}
                    className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
           </label>
           <label className="block">
             VS order #
-            <input value={order.vsOrderNumber} onFocus={noteFocus} readOnly={!editGate.allowed} title={editGate.title}
+            <input value={order.vsOrderNumber} onFocus={noteFocus("vsOrderNumber")} readOnly={!editGate.allowed} title={editGate.title}
                    onChange={(e) => setOrder({ ...order, vsOrderNumber: e.target.value })}
                    onBlur={(e) => onBlurSave(e, (vsOrderNumber) => void saveOrder({ vsOrderNumber }))}
                    className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
@@ -508,7 +538,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
             {/* §3.22: the customer's own job number, printed on the shipping ticket beside the
                 PO. Same blur-save shape as PO/VS # above; stays editable at every status
                 (spec §5.5's "everything else stays editable" list names it). */}
-            <input value={order.customerJobNo} onFocus={noteFocus} readOnly={!editGate.allowed} title={editGate.title}
+            <input value={order.customerJobNo} onFocus={noteFocus("customerJobNo")} readOnly={!editGate.allowed} title={editGate.title}
                    onChange={(e) => setOrder({ ...order, customerJobNo: e.target.value })}
                    onBlur={(e) => onBlurSave(e, (customerJobNo) => void saveOrder({ customerJobNo }))}
                    className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
@@ -625,7 +655,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         <h2 className="mb-2 font-medium">Notes</h2>
         <label className="mb-3 block text-sm">
           Order notes
-          <textarea value={order.notes} rows={3} onFocus={noteFocus} readOnly={!editGate.allowed} title={editGate.title}
+          <textarea value={order.notes} rows={3} onFocus={noteFocus("notes")} readOnly={!editGate.allowed} title={editGate.title}
                     onChange={(e) => setOrder({ ...order, notes: e.target.value })}
                     onBlur={(e) => onBlurSave(e, (notes) => void saveOrder({ notes }))}
                     className="mt-1 w-full rounded border p-2 read-only:bg-slate-50" />
