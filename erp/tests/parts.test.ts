@@ -156,6 +156,22 @@ describe("parts core", () => {
     expect(before.name).toBe(""); expect(after.name).toBe("Ring gear");
   });
 
+  it("a materialId change snapshots the material's name, not only the cuid (#14 item 2)", async () => {
+    const { acme } = await twoCustomers();
+    const mat = await prisma.material.create({ data: { name: "Ductile iron" } });
+    const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "MAT", eachWeight: 1 }));
+    await asSystem(() => updatePart(id, { materialId: mat.id }));
+    const entry = await prisma.auditLog.findFirst({ where: { entity: "part", entityId: id, action: "update" } });
+    const before = entry!.before as { material: { name: string } | null };
+    const after = entry!.after as { materialId: string | null; material: { name: string } | null };
+    // The raw FK still rides along (frozen history keeps it; the render half pairs the two keys),
+    // but the snapshot now carries the resolved material so history reads "Ductile iron", not a
+    // cuid — the partSpecification precedent.
+    expect(after.materialId).toBe(mat.id);
+    expect(after.material?.name).toBe("Ductile iron");
+    expect(before.material).toBeNull();
+  });
+
   it("inactive parts hide by default and appear with includeInactive", async () => {
     const { acme } = await twoCustomers();
     const { id } = await asSystem(() => createPart({ customerId: acme.id, partNumber: "IN", eachWeight: 1 }));
