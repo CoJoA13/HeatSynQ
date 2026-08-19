@@ -67,6 +67,18 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   newly-pinning a section, controller-added), and the budget-raise remedy replaced by the
   physical-headroom truth. CLAUDE.md's pointer sentence re-matched.
 
+- **Round 4** (two P2s): the criterion itself was one notch weak — a changed `defaultLabel`/
+  `defaultWidth` keeps every stored config VALID yet silently rewrites the next print of
+  already-published versions (stored `null`s resolve `?? default` against the CURRENT contract
+  — verified in `traveler.ts` and the width check — breaking the §5.3 identical-render promise;
+  a raised `defaultWidth` can also trip the width refusal). Criterion strengthened to "stays
+  valid AND keeps rendering the same paper", default changes added to the traps, the sanctioned
+  publishing-era shape re-stated as "validate AND resolve" (defaults preserved too). Second P2
+  half-verified: the per-division statement print catches per member and 200s with per-member
+  failures (`statements.ts:485-513`) — the raw 500/400 claim is now scoped to single-document
+  routes; its cert-bundle example did NOT verify (`printCert` has one call site, the uncaught
+  single-document route) and was not adopted.
+
 Replied + resolved per the loop, all rounds.
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
