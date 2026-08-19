@@ -619,7 +619,24 @@ describe("the §5.14 SSI pairing — dangerous direction (STANDING INVARIANT)", 
     const save = asSystem(() => createOrder({
       customerId: f.customer.id, receivedDate: "2026-08-15", lines: [line(f.part.id)],
     })).then(() => "resolved" as const, (e: unknown) => e);
-    await new Promise((r) => setTimeout(r, 200)); // let it read + block
+    // Wait until the save has genuinely PARKED, by asking pg's own lock state rather than
+    // sleeping a fixed 200ms (#100 item 2 — the sleep could false-RED under load: the drop
+    // would commit before the save had read, turning the race into a different, passing
+    // schedule). A backend of THIS database waiting on an ungranted lock can only be the save
+    // blocked at allocateNumber's SELECT … FOR UPDATE on the gated counter row
+    // (fileParallelism: false — no other test shares the cluster's erp_test backends).
+    // Bounded so a genuinely stuck run still fails loudly instead of hanging.
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const waiters = await prisma.$queryRaw<{ pid: number }[]>`
+        SELECT l.pid FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE NOT l.granted AND a.datname = current_database()`;
+      if (waiters.length > 0) break;
+      if (Date.now() >= deadline) {
+        throw new Error("the parked save never blocked at allocateNumber (no ungranted lock within 10s)");
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
 
     // The REAL updateQuote drops the linked-to-be line and COMMITS while the save is paused.
     await runWithContext({ actor: { id: f.user.id, name: "QL User" }, user: null }, () =>
