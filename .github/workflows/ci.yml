@@ -98,10 +98,10 @@ jobs:
             -e DATABASE_URL=postgresql://erp:erp_local_dev@db:5432/erp \
             heatsynq-app:ci
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3000/api/health | grep -q '"ok":true'; then
+            if curl -fsS --max-time 5 http://127.0.0.1:3000/api/health | grep -q '"ok":true'; then
               echo "boot check passed"; exit 0
             fi
-            if [ -z "$(docker ps -q -f name=app-boot)" ]; then
+            if [ -z "$(docker ps -q -f 'name=^app-boot$')" ]; then
               echo "container exited before becoming healthy"; docker logs app-boot; exit 1
             fi
             sleep 3

@@ -43,3 +43,20 @@ union and still flag), verified all 71 model names satisfy the delegate conventi
 the load-bearing empty-set-vs-absent distinction (no silent-pass path exists), and checked the
 tripwire's parse robustness in both failure directions. ALLOWED_CALLS deleted entirely — a
 permanent allowlist replaced by a structural fix. Two polish minors, no action.
+
+**Task 3 (#30 CI docker job + #112 README)** — implementer `6786989`/`4326860`/`d13ec3e`, with
+the watched local verification as the task's gate (build exit 0, health 200 — including a real
+transient curl failure absorbed by the very retry loop under review; the README stale claim
+empirically disproven against the just-built image). Review: **Spec ✅ · Approved (round 1)**.
+The reviewer traced GHA's actual shell semantics (no pipefail by default; the pipeline sits in
+an if-condition exempt from errexit either way), verified the `erp_default` derivation holds
+under CI's checkout layout, and confirmed the report's 50-vs-51 migration off-by-one (the 51st
+entry is migration_lock.toml). Two consequence-free nits (unanchored `-f name=` filter; curl
+without `--max-time`) — **controller-applied on-branch**.
+
+## Group tally
+
+Four implementation tasks, four reviews — **ALL Approved on round 1, zero implementer fix
+rounds** (three controller-applied minors on-branch: the empty-string target hardening, the two
+CI-loop nits). Two issues closed without code by recon/ruling: #34 (already implemented since
+Phase 4) and #107 (owner ruling, not-planned). No schema migration anywhere in the group.
