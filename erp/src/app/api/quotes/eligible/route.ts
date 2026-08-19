@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { handle, requireUser, HttpError } from "@/server/http";
-import { mustCan } from "@/server/permissions";
+import { can } from "@/server/permissions";
 import { prisma } from "@/server/db";
 import { eligibleQuoteLines } from "@/server/quote-links";
 import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
@@ -18,17 +18,22 @@ const QUERY = z.object({
  * customer + part as of a received date, in ruling 7's order, plus which one the save would
  * silently auto-resolve — shown before save, with re-pick/unlink offered against the same list.
  *
- * Gated `orders`-area VIEW, deliberately NOT `quotes` (the §5.15 reasoning — a pick-list is
- * readable with the permission of the SCREEN it serves, not the module that owns the data):
- * this serves order entry's resolution preview, not quote management, and an entry operator
- * without `quotes.view` must still see which quote will price the line they are keying.
+ * Gated `orders.view` OR `quotes.view` (the §5.15 reasoning — a read is gated by the SCREEN it
+ * serves, not the module that owns the data — applied to the TWO screens this route now serves,
+ * #101 / owner ruling 5, 2026-08-12): order entry's resolution preview (an entry operator
+ * without `quotes.view` must still see which quote will price the line they are keying) AND the
+ * part page's Active-quotes indicator (quote visibility on a parts screen is quotes-area
+ * vocabulary, so `quotes.view` alone must also suffice).
  *
  * A preview on the bare client, never a guard: the save re-judges every pick inside its own
  * Serializable transaction (`resolveQuoteLinks`, orders.ts — the §5.14 SSI read), so a stale
  * answer here costs nothing, exactly like /api/orders/entry-defaults.
  */
 export const GET = handle(async (req) => {
-  mustCan(requireUser(), "orders", "view");
+  const u = requireUser();
+  if (!can(u, "orders", "view") && !can(u, "quotes", "view")) {
+    throw new HttpError(403, "Requires orders.view or quotes.view");
+  }
   const url = new URL(req.url);
   // Blank (present-but-empty, what an untouched form input serializes to) means absent — the
   // orders query.ts rule; the required pair then fails zod's own min(1) as a clean 400.
