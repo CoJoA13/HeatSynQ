@@ -3,18 +3,20 @@
 // waitForShipmentPage helpers, same /invoicing "Ready to invoice" -> Create -> Finalize path),
 // then drives the NEW `/receivables` screens end to end: a deposit batch, a check payment applied
 // as a partial payment + a small write-off (leaving an on-account remainder), the aging report
-// (the invoice's own bucket + the Unapplied column), and a printed, archived statement (combined
-// family, finance charges assessed) that reappears in the customer's own Documents list.
+// (the invoice's own bucket + the Unapplied column), a printed, archived statement (combined
+// family, finance charges assessed) that reappears in the customer's own Documents list, and
+// finally a SECOND check that settles the invoice and takes the early-pay discount.
 //
 // Fixture math (e2e/lib/db-fixtures.ts's `arCustomer`/`arPart`/`arTerms`/`arPaymentType`): one
 // priced OPERATION line, unitPrice 100.00 x qty 10 = invoice total 1000.00 (`surchargeOptOut` +
 // `taxable: false` on the fixture customer keep this exact — no surcharge/tax line rides along).
-// Terms are 2/10/30 (netDays 30, discountPercent 2, discountDays 10) and the payment is received
-// today, well inside the 10-day window — but **no discount is offered or taken**, and the flow now
-// asserts its ABSENCE: #69 (owner ruling 2026-08-19) earns the early-pay discount only for a
-// payment that SETTLES the invoice, and a 700.00 check cannot settle 1,000.00. Before that ruling
-// this flow took 20.00 here; the DISCOUNT column is the visible half of the rule now.
+// Terms are 2/10/30 (netDays 30, discountPercent 2, discountDays 10) and both checks are received
+// today, well inside the 10-day window. **The two applies are the two halves of #69** (owner ruling
+// 2026-08-19: an early-pay discount is earned only by a payment that SETTLES the invoice) — the
+// first is refused the offer and asserts its ABSENCE, the second earns it. Before that ruling the
+// first apply took 20.00 on a partial payment.
 //
+//   FIRST APPLY — a partial payment; no discount offered (700.00 cannot settle 1,000.00):
 //   check received:              700.00
 //   PAYMENT applied to invoice:  500.00
 //   WRITE_OFF applied:            30.00
@@ -25,7 +27,16 @@
 //   on-account (unapplied cash): 700.00 (check) - 500.00 (PAYMENT-type applications) = 200.00
 //
 // So the aging report's row for this customer must show Current 470.00, Unapplied 200.00, Net
-// 270.00 — the exact figures asserted below.
+// 270.00 — the exact figures asserted below, and the statement's total due must match that Net.
+//
+//   SECOND APPLY — the settling remittance, which DOES earn the discount (runs LAST, after every
+//   aging/statement assertion, so it moves none of the figures above):
+//   eligible discount:             9.40  (2% x the 470.00 still open, under the 20.00 entitlement)
+//   check received:              460.60  (= 470.00 - 9.40, exactly the offer's boundary)
+//   PAYMENT applied:             460.60
+//   DISCOUNT taken:                9.40
+//   ---------------------------------------
+//   invoice open balance:          0.00, second check fully applied (on account 0.00)
 //
 // Never `page.waitForURL` for a route -> route/[id] hop (the Phase 3/4/5A trap, spec §13,
 // re-armed in invoice-shipped-order.mjs) — every wait below is for post-navigation-ONLY content.
@@ -221,4 +232,69 @@ export async function run(page, shot, ctx) {
   await documentsSection.getByRole("link", { name: "Statement", exact: true })
     .waitFor({ state: "visible", timeout: 15000 });
   await shot("statement-printed-archived");
+
+  // --- LAST, and deliberately after every assertion above: a SECOND check that SETTLES the
+  // invoice, which is the only way an early-pay discount can be earned since #69. This is the
+  // discount's happy path — the checkbox rendered, checked, and driven through the route into a
+  // real DISCOUNT application — restored end to end after the first apply above lost it. It runs
+  // at the tail so the aging/statement fixture math it would otherwise move stays untouched.
+  //
+  //   invoice open after the first apply:  470.00
+  //   eligible discount:                     9.40  (2% x 470.00, under the 20.00 entitlement)
+  //   second check received:               460.60  (= 470.00 - 9.40, the settling remittance)
+  //   PAYMENT applied:                     460.60
+  //   DISCOUNT taken:                        9.40
+  //   ---------------------------------------------
+  //   invoice open balance:                  0.00, and the check is fully applied (on account 0.00)
+  //
+  // 460.60 is the offer's boundary exactly (`cash >= open - eligible`), so a cent lost anywhere in
+  // the chain shows up here as an absent checkbox rather than a wrong number.
+  await page.goto(`${ctx.baseURL}/receivables/batches/${ctx.created.receivablesBatchId}`);
+  await batchHeading.waitFor({ state: "visible", timeout: 15000 });
+  await page.locator("label", { hasText: "Payer customer" }).locator("select").selectOption(fixtures.arCustomerId);
+  await page.locator("label", { hasText: "Payment type" }).locator("select").selectOption(fixtures.arPaymentTypeId);
+  await page.getByLabel("Amount", { exact: true }).fill("460.60");
+  await page.getByLabel("Check #", { exact: true }).fill("E2E-1002");
+  await page.getByLabel("Received date", { exact: true }).fill(today);
+  await page.getByRole("button", { name: "Add payment", exact: true }).click();
+
+  // By CHECK NUMBER, not by payment type: both checks share this batch's one payment type now, so
+  // the `paymentRow` locator used earlier in this flow would match two rows from here on.
+  const settlingRow = page.locator("tr").filter({ has: page.getByText("E2E-1002", { exact: true }) });
+  await settlingRow.waitFor({ state: "visible", timeout: 15000 });
+  await settlingRow.getByRole("button", { name: "Apply", exact: true }).click();
+
+  const settleTable = page.getByRole("columnheader", { name: "Write-off", exact: true })
+    .locator("xpath=ancestor::table[1]");
+  const settleCandidateRow = settleTable.locator("tbody tr")
+    .filter({ has: page.getByText(String(order.number), { exact: true }) });
+  await settleCandidateRow.waitFor({ state: "visible", timeout: 15000 });
+
+  // The offer is present THIS time, and for the right amount — the mirror of the absence assertion
+  // on the first apply, and the half of #69 that would otherwise have no end-to-end coverage.
+  await settleCandidateRow.getByText(/^Take 9\.40$/).waitFor({ state: "visible", timeout: 15000 });
+  await settleCandidateRow.getByLabel(`${order.number} amount`, { exact: true }).fill("460.60");
+  await settleCandidateRow.locator('input[type="checkbox"]').check();
+  await shot("settling-apply-panel-filled");
+
+  // Scoped to the panel's own `<td colSpan={8}>` (the candidate table's nearest ancestor `td`),
+  // NOT `page.getByRole(...)` as the first apply above could safely do: with a second payment row
+  // on screen, the page now carries the OTHER row's "Apply" toggle as well as this panel's submit
+  // button, and an unscoped locator goes strict-mode ambiguous.
+  const settlePanel = settleTable.locator("xpath=ancestor::td[1]");
+  const settled = page.waitForResponse((res) =>
+    new URL(res.url()).pathname === "/api/receivables/applications" && res.request().method() === "POST" && res.ok());
+  await settlePanel.getByRole("button", { name: "Apply", exact: true }).click();
+  await settled;
+
+  await settlePanel.getByText("Payment 460.60 · Applied 460.60 · On account 0.00", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
+  // The DISCOUNT actually landed as its own application row, at the offered figure.
+  const discountRow = settlePanel.locator("tr").filter({ has: page.getByText("Discount", { exact: true }) });
+  await discountRow.waitFor({ state: "visible", timeout: 15000 });
+  assert.equal((await discountRow.locator("td").nth(2).textContent()).trim(), "9.40",
+    "the DISCOUNT application must be written for the offered early-pay amount (#69)");
+  // Settled invoices drop out of the candidate list, so the row that carried the offer is gone.
+  await settleCandidateRow.waitFor({ state: "detached", timeout: 15000 });
+  await shot("settling-payment-applied");
 }

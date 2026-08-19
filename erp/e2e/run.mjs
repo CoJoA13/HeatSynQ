@@ -54,8 +54,11 @@ const HEADED = Boolean(process.env.HEADED);
 // statement print+archive) end to end.
 // Task 9 (Phase 5C) adds the 18th flow, `close-month-end`, as admin (needs
 // `close_ar_period`/`run_qbo_export`, both held via ALL_PERMISSIONS) — it sets the four Admin ->
-// Billing GL defaults, seeds its own shipped-and-invoiced order + a discounted/written-off payment
-// against its own fixture customer, closes the current month, exports the GL delta, then
+// Billing GL defaults, seeds its own shipped-and-invoiced order + a partly-applied/written-off
+// payment against its own fixture customer (no discount since #69 — a 600.00 check cannot settle a
+// 1,000.00 invoice, and the flow asserts the offer's absence; the discount's happy path lives in
+// `receivables-apply-age-statement`'s settling second check), closes the current month, exports the
+// GL delta, then
 // reopens/corrects/re-closes/re-exports and confirms the reversing delta. Ran last (of 18) for the
 // same "nothing after it needs its state" reason as every other flow at the tail of this list — and
 // deliberately AFTER `receivables-apply-age-statement`, whose own invoice stays FINALIZED (never

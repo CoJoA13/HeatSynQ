@@ -173,3 +173,88 @@ the main spec §15 row — see the deviation below.
   the UI (not a guard — the save re-derives everything under its own claims), so no transaction
   threading was added. Worth a second pair of eyes that this is the right call for a read that no
   invariant depends on.
+
+---
+
+# Fix round 1 — the five review Minors
+
+Reviewer verdict was **Spec ✅ · Approved (round 1)**, zero Important, zero Critical; all five items
+below are Minors. Only one changes behavior (the E2E addition). Two commits:
+
+| | |
+|---|---|
+| `ec06fbf` | `docs(receivables): name the multi-invoice caveat in the §4.3 settlement block (#69)` — **committed first and alone**, to clear `erp/src/server/applications.ts` for the #77 implementer the controller was holding |
+| *(this commit)* | the remaining four Minors + this note |
+
+**Item 2 — the §4.3 header overclaimed** (`applications.ts`). It said the two read sites "must
+agree", full stop. They must agree *per invoice*; across a whole grid they deliberately cannot, since
+`discountAvailable` answers about one invoice and measures the payment's entire unapplied cash
+against it — a $1,000 check facing two $1,000 invoices offers "Take 20.00" on both, and taking both
+is refused by the payment's own unapplied-amount check (the same upper bound the plain amount inputs
+have always had). The block now says so, and states the invariant that actually holds: it is
+one-directional — every DISCOUNT the save accepts satisfies the offer's condition, so the save can
+never accept what the offer would refuse. Comment only.
+
+**Item 1 — the discount happy path had lost all E2E coverage.** Both flows that drove the
+"Take 20.00" checkbox now assert its absence, so nothing end to end rendered the offer, checked it,
+or drove a DISCOUNT through the route. Restored at the **tail** of
+`receivables-apply-age-statement.mjs`, after every aging/statement assertion, so the existing fixture
+math is untouched: a second check of **460.60** settles the 470.00 still open and takes the **9.40**
+offered (2% of 470.00, inside the 20.00 entitlement). Re-derived and checked in integer cents —
+`46060 >= 47000 − 940` is the offer's boundary **exactly**, so a cent lost anywhere in the chain
+shows up as an absent checkbox rather than a wrong number, and the save's exactness test is
+`46060 + 940 == 47000`. It asserts the offer is present *and* reads "Take 9.40" (the mirror of the
+two absence assertions), that the panel settles to
+`Payment 460.60 · Applied 460.60 · On account 0.00`, that a **Discount** application row exists for
+9.40, and that the settled invoice drops out of the candidate list.
+
+Three traps handled while writing it, each commented in place: the second payment shares the batch's
+one payment type, so the earlier `paymentRow` locator would match two rows from here on (the new row
+is located by **check number**); the page now carries the other row's "Apply" **toggle** alongside
+the panel's "Apply" **submit**, so the submit is scoped to the panel's own `<td colSpan={8}>` via
+`ancestor::td[1]` rather than the unscoped `page.getByRole` the first apply can safely use; and the
+batch's `controlTotal` is null (the flow never sets one), so `postBatch`'s #80 footing check does not
+object to a second payment — which matters because `close-month-end.mjs` posts this batch. That flow
+also already sets **"Discount GL account"** among its four Admin → Billing defaults, so the restored
+DISCOUNT posting is covered by readiness exactly as it was before #69 removed it.
+
+**Item 3 — attribution in the spec.** The WRITE_OFF exclusion was stated inline with the owner's
+ruled text as though the owner had said it. Both spec sites now label it as the implementation's
+reading of `cash + discount == open`, **pending ratification**, with the reasoning, the reviewer's
+endorsement, and the reviewer's sharper argument for it (counting a write-off would open a
+`PAYMENT 500 + DISCOUNT 20 + WRITE_OFF 480` loophole), plus the note that it is a one-line change if
+the owner reads it the other way.
+
+**Item 4 — `e2e/run.mjs`** no longer describes `close-month-end` as seeding "a discounted/written-off
+payment"; it points at the A/R flow's settling second check for where the discount now lives.
+
+**Item 5 — the demo doc contradicted itself** ("none of the three options" / "the basis stays the
+open balance", which is option 1). Rewritten: the basis *is* option 1 and did not move; what the
+owner added is a settlement guard none of the three options contemplated.
+
+**Follow-up issue filed: [#155](https://github.com/CoJoA13/HeatSynQ/issues/155)** — "5B A/R: the
+two-step early-pay discount is unreachable after #69, and the hidden offer explains nothing (§5.14)".
+It carries both arms: the arithmetic finding (composing #69 with the #81 cap leaves no pair of
+numbers that satisfies both, so a discount is takeable only in the same call as the settling payment
+— with the owner question of whether "pay first, discount after" is a real remittance pattern, and
+the basis change that would fix it if so), and the reviewer's §5.14 finding (an operator entering a
+partial sees nothing at all in the Discount cell and cannot learn that remitting 980.00 would earn
+20.00, though the hide reason is operator-fixable). The issue records the E2E note for whoever takes
+it: the flows assert a row-scoped checkbox count of 0, so a text-only hint keeps them green while a
+disabled-with-tooltip checkbox would fail them, correctly.
+
+## Fix-round gates
+
+Scratch DB `erp_scratch_i1` recreated + migrated, dropped after.
+
+| Gate | Result |
+|---|---|
+| `npx vitest run` on the four touched suites (applications, applications-routes, roles-routes, roles) | **98 passed** |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `node --check` on both edited `.mjs` files | clean |
+| `npx eslint e2e` | the same **pre-existing** `cert-results-print.mjs` warning, nothing new |
+
+The full suite was not re-run this round — the only non-comment changes are E2E `.mjs` files and
+docs, neither of which vitest loads. **The E2E run is still owed at group level, and now has one more
+reason to matter**: the settling second apply is new UI driving, not just re-derived numbers.
