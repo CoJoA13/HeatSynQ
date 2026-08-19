@@ -81,3 +81,22 @@ by `exportClose`'s 409 — recorded, not changed.
 
 Task 3's implementer also found the scratch-DB override defect (incident 1 above) and
 re-verified its gates on a genuinely private database.
+
+## Group tally
+
+Three implementation tasks, three reviews — **three Approved round 1, zero Important findings
+across the group**. Two single-Minor fix rounds, both TDD'd by their own implementers (Task 1's
+disappearing-row slot release `9d58d2a`; Task 3's fieldId-keying pin `653e516`, proven red
+under a positional variant). Task 2's five minors all record-only. Six issues closed by the PR
+(#144–#149). No migrations. Two new `src/lib/` leaves with suites (`field-drafts.ts`; the
+keyed edit-guard variant inside `use-edit-guard.ts` with its first-ever test file).
+
+## Gates (final tree `681b44f` + `653e516`/`20bf167`)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3346 passed / 200 files** (solo run on `erp_test`, all implementers done; Group H closed at 3310/198) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npm run test:e2e` | **23/23 flows** |
