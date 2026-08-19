@@ -87,11 +87,109 @@ describe("db error hygiene", () => {
   });
 });
 
+// #40: on the Prisma 7 + @prisma/adapter-pg stack a P2002 carries NO `meta.target` and a P2003
+// carries NO `meta.constraint` — the answer lives in `meta.driverAdapterError.cause.constraint`
+// ({ fields } for 23505, { index } for 23503), with mixed-case identifiers arriving wrapped in
+// literal double quotes (parsed from Postgres' DETAIL line). These tests pin the extraction:
+// three through the real DB (the measured shapes), two synthetic (legacy-first ordering and the
+// never-throws fallback). The legacy `meta.target` synthetic in the #90 describe below stays as
+// the legacy-shape regression alongside these.
+describe("P2002/P2003 field extraction on the driver-adapter stack (#40)", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("names the conflicting field on a real P2002 without conflictField (Role.name)", async () => {
+    await prisma.role.create({ data: { name: "Office" } });
+    const boom = withDbErrors({ entity: "Role" }, () =>
+      prisma.role.create({ data: { name: "Office" } }));
+    await expect(boom).rejects.toMatchObject({
+      status: 400, message: "A role with that name already exists",
+    });
+  });
+
+  // Mixed-case identifiers arrive from the adapter as '"tokenHash"' — literal embedded double
+  // quotes, parsed straight out of Postgres' DETAIL line. The extractor must strip them or the
+  // user sees `that "tokenHash"`.
+  it("strips the adapter's embedded quotes on a camelCase P2002 (Session.tokenHash)", async () => {
+    const user = await prisma.user.create({
+      data: { username: "u1", passwordHash: "x", displayName: "U One" },
+    });
+    const expiresAt = new Date(Date.now() + 3_600_000);
+    await prisma.session.create({ data: { tokenHash: "tok-1", userId: user.id, expiresAt } });
+    const boom = withDbErrors({ entity: "Session" }, () =>
+      prisma.session.create({ data: { tokenHash: "tok-1", userId: user.id, expiresAt } }));
+    await expect(boom).rejects.toMatchObject({ status: 400 });
+    const message = await boom.catch((e: HttpError) => e.message);
+    expect(message).toContain("tokenHash");
+    expect(message).not.toContain('"');
+  });
+
+  // Calls the delegate directly: the service path (`createReference` → `assertRefExists`)
+  // pre-checks the FK and would 400 before the constraint ever fires. The constraint is the
+  // race-path backstop, and its message should name the field just like the pre-check does.
+  it("names the missing reference on a real P2003 (PaymentType.glAccountId)", async () => {
+    const boom = withDbErrors({ entity: "Payment type" }, () =>
+      prisma.paymentType.create({ data: { name: "Check", glAccountId: "nope" } }));
+    await expect(boom).rejects.toMatchObject({
+      status: 400, message: "That gl account does not exist",
+    });
+  });
+
+  // Legacy-first ordering (the isDuplicateClientRequestId precedent, orders.ts): `meta.target` /
+  // `meta.constraint` are consulted BEFORE the adapter shape, so a future adapter that populates
+  // them wins even when the driver-adapter cause disagrees.
+  it("prefers the legacy meta shapes over the adapter shape (synthetic)", () => {
+    const legacyP2002 = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test",
+      meta: {
+        target: ["name"],
+        driverAdapterError: { cause: { constraint: { fields: ['"somethingElse"'] } } },
+      },
+    });
+    expect(() => translatePrisma(legacyP2002, { entity: "Role" }))
+      .toThrow(expect.objectContaining({ status: 400, message: "A role with that name already exists" }));
+
+    const legacyStringTarget = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test", meta: { target: "name" },
+    });
+    expect(() => translatePrisma(legacyStringTarget, { entity: "Role" }))
+      .toThrow(expect.objectContaining({ status: 400, message: "A role with that name already exists" }));
+
+    const legacyP2003 = new Prisma.PrismaClientKnownRequestError("FK constraint failed", {
+      code: "P2003", clientVersion: "test",
+      meta: {
+        constraint: "PaymentType_glAccountId_fkey", modelName: "PaymentType",
+        driverAdapterError: { cause: { constraint: { index: "PaymentType_nopeId_fkey" } } },
+      },
+    });
+    expect(() => translatePrisma(legacyP2003, { entity: "Payment type" }))
+      .toThrow(expect.objectContaining({ status: 400, message: "That gl account does not exist" }));
+  });
+
+  // The adapter omits `constraint` entirely when Postgres sends no DETAIL line — the extractor
+  // must fall back to "value", never throw.
+  it("falls back to 'value' on a P2002 with neither shape (synthetic)", () => {
+    const bare = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test", meta: { modelName: "Role" },
+    });
+    expect(() => translatePrisma(bare, { entity: "Role" }))
+      .toThrow(expect.objectContaining({ status: 400, message: "A role with that value already exists" }));
+
+    const noDetail = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "test",
+      meta: { modelName: "Role", driverAdapterError: { cause: { originalCode: "23505" } } },
+    });
+    expect(() => translatePrisma(noDetail, { entity: "Role" }))
+      .toThrow(expect.objectContaining({ status: 400, message: "A role with that value already exists" }));
+  });
+});
+
 // #90: the retry wrapper's scope. A P2002 is only a losing-Serializable-writer shape at ONE call
 // site (closePeriod's year-month insert race); the allocation paths answer nonce P2002s by
-// in-attempt replay and never retry (#115), and constraint-name discrimination via `meta.target`
-// is unavailable on the driver-adapter stack (#40) — so the unique-conflict retry is a per-call
-// opt-in boolean, default off. Deadlock victims (40P01) join 40001 as always-retryable.
+// in-attempt replay and never retry (#115). Constraint discrimination IS possible since #40
+// (`uniqueConflictFields` reads the adapter shape), but whether a P2002 means "a concurrent
+// writer won — a re-run will see its row" is a fact about the call site's own insert semantics,
+// not about which constraint fired — so the unique-conflict retry stays a per-call opt-in
+// boolean, default off. Deadlock victims (40P01) join 40001 as always-retryable.
 describe("retryOnSerializationConflict scope (#90)", () => {
   const p2002 = () => new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
     code: "P2002", clientVersion: "test", meta: { target: ["year", "month"] },
