@@ -622,15 +622,17 @@ describe("the §5.14 SSI pairing — dangerous direction (STANDING INVARIANT)", 
     // Wait until the save has genuinely PARKED, by asking pg's own lock state rather than
     // sleeping a fixed 200ms (#100 item 2 — the sleep could false-RED under load: the drop
     // would commit before the save had read, turning the race into a different, passing
-    // schedule). A backend of THIS database waiting on an ungranted lock can only be the save
-    // blocked at allocateNumber's SELECT … FOR UPDATE on the gated counter row
-    // (fileParallelism: false — no other test shares the cluster's erp_test backends).
-    // Bounded so a genuinely stuck run still fails loudly instead of hanging.
+    // schedule). The waiter filter names the counter statement itself, so the proof is
+    // self-contained: even a stray blocked backend from a concurrent process (a sibling
+    // vitest run stuck in truncateAll) cannot satisfy the poll early — only the save parked
+    // at allocateNumber's SELECT … FOR UPDATE on the gated counter row does (reviewer minor,
+    // Group H task 3). Bounded so a genuinely stuck run still fails loudly instead of hanging.
     const deadline = Date.now() + 10_000;
     for (;;) {
       const waiters = await prisma.$queryRaw<{ pid: number }[]>`
         SELECT l.pid FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
-        WHERE NOT l.granted AND a.datname = current_database()`;
+        WHERE NOT l.granted AND a.datname = current_database()
+          AND a.query LIKE '%order_number_next%'`;
       if (waiters.length > 0) break;
       if (Date.now() >= deadline) {
         throw new Error("the parked save never blocked at allocateNumber (no ungranted lock within 10s)");
