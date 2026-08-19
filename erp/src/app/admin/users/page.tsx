@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
-import { gateDo } from "@/lib/permission-ui";
+import { gateDo, type Gate } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import { UserSignatureControl } from "@/components/UserSignatureControl";
 
@@ -17,11 +17,14 @@ type User = {
 /** The signature-title cell (Phase 6 ruling 14): prints on the quote and cert signature blocks;
  *  blank prints nothing. Local draft, PATCHed on blur only when actually changed — the row's
  *  other controls PATCH per interaction, and a keystroke-level PATCH would mint an audit entry
- *  per character. Keyed remount (below) re-baselines it after every reload. */
-function TitleCell({ user, onSave }: { user: User; onSave: (title: string) => void }) {
+ *  per character. Keyed remount (below) re-baselines it after every reload.
+ *  `gate`: the page's `gateDo(perms, "manage_users")` (§5.16 — disabled with the reason, never
+ *  hidden; the UserSignatureControl precedent). */
+function TitleCell({ user, gate, onSave }: { user: User; gate: Gate; onSave: (title: string) => void }) {
   const [draft, setDraft] = useState(user.title);
   return (
     <input value={draft} placeholder="— none —"
+           disabled={gate.disabled} title={gate.title}
            onChange={(e) => setDraft(e.target.value)}
            onBlur={() => { if (draft !== user.title) onSave(draft); }}
            className="w-36 rounded border px-1 py-0.5" />
@@ -34,8 +37,9 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ username: "", displayName: "", password: "", roleId: "" });
   const { permissions: perms, error: permsError } = usePermissions();
-  // Every verb on the signature route (PUT/DELETE/GET, src/app/api/admin/users/[id]/signature/
-  // route.ts) requires this same special action — disabled with a tooltip, never hidden (§5.16).
+  // Every route this page calls — list/create (api/admin/users), per-user PUT, and every verb on
+  // the signature route — requires this same special action, so ONE gate covers the whole page:
+  // each row control and the Add form disable with the reason, never hide (§5.16; #100 item 4).
   const manageUsersGate = gateDo(perms, "manage_users");
 
   // Ticket-gated load (the surcharges/page.tsx load shape): patch()/create() refire this per row
@@ -104,23 +108,29 @@ export default function UsersPage() {
               <td className="p-2">{u.displayName}</td>
               <td className="p-2">
                 {/* key re-baselines the draft when a reload brings fresh server truth. */}
-                <TitleCell key={`${u.id}-${u.title}`} user={u} onSave={(title) => patch(u.id, { title })} />
+                <TitleCell key={`${u.id}-${u.title}`} user={u} gate={manageUsersGate}
+                           onSave={(title) => patch(u.id, { title })} />
               </td>
               <td className="p-2">
                 <select value={u.roleId ?? ""} onChange={(e) => patch(u.id, { roleId: e.target.value || null })}
-                        className="rounded border px-1 py-0.5">
+                        disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+                        className="rounded border px-1 py-0.5 disabled:cursor-not-allowed">
                   <option value="">— none —</option>
                   {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
               </td>
               <td className="p-2">
-                <input type="checkbox" checked={u.active} onChange={(e) => patch(u.id, { active: e.target.checked })} />
+                <input type="checkbox" checked={u.active}
+                       disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+                       className="disabled:cursor-not-allowed"
+                       onChange={(e) => patch(u.id, { active: e.target.checked })} />
               </td>
               <td className="p-2">
                 <UserSignatureControl userId={u.id} gate={manageUsersGate} />
               </td>
               <td className="p-2">
-                <button className="text-blue-700 underline"
+                <button className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
+                        disabled={manageUsersGate.disabled} title={manageUsersGate.title}
                         onClick={() => { const p = prompt("New password (min 8 chars):"); if (p) void patch(u.id, { password: p }, { invalidatesSetup: true }); }}>
                   reset…
                 </button>
@@ -132,17 +142,27 @@ export default function UsersPage() {
       <h2 className="mb-2 font-medium">Add user</h2>
       <div className="flex flex-wrap items-end gap-2 text-sm">
         <input placeholder="Username" value={form.username}
-               onChange={(e) => setForm({ ...form, username: e.target.value })} className="rounded border px-2 py-1" />
+               disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+               onChange={(e) => setForm({ ...form, username: e.target.value })}
+               className="rounded border px-2 py-1 disabled:cursor-not-allowed" />
         <input placeholder="Display name" value={form.displayName}
-               onChange={(e) => setForm({ ...form, displayName: e.target.value })} className="rounded border px-2 py-1" />
+               disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+               onChange={(e) => setForm({ ...form, displayName: e.target.value })}
+               className="rounded border px-2 py-1 disabled:cursor-not-allowed" />
         <input placeholder="Password" type="password" value={form.password}
-               onChange={(e) => setForm({ ...form, password: e.target.value })} className="rounded border px-2 py-1" />
+               disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+               onChange={(e) => setForm({ ...form, password: e.target.value })}
+               className="rounded border px-2 py-1 disabled:cursor-not-allowed" />
         <select value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })}
-                className="rounded border px-2 py-1">
+                disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+                className="rounded border px-2 py-1 disabled:cursor-not-allowed">
           <option value="">— no role —</option>
           {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
-        <button onClick={create} className="rounded bg-slate-800 px-3 py-1 text-white">Add</button>
+        <button onClick={create} disabled={manageUsersGate.disabled} title={manageUsersGate.title}
+                className="rounded bg-slate-800 px-3 py-1 text-white disabled:cursor-not-allowed disabled:bg-slate-400">
+          Add
+        </button>
       </div>
       <p className="mt-4 text-xs text-slate-500">
         Users are never deleted — deactivate instead (audit history must keep resolving their names).

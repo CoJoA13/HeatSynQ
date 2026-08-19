@@ -41,9 +41,13 @@ export function armPrompt(page, responseText) {
  * (spec §11 calls for free-text autocomplete, which a native select can't do). `labelText` locates
  * the combobox's own `<input>` by its `aria-label` (every instance carries one — "Customer",
  * "Line 1 part", etc.); `filterText` is typed to narrow the dropdown to the option intended;
- * `optionNamePattern` matches that option's rendered button by its accessible name (a regex
- * anchored on the option's own leading text, e.g. `/^E2E-ORD-LEAD/`, is normally enough — the
- * label also carries a trailing `— name` or `· name` this doesn't need to match).
+ * `optionNamePattern` matches the option by its accessible name (a regex anchored on the
+ * option's own leading text, e.g. `/^E2E-ORD-LEAD/`, is normally enough — the label also
+ * carries a trailing `— name` or `· name` this doesn't need to match). The options are located
+ * by role="option", NOT "button": #37's WAI-ARIA pass gave each option button an explicit
+ * option role, and an explicit role replaces the implicit button role in the accessibility
+ * tree — getByRole("button") stopped matching them the moment that landed (group-H E2E run,
+ * 14 flows red on exactly this line).
  *
  * `.click()` before `.fill()` is not strictly required (Playwright's `.fill()` focuses the element
  * itself, and this component opens its dropdown `onFocus`) but mirrors how a real user would
@@ -53,7 +57,7 @@ export async function pickCombobox(page, labelText, filterText, optionNamePatter
   const input = page.getByLabel(labelText, { exact: true });
   await input.click();
   await input.fill(filterText);
-  await page.getByRole("button", { name: optionNamePattern }).click();
+  await page.getByRole("option", { name: optionNamePattern }).click();
 }
 
 /**

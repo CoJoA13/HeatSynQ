@@ -24,7 +24,7 @@ const stripQuotes = (field: string): string => field.replace(/^"|"$/g, "");
  * The columns a P2002 fired on. Measured on this stack (#40): `meta.target` is ALWAYS absent —
  * the answer lives in `meta.driverAdapterError.cause.constraint.fields`. Legacy `meta.target`
  * (string[] or string) is still consulted FIRST so this keeps working if a future adapter
- * populates it — the `isDuplicateClientRequestId` precedent (orders.ts) and its documented
+ * populates it — the `isDuplicateClientRequestId` precedent (below) and its documented
  * rationale. Returns undefined when neither shape carries usable field names (e.g. the adapter's
  * no-DETAIL case, where `constraint` is omitted entirely), so the caller falls back to "value".
  */
@@ -40,6 +40,44 @@ function uniqueConflictFields(err: Prisma.PrismaClientKnownRequestError): string
     return fields.map(stripQuotes);
   }
   return undefined;
+}
+
+/**
+ * Whether `err` is a unique violation on `Order.clientRequestId` specifically — never on
+ * `orderNumber`, which shares the P2002 code and means something else entirely (a genuine
+ * numbering collision, still a 400 through `withDbErrors`). Getting this discrimination wrong in
+ * the permissive direction would turn a numbering bug into a silent wrong-order response, so the
+ * check names the column rather than assuming "the only unique on Order".
+ *
+ * `meta.target` is EMPTY on this stack — measured, not assumed: under Prisma 7's pg driver adapter
+ * a P2002 arrives as `meta = { modelName, driverAdapterError: { cause: { originalCode: "23505",
+ * constraint: { fields: ['"clientRequestId"'] }, originalMessage } } }`, with no `target` key at
+ * all (which is also why this file's P2002 branch always falls through to its
+ * `conflictField` fallback). So the adapter's own `constraint.fields` is what actually carries the
+ * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
+ * is still consulted first, so this keeps working if a future adapter populates it; the driver's
+ * message is the last resort. Field names arrive quoted, hence substring rather than equality.
+ *
+ * Exported for shippers.ts's `createShipper` (Task 8) — `Shipper.clientRequestId` is the
+ * identical idempotency-nonce shape on a different model, and this function never hardcodes a
+ * model name, only the column name, so it discriminates a `Shipper` P2002 exactly as it does an
+ * `Order` one. Reused rather than re-derived, per the task brief.
+ *
+ * Lived in orders.ts through Round 2 Group G; moved HERE (#33, 2026-08-19) because it is a pure
+ * P2002-meta reader with no order semantics, and because it was the shippers.ts → orders.ts and
+ * invoices.ts → orders.ts import edge — the first of which closed the documented orders↔shippers
+ * runtime cycle. orders.ts still re-exports it, so `@/server/orders` callers are unaffected.
+ */
+export function isDuplicateClientRequestId(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
+  const meta = err.meta as {
+    target?: unknown;
+    driverAdapterError?: { cause?: { constraint?: { fields?: unknown }; originalMessage?: unknown } };
+  } | undefined;
+  const cause = meta?.driverAdapterError?.cause;
+  return [meta?.target, cause?.constraint?.fields, cause?.originalMessage]
+    .flat()
+    .some((candidate) => typeof candidate === "string" && candidate.includes("clientRequestId"));
 }
 
 /**

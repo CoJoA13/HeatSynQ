@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { invalidateHistory } from "@/components/HistoryPanel";
 
 type FieldRow = { fieldId: string; name: string; type: string; sort: number; active: boolean; value: string };
 
@@ -47,6 +48,7 @@ export function CustomFieldsSection({
         body: JSON.stringify({ values: dirty.map((r) => ({ fieldId: r.fieldId, value: r.value })) }),
       });
       onError(null);
+      invalidateHistory(); // #14 item 1 — success path, before the follow-up load
       await load();
     } catch (e) {
       onError((e as Error).message);

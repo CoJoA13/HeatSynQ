@@ -75,10 +75,14 @@ const MAX_UPLOAD_BODY = 21_000_000;
  *
  * `Content-Length` is a claim by the client, not a proof, so this is a cheap first gate rather
  * than the whole answer: a client that under-declares still gets through here and is caught by
- * the real byte-length cap afterwards — which is exactly the case that still buffers, and exactly
- * what backlog issue #38 (streaming enforcement, counting bytes as they arrive and aborting mid-
- * stream) remains open to close. What this closes is the trivial case: an HONEST declaration of
- * an oversized body, and an UNDECLARED one, are both refused for the cost of a header read.
+ * the real byte-length cap afterwards — which is exactly the case that still buffers. Issue #38
+ * CLOSED on pre-checks at both ends rather than streaming enforcement (Group H kickoff
+ * controller call, 2026-08-19): counting bytes as they arrive and aborting mid-stream would mean
+ * hand-rolling a multipart parser in every upload route, for a win this very paragraph bounds —
+ * only a client that LIES about its size still buffers, and the cap then catches it. The honest
+ * paths are covered twice over: this header gate server-side, and the client's own `file.size`
+ * pre-check (src/lib/upload-limits.ts, mirroring attachments.ts's cap and message verbatim,
+ * drift-guarded by tests/upload-limits.test.ts) before the browser ever ships the body.
  *
  * An absent or malformed `Content-Length` is refused too, not waved through: without it there is
  * no bound to check at all, and "buffer it and see" is the very thing being prevented. Every

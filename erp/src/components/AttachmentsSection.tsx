@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { useLatest } from "@/lib/use-latest";
+import { attachmentSizeError } from "@/lib/upload-limits";
 
 // Mirrors src/server/attachments.ts's AttachmentOwner/AttachmentMeta shape — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -31,21 +32,25 @@ function formatSize(bytes: number): string {
  * disabled tooltip below.
  *
  * §5.16: canEdit=false disables upload/delete with a tooltip naming the missing permission; it
- * never hides them.
+ * never hides them. `disabledTitle` overrides that permission wording for a caller whose block
+ * is NOT a permission at all — a voided order's page passes "Order is voided", because telling
+ * an operator they lack orders.edit when the real reason is the order's own state names the
+ * WRONG reason (#37, the same §5.16 rule).
  */
 export function AttachmentsSection({
-  owner, ownerId, canEdit,
+  owner, ownerId, canEdit, disabledTitle,
 }: {
   owner: AttachmentOwner;
   ownerId: string;
   canEdit: boolean;
+  disabledTitle?: string;
 }) {
   const [rows, setRows] = useState<AttachmentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const basePath = `/api/${AREA_PATH[owner]}/${ownerId}/attachments`;
-  const editTitle = canEdit ? undefined : `Requires ${EDIT_PERMISSION[owner]}`;
+  const editTitle = canEdit ? undefined : (disabledTitle ?? `Requires ${EDIT_PERMISSION[owner]}`);
 
   const latest = useLatest();
   // F7 (customers/page.tsx precedent): ticket-gated on BOTH paths. `load` is the one funnel for
@@ -72,6 +77,16 @@ export function AttachmentsSection({
   async function onFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    // #38: refuse an oversized file BEFORE building the FormData — the server's exact refusal
+    // (mirrored in src/lib/upload-limits.ts, drift-guarded), without first shipping 20MB+ of
+    // body that can only end in that same message. The picker resets for the same reason as the
+    // finally block below: re-choosing the same (perhaps since-shrunk) file must still fire.
+    const sizeError = attachmentSizeError(file.size);
+    if (sizeError) {
+      setError(sizeError);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     setUploading(true);
     try {
       const form = new FormData();

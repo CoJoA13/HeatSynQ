@@ -364,17 +364,24 @@ describe("GET /api/quotes/eligible — the entry UI's link-resolution preview (T
     return { older, winner };
   }
 
-  it("gates on ORDERS view, not quotes — it serves order entry (the §5.15 reasoning)", async () => {
+  it("gates on orders.view OR quotes.view — it serves order entry AND the part page's indicator (#101)", async () => {
     const f = await fixture();
     const url = `http://t/api/quotes/eligible?customerId=${f.customer.id}&partId=${f.part.id}`;
     expect((await eligibleRoute(getReq(url), noParams)).status).toBe(401);
 
-    // quotes.view alone is NOT enough — the inversion of every other route in this file.
-    const quotesOnly = await signInWith(["quotes.view"], "q-elig-wrong");
-    expect((await eligibleRoute(getReq(url, quotesOnly), noParams)).status).toBe(403);
+    // quotes.view alone now suffices (#101, owner ruling 5 of the Phase 6 demo): the part
+    // page's Active-quotes indicator reads this route too.
+    const quotesOnly = await signInWith(["quotes.view"], "q-elig-quotes");
+    expect((await eligibleRoute(getReq(url, quotesOnly), noParams)).status).toBe(200);
 
     const entry = await signInWith(["orders.view"], "q-elig-entry");
     expect((await eligibleRoute(getReq(url, entry), noParams)).status).toBe(200);
+
+    // Neither permission: the 403 names BOTH gates (§5.16 — never a silent denial).
+    const neither = await signInWith(["parts.view"], "q-elig-neither");
+    const res = await eligibleRoute(getReq(url, neither), noParams);
+    expect(res.status).toBe(403);
+    expect((await res.json() as { error: string }).error).toBe("Requires orders.view or quotes.view");
   });
 
   it("returns the ruling-7 ordering plus which candidate auto-resolves", async () => {

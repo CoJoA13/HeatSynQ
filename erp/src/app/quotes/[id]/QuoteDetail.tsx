@@ -323,6 +323,9 @@ export function QuoteDetail({ id }: { id: string }) {
       });
       adopt(res.quote);
       setCloseWarning(res.linkedOpenOrders.length > 0 ? res.linkedOpenOrders : null);
+      // Overlap warnings describe a SAVE on an OPEN quote — stale beside a closed one (#100
+      // item 8): a closed quote no longer overlaps anything.
+      setOverlapWarnings([]);
       setError(null);
     } catch (e) {
       // §5.13: back to server truth first (another session may have closed it already), then
@@ -356,6 +359,9 @@ export function QuoteDetail({ id }: { id: string }) {
       }));
       setError(null);
       setCloseWarning(null);
+      // Any lingering warnings described the state before the close/reopen cycle — the next
+      // save recomputes them fresh (#100 item 8).
+      setOverlapWarnings([]);
     } catch (e) {
       // Same rollback-then-report shape as closeQuote, reload failure appended.
       const message = (e as Error).message;

@@ -107,6 +107,9 @@ type RefDelegate = {
   findFirst: (a: { where: object; select?: object }) => Promise<{ id: string } | null>;
   create: (a: { data: object }) => Promise<{ id: string }>;
   update: (a: { where: { id: string }; data: object }) => Promise<{ id: string }>;
+  // The #99 guarded write: conditional on `deletedAt: null`, zero-count = absent (see
+  // updateReference). Every reference model's generated delegate carries it.
+  updateMany: (a: { where: object; data: object }) => Promise<{ count: number }>;
 };
 function delegate(kind: ReferenceKind, db: Prisma.TransactionClient = prisma): RefDelegate {
   return db[kind] as unknown as RefDelegate;
@@ -265,7 +268,14 @@ async function normalizeEndingStatementDefaultOnUpdate(
     const current = await tx.endingStatement.findFirst({
       where: { id, deletedAt: null }, select: { active: true },
     });
-    if (!current) return; // no such live row — the update() below raises the real error
+    // #99: a row soft-deleted (or missing) at entry never reaches here — the live-row guard at
+    // the top of updateReference's transaction already 404'd it. Null now means a concurrent
+    // delete committed between that guard and this locked re-read (visible at Read Committed);
+    // returning skips the demote-scan, and the flag write below lands on a dead row no live
+    // read ever sees — the at-most-one-LIVE-default invariant holds either way. (The update()
+    // below does NOT 404 a soft-deleted id — it finds rows by bare id — which is exactly why
+    // the guard exists.)
+    if (!current) return;
     if (data.active !== true && !current.active) {
       throw new HttpError(400, "An inactive ending statement cannot be the default");
     }
@@ -344,7 +354,11 @@ async function assertDiscountPairAfterUpdate(
   const current = await tx.terms.findFirst({
     where: { id }, select: { discountPercent: true, discountDays: true },
   });
-  if (!current) return; // No such row — the update() below raises the real (404-shaped) error.
+  // #99: an id that was missing at entry never reaches here — updateReference's live-row guard
+  // already 404'd it (this bare-id read sees soft-deleted rows, so null means hard-missing
+  // only). Null now takes a mid-transaction hard delete, which only tests perform; the update()
+  // below then raises the real (404-shaped) P2025 error.
+  if (!current) return;
   const percent = "discountPercent" in patch ? patch.discountPercent : current.discountPercent;
   const days = "discountDays" in patch ? patch.discountDays : current.discountDays;
   if ((percent != null) !== (days != null)) {
@@ -363,13 +377,31 @@ export async function updateReference(kind: string, id: string, input: Record<st
   const assignsFk = links.some((link) => data[link.column] != null);
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
     prisma.$transaction(async (tx) => {
+      // #99, two layers. This ENTRY guard 404s a soft-deleted (or hard-missing) row before the
+      // link asserts and both normalizers run — first statement of the transaction, ON this tx
+      // (the #60 rule — a read defaulting to the top-level singleton escapes the caller's
+      // snapshot AND its Serializable read-set), message matching db-errors.ts's P2025 mapping
+      // so the two absences present identically. It is a plain read, though, so a concurrent
+      // deleteReference committing between it and the write could still slip past — the WRITE
+      // below is the guarantee: a guarded updateMany conditional on `deletedAt: null` (the
+      // auditedSoftDelete shape, audit.ts) whose zero-count raises the same 404 and aborts the
+      // transaction entry-less at any isolation (PR #152 Codex round; the task-2 review had
+      // recorded this residue as accepted — now closed).
+      const alive = await delegate(kind, tx).findFirst({
+        where: { id, deletedAt: null }, select: { id: true },
+      });
+      if (!alive) throw new HttpError(404, `${REFERENCE_LABELS[kind].singular} not found`);
       for (const link of links) {
         const value = data[link.column];
         if (value != null) await assertRefExists(link.targetKind, value as string, tx);
       }
       if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);
       if (kind === "endingStatement") await normalizeEndingStatementDefaultOnUpdate(tx, id, data);
-      await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
+      await auditedUpdate(kind, id, async () => {
+        const updated = await delegate(kind, tx).updateMany({ where: { id, deletedAt: null }, data });
+        if (updated.count === 0) throw new HttpError(404, `${REFERENCE_LABELS[kind].singular} not found`);
+        return updated;
+      }, { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 

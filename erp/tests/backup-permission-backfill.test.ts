@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
 import { ALL_PERMISSIONS } from "@/server/permissions";
+import { setRolePermissions } from "@/server/roles";
 
 /**
  * Phase 8C Task 8 — the `action.manage_backups` permission-backfill migrations.
@@ -87,8 +88,20 @@ describe("migration 1's own SQL literal (drift guard — parses the file, never 
   // entry — the dangerous direction, since a wrong entry only ever LOOSENS the migration's rule
   // (a role that should have been excluded gets backfilled instead). This still guards migration
   // 1's list; migration 2 has no list to drift (a two-permission EXISTS predicate).
-  it("is exactly ALL_PERMISSIONS minus action.manage_backups — no typo'd or substituted entry", () => {
-    const expected = ALL_PERMISSIONS.filter((p) => p !== "action.manage_backups");
+  //
+  // #72 refinement: migration 1's SQL is FROZEN history (an applied migration is never edited),
+  // so its VALUES list permanently carries the four `ar.*` literals even though the `ar` area is
+  // retired — superseded by `receivables` (Phase 5B) and deleted from AREAS, with
+  // 20260819003000_remove_ar_permission_area purging the seeded grant rows. The expected set is
+  // therefore today's ALL_PERMISSIONS plus this RETIRED frozen literal. Extend RETIRED only when
+  // another area that shipped inside migration 1's list is itself retired — never to paper over a
+  // genuine drift.
+  const RETIRED_PERMISSIONS = ["ar.view", "ar.create", "ar.edit", "ar.delete"];
+  it("is exactly ALL_PERMISSIONS minus action.manage_backups plus the retired ar.* literals", () => {
+    const expected = [
+      ...ALL_PERMISSIONS.filter((p) => p !== "action.manage_backups"),
+      ...RETIRED_PERMISSIONS,
+    ];
     expect([...REQUIRED_PERMISSIONS].sort()).toEqual([...expected].sort());
   });
 });
@@ -189,5 +202,100 @@ describe("both migrations applied in sequence (the interaction the owner's super
       where: { roleId: role.id, permission: "action.manage_backups" },
     });
     expect(rows).toHaveLength(1);
+  });
+});
+
+/**
+ * #72 — the `ar` permission area was vestigial from the moment Phase 5B introduced `receivables`
+ * (nothing ever called `mustCan(user, "ar", ...)`), but seeded installs hold granted `ar.*`
+ * `RolePermission` rows, so deleting the constant ALONE would 400 every subsequent whole-set role
+ * save ("Unknown permissions: ar.view" — setRolePermissions round-trips the role's full
+ * permission list). The data migration below is what makes the constant removal safe. Same
+ * drift-guard shape as the two suites above: the migration's OWN SQL file is read and executed
+ * against hand-built fixture rows, never re-implemented in TypeScript.
+ */
+const MIGRATION_REMOVE_AR_PATH = join(
+  process.cwd(),
+  "prisma/migrations/20260819003000_remove_ar_permission_area/migration.sql",
+);
+
+// Read lazily (inside the runner, not at module load) so a missing migration file fails only
+// these tests, and split on `;` because $executeRawUnsafe runs ONE prepared statement per call —
+// this migration carries two DELETEs. A chunk that is only comments/whitespace is skipped
+// (Postgres treats a comment-only string as an empty query and errors).
+async function runRemoveArMigration(): Promise<void> {
+  const sql = readFileSync(MIGRATION_REMOVE_AR_PATH, "utf8");
+  for (const chunk of sql.split(";")) {
+    const lines = chunk.split("\n").map((l) => l.trim());
+    if (lines.every((l) => l === "" || l.startsWith("--"))) continue;
+    await prisma.$executeRawUnsafe(chunk);
+  }
+}
+
+const AR_PERMISSIONS = ["ar.view", "ar.create", "ar.edit", "ar.delete"];
+
+describe("migration remove_ar_permission_area (#72) — retired ar.* rows purged, everything else survives", () => {
+  beforeEach(truncateAll);
+
+  // Fixtures are built with raw nested creates, NOT setRolePermissions/setUserOverrides — the
+  // constants no longer know `ar`, so the service validators would reject these rows the same
+  // way they reject the whole-set save the stale rows break.
+  it("deletes the four ar.* grants from RolePermission AND UserPermissionOverride, leaving siblings untouched", async () => {
+    const role = await prisma.role.create({
+      data: {
+        name: "Legacy Full Access",
+        permissions: {
+          create: [...AR_PERMISSIONS, "orders.view", "receivables.view"].map((permission) => ({ permission })),
+        },
+      },
+    });
+    const user = await prisma.user.create({
+      data: {
+        username: "legacy-user", displayName: "Legacy User", passwordHash: "not-a-real-hash",
+        overrides: {
+          create: [
+            { permission: "ar.edit", mode: "DENY" },
+            { permission: "receivables.edit", mode: "GRANT" },
+          ],
+        },
+      },
+    });
+
+    await runRemoveArMigration();
+
+    const rolePerms = (await prisma.rolePermission.findMany({ where: { roleId: role.id } }))
+      .map((p) => p.permission).sort();
+    expect(rolePerms).toEqual(["orders.view", "receivables.view"]);
+    const overrides = (await prisma.userPermissionOverride.findMany({ where: { userId: user.id } }))
+      .map((o) => o.permission);
+    expect(overrides).toEqual(["receivables.edit"]);
+  });
+
+  it("a whole-set setRolePermissions save of the full current set succeeds afterwards — the #72 failure mode", async () => {
+    const role = await prisma.role.create({
+      data: {
+        name: "Legacy Admin",
+        permissions: { create: [...AR_PERMISSIONS, "admin.view"].map((permission) => ({ permission })) },
+      },
+    });
+
+    await runRemoveArMigration();
+
+    // The admin UI round-trips the role's complete permission list on every save; before the
+    // migration + constant removal, the stale ar.* rows made this exact call 400.
+    await expect(setRolePermissions(role.id, [...ALL_PERMISSIONS])).resolves.toBeUndefined();
+    const stored = (await prisma.rolePermission.findMany({ where: { roleId: role.id } }))
+      .map((p) => p.permission).sort();
+    expect(stored).toEqual([...ALL_PERMISSIONS].sort());
+    expect(stored).not.toContain("ar.view");
+  });
+
+  it("re-running is a no-op — plain DELETEs, nothing to conflict", async () => {
+    await prisma.role.create({
+      data: { name: "Legacy", permissions: { create: AR_PERMISSIONS.map((permission) => ({ permission })) } },
+    });
+    await runRemoveArMigration();
+    await expect(runRemoveArMigration()).resolves.not.toThrow();
+    expect(await prisma.rolePermission.count()).toBe(0);
   });
 });

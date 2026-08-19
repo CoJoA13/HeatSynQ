@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type Order, type Shipper } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors, retryAllocation } from "./db-errors";
+import { withDbErrors, retryAllocation, isDuplicateClientRequestId } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -18,7 +18,6 @@ import { buildBolDefinition, type BolData, type BolParty } from "./pdf/bol";
 import { storeDocument, assertPrintable } from "./documents";
 import { shippedTotals, recomputeOrderStatus, nextShipmentSequence, type ShippedTotal } from "./ship-ledger";
 import { createCert } from "./certs";
-import { isDuplicateClientRequestId } from "./orders";
 import { toXlsx } from "./excel";
 import type { Blocker } from "./reference-blockers";
 import { parseDateOnly, formatDateOnly } from "../lib/business-days";
@@ -694,7 +693,8 @@ async function saveNewShipper(
 /**
  * `createShipper` (spec §5, task-8-brief.md). `clientRequestId` collisions answer with the
  * shipment that request already created — `orders.ts`'s `createOrder` idempotent-replay shape,
- * reused via its exported `isDuplicateClientRequestId` rather than rediscovered here.
+ * reused via the shared `isDuplicateClientRequestId` (db-errors.ts since #33; it never hardcodes
+ * a model name) rather than rediscovered here.
  */
 export async function createShipper(
   input: unknown, opts: { canOverrideCreditHold: boolean },
@@ -1656,14 +1656,15 @@ export async function replaceShipperSerials(id: string, shipperOrderId: string, 
 // `orders.ts -> shippers.ts` import edge this task adds — `orders.ts`'s `removeLine`/`updateLine`/
 // `voidOrder` call it to refuse a contradiction of shipped fact, naming the blocking shipment
 // through the SAME `Blocker` shape every other "still in use" refusal in this codebase already
-// renders through `BlockerPanel` (reference-blockers.ts), rather than a bespoke shape. Safe
-// against the cycle this creates with `shippers.ts`'s own pre-existing import of
-// `isDuplicateClientRequestId` FROM orders.ts (order-locks.ts's own header comment anticipated
-// this): both crossing exports are hoisted `function` declarations, never a top-level `const`
-// evaluated at module-load time, so neither side can land in the other's temporal dead zone
-// regardless of which module a given entry point happens to import first — see the task report
-// for how this was verified (module-load-order smoke test, plus the full suite importing both
-// modules together with no import-time error).
+// renders through `BlockerPanel` (reference-blockers.ts), rather than a bespoke shape. This
+// edge made orders.ts <-> shippers.ts a runtime CYCLE while this file imported
+// `isDuplicateClientRequestId` back from orders.ts — survivable only because both crossing
+// exports were hoisted `function` declarations, never a top-level `const` evaluated at
+// module-load time, so neither side could land in the other's temporal dead zone regardless of
+// import order (order-locks.ts's own header comment anticipated it; verified then by a
+// module-load-order smoke test). Since #33 (2026-08-19) that helper lives in db-errors.ts and
+// the cycle is GONE — the edge is one-directional, orders.ts -> shippers.ts only. A new
+// shippers.ts import from orders.ts would re-open it and inherit the hoisted-function rule.
 // -------------------------------------------------------------------------------------------
 
 /**

@@ -2,13 +2,12 @@ import { z } from "zod";
 import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors, retryAllocation } from "./db-errors";
+import { withDbErrors, retryAllocation, isDuplicateClientRequestId } from "./db-errors";
 import { orderEntryReadiness } from "./order-entry-readiness";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { currentActor } from "./context";
-import { toXlsx } from "./excel";
 import { allocateNumber, getSetting } from "./settings";
 import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail } from "./part-process-steps";
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
@@ -20,18 +19,33 @@ import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
 // `removeLine`/`updateLine`/`voidOrder`'s bodies, all called well after both modules finish
-// loading) — safe against the cycle this creates with `shippers.ts`'s own pre-existing import of
-// `isDuplicateClientRequestId` FROM this file, for the identical reason (order-locks.ts's own
-// header comment; verified per the task report, not merely assumed).
+// loading). ONE-DIRECTIONAL since #33 (2026-08-19): `isDuplicateClientRequestId` — the
+// shippers.ts -> orders.ts return edge that made this a documented runtime cycle — lives in
+// db-errors.ts now (re-exported below), so shippers.ts no longer imports this file back. Keep it
+// that way: a new shippers.ts -> orders.ts import would re-open the cycle and inherit the
+// hoisted-function-declarations-only rule order-locks.ts's header records for surviving one.
 import { shipmentBlockers } from "./shippers";
 // Type-only, so it is erased at compile time and adds nothing to the runtime cycle above.
 import type { OrderLineShippedToDate } from "./shippers";
 import type { Blocker } from "./reference-blockers";
 import { splitLoads } from "../lib/load-split";
 import { addBusinessDays, formatDateOnly, parseDateOnly, todayDateOnly } from "../lib/business-days";
-import { computeLight, LIGHT_LABELS, type TrafficLight } from "../lib/traffic-light";
+import { computeLight, type TrafficLight } from "../lib/traffic-light";
 import { CERT_SCOPES, type CertScopeValue } from "../lib/cert-constants";
 import { INT4_MAX } from "../lib/order-constants";
+// The board reads (#33's bounded slice, 2026-08-19) live in order-board.ts — `listOrders`,
+// `exportOrders`, their `BoardRow`/`OrderFilter` shapes and the WHERE/orderBy builders, moved
+// there verbatim: pure reads with no claim, no Serializable transaction and no allocation, so no
+// concurrency invariant moved with them. Re-exported here so every existing `@/server/orders`
+// import site (the routes, the tests, order-loads.ts, traveler.ts) keeps its path;
+// `trafficSettings`/`Traffic` are imported back because this file's own mutators end every write
+// with the same `readDetail(tx, id, traffic)` read the board's light computation uses.
+import { trafficSettings, type Traffic } from "./order-board";
+export { listOrders, exportOrders, trafficSettings } from "./order-board";
+export type { BoardRow, OrderFilter } from "./order-board";
+// Likewise re-exported (#33): `isDuplicateClientRequestId` is a pure P2002-meta reader and lives
+// in db-errors.ts now — this keeps the historical `@/server/orders` import path working.
+export { isDuplicateClientRequestId } from "./db-errors";
 
 export type OrderWarnings = string[];
 
@@ -94,27 +108,6 @@ export type OrderDetail = {
   loads: OrderLoadDetail[];
   charges: OrderChargeDetail[];
   linkedOrders: { id: string; orderNumber: number }[];
-};
-
-export type BoardRow = {
-  id: string; orderNumber: number; customerCode: string; customerName: string;
-  leadPartNumber: string; poNumber: string; vsOrderNumber: string;
-  /** Σ over the order's lines. */
-  qty: number; weight: number;
-  receivedDate: string; requestDate: string; targetDate: string | null;
-  status: OrderStatus; voided: boolean; light: TrafficLight;
-  loadCount: number; linked: boolean;
-};
-
-/**
- * The board query. Dates arrive as "yyyy-mm-dd" strings and are validated here; `status` is
- * already typed, so the route that turns a query string into this shape owns that parse — the
- * `listParts` precedent.
- */
-export type OrderFilter = {
-  search?: string; status?: OrderStatus[]; customerId?: string;
-  receivedFrom?: string; receivedTo?: string; requestFrom?: string; requestTo?: string;
-  includeVoided?: boolean; sort?: string; dir?: "asc" | "desc";
 };
 
 // Kept in sync with prisma/schema.prisma's @db.Decimal declarations on the order tables.
@@ -527,19 +520,6 @@ const DETAIL_INCLUDE = {
 
 type DetailRow = Prisma.OrderGetPayload<{ include: typeof DETAIL_INCLUDE }>;
 
-type Traffic = { mayMissDays: number; willMissDays: number };
-
-/** Both windows in ONE pair of reads per call — the board computes a light for every row and
- *  must not fan a settings query out across them (spec §6). Exported for order-loads.ts (Task 6),
- *  whose mutators need the same `readDetail` call this file's own mutators do. */
-export async function trafficSettings(): Promise<Traffic> {
-  const [mayMissDays, willMissDays] = await Promise.all([
-    getSetting("traffic_may_miss_days"),
-    getSetting("traffic_will_miss_days"),
-  ]);
-  return { mayMissDays, willMissDays };
-}
-
 function toDetail(
   row: DetailRow, linkedOrders: { id: string; orderNumber: number }[], traffic: Traffic,
   shipped: Map<string, { qty: number; weight: number }>,
@@ -610,39 +590,6 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
     : [];
   const shipped = await shippedTotals(db, row.lines.map((l) => l.id));
   return toDetail(row, linkedOrders, traffic, shipped);
-}
-
-/**
- * Whether `err` is a unique violation on `Order.clientRequestId` specifically — never on
- * `orderNumber`, which shares the P2002 code and means something else entirely (a genuine
- * numbering collision, still a 400 through `withDbErrors`). Getting this discrimination wrong in
- * the permissive direction would turn a numbering bug into a silent wrong-order response, so the
- * check names the column rather than assuming "the only unique on Order".
- *
- * `meta.target` is EMPTY on this stack — measured, not assumed: under Prisma 7's pg driver adapter
- * a P2002 arrives as `meta = { modelName, driverAdapterError: { cause: { originalCode: "23505",
- * constraint: { fields: ['"clientRequestId"'] }, originalMessage } } }`, with no `target` key at
- * all (which is also why db-errors.ts's own P2002 branch always falls through to its
- * `conflictField` fallback). So the adapter's own `constraint.fields` is what actually carries the
- * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
- * is still consulted first, so this keeps working if a future adapter populates it; the driver's
- * message is the last resort. Field names arrive quoted, hence substring rather than equality.
- *
- * Exported for shippers.ts's `createShipper` (Task 8) — `Shipper.clientRequestId` is the
- * identical idempotency-nonce shape on a different model, and this function never hardcodes a
- * model name, only the column name, so it discriminates a `Shipper` P2002 exactly as it does an
- * `Order` one. Reused rather than re-derived, per the task brief.
- */
-export function isDuplicateClientRequestId(err: unknown): boolean {
-  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
-  const meta = err.meta as {
-    target?: unknown;
-    driverAdapterError?: { cause?: { constraint?: { fields?: unknown }; originalMessage?: unknown } };
-  } | undefined;
-  const cause = meta?.driverAdapterError?.cause;
-  return [meta?.target, cause?.constraint?.fields, cause?.originalMessage]
-    .flat()
-    .some((candidate) => typeof candidate === "string" && candidate.includes("clientRequestId"));
 }
 
 /**
@@ -939,157 +886,6 @@ export async function defaultRequestDate(customerId: string, partId?: string, re
   const days = partOverride ?? customer.requestDaysOverride ?? defaultRequestDays;
   const base = receivedDate ? parseDate(receivedDate, "Received date") : todayDateOnly();
   return formatDateOnly(addBusinessDays(base, days));
-}
-
-const BOARD_SELECT = {
-  id: true, orderNumber: true, poNumber: true, vsOrderNumber: true,
-  receivedDate: true, requestDate: true, targetDate: true, status: true,
-  deletedAt: true, linkGroupId: true,
-  customer: { select: { code: true, name: true } },
-  lines: {
-    orderBy: { position: "asc" },
-    select: { position: true, qty: true, weight: true, part: { select: { partNumber: true } } },
-  },
-  _count: { select: { loads: true } },
-} satisfies Prisma.OrderSelect;
-
-/**
- * The columns the board can sort in SQL. `qty`, `weight`, `light` and `loadCount` are derived per
- * row rather than stored, so they are deliberately absent — asking for one is a 400 rather than a
- * board silently sorted by something else, which is the kind of quiet wrong answer this app
- * refuses to give.
- */
-const SORTABLE: Record<string, (dir: Prisma.SortOrder) => Prisma.OrderOrderByWithRelationInput> = {
-  orderNumber: (dir) => ({ orderNumber: dir }),
-  customerCode: (dir) => ({ customer: { code: dir } }),
-  customerName: (dir) => ({ customer: { name: dir } }),
-  poNumber: (dir) => ({ poNumber: dir }),
-  vsOrderNumber: (dir) => ({ vsOrderNumber: dir }),
-  receivedDate: (dir) => ({ receivedDate: dir }),
-  requestDate: (dir) => ({ requestDate: dir }),
-  targetDate: (dir) => ({ targetDate: dir }),
-  status: (dir) => ({ status: dir }),
-};
-
-function orderByFor(filter: OrderFilter): Prisma.OrderOrderByWithRelationInput[] {
-  const key = filter.sort ?? "orderNumber";
-  // Object.hasOwn, not a bare lookup: "constructor" and "toString" are inherited and truthy, and
-  // calling one of those would hand Prisma something that is not an orderBy at all.
-  if (!Object.hasOwn(SORTABLE, key)) throw new HttpError(400, `Cannot sort orders by "${key}"`);
-  const dir: Prisma.SortOrder = filter.dir === "asc" ? "asc" : "desc";
-  // orderNumber is unique, so it doubles as the tiebreaker for every other column — without it,
-  // two orders sharing a request date come back in whatever order the planner picked that run.
-  return key === "orderNumber" ? [{ orderNumber: dir }] : [SORTABLE[key](dir), { orderNumber: "desc" }];
-}
-
-function dateRange(
-  from: string | undefined, to: string | undefined, fromField: string, toField: string,
-): Prisma.DateTimeFilter | undefined {
-  if (!from && !to) return undefined;
-  return {
-    ...(from ? { gte: parseDate(from, fromField) } : {}),
-    ...(to ? { lte: parseDate(to, toField) } : {}),
-  };
-}
-
-function searchWhere(term: string): Prisma.OrderWhereInput[] {
-  const clauses: Prisma.OrderWhereInput[] = [
-    { poNumber: { contains: term, mode: "insensitive" } },
-    { vsOrderNumber: { contains: term, mode: "insensitive" } },
-    { customer: { code: { contains: term, mode: "insensitive" } } },
-    { customer: { name: { contains: term, mode: "insensitive" } } },
-    // The LEAD part only. A board row is labelled with its lead part, so matching a rider would
-    // surface an order under a part number that appears nowhere in the list the operator is
-    // looking at.
-    { lines: { some: { position: 1, part: { partNumber: { contains: term, mode: "insensitive" } } } } },
-  ];
-  // orderNumber is an Int4 column: a longer digit string is not a value it can hold, and handing
-  // it to Prisma is a validation error (a status-less 500), not "no match".
-  const asNumber = Number(term);
-  if (/^\d+$/.test(term) && Number.isSafeInteger(asNumber) && asNumber <= 2_147_483_647) {
-    clauses.push({ orderNumber: asNumber });
-  }
-  return clauses;
-}
-
-function boardWhere(filter: OrderFilter): Prisma.OrderWhereInput {
-  const term = filter.search?.trim();
-  const received = dateRange(filter.receivedFrom, filter.receivedTo, "Received from", "Received to");
-  const request = dateRange(filter.requestFrom, filter.requestTo, "Request from", "Request to");
-  return {
-    // Voided orders leave the board unless the toggle is on (spec §5c).
-    ...(filter.includeVoided ? {} : { deletedAt: null }),
-    ...(filter.status?.length ? { status: { in: filter.status } } : {}),
-    ...(filter.customerId ? { customerId: filter.customerId } : {}),
-    ...(received ? { receivedDate: received } : {}),
-    ...(request ? { requestDate: request } : {}),
-    ...(term ? { OR: searchWhere(term) } : {}),
-  };
-}
-
-export async function listOrders(filter: OrderFilter): Promise<BoardRow[]> {
-  // Both of these reject bad input before a query is issued.
-  const orderBy = orderByFor(filter);
-  const where = boardWhere(filter);
-
-  const traffic = await trafficSettings();
-  const today = todayDateOnly();
-  const rows = await prisma.order.findMany({ where, select: BOARD_SELECT, orderBy });
-
-  return rows.map((row) => {
-    const cents = row.lines.reduce((sum, l) => sum + Math.round(l.weight.toNumber() * 100), 0);
-    const lead = row.lines.find((l) => l.position === 1);
-    return {
-      id: row.id, orderNumber: row.orderNumber,
-      customerCode: row.customer.code, customerName: row.customer.name,
-      leadPartNumber: lead?.part.partNumber ?? "",
-      poNumber: row.poNumber, vsOrderNumber: row.vsOrderNumber,
-      qty: row.lines.reduce((sum, l) => sum + l.qty, 0),
-      weight: cents / 100,
-      receivedDate: formatDateOnly(row.receivedDate),
-      requestDate: formatDateOnly(row.requestDate),
-      targetDate: row.targetDate === null ? null : formatDateOnly(row.targetDate),
-      status: row.status,
-      voided: row.deletedAt !== null,
-      light: computeLight(row.requestDate, today, traffic.mayMissDays, traffic.willMissDays),
-      loadCount: row._count.loads,
-      linked: row.linkGroupId !== null,
-    };
-  });
-}
-
-/** §11's board column order, with the customer split into its two cells and `voided` appended —
- *  it only carries information once the include-voided toggle is on, but it is a board column. */
-const BOARD_COLUMNS = [
-  { key: "orderNumber", header: "Order #" },
-  { key: "customerCode", header: "Customer code" },
-  { key: "customerName", header: "Customer name" },
-  { key: "leadPartNumber", header: "Lead part" },
-  { key: "poNumber", header: "PO" },
-  { key: "qty", header: "Qty" },
-  { key: "weight", header: "Weight" },
-  { key: "receivedDate", header: "Received" },
-  { key: "requestDate", header: "Request" },
-  { key: "targetDate", header: "Target" },
-  { key: "light", header: "Light" },
-  { key: "status", header: "Status" },
-  { key: "loadCount", header: "Loads" },
-  { key: "linked", header: "Linked" },
-  { key: "vsOrderNumber", header: "VS #" },
-  { key: "voided", header: "Voided" },
-];
-
-/** Exactly what `listOrders` returned for the same filter — same query, same rows, humanized
- *  cells (the parts export precedent: booleans as yes/no, never a raw enum key). */
-export async function exportOrders(filter: OrderFilter): Promise<Buffer> {
-  const rows = await listOrders(filter);
-  const xlsxRows = rows.map((r) => ({
-    ...r,
-    light: LIGHT_LABELS[r.light],
-    linked: r.linked ? "yes" : "no",
-    voided: r.voided ? "yes" : "no",
-  }));
-  return toXlsx("Orders", BOARD_COLUMNS, xlsxRows as unknown as Record<string, unknown>[]);
 }
 
 // -------------------------------------------------------------------------------------------

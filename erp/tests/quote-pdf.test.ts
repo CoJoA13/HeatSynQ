@@ -278,6 +278,15 @@ describe("buildQuoteDefinition", () => {
     expect(text).toContain("$0.12");
   });
 
+  it("suppresses the bare Material label when the value is blank (owner ruling 8, #100 item 9)", () => {
+    const data = sampleData();
+    data.lines[0] = { ...data.lines[0], material: "" };
+    const text = allText(buildQuoteDefinition(data)).join(" ");
+    // Value-based suppression, deliberately NOT the cert's keep-the-label rule: an empty value
+    // would print a bare "Material:" with nothing after it.
+    expect(text).not.toContain("Material: ");
+  });
+
   it("omits blank optional pieces: no attn, no phone, no RFQ value, blank title prints nothing", () => {
     const text = allText(buildQuoteDefinition(sampleData({
       attn: "", customerPhone: "", rfqNumber: "",
@@ -385,6 +394,26 @@ describe("readQuotePdfData", () => {
     expect(dataN.lines[0].prices[0].amount).toBeNull();       // LB basis unknown — omitted, never $0
   });
 
+  it("rounds the qty × each-weight products to the Decimal(10,4) grain — 3 × 0.1 prints exactly 0.3 (#100 item 5)", async () => {
+    await asSystem(() => setSetting("company_name", "CSI Support Inc."));
+    const customer = await makeCustomer();
+    const quotedBy = await makeQuotedBy();
+    const step = await makeStep("Anneal");
+    const quote = await asSystem(() => createQuote({
+      customerId: customer.id, quotedById: quotedBy.id,
+      lines: [{
+        partNumberText: "FLT-1", quotedQty: 3, eachWeight: "0.1",
+        prices: [{ processStepCodeId: step.id, unitPrice: "1.0000", pricePer: "LB" }],
+      }],
+    }));
+    const data = await readQuotePdfData(prisma, quote.id);
+    // 3 × 0.1 is 0.30000000000000004 in bare float math — the payload must carry the
+    // Decimal(10,4)-grain value, exactly.
+    expect(data.lines[0].totalLbs).toBe(0.3);
+    // The engine's LB basis (shippedWeight) is rounded at the same grain; $1.00/lb over it.
+    expect(data.lines[0].prices[0].amount).toBe(0.3);
+  });
+
   it("omits every amount for unlimited and no-qty lines", async () => {
     await asSystem(() => setSetting("company_name", "CSI Support Inc."));
     const customer = await makeCustomer();
@@ -430,6 +459,26 @@ describe("readQuotePdfData", () => {
       partNumber: "A16-21591-000", partName: "EQUALIZER-RR SUSP",
       material: "Ductile Iron", eachWeight: 21, totalLbs: 3024,
     });
+  });
+
+  it("a part with no material and a free-text line with blank materialText print NO bare Material label (ruling 8)", async () => {
+    await asSystem(() => setSetting("company_name", "CSI Support Inc."));
+    const customer = await makeCustomer();
+    const quotedBy = await makeQuotedBy();
+    const part = await prisma.part.create({
+      data: { customerId: customer.id, partNumber: "NOMAT-1", eachWeight: "1.0000" }, // no materialId
+    });
+    const quote = await asSystem(() => createQuote({
+      customerId: customer.id, quotedById: quotedBy.id,
+      lines: [
+        { partId: part.id, prices: [] },
+        { partNumberText: "FT-NOMAT", prices: [] }, // free-text, no materialText
+      ],
+    }));
+    const data = await readQuotePdfData(prisma, quote.id);
+    expect(data.lines.map((l) => l.material)).toEqual(["", ""]);
+    const text = allText(buildQuoteDefinition(data)).join(" ");
+    expect(text).not.toContain("Material: ");
   });
 
   it("prints notes but never internal notes, and carries the ending statement text", async () => {

@@ -1,18 +1,14 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+// The pure diff logic lives in a client-safe leaf so tests/audit-diff.test.ts can pin it —
+// including the raw-FK suppression (#14 item 2's render half) — without a DOM test env.
+import { changedFields } from "@/lib/audit-diff";
 
 type Entry = {
   id: string; at: string; actorName: string; action: string; reason: string | null;
   before: Record<string, unknown> | null; after: Record<string, unknown> | null;
 };
-
-function changedFields(e: Entry): string[] {
-  if (!e.before || !e.after) return [];
-  const keys = new Set([...Object.keys(e.before), ...Object.keys(e.after)]);
-  return [...keys].filter((k) => JSON.stringify(e.before?.[k]) !== JSON.stringify(e.after?.[k]))
-    .filter((k) => !["updatedAt"].includes(k));
-}
 
 // The audit endpoint is gated on admin.view (a permission-model decision recorded in
 // docs/HANDOFF.md §6, deliberately not revisited here). A user who can view the record this
@@ -22,27 +18,68 @@ function changedFields(e: Entry): string[] {
 // entries: the panel must not flash "No history" for the instant before the real answer arrives.
 type Status = "loading" | "ok" | "error";
 
+/**
+ * Mounted panels ↔ mutating pages, the invalidateSetupBanner/invalidateBackupBanner mechanism
+ * (#124/#110) cloned for #14 item 1. A module-level Set rather than context: the panel lives at
+ * the bottom of a detail page and the mutations that move its history live in that page's
+ * sections, with no common provider worth wrapping the app for; a Set also means a remount
+ * cannot leave a stale subscriber behind. Per-tab, like both precedents.
+ */
+const invalidationListeners = new Set<() => void>();
+
+/** Subscribe a listener; returns the unsubscribe. Exported so tests/history-invalidation.test.ts
+ *  can pin the register/invalidate/unsubscribe contract without a DOM test env (the
+ *  subscribeSetupInvalidations precedent); the component's own effect subscribes through this
+ *  too, so the tested path IS the wired path. */
+export function subscribeHistoryInvalidations(listener: () => void): () => void {
+  invalidationListeners.add(listener);
+  return () => { invalidationListeners.delete(listener); };
+}
+
+/**
+ * Tell every mounted HistoryPanel that the history it shows is certainly out of date, and to
+ * refetch NOW (#14 item 1). The panel otherwise fetches once per mount per entity, so without
+ * this an edit made while staying on the page — set the material, then a price — never appeared
+ * until a full reload, teaching an operator the panel lies. Call sites fire it on the SUCCESS
+ * path, the instant the mutation resolves and BEFORE any follow-up load (the #124/#131
+ * ordering: the server state has certainly changed by then, and a transiently failing follow-up
+ * read must not skip the signal). Every mounted panel refetches — cheap (one gated GET each),
+ * and a cross-entity signal is at worst a refresh that finds nothing new.
+ */
+export function invalidateHistory(): void {
+  for (const listen of invalidationListeners) listen();
+}
+
 export function HistoryPanel({ entity, entityId }: { entity: string; entityId: string }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [status, setStatus] = useState<Status>("loading");
+  // Bumped by an invalidation to re-run the fetch effect below (the SetupBanner refreshNonce
+  // shape, minus the one-shot latch — this fetch is cheap enough to simply re-run).
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  useEffect(() => subscribeHistoryInvalidations(() => setRefreshNonce((n) => n + 1)), []);
+  // Which entity/entityId the currently rendered entries belong to — so an invalidation refetch
+  // (same key) keeps the list on screen instead of flashing "Loading history…" after every
+  // section save, while a re-pointed panel (call sites re-point `entityId` into this unkeyed
+  // subtree) still blanks to loading rather than showing row A's history under row B's heading.
+  const loadedKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    setStatus("loading");
+    const key = `${entity}:${entityId}`;
+    if (loadedKeyRef.current !== key) setStatus("loading");
     // Effect-scoped stale flag (the QuoteDetail/templates-list shape — the sanctioned useLatest
-    // equivalent where the fetch is keyed entirely by the effect's deps), gating BOTH paths:
-    // call sites re-point `entityId` into this unkeyed subtree, so a superseded response must
-    // not paint row A's history under row B's heading, flip a fresh "ok" to "error", or mask a
-    // real 403 with a stale success.
+    // equivalent where the fetch is keyed entirely by the effect's deps, refreshNonce included),
+    // gating BOTH paths: a superseded response must not paint stale rows, flip a fresh "ok" to
+    // "error", or mask a real 403 with a stale success.
     let stale = false;
     api<Entry[]>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`)
-      .then((rows) => { if (stale) return; setEntries(rows); setStatus("ok"); })
-      .catch(() => { if (!stale) setStatus("error"); });
+      .then((rows) => { if (stale) return; loadedKeyRef.current = key; setEntries(rows); setStatus("ok"); })
+      .catch(() => { if (!stale) { loadedKeyRef.current = null; setStatus("error"); } });
     return () => { stale = true; };
-  }, [entity, entityId]);
+  }, [entity, entityId, refreshNonce]);
   if (status === "loading") return <p className="text-sm text-slate-500">Loading history…</p>;
   // Never render "No history" for a request that did not succeed — that's indistinguishable
   // from a record that genuinely has none, and actively misinforms whoever lacks admin.view.
   if (status === "error") {
-    return <p className="text-sm text-slate-500">History unavailable (you may not have permission to view it).</p>;
+    return <p className="text-sm text-slate-500">History could not be loaded.</p>;
   }
   if (entries.length === 0) return <p className="text-sm text-slate-500">No history.</p>;
   return (
@@ -53,7 +90,7 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
             <span><b>{e.actorName}</b> — {e.action}{e.reason ? ` (${e.reason})` : ""}</span>
             <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
           </div>
-          {changedFields(e).map((k) => (
+          {changedFields(e.before, e.after).map((k) => (
             <div key={k} className="ml-2 text-xs text-slate-600">
               {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
             </div>

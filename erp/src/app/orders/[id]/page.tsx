@@ -638,7 +638,11 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         )}
       </section>
 
-      <AttachmentsSection owner="order" ownerId={id} canEdit={attachmentsCanEdit} />
+      {/* #37: when the block is the order's own state, say so — voidLocked's exact wording —
+          instead of the component's default "Requires orders.edit" (§5.16: the title must name
+          the REAL reason; a voided order is read-only regardless of the permission grid). */}
+      <AttachmentsSection owner="order" ownerId={id} canEdit={attachmentsCanEdit}
+                          disabledTitle={voided ? "Order is voided" : undefined} />
 
       <DocumentsSection
         orderId={id} loads={order.loads} voided={voided} viewGate={gate(perms, "orders.view")}

@@ -150,6 +150,49 @@ describe("flat reference tables", () => {
   });
 });
 
+// #99: updateReference used to find rows by BARE id, so a soft-deleted row updated and 200'd —
+// and the endingStatement promote normalizer early-returned on the false premise that the
+// update() below would 404 (it only 404s hard-missing ids, via P2025). The live-row guard at the
+// top of updateReference's transaction makes soft-deleted and hard-missing present identically:
+// the same 404 shape db-errors.ts mints for P2025 (`${entity} not found`).
+describe("update refuses a soft-deleted row — 404, identical to a hard-missing id (#99)", () => {
+  beforeEach(async () => await truncateAll());
+
+  it("promoting a soft-deleted ending statement 404s; its raw flag and the live default are untouched", async () => {
+    const live = await createReference("endingStatement", { name: "Live default", isDefault: true });
+    const dead = await createReference("endingStatement", { name: "Doomed" });
+    await deleteReference("endingStatement", dead.id);
+
+    await expect(updateReference("endingStatement", dead.id, { isDefault: true }))
+      .rejects.toMatchObject({ status: 404, message: "Ending statement not found" });
+
+    // The refused write must not have landed on the dead row, and must not have demoted the
+    // live default (before the guard, the early-returning normalizer skipped the demote-scan
+    // but the flag write still landed on the deleted row).
+    const deadRow = await prisma.endingStatement.findFirst({ where: { id: dead.id } });
+    expect(deadRow?.deletedAt).not.toBeNull();
+    expect(deadRow?.isDefault).toBe(false);
+    const liveRow = await prisma.endingStatement.findFirst({ where: { id: live.id } });
+    expect(liveRow?.isDefault).toBe(true);
+  });
+
+  it("a link-free kind (material): renaming a soft-deleted row 404s and stores nothing", async () => {
+    const { id } = await createReference("material", { name: "4140" });
+    await deleteReference("material", id);
+
+    await expect(updateReference("material", id, { name: "4340" }))
+      .rejects.toMatchObject({ status: 404, message: "Material not found" });
+
+    const row = await prisma.material.findFirst({ where: { id } });
+    expect(row?.name).toBe("4140");
+  });
+
+  it("a hard-missing id presents the same 404, not a different failure class", async () => {
+    await expect(updateReference("material", "no-such-id", { name: "4340" }))
+      .rejects.toMatchObject({ status: 404, message: "Material not found" });
+  });
+});
+
 // Task 4: Terms carries netDays (required going forward, default 30) and an optional
 // discountPercent/discountDays early-pay-discount pair that is all-or-nothing.
 describe("terms: netDays + early-pay discount", () => {

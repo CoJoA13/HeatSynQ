@@ -1,7 +1,7 @@
 import { prisma } from "./db";
 import { currentActor } from "./context";
 import { HttpError } from "./errors";
-import type { Prisma } from "../../prisma/generated/prisma/client";
+import { Prisma } from "../../prisma/generated/prisma/client";
 
 export type AuditableModel =
   | "user" | "role" | "setting"
@@ -25,13 +25,24 @@ export type AuditableModel =
 // model row itself. `undefined` means "no relations" — snapshot() falls back to a bare
 // findUnique for that model. These relations carry no sensitive fields (permission/mode keys
 // only), so redact() doesn't need new patterns to keep snapshots safe.
-// Exported for tests/certs-schema.test.ts's smoke test: this map is typed `object | undefined`
+// Exported for tests/certs-schema.test.ts's smoke test and tests/snapshot-order-sweep.test.ts's
+// list-relation orderBy sweep (issue #24): this map is typed `object | undefined`
 // per entry (Prisma's own `include` shape has no useful common supertype), so a wrong relation
 // name or `orderBy` field compiles cleanly and would otherwise only explode at the first
 // `audited*` call against that model, in whatever later task happens to be the first to touch it.
 export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
-  role: { permissions: true },
-  user: { overrides: true },
+  // Ordered AND projected onto stable fields — issue #24 + the PR #152 Codex round:
+  // setRolePermissions delete/recreates the rows, so scan order tracks insertion order (the
+  // orderBy) AND every re-save mints fresh generated ids (the select) — either alone leaves a
+  // same-set re-save rendering as a spurious diff under HistoryPanel's whole-key
+  // JSON.stringify. `permission` is unique within a role (@@unique([roleId, permission])), so
+  // it orders alone and IS the row's whole meaning.
+  role: { permissions: { select: { permission: true }, orderBy: { permission: "asc" } } },
+  // Same delete/recreate shape via setUserOverrides (the Group H recon find + the same Codex
+  // round); `permission` unique within a user, `mode` the only other meaning the row carries.
+  // The SNAPSHOT_SELECT.user entry below is the one user snapshots actually take (the
+  // signatureImage exclusion) — keep the two in step by hand.
+  user: { overrides: { select: { permission: true, mode: true }, orderBy: { permission: "asc" } } },
   setting: undefined,
   glAccount: undefined,
   material: undefined,
@@ -46,15 +57,27 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Field definitions are mutated through the parent (setStepFields deletes/recreates
   // ProcessStepFieldDef rows), not via a scalar column on ProcessStepCode itself — without this
   // include, before/after snapshots would both omit `fields` and the diff would show no change
-  // for the exact operation most worth auditing.
-  processStepCode: { fields: true },
+  // for the exact operation most worth auditing. Ordered — issue #24: `sort` matches the live
+  // read (listStepCodes, process-step-codes.ts); it is not unique within a code, so `id` breaks
+  // ties deterministically (ordering by an unselected column is fine). Projected onto stable
+  // fields (the PR #152 Codex round's class): delete/recreate mints fresh ids every save, so
+  // the snapshot carries only the columns that MEAN something — id/codeId churn would render a
+  // same-set re-save as a spurious diff.
+  processStepCode: {
+    fields: {
+      select: { label: true, type: true, unit: true, sort: true },
+      orderBy: [{ sort: "asc" }, { id: "asc" }],
+    },
+  },
   // Addresses and contacts (Task 5/6) are audited as their own models, so the parent snapshot
   // needs no relations.
   customer: undefined,
   customerAddress: undefined,
   customerContact: undefined,
-  // children are audited as their own models
-  part: undefined,
+  // Children are audited as their own models; the material rides along so a materialId change
+  // reads "Ductile iron", not a cuid (#14 item 2 — the partSpecification precedent below).
+  // Frozen history keeps the bare cuid: snapshots are frozen, no backfill.
+  part: { material: true },
   // history reads "ASTM A536", not a cuid
   partSpecification: { specification: true },
   partInspection: { inspectionCode: true, scale: true },
@@ -314,8 +337,12 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
  * (`auditedCreate` never calls `snapshot()` — see its own doc comment), so this entry is
  * currently unreached; it is defined anyway so the exclusion already exists the moment that
  * changes, rather than being something a future phase has to remember to add.
+ *
+ * Exported for tests/snapshot-order-sweep.test.ts (issue #24): the sweep walks BOTH maps, because
+ * a list relation projected through a `select` (user.overrides here) can carry an unordered
+ * collection into a snapshot exactly as an `include` can.
  */
-const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
+export const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   partAttachment: {
     id: true, partId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
@@ -342,7 +369,10 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   user: {
     id: true, username: true, passwordHash: true, displayName: true, title: true, roleId: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
-    overrides: true,
+    // Ordered + stable-field-projected — issue #24 and the PR #152 Codex round, in step with
+    // SNAPSHOT_INCLUDE.user (this SELECT is the entry user snapshots actually take; see that
+    // entry's comment).
+    overrides: { select: { permission: true, mode: true }, orderBy: { permission: "asc" } },
   },
   // Phase 7 (spec §4.2): `logoImage` is a bytes column exactly like signatureImage/fileData —
   // every scalar EXCEPT it, so a draft edit's before→after snapshot carries the real `config`
@@ -420,6 +450,52 @@ export function redact(value: unknown): Prisma.InputJsonValue | undefined {
 // left an audit-write failure able to commit an unaudited mutation. Making it required lets the
 // compiler enumerate every caller instead of trusting each one to opt in.
 type Db = typeof prisma | Prisma.TransactionClient;
+
+/**
+ * Claims the audited row FOR UPDATE before the before-snapshot (issue #9). Without it, the
+ * before-snapshot → doIt → after-snapshot sequence is an open window: a CONCURRENT committed
+ * write to the same row lands inside the after-snapshot, so each entry's diff absorbs the other
+ * edit's field — history then attributes one operator's change to the other. Claiming the row
+ * first means whoever gets there first holds it until commit, and the loser's ENTIRE snapshot
+ * window sees a settled row. This is a row lock, so it guards at ANY caller isolation
+ * (CLAUDE.md's row-locks rule — never "simplify" it into a plain read).
+ *
+ * FOR NO KEY UPDATE, deliberately NOT FOR UPDATE — the strength is load-bearing. A non-key
+ * UPDATE (every audited mutation: scalar patches, deletedAt stamps) takes FOR NO KEY UPDATE on
+ * its row, and a foreign key's RI trigger probes the row a new FK value REFERENCES with FOR KEY
+ * SHARE — which conflicts with FOR UPDATE and with nothing weaker. Claiming FOR UPDATE therefore
+ * ADDS a conflict the mutation itself never had: two customers concurrently re-parenting onto
+ * each other (customers.test.ts's reciprocal-cycle test) each claimed their own row, then each
+ * UPDATE's RI probe of the OTHER row blocked on the other's claim — an ABBA deadlock through
+ * Postgres's own trigger that no claim ordering can prevent (the probe isn't ours to reorder),
+ * costing a deadlock_timeout stall per collision. Measured during this fix; FOR NO KEY UPDATE
+ * reproduces the mutation's own lock exactly, so writers of the SAME row still mutually exclude
+ * (NO KEY UPDATE conflicts with itself — the #9 guard) while RI probes pass as they always did.
+ *
+ * Deadlock surface is otherwise UNCHANGED: the mutation inside doIt takes this same row lock in
+ * this same tx anyway — the claim only acquires it EARLIER. The families that already claim
+ * their row before snapshotting (order/invoice/quote/template/revision) re-lock a row their tx
+ * already holds a stronger FOR UPDATE claim on — a no-op. Serializable callers see a locking
+ * read whose 40001 their existing retry wrappers already handle. `auditedCreate` needs no
+ * claim: it has no before-snapshot and its row is fresh. A missing id locks nothing and throws
+ * nothing — the snapshot's null / updateMany's count 0 keep reporting that case exactly as
+ * before.
+ *
+ * Never string-interpolate unvalidated input into SQL: `model` is compiler-constrained to the
+ * AuditableModel union and re-validated at runtime against SNAPSHOT_INCLUDE's own key set
+ * (`Record<AuditableModel, …>` — its keys ARE the model list) before the identifier is inlined
+ * via Prisma.raw; the id rides as an ordinary bound parameter. The table name is the model key
+ * with its first letter uppercased — no @@map exists in schema.prisma, so the Prisma model name
+ * IS the table name (pinned by tests/snapshot-order-sweep.test.ts's mapping test). `setting` is
+ * nominally in the union but never reaches these helpers (auditSettingChange is its sanctioned
+ * path; its PK is `key`, so the claim's own `SELECT "id"` would fail loudly first — Setting has
+ * no `id` column).
+ */
+async function claimAuditedRow(model: AuditableModel, id: string, db: Db): Promise<void> {
+  if (!Object.hasOwn(SNAPSHOT_INCLUDE, model)) throw new Error(`Not an auditable model: ${model}`);
+  const table = model.charAt(0).toUpperCase() + model.slice(1);
+  await db.$queryRaw`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id" = ${id} FOR NO KEY UPDATE`;
+}
 
 async function snapshot(model: AuditableModel, id: string, db: Db): Promise<unknown> {
   // Each auditable model has a string id primary key named `id`.
@@ -499,6 +575,7 @@ export async function auditedUpdate<T>(
   opts: { tx: Prisma.TransactionClient; reason?: string },
 ): Promise<T> {
   const db = opts.tx;
+  await claimAuditedRow(model, id, db);
   const before = await snapshot(model, id, db);
   const result = await doIt();
   const after = await snapshot(model, id, db);
@@ -528,6 +605,7 @@ export async function auditedSoftDelete(
   model: AuditableModel, id: string, reason: string | undefined, tx: Prisma.TransactionClient,
 ): Promise<void> {
   const db = tx;
+  await claimAuditedRow(model, id, db);
   const before = await snapshot(model, id, db);
   const client = db[model] as unknown as {
     updateMany: (a: {
