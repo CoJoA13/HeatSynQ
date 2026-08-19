@@ -170,3 +170,60 @@ only consumer must land together for every commit to compile.
 **Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 26/26 green; `npx tsc --noEmit`
 clean; `npx eslint src tests` clean. Not pushed — the controller pushes after both Codex fixes
 land.
+
+## Codex round 2 (PR #154 — P2, controller-broadened to the scalar half)
+
+**Finding (P2):** `merge`/`mergeRows` MUTATED the guard slot from inside functional setState
+updaters (the untouched-branch re-snapshot, plus the keyed release). Updaters must be pure:
+Strict Mode double-invokes them with the same prev — call 1's re-snapshot made call 2 judge the
+untouched field dirty, preserving stale data the user then blurred into a spurious commit — and
+React 19's concurrent rebasing can re-run updaters in production. The scalar half was
+pre-existing across all seven consumers since Phase 4; the orders adoption extended it.
+
+**A second hazard found while working the prescribed design through** (reported to the
+controller): the prescribed companion overwrote `atFocus := incoming` right after the setState —
+but React can also DEFER an updater past the companion call (guaranteed for the 2nd/3rd
+dispatch in one handler — customers' `applyDetail` issues three), and the deferred updater then
+reads the already-transitioned `atFocus` and judges an untouched field dirty: the same bug
+through the other door. Neither "note after" nor "note before" is safe with a single mutable
+snapshot, because React fixes neither the order nor the count of updater runs.
+
+**Fix (`d599ec1`, TDD):** all prescribed constraints kept, with one structural upgrade making
+the decision ordering-proof: the slot holds a per-focus-session **snapshot SET** (the at-entry
+value plus every server value a companion notes), and "untouched" is set MEMBERSHIP — the
+field's text is a value the box was GIVEN, not one the user typed. The set only grows within a
+session, so `merge`/`mergeRows` (now strictly read-only) return identical results whether an
+updater runs before its companion, after it, once, or twice. `noteMerged(incoming)` /
+`noteMergedRows(collection, incoming)` add the focused key/cell's payload value; `noteMergedRows`
+keeps round 1's collection scoping and owns the release-on-absence (running exactly once,
+outside any updater). `onBlurSave` no-ops on ANY session snapshot and passes the NEWEST one as
+`commit`'s `atFocus` argument — the int-field rollback callers now restore the last value the
+box was actually given rather than a stale at-entry value.
+
+**Blur-semantics analysis — where it differs from the controller's:** (1) untouched fields:
+identical to before. (2) A dirty field's typed text: still commits. (3) Revert-to-server-value:
+now a no-op — the improved edge, as prescribed. (4) One divergence: a DIRTY field reverted to
+exactly the AT-ENTRY value — the prescribed overwrite would COMMIT it (atFocus had moved to the
+server value); the set keeps the original snapshot, so it stays a NO-OP, which is the exact
+pre-round-2 behavior (pinned since the first commit). Both readings are defensible (committing
+would sync the box with the server; no-op matches "the user ended where they began"); the set
+preserves the shipped behavior rather than changing it as a side effect of a purity fix.
+
+**Call sites (all 13 apply sites across the 7 consumers):** every merged setState gained its
+companion beside it — inside the mutation-gate accept branch where one gates the apply (a
+dropped stale payload is never applied, so it is never noted; CertDetail, ShipmentDetail,
+InvoiceDetail, BatchDetail, orders' `load`) — and customers' `applyDetail` pairs all three.
+Orders' `applyMutation` notes the PRE-ternary `fresh` with a comment stating why that is exact
+(the travelerPrinted ternary alters only a boolean, never a guard-registered text field). The
+pairing discipline is documented in the leaf header: a functional-updater merge is always
+followed by its companion with the same payload.
+
+**TDD:** RED observed first — 10 new purity/ordering/blur tests + the migrated release test:
+11 failed / 25 passed against the mutating implementation; the new battery covers double
+invocation (scalar and keyed), note-before-updater (both variants), two deferred refreshes in a
+row, dirty-preserve under every ordering, the revert edges, and companion-owned scoping +
+release. 36/36 after.
+
+**Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 36/36 green; `npx tsc --noEmit`
+clean; `npx eslint src tests` clean. Not pushed — the controller runs the full suite + E2E and
+pushes.
