@@ -183,6 +183,18 @@ session, `capturePayload`, double-invocation, boundary pin), **39/39** after; mo
 sites simplified to one line. Full suite **3362/200**, tsc/eslint/build clean, **E2E 23/23
 (fourth run)**.
 
+## Codex round 4 (2026-08-19)
+
+**CLEAN** — no new comments within the watch window, zero unresolved threads. The fixpoint
+ended the chain, as with the float-arithmetic (Group C) and travelerPrinted chains before it.
+
+## Merge (2026-08-19)
+
+Squash-merged as `1ba0d34` (PR #154). **All six issues (#144–#149) auto-closed** — the
+one-`Closes`-per-issue discipline from PR #152's lesson, applied and now verified working.
+9 issues open after: #33 (deferred create/edit split), #153, parked #4/#8/#69/#71/#77, #134,
+#137 — all owner-gated; Round 2's grouped work is complete.
+
 ## Gates (re-run IN FULL after the Codex round; final tree `cc0e946`)
 
 | Gate | Result |

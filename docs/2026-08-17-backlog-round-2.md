@@ -443,8 +443,13 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
 ~~**D** (stale-load, merged `c0b795e`)~~ →
 ~~**F** (infra, merged `b5a2069`)~~ → ~~**G** (documents/templates, merged `5c54730`)~~ →
-~~**H** (polish, merged `a8ed769`)~~ → **H2** (#144–#149, split out at H kickoff by controller
-call) ← **NEXT when asked**. H2's kickoff is the Group H brief's own H2 section — recon done.
+~~**H** (polish, merged `a8ed769`)~~ → ~~**H2** (#144–#149, the client-state batch, merged
+`1ba0d34`, PR #154, 2026-08-19 — all six closed; three reviews all Approved round 1 with zero
+Important; three Codex rounds drove the edit-guard to its captured-session fixpoint, round 4
+clean; ledger `docs/execution/2026-08-19-round-2-group-h2/progress.md`)~~ —
+**ROUND 2's GROUPED WORK IS COMPLETE.** Every issue still open is owner-gated: #33 (create/edit
+split, deferred past the acceptance month), #153, parked #4/#8/#69/#71/#77, #134 (owner
+decision), #137.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across
