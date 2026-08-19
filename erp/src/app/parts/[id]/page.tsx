@@ -94,7 +94,11 @@ function PartDetail({ id }: { id: string }) {
   const saveScope = useSaveScope();
 
   const fetchPart = useCallback(() => api<Part>(`/api/parts/${id}`), [id]);
-  const applyPart = useCallback((p: Part) => { setPart((cur) => editGuard.merge(cur, p)); }, [editGuard]);
+  const applyPart = useCallback((p: Part) => {
+    // Pure merge + paired companion (use-edit-guard.ts, the round-2 discipline).
+    setPart((cur) => editGuard.merge(cur, p));
+    editGuard.noteMerged(p);
+  }, [editGuard]);
   const load = useCallback(
     () => saveScope.reload(fetchPart, (p) => { applyPart(p); setError(null); }),
     [saveScope, fetchPart, applyPart],

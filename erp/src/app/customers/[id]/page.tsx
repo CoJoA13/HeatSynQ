@@ -155,9 +155,15 @@ function CustomerDetail({ id }: { id: string }) {
     api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
   ]), [id, showInactiveAddresses, showInactiveContacts]);
   const applyDetail = useCallback(([cust, addr, cont]: [Customer, Address[], Contact[]]) => {
+    // Each merge is PURE and its companion note runs beside the setState (use-edit-guard.ts,
+    // the round-2 pairing discipline): React defers the 2nd/3rd updaters here past this whole
+    // function, so the transition must not live inside them.
     setC((cur) => editGuard.merge(cur, cust));
+    editGuard.noteMerged(cust);
     setAddresses((cur) => editGuard.mergeRows("addresses", cur, addr));
+    editGuard.noteMergedRows("addresses", addr);
     setContacts((cur) => editGuard.mergeRows("contacts", cur, cont));
+    editGuard.noteMergedRows("contacts", cont);
   }, [editGuard]);
   const load = useCallback(
     () => saveScope.reload(fetchDetail, (data) => { applyDetail(data); setError(null); }),

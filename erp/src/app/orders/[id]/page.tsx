@@ -210,7 +210,12 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const o = await api<OrderDetail>(`/api/orders/${id}`);
-    if (mutations.accept(ticket)) setOrder((prev) => editGuard.merge(prev, o));
+    if (mutations.accept(ticket)) {
+      setOrder((prev) => editGuard.merge(prev, o));
+      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline):
+      // a dropped stale payload is never applied, so it is never noted either.
+      editGuard.noteMerged(o);
+    }
     return o;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -248,6 +253,11 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         : fresh;
       return editGuard.merge(prev, next);
     });
+    // Paired companion (round-2 discipline), noted with the PRE-ternary payload: the ternary
+    // computes `next` FROM prev, which the companion cannot see — but it only ever alters
+    // `travelerPrinted`, a boolean never registered with the guard, so `fresh` carries exactly
+    // the values the note reads and noting it is exact.
+    editGuard.noteMerged(fresh);
     setWarnings(w);
   }, [mutations, editGuard]);
 

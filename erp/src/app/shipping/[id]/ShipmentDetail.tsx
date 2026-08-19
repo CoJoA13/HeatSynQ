@@ -241,7 +241,12 @@ export function ShipmentDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<ShipperMutationResult>(`/api/shippers/${id}`);
-    if (mutations.accept(ticket)) { setShipper((cur) => editGuard.merge(cur, res.shipper)); setWarnings(res.warnings); }
+    if (mutations.accept(ticket)) {
+      setShipper((cur) => editGuard.merge(cur, res.shipper));
+      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
+      editGuard.noteMerged(res.shipper);
+      setWarnings(res.warnings);
+    }
     return res.shipper;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -253,6 +258,7 @@ export function ShipmentDetail({ id }: { id: string }) {
     const res = await run();
     if (!mutations.accept(ticket)) return;
     setShipper((cur) => editGuard.merge(cur, res.shipper));
+    editGuard.noteMerged(res.shipper);
     setWarnings(res.warnings);
   }, [mutations, editGuard]);
 

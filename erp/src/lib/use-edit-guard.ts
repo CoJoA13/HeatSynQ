@@ -50,6 +50,32 @@
 // (reactivation, an includeInactive refetch) and must merge clean. One slot still serves both
 // variants — the DOM has one focused element, so a cell registration and a scalar registration
 // displace each other.
+//
+// PURITY AND THE COMPANION TRANSITION (Codex PR #154 round 2). `merge` and `mergeRows` run
+// inside React functional setState updaters, and updaters must be PURE: Strict Mode
+// double-invokes them with the same prev, and React can both DEFER an updater past the code
+// following its setState (guaranteed for the 2nd/3rd dispatch in one handler — customers'
+// applyDetail) and re-run updaters when rebasing concurrent updates. So the merges only READ
+// the slot; the focus-session transition lives in the companions `noteMerged`/`noteMergedRows`,
+// called beside the setState. THE PAIRING DISCIPLINE: a functional-updater merge is ALWAYS
+// followed by its companion with the same payload — and where the setState sits inside a
+// mutation-gate accept branch, the companion goes inside that branch too (a dropped stale
+// payload is never applied, so it must never be noted).
+//
+// Because React fixes neither whether the updater runs before or after the companion, nor how
+// many times, the untouched-vs-dirty decision cannot compare against a single mutable atFocus.
+// Instead the slot keeps a per-focus-session SNAPSHOT SET — the at-entry value plus every
+// server value the companions have noted since — and "untouched" means the field's current text
+// is a member: a value the box was given, not one the user typed. The set only ever grows
+// within a session, so the merge decision is identical under every interleaving. Blur semantics
+// (worked through, round 2): an untouched field behaves exactly as before (its shown value is
+// always the newest member); a dirty field's typed text still commits (it matches no snapshot);
+// a dirty field reverted to exactly the server's value now blurs to a NO-OP instead of a
+// redundant PATCH (strictly better — the write would assert a change nobody made); and a dirty
+// field reverted to the AT-ENTRY value stays a no-op, the pre-round-2 behavior, because the set
+// keeps the original snapshot (an atFocus overwrite would have committed there). `onBlurSave`'s
+// `atFocus` argument is the NEWEST snapshot — for the int-field rollback callers, the last
+// value the box was actually given.
 import { useState } from "react";
 
 type EditableElement = HTMLInputElement | HTMLTextAreaElement;
@@ -70,111 +96,158 @@ export type EditGuard = {
    *  displaces the other. */
   onFocusCell: (collection: string, rowId: string, field: string) =>
     (e: React.FocusEvent<EditableElement>) => void;
-  /** Blur-save no-op guard: commits only when the value genuinely changed since focus.
-   *  `commit` also receives the at-focus snapshot, for callers that roll a bad value back to it.
-   *  `opts.trim` mirrors a server-side zod `.trim()` so add-and-remove-a-space is a no-op. */
+  /** Blur-save no-op guard: commits only when the value is one the user typed — a value
+   *  matching ANY of the focus session's snapshots (the at-entry value, or a server value a
+   *  companion noted since) is a no-op, since committing it would assert a change nobody made.
+   *  `commit`'s second argument is the NEWEST snapshot (the last value the box was given), for
+   *  callers that roll a bad value back to it. `opts.trim` mirrors a server-side zod `.trim()`
+   *  so add-and-remove-a-space is a no-op. */
   onBlurSave: (
     e: React.FocusEvent<EditableElement>,
     commit: (value: string, atFocus: string) => void,
     opts?: { trim?: boolean },
   ) => void;
   /** Merge an arriving server detail over current state, preserving the one field the user is
-   *  actively editing (focused AND changed since focus). Route EVERY set-state-from-server-detail
-   *  through this. */
+   *  actively editing (focused AND changed since focus — i.e. its text matches no session
+   *  snapshot). PURE: runs inside functional setState updaters and never writes the slot —
+   *  ALWAYS pair the setState with `noteMerged(incoming)` beside it (inside the same accept
+   *  branch where one gates the setState). Route EVERY set-state-from-server-detail through
+   *  this. */
   merge: <T extends object>(cur: T | null, incoming: T) => T;
+  /** The companion transition for `merge` — call it beside (not inside) the setState whose
+   *  updater merged this payload: records the payload's value for the focused key as a session
+   *  snapshot, so the box's new server-given text reads as untouched and blurs to a no-op.
+   *  No-ops when nothing scalar is focused or the payload lacks the key. Never note a payload
+   *  the mutation gate dropped — it was not applied. */
+  noteMerged: <T extends object>(incoming: T) => void;
   /** `merge`'s counterpart for array state keyed by row id: the incoming array lands wholesale
    *  UNLESS the focused cell (registered via `onFocusCell`) is dirty-since-focus, in which case
    *  that ONE cell keeps its local value inside the incoming row of the same id — reorders,
-   *  insertions, and every sibling field/row refresh. Acts on the slot — protecting OR
-   *  releasing — only when the registration names THIS `collection`; any other registration
-   *  passes through untouched, payload and slot both (Codex PR #154 round 1: a focused
-   *  contact's id is absent from the addresses array by definition, and that absence is not a
-   *  deletion). A focused row absent from its OWN collection's payload (genuinely deleted
-   *  server-side) takes the payload as-is and releases the slot — its input is about to unmount
-   *  with no React blur, and the same id can re-enter a later payload. Route EVERY
-   *  set-rows-from-server through this on pages whose cells register with `onFocusCell`. */
+   *  insertions, and every sibling field/row refresh. Reads the slot only when the registration
+   *  names THIS `collection`; any other registration passes through untouched (Codex PR #154
+   *  round 1: a focused contact's id is absent from the addresses array by definition, and that
+   *  absence is not a deletion). PURE like `merge` — it never writes the slot; the transition
+   *  AND the release-on-absence live in `noteMergedRows`, so ALWAYS pair the setState with it.
+   *  Route EVERY set-rows-from-server through this on pages whose cells register with
+   *  `onFocusCell`. */
   mergeRows: <R extends { id: string }>(collection: string, cur: R[], incoming: R[]) => R[];
+  /** The companion transition for `mergeRows` — call it beside (not inside) the setState whose
+   *  updater merged this payload, with the SAME collection and payload. Same collection scoping
+   *  as the merge; for its own collection it records the focused cell's server value as a
+   *  session snapshot, or — when the focused row is ABSENT from the payload (genuinely deleted
+   *  server-side) — RELEASES the slot: the cell's input is about to unmount with no React blur,
+   *  and the same id can re-enter a later payload (round 1's rule, now living outside the
+   *  updater so it runs exactly once). A payload whose row lacks the field leaves the
+   *  registration alone. Never note a payload the mutation gate dropped. */
+  noteMergedRows: <R extends { id: string }>(collection: string, incoming: R[]) => void;
 };
 
 export function makeEditGuard(): EditGuard {
   // The ONE focused slot, shared by both variants: `key` names a property of the page's detail
   // object (`merge`), `cell` names a collection+row-id+field of a keyed array (`mergeRows`). At
   // most one of the two is set — registering either clears the other, mirroring the DOM's
-  // single focus.
+  // single focus. `snapshots` is the focus session's grow-only set of server-given values (the
+  // at-entry value, plus one per companion note); `atFocus` is its newest member. Only the
+  // focus/blur handlers and the companions write this slot — the merges are PURE (round 2).
   let focused: {
     key: string | null;
     cell: { collection: string; rowId: string; field: string } | null;
     atFocus: string;
-  } = { key: null, cell: null, atFocus: "" };
+    snapshots: Set<string>;
+  } = { key: null, cell: null, atFocus: "", snapshots: new Set([""]) };
 
   return {
     onFocusField: (key) => (e) => {
-      focused = { key, cell: null, atFocus: e.target.value };
+      focused = { key, cell: null, atFocus: e.target.value, snapshots: new Set([e.target.value]) };
     },
 
     onFocusCell: (collection, rowId, field) => (e) => {
-      focused = { key: null, cell: { collection, rowId, field }, atFocus: e.target.value };
+      focused = {
+        key: null,
+        cell: { collection, rowId, field },
+        atFocus: e.target.value,
+        snapshots: new Set([e.target.value]),
+      };
     },
 
     onBlurSave: (e, commit, opts = {}) => {
       const was = focused;
-      focused = { key: null, cell: null, atFocus: "" };
+      focused = { key: null, cell: null, atFocus: "", snapshots: new Set([""]) };
       const normalize = (v: string) => (opts.trim ? v.trim() : v);
       const value = normalize(e.target.value);
-      if (value === normalize(was.atFocus)) return;
+      // A value matching ANY session snapshot is one the box was GIVEN — at entry, or by a
+      // noted server apply — not one the user typed; committing it would assert a change
+      // nobody made (and write an identical-before-and-after audit entry).
+      for (const s of was.snapshots) if (normalize(s) === value) return;
       commit(value, was.atFocus);
     },
 
+    // PURE — runs inside functional setState updaters (Strict Mode double-invokes them; React
+    // may also defer them past the companion call). Reads the slot, never writes it.
     merge: <T extends object>(cur: T | null, incoming: T): T => {
       const f = focused;
       if (cur === null || f.key === null || !(f.key in incoming)) return incoming;
       const local = (cur as Record<string, unknown>)[f.key];
       // Same string lens the inputs themselves render through (`value={x ?? ""}`), so a numeric
       // field mid-edit (held as the typed string) still compares against what the box showed.
-      if (String(local ?? "") === f.atFocus) {
-        // Untouched since focus: take the server's value and re-snapshot the no-op guard against
-        // what the box will now show.
-        focused = { key: f.key, cell: null, atFocus: String((incoming as Record<string, unknown>)[f.key] ?? "") };
-        return incoming;
-      }
+      // Untouched = the shown text is a session snapshot (a value the box was given): server
+      // truth lands. This membership test is what makes the decision identical whether the
+      // updater runs before its companion, after it, once, or twice — the set only grows.
+      if (f.snapshots.has(String(local ?? ""))) return incoming;
       // Dirty since focus: the server detail lands everywhere EXCEPT under the user's cursor.
       return { ...incoming, [f.key]: local };
     },
 
+    noteMerged: <T extends object>(incoming: T) => {
+      const f = focused;
+      if (f.key === null || !(f.key in incoming)) return;
+      const v = String((incoming as Record<string, unknown>)[f.key] ?? "");
+      f.snapshots.add(v);
+      focused = { ...f, atFocus: v };
+    },
+
+    // PURE — the same updater constraints as `merge`. The transition and the release-on-absence
+    // both live in `noteMergedRows`.
     mergeRows: <R extends { id: string }>(collection: string, cur: R[], incoming: R[]): R[] => {
       const f = focused;
-      // Not this collection's registration (or none at all): the payload lands wholesale and
-      // the slot is left ALONE — a focused contact's id is absent from the addresses array by
-      // definition, and treating that absence as a deletion is what re-opened the #149 clobber
-      // (Codex PR #154 round 1). Only a cell's OWN collection may protect or release it.
+      // Not this collection's registration (or none at all): the payload lands wholesale — a
+      // focused contact's id is absent from the addresses array by definition, and treating
+      // that absence as a deletion is what re-opened the #149 clobber (round 1). Only a cell's
+      // OWN collection may act on it.
       if (f.cell === null || f.cell.collection !== collection) return incoming;
       const { rowId, field } = f.cell;
       const incomingRow = incoming.find((r) => r.id === rowId);
-      if (!incomingRow) {
-        // The focused row deleted server-side: land as-is — there is no row left to carry the
-        // cell, and resurrecting one would show data the server no longer has — and RELEASE the
-        // slot. Once this payload applies, the cell's input unmounts without a React blur, and
-        // only guard-REGISTERED focus/blur replaces the slot (checkboxes, selects, and buttons
-        // never touch it) — so a stale registration would survive until the next guarded field
-        // is entered. Soft-delete is exactly what lets the same id LEAVE and RE-ENTER the
-        // visible payload (reactivation, an includeInactive refetch): a re-entering row must
-        // merge clean, not read as dirty against this dead snapshot forever.
-        focused = { key: null, cell: null, atFocus: "" };
-        return incoming;
-      }
-      // The field unknown to the payload's row shape: land as-is (nothing comparable to
-      // preserve). The row — and its input — are still live, so the registration stays for the
-      // blur no-op guard.
-      if (!(field in incomingRow)) return incoming;
+      // Row deleted server-side (there is no row left to carry the cell, and resurrecting one
+      // would show data the server no longer has) or the field unknown to the payload: land
+      // as-is. The RELEASE for the deleted case is `noteMergedRows`'s job — a pure updater
+      // cannot clear the slot.
+      if (!incomingRow || !(field in incomingRow)) return incoming;
       const curRow = cur.find((r) => r.id === rowId);
       if (!curRow) return incoming;
       const local = (curRow as Record<string, unknown>)[field];
-      // The scalar merge's exact string lens and untouched/dirty split, per-cell.
-      if (String(local ?? "") === f.atFocus) {
-        focused = { key: null, cell: f.cell, atFocus: String((incomingRow as Record<string, unknown>)[field] ?? "") };
-        return incoming;
-      }
+      // The scalar merge's exact string lens and membership decision, per-cell.
+      if (f.snapshots.has(String(local ?? ""))) return incoming;
       return incoming.map((r) => (r.id === rowId ? { ...r, [field]: local } : r));
+    },
+
+    noteMergedRows: <R extends { id: string }>(collection: string, incoming: R[]) => {
+      const f = focused;
+      if (f.cell === null || f.cell.collection !== collection) return;
+      const { field } = f.cell;
+      const incomingRow = incoming.find((r) => r.id === f.cell!.rowId);
+      if (!incomingRow) {
+        // Round 1's release-on-absence, now outside the updater so it runs exactly once: the
+        // focused row was deleted from its OWN collection's payload, its input unmounts with no
+        // React blur (only guard-registered focus/blur replaces the slot — checkboxes, selects,
+        // and buttons never touch it), and soft-delete means the same id can re-enter a later
+        // payload (reactivation, an includeInactive refetch) and must merge clean.
+        focused = { key: null, cell: null, atFocus: "", snapshots: new Set([""]) };
+        return;
+      }
+      if (!(field in incomingRow)) return;
+      const v = String((incomingRow as Record<string, unknown>)[field] ?? "");
+      f.snapshots.add(v);
+      focused = { ...f, atFocus: v };
     },
   };
 }

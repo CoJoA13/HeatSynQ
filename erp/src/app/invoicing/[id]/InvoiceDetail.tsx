@@ -456,7 +456,12 @@ export function InvoiceDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<InvoiceMutationResult>(`/api/invoices/${id}`);
-    if (mutations.accept(ticket)) { setInvoice((cur) => editGuard.merge(cur, res.invoice)); setWarnings(res.warnings); }
+    if (mutations.accept(ticket)) {
+      setInvoice((cur) => editGuard.merge(cur, res.invoice));
+      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
+      editGuard.noteMerged(res.invoice);
+      setWarnings(res.warnings);
+    }
     return res.invoice;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -468,6 +473,7 @@ export function InvoiceDetail({ id }: { id: string }) {
     const res = await run();
     if (!mutations.accept(ticket)) return;
     setInvoice((cur) => editGuard.merge(cur, res.invoice));
+    editGuard.noteMerged(res.invoice);
     setWarnings(res.warnings);
   }, [mutations, editGuard]);
 

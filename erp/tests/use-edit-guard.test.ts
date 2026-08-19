@@ -41,8 +41,9 @@ describe("makeEditGuard — the scalar guard (pinned pre-#149 behavior)", () => 
     const cur = { notes: "a", po: "p0" }; // untouched since focus
     const incoming = { notes: "server", po: "p1" };
     expect(g.merge(cur, incoming)).toBe(incoming);
-    // The guard re-snapshotted against what the box now shows: blurring without typing is still
-    // a no-op — a later blur must not "save" a change the user never typed.
+    g.noteMerged(incoming); // the paired companion (round 2) — the transition lives here now
+    // The guard snapshotted what the box now shows: blurring without typing is still a no-op —
+    // a later blur must not "save" a change the user never typed.
     const commit = vi.fn();
     g.onBlurSave(ev("server"), commit);
     expect(commit).not.toHaveBeenCalled();
@@ -108,8 +109,10 @@ describe("makeEditGuard — the scalar guard (pinned pre-#149 behavior)", () => 
     g.onFocusField("qty")(ev("5")); // the input rendered String(5)
     const cur = { qty: 5 as number | string };
     const incoming = { qty: 7 as number | string };
-    // Untouched since focus (String(5) === "5"): server truth lands, guard re-snapshots to "7".
+    // Untouched since focus (String(5) === "5"): server truth lands; the paired companion
+    // snapshots "7" so the box's new text blurs to a no-op.
     expect(g.merge(cur, incoming)).toBe(incoming);
+    g.noteMerged(incoming);
     const commit = vi.fn();
     g.onBlurSave(ev("7"), commit);
     expect(commit).not.toHaveBeenCalled();
@@ -174,6 +177,7 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
     g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const incoming = rows({ r1: { name: "SERVER" } });
     expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
+    g.noteMergedRows("rows", incoming); // the paired companion (round 2)
     // Blurring without typing stays a no-op against what the box now shows.
     const commit = vi.fn();
     g.onBlurSave(ev("SERVER"), commit);
@@ -197,6 +201,7 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
     // touch it), so the guard must release the registration itself.
     const afterDelete = [{ id: "r2", name: "N2", street: "S2" }];
     expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
+    g.noteMergedRows("rows", afterDelete); // round 2: the paired companion performs the release
     // The same id re-enters the payload (reactivation / includeInactive refetch — supported
     // flows, not a hard recreate): merges clean…
     const reappeared = [{ id: "r1", name: "BACK", street: "S1" }, ...afterDelete];
@@ -260,8 +265,9 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
     const cur: NumRow[] = [{ id: "r1", qty: 5 }];
     const incoming: NumRow[] = [{ id: "r1", qty: 7 }];
     expect(g.mergeRows("rows", cur, incoming)).toBe(incoming); // untouched: server truth lands
+    g.noteMergedRows("rows", incoming); // paired companion snapshots what the box now shows
     const commit = vi.fn();
-    g.onBlurSave(ev("7"), commit); // re-snapshotted to what the box now shows
+    g.onBlurSave(ev("7"), commit);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -329,10 +335,173 @@ describe("makeEditGuard — cross-collection scoping (Codex PR #154 round 1)", (
     g.onFocusCell("addresses", "r1", "name")(ev("n1"));
     const afterDelete = [{ id: "r2", name: "N2", street: "S2" }];
     expect(g.mergeRows("addresses", rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
+    g.noteMergedRows("addresses", afterDelete); // the companion owns the release (round 2)
     // Released: a same-id row re-entering merges clean and stays clean (the 9d58d2a contract).
     const reappeared = [{ id: "r1", name: "BACK", street: "S1" }, ...afterDelete];
     expect(g.mergeRows("addresses", afterDelete, reappeared)).toBe(reappeared);
     const fresh = [{ id: "r1", name: "NEWER", street: "S1" }, ...afterDelete];
     expect(g.mergeRows("addresses", reappeared, fresh)).toBe(fresh);
+  });
+});
+
+// Codex round 2 on PR #154 (P2, controller-broadened to the scalar half): merge/mergeRows ran
+// inside React functional setState updaters and MUTATED the slot there — updaters must be pure.
+// Strict Mode double-invokes them with the same prev (call 1's in-merge re-snapshot made call 2
+// judge an untouched field dirty and preserve stale data), and React can also DEFER an updater
+// past the code following the setState (guaranteed for the 2nd/3rd dispatch in one handler —
+// customers' applyDetail), so the transition cannot simply run "after the setState" either. The
+// fix: merge/mergeRows are PURE (read-only), the transition lives in companion noteMerged/
+// noteMergedRows calls made beside the setState, and the untouched-vs-dirty decision tests
+// membership in a per-focus-session SNAPSHOT SET (the at-entry value plus every noted server
+// value) — a grow-only structure, so the decision is identical whether an updater runs before
+// the companion, after it, once, or twice.
+describe("makeEditGuard — pure merges + the companion transition (Codex PR #154 round 2)", () => {
+  type Row = { id: string; name: string; street: string };
+  const rows = (over: Partial<Record<"r1" | "r2", Partial<Row>>> = {}): Row[] => [
+    { id: "r1", name: "n1", street: "s1", ...over.r1 },
+    { id: "r2", name: "n2", street: "s2", ...over.r2 },
+  ];
+
+  it("merge is pure: double-invocation returns identical results and never touches the slot", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const cur = { notes: "a", po: "p0" }; // untouched since focus
+    const incoming = { notes: "srv", po: "p1" };
+    // Strict Mode shape: the same updater body runs twice with the same prev.
+    expect(g.merge(cur, incoming)).toBe(incoming);
+    expect(g.merge(cur, incoming)).toBe(incoming); // call 2 must NOT judge "srv" dirty
+    // And the slot was not transitioned by merge itself: without the companion, a blur at the
+    // server value still reads as a change from the at-entry snapshot.
+    const commit = vi.fn();
+    g.onBlurSave(ev("srv"), commit);
+    expect(commit).toHaveBeenCalledWith("srv", "a");
+  });
+
+  it("mergeRows is pure: double-invocation identical; no release happens inside the updater", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
+    // Untouched cell, changed server value — twice with the same prev:
+    const cur = rows();
+    const incoming = rows({ r1: { name: "SRV" } });
+    expect(g.mergeRows("rows", cur, incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", cur, incoming)).toBe(incoming);
+    // A row-absent payload through the PURE merge must not release the registration — only the
+    // companion may. The still-registered dirty cell stays protected afterwards.
+    const absent = [{ id: "r2", name: "N2", street: "S2" }];
+    expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), absent)).toBe(absent);
+    expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), rows({ r1: { name: "S2" } })))
+      .toEqual(rows({ r1: { name: "n1-typed" } }));
+  });
+
+  it("noteMerged owns the transition: post-note blur no-ops at the server value, commits typed text", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const incoming = { notes: "srv" };
+    expect(g.merge({ notes: "a" }, incoming)).toBe(incoming);
+    g.noteMerged(incoming);
+    const noop = vi.fn();
+    g.onBlurSave(ev("srv"), noop); // the box shows what the server sent — not a user change
+    expect(noop).not.toHaveBeenCalled();
+    // Typed text still commits, and the atFocus argument is the NEWEST snapshot (the last
+    // server value the box was given) — the best rollback target for the int-field callers.
+    const g2 = makeEditGuard();
+    g2.onFocusField("notes")(ev("a"));
+    g2.noteMerged({ notes: "srv" });
+    const commit = vi.fn();
+    g2.onBlurSave(ev("typed"), commit);
+    expect(commit).toHaveBeenCalledWith("typed", "srv");
+  });
+
+  it("note-BEFORE-updater (a deferred updater) still lands the refresh on an untouched field", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const incoming = { notes: "srv" };
+    // React deferred the updater past the companion call (the 2nd/3rd dispatch in a batch):
+    g.noteMerged(incoming);
+    // The updater then runs with the PRE-refresh prev. The at-entry snapshot is still in the
+    // session set, so the untouched field takes server truth — an atFocus overwrite would have
+    // judged it dirty here and preserved stale data.
+    expect(g.merge({ notes: "a" }, incoming)).toBe(incoming);
+  });
+
+  it("keyed note-before-updater: the deferred untouched-cell refresh lands too", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
+    const incoming = rows({ r1: { name: "SRV" } });
+    g.noteMergedRows("rows", incoming);
+    expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
+    const noop = vi.fn();
+    g.onBlurSave(ev("SRV"), noop);
+    expect(noop).not.toHaveBeenCalled();
+  });
+
+  it("two deferred refreshes in a row: the untouched field tracks the newest server value", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const s1 = { notes: "s1" };
+    const s2 = { notes: "s2" };
+    // Both companions ran before either updater (a batched double-apply):
+    g.noteMerged(s1);
+    g.noteMerged(s2);
+    expect(g.merge({ notes: "a" }, s1)).toBe(s1);   // prev is the pre-refresh value
+    expect(g.merge({ notes: "s1" }, s2)).toBe(s2);  // prev is refresh 1's applied value
+    const noop = vi.fn();
+    g.onBlurSave(ev("s2"), noop);
+    expect(noop).not.toHaveBeenCalled();
+  });
+
+  it("dirty preserve survives every ordering and double-invocation, then blur commits", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const cur = { notes: "ab" }; // typed since focus
+    const incoming = { notes: "srv" };
+    g.noteMerged(incoming); // note first (deferred-updater ordering)
+    expect(g.merge(cur, incoming)).toEqual({ notes: "ab" });
+    expect(g.merge(cur, incoming)).toEqual({ notes: "ab" }); // double-invocation
+    const commit = vi.fn();
+    g.onBlurSave(ev("ab"), commit);
+    expect(commit).toHaveBeenCalledWith("ab", "srv");
+  });
+
+  it("a dirty field reverted to the server's value blurs to a no-op (the improved edge)", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const incoming = { notes: "srv" };
+    expect(g.merge({ notes: "ab" }, incoming)).toEqual({ notes: "ab" }); // preserved
+    g.noteMerged(incoming);
+    // The user then deletes their text and types exactly what the server holds: committing it
+    // would be a redundant PATCH asserting a change nobody made.
+    const noop = vi.fn();
+    g.onBlurSave(ev("srv"), noop);
+    expect(noop).not.toHaveBeenCalled();
+  });
+
+  it("a dirty field reverted to the AT-ENTRY value blurs to a no-op (the session set keeps it)", () => {
+    const g = makeEditGuard();
+    g.onFocusField("notes")(ev("a"));
+    const incoming = { notes: "srv" };
+    expect(g.merge({ notes: "ab" }, incoming)).toEqual({ notes: "ab" });
+    g.noteMerged(incoming);
+    // Type "ab", refresh noted, delete back to exactly "a": the pre-round-2 guard treated this
+    // as a no-op (value === the at-entry snapshot), and the session SET preserves that — an
+    // atFocus overwrite would have committed "a" here, a behavior change this design avoids.
+    const noop = vi.fn();
+    g.onBlurSave(ev("a"), noop);
+    expect(noop).not.toHaveBeenCalled();
+  });
+
+  it("noteMergedRows scopes by collection and owns the release-on-absence", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("contacts", "c1", "name")(ev("Bob"));
+    // A sibling collection's companion never touches the registration…
+    g.noteMergedRows("addresses", [{ id: "a1", name: "N", street: "S" }]);
+    expect(g.mergeRows("contacts",
+      [{ id: "c1", name: "Bobby", phone: "p" }],
+      [{ id: "c1", name: "SRV", phone: "P" }],
+    )).toEqual([{ id: "c1", name: "Bobby", phone: "P" }]);
+    // …while the OWN collection's companion releases on a genuine deletion:
+    g.noteMergedRows("contacts", [{ id: "c2", name: "Other", phone: "q" }]);
+    const incoming = [{ id: "c1", name: "SRV2", phone: "P2" }];
+    expect(g.mergeRows("contacts", [{ id: "c1", name: "Bobby", phone: "p" }], incoming)).toBe(incoming);
   });
 });

@@ -178,7 +178,11 @@ export function CertDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const detail = await api<CertDetailData>(`/api/certs/${id}`);
-    if (mutations.accept(ticket)) setCert((cur) => editGuard.merge(cur, detail));
+    if (mutations.accept(ticket)) {
+      setCert((cur) => editGuard.merge(cur, detail));
+      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
+      editGuard.noteMerged(detail);
+    }
     return detail;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -188,7 +192,10 @@ export function CertDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<CertDetailData>) => {
     const ticket = mutations.next();
     const detail = await run();
-    if (mutations.accept(ticket)) setCert((cur) => editGuard.merge(cur, detail));
+    if (mutations.accept(ticket)) {
+      setCert((cur) => editGuard.merge(cur, detail));
+      editGuard.noteMerged(detail);
+    }
   }, [mutations, editGuard]);
 
   const voided = (cert?.deletedAt ?? null) !== null;
