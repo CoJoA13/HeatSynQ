@@ -123,3 +123,132 @@ describe("makeEditGuard — the scalar guard (pinned pre-#149 behavior)", () => 
     expect(g.merge(cur, incoming)).toBe(incoming);
   });
 });
+
+// The keyed variant (#149): array state keyed by row id + field — the customers page's address/
+// contact rows, whose cells previously registered only the blur no-op guard (onFocusField(null))
+// and so had NO mid-typing protection when applyDetail's setAddresses/setContacts landed a fresh
+// server array over them. One focused slot still serves both variants: the DOM has one focused
+// element, so a cell registration and a scalar registration displace each other.
+describe("makeEditGuard — the keyed variant (mergeRows)", () => {
+  type Row = { id: string; name: string; street: string };
+  const rows = (over: Partial<Record<"r1" | "r2", Partial<Row>>> = {}): Row[] => [
+    { id: "r1", name: "n1", street: "s1", ...over.r1 },
+    { id: "r2", name: "n2", street: "s2", ...over.r2 },
+  ];
+
+  it("no focused cell: an incoming array lands wholesale", () => {
+    const g = makeEditGuard();
+    const incoming = rows();
+    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+  });
+
+  it("a focused-and-dirty cell keeps its local value; sibling fields, rows, and additions refresh", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1")); // the box showed "n1" on entry
+    const cur = rows({ r1: { name: "n1-typed" } }); // typed since focus
+    const incoming = [...rows({ r1: { name: "SERVER", street: "S1" }, r2: { name: "N2" } }),
+      { id: "r3", name: "n3", street: "s3" }];
+    expect(g.mergeRows(cur, incoming)).toEqual([
+      { id: "r1", name: "n1-typed", street: "S1" }, // the cell under the cursor survives; its row refreshes
+      { id: "r2", name: "N2", street: "s2" },
+      { id: "r3", name: "n3", street: "s3" },
+    ]);
+  });
+
+  it("matched by row id, not index: a reordered payload still preserves the right cell", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    const cur = rows({ r1: { name: "n1-typed" } });
+    const incoming = [
+      { id: "r2", name: "N2", street: "S2" },
+      { id: "r1", name: "SERVER", street: "S1" },
+    ];
+    expect(g.mergeRows(cur, incoming)).toEqual([
+      { id: "r2", name: "N2", street: "S2" },
+      { id: "r1", name: "n1-typed", street: "S1" },
+    ]);
+  });
+
+  it("a focused-but-untouched cell takes the server value and re-snapshots the no-op guard", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    const incoming = rows({ r1: { name: "SERVER" } });
+    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+    // Blurring without typing stays a no-op against what the box now shows.
+    const commit = vi.fn();
+    g.onBlurSave(ev("SERVER"), commit);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("the focused row disappearing from the payload: the payload lands as-is", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    const cur = rows({ r1: { name: "n1-typed" } });
+    const incoming = [{ id: "r2", name: "N2", street: "S2" }]; // r1 deleted server-side
+    expect(g.mergeRows(cur, incoming)).toBe(incoming);
+  });
+
+  it("the focused row missing locally: the payload lands as-is (nothing to preserve)", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r9", "name")(ev("x"));
+    const incoming = rows();
+    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+  });
+
+  it("blur releases the cell slot: commits the change, then arrays land wholesale", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    const commit = vi.fn();
+    g.onBlurSave(ev("n1-typed"), commit);
+    expect(commit).toHaveBeenCalledWith("n1-typed", "n1");
+    const cur = rows({ r1: { name: "n1-typed" } });
+    const incoming = rows({ r1: { name: "SERVER" } });
+    expect(g.mergeRows(cur, incoming)).toBe(incoming);
+  });
+
+  it("one slot: focusing a second cell releases the first", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("r2", "street")(ev("s2"));
+    const cur = rows({ r1: { name: "n1-typed" }, r2: { street: "s2-typed" } });
+    const incoming = rows({ r1: { name: "N1" }, r2: { street: "S2" } });
+    expect(g.mergeRows(cur, incoming)).toEqual(rows({ r1: { name: "N1" }, r2: { street: "s2-typed" } }));
+  });
+
+  it("one slot across variants: a cell registration displaces a scalar one, and vice versa", () => {
+    const g = makeEditGuard();
+    // Scalar focused+dirty: rows are not intercepted…
+    g.onFocusField("notes")(ev("a"));
+    const incomingRows = rows();
+    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), incomingRows)).toBe(incomingRows);
+    // …and the scalar registration still protects the detail object.
+    const merged = g.merge({ notes: "ab" }, { notes: "server" });
+    expect(merged).toEqual({ notes: "ab" });
+    // Cell focused+dirty: the detail object is not intercepted…
+    g.onFocusCell("r1", "name")(ev("n1"));
+    const incomingDetail = { notes: "server2" };
+    expect(g.merge({ notes: "typed" }, incomingDetail)).toBe(incomingDetail);
+    // …and the scalar registration is gone: a cell edit survives its own array merge only.
+    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), rows({ r1: { name: "N1" } })))
+      .toEqual(rows({ r1: { name: "n1-typed", street: "s1" } }));
+  });
+
+  it("the string lens applies to cells: a numeric cell held as a number reads as displayed", () => {
+    const g = makeEditGuard();
+    type NumRow = { id: string; qty: number | string };
+    g.onFocusCell("r1", "qty")(ev("5"));
+    const cur: NumRow[] = [{ id: "r1", qty: 5 }];
+    const incoming: NumRow[] = [{ id: "r1", qty: 7 }];
+    expect(g.mergeRows(cur, incoming)).toBe(incoming); // untouched: server truth lands
+    const commit = vi.fn();
+    g.onBlurSave(ev("7"), commit); // re-snapshotted to what the box now shows
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("a focused field absent from the incoming row: the payload lands as-is", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("r1", "ghost")(ev("x"));
+    const incoming = rows();
+    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+  });
+});
