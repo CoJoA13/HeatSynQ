@@ -193,12 +193,44 @@ by owner ruling (#134, #4, #71). One follow-up filed on-branch (**#155**, the di
 unreachable two-step composition plus the §5.14 silent-hide). No schema change and no migration
 anywhere in the group.
 
-## Gates (final tree)
+## Codex round 1 (PR #156, 2026-08-19)
+
+One P2, **verified against the code before accepting and then fixed WIDER than reported**
+(`ceaebba`). The finding: #153's union made child rows visible on the customer, order, invoice
+and receiptBatch panels, but the `#14 item 1` invalidation contract still covered only the PART
+sections — `grep -rn "invalidateHistory" src` returned `parts/[id]` and its four sections and
+nothing else. So those panels began advertising child history and then went stale on exactly
+the edits they had just started showing: a child save wrote a row the panel would not display
+until a full reload.
+
+**Deriving the call sites from the REGISTRY rather than from Codex's symptom list is what made
+the fix complete.** Codex named four; the registry implied eight, and the two it would have left
+behind were on the parts page itself — `partAttachment` and `partProcessRevision` were never in
+`#14`'s original scope and are equally newly-visible. Final: **17 sites across 6 files**, wired
+at the shared success seam wherever one exists (the customer page's `call()` covers five
+address/contact sites at once) rather than at each call site.
+
+Deliberately skipped, with reasons recorded: `InvoiceDetail` writes no applications;
+`ReceivablesSection` writes applications but sits on the customer page, whose panel does not
+register that entity. One genuinely PRE-EXISTING gap was surfaced and deliberately not widened
+into: **every parent's own mutations outside the parts page still do not invalidate** — a real
+defect, but a different one from the finding under review → filed at close-out.
+
+Coverage in the shape the repo allows (no DOM env): an `INVALIDATION_SITES` manifest asserting
+registry↔manifest coverage in BOTH directions plus that each named file imports and calls
+`invalidateHistory`, **verified by injecting both silent-rot modes** (stripping a file's calls
+reds the file test; adding an unwired registry entry reds the coverage test). A comment states
+plainly what is NOT pinned — that the call sits on the right mutation's success path, and that a
+mounted panel actually refetches — the Task 2 precedent of naming the gap rather than
+manufacturing a fake pin. CLAUDE.md's Audit paragraph now says **four** edits, not three, and
+names the manifest as the enforcement so it is a test rather than a doc promise.
+
+## Gates (final tree, re-run in full after the Codex fix)
 
 | Gate | Result |
 |---|---|
-| `npm test` | **3446 passed / 204 files** (Group H2 closed at 3362/200) |
+| `npm test` | **3448 passed / 204 files** (3446 pre-Codex; Group H2 closed at 3362/200) |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests` | clean |
 | `npm run build` | clean |
-| `npm run test:e2e` | **23/23 flows** (first run 22/23 twice, both on the one file two tasks edited) |
+| `npm run test:e2e` | **23/23 flows**, twice — at `9ba0461` pre-PR and again after the Codex fix (it touched six UI components) |
