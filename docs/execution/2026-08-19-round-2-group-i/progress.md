@@ -167,3 +167,38 @@ implementer re-introduced the collision and ran eslint on the file — **exit 0,
 reported, on a file that cannot be parsed**. `node --check` catches it in milliseconds. After
 the fix they parsed every declaration in the file rather than trusting a name list (41
 declarations, zero duplicates) and `node --check`ed every `e2e/` module.
+
+The re-run then failed **1 of 23 again**, on the same flow but for a different reason — the
+first failure had masked it. Task 1's settling-apply assertion timed out; the apply itself had
+SUCCEEDED (its response gate requires `res.ok()`), so the defect was the assertion's anchor.
+The controller's hypothesis — "a successful apply closes the panel" — was **wrong in its
+mechanism**, and the implementer's correction is the reusable rule: the panel never closes
+(`apply()` never touches `expandedPaymentId`); the **candidate table inside it** unmounts,
+because it renders only under `rows.length > 0` and a settling apply empties the family's last
+open invoice out of that list. So: *a settling apply destroys the candidate table it was driven
+from* — post-apply assertions must not anchor there, pre-apply ones may. A grep found three
+anchors on that columnheader across two flows; only the settling one is affected, and the other
+two are now documented as latent in place. Two intermittent races went in with the fix (the
+detached-wait ordering doubling as the reload wait; the discount row filtered on amount as well
+as type, since a stale table's "Discount" COLUMN HEADER satisfies a type-only filter).
+**Neither E2E defect was reachable by any other gate** — the unit suite, tsc, eslint and the
+build were green throughout both.
+
+## Group tally
+
+Four implementation tasks, five reviews — **two Approved round 1 (#137, #69+#8), two requiring
+one fix round each (#153 approved on round 2; #77's §5.14 messages), zero Critical across the
+group**. Five issues closed by the PR (#69, #8, #137, #77, #153); three more closed at kickoff
+by owner ruling (#134, #4, #71). One follow-up filed on-branch (**#155**, the discount's
+unreachable two-step composition plus the §5.14 silent-hide). No schema change and no migration
+anywhere in the group.
+
+## Gates (final tree)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3446 passed / 204 files** (Group H2 closed at 3362/200) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npm run test:e2e` | **23/23 flows** (first run 22/23 twice, both on the one file two tasks edited) |
