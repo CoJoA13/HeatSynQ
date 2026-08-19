@@ -93,14 +93,18 @@ in scope order. All refs below are at the post-commit tree.
 
 - `npx tsc --noEmit` — clean.
 - `npx eslint src tests` — clean.
-- `npm test` on scratch DB `erp_scratch_h2t2` — **200 files / 3345 tests, all green** (486s).
-  Note: a first full run, executed while all three implementers' suites were hammering the one
-  Postgres container concurrently, mass-failed (1126 tests, every failure inside
-  `truncateAll` → `reseedSingletons` with a Prisma request-level error) — pure environment
-  contention, not the diff: the failing files passed individually immediately afterwards, and
-  the solo re-run above is fully green. Worth knowing for future multi-implementer waves: three
-  concurrent full suites against one `db` container is over the line even with separate
-  scratch databases.
+- `npm test` — **200 files / 3345 tests, all green** (486s), run solo. **Actual database:
+  the shared `erp_test`**, not the scratch DB: `tests/helpers/setup.ts:4` reassigns
+  `process.env.DATABASE_URL = process.env.DATABASE_URL_TEST`, so the brief's
+  `DATABASE_URL=…erp_scratch_h2t2 npm test` override never redirected vitest (coordinator
+  ruling mid-task, after Task 3 discovered it: a solo green run against `erp_test` is valid,
+  recorded with the DB named; the working override for future waves is `DATABASE_URL_TEST=…`).
+  The scratch DB `erp_scratch_h2t2` was created and migrated per the brief, was only ever
+  exercised by `migrate deploy`, and has been dropped.
+  The same no-op override also explains the FIRST full run's mass failure (1126 tests, every
+  failure inside `truncateAll` → `reseedSingletons`): all three implementers' suites were
+  unknowingly truncating the one `erp_test` concurrently. Not the diff — the failing files
+  passed individually right afterwards, and the solo re-run is fully green.
 
 ## What the reviewer should probe
 
