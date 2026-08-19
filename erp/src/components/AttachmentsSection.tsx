@@ -46,7 +46,13 @@ export function AttachmentsSection({
   disabledTitle?: string;
 }) {
   const [rows, setRows] = useState<AttachmentRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  // #144: the error carries WHICH operation failed, so a success can only ever clear its own
+  // operation's failure (plus a load failure, which its reload is about to either refresh away
+  // or re-report) — an upload landing must never erase a delete's failure banner, nor the
+  // reverse. One banner slot, tagged, rather than three states: the clearing rules change,
+  // nothing else does.
+  const [error, setError] =
+    useState<{ source: "load" | "upload" | "delete"; message: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const basePath = `/api/${AREA_PATH[owner]}/${ownerId}/attachments`;
@@ -58,15 +64,16 @@ export function AttachmentsSection({
   // so two list GETs can overlap — the earlier snapshot landing last would hide a committed
   // change ("uploaded but not listed", "deleted but still listed") — and a superseded request's
   // rejection must not overwrite current state with a stale failure either. Deliberately no
-  // setError(null) on success here (§5.13): the handlers clear the banner themselves before
-  // dispatching their refresh, and a reload must never erase a failure reported after it started.
+  // clear on success here (§5.13): the handlers clear their own operation's failure themselves
+  // before dispatching their refresh, and a reload must never erase a failure reported after it
+  // started.
   const load = useCallback(async () => {
     const t = latest.next();
     let data: AttachmentRow[];
     try {
       data = await api<AttachmentRow[]>(basePath);
     } catch (e) {
-      if (latest.isCurrent(t)) setError((e as Error).message);
+      if (latest.isCurrent(t)) setError({ source: "load", message: (e as Error).message });
       return;
     }
     if (!latest.isCurrent(t)) return;
@@ -83,7 +90,8 @@ export function AttachmentsSection({
     // finally block below: re-choosing the same (perhaps since-shrunk) file must still fire.
     const sizeError = attachmentSizeError(file.size);
     if (sizeError) {
-      setError(sizeError);
+      // #38's pre-check rides the upload channel — it refuses the same operation the POST would.
+      setError({ source: "upload", message: sizeError });
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -96,10 +104,11 @@ export function AttachmentsSection({
       // needs the browser's own auto-computed `multipart/form-data; boundary=...`, which only
       // happens when nothing has already claimed the Content-Type header.
       await api(basePath, { method: "POST", headers: {}, body: form });
-      setError(null);
+      // Clears an upload or load failure only — never a delete's (#144).
+      setError((cur) => (cur?.source === "delete" ? cur : null));
       await load();
     } catch (err) {
-      setError((err as Error).message);
+      setError({ source: "upload", message: (err as Error).message });
     } finally {
       setUploading(false);
       // Resets the picker so choosing the SAME file again still fires onChange (the DOM only
@@ -113,10 +122,11 @@ export function AttachmentsSection({
     if (!confirm(`Delete attachment "${att.filename}"?`)) return;
     try {
       await api(`${basePath}/${att.id}`, { method: "DELETE" });
-      setError(null);
+      // Clears a delete or load failure only — never an upload's (#144).
+      setError((cur) => (cur?.source === "upload" ? cur : null));
       await load();
     } catch (err) {
-      setError((err as Error).message);
+      setError({ source: "delete", message: (err as Error).message });
     }
   }
 
@@ -129,7 +139,7 @@ export function AttachmentsSection({
       </div>
 
       {/* Standard error banner — no silent catch on a failed list/upload/delete. */}
-      {error && <p className="mb-2 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {error && <p className="mb-2 rounded bg-red-50 p-2 text-sm text-red-700">{error.message}</p>}
       {uploading && <p className="mb-2 text-sm text-slate-500">Uploading…</p>}
 
       {rows.length === 0 ? (
