@@ -63,8 +63,10 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   customer: undefined,
   customerAddress: undefined,
   customerContact: undefined,
-  // children are audited as their own models
-  part: undefined,
+  // Children are audited as their own models; the material rides along so a materialId change
+  // reads "Ductile iron", not a cuid (#14 item 2 — the partSpecification precedent below).
+  // Frozen history keeps the bare cuid: snapshots are frozen, no backfill.
+  part: { material: true },
   // history reads "ASTM A536", not a cuid
   partSpecification: { specification: true },
   partInspection: { inspectionCode: true, scale: true },
@@ -474,7 +476,8 @@ type Db = typeof prisma | Prisma.TransactionClient;
  * with its first letter uppercased — no @@map exists in schema.prisma, so the Prisma model name
  * IS the table name (pinned by tests/snapshot-order-sweep.test.ts's mapping test). `setting` is
  * nominally in the union but never reaches these helpers (auditSettingChange is its sanctioned
- * path; its PK is `key`, so snapshot()'s own `where: { id }` would refuse it first anyway).
+ * path; its PK is `key`, so the claim's own `SELECT "id"` would fail loudly first — Setting has
+ * no `id` column).
  */
 async function claimAuditedRow(model: AuditableModel, id: string, db: Db): Promise<void> {
   if (!Object.hasOwn(SNAPSHOT_INCLUDE, model)) throw new Error(`Not an auditable model: ${model}`);

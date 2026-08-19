@@ -109,6 +109,14 @@ parent.`).toEqual([]);
     const unmapped = Object.keys(SNAPSHOT_INCLUDE).filter((key) => !modelNames.has(modelNameFor(key)));
     expect(unmapped).toEqual([]);
   });
+
+  // The derivation above additionally assumes NO model is @@map'd to a different table name —
+  // without this pin, a future @@map on an auditable model would fail only at the first audited
+  // mutation ("relation does not exist"), not at test time (task 1 reviewer minor). If @@map
+  // ever becomes necessary, extend claimAuditedRow's table derivation instead of dropping this.
+  it("no model in schema.prisma carries an @@map", () => {
+    expect(SCHEMA).not.toMatch(/@@map/);
+  });
 });
 
 describe("snapshot order — behavioral pin (#24)", () => {
