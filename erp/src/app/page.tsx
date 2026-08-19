@@ -50,6 +50,11 @@ export default function OrdersPage() {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saveDefault, setSaveDefault] = useState(false);
+  // #145 (the processes/templates togglingActive precedent): the Set-as-default checkbox stays
+  // enabled through its PATCH otherwise, and two clicks faster than a round trip issue two
+  // unordered updates — if the first lands second, the database keeps the first click's value
+  // while the local mirror below shows the second's, and nothing ever reveals the divergence.
+  const [settingDefault, setSettingDefault] = useState(false);
 
   const canCreateOrder = gate(perms, "orders.create");
   const customersGate = gate(perms, "customers.view");
@@ -169,7 +174,8 @@ export default function OrdersPage() {
   // drifted from it). Mirrors the server's own demote-other-defaults behaviour locally so the
   // dropdown/checkbox stay correct without a full refetch.
   async function setSelectedDefault(isDefault: boolean) {
-    if (!selectedViewId) return;
+    if (!selectedViewId || settingDefault) return; // one at a time (#145)
+    setSettingDefault(true);
     try {
       const updated = await api<SavedViewRow>(`/api/saved-views/${selectedViewId}`, {
         method: "PATCH", body: JSON.stringify({ isDefault }),
@@ -180,6 +186,7 @@ export default function OrdersPage() {
       }));
       setError(null);
     } catch (e) { setError((e as Error).message); }
+    finally { setSettingDefault(false); }
   }
 
   async function deleteSelectedView() {
@@ -219,6 +226,7 @@ export default function OrdersPage() {
         saveOpen={saveOpen}
         saveName={saveName}
         saveDefault={saveDefault}
+        settingDefault={settingDefault}
         onApplyView={applyView}
         onSetSelectedDefault={setSelectedDefault}
         onOpenSave={() => setSaveOpen(true)}

@@ -14,6 +14,9 @@ type Props = {
   saveOpen: boolean;
   saveName: string;
   saveDefault: boolean;
+  /** True while a set-as-default PATCH is in flight — disables the checkbox so two clicks
+   *  faster than the round trip cannot issue two unordered updates (#145). */
+  settingDefault: boolean;
   onApplyView: (id: string) => void;
   onSetSelectedDefault: (isDefault: boolean) => void;
   onOpenSave: () => void;
@@ -25,7 +28,7 @@ type Props = {
 };
 
 export function SavedViewsBar({
-  savedViews, selectedViewId, saveOpen, saveName, saveDefault,
+  savedViews, selectedViewId, saveOpen, saveName, saveDefault, settingDefault,
   onApplyView, onSetSelectedDefault, onOpenSave, onDeleteView,
   onSaveNameChange, onSaveDefaultChange, onSaveView, onCancelSave,
 }: Props) {
@@ -44,6 +47,7 @@ export function SavedViewsBar({
           <label className="flex items-center gap-1">
             <input type="checkbox"
                    checked={savedViews.find((v) => v.id === selectedViewId)?.isDefault ?? false}
+                   disabled={settingDefault} title={settingDefault ? "Saving…" : undefined}
                    onChange={(e) => onSetSelectedDefault(e.target.checked)} />
             Set as default
           </label>
