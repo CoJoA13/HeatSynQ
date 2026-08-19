@@ -137,3 +137,36 @@ type doc.
 
 **Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 23/23 green; `npx tsc --noEmit`
 clean; `npx eslint src tests` clean.
+
+## Codex round 1 (PR #154 — P1, verified by the controller)
+
+**Finding (P1):** the `9d58d2a` clear-on-absence was right WITHIN a collection but destructive
+ACROSS collections. `applyDetail` (customers/[id]/page.tsx) merges addresses THEN contacts
+through ONE guard slot, and a focused contact's rowId is by definition absent from the
+ADDRESSES array — the unscoped release read that absence as a deletion and dropped the
+registration before the contacts merge ran, so a dirty contact cell was overwritten wholesale
+(the exact #149 defect, re-opened). In the other direction, a focused address survived its own
+merge but lost its registration to the contacts merge: the next payload clobbered it, and blur
+fired a spurious commit (onBlurSave compared the field against the cleared slot's
+`atFocus: ""`). The pre-fix-round code was accidentally safe — absence left the slot alone;
+`9d58d2a` made absence destructive without scoping it.
+
+**Fix (`cc0e946`, TDD):** the collection joined the cell's identity —
+`onFocusCell(collection, rowId, field)` / `mergeRows(collection, cur, incoming)` — and
+`mergeRows` acts on the slot (protecting OR releasing) only when `f.cell.collection ===
+collection`, passing through untouched otherwise, payload and slot both. RED first: three
+cross-collection tests against the new signature (observed 3 failed / 23 passed against the
+unscoped implementation) — (a) a dirty contact cell survives an addresses-then-contacts double
+merge, (b) an unrelated collection's merge leaves the registration AND the blur no-op intact
+(the spurious-commit half), (c) the `9d58d2a` within-collection release still holds with the
+collection argument. Then the leaf implementation, the existing keyed tests migrated to the
+new arity (generic collection `"rows"`), and the single consumer updated: the customers page
+passes `"addresses"`/`"contacts"` at both `mergeRows` calls and all 8 `noteFocusCell` sites —
+the page helper narrows `collection` to the union `"addresses" | "contacts"` so a future cell
+cannot pass a name applyDetail's merges do not use. Leaf header, both type docs, and the page
+comments state the scoping rule. One commit (leaf + test + page): the signature change and its
+only consumer must land together for every commit to compile.
+
+**Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 26/26 green; `npx tsc --noEmit`
+clean; `npx eslint src tests` clean. Not pushed — the controller pushes after both Codex fixes
+land.
