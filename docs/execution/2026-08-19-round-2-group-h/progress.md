@@ -104,7 +104,19 @@ helper fix (`5941a52`, mechanism documented in its comment), then **23/23**. Rec
 predicted "switching the flows to getByRole is the durable assertion" — the helper was the
 one place still holding the old locator.
 
-## Gates (final tree `5941a52`, all run to completion 2026-08-19)
+## Codex round (PR #152, 2026-08-19)
+
+One P2, **verified real and accepted** (`716ff21`): #24's orderBy fixed the ORDER but not the
+IDS — delete/recreate mutations mint fresh generated ids every save, so a same-set re-save
+still JSON-differed under HistoryPanel's whole-key compare, and Task 1's behavioral pin
+compared mapped names, missing it. Fixed by projecting all three delete/recreate relations
+onto stable fields (`permission`; `permission`+`mode` in both user maps; the four meaningful
+`ProcessStepFieldDef` columns — the same class extended to the entry Codex didn't name), with
+the behavioral pin strengthened to FULL deep-equality (RED watched on the exact id-churn
+construction first). Full suite 3310/198 green after, on an isolated DB and the shared one.
+Replied + resolved per the loop.
+
+## Gates (final tree `716ff21`; E2E at `5941a52`, unit gates re-run after the Codex fix)
 
 | Gate | Result |
 |---|---|
