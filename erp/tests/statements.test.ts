@@ -359,6 +359,32 @@ describe("printStatementsPerDivision — the per-division choice (#85)", () => {
     expect(single).toHaveLength(1);
     expect(single[0].customerId).toBe(alone.id);
   });
+
+  // #137 defect 3. `asOf` was parsed inside `buildStatementInTx`, i.e. inside each member's own
+  // `try` — so ONE malformed date became N per-member "failures" and the route answered HTTP 200
+  // with an all-failed list. Failing while reporting success is this project's least favourite
+  // shape, and round 4's partial-result change is what introduced it here.
+  it("REFUSES an invalid asOf outright, instead of reporting N per-member failures", async () => {
+    const parent = await makeCustomer();
+    const division = await prisma.customer.create({
+      data: { code: `${parent.code}-D`, name: "Division", parentId: parent.id } });
+    await finalizedInvoice(parent.id, { total: 100, dueDate: back(5) });
+    await finalizedInvoice(division.id, { total: 200, dueDate: back(5) });
+
+    // "2026-02-30" parses as a shape and then ROLLS to March 2 — `parseDateOnly`'s own rolled check
+    // rejects it, which is precisely the failure that used to be swallowed per member.
+    await expect(asSystem(() => printStatementsPerDivision(parent.id, {
+      asOf: "2026-02-30", combineFamily: false, assessFinanceCharges: false,
+    }))).rejects.toMatchObject({ status: 400 });
+
+    // ...and it refused BEFORE printing, so there is no half-printed family to reconcile. This
+    // pins the hoist's PLACEMENT: a "fix" that validated after the loop (or that let the loop run
+    // and rethrew afterwards) would leave two archived statements behind for a date the caller is
+    // being told is invalid. The throw above is what distinguishes it from the pre-fix 200.
+    expect(await prisma.storedDocument.count({
+      where: { customerId: { in: [parent.id, division.id] } },
+    })).toBe(0);
+  });
 });
 
 // -------------------------------------------------------------------------------------------

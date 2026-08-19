@@ -44,7 +44,8 @@ type StatementOpenItem = {
   original: number; open: number;
 };
 
-type StatementPreview = {
+/** Exported only so `printControlTitle`'s tests can build one — see that function's note. */
+export type StatementPreview = {
   asOf: string;
   customer: { code: string; name: string; billTo: string[] };
   openItems: StatementOpenItem[];
@@ -120,6 +121,70 @@ function StatementDocumentsList({ customerId, viewGate, refresh }: {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The Print gate.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Has the customer-options fetch settled, and did it ANSWER? (#137 defect 2.)
+ *
+ * Which print path is correct depends on whether the selected customer has live divisions, and
+ * that customer list is the only thing on this screen that knows. The predecessor was a boolean
+ * `familyKnown`, set true only when the fetch SUCCEEDED — but that fetch needs `customers.view`,
+ * which `receivables.view` does not imply. A caller holding statements permission alone can still
+ * arrive on a bookmarked `?customerId=`, and both statement routes authorise them; the boolean
+ * left Print disabled forever, making a statement permission depend on an unrelated one.
+ *
+ * A tri-state separates the two cases the boolean conflated. `"pending"` means the lookup can
+ * still answer, so waiting for it costs a moment and keeps round 4's protection. `"unknown"` means
+ * it never will — no `customers.view`, or it failed — and holding the control then is a permanent
+ * lockout, so the gate falls open there.
+ */
+export type FamilyLookup = "pending" | "known" | "unknown";
+
+/**
+ * Why Print cannot be pressed, or `undefined` when it can (§5.16: a control the user cannot use is
+ * visible and DISABLED with a tooltip naming why, never offered and then refused).
+ *
+ * Hook-free and exported so tests/statements-screen.test.ts can drive it directly — this repo has
+ * no DOM test environment, and the established answer is to split the DECISION out of the
+ * component (`runControlState` in admin/backups/page.tsx, `advanceBannerState` in BackupBanner)
+ * rather than reach for one. It takes the `preview` itself rather than a derived boolean so the
+ * call site cannot get the derivation wrong; only its nullness is read.
+ *
+ * ORDER IS THE CONTRACT. Permission first, then a chosen customer, then the two async facts this
+ * screen waits on, then the per-division grant, then the in-flight print.
+ */
+export function printControlTitle(s: {
+  viewAllowed: boolean; viewTitle: string | undefined;
+  customerId: string; familyLookup: FamilyLookup; loaded: boolean;
+  preview: StatementPreview | null; perDivisionMode: boolean;
+  runAllowed: boolean; runTitle: string | undefined;
+  printing: boolean;
+}): string | undefined {
+  if (!s.viewAllowed) return s.viewTitle;
+  if (s.customerId === "") return "Pick a customer first";
+  // Only while the lookup can still answer — see `FamilyLookup`. `"unknown"` falls through, and
+  // the SERVER is the authority that makes that safe (see the note on `printSingle`'s call site).
+  if (s.familyLookup === "pending") return "Checking whether this customer has divisions…";
+  if (!s.loaded) return "Loading this customer's statement…";
+  // SETTLED BUT EMPTY = the preview for THESE inputs failed (#137 defect 1). `loadPreview`'s catch
+  // clears `preview` inside its own `isCurrent` guard, so this is precise. Without it the previous
+  // customer's/date's tables stayed on screen with Print live: the operator reviewed the old
+  // result and archived statements for the new inputs.
+  //
+  // Gated on `preview === null`, NOT on `error` — deliberately, and against the issue's own
+  // wording. `error` is a SHARED bucket the customer-options catch also writes, so gating on it
+  // would re-disable Print for precisely the `customers.view`-less caller defect 2 opens up.
+  if (s.preview === null) return "This customer's statement could not be loaded — try again before printing";
+  // Per-division printing archives N documents, so it needs `receivables.create` — the same grant
+  // its endpoint requires. Without this a view-only user saw an ENABLED button, confirmed a
+  // multi-document print, and got a 403.
+  if (s.perDivisionMode && !s.runAllowed) return s.runTitle;
+  if (s.printing) return "Printing…";
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------------------------
 // The screen itself.
 // ---------------------------------------------------------------------------------------------
 
@@ -128,7 +193,14 @@ function StatementsScreen() {
   const viewGate = gate(perms, "receivables.view");
   const runGate = gate(perms, "receivables.create");
   const customersGate = gate(perms, "customers.view");
-  const viewAllowed = viewGate.allowed;
+  // A FRESH primitive, deliberately — NOT a bare alias into `viewGate`. `gate()` builds that object
+  // during render, so the React Compiler cannot prove it immutable; `viewAllowed` is both a
+  // `loadPreview` dependency AND an argument to `printControlTitle`, and handing an alias of an
+  // un-provable object to a call the compiler cannot see into marks that dependency "may be
+  // modified later". The whole component then loses its memoization, which `eslint src` reports as
+  // an ERROR ("Compilation Skipped: Existing memoization could not be preserved") — measured, both
+  // ways, on this file. The comparison is what makes it a new value; do not simplify it away.
+  const viewAllowed = viewGate.allowed === true;
 
   // `?customerId=` preselects — the customer page's "Statement" link (ReceivablesSection.tsx)
   // arrives here with its own id already in the URL, rather than making the operator pick again.
@@ -145,23 +217,38 @@ function StatementsScreen() {
   // Customer/family options — fetched only once the caller is known to hold customers.view
   // (§5.16), never left silently empty on failure — the AgingReport.tsx precedent.
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
-  // Whether the family lookup actually SUCCEEDED — not merely "the array is empty" (§5.15). Which
+  // Whether the family lookup actually ANSWERED — not merely "the array is empty" (§5.15). Which
   // print path is correct depends on whether the selected customer has divisions, and this list is
-  // the only thing that knows. While it is pending, failed, or never fetched (no `customers.view`),
-  // an empty array is indistinguishable from "no divisions" — and printing on that assumption
-  // silently archives the parent alone, which is the omission #85 exists to fix.
-  const [familyKnown, setFamilyKnown] = useState(false);
+  // the only thing on this screen that knows: while it is pending, an empty array is
+  // indistinguishable from "no divisions", and printing on that assumption silently archives the
+  // parent alone, which is the omission #85 exists to fix.
+  //
+  // A TRI-STATE, not a boolean (#137 defect 2 — see `FamilyLookup`). `"unknown"` — no
+  // `customers.view`, or the fetch failed — is a case the boolean conflated with `"pending"` and
+  // answered with a permanent lockout.
+  const [familyLookup, setFamilyLookup] = useState<FamilyLookup>("pending");
   const customersAllowed = customersGate.allowed;
   useEffect(() => {
-    if (!customersAllowed) return;
+    // NOTE the ordering: `customersAllowed` is false while `usePermissions` is still resolving, so
+    // this branch runs first on every mount. That is harmless — `printControlTitle` answers a
+    // caller with no permissions on its FIRST branch, ahead of the family one — and permissions
+    // landing flips this effect back to `"pending"` for the duration of the fetch below, so the
+    // in-flight window is never open for a caller who does hold `customers.view`.
+    if (!customersAllowed) { setFamilyLookup("unknown"); return; }
+    setFamilyLookup("pending");
+    // Effect-scoped stale flag (§5.13, the fetch-keyed-by-an-effect-dep shape): a response from a
+    // superseded run of this effect must not land, on EITHER path (F7) — a stale rejection
+    // reporting `"unknown"` over a fresh `"known"` would open the gate on a list we do have.
+    let stale = false;
     // `includeInactive=1` because BOTH service halves define the family by `deletedAt: null`,
     // not by `active` (review round 1). A parent whose divisions are merely deactivated —
     // how a dormant division that still owes money is parked — otherwise never switched the
     // button, so unchecking "Combine family" silently printed the parent alone: #85's exact
     // symptom, unfixed for that family, while the COMBINED print included those divisions.
     api<CustomerOption[]>("/api/customers?includeInactive=1")
-      .then((rows) => { setCustomers(rows); setFamilyKnown(true); })
-      .catch((e) => setError((e as Error).message)); // leaves familyKnown false — see below
+      .then((rows) => { if (!stale) { setCustomers(rows); setFamilyLookup("known"); } })
+      .catch((e) => { if (!stale) { setError((e as Error).message); setFamilyLookup("unknown"); } });
+    return () => { stale = true; };
   }, [customersAllowed]);
 
   // ---- Preview (GET, build-only — the route's own "a preview" comment) ----
@@ -187,7 +274,17 @@ function StatementsScreen() {
     try {
       data = await api<StatementPreview>(`/api/receivables/statements?${query}`);
     } catch (e) {
-      if (latest.isCurrent(t)) { setError((e as Error).message); setLoaded(true); }
+      // CLEAR THE PREVIEW TOO (#137 defect 1). Setting `loaded` back to true while leaving the
+      // previous inputs' `preview` on screen re-enabled Print over a stale result: the operator
+      // reviewed the old customer's/date's tables and archived statements for the new ones. Round
+      // 8's fix made printing wait for the matching answer on the SUCCESS path only.
+      //
+      // INSIDE the `isCurrent` guard, which is what makes it compose with the stale-load rule: a
+      // SUPERSEDED rejection must not clobber current state either (F7 — both landings gated).
+      // Not at the top of `loadPreview` either: this callback re-runs on every keystroke in the
+      // as-of field, and blanking a good preview there would flash the pane empty on each one.
+      // Round 8 deliberately cleared only `loaded` up there, and that stays true.
+      if (latest.isCurrent(t)) { setError((e as Error).message); setPreview(null); setLoaded(true); }
       return;
     }
     if (!latest.isCurrent(t)) return;
@@ -294,16 +391,23 @@ function StatementsScreen() {
     }
   }
 
-  // Per-division printing archives N documents, so it needs `receivables.create` — the same grant
-  // its endpoint now requires. Without this a view-only user saw an ENABLED button, confirmed a
-  // multi-document print, and got a 403: §5.16 says a control the user cannot use is disabled and
-  // says why, never offered and then refused.
-  const printTitle = !viewGate.allowed ? viewGate.title
-    : !customerId ? "Pick a customer first"
-      : !familyKnown ? "Checking whether this customer has divisions…"
-        : !loaded ? "Loading this customer's statement…"
-          : perDivisionMode && !runGate.allowed ? runGate.title
-            : printing ? "Printing…" : undefined;
+  // §5.16, decided in `printControlTitle` above — a pure function so it can be driven directly in
+  // this repo's node-only test environment (the `runControlState` precedent).
+  //
+  // THE SERVER IS THE AUTHORITY, and this gate is belt-and-braces (#136, owner ruling
+  // 2026-08-17). `POST /api/receivables/statements` refuses an un-combined print for a customer
+  // with live divisions (`hasLiveDivisions`, route.ts), so a client that guesses the print path
+  // wrong — from a list that has been wrong three different ways across review: active-only, not
+  // yet loaded, stale — can now only produce a refusal naming the fix, never a silently
+  // parent-only statement. That is exactly what lets the family gate fall open on `"unknown"`
+  // (#137 defect 2): a permanent lockout becomes an occasional, self-describing 409.
+  //
+  // Scalar FIELDS, not the two `Gate` objects — "a pure function over plain args", and the same
+  // React Compiler constraint documented on `viewAllowed` above.
+  const printTitle = printControlTitle({
+    viewAllowed, viewTitle: viewGate.title, customerId, familyLookup, loaded, preview,
+    perDivisionMode, runAllowed: runGate.allowed, runTitle: runGate.title, printing,
+  });
   const runTitle = !runGate.allowed ? runGate.title : running ? "Running…" : undefined;
 
   // §5.16: a caller without receivables.view sees the page saying why, never a silently empty one.
@@ -413,8 +517,27 @@ function StatementsScreen() {
       {/* ---- Preview ---- */}
       {customerId && (
         <section className="mb-6 rounded border bg-white p-4">
-          <h2 className="mb-2 font-medium">Preview</h2>
+          {/* WHO this preview is for, named from the payload the server already sends (#137). The
+              selector above answers it only for a caller holding `customers.view`; without that
+              grant it is disabled and empty, and once the family gate falls open such a caller can
+              print — so this is their only way to confirm the `?customerId=` they arrived on is the
+              customer they meant. */}
+          <h2 className="mb-2 font-medium">
+            Preview
+            {loaded && preview && (
+              <>
+                {" — "}<span className="font-mono">{preview.customer.code}</span>{" "}
+                <span className="font-normal text-slate-600">{preview.customer.name}</span>
+              </>
+            )}
+          </h2>
           {!loaded && !error && <p className="text-sm text-slate-500">Loading…</p>}
+          {/* Settled with nothing to show — the request for THESE inputs failed. Said here as well
+              as in the banner above, because the banner is a SHARED bucket (the customer-options
+              catch writes it too) and this pane must not simply go blank. */}
+          {loaded && !preview && (
+            <p className="text-sm text-red-700">This customer&apos;s statement could not be loaded.</p>
+          )}
           {loaded && preview && (
             <>
               <div className="mb-3 overflow-x-auto">

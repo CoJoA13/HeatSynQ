@@ -580,6 +580,30 @@ describe("POST /api/receivables/statements/divisions (#85)", () => {
     // The parent AND the division — before #85 the screen sent one request and got the parent only.
     expect(body.map((r) => r.customerId).sort()).toEqual([parent.id, division.id].sort());
   });
+
+  // #137 defect 3: an invalid `asOf` was parsed inside each member's own `try`, so it came back as
+  // HTTP 200 carrying N per-member "failures" — failing while reporting success. The parse is
+  // hoisted above the loop now, so the shared date is a request-level 400 and only genuinely
+  // member-specific failures stay in the partial-results list.
+  it("400s an invalid asOf instead of answering 200 with a per-member failure each", async () => {
+    const parent = await invoicedCustomer();
+    await prisma.customer.create({ data: { code: "DIVBADDATE", name: "Division", parentId: parent.id } });
+    const creator = await signInWith(["receivables.view", "receivables.create"], "stmt-div-baddate");
+
+    const bad = await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", creator,
+        { customerId: parent.id, asOf: "2026-02-30" }), withParams({}),
+    );
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error?: string }).error).toMatch(/not a valid date/i);
+
+    // The same family with a good date still prints — the hoist refuses the date, not the run.
+    const good = await divisionStatementsRoute(
+      bodyReq("http://t/api/receivables/statements/divisions", "POST", creator,
+        { customerId: parent.id, asOf: "2026-08-08" }), withParams({}),
+    );
+    expect(good.status).toBe(200);
+  });
 });
 
 // -------------------------------------------------------------------------------------------
