@@ -21,7 +21,50 @@
  * and applies the contract's defaults for every absent key — scalar knobs via zod `.default()`,
  * missing section/field entries re-inserted at their contract position — so a version stored
  * before a knob existed keeps rendering identically as contracts grow. The parse result is always
- * a COMPLETE `TemplateConfig`; no consumer ever reaches for a contract default at render time.
+ * a COMPLETE `TemplateConfig` — every key present, scalar knobs concrete — but a field's
+ * `label: null`/`width: null` is a SENTINEL meaning "the contract's default", which builders and
+ * the width check resolve at render/validation time: those two defaults stay live past the
+ * parse (the evolution warning below).
+ *
+ * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103) — and "additive" is a
+ * SEMANTIC test, not a syntactic one: every config valid under the old contract must stay valid
+ * AND keep rendering the same paper under the new one. Published versions are immutable and live
+ * only in each deployed database, so the repo alone cannot prove no stored config is affected;
+ * an invalidated config is re-validated at print-time dereference (`template-assignments.ts`
+ * `dereference` → `validateConfig`), which single-document print routes surface raw along the
+ * two-kinds split above (`TemplateConfigError` → 500, `ZodError` → 400) and batch flows (the
+ * per-division statement print) catch per member, reporting that member failed — either way,
+ * previously-valid paper no longer prints. SAFE under the test, PROVIDED the new defaults are
+ * rendering-neutral for existing configs (a new knob must default to the prior hardcoded
+ * behavior — the §5.3 DEFAULT_CONFIG convention; a new field or section backfills VISIBLE, so it
+ * lands on every stored config's next print and must be intended for all templates, published
+ * ones included): a new knob, a new removable non-column field, a new section of such fields, a
+ * widened enum, a raised budget (within the physical width it models), removable false→true —
+ * the defaults and the backfill absorb them (the knob/field direction is pinned by the
+ * synthetic cases in `tests/template-contracts.test.ts` — parsing and default insertion, not
+ * output). NOT safe, INCLUDING the additive-looking cases: a removed
+ * or renamed field key (saves store the complete validated parse, so any config saved while the
+ * key existed still carries the entry); a narrowed enum or a lowered `tableBudget` (bites
+ * exactly the configs using a dropped value, or totals above the new budget); a new lock —
+ * removable→false, hideable→false, newly pinning a section, or a new NON-removable field inside
+ * a hideable section (a stored config hiding that section now shelters a locked field, which
+ * `assertLocksHonored` refuses); a new visible COLUMN on an existing table — it backfills
+ * visible contributing exactly its `defaultWidth` (a config saved before the field existed
+ * cannot carry an override for it; `"*"` counts 0), so every stored config's total grows by
+ * that much, and a table without that much physical headroom cannot absorb it (raising
+ * `tableBudget` past the width the paper can print only disables the overflow guard); and
+ * CHANGING any existing contract default: a stored config pins only what it explicitly stores
+ * (a present key, a non-null label or width) — everything else re-resolves against the CURRENT
+ * contract at every print, an absent scalar key through the schema's `.default(...)` exactly
+ * like a stored-`null` `defaultLabel`/`defaultWidth` or a text block's default — so a contract
+ * default, once published against, is immutable IN EFFECT: changing one silently relabels,
+ * resizes, or restyles the next print of every published version relying on it (the §5.3
+ * identical-render promise, broken without any refusal), and a raised `defaultWidth` grows
+ * stored totals, which can trip the width refusal. If a change that
+ * affects (or cannot be ruled out for) stored configs is ever genuinely required, the two
+ * sanctioned shapes are: validate AND resolve a stored config against the contract version it
+ * was PUBLISHED under (which preserves its defaults too), or make print-time dereference
+ * degrade gracefully (log + contract defaults for the offending elements) rather than throw.
  */
 import { z } from "zod";
 
@@ -525,6 +568,8 @@ function assertWidthBudgets(contract: TemplateContract, sections: SectionConfig[
  * rule violations; returns a complete `TemplateConfig` otherwise. The registry-facing
  * `validateConfig(docType, json)` lives in ./index.ts — the registry imports the contract
  * modules, which import this file, so the docType lookup cannot live here without a cycle.
+ * This battery runs at print time against immutable PUBLISHED configs — before tightening any
+ * rule it enforces, read the evolution warning in this file's header (#103).
  */
 export function validateContractConfig(contract: TemplateContract, json: unknown): TemplateConfig {
   const parsed = configSchema(contract).parse(json);
