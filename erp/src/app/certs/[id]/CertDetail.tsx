@@ -169,7 +169,7 @@ export function CertDetail({ id }: { id: string }) {
   // mutating call here replaces the whole `cert` state, so overlapping calls race and the ticket
   // ensures the winner is whichever is genuinely newest (the ShipmentDetail.tsx precedent).
   const mutations = useMutationGate();
-  // Every set-from-server-detail below routes through `editGuard.merge` so an arriving detail —
+  // Every set-from-server-detail below routes through `editGuard.applyPayload` so an arriving detail —
   // a sibling field's PATCH response, or §5.13's rollback `load()` — never resets the notes field
   // the user is actively typing in (use-edit-guard.ts; the fix-wave notes-clobber trio, of which
   // ShipmentDetail.tsx and customers/[id]/page.tsx carry the same shape).
@@ -178,11 +178,8 @@ export function CertDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const detail = await api<CertDetailData>(`/api/certs/${id}`);
-    if (mutations.accept(ticket)) {
-      setCert((cur) => editGuard.merge(cur, detail));
-      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
-      editGuard.noteMerged(detail);
-    }
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3 fixpoint).
+    if (mutations.accept(ticket)) setCert(editGuard.applyPayload(detail));
     return detail;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -192,10 +189,7 @@ export function CertDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<CertDetailData>) => {
     const ticket = mutations.next();
     const detail = await run();
-    if (mutations.accept(ticket)) {
-      setCert((cur) => editGuard.merge(cur, detail));
-      editGuard.noteMerged(detail);
-    }
+    if (mutations.accept(ticket)) setCert(editGuard.applyPayload(detail));
   }, [mutations, editGuard]);
 
   const voided = (cert?.deletedAt ?? null) !== null;

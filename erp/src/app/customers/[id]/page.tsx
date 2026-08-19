@@ -128,11 +128,11 @@ function CustomerDetail({ id }: { id: string }) {
   // failure surfaces through permsError, folded into the same error banner below, instead of
   // leaving every control silently stuck disabled.
   const { permissions: perms, error: permsError } = usePermissions();
-  // Every set-of-`c`-from-server routes through `editGuard.merge` so a reload landing mid-typing —
-  // most notably save()'s own §5.13 failure-path rollback for a SIBLING field — never resets the
-  // customer field the user is actively editing (use-edit-guard.ts; the fix-wave notes-clobber
-  // trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same shape). The address/
-  // contact ROW arrays route through the keyed counterpart `editGuard.mergeRows` (#149): their
+  // Every set-of-`c`-from-server routes through `editGuard.applyPayload` so a reload landing
+  // mid-typing — most notably save()'s own §5.13 failure-path rollback for a SIBLING field —
+  // never resets the customer field the user is actively editing (use-edit-guard.ts; the
+  // fix-wave notes-clobber trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same
+  // shape). The address/contact ROW arrays route through the keyed `editGuard.applyRows` (#149): their
   // cells register collection + row id + field via `onFocusCell`, so an arriving server array
   // preserves the one cell under the cursor the same way. The collection scope is load-bearing
   // (Codex PR #154 round 1): applyDetail merges BOTH arrays back-to-back through this one
@@ -155,15 +155,13 @@ function CustomerDetail({ id }: { id: string }) {
     api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
   ]), [id, showInactiveAddresses, showInactiveContacts]);
   const applyDetail = useCallback(([cust, addr, cont]: [Customer, Address[], Contact[]]) => {
-    // Each merge is PURE and its companion note runs beside the setState (use-edit-guard.ts,
-    // the round-2 pairing discipline): React defers the 2nd/3rd updaters here past this whole
-    // function, so the transition must not live inside them.
-    setC((cur) => editGuard.merge(cur, cust));
-    editGuard.noteMerged(cust);
-    setAddresses((cur) => editGuard.mergeRows("addresses", cur, addr));
-    editGuard.noteMergedRows("addresses", addr);
-    setContacts((cur) => editGuard.mergeRows("contacts", cur, cont));
-    editGuard.noteMergedRows("contacts", cont);
+    // applyPayload/applyRows capture the focus session ONCE at dispatch and return a pure
+    // updater closed over it (use-edit-guard.ts, the round-3 fixpoint) — React defers the
+    // 2nd/3rd updaters here past this whole function, so nothing an updater needs may live in
+    // guard state it reads at run time.
+    setC(editGuard.applyPayload(cust));
+    setAddresses(editGuard.applyRows("addresses", addr));
+    setContacts(editGuard.applyRows("contacts", cont));
   }, [editGuard]);
   const load = useCallback(
     () => saveScope.reload(fetchDetail, (data) => { applyDetail(data); setError(null); }),

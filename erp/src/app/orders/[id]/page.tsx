@@ -200,7 +200,8 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   const mutations = useMutationGate();
 
   // Every set-of-`order`-from-server (load()'s refresh — the §5.13 rollback path included — and
-  // applyMutation's response apply below) routes through `editGuard.merge`, so a response landing
+  // applyMutation's response apply below) routes through `editGuard.applyPayload`/
+  // `editGuard.capturePayload`, so a response landing
   // mid-typing never resets the Overview/Notes field the user is actively editing
   // (use-edit-guard.ts — the #149 adoption; the parts/[id]/page.tsx shape). The classic trigger
   // here is an onChange-saving date input's PATCH resolving while the user has already moved on
@@ -210,12 +211,9 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const o = await api<OrderDetail>(`/api/orders/${id}`);
-    if (mutations.accept(ticket)) {
-      setOrder((prev) => editGuard.merge(prev, o));
-      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline):
-      // a dropped stale payload is never applied, so it is never noted either.
-      editGuard.noteMerged(o);
-    }
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3
+    // fixpoint): a dropped stale payload is never applied, so it is never noted either.
+    if (mutations.accept(ticket)) setOrder(editGuard.applyPayload(o));
     return o;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -244,20 +242,21 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     // only ever goes false → true (stored documents never delete, spec §5.6), so preserving a
     // local true is exact under EVERY response ordering — the fixpoint the per-callback timing
     // fixes could not reach. The #149 focused-field preserve composes OVER that adjustment:
-    // `next` is the incoming server detail (flag-corrected), and `editGuard.merge` then keeps
-    // only the one text field the user is actively editing — a boolean is never under a text
-    // cursor, so the two preserves cannot collide.
+    // `next` is the incoming server detail (flag-corrected), and the captured session's merge
+    // then keeps only the one text field the user is actively editing — a boolean is never
+    // under a text cursor, so the two preserves cannot collide.
+    // The one composed site: the updater derives `next` FROM prev (the monotonic boolean
+    // preserve above), so it cannot be a plain applyPayload — capturePayload takes the same
+    // capture+note at dispatch (against the PRE-ternary `fresh`, which is exact: the ternary
+    // only ever alters `travelerPrinted`, a boolean never registered with the guard) and the
+    // updater merges `next` with that captured session (use-edit-guard.ts, round 3).
+    const captured = editGuard.capturePayload(fresh);
     setOrder((prev) => {
       const next = prev?.travelerPrinted && !fresh.travelerPrinted
         ? { ...fresh, travelerPrinted: true }
         : fresh;
-      return editGuard.merge(prev, next);
+      return captured.merge(prev, next);
     });
-    // Paired companion (round-2 discipline), noted with the PRE-ternary payload: the ternary
-    // computes `next` FROM prev, which the companion cannot see — but it only ever alters
-    // `travelerPrinted`, a boolean never registered with the guard, so `fresh` carries exactly
-    // the values the note reads and noting it is exact.
-    editGuard.noteMerged(fresh);
     setWarnings(w);
   }, [mutations, editGuard]);
 
@@ -350,7 +349,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       "poNumber" | "vsOrderNumber" | "customerJobNo" | "receivedDate" | "requestDate" | "targetDate" | "notes"
       | "certRequired" | "certScope">>,
   ): Promise<boolean> {
-    // The optimistic patch needs no editGuard.merge (the customers/parts save() shape): it
+    // The optimistic patch needs no editGuard apply (the customers/parts save() shape): it
     // spreads over `cur`, touching only the just-blurred field (or an unfocusable date input's),
     // so the focused sibling's in-flight text is untouched by construction. The merges guard the
     // SERVER-detail applies — applyMutation's response and the rollback load() below.

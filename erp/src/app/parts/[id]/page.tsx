@@ -80,7 +80,7 @@ function PartDetail({ id }: { id: string }) {
   // leaving a bare count with nothing to click through.
   const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
-  // Every set-of-`part`-from-server routes through `editGuard.merge` so a reload landing
+  // Every set-of-`part`-from-server routes through `editGuard.applyPayload` so a reload landing
   // mid-typing — most notably save()'s own §5.13 failure-path rollback for a SIBLING field —
   // never resets the field the user is actively editing (use-edit-guard.ts; the customers/
   // CertDetail/ShipmentDetail fix-wave trio, which this page never received). IdentitySection
@@ -95,9 +95,8 @@ function PartDetail({ id }: { id: string }) {
 
   const fetchPart = useCallback(() => api<Part>(`/api/parts/${id}`), [id]);
   const applyPart = useCallback((p: Part) => {
-    // Pure merge + paired companion (use-edit-guard.ts, the round-2 discipline).
-    setPart((cur) => editGuard.merge(cur, p));
-    editGuard.noteMerged(p);
+    // Captured-session apply (use-edit-guard.ts, the round-3 fixpoint).
+    setPart(editGuard.applyPayload(p));
   }, [editGuard]);
   const load = useCallback(
     () => saveScope.reload(fetchPart, (p) => { applyPart(p); setError(null); }),

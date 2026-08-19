@@ -232,7 +232,7 @@ export function ShipmentDetail({ id }: { id: string }) {
   // replaces the whole `shipper` state, so overlapping calls race and the ticket ensures the
   // winner is whichever call is genuinely newest, not whichever happens to answer last.
   const mutations = useMutationGate();
-  // Every set-from-server-detail below routes through `editGuard.merge` so an arriving detail —
+  // Every set-from-server-detail below routes through `editGuard.applyPayload` so an arriving detail —
   // another header field's PATCH response, a grid save, or §5.13's rollback `load()` — never
   // resets the header text field the user is actively typing in (use-edit-guard.ts; the fix-wave
   // notes-clobber trio, of which CertDetail.tsx and customers/[id]/page.tsx carry the same shape).
@@ -241,10 +241,9 @@ export function ShipmentDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<ShipperMutationResult>(`/api/shippers/${id}`);
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3 fixpoint).
     if (mutations.accept(ticket)) {
-      setShipper((cur) => editGuard.merge(cur, res.shipper));
-      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
-      editGuard.noteMerged(res.shipper);
+      setShipper(editGuard.applyPayload(res.shipper));
       setWarnings(res.warnings);
     }
     return res.shipper;
@@ -257,8 +256,7 @@ export function ShipmentDetail({ id }: { id: string }) {
     const ticket = mutations.next();
     const res = await run();
     if (!mutations.accept(ticket)) return;
-    setShipper((cur) => editGuard.merge(cur, res.shipper));
-    editGuard.noteMerged(res.shipper);
+    setShipper(editGuard.applyPayload(res.shipper));
     setWarnings(res.warnings);
   }, [mutations, editGuard]);
 

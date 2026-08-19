@@ -367,11 +367,8 @@ export function BatchDetail({ id }: { id: string }) {
   const load = useCallback(async () => {
     const ticket = mutations.next();
     const res = await api<BatchDetailData>(`/api/receivables/batches/${id}`);
-    if (mutations.accept(ticket)) {
-      setBatch((cur) => editGuard.merge(cur, res));
-      // Paired companion inside the accept branch (use-edit-guard.ts, the round-2 discipline).
-      editGuard.noteMerged(res);
-    }
+    // Captured-session apply inside the accept branch (use-edit-guard.ts, the round-3 fixpoint).
+    if (mutations.accept(ticket)) setBatch(editGuard.applyPayload(res));
     return res;
   }, [id, mutations, editGuard]);
   useEffect(() => {
@@ -382,8 +379,7 @@ export function BatchDetail({ id }: { id: string }) {
     const ticket = mutations.next();
     const res = await run();
     if (!mutations.accept(ticket)) return;
-    setBatch((cur) => editGuard.merge(cur, res));
-    editGuard.noteMerged(res);
+    setBatch(editGuard.applyPayload(res));
   }, [mutations, editGuard]);
 
   const posted = batch?.status === "POSTED";
