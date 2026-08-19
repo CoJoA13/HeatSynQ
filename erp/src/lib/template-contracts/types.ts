@@ -25,17 +25,17 @@
  *
  * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103). LOOSENING is safe: a
  * new knob, field, or section, a widened enum, a raised budget, or flipping removable false→true
- * are all absorbed by the defaults and the backfill — pinned by the synthetic contract-growth
- * cases in `tests/template-contracts.test.ts`. TIGHTENING is NOT: a new lock or removable→false,
- * a removed or renamed field key, a narrowed enum, or a lowered `tableBudget` breaks paper the
- * shop has already published, because immutable PUBLISHED configs are re-validated at print-time
- * dereference (`template-assignments.ts` `dereference` → `validateConfig`) with no catch on the
- * print path — a previously-valid old config simply stops printing, refusing along the two-kinds
- * split above: `TemplateConfigError` → 500 for rule tightenings, `ZodError` → 400 for shape
- * tightenings. If a tightening is ever genuinely required, the two sanctioned shapes are:
- * validate a stored config against the contract version it was PUBLISHED under, or make
- * print-time dereference degrade gracefully (log + contract defaults for the offending elements)
- * rather than throw.
+ * are all absorbed by the defaults and the backfill (the knob/field growth direction is pinned
+ * by the synthetic cases in `tests/template-contracts.test.ts`). TIGHTENING is NOT: a new lock
+ * or removable→false, a removed or renamed field key, a narrowed enum, or a lowered `tableBudget`
+ * breaks paper the shop has already published, because immutable PUBLISHED configs are
+ * re-validated at print-time dereference (`template-assignments.ts` `dereference` →
+ * `validateConfig`) with no catch on the print path — a previously-valid old config simply stops
+ * printing, refusing along the two-kinds split above: `TemplateConfigError` → 500 for rule
+ * tightenings, `ZodError` → 400 for shape tightenings. If a tightening is ever genuinely
+ * required, the two sanctioned shapes are: validate a stored config against the contract version
+ * it was PUBLISHED under, or make print-time dereference degrade gracefully (log + contract
+ * defaults for the offending elements) rather than throw.
  */
 import { z } from "zod";
 
