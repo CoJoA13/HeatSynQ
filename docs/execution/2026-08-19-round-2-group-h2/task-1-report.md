@@ -227,3 +227,53 @@ release. 36/36 after.
 **Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 36/36 green; `npx tsc --noEmit`
 clean; `npx eslint src tests` clean. Not pushed — the controller runs the full suite + E2E and
 pushes.
+
+## Codex round 3 (PR #154 — P2, the fixpoint; third round on the mechanism → lesson 4)
+
+**Finding (P2, verified):** the round-2 merges still READ the live session from inside a
+deferrable updater while the note ran at dispatch — two consultations of mutable guard state at
+different times. Defer the updater across a focus change and the note lands on the OLD session
+while the merge consults the NEW one: the newly-focused untouched field takes the payload value
+without its snapshot set learning it, and an immediate blur spuriously PATCHes a server-given
+value. Unreachable today (default-priority updates flush in microtasks, focus is a macrotask,
+no startTransition) — but the read-of-live-state was the same React-contract violation as the
+write.
+
+**The fixpoint (`8f3d1cb`, TDD):** the focus session is an **immutable-identity value object** —
+created by onFocus\*, replaced (never mutated) by the next onFocus\*/onBlurSave; its grow-only
+snapshot set rides on it, so a replaced session stays a stable record for late readers. The API
+makes mispairing unrepresentable: `applyPayload(incoming)` / `applyRows(collection, incoming)`
+CAPTURE the current session once at dispatch, note the payload's focused-field value into that
+same captured identity (the keyed release-on-absence also happens here — it replaces the LIVE
+session, which at that synchronous instant IS the captured one), and return a pure setState
+updater **closed over the captured session**. `capturePayload(incoming)` is the low-level pair
+for the one composed updater (orders' travelerPrinted ternary derives `next` from prev, then
+`captured.merge(prev, next)`), noting the same pre-ternary payload. The old
+`merge`/`mergeRows`/`noteMerged`/`noteMergedRows` are REMOVED — an updater can no longer
+express a live-state read. **Round-4-proofing sweep:** live-session access now exists at
+exactly two kinds of places — user-event handlers (onFocusField/onFocusCell/onBlurSave, never
+deferred) and the single synchronous capture instant inside the three apply/capture entry
+points; grep confirms no other reader.
+
+**The documented residual (stated in the leaf header, pinned by a boundary test, not chased):**
+a payload whose updater commits AFTER a focus change repaints the newly-focused untouched box
+without the NEW session learning the value (the note went, correctly, to the session that
+existed at dispatch); an immediate blur then PATCHes a server-given value. Requires the same
+macrotask-scale deferral as above — unreachable here today — and equals the app's long-standing
+pre-adoption `focusedValue` behavior, which had the hole unconditionally. No pure guard API can
+close it (it would need the DOM-rendered value); the header says the fix, if ever needed, is an
+effect-time note.
+
+**TDD:** RED first — six round-3 tests against the new API (observed 6 failed / 36 passed):
+the dirty-A-capture-across-focus-change trace (the round-2 implementation clobbered A), the
+ENDED-session late updater (the round-2 implementation un-typed a just-committed blur on
+screen — capture strictly improves this), the keyed capture analog, the orders `capturePayload`
+shape, updater double-invocation, and the boundary pin. All prior tests migrated to the new API
+(39 total — a few round-2 tests merged where the old API's bare-merge/bare-note distinctions
+became inexpressible; every invariant they pinned survives, re-expressed). All seven consumer
+files migrated in the same commit — most sites SIMPLIFIED to one line
+(`setX(editGuard.applyPayload(res))`), customers' applyDetail to three; orders' applyMutation
+is the one `capturePayload` site.
+
+**Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 39/39 green; `npx tsc --noEmit`
+clean; `npx eslint src tests` clean. Not pushed — controller runs full suite + E2E and pushes.
