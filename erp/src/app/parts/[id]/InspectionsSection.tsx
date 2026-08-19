@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { useSaveScope } from "@/lib/save-scope";
 
 type InspRow = {
   id: string; inspectionCodeId: string; inspectionCodeName: string;
@@ -25,15 +26,31 @@ export function InspectionsSection({
   onOptionsError: (message: string) => void;
 }) {
   const [rows, setRows] = useState<InspRow[]>([]);
+  // Set only once `load()` has actually landed a real list (the PricingSection `rowsReady`
+  // port): `rows` starts `[]` the same as "loaded, genuinely empty", so `add()` used to be
+  // unable to tell those apart and would happily mint sort 0 while the initial GET was still in
+  // flight OR had already failed — a failed load is the steady state on an error, not a
+  // transient race, so without this a duplicate sort-0 could sit there indefinitely.
+  const [rowsReady, setRowsReady] = useState(false);
   const [codes, setCodes] = useState<CodeOption[]>([]);
   const [scales, setScales] = useState<ScaleOption[]>([]);
   const [draft, setDraft] = useState(emptyDraft);
   const canEdit = gate(perms, "parts.edit");
 
-  const load = useCallback(async () => {
-    const data = await api<InspRow[]>(`/api/parts/${partId}/inspections`);
-    setRows(data);
-  }, [partId]);
+  // Guards the list reload two ways (save-scope.ts — the PricingSection shape; this section
+  // previously had no reload ticket at all): overlapping reloads stay ordered, and a reload's
+  // GET waits out the saves registered below, re-fetching if one is dispatched mid-fetch, so a
+  // §5.13 rollback reload can never revert a NEWER row's optimistic patch (#15's section-local
+  // analog). `load` never touches the error state, so it doubles as the no-clear rollback
+  // variant.
+  const saveScope = useSaveScope();
+  const load = useCallback(
+    () => saveScope.reload(
+      () => api<InspRow[]>(`/api/parts/${partId}/inspections`),
+      (data) => { setRows(data); setRowsReady(true); },
+    ),
+    [partId, saveScope],
+  );
   useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
 
   // F9: a failed code/scale-options fetch used to report through the shared `onError`, which a
@@ -73,17 +90,21 @@ export function InspectionsSection({
   }
   // Optimistic (mirrors customers/[id]/page.tsx's saveAddressField): the row already shows the
   // new value (either from setRowField above on a text field, or from the <select>'s own native
-  // behavior), so a failure has something to roll back — reload from the server FIRST, then
-  // report the error (§5.13), never the other way around.
+  // behavior), so a failure has something to roll back. The PATCH registers with saveScope at
+  // call time — no serial() queue here, so the round-trip itself is the registered save — and
+  // the §5.13 rollback is fired detached (never awaited: the reload waits for every registered
+  // save, this one included, to settle before its GET dispatches).
   async function saveRow(id: string, patch: Record<string, unknown>): Promise<boolean> {
     setRows((cur) => cur.map((r) => (r.id === id ? ({ ...r, ...patch } as InspRow) : r)));
+    const put = api(`/api/parts/${partId}/inspections/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    saveScope.begin(put);
     try {
-      await api(`/api/parts/${partId}/inspections/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      await put;
       onError(null);
       return true;
     } catch (e) {
-      await load().catch(() => {});
       onError((e as Error).message);
+      void load().catch(() => {});
       return false;
     }
   }
@@ -116,23 +137,33 @@ export function InspectionsSection({
     if (j < 0 || j >= rows.length) return;
     const reordered = [...rows];
     [reordered[idx], reordered[j]] = [reordered[j], reordered[idx]];
+    const put = api(`/api/parts/${partId}/inspections/order`, {
+      method: "PUT",
+      body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
+    });
+    saveScope.begin(put);
     try {
-      await api(`/api/parts/${partId}/inspections/order`, {
-        method: "PUT",
-        body: JSON.stringify({ orderedIds: reordered.map((r) => r.id) }),
-      });
+      await put;
       onError(null);
       await load();
     } catch (e) {
-      // Roll back to server truth FIRST, then report why (§5.13) — reload before setting the
-      // error, the saveRow() precedent above, so local rows never diverge from what the server
-      // actually has.
-      await load().catch(() => {});
+      // §5.13 rollback, detached — the saveRow() shape above. (The success path may await
+      // load(): by then the registered PUT has settled, so the reload cannot deadlock on it.)
       onError((e as Error).message);
+      void load().catch(() => {});
     }
   }
   async function add() {
     if (!draft.inspectionCodeId) return;
+    // The PricingSection addRow guard: `rows` reads `[]` both when the part genuinely has no
+    // inspections yet AND when the initial GET is still in flight or has failed outright — on a
+    // failed load that empty array is the steady state, not a momentary race. Without this,
+    // `nextSort` below computed `0` either way, so a failed fetch silently produced a duplicate
+    // sort-0 the instant the user added a row. Refuse rather than guess.
+    if (!rowsReady) {
+      onError("Inspection rows have not finished loading yet — reload the page and try again.");
+      return;
+    }
     try {
       // F6: rows.length duplicates a sort value after a mid-list delete — deleting row 0 of 3
       // leaves rows at sort {1, 2}, and rows.length (now 2) collides with the row still at sort
@@ -274,7 +305,9 @@ export function InspectionsSection({
                title={canEdit.title}
                onChange={(e) => setDraft({ ...draft, location: e.target.value })}
                className="w-28 rounded border px-2 py-1 text-sm" />
-        <button onClick={add} disabled={canEdit.disabled || !draft.inspectionCodeId} title={canEdit.title}
+        <button onClick={add} disabled={canEdit.disabled || !draft.inspectionCodeId || !rowsReady}
+                title={!rowsReady ? "Inspection rows have not finished loading yet — reload the page and try again."
+                  : canEdit.title}
                 className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:cursor-not-allowed disabled:bg-slate-400">
           Add
         </button>

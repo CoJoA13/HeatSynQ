@@ -1,8 +1,9 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { PasteGrid } from "@/components/PasteGrid";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PART_PASTE_COLUMNS } from "@/lib/part-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -58,6 +59,14 @@ export default function PartsPage() {
   }, [query, latest]);
   useEffect(() => { void load(); }, [load]);
 
+  // Stale-closure guard (Task 7): `load` closes over `query`, so a handler continuation captured
+  // before a search/show-inactive change would re-ask the OLD query with the NEWEST ticket —
+  // defeating the gate, and leaving the table disagreeing with the controls above it. The
+  // post-mutation refetches below go through this ref, updated every render (in an effect — the
+  // `react-hooks/refs` rule forbids a render-time write), so they always call the CURRENT loader.
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; });
+
   const canCreate = gate(perms, "parts.create");
   const customersGate = gate(perms, "customers.view");
 
@@ -75,9 +84,11 @@ export default function PartsPage() {
       // eachWeight is sent as the string the user typed — the service's decimalField zod
       // schema accepts a decimal string directly, no client-side parseFloat needed.
       await api("/api/parts", { method: "POST", body: JSON.stringify(draft) });
+      // #110: the first part completes a banner readiness step (#124/#131 ordering: before load()).
+      invalidateSetupBanner();
       setDraft({ customerId: "", partNumber: "", eachWeight: "" });
       setError(null);
-      await load();
+      await loadRef.current();
     } catch (e) { setError((e as Error).message); }
   }
 
@@ -156,7 +167,9 @@ export default function PartsPage() {
       </table>
 
       {pasting && (
-        <PasteGrid endpoint="/api/parts/paste" columns={[...PART_PASTE_COLUMNS]} onDone={load} />
+        // #110: PasteGrid fires onDone only after a successful POST.
+        <PasteGrid endpoint="/api/parts/paste" columns={[...PART_PASTE_COLUMNS]}
+                   onDone={() => { invalidateSetupBanner(); void loadRef.current(); }} />
       )}
     </div>
   );

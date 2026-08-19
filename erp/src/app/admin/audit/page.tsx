@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { useLatest } from "@/lib/use-latest";
 
 type Entry = { id: string; at: string; actorName: string; entity: string; entityId: string; action: string; reason: string | null };
 
@@ -10,14 +11,24 @@ export default function AuditPage() {
   const [actor, setActor] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // Ticket-gated (the customers/page.tsx load shape): two Searches with different filters used to
+  // land in arrival order, permanently showing A's rows under B's filter text. The success-path
+  // `setError(null)` moved BEHIND the ticket check — a stale response must not clear a newer
+  // failure either (§5.13).
+  const latest = useLatest();
   async function load() {
+    const ticket = latest.next();
     try {
-      setError(null);
       const params = new URLSearchParams();
       if (entity) params.set("entity", entity);
       if (actor) params.set("actor", actor);
-      setEntries(await api<Entry[]>(`/api/admin/audit?${params}`));
+      const data = await api<Entry[]>(`/api/admin/audit?${params}`);
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded search lost the state race
+      setEntries(data);
+      setError(null);
     } catch (e) {
+      // F7 (customers/page.tsx): a superseded search's rejection must not clobber current state.
+      if (!latest.isCurrent(ticket)) return;
       setError((e as Error).message);
     }
   }

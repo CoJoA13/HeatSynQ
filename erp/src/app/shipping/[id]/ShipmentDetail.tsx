@@ -16,6 +16,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
@@ -161,11 +162,15 @@ function ShipmentDocumentsList({ shipperId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch.
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/shippers/${shipperId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [shipperId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/shippers/${shipperId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [shipperId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -399,15 +404,20 @@ export function ShipmentDetail({ id }: { id: string }) {
   // shipment. `GET /api/orders` excludes voided orders unless includeVoided=1 is passed (orders.ts
   // `boardWhere`), so nothing extra is needed here for that half.
   const onShipmentOrderIds = shipper ? shipper.orders.map((o) => o.orderId).join(",") : "";
+  // §5.13 stale-gate, the NewShipment #51 `candidatesLatest` shape, both paths (F7): re-runs on
+  // every add/remove order, so a slow earlier response must not clobber a newer order-set's list.
+  const addableLatest = useLatest();
   useEffect(() => {
+    const t = addableLatest.next();
     if (!customerId || !ordersGate.allowed) return;
     api<OrderOption[]>(`/api/orders?customerId=${customerId}&status=OPEN,PARTIAL_SHIPPED`)
       .then((rows) => {
+        if (!addableLatest.isCurrent(t)) return;
         const already = new Set(onShipmentOrderIds ? onShipmentOrderIds.split(",") : []);
         setAddableOrders(rows.filter((r) => !already.has(r.id)));
       })
-      .catch((e) => addLoadError(`Could not load orders available to add: ${(e as Error).message}`));
-  }, [customerId, ordersGate.allowed, onShipmentOrderIds, addLoadError]);
+      .catch((e) => { if (addableLatest.isCurrent(t)) addLoadError(`Could not load orders available to add: ${(e as Error).message}`); });
+  }, [customerId, ordersGate.allowed, onShipmentOrderIds, addableLatest, addLoadError]);
 
   // Per-order catalogs — refetched wholesale whenever the order-id SET on this shipment changes
   // (add/remove order), never incrementally patched: a rare, deliberate action, so the simplicity
@@ -451,6 +461,13 @@ export function ShipmentDetail({ id }: { id: string }) {
     queue.current.set(key, next.catch(() => {}));
     return next;
   }
+  // Per-key REQUEST-settled signals for the failure drain below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
 
   type HeaderPatch = {
     shipToAddressId?: string | null; shipDate?: string; carrierId?: string | null;
@@ -465,14 +482,24 @@ export function ShipmentDetail({ id }: { id: string }) {
    *  clear it, since `load()` resets `error` to null on success). */
   async function patchHeader(patch: HeaderPatch): Promise<boolean> {
     setShipper((cur) => (cur ? { ...cur, ...patch } : cur));
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<ShipperMutationResult>(
+        const req = applyMutation(() => api<ShipperMutationResult>(
           `/api/shippers/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
         return true;
       } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen (its own response then drops as
+        // older-ticketed). Drains the request-settled SIGNALS above, never the queue tails
+        // (fix round 1 — mutual deadlock; drain-queue.ts carries the full story).
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;

@@ -6,6 +6,7 @@ import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 
 // Local mirrors of src/server/process-templates.ts's exported row types — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -56,16 +57,29 @@ function Detail({ id }: { id: string }) {
   // state: it is bookkeeping for the next load, and nothing renders from it.
   const lastServerName = useRef<string | null>(null);
 
+  // §5.13 stale-gate, the processes/page.tsx shape, both paths (F7): six mutation callers funnel
+  // through this full refetch, so overlapping loads race — and a dropped stale response must not
+  // advance the rename bookkeeping either, so the gate covers `setNameDraft`'s reconciliation and
+  // the `lastServerName.current` write alongside `setTemplate`.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    const t = await api<Template>(`/api/process-templates/${id}`);
+    const ticket = latest.next();
+    let t: Template;
+    try {
+      t = await api<Template>(`/api/process-templates/${id}`);
+    } catch (e) {
+      if (latest.isCurrent(ticket)) setError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(ticket)) return;
     setTemplate(t);
     setNameDraft((cur) => (
       lastServerName.current === null || cur === lastServerName.current ? t.name : cur
     ));
     lastServerName.current = t.name;
     setError(null);
-  }, [id]);
-  useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
+  }, [id, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   // Session-only read (§5.15 vocabulary rule) — every signed-in user can see which step codes
   // exist, the same pick-list idiom ProcessStepsSection.tsx uses for the part-detail Add-step
@@ -112,10 +126,11 @@ function Detail({ id }: { id: string }) {
       // mid-flight reads the OLD active value and overwrites the optimistic checkbox, and with no
       // reload here nothing ever corrected it — the box showed one thing, the database held the
       // other. Safe to reload now that load() preserves an unsaved name and merges step drafts.
-      await load().catch(() => {});
+      // (load() reports its own failures through the gated catch and never rejects.)
+      await load();
       setError(null);
     } catch (e) {
-      await load().catch(() => {});
+      await load();
       setError((e as Error).message);
     } finally {
       setTogglingActive(false);

@@ -19,6 +19,7 @@ import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { LIGHT_DOT_CLASS, LIGHT_LABELS, type TrafficLight } from "@/lib/traffic-light";
@@ -307,6 +308,13 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
     queue.current.set(key, next.catch(() => {}));
     return next;
   }
+  // Per-key REQUEST-settled signals for the failure drain below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
 
   /** Overview's scalar fields + Notes' textarea share one PATCH surface (Task 5's `updateOrder`).
    *  Optimistic: the field shows the typed value immediately; a rejection rolls back to server
@@ -318,14 +326,25 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       | "certRequired" | "certScope">>,
   ): Promise<boolean> {
     setOrder((cur) => (cur ? { ...cur, ...patch } : cur));
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<OrderMutationResult>(
+        const req = applyMutation(() => api<OrderMutationResult>(
           `/api/orders/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
         return true;
       } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen (its own response then drops as
+        // older-ticketed). Drains the request-settled SIGNALS above, never the queue tails
+        // (fix round 1 — mutual deadlock). Same-key corrections need no drain — a same-key
+        // response re-applies through the accept gate.
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;

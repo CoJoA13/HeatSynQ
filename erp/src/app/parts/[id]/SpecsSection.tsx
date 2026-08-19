@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 
 type SpecLink = { id: string; specificationId: string; specificationName: string };
 type SpecOption = { id: string; name: string; active: boolean };
@@ -19,11 +20,24 @@ export function SpecsSection({
   const [draft, setDraft] = useState("");
   const canEdit = gate(perms, "parts.edit");
 
+  // §5.13 stale-gate, the processes/page.tsx shape, both paths (F7) — the plain ticket, not the
+  // sibling PricingSection's saveScope: this section has no optimistic saves, only
+  // report-and-reload, so there is no rollback ordering to defer for. `load` never clears the
+  // shared error itself — add/remove do that before reloading — so a rollback reload stays §5.13-safe.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    const rows = await api<SpecLink[]>(`/api/parts/${partId}/specifications`);
+    const t = latest.next();
+    let rows: SpecLink[];
+    try {
+      rows = await api<SpecLink[]>(`/api/parts/${partId}/specifications`);
+    } catch (e) {
+      if (latest.isCurrent(t)) onError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
     setLinks(rows);
-  }, [partId]);
-  useEffect(() => { load().catch((e) => onError((e as Error).message)); }, [load, onError]);
+  }, [partId, latest, onError]);
+  useEffect(() => { void load(); }, [load]);
 
   // F9: a failed specification-options fetch used to report through the shared `onError`, which
   // a later successful save elsewhere on the page resets to null — see IdentitySection's comment

@@ -25,7 +25,8 @@ import { ApiError, api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { contractFor, type TemplateConfig, type TemplateDocTypeString } from "@/lib/template-contracts";
-import { lockIndex, resolveSaveError, widthBudgetError } from "@/lib/template-editor";
+import { useLatest } from "@/lib/use-latest";
+import { lockIndex, resolveSaveError, resolveSaveSettle, widthBudgetError } from "@/lib/template-editor";
 import {
   FontsPanel, FormatsPanel, PageFooterPanel, SectionsPanel, TextBlocksPanel, WidthsPanel,
 } from "./panels";
@@ -58,6 +59,12 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   const { permissions: perms, error: permsError } = usePermissions();
   const canEdit = gate(perms, "templates.edit");
 
+  // The edit-epoch gate (useLatest semantics, Group D Task 8): `apply` bumps it, `save` takes a
+  // ticket at dispatch, and `resolveSaveSettle` decides at each settle point what the save may
+  // still touch — an edit landing mid-round-trip must not be falsely marked "Saved" (success) or
+  // wiped by the 409 rollback's config reset (conflict).
+  const editEpoch = useLatest();
+
   const load = useCallback(async () => {
     const d = await api<Detail>(`/api/templates/${templateId}`);
     setDetail(d);
@@ -77,12 +84,13 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   // never read a stale closure. A deliberate edit is the user "acting", so it dismisses the
   // conflict banner (they have moved on from the stale-draft resolution) and drops the stash.
   const apply = useCallback((fn: (c: TemplateConfig) => TemplateConfig) => {
+    editEpoch.next(); // supersede any in-flight save's ticket — its settle must not claim this edit
     setConfig((prev) => (prev === null ? prev : fn(prev)));
     setDirty(true);
     setSavedTick(false);
     setConflict(null);
     setStashed(null);
-  }, []);
+  }, [editEpoch]);
 
   // After a logo upload/clear (which bumps the draft's updatedAt on the server), refresh ONLY the
   // precondition + the logo-present flag — never the config, so in-progress unsaved edits survive.
@@ -92,31 +100,44 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
   }, [templateId]);
 
   // Roll the working state back to the server's current draft — the FIRST half of the 409 conflict
-  // response (§5.13): it replaces the config and the precondition with server truth and clears
-  // dirty. It deliberately does NOT touch `conflict`/`stashed`: the caller sets the banner AFTER
-  // this resolves, so nothing here can wipe the message it is about to show.
-  const rollbackToServerTruth = useCallback(async () => {
+  // response (§5.13). Returns whether the rollback's outcome was applied (resolveSaveSettle on the
+  // caller's edit-epoch ticket): the precondition + logo meta are ALWAYS freshened from the fetch
+  // (they genuinely advanced), but if an apply() intervened during the fetch the config reset is
+  // SKIPPED — the user has moved on, and replacing what they typed would be unrecoverable loss. It
+  // deliberately does NOT touch `conflict`/`stashed`: the caller sets the banner AFTER this
+  // resolves, so nothing here can wipe the message it is about to show.
+  const rollbackToServerTruth = useCallback(async (ticket: number): Promise<boolean> => {
     const d = await api<Detail>(`/api/templates/${templateId}`);
     if (d.draft === null) throw new ApiError("This template no longer has an open draft.", 404);
-    setConfig(d.draft.config);
     setUpdatedAt(d.draft.updatedAt);
     setLogoMimeType(d.draft.logoMimeType);
-    setDirty(false);
-    setSavedTick(false);
-  }, [templateId]);
+    const { applyOutcome } = resolveSaveSettle(!editEpoch.isCurrent(ticket));
+    if (applyOutcome) {
+      setConfig(d.draft.config);
+      setDirty(false);
+      setSavedTick(false);
+    }
+    return applyOutcome;
+  }, [templateId, editEpoch]);
 
   async function save() {
     if (config === null || updatedAt === null) return;
     const attempted = config; // capture the edits this save is trying to write, for the stash
+    const ticket = editEpoch.next(); // at dispatch — an apply() during the round trip supersedes it
     setSaving(true);
     setError(null);
     try {
       const res = await api<{ updatedAt: string }>(`/api/templates/${templateId}/draft`, {
         method: "PATCH", body: JSON.stringify({ config, updatedAt }),
       });
-      setUpdatedAt(res.updatedAt); // keep the precondition fresh for the next save
-      setDirty(false);
-      setSavedTick(true);
+      setUpdatedAt(res.updatedAt); // keep the precondition fresh for the next save — always safe
+      if (resolveSaveSettle(!editEpoch.isCurrent(ticket)).applyOutcome) {
+        // No edit intervened: this save wrote everything on screen, so clean/Saved is true. When
+        // one DID intervene, dirty stays true and Save stays live — a false "Saved" here loses the
+        // newer edits the moment the user navigates away.
+        setDirty(false);
+        setSavedTick(true);
+      }
       setConflict(null); // a save that SUCCEEDS clears the conflict banner
       setStashed(null);
     } catch (e) {
@@ -127,8 +148,14 @@ export function TemplateEditor({ templateId }: { templateId: string }) {
         // it. Stash the attempted edits so the user can re-apply them (the overwrite path).
         setStashed(attempted);
         try {
-          await rollbackToServerTruth();
-          setConflict(resolution.message);
+          if (await rollbackToServerTruth(ticket)) {
+            setConflict(resolution.message);
+          } else {
+            // An apply() intervened during the rollback fetch — the user has moved on (the same
+            // semantics apply's conflict-dismissal claims), so no banner, and this superseded
+            // save's stash is dropped rather than offering to resurrect pre-edit state.
+            setStashed(null);
+          }
         } catch (reloadErr) {
           // The rollback fetch itself failed — surface that rather than a half-reloaded editor.
           setStashed(null);

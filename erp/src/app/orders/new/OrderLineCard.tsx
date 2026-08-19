@@ -112,6 +112,11 @@ export function OrderLineCard({
     const partId = line.partId;
     const t = latest.next();
     setLeadCheck({ status: "checking" });
+    // A fresh dispatch means the verdict is unknown until this check resolves (null never blocks,
+    // src/lib/lead-validity.ts) — without this the guard branch above reported null at dispatch
+    // but the fetch path never did, so a part swap left Save refusing on the PREVIOUS part's
+    // verdict while the panel showed "Checking…".
+    onLeadValidity?.(lineId, null);
     checkLead(partId).then((result) => {
       if (!latest.isCurrent(t)) return;
       setLeadCheck(result);

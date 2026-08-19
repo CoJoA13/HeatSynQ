@@ -13,12 +13,13 @@
 // truth, discard the block's draft (bumpReset remounts it), then show the error. Every mutating
 // call on this page answers with the ENTIRE fresh CertDetail, so all of them share ONE monotonic
 // mutation-ticket sequence (`useMutationGate`, fix-wave R4 finding 6).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { useMutationGate } from "@/lib/use-latest";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
@@ -105,11 +106,16 @@ function resultsGateFor(perms: string[] | undefined, voided: boolean, printed: b
 function CertDocumentsList({ certId, viewGate, refresh }: { certId: string; viewGate: Gate; refresh: number }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch
+  // (the ShipmentDocumentsList shape).
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/certs/${certId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [certId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/certs/${certId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [certId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -217,19 +223,55 @@ export function CertDetail({ id }: { id: string }) {
 
   // ---- Notes: optimistic blur-save PATCH (ShipmentDetail.tsx `patchHeader` precedent) ----
 
+  // Per-key request queue (Task 7 — the InvoiceDetail.tsx `serial` shape, which this page never
+  // received): without it, two overlapping PATCHes to the same notes field (an ordinary
+  // double-blur) can commit out of order server-side and leave the database holding the opposite
+  // of the last thing the UI showed. Readings saves join the same queue under per-block keys
+  // below, so two blocks still save in parallel while each block serializes with itself — and a
+  // failing save drains the OTHER keys' in-flight requests before its §5.13 rollback load.
+  // `serial` is a useCallback (unlike its siblings' plain functions) because `saveReadings`
+  // lists it as a dep.
+  const queue = useRef<Map<string, Promise<unknown>>>(new Map());
+  const serial = useCallback(function run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = queue.current.get(key) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    queue.current.set(key, next.catch(() => {}));
+    return next;
+  }, []);
+  // Per-key REQUEST-settled signals for the failure drains below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
+
   /** Optimistic: the field shows the typed value immediately; a rejection rolls back to server
    *  truth FIRST and only then reports why (§5.13 — a reload after the error is set would clear
    *  it, since the initial-load effect resets `error` on success but `load` itself never does). */
   async function patchNotes(patch: { freeform?: string; internalNotes?: string }): Promise<void> {
     setCert((cur) => (cur ? { ...cur, ...patch } : cur));
-    try {
-      await applyMutation(() => api<CertDetailData>(
-        `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
-      setError(null);
-    } catch (e) {
-      await load().catch(() => {});
-      setError((e as Error).message);
-    }
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
+    const key = Object.keys(patch).sort().join(",");
+    return serial(key, async () => {
+      try {
+        const req = applyMutation(() => api<CertDetailData>(
+          `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
+        setError(null);
+      } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's save commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen. Drains the request-settled
+        // SIGNALS above, never the queue tails (fix round 1 — mutual deadlock; drain-queue.ts
+        // has the story).
+        await drainOtherKeys(inFlight.current, key);
+        await load().catch(() => {});
+        setError((e as Error).message);
+      }
+    });
   }
 
   // Blur-save guard and focused-field tracking are both `editGuard`'s (use-edit-guard.ts): the
@@ -239,21 +281,32 @@ export function CertDetail({ id }: { id: string }) {
   // ---- Readings: non-optimistic per-requirement save (merge semantics — only the named
   // requirement's readings are replaced; every other requirement is untouched server-side) ----
 
+  // Queued per BLOCK (`readings:` prefixed so requirement-id keys can never collide with the
+  // notes-field key space): two blocks still save in parallel, each block serializes with
+  // itself, and the failure drain below covers every other key — notes and sibling blocks alike.
   const saveReadings = useCallback(async (requirementId: string, readings: ReadingPayload[]) => {
-    try {
-      await applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
-        method: "PUT", body: JSON.stringify({ requirements: [{ id: requirementId, readings }] }),
-      }));
-      setError(null);
-      bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
-    } catch (e) {
-      // Rollback-then-report (§5.13): server truth back into state, the block's draft discarded,
-      // and only THEN the error — so the report survives the reload.
-      await load().catch(() => {});
-      bumpReset(requirementId);
-      setError((e as Error).message);
-    }
-  }, [id, applyMutation, load, bumpReset]);
+    const key = `readings:${requirementId}`;
+    return serial(key, async () => {
+      try {
+        const req = applyMutation(() => api<CertDetailData>(`/api/certs/${id}/results`, {
+          method: "PUT", body: JSON.stringify({ requirements: [{ id: requirementId, readings }] }),
+        }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
+        setError(null);
+        bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
+      } catch (e) {
+        // Rollback-then-report (§5.13): drain the other keys' in-flight requests (Task 7 — the
+        // request-settled SIGNALS above, never the queue tails: fix round 1's mutual deadlock),
+        // server truth back into state, the block's draft discarded, and only THEN the error —
+        // so the report survives the reload.
+        await drainOtherKeys(inFlight.current, key);
+        await load().catch(() => {});
+        bumpReset(requirementId);
+        setError((e as Error).message);
+      }
+    });
+  }, [id, serial, applyMutation, load, bumpReset]);
 
   // ---- Print: the ShipmentDetail.tsx `printDoc` pipeline (popup handling and error surfacing
   // shared shape; the x-print-warnings decode there is shipment-specific and has no counterpart

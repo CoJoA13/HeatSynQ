@@ -10,6 +10,7 @@ import {
   moveSection,
   previewRecordSpec,
   resolveSaveError,
+  resolveSaveSettle,
   setFieldLabel,
   setFieldWidth,
   setFonts,
@@ -311,6 +312,34 @@ describe("resolveSaveError — the save-conflict state machine (Task 18)", () =>
       expect(r.action).toBe("error");
       expect(r.message).toBe("the server's own message");
     }
+  });
+});
+
+describe("resolveSaveSettle — the edit-epoch gate at a save's two settle points (Group D Task 8)", () => {
+  it("save-success with an intervening apply keeps dirty: the outcome is withheld, the precondition still advances", () => {
+    // apply() bumped the edit epoch while the PATCH was in flight, so the save's ticket is no
+    // longer current: marking the editor clean/Saved would falsely claim the newer edits were
+    // written (the user navigates away, work lost). The precondition (updatedAt) DID genuinely
+    // advance server-side, so freshening it is always safe — and required for the next save.
+    const d = resolveSaveSettle(true);
+    expect(d.freshenPrecondition).toBe(true);
+    expect(d.applyOutcome).toBe(false); // dirty stays true, Save stays live
+  });
+
+  it("409-rollback with an intervening apply skips the config reset and the conflict banner", () => {
+    // The same decision at the OTHER settle point: an apply() during the rollback fetch means the
+    // user has moved on (the exact semantics apply's conflict-dismissal already claims), so the
+    // fetched config must NOT replace what they typed and no banner blames another editor —
+    // updatedAt/logo meta are still freshened from the fetch.
+    const d = resolveSaveSettle(true);
+    expect(d.freshenPrecondition).toBe(true);
+    expect(d.applyOutcome).toBe(false); // no setConfig, no setDirty(false), no conflict banner
+  });
+
+  it("with no intervening edit, both settle points apply their outcome in full", () => {
+    const d = resolveSaveSettle(false);
+    expect(d.freshenPrecondition).toBe(true);
+    expect(d.applyOutcome).toBe(true); // success marks clean/Saved; the 409 path resets + banners
   });
 });
 

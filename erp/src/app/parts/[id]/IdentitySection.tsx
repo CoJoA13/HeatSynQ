@@ -1,20 +1,22 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
 import { CERT_SCOPES, CERT_SCOPE_LABELS } from "@/lib/cert-constants";
+import type { EditGuard } from "@/lib/use-edit-guard";
 import type { Part } from "./page";
 
 type MaterialOption = { id: string; name: string; active: boolean };
 
 export function IdentitySection({
-  part, perms, save, patchDraft, onError, onOptionsError,
+  part, perms, save, patchDraft, editGuard, onError, onOptionsError,
 }: {
   part: Part;
   perms: string[] | undefined;
   save: (patch: Record<string, unknown>) => Promise<boolean>;
   patchDraft: (patch: Partial<Part>) => void;
+  editGuard: EditGuard;
   onError: (message: string | null) => void;
   onOptionsError: (message: string) => void;
 }) {
@@ -42,22 +44,18 @@ export function IdentitySection({
 
   const canEdit = gate(perms, "parts.edit");
 
-  // Blur-save guard (customers/[id]/page.tsx precedent): only fields the user actually changed
-  // reach the network, so tabbing through the form without editing doesn't write a no-op audit
-  // entry for every field.
-  const focusedValue = useRef("");
-  const noteFocus = (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    focusedValue.current = e.target.value;
-  };
+  // Blur-save guard, now the page-level editGuard (use-edit-guard.ts — the customers/[id]/
+  // page.tsx noteFocusC shape): the no-op half is unchanged (only fields the user actually
+  // changed reach the network), and registering WHICH Part property is under the cursor is what
+  // lets the page's reload merge preserve the field mid-typing when a sibling save's §5.13
+  // rollback (or any other reload) lands.
+  const noteFocus = (key: keyof Part & string) => editGuard.onFocusField(key);
   function onBlurSave(
     e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>,
     opts: { trim?: boolean },
-    commit: (value: string) => void,
+    commit: (value: string, atFocus: string) => void,
   ) {
-    const normalize = (v: string) => (opts.trim ? v.trim() : v);
-    const value = normalize(e.target.value);
-    if (value === normalize(focusedValue.current)) return;
-    commit(value);
+    editGuard.onBlurSave(e, commit, opts);
   }
 
   return (
@@ -74,21 +72,21 @@ export function IdentitySection({
       <div className="grid grid-cols-2 gap-3">
         <label className="block text-sm">
           Part number
-          <input value={part.partNumber} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
+          <input value={part.partNumber} onFocus={noteFocus("partNumber")} readOnly={!canEdit.allowed} title={canEdit.title}
                  onChange={(e) => patchDraft({ partNumber: e.target.value })}
                  onBlur={(e) => onBlurSave(e, { trim: true }, (partNumber) => void save({ partNumber }))}
                  className="mt-1 w-full rounded border px-2 py-1 font-mono read-only:bg-slate-50" />
         </label>
         <label className="block text-sm">
           Name
-          <input value={part.name} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
+          <input value={part.name} onFocus={noteFocus("name")} readOnly={!canEdit.allowed} title={canEdit.title}
                  onChange={(e) => patchDraft({ name: e.target.value })}
                  onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void save({ name }))}
                  className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
         </label>
         <label className="col-span-2 block text-sm">
           Description
-          <textarea value={part.description} rows={2} onFocus={noteFocus} readOnly={!canEdit.allowed}
+          <textarea value={part.description} rows={2} onFocus={noteFocus("description")} readOnly={!canEdit.allowed}
                     title={canEdit.title}
                     onChange={(e) => patchDraft({ description: e.target.value })}
                     onBlur={(e) => onBlurSave(e, {}, (description) => void save({ description }))}
@@ -100,7 +98,7 @@ export function IdentitySection({
             reloads fresh per record, §5.12), read-only without parts.edit (§5.16). */}
         <label className="col-span-2 block text-sm">
           Process name
-          <input value={part.processName} onFocus={noteFocus} readOnly={!canEdit.allowed} title={canEdit.title}
+          <input value={part.processName} onFocus={noteFocus("processName")} readOnly={!canEdit.allowed} title={canEdit.title}
                  onChange={(e) => patchDraft({ processName: e.target.value })}
                  onBlur={(e) => onBlurSave(e, { trim: true }, (processName) => void save({ processName }))}
                  className="mt-1 w-full rounded border px-2 py-1 read-only:bg-slate-50" />
@@ -122,7 +120,7 @@ export function IdentitySection({
         </label>
         <label className="block text-sm">
           Each weight
-          <input value={part.eachWeight} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
+          <input value={part.eachWeight} inputMode="decimal" onFocus={noteFocus("eachWeight")} readOnly={!canEdit.allowed}
                  title={canEdit.title}
                  onChange={(e) => patchDraft({ eachWeight: e.target.value })}
                  onBlur={(e) => onBlurSave(e, {}, (v) => void save({ eachWeight: v }))}
@@ -136,10 +134,10 @@ export function IdentitySection({
               value would otherwise JSON.stringify to `null` (JSON has no NaN) and silently clear
               the field instead of surfacing as the "must be a whole number" 400 the server would
               give a well-formed request. */}
-          <input value={part.loadQty ?? ""} inputMode="numeric" onFocus={noteFocus} readOnly={!canEdit.allowed}
+          <input value={part.loadQty ?? ""} inputMode="numeric" onFocus={noteFocus("loadQty")} readOnly={!canEdit.allowed}
                  title={canEdit.title}
                  onChange={(e) => patchDraft({ loadQty: e.target.value })}
-                 onBlur={(e) => onBlurSave(e, {}, (v) => {
+                 onBlur={(e) => onBlurSave(e, {}, (v, atFocus) => {
                    // Trim before the empty-check: Number(" ") is 0, not NaN, so an untrimmed
                    // whitespace-only value would silently parse as the integer 0 instead of
                    // being treated as "cleared" like a truly empty value.
@@ -148,18 +146,17 @@ export function IdentitySection({
                    const n = Number(trimmed);
                    if (!Number.isInteger(n)) {
                      // H2 (Codex round 3 review): this branch never reaches save(), so it can't
-                     // rely on save()'s own catch (which rolls back via the page's load() before
-                     // reporting, §5.13) — but leaving the invalid typed text sitting in the
-                     // shared `part` state (patchDraft already echoed it there on every keystroke,
-                     // onChange below) makes it pseudo-server state: a later, unrelated successful
-                     // save elsewhere on this page clears `error` on its own success path while
-                     // the invalid text stays put looking saved. Restore server truth BEFORE
-                     // reporting, same ordering as every other failure path on this page.
-                     // `focusedValue.current` is what this field displayed before THIS edit
-                     // began — the last value it actually loaded/committed — so reverting to it
-                     // is this section's own version of the load()-then-setError idiom the
-                     // empty/valid branches reach via save()'s catch.
-                     patchDraft({ loadQty: focusedValue.current });
+                     // rely on save()'s own catch (which rolls back via the page's rollback
+                     // reload before reporting, §5.13) — but leaving the invalid typed text
+                     // sitting in the shared `part` state (patchDraft already echoed it there on
+                     // every keystroke, onChange below) makes it pseudo-server state: a later,
+                     // unrelated successful save elsewhere on this page clears `error` on its
+                     // own success path while the invalid text stays put looking saved. Restore
+                     // server truth BEFORE reporting, same ordering as every other failure path
+                     // on this page. `atFocus` is the editGuard's own snapshot of what this
+                     // field displayed before THIS edit began — the last value it actually
+                     // loaded/committed — the customers requestDaysOverride precedent.
+                     patchDraft({ loadQty: atFocus });
                      onError("Load qty must be a whole number");
                      return;
                    }
@@ -169,7 +166,7 @@ export function IdentitySection({
         </label>
         <label className="block text-sm">
           Load weight
-          <input value={part.loadWeight ?? ""} inputMode="decimal" onFocus={noteFocus} readOnly={!canEdit.allowed}
+          <input value={part.loadWeight ?? ""} inputMode="decimal" onFocus={noteFocus("loadWeight")} readOnly={!canEdit.allowed}
                  title={canEdit.title}
                  onChange={(e) => patchDraft({ loadWeight: e.target.value })}
                  onBlur={(e) => onBlurSave(e, {}, (v) => void save({ loadWeight: v === "" ? null : v }))}
@@ -183,15 +180,15 @@ export function IdentitySection({
               here rather than forwarded as-is. Blank clears the override, falling back to the
               customer's own override, then the plant default (spec §7.1's most-specific-wins
               chain — orders.ts). */}
-          <input value={part.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocus}
+          <input value={part.requestDaysOverride ?? ""} inputMode="numeric" onFocus={noteFocus("requestDaysOverride")}
                  readOnly={!canEdit.allowed} title={canEdit.title}
                  onChange={(e) => patchDraft({ requestDaysOverride: e.target.value })}
-                 onBlur={(e) => onBlurSave(e, {}, (v) => {
+                 onBlur={(e) => onBlurSave(e, {}, (v, atFocus) => {
                    const trimmed = v.trim();
                    if (trimmed === "") { void save({ requestDaysOverride: null }); return; }
                    const n = Number(trimmed);
                    if (!Number.isInteger(n)) {
-                     patchDraft({ requestDaysOverride: focusedValue.current });
+                     patchDraft({ requestDaysOverride: atFocus });
                      onError("Request days override must be a whole number");
                      return;
                    }

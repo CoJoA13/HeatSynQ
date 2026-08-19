@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { PasteGrid } from "@/components/PasteGrid";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { CUSTOMER_PASTE_COLUMNS } from "@/lib/customer-constants";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -52,6 +53,8 @@ export default function CustomersPage() {
   async function add() {
     try {
       await api("/api/customers", { method: "POST", body: JSON.stringify(draft) });
+      // #110: the first customer completes a banner readiness step (#124/#131 ordering: before load()).
+      invalidateSetupBanner();
       setDraft({ code: "", name: "" }); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
   }
@@ -122,7 +125,9 @@ export default function CustomersPage() {
       </table>
 
       {pasting && (
-        <PasteGrid endpoint="/api/customers/paste" columns={[...CUSTOMER_PASTE_COLUMNS]} onDone={load} />
+        // #110: PasteGrid fires onDone only after a successful POST.
+        <PasteGrid endpoint="/api/customers/paste" columns={[...CUSTOMER_PASTE_COLUMNS]}
+                   onDone={() => { invalidateSetupBanner(); void load(); }} />
       )}
     </div>
   );

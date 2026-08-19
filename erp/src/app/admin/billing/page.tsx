@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
 import { gate } from "@/lib/permission-ui";
 
@@ -53,6 +54,10 @@ export default function BillingPage() {
     const field = Object.keys(patch)[0] as keyof Cfg;
     try {
       const updated = await api<Cfg>("/api/admin/billing", { method: "PUT", body: JSON.stringify(patch) });
+      // #110: assigning (or clearing) the A/R GL account moves the banner's `chart` readiness
+      // step — fired the instant the PUT resolves (the #124/#131 ordering; no follow-up load on
+      // this success path, the response body is the fresh truth).
+      invalidateSetupBanner();
       setCfg(updated); setError(null);
       setSaved(field); setTimeout(() => setSaved(null), 1500);
     } catch (e) {

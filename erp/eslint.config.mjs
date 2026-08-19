@@ -15,10 +15,10 @@ const eslintConfig = [
   ...nextTypeScript,
   {
     rules: {
-      // OFF DELIBERATELY, and not because it was inconvenient — see the reasoning before changing.
+      // OFF PERMANENTLY — an owner decision (issue #31, ruled 2026-08-18), not a deferral.
       //
-      // eslint-config-next 16 turns on the React Compiler's hook rules, and this one fires 21
-      // times across 19 files, every hit the same shape:
+      // eslint-config-next 16 turns on the React Compiler's hook rules, and this one fires on
+      // every fetch-into-state effect in the app, all the same shape:
       //
       //     const load = useCallback(async () => { const data = await api(...); setRows(data); }, [...]);
       //     useEffect(() => { void load(); }, [load]);
@@ -29,11 +29,14 @@ const eslintConfig = [
       // the call into `load`, sees a setState, and cannot tell the two apart.
       //
       // Satisfying it for real would mean this app stops fetching in effects — a data-fetching
-      // library, or moving these pages to Server Components. That is a genuine architectural
-      // direction Next 16 nudges toward and may well be right, but it is a decision about 19
-      // pages, not a detail of a version bump, and it is tracked separately. Turning the rule to
-      // `warn` was rejected: 21 warnings on every run is noise that teaches people to skim past
-      // lint output, which costs more than the rule buys here.
+      // library, or moving these pages to Server Components. The owner ruled against both: the
+      // build is complete, the pages are tested, and either would be a real migration over
+      // working paper for consistency rather than correctness. Fetching in effects stays, and
+      // the discipline the rule cannot see is src/lib/use-latest.ts (tickets on both the success
+      // and rejection paths) plus its siblings — enforced across the codebase by the Round 2
+      // Group D sweep rather than by this rule. Turning it to `warn` was rejected: dozens of
+      // warnings on every run is noise that teaches people to skim past lint output, which costs
+      // more than the rule buys here.
       //
       // Narrow in scope on purpose: every other React Compiler rule the new config enables stays
       // on, including `react-hooks/refs`, which found a real lazy-init-ref smell in use-latest.ts

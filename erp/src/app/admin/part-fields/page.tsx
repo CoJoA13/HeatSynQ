@@ -5,6 +5,7 @@ import { PART_FIELD_TYPES, type PartFieldTypeValue } from "@/lib/part-constants"
 import { nextSort } from "@/lib/next-sort";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useLatest } from "@/lib/use-latest";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 
 type FieldDef = { id: string; name: string; type: PartFieldTypeValue; sort: number; active: boolean };
@@ -38,12 +39,36 @@ export default function PartFieldsPage() {
   // loaded rows on every load() call — which already runs on mount and after every save/add/
   // delete — fixes both: the draft's sort default is never stale, and it is always one past the
   // highest live sort regardless of gaps.
+  // Ticket-gated (the surcharges/page.tsx load shape): load() is refired from six caller sites
+  // unserialized, so overlapping loads used to land in arrival order. The gate covers BOTH writes
+  // — setRows AND the draft-sort recompute (stale bookkeeping is as wrong as stale rows).
+  const latest = useLatest();
   const load = useCallback(async () => {
-    const data = await api<FieldDef[]>("/api/admin/part-fields?includeInactive=1");
-    setRows(data);
-    setDraft((d) => ({ ...d, sort: nextSort(data) }));
-  }, []);
+    const ticket = latest.next();
+    try {
+      const data = await api<FieldDef[]>("/api/admin/part-fields?includeInactive=1");
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setRows(data);
+      setDraft((d) => ({ ...d, sort: nextSort(data) }));
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not clobber current state.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+
+  // What the user has typed into a row's Name/Sort input but not yet blurred, keyed by
+  // `${rowId}.${field}` — composed with the server value at render time (`draftValue`), never
+  // written into `rows` (the surcharges/page.tsx textDrafts pattern). Writing keystrokes into
+  // `rows` meant a landing load reverted mid-typing text, and a blur from there saved the mangled
+  // value. NOTE: unlike surcharges/step-codes, save bodies here are SINGLE-FIELD partials, so
+  // there is no whole-row write-back amplification and no rowsRef/accept mechanism is needed —
+  // the drafts only protect the typing itself. Cleared when the field's OWN save settles.
+  const [textDrafts, setTextDrafts] = useState<Record<string, string>>({});
+  function draftValue(key: string, serverValue: string): string {
+    return Object.hasOwn(textDrafts, key) ? textDrafts[key] : serverValue;
+  }
 
   async function save(id: string, body: Record<string, unknown>) {
     try {
@@ -74,42 +99,45 @@ export default function PartFieldsPage() {
     }
   }
 
-  function editLocal(id: string, patch: Partial<FieldDef>) {
-    setRows((cur) => cur.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }
-
-  // onChange-sets-local/onBlur-saves split (IdentitySection.tsx precedent): typing doesn't hit
-  // the network on every keystroke, and tabbing through a row without changing it writes no
-  // no-op audit entry.
+  // onFocus/onBlur split (IdentitySection.tsx precedent): typing doesn't hit the network on every
+  // keystroke, and tabbing through a row without changing it writes no no-op audit entry.
   const focused = useRef<Record<string, string>>({});
   function noteFocus(id: string, field: string, value: string) {
     focused.current[`${id}.${field}`] = value;
   }
 
   function blurSaveName(id: string, value: string) {
-    const before = focused.current[`${id}.name`];
+    const key = `${id}.name`;
+    const clearDraft = () => setTextDrafts((d) => { const n = { ...d }; delete n[key]; return n; });
+    const before = focused.current[key];
     const name = value.trim();
-    if (name === before?.trim()) return;
+    if (name === before?.trim()) { clearDraft(); return; }
     if (!name) {
       // Revert to server truth; its own failure is swallowed here the same way save()'s catch
       // swallows it (§5.13) — the validation message below is what gets reported either way.
       void load().catch(() => {});
       setError("Name is required");
+      clearDraft();
       return;
     }
-    void save(id, { name });
+    void save(id, { name }).finally(clearDraft);
   }
 
   function blurSaveSort(id: string, value: string) {
-    const before = focused.current[`${id}.sort`];
-    if (value === before) return;
+    const key = `${id}.sort`;
+    const clearDraft = () => setTextDrafts((d) => { const n = { ...d }; delete n[key]; return n; });
+    const before = focused.current[key];
+    if (value === before) { clearDraft(); return; }
     const n = Number(value);
-    if (!Number.isInteger(n) || n < 0) {
+    // Empty is rejected too (the surcharges position-blur guard): Number("") is 0, so a blur from
+    // a backspaced-to-empty field used to silently save sort 0 — the mangled-value class.
+    if (value.trim() === "" || !Number.isInteger(n) || n < 0) {
       void load().catch(() => {});
       setError("Sort must be a whole number, 0 or greater");
+      clearDraft();
       return;
     }
-    void save(id, { sort: n });
+    void save(id, { sort: n }).finally(clearDraft);
   }
 
   async function add() {
@@ -165,9 +193,11 @@ export default function PartFieldsPage() {
           {rows.map((r) => (
             <tr key={r.id} className="border-t">
               <td className="p-2">
-                <input value={r.name} disabled={canEdit.disabled} title={canEdit.title}
+                {/* value from the draft overlay; onChange writes the draft, never rows (the
+                    surcharges/page.tsx textDrafts pattern). */}
+                <input value={draftValue(`${r.id}.name`, r.name)} disabled={canEdit.disabled} title={canEdit.title}
                        onFocus={(e) => noteFocus(r.id, "name", e.target.value)}
-                       onChange={(e) => editLocal(r.id, { name: e.target.value })}
+                       onChange={(e) => setTextDrafts((d) => ({ ...d, [`${r.id}.name`]: e.target.value }))}
                        onBlur={(e) => blurSaveName(r.id, e.target.value)}
                        className="w-full rounded border px-2 py-1 disabled:bg-slate-100" />
               </td>
@@ -179,9 +209,13 @@ export default function PartFieldsPage() {
                 </select>
               </td>
               <td className="p-2">
-                <input value={r.sort} type="number" disabled={canEdit.disabled} title={canEdit.title}
+                {/* Draft overlay like Name — the old onChange parsed through `Number(...) || 0`
+                    into rows, so backspacing to empty instantly re-rendered as "0" and a blur
+                    from there saved sort 0 (the surcharges Position precedent). */}
+                <input value={draftValue(`${r.id}.sort`, String(r.sort))} type="number"
+                       disabled={canEdit.disabled} title={canEdit.title}
                        onFocus={(e) => noteFocus(r.id, "sort", e.target.value)}
-                       onChange={(e) => editLocal(r.id, { sort: Number(e.target.value) || 0 })}
+                       onChange={(e) => setTextDrafts((d) => ({ ...d, [`${r.id}.sort`]: e.target.value }))}
                        onBlur={(e) => blurSaveSort(r.id, e.target.value)}
                        className="w-20 rounded border px-2 py-1 disabled:bg-slate-100" />
               </td>

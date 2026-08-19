@@ -27,9 +27,16 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
   const [status, setStatus] = useState<Status>("loading");
   useEffect(() => {
     setStatus("loading");
+    // Effect-scoped stale flag (the QuoteDetail/templates-list shape — the sanctioned useLatest
+    // equivalent where the fetch is keyed entirely by the effect's deps), gating BOTH paths:
+    // call sites re-point `entityId` into this unkeyed subtree, so a superseded response must
+    // not paint row A's history under row B's heading, flip a fresh "ok" to "error", or mask a
+    // real 403 with a stale success.
+    let stale = false;
     api<Entry[]>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`)
-      .then((rows) => { setEntries(rows); setStatus("ok"); })
-      .catch(() => setStatus("error"));
+      .then((rows) => { if (stale) return; setEntries(rows); setStatus("ok"); })
+      .catch(() => { if (!stale) setStatus("error"); });
+    return () => { stale = true; };
   }, [entity, entityId]);
   if (status === "loading") return <p className="text-sm text-slate-500">Loading history…</p>;
   // Never render "No history" for a request that did not succeed — that's indistinguishable

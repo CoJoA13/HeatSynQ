@@ -24,7 +24,8 @@ import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { useMutationGate } from "@/lib/use-latest";
+import { useLatest, useMutationGate } from "@/lib/use-latest";
+import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -107,11 +108,16 @@ function InvoiceDocumentsList({ invoiceId, viewGate, refresh }: {
 }) {
   const [docs, setDocs] = useState<StoredDoc[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  // §5.13 stale-gate, both paths (F7): the mount fetch races the print-bumped `refresh` refetch
+  // (the ShipmentDocumentsList shape).
+  const latest = useLatest();
   useEffect(() => {
     if (!viewGate.allowed) return;
-    api<StoredDoc[]>(`/api/invoices/${invoiceId}/documents`).then(setDocs)
-      .catch((e) => setErr((e as Error).message));
-  }, [invoiceId, viewGate.allowed, refresh]);
+    const t = latest.next();
+    api<StoredDoc[]>(`/api/invoices/${invoiceId}/documents`)
+      .then((rows) => { if (latest.isCurrent(t)) setDocs(rows); })
+      .catch((e) => { if (latest.isCurrent(t)) setErr((e as Error).message); });
+  }, [invoiceId, viewGate.allowed, refresh, latest]);
 
   if (!viewGate.allowed) return <p className="text-sm text-slate-500">{viewGate.title}</p>;
   if (err) return <p className="text-sm text-red-700">{err}</p>;
@@ -542,19 +548,36 @@ export function InvoiceDetail({ id }: { id: string }) {
     queue.current.set(key, next.catch(() => {}));
     return next;
   }
+  // Per-key REQUEST-settled signals for the failure drain below (Task 7 fix round 1): the drain
+  // must never await the queue's chain TAILS — a tail settles only after its own catch, drain
+  // included, completes, so two keys' saves both failing while overlapping had each catch
+  // awaiting the other's tail: a mutual deadlock. A signal settles with its key's dispatched
+  // request — which IS the commit/failure the rollback GET must postdate — and never depends on
+  // a drain, so no cycle is possible (drain-queue.ts carries the full story).
+  const inFlight = useRef<Map<string, Promise<unknown>>>(new Map());
 
   type HeaderPatch = { poNumber?: string; invoiceDate?: string; termsName?: string; billTo?: string; shipTo?: string };
 
   async function patchHeader(patch: HeaderPatch): Promise<boolean> {
     setInvoice((cur) => (cur ? { ...cur, ...patch } : cur));
+    // A multi-field patch's composite key would NOT serialize against its constituent
+    // single-field keys — latent only: every caller PATCHes one field per save.
     const key = Object.keys(patch).sort().join(",");
     return serial(key, async () => {
       try {
-        await applyMutation(() => api<InvoiceMutationResult>(
+        const req = applyMutation(() => api<InvoiceMutationResult>(
           `/api/invoices/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
+        inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
+        await req;
         setError(null);
         return true;
       } catch (e) {
+        // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
+        // the rollback GET — served before a sibling key's PATCH commits, the newest-ticket GET
+        // would revert that sibling's committed write on screen (its own response then drops as
+        // older-ticketed). Drains the request-settled SIGNALS above, never the queue tails
+        // (fix round 1 — mutual deadlock; drain-queue.ts carries the full story).
+        await drainOtherKeys(inFlight.current, key);
         await load().catch(() => {});
         setError((e as Error).message);
         return false;

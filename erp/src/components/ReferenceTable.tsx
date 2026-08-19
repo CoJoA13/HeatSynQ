@@ -1,7 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
+import { useLatest } from "@/lib/use-latest";
 import { HistoryPanel } from "@/components/HistoryPanel";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
 import { linksFrom, nameKey } from "@/lib/reference-links";
@@ -10,6 +12,16 @@ import { usePermissions } from "@/lib/use-permissions";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 
 type Row = { id: string; name: string; active: boolean } & Record<string, unknown>;
+
+// The reference kinds the setup banner's readiness rollup counts: glAccount feeds the `chart`
+// step (src/server/order-entry-readiness.ts), the other four feed `references`
+// (src/server/install-readiness.ts). Hardcoded here rather than imported because a client
+// component must not import from src/server/** (CLAUDE.md). A create or delete on any other kind
+// moves no readiness signal, so it skips the invalidation — each refetch costs the server an
+// argon2 verify (#110).
+const READINESS_COUNTED_KINDS: ReadonlySet<string> = new Set([
+  "glAccount", "terms", "carrier", "containerType", "material",
+]);
 
 export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -32,10 +44,29 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   const canDelete = gate(perms, "admin.delete");
   const canEdit = gate(perms, "admin.edit");
 
+  // Named `latest`, not `gate` — this file also imports `gate` from permission-ui for the
+  // held-permission checks below, and shadowing that binding with the stale-response gate would
+  // break every `gate(perms, ...)` call in this component (the customers/page.tsx hazard).
+  const latest = useLatest();
+  // F7 (customers/page.tsx precedent): ticket-gated on BOTH paths — a rapid Show-inactive
+  // toggle, or a handler refresh racing one, can land out of order (inactive rows painted under
+  // an unchecked box; a just-flipped flag visually reverting), and a superseded request's
+  // rejection must not overwrite fresh rows with a stale failure either. Cross-KIND safety is
+  // NOT this gate's job: it rests on the mount site remounting the component per kind via
+  // `key={kind}` (admin/reference/page.tsx) — a standing requirement for any future mount site.
   const load = useCallback(async () => {
-    setRows(await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`));
-  }, [kind, showInactive]);
-  useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
+    const t = latest.next();
+    let data: Row[];
+    try {
+      data = await api<Row[]>(`/api/admin/reference/${kind}${showInactive ? "?includeInactive=1" : ""}`);
+    } catch (e) {
+      if (latest.isCurrent(t)) setError((e as Error).message);
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+  }, [kind, showInactive, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   // A stale blocker list from another kind's row must not linger on screen once the admin
   // switches tables.
@@ -68,6 +99,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
   async function add() {
     try {
       await api(`/api/admin/reference/${kind}`, { method: "POST", body: JSON.stringify(buildPayload()) });
+      // #110: a create on a counted kind can complete a readiness step — fired the instant the
+      // POST resolves, before load() (the #124/#131 ordering).
+      if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
       setDraft({}); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
   }
@@ -127,6 +161,8 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
     if (!confirm(`Delete ${labels.singular.toLowerCase()} "${row.name}"?`)) return;
     try {
       await api(`/api/admin/reference/${kind}/${row.id}`, { method: "DELETE" });
+      // #110: deleting the last row of a counted kind can UN-complete a readiness step.
+      if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
       setError(null); setBlocked(null); await load();
     } catch (e) {
       // A refusal is not a dead end here: say what is blocking, and make the list exportable.
@@ -264,7 +300,11 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
         <PasteGrid
           endpoint={`/api/admin/reference/${kind}/paste`}
           columns={[REFERENCE_LABELS[kind].nameLabel, ...REFERENCE_EXTRA_FIELDS[kind].map((f) => f.label)]}
-          onDone={load}
+          onDone={() => {
+            // #110: PasteGrid fires onDone only after a successful POST — same rule as add().
+            if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+            void load();
+          }}
         />
       )}
     </div>

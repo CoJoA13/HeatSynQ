@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
@@ -135,6 +135,16 @@ export function InvoicingList() {
   }, [query, invoicesLatest]);
   useEffect(() => { void loadInvoices(); }, [loadInvoices]);
 
+  // Stale-closure guard (Task 7): `createInvoices` can run a while (one sequential POST per
+  // ticked order), and its captured `loadInvoices` closes over the filter query as of the click —
+  // the post-run reload would re-ask that OLD query with the NEWEST ticket, defeating the gate
+  // and leaving the table disagreeing with the filter controls. The reload goes through this
+  // ref, updated every render (in an effect — the `react-hooks/refs` rule forbids a render-time
+  // write), so it always closes over the CURRENT query. `loadCandidates` has no query axis, so
+  // its captured closure cannot go stale — left as-is.
+  const loadInvoicesRef = useRef(loadInvoices);
+  useEffect(() => { loadInvoicesRef.current = loadInvoices; });
+
   // Task 11's create is per-order and independent: each ticked order POSTs on its own turn, and a
   // failure on one must never abort the run or hide behind one shared banner — it is reported
   // BESIDE that order's own row (task-17-brief.md). Sequential ("in turn"), not Promise.all, so
@@ -155,7 +165,7 @@ export function InvoicingList() {
     // §5.13: roll back to server truth FIRST, then report why. Reloading both lists before
     // setting the per-order failures means a succeeded order's row is never left stranded in
     // "Ready to invoice" for even a moment after the server has already moved it into "Invoices".
-    await Promise.all([loadCandidates(), loadInvoices()]);
+    await Promise.all([loadCandidates(), loadInvoicesRef.current()]);
     setTicked(new Set(failures.keys()));
     setCreateErrors(failures);
     setCreating(false);

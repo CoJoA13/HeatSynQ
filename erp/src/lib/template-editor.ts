@@ -310,6 +310,32 @@ export function resolveSaveError(status: number | null, serverMessage: string): 
 }
 
 // ---------------------------------------------------------------------------------------------
+// Edit-epoch settle decision — what a settling save may still touch (Group D Task 8)
+// ---------------------------------------------------------------------------------------------
+
+export type SaveSettleDecision = {
+  /** Always true: the precondition (`updatedAt`, logo meta) genuinely advanced server-side, so
+   *  freshening it is safe — and required for the NEXT save to match — even when the user edited
+   *  on during the round trip. */
+  freshenPrecondition: true;
+  /** True only when no edit intervened between the save's dispatch and its settle. When false:
+   *  a SUCCESS must not mark the editor clean/Saved (the newer edits were never written — a
+   *  false "Saved" loses them the moment the user navigates away), and a 409 ROLLBACK must not
+   *  replace the config with the fetched one nor raise the conflict banner (the user has moved
+   *  on — the same semantics `apply`'s conflict-dismissal already claims). */
+  applyOutcome: boolean;
+};
+
+/**
+ * The edit-epoch gate's decision at a save's two settle points (`useLatest` semantics: `apply()`
+ * bumps the epoch, `save()` takes a ticket at dispatch, and `editIntervened` is that ticket no
+ * longer being current). Pure so the node-only harness pins it — the `resolveSaveError` precedent.
+ */
+export function resolveSaveSettle(editIntervened: boolean): SaveSettleDecision {
+  return { freshenPrecondition: true, applyOutcome: !editIntervened };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Preview record picker (Task 19, spec §5.5) — docType → which real record the live preview
 // renders against, and how the pane fetches the choices. Pure and client-safe so the picker's
 // mapping is unit-tested here and the pane stays a thin wrapper.

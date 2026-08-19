@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
 import type { Gate } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import type { OrderLoad } from "./page";
 
@@ -66,15 +67,40 @@ export function CertificationsSection({
   createGate: Gate;
 }) {
   const [rows, setRows] = useState<CertRow[]>([]);
+  // A `loaded` flag distinct from "the array is empty" (HANDOFF §5.15, the InvoicesSection shape):
+  // rows=[] before the first fetch lands must not render every "Create cert for Load N" button —
+  // a click there is a guaranteed-400 double create once the real rows arrive.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // load()'s failures get their OWN channel (fix round): createForLoad's catch writes `error` and
+  // does not reload, so sharing one channel let a transient create failure hide the §4.1 gap block
+  // until a full page reload. Only a LOAD failure makes the coverage set untrustworthy.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [creating, setCreating] = useState<number | null>(null);
 
   const allowed = viewGate.allowed;
+  // §5.13 stale-gate, the InvoicesSection shape, both paths (F7): mount races createForLoad's
+  // refresh, and a superseded response — success or rejection — must touch nothing.
+  const latest = useLatest();
   const load = useCallback(async () => {
     if (!allowed) return;
-    setRows(await api<CertRow[]>(`/api/orders/${orderId}/certs`));
-  }, [orderId, allowed]);
-  useEffect(() => { load().then(() => setError(null)).catch((e) => setError((e as Error).message)); }, [load]);
+    const t = latest.next();
+    let data: CertRow[];
+    try {
+      data = await api<CertRow[]>(`/api/orders/${orderId}/certs`);
+    } catch (e) {
+      if (latest.isCurrent(t)) {
+        setLoadError((e as Error).message);
+        setLoaded(true);
+      }
+      return;
+    }
+    if (!latest.isCurrent(t)) return;
+    setRows(data);
+    setLoadError(null);
+    setLoaded(true);
+  }, [orderId, allowed, latest]);
+  useEffect(() => { void load(); }, [load]);
 
   async function createForLoad(loadNumber: number) {
     setCreating(loadNumber);
@@ -106,13 +132,19 @@ export function CertificationsSection({
   // orphan. Flagged by name; the voided case is deliberately excluded (see the header comment).
   const orphans = liveLoadCerts.filter((r) => r.loadNumber !== null && !currentLoadNumbers.has(r.loadNumber));
   const uncovered = loads.filter((l) => !coveredLoadNumbers.has(l.loadNumber));
-  const showLoadGap = certRequired && certScope === "LOAD";
+  // The gap block renders once the first load has SETTLED, success or failure (fix round): a
+  // LOAD failure disables the create buttons with a reason instead of hiding them (§5.16 —
+  // nothing re-triggers load, its deps are fixed for the page's life, so disabled-with-reason is
+  // the honest state), while a createForLoad failure (`error`) hides and disables NOTHING: the
+  // retry click is the recovery.
+  const showLoadGap = loaded && certRequired && certScope === "LOAD";
 
   return (
     <section className="mb-6 rounded border bg-white p-4">
       <h2 className="mb-2 font-medium">Certifications</h2>
 
       {error && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error}</p>}
+      {loadError && <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{loadError}</p>}
 
       {orphans.map((r) => (
         <p key={r.id} className="mb-2 rounded bg-amber-50 p-2 text-sm text-amber-800">
@@ -130,7 +162,10 @@ export function CertificationsSection({
             <div className="flex flex-wrap items-center gap-2">
               {uncovered.map((l) => (
                 <button key={l.id} type="button" onClick={() => void createForLoad(l.loadNumber)}
-                        disabled={createGate.disabled || creating !== null} title={createGate.title}
+                        disabled={createGate.disabled || creating !== null || loadError !== null}
+                        title={createGate.allowed && loadError !== null
+                          ? "Could not confirm which loads already have a cert — reload the page to try again"
+                          : createGate.title}
                         className="rounded border border-slate-800 px-2 py-0.5 text-slate-800 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
                   {creating === l.loadNumber ? "Creating…" : `Create cert for Load ${l.loadNumber}`}
                 </button>
@@ -140,11 +175,11 @@ export function CertificationsSection({
         </div>
       )}
 
-      {rows.length === 0 ? (
+      {loaded && !loadError && rows.length === 0 ? (
         <p className="text-sm text-slate-500">
           {certRequired ? "No certifications yet." : "None — this order does not require a certification."}
         </p>
-      ) : (
+      ) : rows.length > 0 ? (
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-slate-500">
@@ -174,7 +209,7 @@ export function CertificationsSection({
             ))}
           </tbody>
         </table>
-      )}
+      ) : null}
     </section>
   );
 }

@@ -1,8 +1,10 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
 import { gateDo } from "@/lib/permission-ui";
+import { useLatest } from "@/lib/use-latest";
 import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
@@ -36,10 +38,27 @@ export default function UsersPage() {
   // route.ts) requires this same special action — disabled with a tooltip, never hidden (§5.16).
   const manageUsersGate = gateDo(perms, "manage_users");
 
+  // Ticket-gated load (the surcharges/page.tsx load shape): patch()/create() refire this per row
+  // interaction, so overlapping loads used to land in arrival order — a toggled checkbox visibly
+  // reverted while the server held the new value. ONE ticket covers BOTH fetches (Promise.all),
+  // so users and roles can never tear across two loads' snapshots either.
+  const latest = useLatest();
   const load = useCallback(async () => {
-    setUsers(await api<User[]>("/api/admin/users"));
-    setRoles(await api<Role[]>("/api/admin/roles"));
-  }, []);
+    const ticket = latest.next();
+    try {
+      const [u, r] = await Promise.all([
+        api<User[]>("/api/admin/users"),
+        api<Role[]>("/api/admin/roles"),
+      ]);
+      if (!latest.isCurrent(ticket)) return; // a slower, now-superseded load lost the state race
+      setUsers(u); setRoles(r);
+    } catch (e) {
+      // F7 (customers/page.tsx): a superseded load's rejection must not surface an error over
+      // state a newer load has already refreshed.
+      if (!latest.isCurrent(ticket)) return;
+      throw e;
+    }
+  }, [latest]);
   useEffect(() => { load().catch((e) => setError(e.message)); }, [load]);
 
   async function create() {
@@ -53,9 +72,17 @@ export default function UsersPage() {
     } catch (e) { setError((e as Error).message); }
   }
 
-  async function patch(id: string, body: object) {
-    try { await api(`/api/admin/users/${id}`, { method: "PUT", body: JSON.stringify(body) }); await load(); }
-    catch (e) { setError((e as Error).message); }
+  async function patch(id: string, body: object, opts?: { invalidatesSetup?: boolean }) {
+    try {
+      await api(`/api/admin/users/${id}`, { method: "PUT", body: JSON.stringify(body) });
+      // #110: fired for the PASSWORD mutation only (the reset button below passes the flag) —
+      // it is the one PATCH here that moves the banner's readiness signal (install-readiness.ts
+      // argon2-verifies the admin row's password; title/role/active touch nothing it reads), and
+      // invalidating on every title blur would spend a server-side argon2 verify per field edit
+      // for nothing. Before load(), the #124/#131 ordering.
+      if (opts?.invalidatesSetup) invalidateSetupBanner();
+      await load();
+    } catch (e) { setError((e as Error).message); }
   }
 
   return (
@@ -94,7 +121,7 @@ export default function UsersPage() {
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline"
-                        onClick={() => { const p = prompt("New password (min 8 chars):"); if (p) void patch(u.id, { password: p }); }}>
+                        onClick={() => { const p = prompt("New password (min 8 chars):"); if (p) void patch(u.id, { password: p }, { invalidatesSetup: true }); }}>
                   reset…
                 </button>
               </td>

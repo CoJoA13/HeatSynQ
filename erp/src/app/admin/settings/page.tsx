@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { usePermissions } from "@/lib/use-permissions";
 import { gate } from "@/lib/permission-ui";
 import { widgetKindFor, selectOptionsFor, selectLabelsFor, coerceForSubmit } from "@/lib/settings-ui";
@@ -29,6 +30,11 @@ export default function SettingsPage() {
     const value = coerceForSubmit(kind, raw);
     try {
       await api("/api/admin/settings", { method: "PUT", body: JSON.stringify({ key: row.key, value }) });
+      // #110: a company name/address/phone save can complete the banner's `company` readiness
+      // step — fired the instant the PUT resolves, before the reload (the #124/#131 ordering).
+      // Unconditional across keys: settings edits are rare admin actions, and the banner's own
+      // renders-nothing guard bounds the cost once setup is behind it.
+      invalidateSetupBanner();
       setSaved(row.key); setError(null); setTimeout(() => setSaved(null), 1500); void load();
     } catch (e) { setError((e as Error).message); }
   }

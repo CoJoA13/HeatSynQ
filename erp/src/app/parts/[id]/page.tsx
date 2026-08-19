@@ -5,6 +5,8 @@ import { api, ApiError } from "@/lib/fetcher";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
+import { useEditGuard } from "@/lib/use-edit-guard";
+import { useSaveScope } from "@/lib/save-scope";
 import type { CertScopeValue } from "@/lib/cert-constants";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { IdentitySection } from "./IdentitySection";
@@ -78,12 +80,31 @@ function PartDetail({ id }: { id: string }) {
   // leaving a bare count with nothing to click through.
   const [blocked, setBlocked] = useState<{ list: Blocker[] } | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
+  // Every set-of-`part`-from-server routes through `editGuard.merge` so a reload landing
+  // mid-typing — most notably save()'s own §5.13 failure-path rollback for a SIBLING field —
+  // never resets the field the user is actively editing (use-edit-guard.ts; the customers/
+  // CertDetail/ShipmentDetail fix-wave trio, which this page never received). IdentitySection
+  // registers WHICH Part property is under the cursor via `editGuard` below.
+  const editGuard = useEditGuard();
+  // And every optimistic save registers with this scope, every reload routing through it
+  // (save-scope.ts, issue #15): the reload's GET waits out registered saves and re-fetches if
+  // one is dispatched mid-fetch, so a rollback can never apply a payload that predates a newer
+  // save's optimistic value — the merge protects only the focused field; the scope protects
+  // every other key (an in-flight `active`/`serializationRequired` toggle included).
+  const saveScope = useSaveScope();
 
-  const load = useCallback(async () => {
-    const p = await api<Part>(`/api/parts/${id}`);
-    setPart(p);
-    setError(null);
-  }, [id]);
+  const fetchPart = useCallback(() => api<Part>(`/api/parts/${id}`), [id]);
+  const applyPart = useCallback((p: Part) => { setPart((cur) => editGuard.merge(cur, p)); }, [editGuard]);
+  const load = useCallback(
+    () => saveScope.reload(fetchPart, (p) => { applyPart(p); setError(null); }),
+    [saveScope, fetchPart, applyPart],
+  );
+  // The rollback variant skips load()'s setError(null): a rollback reload lands AFTER the
+  // failure it rolls back was reported, and must never clear that banner (§5.13).
+  const rollbackLoad = useCallback(
+    () => saveScope.reload(fetchPart, applyPart),
+    [saveScope, fetchPart, applyPart],
+  );
   useEffect(() => { load().catch((e) => setError((e as Error).message)); }, [load]);
 
   // Per-key request queue + optimistic-then-persist save, the customers/[id]/page.tsx save()/
@@ -98,24 +119,32 @@ function PartDetail({ id }: { id: string }) {
   async function save(body: Record<string, unknown>): Promise<boolean> {
     setPart((cur) => (cur ? ({ ...cur, ...body } as Part) : cur));
     const key = Object.keys(body).sort().join(",");
-    return serial(key, async () => {
+    const settled = serial(key, async () => {
       try {
         await api(`/api/parts/${id}`, { method: "PATCH", body: JSON.stringify(body) });
         setError(null);
         return true;
       } catch (e) {
-        // Roll back to server truth FIRST, then report why — load() clears the error on
-        // success, so setting the error before the reload would let that clear wipe it out
-        // before the user ever saw it (§5.13).
-        await load().catch(() => {});
+        // §5.13 rollback, detached: report first, then fire rollbackLoad() WITHOUT awaiting it
+        // — awaiting from inside this queued fn deadlocks, since the reload waits for every
+        // registered save chain (this one included) to settle before its GET dispatches. The
+        // no-clear apply means the reload can never wipe this banner however late it lands, and
+        // the settle-defer means its payload postdates every save queued behind this one (#15).
         setError((e as Error).message);
+        void rollbackLoad().catch(() => {});
         return false;
       }
     });
+    // Registered at save call time, beside the optimistic set above: reloads defer to this
+    // save's whole chain and re-fetch if it was dispatched mid-fetch (save-scope.ts).
+    saveScope.begin(settled);
+    return settled;
   }
   // Pure local edit — keeps a controlled input showing what the user is typing without a round
   // trip. save() above applies the same shape of patch permanently; this is the onChange half of
-  // the onChange-sets-local/onBlur-saves split customers/[id]/page.tsx uses throughout.
+  // the onChange-sets-local/onBlur-saves split customers/[id]/page.tsx uses throughout. It must
+  // NOT register with saveScope: typing is not a save, and bumping the epoch per keystroke would
+  // starve reloads — mid-typing protection is editGuard's job, not the scope's.
   function patchDraft(patch: Partial<Part>) {
     setPart((cur) => (cur ? { ...cur, ...patch } : cur));
   }
@@ -193,8 +222,8 @@ function PartDetail({ id }: { id: string }) {
         />
       )}
 
-      <IdentitySection part={part} perms={perms} save={save} patchDraft={patchDraft} onError={setError}
-                        onOptionsError={addLoadError} />
+      <IdentitySection part={part} perms={perms} save={save} patchDraft={patchDraft} editGuard={editGuard}
+                        onError={setError} onOptionsError={addLoadError} />
       <SpecsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <InspectionsSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
       <PricingSection partId={id} perms={perms} onError={setError} onOptionsError={addLoadError} />
