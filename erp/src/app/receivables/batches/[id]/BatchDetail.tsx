@@ -727,7 +727,17 @@ export function BatchDetail({ id }: { id: string }) {
                       <td colSpan={8}>
                         <ApplyPanel payment={p} moneyGate={moneyGate} writeOffGate={writeOffGate}
                                     voidApplicationGate={voidApplicationGate}
-                                    onApplied={() => { void load(); }} onError={setError} />
+                                    onApplied={() => {
+                                      // #146 — the outer `load` rethrows (only its mount effect
+                                      // catches), so a network blip HERE after a successful
+                                      // apply was an unhandled rejection + a silently stale
+                                      // page. Reported the way voidBatchAction's own second
+                                      // try/catch does; wording is generic because both
+                                      // apply() and voidApplicationAction() fire this.
+                                      load().catch((e) => setError(
+                                        `The operation succeeded, but the page could not be refreshed — reload to see the current state. (${(e as Error).message})`,
+                                      ));
+                                    }} onError={setError} />
                       </td>
                     </tr>
                   )}
