@@ -74,6 +74,14 @@ export function CertList() {
   const [includeVoided, setIncludeVoided] = useState(false);
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // #144: the picker fetch gets its OWN banner, never the shared `error` that `load()`'s success
+  // clears (the NewShipment `loadError` precedent) — never auto-cleared, since nothing retries
+  // the picker.
+  const [customersError, setCustomersError] = useState<string | null>(null);
+  // A `loaded` flag distinct from "the array is empty" (the InvoicingList `candidatesLoaded`
+  // precedent): the empty-state row must not render before the first load resolves — an
+  // in-flight first fetch is not "No certifications match these filters."
+  const [loaded, setLoaded] = useState(false);
   const { permissions: perms, error: permsError } = usePermissions();
 
   const customersGate = gate(perms, "customers.view");
@@ -99,22 +107,27 @@ export function CertList() {
     try {
       data = await api<CertRow[]>(`/api/certs${query ? `?${query}` : ""}`);
     } catch (e) {
-      if (latest.isCurrent(t)) setError((e as Error).message);
+      if (latest.isCurrent(t)) {
+        setError((e as Error).message);
+        setLoaded(true);
+      }
       return;
     }
     if (!latest.isCurrent(t)) return;
     setError(null);
     setRows(data);
+    setLoaded(true);
   }, [query, latest]);
   useEffect(() => { void load(); }, [load]);
 
   // Customer filter picker: fetched only once the caller is known to hold customers.view (§5.16
   // — a blocked control must say why, not silently sit empty), the parts/page.tsx precedent. A
-  // failed fetch surfaces through the same `error` banner as every other fetch on this page — no
-  // `.catch(() => {})` silencing.
+  // failed fetch reports into `customersError`, NOT the shared `error` (#144): that channel is
+  // cleared by every successful list load, so a picker failure would vanish on the next filter
+  // change while the picker stayed broken. No `.catch(() => {})` silencing either way.
   useEffect(() => {
     if (!customersGate.allowed) return;
-    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setError((e as Error).message));
+    api<CustomerOption[]>("/api/customers").then(setCustomers).catch((e) => setCustomersError((e as Error).message));
   }, [customersGate.allowed]);
 
   return (
@@ -122,6 +135,11 @@ export function CertList() {
       <h1 className="mb-4 text-2xl font-semibold">Certifications</h1>
       {(error ?? permsError) && (
         <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      )}
+      {customersError && (
+        <p className="mb-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
+          Could not load the customer filter: {customersError}
+        </p>
       )}
 
       <div className="mb-3 flex flex-wrap items-center gap-3">
@@ -191,7 +209,7 @@ export function CertList() {
               </td>
             </tr>
           ))}
-          {rows.length === 0 && !error && (
+          {rows.length === 0 && loaded && !error && (
             <tr><td className="p-2 text-slate-500" colSpan={6}>No certifications match these filters.</td></tr>
           )}
         </tbody>
