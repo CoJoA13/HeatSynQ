@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
@@ -345,6 +345,11 @@ function CustomerDetail({ id }: { id: string }) {
       inFlight.current.delete(key);
       return false;
     }
+    // #14 item 1, extended by #153: every caller of `call()` writes a `customerAddress` or
+    // `customerContact` row, both registered children of this page's panel, so each one moves a
+    // history the panel is displaying. Wired HERE rather than at the five call sites because
+    // this is the single success path they share; on success, before the follow-up load.
+    invalidateHistory();
     setError(null);
     try {
       await load();
@@ -447,6 +452,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(`contact:${ct.id}:${key}`, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+        invalidateHistory(); // #14 item 1 — success path, before the rollback/refresh branches
         setError(null);
       } catch (e) {
         // Detached no-clear rollback, the save() shape above (§5.13; #15's cross-key clobber —
@@ -471,6 +477,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        invalidateHistory(); // #14 item 1
         setError(null);
         return true;
       } catch (e) {
@@ -497,6 +504,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        invalidateHistory(); // #14 item 1
         setError(null);
       } catch (e) {
         // Detached no-clear rollback, the save() shape above (§5.13).

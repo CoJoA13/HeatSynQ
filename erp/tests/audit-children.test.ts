@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -128,6 +130,65 @@ describe("#153 — the registry is the whole design", () => {
     // The parent's own rows need no label, and an unregistered entity is never guessed at.
     expect(auditChildLabel("part", "part")).toBeNull();
     expect(auditChildLabel("part", "customerAddress")).toBeNull();
+  });
+});
+
+/**
+ * The FOURTH thing a registry entry implies (Codex round 1 on PR #156): the panel now displays
+ * child rows, so the child's client mutations have to fire `invalidateHistory()` or the panel
+ * advertises that history and then goes stale on exactly the edits it just started advertising.
+ * `#14 item 1` wired only the PART sections, which was correct for the pre-#153 world.
+ *
+ * Entity -> the client file(s) whose mutations write it AND sit on a page mounting a panel that
+ * registers it. A mutation whose page mounts no panel registering that entity is deliberately
+ * absent: `ReceivablesSection.tsx` writes `application` rows, but it lives on the CUSTOMER page,
+ * whose panel is `customer` — which does not register `application` — so there is no stale panel
+ * to refresh there.
+ */
+const INVALIDATION_SITES: Record<string, readonly string[]> = {
+  partSpecification: ["src/app/parts/[id]/SpecsSection.tsx"],
+  partInspection: ["src/app/parts/[id]/InspectionsSection.tsx"],
+  partPrice: ["src/app/parts/[id]/PricingSection.tsx"],
+  partPriceBreak: ["src/app/parts/[id]/PricingSection.tsx"],
+  partFieldValue: ["src/app/parts/[id]/CustomFieldsSection.tsx"],
+  partAttachment: ["src/components/AttachmentsSection.tsx"],
+  partProcessRevision: ["src/app/parts/[id]/ProcessStepsSection.tsx"],
+  customerAddress: ["src/app/customers/[id]/page.tsx"],
+  customerContact: ["src/app/customers/[id]/page.tsx"],
+  customerSurcharge: ["src/app/customers/[id]/SurchargeOverridesSection.tsx"],
+  customerTemplateAssignment: ["src/app/customers/[id]/TemplateAssignmentsSection.tsx"],
+  orderAttachment: ["src/components/AttachmentsSection.tsx"],
+  payment: ["src/app/receivables/batches/[id]/BatchDetail.tsx"],
+  application: ["src/app/receivables/batches/[id]/BatchDetail.tsx"],
+};
+
+describe("#153 — a registered child implies invalidation wiring", () => {
+  // WHAT THIS DOES NOT PIN, stated plainly rather than papered over (the Task 2 precedent this
+  // group set): there is no DOM test environment here, so nothing below proves the call sits on
+  // the SUCCESS path of the right mutation, nor that a mounted panel actually refetches. The
+  // listener contract itself is pinned in tests/history-invalidation.test.ts, and the panel
+  // subscribes through that same export. What this sweep does pin is the pair that actually
+  // rots: a registry entry added with no wiring at all, and a wired file that later loses the
+  // call. Both are silent failures — the panel keeps rendering, just stale.
+
+  it("every registered child entity names a client file that invalidates", () => {
+    const registered = new Set<string>();
+    for (const specs of Object.values(AUDIT_CHILDREN)) {
+      for (const spec of specs) registered.add(spec.entity);
+    }
+    // Coverage both ways: a new registry entry with no manifest row fails here, and a manifest
+    // row left behind by a deleted registry entry fails too.
+    expect([...Object.keys(INVALIDATION_SITES)].sort()).toEqual([...registered].sort());
+  });
+
+  it("every named file imports and calls invalidateHistory", () => {
+    const files = new Set(Object.values(INVALIDATION_SITES).flat());
+    for (const file of files) {
+      const src = readFileSync(join(process.cwd(), file), "utf8");
+      expect(src, `${file} must import invalidateHistory`)
+        .toMatch(/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/);
+      expect(src, `${file} must call invalidateHistory()`).toMatch(/invalidateHistory\(\)/);
+    }
   });
 });
 

@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateHistory } from "@/components/HistoryPanel";
 import { gate, gateDo } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import { TEMPLATE_DOC_TYPES } from "@/lib/template-contracts/index";
@@ -77,6 +78,10 @@ export function TemplateAssignmentsSection({
     const task = async () => {
       try {
         await fn();
+        // #14 item 1, extended by #153: both callers of `run()` write a
+        // `customerTemplateAssignment`, a registered child of this page's panel. Wired here
+        // because this is the single success path they share; before the follow-up load.
+        invalidateHistory();
         onError(null);
         await loadResolved();
       } catch (e) {

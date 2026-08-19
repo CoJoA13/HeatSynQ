@@ -20,7 +20,7 @@ import { useMutationGate, useLatest } from "@/lib/use-latest";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid } from "@/lib/bulk-grid";
 import { formatDateOnly, todayDateOnly } from "@/lib/business-days";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import {
   RECEIPT_BATCH_STATUS_LABELS, APPLICATION_TYPE_LABELS,
   type ReceiptBatchStatusValue, type ApplicationTypeValue,
@@ -200,6 +200,9 @@ function ApplyPanel({
       await api("/api/receivables/applications", {
         method: "POST", body: JSON.stringify({ paymentId: payment.id, lines }),
       });
+      // #14 item 1, extended by #153: `application` is a registered child of the batch panel
+      // (reached through its payment). Success path, before the follow-up load.
+      invalidateHistory();
       grid.reset();
       onError(null);
       onApplied();
@@ -225,6 +228,7 @@ function ApplyPanel({
     setVoidingApplicationId(app.id);
     try {
       await api(`/api/receivables/applications/${app.id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+      invalidateHistory(); // #14 item 1
       onError(null);
       onApplied();
       await load(); // this payment's own candidates: the voided amount reopens the invoice's balance
@@ -476,6 +480,7 @@ export function BatchDetail({ id }: { id: string }) {
           reference: payReference, receivedDate: payReceivedDate,
         }),
       }));
+      invalidateHistory(); // #14 item 1 — `payment` is a registered child of the batch panel
       setPayCustomerId(""); setPayTypeId(""); setPayAmount(""); setPayReference(""); setPayReceivedDate("");
       setError(null);
     } catch (e) {
@@ -498,6 +503,7 @@ export function BatchDetail({ id }: { id: string }) {
       await applyMutation(() => api<BatchDetailData>(`/api/receivables/batches/${id}/payments/${payment.id}`, {
         method: "DELETE", body: JSON.stringify({ reason }),
       }));
+      invalidateHistory(); // #14 item 1
       setError(null);
     } catch (e) {
       setError((e as Error).message);
