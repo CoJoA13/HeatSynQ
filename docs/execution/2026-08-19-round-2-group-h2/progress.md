@@ -47,3 +47,17 @@ the disappearing-row branch now RELEASES the cell slot — the reviewer inverted
 dismissal (soft-delete is precisely what lets a same id leave and re-enter the payload via
 `includeInactive`/reactivation), and with the row's input guaranteed to unmount there is
 nothing left to protect. 23/23 leaf tests; two record-only notes.
+
+**Task 2 (#144 + #145, error channels + in-flight guards)** — implementer `03bee03`/`1b1bc1e`/
+`2b9d006`/`e54b986`/`d663f08`/`f1f3225`/`8bc4415`/`b7cfe25`. Review: **Spec ✅ · Approved
+(round 1)**, zero Important. The reviewer verified every channel split against its actual
+precedent (incl. the customers `loadError`/`actionError` split genuinely dissolving the filed
+trade-off — the ticket-gated clear sits after `isCurrent`, `actionError` is add()-only), both
+AttachmentsSection directions, the board's no-unordered-PATCH window closed, and PricingSection's
+handler bodies byte-identical to base around the new guards. Two deviations judged strictly MORE
+correct than the brief's literal text: the Quotes `bumpingIds` Set (a scalar's `finally` after
+row B starts would clear B's live guard) and the functional `setTicked` (`failures ∪ (prev ∖
+ran)`). Five record-only minors (single banner slot inherent to the sanctioned tagged channel;
+kind-scoped guard breadth matching the `addingRow` precedent; never-auto-cleared picker states
+being the precedent's own rule; untick-mid-run re-tick kept as out-of-scope; no TDD by design —
+client components, nothing extracted).
