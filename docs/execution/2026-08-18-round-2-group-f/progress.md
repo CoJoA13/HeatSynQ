@@ -33,3 +33,13 @@ Approved (round 1)**. The adversarial legacy-first pin (both shapes present, dis
 delete-direction FK semantics were singled out as correct; the honest restatement of the
 retry-scope comment verified coherent. One synthetic-only minor (empty-string targets slipping
 the hardening) — **controller-applied on-branch** (`9c6ab52`), 16/16 green after.
+
+**Task 4 (#32 tripwire + #35 per-model scoping)** — implementer `5ceae06`. #35's RED watched
+(the two order-drafts sites flagged under global matching with the allowlist deleted); #32's
+failure paths proven by watched inversion (no pg@9 exists to go genuinely RED against). Review:
+**Spec ✅ · Approved (round 1)**. The reviewer re-probed the widened regex against adversarial
+receiver shapes (bare variable, multi-line split, unknown delegate — all fall back to the global
+union and still flag), verified all 71 model names satisfy the delegate convention, confirmed
+the load-bearing empty-set-vs-absent distinction (no silent-pass path exists), and checked the
+tripwire's parse robustness in both failure directions. ALLOWED_CALLS deleted entirely — a
+permanent allowlist replaced by a structural fix. Two polish minors, no action.
