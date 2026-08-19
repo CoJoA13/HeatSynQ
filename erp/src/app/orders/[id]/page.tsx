@@ -127,7 +127,9 @@ export type ContainerTypeOption = { id: string; name: string };
 /** Slice of `getCustomer`'s row (src/server/customers.ts) this page actually reads. */
 type Customer = { id: string; code: string; name: string; orderNotes: string };
 
-type AuditEntry = { id: string; action: string; reason: string | null };
+// `entity` since #153: the single-record audit read is a UNION over the parent's child sections,
+// so a row in it is not necessarily the order's own.
+type AuditEntry = { id: string; entity: string; action: string; reason: string | null };
 
 function unwrapMutation(res: OrderMutationResult): { order: OrderDetail; warnings: string[] } {
   if (res && typeof res === "object" && "order" in res) {
@@ -312,9 +314,12 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }
-    api<AuditEntry[]>(`/api/admin/audit?entity=order&entityId=${id}`)
-      .then((entries) => {
-        const latest = entries[0];
+    api<{ rows: AuditEntry[]; hasMore: boolean }>(`/api/admin/audit?entity=order&entityId=${id}`)
+      .then(({ rows }) => {
+        // The newest row belonging to the ORDER — `rows[0]` since #153 may be an attachment's
+        // entry, and reading the reason off that would quietly drop the banner's copy back to
+        // the generic fallback with nothing to show it had happened.
+        const latest = rows.find((e) => e.entity === "order");
         setVoidReason(latest?.action === "delete" ? (latest.reason ?? undefined) : undefined);
       })
       .catch(() => setVoidReason(undefined));

@@ -41,8 +41,11 @@ describe("audit route", () => {
       { params: Promise.resolve({}) });
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toHaveLength(1);
-    expect(body[0].action).toBe("update");
+    // `{ rows, hasMore }` since #153 — the single-record branch is a capped union over the
+    // parent's child sections, and the panel has to be able to state the truncation.
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0].action).toBe("update");
+    expect(body.hasMore).toBe(false);
   });
 
   it("rejects invalid 'from' date with 400", async () => {

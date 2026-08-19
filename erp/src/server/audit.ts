@@ -2,6 +2,7 @@ import { prisma } from "./db";
 import { currentActor } from "./context";
 import { HttpError } from "./errors";
 import { Prisma } from "../../prisma/generated/prisma/client";
+import { AUDIT_CHILDREN, auditChildrenOf } from "@/lib/audit-children";
 
 export type AuditableModel =
   | "user" | "role" | "setting"
@@ -632,6 +633,97 @@ export function readAudit(entity: string, entityId: string) {
     where: { entity, entityId },
     orderBy: [{ at: "desc" }, { id: "desc" }],
   });
+}
+
+/**
+ * Every child entity the registry names, typed as `AuditableModel[]` so the COMPILER rejects a
+ * registry entry naming an entity nothing is audited under — such an entry would resolve to zero
+ * rows forever, and the panel would go on looking correct while showing nothing. The registry is
+ * a client-safe leaf (`src/lib/audit-children.ts` — it cannot import this union), so this is
+ * where that check has to live. Exported for tests/audit-children.test.ts, which re-asserts it
+ * against SNAPSHOT_INCLUDE at runtime; the compile-time half is the whole reason it exists.
+ */
+export const AUDIT_CHILD_ENTITIES: AuditableModel[] =
+  Object.values(AUDIT_CHILDREN).flatMap((specs) => specs.map((spec) => spec.entity));
+
+/** The cap on a parent History panel's union read (#153). Load-bearing, not a nicety:
+ *  SNAPSHOT_INCLUDE.partProcessRevision carries a revision's whole step tree TWICE per entry
+ *  (before + after), and a well-worn part can hold hundreds of those. The panel states the
+ *  truncation whenever `hasMore` comes back true — a silently shortened history is the same class
+ *  of lie as the "No history" on a 403 that panel already refuses to show. */
+export const AUDIT_PANEL_LIMIT = 200;
+
+/** Row shape both audit reads return — `readAudit`'s array and `readAuditWithChildren`'s rows. */
+export type AuditRow = Awaited<ReturnType<typeof readAudit>>[number];
+
+/** One hop of a registry path, executed. Never filters `deletedAt`: see the leaf's own comment —
+ *  a child's DELETE entry is the row a panel most needs, and an intermediate hop that has since
+ *  been soft-deleted (a price row carrying breaks) must not take its children's history with it. */
+async function hopIds(model: string, fk: string, parents: string[]): Promise<string[]> {
+  const delegate = (prisma as unknown as Record<string, {
+    findMany?: (a: { where: Record<string, unknown>; select: { id: true } }) => Promise<{ id: string }[]>;
+  }>)[model];
+  // The registry is a compile-time constant in this repo, never user input, so a miss here is a
+  // programming error and deserves to be loud. tests/audit-children.test.ts walks every hop of
+  // every path so it surfaces at test time rather than at the first panel load.
+  if (typeof delegate?.findMany !== "function") {
+    throw new Error(`audit-children: no Prisma model named "${model}"`);
+  }
+  const rows = await delegate.findMany({ where: { [fk]: { in: parents } }, select: { id: true } });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * A parent's History panel, as a UNION over the child sections that edit it (#153).
+ *
+ * `readAudit` above is an exact `(entity, entityId)` match, and every child section writes its
+ * audit rows under its OWN entity and id — so a price edit, an address rename or a spec swap has
+ * never appeared on the parent's panel at all. This resolves the parent's child-row ids through
+ * `AUDIT_CHILDREN` and reads all of it as ONE newest-first query, so the rows interleave by TIME
+ * rather than as "the parent's own history, then everything else".
+ *
+ * **`readAudit` is deliberately left exactly as it was.** 40-odd call sites — nearly every service
+ * test in the suite — pin it as the exact-match primitive, and folding the union into it would
+ * silently widen all of them.
+ *
+ * The registry lookup goes through `auditChildrenOf`, which guards with `Object.hasOwn`: `entity`
+ * arrives straight off a query string, and `__proto__` must answer an empty union rather than
+ * crash on inherited junk. An unregistered parent simply reads as the exact match it always was.
+ *
+ * Ids union into a SET before the query is built, so a child reachable by two FKs — an
+ * `Application` under an `Invoice` as both the invoice it reduces and the credit it spends — is
+ * listed once, not twice.
+ *
+ * `take: limit + 1` is how `hasMore` is answered without a second COUNT over the same union.
+ */
+export async function readAuditWithChildren(
+  entity: string, entityId: string, limit: number = AUDIT_PANEL_LIMIT,
+): Promise<{ rows: AuditRow[]; hasMore: boolean }> {
+  const scopes: Prisma.AuditLogWhereInput[] = [{ entity, entityId }];
+
+  for (const spec of auditChildrenOf(entity)) {
+    const ids = new Set<string>();
+    for (const path of spec.paths) {
+      // Walk the path in REVERSE — parent id down to child ids — since each hop's `fk` points
+      // one level UP and the last hop's points at the parent itself.
+      let level = [entityId];
+      for (let i = path.length - 1; i >= 0 && level.length > 0; i--) {
+        level = await hopIds(path[i].model, path[i].fk, level);
+      }
+      for (const id of level) ids.add(id);
+    }
+    if (ids.size > 0) scopes.push({ entity: spec.entity, entityId: { in: [...ids] } });
+  }
+
+  const rows = await prisma.auditLog.findMany({
+    where: { OR: scopes },
+    // The same tie-break as readAudit, and for the same reason — but it matters more here: a
+    // union routinely writes several entries in one millisecond (a cascade, a replace-grid), and
+    // `at` alone would leave their order to the planner.
+    orderBy: [{ at: "desc" }, { id: "desc" }],
+    take: limit + 1,
+  });
+  return { rows: rows.slice(0, limit), hasMore: rows.length > limit };
 }
 
 export function searchAudit(filter: { entity?: string; actorName?: string; from?: Date; to?: Date; limit?: number }) {
