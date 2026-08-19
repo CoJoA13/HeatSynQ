@@ -6,6 +6,7 @@ import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-cons
 import { swapAt } from "@/lib/reorder";
 import { useSaveScope } from "@/lib/save-scope";
 import { invalidateHistory } from "@/components/HistoryPanel";
+import { normalizePriceText } from "@/lib/price-display";
 
 // Local mirrors of src/server/part-prices.ts's PartPriceRow/PartBreakRow — not imported from
 // src/server/**, since a client component pulling from there drags node:async_hooks and Prisma
@@ -132,7 +133,18 @@ export function PricingSection({
   function blurSaveRow(e: React.FocusEvent<HTMLInputElement>, id: string, field: RowMoneyField) {
     const value = e.target.value;
     if (value === focusedValue.current) return;
-    void saveRow(id, { [field]: value === "" ? null : value });
+    const sent = value === "" ? null : value;
+    void saveRow(id, { [field]: sent }).then((ok) => {
+      // #14 item 4: on a SUCCESSFUL blur-save, re-set the field to the text a reload would render
+      // ("0.5500" → "0.55" — src/lib/price-display.ts), so the session never shows text the next
+      // reload (or the audit diff) contradicts. Only if the field still holds the exact text this
+      // save sent — the user may have refocused and typed on while the PATCH was in flight, and a
+      // late re-set must not clobber that (the section has no editGuard; this equality check is
+      // its narrow stand-in for this one write).
+      if (!ok || sent === null) return;
+      setRows((cur) => cur.map((r) => (r.id === id && r[field] === sent
+        ? { ...r, [field]: normalizePriceText(sent) } : r)));
+    });
   }
 
   // The open question this task owns (task-5 brief, carried in from Task 4's review): moving a
@@ -284,7 +296,19 @@ export function PricingSection({
       onError(`${field === "threshold" ? "Threshold" : "Price"} cannot be blank — delete the break instead.`);
       return;
     }
-    void saveBreak(priceId, breakId, { [field]: value });
+    void saveBreak(priceId, breakId, { [field]: value }).then((ok) => {
+      // #14 item 4 — the blurSaveRow convention above, applied to the break cells (they are the
+      // same class of 4-decimal input; leaving them un-normalized would recreate the issue one
+      // table down). Same still-holds-the-sent-text guard.
+      if (!ok) return;
+      setRows((cur) => cur.map((r) => (r.id === priceId
+        ? {
+            ...r,
+            breaks: r.breaks.map((b) => (b.id === breakId && b[field] === value
+              ? { ...b, [field]: normalizePriceText(value) } : b)),
+          }
+        : r)));
+    });
   }
   async function addBreak(priceId: string) {
     const draft = draftFor(priceId);
