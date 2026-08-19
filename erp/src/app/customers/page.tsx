@@ -20,7 +20,14 @@ export default function CustomersPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [pasting, setPasting] = useState(false);
   const [draft, setDraft] = useState({ code: "", name: "" });
-  const [error, setError] = useState<string | null>(null);
+  // #144: load and add() each get their OWN channel. One shared `error` forced a choice between
+  // two bugs: a ticket-gated success that never cleared it left a superseded search failure's
+  // banner sitting over fresh rows, while clearing it on load success would wipe an add()
+  // failure the moment the next keystroke's search landed. Split, both rules hold: `loadError`
+  // is cleared by the ticket-gated success below, `actionError` is written and cleared only by
+  // add() itself.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const { permissions: perms, error: permsError } = usePermissions();
 
   const query = `${showInactive ? "includeInactive=1&" : ""}${search ? `search=${encodeURIComponent(search)}` : ""}`;
@@ -31,20 +38,22 @@ export default function CustomersPage() {
   const latest = useLatest();
   // F7: the catch must be ticket-gated too, not just the success path. Without this, a
   // superseded request's REJECTION (a dropped connection on the OLD search term, say) can land
-  // after a newer request already succeeded, and setError() would overwrite the fresh rows with
-  // a stale failure message — the mirror image of the stale-success bug isCurrent() already
-  // guarded against below.
+  // after a newer request already succeeded, and setLoadError() would overwrite the fresh rows
+  // with a stale failure message — the mirror image of the stale-success bug isCurrent() already
+  // guarded against below. The success path clears `loadError` (ticket-gated the same way): a
+  // load failure's banner must not outlive its cause once a newer load has landed fresh rows.
   const load = useCallback(async () => {
     const t = latest.next();
     let data: Customer[];
     try {
       data = await api<Customer[]>(`/api/customers${query ? `?${query}` : ""}`);
     } catch (e) {
-      if (latest.isCurrent(t)) setError((e as Error).message);
+      if (latest.isCurrent(t)) setLoadError((e as Error).message);
       return;
     }
     if (!latest.isCurrent(t)) return;
     setRows(data);
+    setLoadError(null);
   }, [query, latest]);
   useEffect(() => { void load(); }, [load]);
 
@@ -55,15 +64,18 @@ export default function CustomersPage() {
       await api("/api/customers", { method: "POST", body: JSON.stringify(draft) });
       // #110: the first customer completes a banner readiness step (#124/#131 ordering: before load()).
       invalidateSetupBanner();
-      setDraft({ code: "", name: "" }); setError(null); await load();
-    } catch (e) { setError((e as Error).message); }
+      setDraft({ code: "", name: "" }); setActionError(null); await load();
+    } catch (e) { setActionError((e as Error).message); }
   }
 
   return (
     <div className="p-6">
       <h1 className="mb-4 text-2xl font-semibold">Customers</h1>
-      {(error ?? permsError) && (
-        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{error ?? permsError}</p>
+      {(loadError ?? permsError) && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{loadError ?? permsError}</p>
+      )}
+      {actionError && (
+        <p className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">{actionError}</p>
       )}
 
       <div className="mb-3 flex items-center gap-3">
