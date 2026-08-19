@@ -121,3 +121,49 @@ claiming a runtime re-assertion that never existed, and a CLAUDE.md paragraph tr
 its prior length. One declined-and-endorsed: scoping the banner fetch was rejected in favour of
 documenting, since a `parentOnly` param would widen a shared route's contract for a state that
 cannot currently arise.
+
+**Task 4 (#77, the standalone bad-debt write-off)** — implementer `c738663`/`3f00bb5`/`8865cb6`
+(+ fix round `50cf2cf`/`3f90465`/`afeefa3`). Review: **Needs fixes (round 1)**, one Important,
+no Critical. The reviewer verified the whole posting discipline in order (stub read refusing an
+untargetable row before any lock → `claimOrder` → invoice `FOR UPDATE` → re-read → re-validate
+kind/status/deletedAt → over-application vs the live balance → `assertPeriodOpen` → audited
+write on `tx`, all Serializable), ran the suites (54 passed, pristine), and confirmed the
+structural isolation pin is a LIVE assertion on the intercepted transaction option rather than
+a comment. Every paymentId-blind claim was verified by a real test — GL postings through a real
+`closePeriod`+`exportClose`, roll-forward `writeOffTotal`/variance 0, aging, statements.
+
+**The implementer's dangerous-direction deviation was endorsed as stronger than the repo's own
+precedent.** They MEASURED that the brief's single test cannot work: downgrading
+`writeOffInvoice` alone leaves it green, because a Read Committed transaction re-reads the
+period fresh and refuses on the ordinary guard — **the stale snapshot IS the Serializable
+exposure**. So the behavioural half is RED-verified by downgrading `closePeriod` (exactly what
+`close-periods.test.ts`'s existing finalize-vs-close test does) and a structural pin guards this
+service's half — which the precedent lacks.
+
+**The Important is what happens when a feature becomes first-class.** `hasReceivableActivity`
+matches any live application with no type or payment predicate, so a standalone write-off now
+blocks unlock and void-order — correct behavior, but the refusals still said "void the payments
+applied to it first". Before this task a `WRITE_OFF` always carried a `paymentId`, so those
+strings were always true; they became reachable and FALSE, sending the operator to the receipt
+batches to void a payment that does not exist while the actual correction is the Receivables
+section this task built. That is §5.14 — the very rule the void surface exists to satisfy.
+Fixed via one shared `WRITE_OFF_VOID_HINT` constant, with new coverage proving not just the
+refusal but that **voiding the write-off then permits the unlock** (a named route out only
+counts if it unblocks), RED-verified by reverting the wording so the failure prints the false
+instruction itself. Three minors applied.
+
+## The group-level E2E catch (why that gate exists)
+
+The first full run failed **1 of 23** — `receivables-apply-age-statement`, with
+`SyntaxError: Identifier 'invoiceRow' has already been declared`. The flow never parsed, so it
+ran no assertions at all. Cause: **the one file two tasks edited.** Task 1's fix round added a
+settling-payment step and Task 4 added the write-off/void step, each declaring `invoiceRow` in
+the same function scope. Neither implementer could have caught it alone — Task 1 ran
+`node --check` before Task 4's commit existed, and Task 4 verified its selectors against a live
+DOM, which proves the selectors and says nothing about whether the file parses.
+
+**The propagatable finding: `npx eslint src tests` does not cover `e2e/` at all.** The
+implementer re-introduced the collision and ran eslint on the file — **exit 0, nothing
+reported, on a file that cannot be parsed**. `node --check` catches it in milliseconds. After
+the fix they parsed every declaration in the file rather than trusting a name list (41
+declarations, zero duplicates) and `node --check`ed every `e2e/` module.
