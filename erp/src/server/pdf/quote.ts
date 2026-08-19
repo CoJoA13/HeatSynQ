@@ -459,9 +459,12 @@ function priceRow(ctx: Ctx, row: QuotePdfPriceRow): Content[] {
 function lineBlock(ctx: Ctx, line: QuotePdfLine): Content[] {
   const v = ctx.sections.get("lines")!;
   const out: Content[] = [lineGridRow(ctx, line)];
-  // "Material: X" beneath the identity, indented under the sample's own placement. The label stays
-  // when the value is blank (the cert's keep-the-label rule).
-  if (v.field("material").visible) {
+  // "Material: X" beneath the identity, indented under the sample's own placement. The label is
+  // SUPPRESSED when the value is blank (owner ruling 8, 2026-08-12 demo — #100 item 9): a part
+  // with no material assigned, or a free-text line with no materialText, must not print a bare
+  // "Material:". Value-based suppression, deliberately NOT a config knob — the template
+  // contract is untouched, so the §5.3 three-copy drift guard is unaffected.
+  if (v.field("material").visible && line.material !== "") {
     out.push({
       text: [{ text: `${v.field("material").label} `, bold: true }, line.material],
       fontSize: 9, margin: [ctx.qtyW + 6, 6, 0, 0],
