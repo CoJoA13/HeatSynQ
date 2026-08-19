@@ -445,8 +445,9 @@ export function ShipmentDetail({ id }: { id: string }) {
   }, [onShipmentOrderIds, ordersGate.allowed, catalogsLatest, addLoadError]);
 
   // Voided banner's reason (order hub `voidReason` precedent) — safe to key on `voided` alone:
-  // once voided, no mutator can touch the shipment again, so the delete entry, if readable at
-  // all, is always entries[0].
+  // once voided, no mutator can touch the shipment again, so the delete entry is the shipment's
+  // own newest. Since #153 this read is a capped union over the parent's child sections, so it is
+  // found by `entity`, not by position — see the order hub's fuller note on both points.
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }

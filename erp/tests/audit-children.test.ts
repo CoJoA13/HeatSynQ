@@ -3,7 +3,8 @@ import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
 import {
-  AUDIT_PANEL_LIMIT, SNAPSHOT_INCLUDE, auditedUpdate, readAudit, readAuditWithChildren,
+  AUDIT_CHILD_ENTITIES, AUDIT_PANEL_LIMIT, SNAPSHOT_INCLUDE, auditedUpdate, hopIds,
+  readAudit, readAuditWithChildren,
 } from "@/server/audit";
 import { AUDIT_CHILDREN, auditChildLabel, auditChildrenOf } from "@/lib/audit-children";
 import { GET as auditGet } from "@/app/api/admin/audit/route";
@@ -40,7 +41,8 @@ async function partFixture() {
 describe("#153 — the registry is the whole design", () => {
   beforeEach(truncateAll);
 
-  it("every registered child entity is auditable, and every hop resolves against the real schema", async () => {
+  it("every registered child entity is auditable, and the projection covers the whole registry", () => {
+    const entities: string[] = [];
     for (const [parent, specs] of Object.entries(AUDIT_CHILDREN)) {
       for (const spec of specs) {
         // A child whose entity is not an AuditableModel could never have written a row under it —
@@ -48,11 +50,62 @@ describe("#153 — the registry is the whole design", () => {
         expect(Object.hasOwn(SNAPSHOT_INCLUDE, spec.entity), `${parent} → ${spec.entity}`).toBe(true);
         expect(spec.paths.length, `${parent} → ${spec.entity} needs at least one path`)
           .toBeGreaterThan(0);
+        entities.push(spec.entity);
       }
-      // Runs the PRODUCTION walk over every hop of every path. The registry names models and
-      // columns as plain strings (it must stay browser-importable), so this is what catches a
-      // typo — at test time rather than at the first panel load.
-      await expect(readAuditWithChildren(parent, "no-such-parent-id")).resolves.toMatchObject({
+    }
+    // AUDIT_CHILD_ENTITIES is what carries the COMPILE-TIME check (it is annotated
+    // `AuditableModel[]`, which the client-safe registry cannot annotate itself). That guarantee
+    // is only as wide as the projection, so pin that it still enumerates every entry.
+    expect([...AUDIT_CHILD_ENTITIES].sort()).toEqual([...entities].sort());
+  });
+
+  it("executes EVERY registry hop against the real schema, and proves it covered them all", async () => {
+    // Derived from the registry independently of the execution loop below. If the execution ever
+    // stops reaching some hops — which is exactly what happened when this sweep walked whole
+    // chains from a bogus parent id, short-circuiting after the first hop and never executing the
+    // inner hop of `application → paymentId → payment → batchId` — `covered` shrinks while this
+    // stays complete, and the final comparison fails.
+    const expected = new Set<string>();
+    for (const specs of Object.values(AUDIT_CHILDREN)) {
+      for (const spec of specs) {
+        for (const path of spec.paths) {
+          for (const hop of path) expected.add(`${hop.model}.${hop.fk}`);
+        }
+      }
+    }
+
+    const covered = new Set<string>();
+    for (const specs of Object.values(AUDIT_CHILDREN)) {
+      for (const spec of specs) {
+        for (const path of spec.paths) {
+          // Each hop driven on its OWN, through the production `hopIds` — not a replica, and
+          // never by walking the chain. A bogus id list is enough: the query has to COMPILE
+          // against the real schema, which is what catches a typo'd model or column. The
+          // registry names both as plain strings (it must stay browser-importable), so nothing
+          // else can catch one.
+          for (const hop of path) {
+            await expect(hopIds(hop.model, hop.fk, ["no-such-id"]), `${hop.model}.${hop.fk}`)
+              .resolves.toEqual([]);
+            covered.add(`${hop.model}.${hop.fk}`);
+          }
+        }
+      }
+    }
+
+    expect([...covered].sort()).toEqual([...expected].sort());
+    expect(covered.size).toBeGreaterThan(0);
+  });
+
+  it("an unknown model name in a path fails loudly rather than resolving to nothing", async () => {
+    // The other half of the guarantee above: a hop that does not compile must THROW, not answer
+    // an empty list — an empty list is indistinguishable from a correct hop finding no children,
+    // which is how a typo would ship green.
+    await expect(hopIds("partPriceBreek", "partPriceId", ["x"])).rejects.toThrow(/no Prisma model/);
+  });
+
+  it("a parent with no rows reads empty end to end", async () => {
+    for (const parent of Object.keys(AUDIT_CHILDREN)) {
+      await expect(readAuditWithChildren(parent, "no-such-parent-id")).resolves.toEqual({
         rows: [], hasMore: false,
       });
     }
@@ -245,6 +298,61 @@ describe("#153 — the customer panel sees every child section", () => {
   });
 });
 
+describe("#153 — the receipt batch panel reaches its payments and their applications", () => {
+  beforeEach(truncateAll);
+
+  /** The one two-hop chain with no behavioural coverage until review round 1: an application
+   *  reaches the batch only THROUGH its payment. The hop sweep above proves the pair compiles;
+   *  this proves the chain actually resolves with rows at both levels. */
+  it("an application resolves to the batch through its payment", async () => {
+    const customer = await prisma.customer.create({ data: { code: "ACME", name: "Acme" } });
+    const type = await prisma.paymentType.create({ data: { name: "Check" } });
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: 2001, customerId: customer.id,
+        receivedDate: new Date("2026-08-01"), requestDate: new Date("2026-08-10"),
+      },
+    });
+    const invoice = await prisma.invoice.create({
+      data: { orderId: order.id, customerId: customer.id, invoiceDate: new Date("2026-08-01") },
+    });
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 501, depositDate: new Date("2026-08-03") },
+    });
+    const payment = await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: customer.id, paymentTypeId: type.id,
+        amount: 100, receivedDate: new Date("2026-08-03"),
+      },
+    });
+    const app = await prisma.application.create({
+      data: {
+        invoiceId: invoice.id, paymentId: payment.id, amount: 100, type: "PAYMENT",
+        appliedDate: new Date("2026-08-03"),
+      },
+    });
+    await prisma.$transaction(async (tx) => {
+      await auditedUpdate("payment", payment.id, () =>
+        tx.payment.update({ where: { id: payment.id }, data: { notes: "posted" } }), { tx });
+      await auditedUpdate("application", app.id, () =>
+        tx.application.update({ where: { id: app.id }, data: { reason: "applied" } }), { tx });
+    });
+
+    const { rows } = await readAuditWithChildren("receiptBatch", batch.id);
+    expect(rows.filter((r) => r.entity === "payment").map((r) => r.entityId)).toEqual([payment.id]);
+    expect(rows.filter((r) => r.entity === "application").map((r) => r.entityId)).toEqual([app.id]);
+    expect(auditChildLabel("receiptBatch", "payment")).toBe("Payment");
+    expect(auditChildLabel("receiptBatch", "application")).toBe("Application");
+
+    // Scoped: a second batch sees neither.
+    const other = await prisma.receiptBatch.create({
+      data: { batchNumber: 502, depositDate: new Date("2026-08-04") },
+    });
+    const underOther = await readAuditWithChildren("receiptBatch", other.id);
+    expect(underOther.rows).toEqual([]);
+  });
+});
+
 describe("#153 — a child reachable by two FKs is listed once", () => {
   beforeEach(truncateAll);
 
@@ -314,6 +422,11 @@ describe("#153 — a child reachable by two FKs is listed once", () => {
     const appRows = rows.filter((r) => r.entity === "application");
     expect(appRows).toHaveLength(2);
     expect(new Set(appRows.map((r) => r.id)).size).toBe(appRows.length); // no duplicated audit row
+    // Honest about what this pins: the PRIMARY guarantee is the SQL shape — one `findMany` with
+    // an `OR` of `entityId: { in: [...] }` cannot return a row twice — so this passes with or
+    // without the id `Set` in `readAuditWithChildren`. The `Set` is belt (it also keeps the `IN`
+    // list from doubling), and the contract "a child reachable twice is listed once" is worth
+    // pinning against a future rewrite that resolves each path as its own query and concatenates.
   });
 
   it("does not pull one invoice's applications under another", async () => {

@@ -310,7 +310,14 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   // admin.view (HistoryPanel.tsx's own comment), so a caller without it — plausible; orders.view
   // does not imply admin.view — gets the fallback copy rather than a guaranteed 403. Safe to key
   // on `voided` alone: once voided, no mutator can touch the order again (every one of them
-  // requires deletedAt: null), so the delete entry, if readable at all, is always entries[0].
+  // requires deletedAt: null), so the delete entry is the order's own newest.
+  //
+  // It is NOT necessarily the newest row in the response, though: since #153 this read is a
+  // union over the order's child sections, hence the `entity` filter below rather than `rows[0]`.
+  // The union is also CAPPED (AUDIT_PANEL_LIMIT), so a parent holding more child rows than the
+  // cap NEWER than its own delete entry would push that entry out of the window and drop this
+  // banner to its generic copy. Not reachable today — a voided order takes no further child
+  // edits either — but it is the failure mode to remember if the cap or the registry changes.
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }
@@ -318,7 +325,7 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       .then(({ rows }) => {
         // The newest row belonging to the ORDER — `rows[0]` since #153 may be an attachment's
         // entry, and reading the reason off that would quietly drop the banner's copy back to
-        // the generic fallback with nothing to show it had happened.
+        // the generic fallback with nothing to show it had happened. See the cap note above.
         const latest = rows.find((e) => e.entity === "order");
         setVoidReason(latest?.action === "delete" ? (latest.reason ?? undefined) : undefined);
       })

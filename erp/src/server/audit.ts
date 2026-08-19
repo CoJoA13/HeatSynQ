@@ -636,12 +636,14 @@ export function readAudit(entity: string, entityId: string) {
 }
 
 /**
- * Every child entity the registry names, typed as `AuditableModel[]` so the COMPILER rejects a
- * registry entry naming an entity nothing is audited under — such an entry would resolve to zero
- * rows forever, and the panel would go on looking correct while showing nothing. The registry is
- * a client-safe leaf (`src/lib/audit-children.ts` — it cannot import this union), so this is
- * where that check has to live. Exported for tests/audit-children.test.ts, which re-asserts it
- * against SNAPSHOT_INCLUDE at runtime; the compile-time half is the whole reason it exists.
+ * Every child entity the registry names, typed as `AuditableModel[]` **so the COMPILER rejects a
+ * registry entry naming an entity nothing is audited under** — such an entry would resolve to
+ * zero rows forever, and the panel would go on looking correct while showing nothing. That
+ * annotation is the whole point of this constant: the registry is a client-safe leaf
+ * (`src/lib/audit-children.ts`) and cannot import this union, so this is the only place the check
+ * can live. Exported so tests/audit-children.test.ts can pin that it still enumerates the WHOLE
+ * registry — a projection that quietly stopped covering an entry would take the compile-time
+ * guarantee with it.
  */
 export const AUDIT_CHILD_ENTITIES: AuditableModel[] =
   Object.values(AUDIT_CHILDREN).flatMap((specs) => specs.map((spec) => spec.entity));
@@ -656,10 +658,19 @@ export const AUDIT_PANEL_LIMIT = 200;
 /** Row shape both audit reads return — `readAudit`'s array and `readAuditWithChildren`'s rows. */
 export type AuditRow = Awaited<ReturnType<typeof readAudit>>[number];
 
-/** One hop of a registry path, executed. Never filters `deletedAt`: see the leaf's own comment —
- *  a child's DELETE entry is the row a panel most needs, and an intermediate hop that has since
- *  been soft-deleted (a price row carrying breaks) must not take its children's history with it. */
-async function hopIds(model: string, fk: string, parents: string[]): Promise<string[]> {
+/**
+ * One hop of a registry path, executed. Never filters `deletedAt`: see the leaf's own comment —
+ * a child's DELETE entry is the row a panel most needs, and an intermediate hop that has since
+ * been soft-deleted (a price row carrying breaks) must not take its children's history with it.
+ *
+ * Exported for tests/audit-children.test.ts's hop sweep, which runs EVERY `(model, fk)` pair in
+ * the registry through this exact function — the wired path, not a replica. It has to drive the
+ * hops individually: `readAuditWithChildren` walks a path only while the previous hop returned
+ * ids, so a sweep that walked a whole chain from a bogus parent id would short-circuit after the
+ * first hop and silently never execute the INNER hop of a multi-hop path (review round 1 — the
+ * `application → paymentId → payment → batchId` chain was validated by nothing).
+ */
+export async function hopIds(model: string, fk: string, parents: string[]): Promise<string[]> {
   const delegate = (prisma as unknown as Record<string, {
     findMany?: (a: { where: Record<string, unknown>; select: { id: true } }) => Promise<{ id: string }[]>;
   }>)[model];

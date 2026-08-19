@@ -212,7 +212,9 @@ export function CertDetail({ id }: { id: string }) {
     : gate(perms, "certs.view");
 
   // Voided banner's reason (ShipmentDetail.tsx precedent) — safe to key on `voided` alone: once
-  // voided, no mutator can touch the cert again, so the delete entry, if readable, is entries[0].
+  // voided, no mutator can touch the cert again, so the delete entry is the cert's own newest.
+  // Since #153 this read is a capped union over the parent's child sections, so it is found by
+  // `entity`, not by position — see the order hub's fuller note on both points.
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }

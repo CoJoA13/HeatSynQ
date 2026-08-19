@@ -533,7 +533,9 @@ export function InvoiceDetail({ id }: { id: string }) {
   const docsGate = gate(perms, "invoicing.view");
 
   // Discarded banner's reason — the order hub / ShipmentDetail `voidReason` precedent. Safe to
-  // key on `discarded` alone: once discarded, no mutator can touch the invoice again.
+  // key on `discarded` alone: once discarded, no mutator can touch the invoice again. Since #153
+  // this read is a capped union over the invoice's child sections (its applications), so the
+  // delete entry is found by `entity`, not by position — see the order hub's fuller note.
   useEffect(() => {
     if (!discarded) { setDiscardReason(null); return; }
     if (!auditGate.allowed) { setDiscardReason(undefined); return; }

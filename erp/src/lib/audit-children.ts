@@ -22,9 +22,13 @@
  * an intermediate hop (a break whose parent price was itself soft-deleted).
  *
  * Names are plain strings because this file must stay importable from the browser bundle, so a
- * typo cannot be caught by Prisma's types here. `tests/audit-children.test.ts` executes every hop
- * against the real schema instead (the snapshot-order-sweep precedent), which catches a wrong
- * model or column at test time rather than at the first panel load.
+ * typo cannot be caught by Prisma's types here. `tests/audit-children.test.ts` executes every
+ * `(model, fk)` pair against the real schema instead (the snapshot-order-sweep precedent),
+ * INDIVIDUALLY rather than by walking a chain — a chain walk from a bogus parent id stops at the
+ * first hop and would leave every INNER hop of a multi-hop path unvalidated — and asserts that
+ * the set of pairs it executed is the whole registry, so the sweep cannot quietly stop covering
+ * one. That is what catches a wrong model or column at test time rather than at the first panel
+ * load.
  */
 export type AuditChildHop = { model: string; fk: string };
 
