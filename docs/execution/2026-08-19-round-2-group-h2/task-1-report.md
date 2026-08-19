@@ -107,9 +107,33 @@ slot displacement in both directions, and blur commit/release for cells.
   — mirrors the scalar branch; a blur after a server-value landing must stay a no-op.
 - In the orders `applyMutation`, merge runs INSIDE the accept branch, so a dropped stale ticket
   still applies nothing — the gate's contract is unchanged.
-- The disappearing-row branch leaves the slot registered (comment in the leaf explains: React
-  fires no blur for an unmounting input; the next focus/blur anywhere replaces the slot). If the
-  same row id later REAPPEARS in a payload while the slot still holds it, the cell would compare
-  against a stale `atFocus` — reachable only by delete-then-recreate-with-the-same-id between
-  two payloads with zero intervening focus/blur, which soft-delete id semantics make practically
-  impossible; noted for completeness.
+- ~~The disappearing-row branch leaves the slot registered~~ — **resolved in fix round 1**
+  (`9d58d2a`, below): the branch now releases the slot. The original dismissal here was
+  inverted, per the reviewer: soft-delete is precisely what lets a same id leave and RE-ENTER
+  the visible payload (reactivation, an includeInactive refetch), and "fresh ids on recreate"
+  only covers hard recreate, which isn't the reachable path.
+
+## Fix round 1 (2026-08-19, review round 1 — Spec ✅, Approved, one Minor)
+
+**Finding (Minor):** `mergeRows`' disappearing-row branch kept the cell registration alive.
+Once the payload applies, the cell's input unmounts with **no React blur**, and only
+guard-REGISTERED focus/blur replaces the slot — checkboxes, selects, and buttons never touch
+it — so the stale registration survived until the next guarded field was entered. A same-id
+row re-entering a later payload (a supported flow under soft-delete) then compared its server
+value against the dead `atFocus` snapshot, read as dirty-since-focus, and blocked server truth
+on every merge indefinitely. The ~:129 comment's "the next focus or blur anywhere replaces it"
+was also wrong for the same reason.
+
+**Fix (`9d58d2a`, TDD):** RED test first — the three-payload trace (cell registered dirty →
+row leaves the payload → same id re-enters → the NEXT refresh must land wholesale; red at the
+third step, where the stale snapshot made the untouched cell read dirty; observed 1 failed /
+22 passed). Then the implementation: the `!incomingRow` branch sets
+`focused = { key: null, cell: null, atFocus: "" }` before returning the payload as-is —
+clearing is strictly safer, since the input is guaranteed to unmount once the payload applies,
+so there is nothing left to protect. The `!(field in incomingRow)` case deliberately does NOT
+clear: that row — and its focused input — are still live, so the registration stays for the
+blur no-op guard. Comments corrected at the branch, in the leaf header, and on the `mergeRows`
+type doc.
+
+**Gates:** `npx vitest run tests/use-edit-guard.test.ts` — 23/23 green; `npx tsc --noEmit`
+clean; `npx eslint src tests` clean.
