@@ -71,11 +71,22 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 // part-paid earlier can still settle the remainder early and earn the percentage on what remains.
 //
 // It is enforced at BOTH read sites, which cap independently: here (the offer the apply grid renders
-// as a "Take 20.00" checkbox) and in `resolveReason` (the save). They must agree, or the grid offers
-// an amount the save refuses. The issue was originally ruled the other way — a pro-rata percentage
-// of the cash remitted — and re-put to the owner with the arithmetic, because that reading strands
-// $0.40 on the ordinary case (a $1,000 invoice at 2/10 settled by a $980 remittance) and contradicts
-// both this phase's design spec and a pinned test.
+// as a "Take 20.00" checkbox) and in `resolveReason` (the save). They must agree PER INVOICE, or the
+// grid offers an amount the save refuses.
+//
+// They deliberately do NOT agree across a WHOLE GRID, and cannot: this function answers about one
+// invoice at a time and measures the payment's entire unapplied cash against it, so a $1,000 check
+// facing two $1,000 invoices renders "Take 20.00" on BOTH — that cash can settle either, just not
+// both. Taking both is then refused by the payment's own unapplied-amount check inside
+// `applyPaymentInTx`, which is the same upper bound the plain amount inputs have always had (the
+// grid has never claimed a per-row figure is affordable alongside every other row's). The invariant
+// that matters is the one-directional one, and it holds: every DISCOUNT the save ACCEPTS satisfies
+// the condition this function offers on, so the save can never accept what the offer would refuse.
+//
+// The issue was originally ruled the other way — a pro-rata percentage of the cash remitted — and
+// re-put to the owner with the arithmetic, because that reading strands $0.40 on the ordinary case
+// (a $1,000 invoice at 2/10 settled by a $980 remittance) and contradicts both this phase's design
+// spec and a pinned test.
 // -------------------------------------------------------------------------------------------
 
 type DiscountTerms = { discountPercent: Prisma.Decimal | null; discountDays: number | null };
