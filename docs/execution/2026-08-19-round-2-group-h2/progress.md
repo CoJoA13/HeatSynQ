@@ -61,3 +61,23 @@ ran)`). Five record-only minors (single banner slot inherent to the sanctioned t
 kind-scoped guard breadth matching the `addingRow` precedent; never-auto-cleared picker states
 being the precedent's own rule; untick-mid-run re-tick kept as out-of-scope; no TDD by design —
 client components, nothing extracted).
+
+**Task 3 (#146 + #147 + #148, the precedent-copies)** — implementer `de21da0`/`60a5fb0`/
+`96f588b` (+ fix round `653e516`). Review: **Spec ✅ · Approved (round 1)**, zero Important.
+The reviewer verified #146's catch covers both firing paths with no double-report possible
+(the panel's own load self-catches and never rejects), #147's gating exhaustive (`error` only
+ever lands with `loaded=true`, so the ternary covers every state; Export disables through
+`exportTitle !== undefined`), and #148's `rowsAfterSave` race-safe (functional `setRows`
+serializes keystroke-vs-merge through React's updater queue; `rowsAtSave` captured from the
+same closure the diff used). Both judgment calls endorsed: NOT clearing gaps in Close's catch
+(cleared gaps read as a false all-clear to a future ungated consumer — stale gaps at worst
+over-disable) and the new `field-drafts.ts` leaf over extending `step-drafts.ts` (shared rule,
+zero shared types/code). Fix round: one Minor applied — a re-sorted-server fixture pinning the
+merge to fieldId keying, proven red under a temporarily-positional variant (13/13 after) — and
+the report's #146 probe note corrected (wrong in the safe direction). One record-only: the
+month-switch transient stale-affirmative window is the page's deliberate sibling idiom
+(`closeTitle`/schedule carry the identical window), ticket-self-correcting and server-backstopped
+by `exportClose`'s 409 — recorded, not changed.
+
+Task 3's implementer also found the scratch-DB override defect (incident 1 above) and
+re-verified its gates on a genuinely private database.
