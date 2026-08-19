@@ -7,7 +7,7 @@ import type { ColumnDef, ColumnKey, SortState } from "@/lib/board-columns";
 // live in the board page (src/app/page.tsx) — this file renders the table, computes each cell's
 // display (renderCell/sortArrow are pure functions of props), and reports header/row clicks up.
 
-// Local mirror of src/server/orders.ts's BoardRow — not imported from src/server/** (CLAUDE.md
+// Local mirror of src/server/order-board.ts's BoardRow — not imported from src/server/** (CLAUDE.md
 // "Constraints that will bite you": a client component pulling from there drags node:async_hooks
 // and Prisma into the browser bundle). Dates arrive pre-formatted as "yyyy-mm-dd" strings
 // (`formatDateOnly` runs server-side before `NextResponse.json`), so there is nothing left to
