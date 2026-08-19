@@ -74,3 +74,22 @@ Four record-only: the defect-1/2 RED was structural (all cases failed on "not a 
 though verified non-vacuous analytically; the divisions-route document-count assertion pins
 less than it appears; the 409's "use Print per division" half is unreachable for the caller the
 gate opens; and the `stale` race needs StrictMode's double-invoke to be reachable.
+
+**Task 1 (#69 + #8)** — implementer `5bfe003`/`bed28b6`/`7b2e604`. Review: **Spec ✅ ·
+Approved (round 1)**, zero Important — and the review did the work the money deserved. It
+**derived** the two sites' consistency rather than trusting the prose: any accepted DISCOUNT
+satisfies `PAYMENT + DISCOUNT = open` and `DISCOUNT ≤ elig`, hence `PAYMENT ≥ open − elig`,
+which is exactly `discountAvailable`'s test — so **the save can never accept a discount the
+offer would have refused**, multi-invoice payloads included. It traced half-cent rounding
+through two constructions (333.33 @ 1.5%, 1000.25 @ 2%), confirmed the order-independence pin
+goes RED if the aggregation moves back into the loop, and re-derived every changed E2E figure
+by hand. The implementer's **WRITE_OFF exclusion was endorsed with an argument the brief had
+not made**: including it would open a `PAYMENT 500 + DISCOUNT 20 + WRITE_OFF 480` loophole —
+absorbing a short-pay is not being paid early. #8's RED was verified real at base (`JSON.parse
+("null")` returns null without invoking the catch, so `null.reason` threw a TypeError past
+`handle`). Six polish minors, one of them a contract-hygiene catch worth keeping: **spec §15
+recorded the implementer's WRITE_OFF reading inline with the owner's ruled text**, unmarked —
+§15 is the contract, so a derived reading must be labelled as derived and pending
+confirmation. The controller-owned record carried the same class of error and was corrected in
+the same breath: HANDOFF's rolling paragraph still stated the **superseded** first #69 ruling,
+so the handoff and spec §15 asserted opposite policies until it was fixed.
