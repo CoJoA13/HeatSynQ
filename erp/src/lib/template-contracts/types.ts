@@ -31,11 +31,15 @@
  * `dereference` → `validateConfig`), which single-document print routes surface raw along the
  * two-kinds split above (`TemplateConfigError` → 500, `ZodError` → 400) and batch flows (the
  * per-division statement print) catch per member, reporting that member failed — either way,
- * previously-valid paper no longer prints. SAFE under the test: a new knob, a new removable
- * non-column field, a new section of such fields, a widened enum, a raised budget (within the
- * physical width it models), removable false→true — the defaults and the backfill absorb them
- * (the knob/field direction is pinned by the synthetic cases in
- * `tests/template-contracts.test.ts`). NOT safe, INCLUDING the additive-looking cases: a removed
+ * previously-valid paper no longer prints. SAFE under the test, PROVIDED the new defaults are
+ * rendering-neutral for existing configs (a new knob must default to the prior hardcoded
+ * behavior — the §5.3 DEFAULT_CONFIG convention; a new field or section backfills VISIBLE, so it
+ * lands on every stored config's next print and must be intended for all templates, published
+ * ones included): a new knob, a new removable non-column field, a new section of such fields, a
+ * widened enum, a raised budget (within the physical width it models), removable false→true —
+ * the defaults and the backfill absorb them (the knob/field direction is pinned by the
+ * synthetic cases in `tests/template-contracts.test.ts` — parsing and default insertion, not
+ * output). NOT safe, INCLUDING the additive-looking cases: a removed
  * or renamed field key (saves store the complete validated parse, so any config saved while the
  * key existed still carries the entry); a narrowed enum or a lowered `tableBudget` (bites
  * exactly the configs using a dropped value, or totals above the new budget); a new lock —

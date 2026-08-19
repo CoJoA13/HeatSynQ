@@ -79,7 +79,16 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   routes; its cert-bundle example did NOT verify (`printCert` has one call site, the uncaught
   single-document route) and was not adopted.
 
-Replied + resolved per the loop, all rounds.
+- **Round 5** (one P2, real): the SAFE list contradicted the strengthened criterion — a new
+  knob is only "same paper" when it defaults to the prior hardcoded behavior (the §5.3
+  DEFAULT_CONFIG convention), and a new field/section backfills VISIBLE, landing on every
+  stored config's next print. The safe list now carries the rendering-neutrality proviso, and
+  the synthetic-cases citation is scoped to what those tests actually pin (parsing and default
+  insertion, not output).
+
+Replied + resolved per the loop, all rounds. Standing note: if a round 6 brings further
+prose-nuance findings, the stop-reviewing ruling applies — triage to the ledger/issue rather
+than another push cycle (correctness-of-fact findings excepted).
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 
