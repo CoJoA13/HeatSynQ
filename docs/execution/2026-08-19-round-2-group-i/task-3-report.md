@@ -240,6 +240,100 @@ injection — that is the whole finding.
 
 Not pushed, per instruction. No HANDOFF/spec §15 edits.
 
+## Codex round 1 (PR #156) — one P2, accepted: the invalidation contract did not follow the union
+
+Codex was right, and the gap is one my change created. `#14 item 1` wired `invalidateHistory()`
+into the PART sections only, which was correct for the pre-#153 world where a parent panel showed
+nothing but parent rows. My registry made child rows visible on the customer, order, invoice and
+receiptBatch panels — so those panels began advertising child history and then went stale on
+exactly the edits they had just started advertising, until a full page reload.
+
+Derived from the registry rather than from Codex's four names, which turned out to be a subset:
+**`part`'s own attachments and process-steps sections were unwired too**, because `partAttachment`
+and `partProcessRevision` are equally newly-visible and neither was in `#14`'s original scope.
+
+### Wired (17 mutation sites across 6 files)
+
+| Parent | Child entity | File | Sites |
+| --- | --- | --- | --- |
+| part | `partAttachment` | `src/components/AttachmentsSection.tsx` | upload, delete |
+| order | `orderAttachment` | *(same file — one component serves both owners)* | *(same two)* |
+| part | `partProcessRevision` | `src/app/parts/[id]/ProcessStepsSection.tsx` | save step, add, remove, reorder, load template |
+| customer | `customerAddress`, `customerContact` | `src/app/customers/[id]/page.tsx` | `call()` seam (add/delete/default × address+contact = 5 call sites), `toggleContactFlag`, `saveAddressField`, `saveContactField` |
+| customer | `customerSurcharge` | `src/app/customers/[id]/SurchargeOverridesSection.tsx` | `save`, `clearOverride` |
+| customer | `customerTemplateAssignment` | `src/app/customers/[id]/TemplateAssignmentsSection.tsx` | `run()` seam (pick + clear) |
+| receiptBatch | `payment` | `src/app/receivables/batches/[id]/BatchDetail.tsx` | add payment, void payment |
+| receiptBatch, invoice | `application` | *(same file)* | apply, void application |
+
+Wired at the shared seam where one exists (`call()`, `run()`) rather than at each call site — the
+success path they all funnel through, on success and before the follow-up load, per `#14`'s shape.
+No second mechanism: every site calls the existing module-level `invalidateHistory()`, and the
+panel still refetches on nonce.
+
+The part sections already wired by `#14` (`SpecsSection`, `InspectionsSection`, `PricingSection`,
+`CustomFieldsSection`) were left alone — they were already correct.
+
+### Deliberately NOT wired, with reasons
+
+1. **`InvoiceDetail.tsx`** — all seven of its mutations are the invoice's own (PATCH, recalculate,
+   finalize, unlock, credit, discard, print). The invoice panel's only registered child is
+   `application`, which no code on that page writes. Nothing to wire.
+2. **`ReceivablesSection.tsx`** — it does write `application` rows, but it lives on the CUSTOMER
+   page, whose panel is `customer`, and `customer` does not register `application`. No panel on
+   that page displays those rows, so there is no stale panel to refresh. (It is also Task 4's
+   file.)
+3. **`admin/surcharges/page.tsx`** — mounts the `surcharge` panel, but `customerSurcharge` is
+   mutated from the customer page, which is wired. Its own mutations are the parent's own — see 4.
+4. **Every parent's OWN mutations** on the customer, order, invoice, batch, shipper, cert, quote,
+   step-code, template and surcharge pages. This is a **pre-existing** gap, not one #153 created:
+   those panels have always shown their parent's rows and have always gone stale on a parent edit
+   until reload — only `parts/[id]/page.tsx` wires its own save, which was `#14 item 1`'s whole
+   scope. Fixing it is a strict improvement and cheap, but it is a different defect from the one
+   under review, so I did not widen the diff. **Recommend filing at close-out.**
+
+### Coverage, and what it does not pin
+
+No DOM environment, so the honest pin is at the source and listener level — I named the gap rather
+than manufacturing a fake one (the Task 2 precedent this group set). Added
+`INVALIDATION_SITES`, a manifest of child entity → the client file(s) that mutate it, with two
+assertions:
+
+- every registered child entity has a manifest row, **and** every manifest row names a live
+  registry entity (both directions, so the manifest cannot rot in either);
+- every named file imports `invalidateHistory` from `@/components/HistoryPanel` and calls it.
+
+Together those catch the two failure modes that actually rot silently: a registry entry added with
+no wiring, and a wired file that later loses the call. **Both proven** — I removed
+`AttachmentsSection`'s two calls (second test fails), and separately added an unwired `savedView`
+registry entry (first test fails); restored both, and confirmed the leaf is byte-identical to its
+committed state before running the gates.
+
+Not pinned, and said so in a comment at the manifest: that the call sits on the SUCCESS path of
+the *right* mutation, and that a mounted panel actually refetches. The listener contract itself
+stays pinned by `tests/history-invalidation.test.ts`, and the panel subscribes through that same
+export.
+
+`CLAUDE.md`'s Audit paragraph now says **four** edits, not three, and names the manifest as the
+enforcement.
+
+### Gates after this round
+
+| Gate | Result |
+| --- | --- |
+| `DATABASE_URL_TEST=…erp_scratch_i3 npm test` | **204 files / 3448 tests passed** |
+| `npx tsc --noEmit` | clean (exit 0) |
+| `npx eslint src tests` | clean (exit 0) |
+| `node --check` on touched `e2e/` files | n/a — no `e2e/` file touched this round (verified: `git diff --name-only HEAD \| grep -c '^erp/e2e/'` → 0) |
+
+```
+ Test Files  204 passed (204)
+      Tests  3448 passed (3448)
+   Start at  14:18:41
+   Duration  419.49s (transform 1.58s, setup 377ms, collect 25.66s, tests 377.73s, environment 15ms, prepare 4.51s)
+```
+
+Not pushed, per instruction.
+
 ## Open concerns
 
 1. **Query shape at scale.** The union is one `findMany` with an `OR` over per-entity `id IN (…)`
@@ -248,7 +342,9 @@ Not pushed, per instruction. No HANDOFF/spec §15 edits.
    deployment gets near a problem; worth a look if a panel ever feels slow.
 2. **`documentTemplate` has no registry entry** because it has no History panel today. If one is
    added, `documentTemplateVersion` and `customerTemplateAssignment` are its children — the leaf's
-   header says so.
+   header says so — and it would need the invalidation wiring too.
+2b. **Parent-own staleness is still unwired outside the parts page** (Codex round 1, skip 4): a
+   pre-existing gap, named above, recommended for close-out rather than folded into this diff.
 3. **`receiptBatch` → `application` via `payment`** was a hop I added on my own reading of what the
    batch page shows (it lists applications per payment) — the only entry not named in the issue or
    brief. Review round 1 judged it right (the batch page mounts that panel and its principal
