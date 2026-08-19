@@ -91,12 +91,39 @@ under a positional variant). Task 2's five minors all record-only. Six issues cl
 (#144–#149). No migrations. Two new `src/lib/` leaves with suites (`field-drafts.ts`; the
 keyed edit-guard variant inside `use-edit-guard.ts` with its first-ever test file).
 
-## Gates (final tree `681b44f` + `653e516`/`20bf167`)
+## Codex round 1 (PR #154, 2026-08-19)
+
+Two findings, **both verified real and accepted** — and the P1 is the sharper lesson: it was a
+regression introduced by OUR OWN review round (the `9d58d2a` clear-on-absence), the classic
+late-round pattern of findings living in code written for the previous round.
+
+- **P1 (`cc0e946`)**: `applyDetail` merges addresses then contacts through ONE guard slot, and
+  the fix-round release fired whenever the focused row was absent from the incoming array — a
+  focused contact is ALWAYS absent from the addresses array, so the sibling collection's merge
+  destroyed the registration: a dirty contact cell was overwritten wholesale (the exact #149
+  defect), and a focused address lost its blur no-op guard to a cleared `atFocus: ""`, turning
+  an untouched blur into a spurious PATCH. The pre-fix-round code was accidentally safe
+  (absence left the slot alone). Fix: the cell identity is now `{collection, rowId, field}` —
+  `mergeRows(collection, …)` acts on the slot only when the registration names its own
+  collection. RED-first (3 failed / 23 passed on the exact cross-collection constructions),
+  26/26 after; the customers page narrows the collection type to its own union.
+- **P2 (`e4941dd`)**: the functional `setTicked` kept `prev ∖ ran` with no intersection
+  against the REFRESHED candidates, so an order ticked mid-run and invoiced by another session
+  stayed invisibly ticked — Create enabled against a row that no longer renders. Fix:
+  `loadCandidates` returns the ids it just applied (`null` when the fetch failed or was
+  superseded — nothing applied, stale rows still render, so the un-pruned set is the
+  consistent state) and the ENTIRE post-run set — failures included, closing the pre-existing
+  half — intersects with it. The prune deliberately lives only in the post-run update, not at
+  every load.
+
+Both replied + resolved per the loop; one push carrying both fixes (re-triggering review).
+
+## Gates (re-run IN FULL after the Codex round; final tree `cc0e946`)
 
 | Gate | Result |
 |---|---|
-| `npm test` | **3346 passed / 200 files** (solo run on `erp_test`, all implementers done; Group H closed at 3310/198) |
+| `npm test` | **3349 passed / 200 files** (solo runs on `erp_test`; 3346 pre-Codex, +3 cross-collection tests; Group H closed at 3310/198) |
 | `npx tsc --noEmit` | clean |
 | `npx eslint src tests` | clean |
 | `npm run build` | clean |
-| `npm run test:e2e` | **23/23 flows** |
+| `npm run test:e2e` | **23/23 flows**, twice — at `653e516` pre-PR and re-run at `cc0e946` after the Codex fixes (both UI-behavioral) |
