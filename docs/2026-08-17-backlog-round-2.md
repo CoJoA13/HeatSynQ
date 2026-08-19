@@ -263,24 +263,34 @@ on the final tree: **3161 tests / 184 files**, `tsc`/`eslint`/`build` clean, E2E
 
 ---
 
-## Group D — The stale-load class · **#31 first, then #3, #5, #15, #23, #110**
+## Group D — The stale-load class · **MERGED as `c0b795e` (PR #143, squash, 2026-08-18)**
 
-**Decide #31 before fixing any of the others**, because #31 is the decision the rest are instances of.
+#3, #15, #23, #31, #110 closed by the PR; **#5 closed separately with evidence** (already fixed
+by `aeed372`, Phase 2C-2 — `use-latest.ts` cites it; recon caught it, no re-fix). **No schema
+migration anywhere in the group.** Seven implementation tasks, seven independent reviews, three
+fix rounds; gates on the final tree **3249 tests / 189 files**, `tsc`/`eslint`/`build` clean,
+E2E **23/23**, CI green on the first run, Codex posted no review (second consecutive PR).
+Ledger: `docs/execution/2026-08-18-round-2-group-d/`.
 
-`react-hooks/set-state-in-effect` fires **21 times across 19 files** and is switched off in
-`eslint.config.mjs`. The override is defensible (the setState runs in an async continuation, not
-synchronously), **but the rule is pointing at something real**: every stale-load bug this project has
-had is a symptom of hand-rolled fetch-into-state, and `use-latest` was built to answer it.
-
-- **#31** — keep the pattern with `use-latest` as the discipline, or move to a fetch library. Zero work
-  vs a real migration. HANDOFF §9 flags a *sibling-page sweep* here: customers/parts/orders/certs detail
-  pages likely share the hole that Phase 7 fixed on two pages.
-- **#3** (customer detail), **#15** (part detail), **#5** (customer list search), **#23** (step-codes
-  blocker panel names a field from a previously selected code), **#110** (SetupBanner shows stale
-  readiness for the rest of the session after a setup mutation — the fix shape is the
-  `invalidateBackupBanner()` precedent built in round 1, and #110 says so).
-
-Fix them as one sweep with one idiom. Fixing them one at a time is how the class survived this long.
+**What went past the issue text:**
+- **The #31 ruling** (owner, 2026-08-18): keep fetching in effects, permanently — spec §15 row,
+  the eslint override rewritten as the decision record, CLAUDE.md's new discipline paragraph.
+  Second ruling widened the sweep to a sibling audit of every fetch-into-state page: the surface
+  had more than tripled since filing (**77 hits / ~48 files**), and the audit found the class
+  alive across shared components, sections, documents lists, and the whole admin cluster —
+  including TemplateEditor's unrecoverable-loss 409 path and roles' silent grant revert.
+- **The review loop caught 1 Critical + 3 Importants.** The Critical: the first rollback-drain
+  design awaited queue chain tails and mutually deadlocked two concurrently-failing saves —
+  reviewer-REPRODUCED, redesigned to per-key request-settled signals registered at dispatch,
+  re-verified with an independent clone. Two Importants were the briefs' own flaws (the
+  save-scope epoch captured after the settle-wait; SetupBanner's `/login` reset overwritten by a
+  pre-logout in-flight fetch), fixed rather than ratified.
+- **Out-of-class adjacent finds were filed, not fixed** — #144 (error channels), #145 (in-flight
+  guards), #146 (BatchDetail swallowed refresh), #147 (Close readiness gating), #148
+  (CustomFields success wipe), #149 (the T16 typed-text overlay gaps) — the scope line that kept
+  ~30 flagged files from ballooning the group.
+- One implementer-concurrency incident (crossing commits on the shared git index) self-repaired,
+  verified byte-identical, and closed structurally: implementers commit with explicit pathspecs.
 
 ---
 
@@ -405,7 +415,8 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ~~**Task 0** (triage, ~1h)~~ → ~~**A** (invoice engine, merged `1c1fc77`)~~ →
 ~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, merged `4cada64`)~~ →
 ~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
-**D** (stale-load — **OPENS with the #31 owner decision**) ← **NEXT when asked** → **F** →
+~~**D** (stale-load, merged `c0b795e`)~~ →
+**F** (infra — #111 carries a read-its-warning-first note) ← **NEXT when asked** →
 **G**/**H** as filler.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
