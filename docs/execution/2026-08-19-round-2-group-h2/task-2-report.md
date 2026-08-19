@@ -123,3 +123,29 @@ in scope order. All refs below are at the post-commit tree.
 All client-component changes; no pure helper was extracted, so no new vitest suite (the
 brief's "if you extract any pure helper" clause was not triggered). E2E is group-level, not
 run here.
+
+## Codex round 1 (PR #154) — `e4941dd`
+
+Finding (P2, coordinator-verified): the #145 functional `setTicked` kept
+`failures ∪ (prev ∖ ran)` with no intersection against the refreshed candidates, so a tick
+whose order left the list mid-run (invoiced by another session before the reload) became a
+phantom — no checkbox row, no visible per-row error, yet `ticked.size` kept Create enabled
+and re-POSTed an order the operator cannot see. The same invisibility predated my change for
+`failures` whose orders leave the list.
+
+Fix: `loadCandidates` now returns the candidate order ids it just APPLIED (`null` on failure
+or supersession — nothing applied), and `createInvoices` intersects the ENTIRE post-run set
+(failures included) with that fresh list inside the `setTicked` updater — closing over the
+response, not `candidates` state, whose closure is stale there. On a failed/superseded
+reload the un-pruned set is kept: the stale rows (checkboxes included) are still what
+renders, so pruning against nothing would desync the other way. Per the coordinator's
+caution, the prune lives ONLY in the post-run update, not at every candidates load (verified
+in passing: candidates carries no filters — the `buildQuery` comment — so no
+narrowed-list interaction exists either way; the placement follows the instruction
+regardless). `createErrors` is deliberately left un-pruned: an absent row simply doesn't
+render its error, and Create's enablement keys off `ticked` alone.
+
+Gates after the fix: `npx eslint src tests` clean; `npx tsc --noEmit` reports zero errors in
+any file this task owns — the 12 errors present at the time all live in
+`tests/use-edit-guard.test.ts`, Task 1's uncommitted in-progress fix-round edit in the
+shared working tree. Not pushed — the controller pushes after both Codex fixes land.
