@@ -58,3 +58,52 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # #30: build the production Docker image and prove it boots. A SEPARATE PARALLEL job,
+  # deliberately: the main job runs 12+ minutes against its 15-minute cap, so a serial
+  # docker-build step risks the timeout, while a parallel job costs no wall clock.
+  # No path filter — the image bakes the entire app (its own npm ci + next build), so
+  # nearly every change affects it; filtering to Dockerfile-only paths would recreate
+  # the #16 blind spot in reverse. No layer caching — boring first; if this proves slow,
+  # the upgrade is buildx + build-push-action with cache-from/to: type=gha.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: erp
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure environment
+        run: cp .env.example .env
+
+      - name: Start Postgres (creates erp + erp_test via db-init/)
+        run: docker compose up -d --wait db
+
+      - name: Build production image
+        run: docker build -t heatsynq-app:ci .
+
+      # The stock CMD runs `npx prisma migrate deploy && node server.js`, so a DB-less boot
+      # is impossible by design — the container joins the compose network and reaches the db
+      # by service name, mirroring the production compose shape. A 200 from /api/health
+      # (unauthenticated by design, SELECT 1) proves: container started, every migration
+      # applied to the fresh erp DB, Next standalone serving, and the pg adapter connecting.
+      # 60×3s covers npx resolution + the full migration apply + server start; the
+      # container-exited branch fails fast with logs instead of burning the whole budget.
+      - name: Boot the image against the compose db
+        run: |
+          docker run -d --name app-boot --network erp_default \
+            -p 127.0.0.1:3000:3000 \
+            -e DATABASE_URL=postgresql://erp:erp_local_dev@db:5432/erp \
+            heatsynq-app:ci
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 5 http://127.0.0.1:3000/api/health | grep -q '"ok":true'; then
+              echo "boot check passed"; exit 0
+            fi
+            if [ -z "$(docker ps -q -f 'name=^app-boot$')" ]; then
+              echo "container exited before becoming healthy"; docker logs app-boot; exit 1
+            fi
+            sleep 3
+          done
+          echo "timed out waiting for /api/health"; docker logs app-boot; exit 1

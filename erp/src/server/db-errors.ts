@@ -3,22 +3,100 @@ import { HttpError } from "./errors";
 
 export type DbErrorOpts = { entity: string; conflictField?: string };
 
+/** The driver-adapter meta shape (#40): every read below is `unknown`-typed and narrowed, the
+ *  `isRawRetryableFailure` style, because the adapter omits `constraint` entirely when Postgres
+ *  sends no DETAIL line and nothing here may ever throw. */
+type AdapterMeta = {
+  target?: unknown;
+  constraint?: unknown;
+  modelName?: unknown;
+  driverAdapterError?: {
+    cause?: { constraint?: { fields?: unknown; index?: unknown }; originalMessage?: unknown };
+  };
+} | undefined;
+
+/** The adapter parses unique-conflict fields out of Postgres' DETAIL line, so mixed-case
+ *  identifiers arrive wrapped in literal double quotes ('"tokenHash"') and lowercase ones don't.
+ *  Strips exactly one surrounding layer. */
+const stripQuotes = (field: string): string => field.replace(/^"|"$/g, "");
+
+/**
+ * The columns a P2002 fired on. Measured on this stack (#40): `meta.target` is ALWAYS absent —
+ * the answer lives in `meta.driverAdapterError.cause.constraint.fields`. Legacy `meta.target`
+ * (string[] or string) is still consulted FIRST so this keeps working if a future adapter
+ * populates it — the `isDuplicateClientRequestId` precedent (orders.ts) and its documented
+ * rationale. Returns undefined when neither shape carries usable field names (e.g. the adapter's
+ * no-DETAIL case, where `constraint` is omitted entirely), so the caller falls back to "value".
+ */
+function uniqueConflictFields(err: Prisma.PrismaClientKnownRequestError): string[] | undefined {
+  const meta = err.meta as AdapterMeta;
+  const target = meta?.target;
+  if (typeof target === "string" && target.length > 0) return [target];
+  if (Array.isArray(target) && target.length > 0 && target.every((f) => typeof f === "string" && f.length > 0)) {
+    return target;
+  }
+  const fields = meta?.driverAdapterError?.cause?.constraint?.fields;
+  if (Array.isArray(fields) && fields.length > 0 && fields.every((f) => typeof f === "string" && f.length > 0)) {
+    return fields.map(stripQuotes);
+  }
+  return undefined;
+}
+
+/**
+ * The constraint NAME a P2003 fired on. Measured on this stack (#40): `meta.constraint` is
+ * ALWAYS absent — the adapter puts the name under `cause.constraint.index` (the key is `index`,
+ * not `fields`; parsed from pg's `error.constraint`). Legacy `meta.constraint` first, the same
+ * ordering rationale as above; the driver's message text is the last resort.
+ */
+function fkConstraintName(err: Prisma.PrismaClientKnownRequestError): string | undefined {
+  const meta = err.meta as AdapterMeta;
+  if (typeof meta?.constraint === "string") return meta.constraint;
+  const cause = meta?.driverAdapterError?.cause;
+  const index = cause?.constraint?.index;
+  if (typeof index === "string") return index;
+  const message = cause?.originalMessage;
+  if (typeof message === "string") {
+    return message.match(/foreign key constraint "([^"]+)"/)?.[1];
+  }
+  return undefined;
+}
+
+/** The shared `Id`-strip + humanize: "glAccountId" → "gl account". Returns undefined rather than
+ *  a guess when the field isn't plain letters, so nothing unexpected ever leaks into a message. */
+function humanizeFkField(field: string): string | undefined {
+  const label = field.endsWith("Id") ? field.slice(0, -2) : field;
+  if (!/^[A-Za-z]+$/.test(label)) return undefined;
+  return label.replace(/([A-Z])/g, " $1").trim().toLowerCase();
+}
+
 /**
  * Turns a Prisma FK-constraint failure's constraint name (e.g. "PaymentType_glAccountId_fkey")
  * into a short, user-safe field label (e.g. "gl account"). Returns undefined rather than a
  * guess when the constraint doesn't match the expected `${Model}_${field}_fkey` shape, so the
- * caller can fall back to a generic message instead of ever surfacing raw Prisma text.
+ * caller can fall back to a generic message instead of ever surfacing raw Prisma text. (A
+ * delete-direction violation keeps the generic text by design: `modelName` is the parent model
+ * while the constraint names the child table, so the prefix check fails.)
+ *
+ * One adapter variant carries no constraint name at all: when pg sets `error.column`, the
+ * adapter emits `cause.constraint = { fields: [column] }` (#40). That column IS the FK field,
+ * so it maps through the same humanize directly, without the name parse.
  */
 function readableFkField(err: Prisma.PrismaClientKnownRequestError): string | undefined {
-  const constraint = err.meta?.constraint;
-  const modelName = err.meta?.modelName;
-  if (typeof constraint !== "string" || typeof modelName !== "string") return undefined;
-  const prefix = `${modelName}_`;
-  if (!constraint.startsWith(prefix) || !constraint.endsWith("_fkey")) return undefined;
-  const field = constraint.slice(prefix.length, -"_fkey".length);
-  const label = field.endsWith("Id") ? field.slice(0, -2) : field;
-  if (!/^[A-Za-z]+$/.test(label)) return undefined; // guards against leaking anything unexpected
-  return label.replace(/([A-Z])/g, " $1").trim().toLowerCase();
+  const meta = err.meta as AdapterMeta;
+  const constraint = fkConstraintName(err);
+  const modelName = meta?.modelName;
+  if (typeof constraint === "string" && typeof modelName === "string") {
+    const prefix = `${modelName}_`;
+    if (constraint.startsWith(prefix) && constraint.endsWith("_fkey")) {
+      const label = humanizeFkField(constraint.slice(prefix.length, -"_fkey".length));
+      if (label) return label;
+    }
+  }
+  const fields = meta?.driverAdapterError?.cause?.constraint?.fields;
+  if (Array.isArray(fields) && fields.length === 1 && typeof fields[0] === "string") {
+    return humanizeFkField(stripQuotes(fields[0]));
+  }
+  return undefined;
 }
 
 /**
@@ -69,7 +147,7 @@ function violatedCheckConstraint(err: Prisma.PrismaClientKnownRequestError): str
 export function translatePrisma(err: unknown, opts: DbErrorOpts): never {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === "P2002") {
-      const field = opts.conflictField ?? (err.meta?.target as string[] | undefined)?.join(", ") ?? "value";
+      const field = opts.conflictField ?? uniqueConflictFields(err)?.join(", ") ?? "value";
       throw new HttpError(400, `A ${opts.entity.toLowerCase()} with that ${field} already exists`);
     }
     if (err.code === "P2025") throw new HttpError(404, `${opts.entity} not found`);
@@ -110,8 +188,10 @@ export async function withDbErrors<T>(opts: DbErrorOpts, fn: () => Promise<T>): 
  * other branch. A unique-constraint violation (P2002) is retryable ONLY when the caller opted in
  * (#90): the one call site where a P2002 is that same losing-writer shape is `closePeriod`'s
  * year-month insert race — the allocation paths answer their nonce P2002s by in-attempt replay and
- * never retry (#115), and constraint-name discrimination via `meta.target` is unavailable on the
- * driver-adapter stack (#40), so a boolean per call site is the honest scope. Detected on the raw
+ * never retry (#115). Constraint discrimination IS possible since #40 (`uniqueConflictFields`
+ * reads the adapter shape), but whether a P2002 means "a concurrent writer won — a re-run will
+ * see its row" is a fact about the call site's own insert semantics, not about which constraint
+ * fired, so a boolean per call site remains the honest scope. Detected on the raw
  * error, so `retryOnSerializationConflict` must sit INSIDE `withDbErrors` (which would otherwise
  * have already turned these into an `HttpError`).
  */

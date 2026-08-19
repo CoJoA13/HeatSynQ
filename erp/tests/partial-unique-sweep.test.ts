@@ -9,10 +9,15 @@ function models(): [string, string][] {
   return [...SCHEMA.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)].map((m) => [m[1], m[2]]);
 }
 
-/** Columns declared unique only among live rows, e.g. @@unique([code], where: raw("…")). */
-function partialUniqueColumns(): Set<string> {
-  const cols = new Set<string>();
-  for (const [, body] of models()) {
+/**
+ * Columns declared unique only among live rows, e.g. @@unique([code], where: raw("…")) —
+ * scoped per model (#35), so a call site whose receiver names a delegate is tested against
+ * that one model's columns instead of a schema-wide union of every model's.
+ */
+function partialUniqueColumnsByModel(): Map<string, Set<string>> {
+  const byModel = new Map<string, Set<string>>();
+  for (const [name, body] of models()) {
+    const cols = new Set<string>();
     for (const m of body.matchAll(/@@unique\(\[([^\]]+)\][^)]*\bwhere:/g)) {
       const parts = m[1].split(",").map((c) => c.trim());
       parts.forEach((c) => cols.add(c));
@@ -22,8 +27,9 @@ function partialUniqueColumns(): Set<string> {
       // soft-deleted-row hole as a single column and must be covered too.
       if (parts.length > 1) cols.add(parts.join("_"));
     }
+    if (cols.size > 0) byModel.set(name, cols);
   }
-  return cols;
+  return byModel;
 }
 
 function tsFiles(dir: string): string[] {
@@ -53,35 +59,40 @@ describe("partial unique sweep", () => {
   // WhereUniqueInput) and stay excluded below by requiring "(" immediately after the method
   // name, so "updateMany(" and "deleteMany(" cannot match this alternation.
   it("no findUnique, findUniqueOrThrow, upsert, update, or delete is keyed on a live-rows-only unique column", () => {
-    const partial = partialUniqueColumns();
-    expect(partial.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
+    const byModel = partialUniqueColumnsByModel();
+    const globalUnion = new Set([...byModel.values()].flatMap((s) => [...s]));
+    expect(globalUnion.size).toBeGreaterThan(0); // the sweep is worthless if the parse silently fails
 
-    // `partialUniqueColumns()` collects bare column NAMES across the whole schema, not scoped to
-    // the model that declares them — necessarily so, since this is a text sweep with no type
-    // information tying a given `.findUnique(...)` call site back to which model it targets. That
-    // makes it column-name-only, and two unrelated models can share a column name: SavedView's
-    // `@@unique([userId, name], where: ...)` (Task 7) contributes the bare name "userId" to this
-    // set, which also (mis)matches OrderDraft.userId — a plain `@unique` on a model with no
-    // `deletedAt` at all (OrderDraft is not soft-deletable, so it cannot have this bug by
-    // construction). Rewriting order-drafts.ts to avoid findUnique/upsert there would trade away
-    // real correctness for nothing: `upsert` is what keeps concurrent autosaves from two tabs of
-    // the same user race-free, an atomicity `findFirst` + branch cannot reproduce. Two exact call
-    // sites allowlisted below rather than weakening the detection regex itself, which risks
-    // silently missing a real offender reached through some other receiver shape.
-    const ALLOWED_CALLS = new Set([
-      "src/server/order-drafts.ts: .findUnique({ where: { userId … } })",
-      "src/server/order-drafts.ts: .upsert({ where: { userId … } })",
-    ]);
+    // Call sites are scoped to the model their receiver names (#35): `prisma.orderDraft
+    // .findUnique(...)` is tested against OrderDraft's partial-unique columns only. A Prisma
+    // delegate is the model name with its first letter lowercased, so every model gets a
+    // delegate entry — including models with NO partial columns, whose empty set is exactly what
+    // clears them. That is what lets two unrelated models share a column name without a false
+    // positive: SavedView's `@@unique([userId, name], where: ...)` contributes the bare name
+    // "userId", which under the old schema-wide union (mis)matched OrderDraft.userId — a plain
+    // `@unique` on a model with no `deletedAt` at all (OrderDraft is not soft-deletable, so it
+    // cannot have this bug by construction) — and forced an exact-call-site allowlist here.
+    //
+    // The scoping is conservative in the only direction that matters: a call whose receiver is
+    // NOT captured, or is captured but is no known delegate — a bare variable, a destructured
+    // delegate, or a receiver split across lines (`prisma.orderDraft\n.findUnique(` captures
+    // nothing; the accepted residual) — falls back to the GLOBAL union of every model's partial
+    // columns, so detection strength never decreases; a genuinely ambiguous receiver still flags.
+    const byDelegate = new Map<string, Set<string>>();
+    for (const [model] of models()) {
+      byDelegate.set(model[0].toLowerCase() + model.slice(1), byModel.get(model) ?? new Set());
+    }
 
     const files = [...tsFiles(join(process.cwd(), "src")), join(process.cwd(), "prisma/seed.ts")];
     const offenders: string[] = [];
 
     for (const file of files) {
       const src = readFileSync(file, "utf8");
-      for (const m of src.matchAll(/\.(findUnique|findUniqueOrThrow|upsert|update|delete)\(\s*\{\s*where:\s*\{\s*(\w+)/g)) {
-        if (partial.has(m[2])) {
-          const label = `${file.replace(process.cwd() + "/", "")}: .${m[1]}({ where: { ${m[2]} … } })`;
-          if (!ALLOWED_CALLS.has(label)) offenders.push(label);
+      for (const m of src.matchAll(/(?:\.(\w+))?\.(findUnique|findUniqueOrThrow|upsert|update|delete)\(\s*\{\s*where:\s*\{\s*(\w+)/g)) {
+        const [, receiver, method, column] = m;
+        const scope = receiver !== undefined && byDelegate.has(receiver) ? byDelegate.get(receiver)! : globalUnion;
+        if (scope.has(column)) {
+          offenders.push(`${file.replace(process.cwd() + "/", "")}: .${method}({ where: { ${column} … } })`);
         }
       }
     }

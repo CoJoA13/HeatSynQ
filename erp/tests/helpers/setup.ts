@@ -27,7 +27,7 @@ process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
  * any case before any upgrade to pg@9 — its changelog drops the call pattern this warning, and
  * this suppression, both depend on. Tracked as issue #32.
  */
-const SUPPRESSED_PG_DEPRECATION = "Calling client.query() when the client is already executing a query";
+export const SUPPRESSED_PG_DEPRECATION = "Calling client.query() when the client is already executing a query";
 
 function isSuppressedPgDeprecation(warning: string | Error, type: unknown): boolean {
   const message = typeof warning === "string" ? warning : warning.message;
