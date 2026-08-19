@@ -116,7 +116,16 @@ the behavioral pin strengthened to FULL deep-equality (RED watched on the exact 
 construction first). Full suite 3310/198 green after, on an isolated DB and the shared one.
 Replied + resolved per the loop.
 
-## Gates (final tree `716ff21`; E2E at `5941a52`, unit gates re-run after the Codex fix)
+- **Round 2** (one P2, real — `bf72649`): #99's entry guard is a plain read, so a
+  `deleteReference` committing between guard and write could still land the patch on a
+  just-deleted row — the exact residue the task-2 review had recorded as an accepted decision.
+  Codex re-found it; closing it turned out cheap in the reviewer's own suggested shape: the
+  WRITE is now a guarded `updateMany` conditional on `deletedAt: null` (the `auditedSoftDelete`
+  precedent), zero-count raising the same 404 and aborting entry-less at any isolation. The
+  entry guard stays as the fast-path 404; `RefDelegate` gained `updateMany`. All six reference
+  suites (111 tests) + the full suite (3310/198) green after.
+
+## Gates (final tree `bf72649`; E2E at `5941a52`, unit gates re-run after each Codex fix)
 
 | Gate | Result |
 |---|---|
