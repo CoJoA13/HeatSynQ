@@ -151,6 +151,38 @@ One P2, **verified real and accepted — then widened twice** (`d599ec1`):
   note/updater orderings incl. the deferred cases, revert edges), **36/36** after. Full suite
   **3359/200**, tsc/eslint/build clean, **E2E 23/23 (third run)**.
 
+## Codex round 3 (2026-08-19) — the fixpoint
+
+One P2, **verified real and taken as the lesson-4 trigger** (`8f3d1cb`): three consecutive
+rounds on one mechanism means redesign to a fixpoint, not another patch. The finding: round
+2's companions still left `merge` READING the live focus slot inside a deferrable updater
+while `noteMerged` ran at dispatch — two consultations of mutable state at different times, so
+a focus change between them lands the note on the old session and the merge on the new one
+(spurious PATCH of a server-given value; can overwrite a concurrent edit). Reachability today
+is essentially nil (default-priority updates flush in microtasks; focus is a macrotask;
+nothing here uses startTransition) — but React guarantees neither order nor count, so the read
+was the same contract violation the write had been.
+
+The fixpoint: the guard's state is a single **focus session** — an immutable-identity value
+object created at focus and REPLACED, never mutated, by the next focus/blur/release; while
+current it accumulates the grow-only snapshot set. Every apply is
+`applyPayload(incoming)` / `applyRows(collection, incoming)`: capture the session ONCE at
+dispatch, note the payload into that same captured identity, return a pure updater closed over
+it — capture, note, and merge derive from one identity, and **mispairing is not representable
+at a call site**. `capturePayload` is the low-level pair for orders' composed
+travelerPrinted-ternary updater. Live-session reads exist at exactly two kinds of places:
+user-event handlers (never deferred) and the single synchronous capture instant
+(grep-swept). The one residual — a payload committing after a focus change repaints the
+newly-focused untouched box without its session learning the value — is DOCUMENTED in the leaf
+header as a boundary (needs macrotask-scale deferral, unreachable here today, equals the
+pre-adoption `focusedValue` behavior in a strictly narrower window; closable only by an
+effect-time note of the DOM-rendered value) and pinned by an expected-current-behavior test.
+
+TDD: 6 failed / 36 passed observed RED (capture-across-focus-change scalar + keyed, ended
+session, `capturePayload`, double-invocation, boundary pin), **39/39** after; most consumer
+sites simplified to one line. Full suite **3362/200**, tsc/eslint/build clean, **E2E 23/23
+(fourth run)**.
+
 ## Gates (re-run IN FULL after the Codex round; final tree `cc0e946`)
 
 | Gate | Result |
