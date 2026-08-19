@@ -93,6 +93,14 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   replaced by its fixpoint: **a stored config pins only what it explicitly stores; every
   contract default, once published against, is immutable in effect.**
 
+- **Round 7** (one P2, real — applied under the correctness-of-fact exception): the
+  PRE-EXISTING §5.3 paragraph (Phase 7 text) said "no consumer ever reaches for a contract
+  default at render time," directly contradicting the builders' `?? defaultLabel`/
+  `?? defaultWidth` resolution and the new paragraph beneath it. The old sentence now states
+  the true split: the parse result is complete (every key present, scalar knobs concrete), but
+  a field's `label: null`/`width: null` is a sentinel the builders and the width check resolve
+  live — the two header paragraphs now agree.
+
 Replied + resolved per the loop, all rounds. Standing note: from here the stop-reviewing
 ruling applies in full — further prose-nuance findings triage to the ledger/issue rather than
 another push cycle (correctness-of-fact findings excepted).

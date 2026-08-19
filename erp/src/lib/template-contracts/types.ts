@@ -21,7 +21,10 @@
  * and applies the contract's defaults for every absent key — scalar knobs via zod `.default()`,
  * missing section/field entries re-inserted at their contract position — so a version stored
  * before a knob existed keeps rendering identically as contracts grow. The parse result is always
- * a COMPLETE `TemplateConfig`; no consumer ever reaches for a contract default at render time.
+ * a COMPLETE `TemplateConfig` — every key present, scalar knobs concrete — but a field's
+ * `label: null`/`width: null` is a SENTINEL meaning "the contract's default", which builders and
+ * the width check resolve at render/validation time: those two defaults stay live past the
+ * parse (the evolution warning below).
  *
  * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103) — and "additive" is a
  * SEMANTIC test, not a syntactic one: every config valid under the old contract must stay valid
