@@ -28,20 +28,21 @@
  * are all absorbed by the defaults and the backfill (the knob/field growth direction is pinned
  * by the synthetic cases in `tests/template-contracts.test.ts`). One caveat inside that list: a
  * new COLUMN field backfills visible with `width: null`, so it contributes exactly its
- * `defaultWidth` to the table total `assertWidthBudgets` checks (a stored config cannot carry an
- * override for a field that predates it; `"*"` counts 0) — adding one therefore means raising
+ * `defaultWidth` to the table total `assertWidthBudgets` checks (a config saved before the field
+ * existed cannot carry an override for it; `"*"` counts 0) — adding one therefore means raising
  * that table's `tableBudget` by at least the new `defaultWidth` in the same change, or a
  * published config already near the budget hits the width refusal at print. TIGHTENING is NOT:
  * a new lock or removable→false, a removed or renamed field key, a narrowed enum, or a lowered
  * `tableBudget` breaks every published config whose STORED values violate the new rule — all of
- * them for a removed/renamed key (saves store the complete validated parse, so every stored
- * config carries the entry), otherwise only those actually using what was tightened away (hiding
- * the newly-locked element, totals above the lowered budget, a dropped enum value) — and because
- * published versions are immutable and live only in each deployed database, the repo alone
- * cannot prove none is affected. An affected config is re-validated at print-time dereference
- * (`template-assignments.ts` `dereference` → `validateConfig`) with no catch on the print path —
- * previously-valid paper simply stops printing, refusing along the two-kinds split above:
- * `TemplateConfigError` → 500 for rule tightenings, `ZodError` → 400 for shape tightenings. If a
+ * them for a removed/renamed key (saves store the complete validated parse, so any config saved
+ * while the key existed carries the entry), otherwise only those using what was tightened away
+ * (hiding the newly-locked element, totals above the lowered budget, a dropped enum value) — and
+ * because published versions are immutable and live only in each deployed database, the repo
+ * alone cannot prove none is affected. An affected config is re-validated at print-time
+ * dereference (`template-assignments.ts` `dereference` → `validateConfig`) with no catch on the
+ * print path — previously-valid paper simply stops printing, refusing along the two-kinds split
+ * above: `TemplateConfigError` → 500 for rule tightenings, `ZodError` → 400 for shape
+ * tightenings. If a
  * tightening that affects (or cannot be ruled out for) stored configs is ever genuinely
  * required, the two sanctioned shapes are: validate a stored config against the contract version
  * it was PUBLISHED under, or make print-time dereference degrade gracefully (log + contract

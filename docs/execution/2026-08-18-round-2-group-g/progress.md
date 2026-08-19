@@ -35,16 +35,27 @@ One implementation task, one review — **Approved on round 1, zero implementer 
 not-reproducible, owner ruling). No schema migration; no executable-code change anywhere in
 the group.
 
-## Codex round (PR #151, 2026-08-18)
+## Codex rounds (PR #151, 2026-08-18)
 
-One P2, **verified real and accepted** (`2629207`): the header's "a new field is safe"
-over-claimed — a new COLUMN field backfills `visible: true, width: null`, so
-`assertWidthBudgets` counts its `defaultWidth` against the table total, and a published config
-already near `tableBudget` would hit the width refusal at print. The amendment states the
-exactly-sufficient rule: a backfilled column contributes exactly `defaultWidth` (a stored
-config cannot carry an override for a field that predates it), so a column addition must raise
-its table's `tableBudget` by at least that amount in the same change (`"*"` counts 0).
-Replied + resolved per the loop.
+Two P2s across two rounds, both wording-precision findings on the new warning paragraph, both
+**verified real and accepted**:
+
+- **Round 1** (`2629207`): "a new field is safe" over-claimed — a new COLUMN field backfills
+  `visible: true, width: null`, so `assertWidthBudgets` counts its `defaultWidth` against the
+  table total, and a published config already near `tableBudget` would hit the width refusal
+  at print. Amended with the exactly-sufficient rule: a backfilled column contributes exactly
+  `defaultWidth`, so a column addition must raise its table's budget by at least that amount
+  in the same change (`"*"` counts 0).
+- **Round 2** (`bcdfaf7`): "tightening breaks paper the shop has already published"
+  over-claimed the other direction — a tightening breaks only configs whose STORED values
+  violate the new rule. Amended with the precise split: effectively categorical for a
+  removed/renamed key (saves store the complete validated parse, `templates.ts:303-306`),
+  conditional for locks/budgets/enums; and the repo alone cannot prove none is affected since
+  published versions live only in each deployed database. CLAUDE.md's pointer sentence
+  matched. The same push corrects two controller-found imprecisions from round 1's own text
+  (an inverted predates-clause; the saved-before-the-key-existed edge).
+
+Replied + resolved per the loop both rounds.
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 
