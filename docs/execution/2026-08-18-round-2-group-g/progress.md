@@ -86,9 +86,16 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   the synthetic-cases citation is scoped to what those tests actually pin (parsing and default
   insertion, not output).
 
-Replied + resolved per the loop, all rounds. Standing note: if a round 6 brings further
-prose-nuance findings, the stop-reviewing ruling applies — triage to the ledger/issue rather
-than another push cycle (correctness-of-fact findings excepted).
+- **Round 6** (one P2, real — applied at the threshold under the correctness-of-fact
+  exception): absent-key defaults are live too — a config predating a scalar knob re-resolves
+  the schema's `.default(...)` at every print, same mechanism as round 4's stored-`null` case.
+  This completed the defaults family (rounds 4–6 were all instances), so the trap clause was
+  replaced by its fixpoint: **a stored config pins only what it explicitly stores; every
+  contract default, once published against, is immutable in effect.**
+
+Replied + resolved per the loop, all rounds. Standing note: from here the stop-reviewing
+ruling applies in full — further prose-nuance findings triage to the ledger/issue rather than
+another push cycle (correctness-of-fact findings excepted).
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 

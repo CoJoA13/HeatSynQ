@@ -50,11 +50,14 @@
  * cannot carry an override for it; `"*"` counts 0), so every stored config's total grows by
  * that much, and a table without that much physical headroom cannot absorb it (raising
  * `tableBudget` past the width the paper can print only disables the overflow guard); and
- * CHANGING an existing default that stored `null`s resolve to (`defaultLabel`, `defaultWidth`):
- * every stored config stays valid, but builders and the width check read `?? default` from the
- * CURRENT contract, so the next print of an already-published version is silently relabeled or
- * resized — the §5.3 identical-render promise, broken without any refusal — and a raised
- * `defaultWidth` grows stored totals, which can trip the width refusal. If a change that
+ * CHANGING any existing contract default: a stored config pins only what it explicitly stores
+ * (a present key, a non-null label or width) — everything else re-resolves against the CURRENT
+ * contract at every print, an absent scalar key through the schema's `.default(...)` exactly
+ * like a stored-`null` `defaultLabel`/`defaultWidth` or a text block's default — so a contract
+ * default, once published against, is immutable IN EFFECT: changing one silently relabels,
+ * resizes, or restyles the next print of every published version relying on it (the §5.3
+ * identical-render promise, broken without any refusal), and a raised `defaultWidth` grows
+ * stored totals, which can trip the width refusal. If a change that
  * affects (or cannot be ruled out for) stored configs is ever genuinely required, the two
  * sanctioned shapes are: validate AND resolve a stored config against the contract version it
  * was PUBLISHED under (which preserves its defaults too), or make print-time dereference
