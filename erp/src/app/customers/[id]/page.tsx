@@ -131,7 +131,10 @@ function CustomerDetail({ id }: { id: string }) {
   // Every set-of-`c`-from-server routes through `editGuard.merge` so a reload landing mid-typing —
   // most notably save()'s own §5.13 failure-path rollback for a SIBLING field — never resets the
   // customer field the user is actively editing (use-edit-guard.ts; the fix-wave notes-clobber
-  // trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same shape).
+  // trio, of which CertDetail.tsx and ShipmentDetail.tsx carry the same shape). The address/
+  // contact ROW arrays route through the keyed counterpart `editGuard.mergeRows` (#149): their
+  // cells register row id + field via `onFocusCell`, so an arriving server array preserves the
+  // one cell under the cursor the same way.
   const editGuard = useEditGuard();
   // Every optimistic save registers with this scope and every reload routes through it
   // (save-scope.ts, issues #3/#15): a reload's GET waits out the registered save chains and
@@ -149,7 +152,9 @@ function CustomerDetail({ id }: { id: string }) {
     api<Contact[]>(`/api/customers/${id}/contacts${showInactiveContacts ? "?includeInactive=1" : ""}`),
   ]), [id, showInactiveAddresses, showInactiveContacts]);
   const applyDetail = useCallback(([cust, addr, cont]: [Customer, Address[], Contact[]]) => {
-    setC((cur) => editGuard.merge(cur, cust)); setAddresses(addr); setContacts(cont);
+    setC((cur) => editGuard.merge(cur, cust));
+    setAddresses((cur) => editGuard.mergeRows(cur, addr));
+    setContacts((cur) => editGuard.mergeRows(cur, cont));
   }, [editGuard]);
   const load = useCallback(
     () => saveScope.reload(fetchDetail, (data) => { applyDetail(data); setError(null); }),
@@ -336,9 +341,11 @@ function CustomerDetail({ id }: { id: string }) {
   // the fix-wave notes-clobber trio — CertDetail.tsx and ShipmentDetail.tsx carry the same shape):
   // customer-bound fields register WHICH property is under the cursor (`noteFocusC`), so `load()`'s
   // merge above can preserve an in-flight edit when a failed sibling save's rollback (or any other
-  // reload) lands mid-typing; address/contact cells keep the plain no-op guard (`noteFocus`) —
-  // they bind to the separate row arrays, not to `c`.
-  const noteFocus = editGuard.onFocusField(null);
+  // reload) lands mid-typing. Address/contact cells register WHICH ROW (by id) and field
+  // (`noteFocusCell` → the keyed variant, #149) — they used to carry only the plain no-op guard
+  // (`onFocusField(null)`), which left applyDetail's whole-array `setAddresses`/`setContacts`
+  // free to reset the cell under the cursor whenever a reload landed mid-typing.
+  const noteFocusCell = (rowId: string, field: string) => editGuard.onFocusCell(rowId, field);
   const noteFocusC = (key: keyof Customer & string) => editGuard.onFocusField(key);
   // `trim` mirrors the server's own zod .trim() on that specific field (customer code and name,
   // contact name). Applying it here as well keeps the input showing what was actually stored:
@@ -730,35 +737,35 @@ function CustomerDetail({ id }: { id: string }) {
                 </td>
                 <td>
                   <input value={a.name} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(a.id, "name")} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, name: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (name) => void saveAddressField(a, { name }))} />
                 </td>
                 <td>
                   <input value={a.street} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(a.id, "street")} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, street: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (street) => void saveAddressField(a, { street }))} />
                 </td>
                 <td>
                   <input value={a.city} className="w-20 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(a.id, "city")} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, city: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (city) => void saveAddressField(a, { city }))} />
                 </td>
                 <td>
                   <input value={a.state} className="w-12 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(a.id, "state")} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, state: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (state) => void saveAddressField(a, { state }))} />
                 </td>
                 <td>
                   <input value={a.zip} className="w-16 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(a.id, "zip")} readOnly={!canEdit.allowed}
                          onChange={(e) => setAddresses((cur) =>
                            cur.map((row) => (row.id === a.id ? { ...row, zip: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (zip) => void saveAddressField(a, { zip }))} />
@@ -859,21 +866,21 @@ function CustomerDetail({ id }: { id: string }) {
               <tr key={ct.id} className="border-t">
                 <td className="py-1">
                   <input value={ct.name} className="w-28 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(ct.id, "name")} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, name: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, { trim: true }, (name) => void saveContactField(ct, { name }))} />
                 </td>
                 <td>
                   <input value={ct.email} className="w-36 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(ct.id, "email")} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, email: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (email) => void saveContactField(ct, { email }))} />
                 </td>
                 <td>
                   <input value={ct.phone} className="w-24 rounded border px-1 py-0.5 read-only:bg-slate-50"
-                         onFocus={noteFocus} readOnly={!canEdit.allowed}
+                         onFocus={noteFocusCell(ct.id, "phone")} readOnly={!canEdit.allowed}
                          onChange={(e) => setContacts((cur) =>
                            cur.map((row) => (row.id === ct.id ? { ...row, phone: e.target.value } : row)))}
                          onBlur={(e) => onBlurSave(e, {}, (phone) => void saveContactField(ct, { phone }))} />
