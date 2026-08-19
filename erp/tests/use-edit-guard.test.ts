@@ -139,16 +139,16 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
   it("no focused cell: an incoming array lands wholesale", () => {
     const g = makeEditGuard();
     const incoming = rows();
-    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
   });
 
   it("a focused-and-dirty cell keeps its local value; sibling fields, rows, and additions refresh", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1")); // the box showed "n1" on entry
+    g.onFocusCell("rows", "r1", "name")(ev("n1")); // the box showed "n1" on entry
     const cur = rows({ r1: { name: "n1-typed" } }); // typed since focus
     const incoming = [...rows({ r1: { name: "SERVER", street: "S1" }, r2: { name: "N2" } }),
       { id: "r3", name: "n3", street: "s3" }];
-    expect(g.mergeRows(cur, incoming)).toEqual([
+    expect(g.mergeRows("rows", cur, incoming)).toEqual([
       { id: "r1", name: "n1-typed", street: "S1" }, // the cell under the cursor survives; its row refreshes
       { id: "r2", name: "N2", street: "s2" },
       { id: "r3", name: "n3", street: "s3" },
@@ -157,13 +157,13 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
 
   it("matched by row id, not index: a reordered payload still preserves the right cell", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const cur = rows({ r1: { name: "n1-typed" } });
     const incoming = [
       { id: "r2", name: "N2", street: "S2" },
       { id: "r1", name: "SERVER", street: "S1" },
     ];
-    expect(g.mergeRows(cur, incoming)).toEqual([
+    expect(g.mergeRows("rows", cur, incoming)).toEqual([
       { id: "r2", name: "N2", street: "S2" },
       { id: "r1", name: "n1-typed", street: "S1" },
     ]);
@@ -171,9 +171,9 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
 
   it("a focused-but-untouched cell takes the server value and re-snapshots the no-op guard", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const incoming = rows({ r1: { name: "SERVER" } });
-    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
     // Blurring without typing stays a no-op against what the box now shows.
     const commit = vi.fn();
     g.onBlurSave(ev("SERVER"), commit);
@@ -182,57 +182,57 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
 
   it("the focused row disappearing from the payload: the payload lands as-is", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const cur = rows({ r1: { name: "n1-typed" } });
     const incoming = [{ id: "r2", name: "N2", street: "S2" }]; // r1 deleted server-side
-    expect(g.mergeRows(cur, incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", cur, incoming)).toBe(incoming);
   });
 
   it("a disappeared row RELEASES the slot: a same-id row re-entering later merges clean", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     // r1 vanishes (soft-deleted, or hidden by a show-inactive toggle's refetch): lands as-is,
     // and once this payload applies the cell's input unmounts with no React blur — only
     // guard-REGISTERED focus/blur replaces the slot (checkboxes, selects, and buttons never
     // touch it), so the guard must release the registration itself.
     const afterDelete = [{ id: "r2", name: "N2", street: "S2" }];
-    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
+    expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
     // The same id re-enters the payload (reactivation / includeInactive refetch — supported
     // flows, not a hard recreate): merges clean…
     const reappeared = [{ id: "r1", name: "BACK", street: "S1" }, ...afterDelete];
-    expect(g.mergeRows(afterDelete, reappeared)).toBe(reappeared);
+    expect(g.mergeRows("rows", afterDelete, reappeared)).toBe(reappeared);
     // …and STAYS clean on the next refresh. Without the release, r1.name ("BACK") compared
     // against the stale at-focus snapshot ("n1") reads as dirty-since-focus and blocks server
     // truth on every merge indefinitely.
     const fresh = [{ id: "r1", name: "NEWER", street: "S1" }, ...afterDelete];
-    expect(g.mergeRows(reappeared, fresh)).toBe(fresh);
+    expect(g.mergeRows("rows", reappeared, fresh)).toBe(fresh);
   });
 
   it("the focused row missing locally: the payload lands as-is (nothing to preserve)", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r9", "name")(ev("x"));
+    g.onFocusCell("rows", "r9", "name")(ev("x"));
     const incoming = rows();
-    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
   });
 
   it("blur releases the cell slot: commits the change, then arrays land wholesale", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const commit = vi.fn();
     g.onBlurSave(ev("n1-typed"), commit);
     expect(commit).toHaveBeenCalledWith("n1-typed", "n1");
     const cur = rows({ r1: { name: "n1-typed" } });
     const incoming = rows({ r1: { name: "SERVER" } });
-    expect(g.mergeRows(cur, incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", cur, incoming)).toBe(incoming);
   });
 
   it("one slot: focusing a second cell releases the first", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "name")(ev("n1"));
-    g.onFocusCell("r2", "street")(ev("s2"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r2", "street")(ev("s2"));
     const cur = rows({ r1: { name: "n1-typed" }, r2: { street: "s2-typed" } });
     const incoming = rows({ r1: { name: "N1" }, r2: { street: "S2" } });
-    expect(g.mergeRows(cur, incoming)).toEqual(rows({ r1: { name: "N1" }, r2: { street: "s2-typed" } }));
+    expect(g.mergeRows("rows", cur, incoming)).toEqual(rows({ r1: { name: "N1" }, r2: { street: "s2-typed" } }));
   });
 
   it("one slot across variants: a cell registration displaces a scalar one, and vice versa", () => {
@@ -240,26 +240,26 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
     // Scalar focused+dirty: rows are not intercepted…
     g.onFocusField("notes")(ev("a"));
     const incomingRows = rows();
-    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), incomingRows)).toBe(incomingRows);
+    expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), incomingRows)).toBe(incomingRows);
     // …and the scalar registration still protects the detail object.
     const merged = g.merge({ notes: "ab" }, { notes: "server" });
     expect(merged).toEqual({ notes: "ab" });
     // Cell focused+dirty: the detail object is not intercepted…
-    g.onFocusCell("r1", "name")(ev("n1"));
+    g.onFocusCell("rows", "r1", "name")(ev("n1"));
     const incomingDetail = { notes: "server2" };
     expect(g.merge({ notes: "typed" }, incomingDetail)).toBe(incomingDetail);
     // …and the scalar registration is gone: a cell edit survives its own array merge only.
-    expect(g.mergeRows(rows({ r1: { name: "n1-typed" } }), rows({ r1: { name: "N1" } })))
+    expect(g.mergeRows("rows", rows({ r1: { name: "n1-typed" } }), rows({ r1: { name: "N1" } })))
       .toEqual(rows({ r1: { name: "n1-typed", street: "s1" } }));
   });
 
   it("the string lens applies to cells: a numeric cell held as a number reads as displayed", () => {
     const g = makeEditGuard();
     type NumRow = { id: string; qty: number | string };
-    g.onFocusCell("r1", "qty")(ev("5"));
+    g.onFocusCell("rows", "r1", "qty")(ev("5"));
     const cur: NumRow[] = [{ id: "r1", qty: 5 }];
     const incoming: NumRow[] = [{ id: "r1", qty: 7 }];
-    expect(g.mergeRows(cur, incoming)).toBe(incoming); // untouched: server truth lands
+    expect(g.mergeRows("rows", cur, incoming)).toBe(incoming); // untouched: server truth lands
     const commit = vi.fn();
     g.onBlurSave(ev("7"), commit); // re-snapshotted to what the box now shows
     expect(commit).not.toHaveBeenCalled();
@@ -267,8 +267,72 @@ describe("makeEditGuard — the keyed variant (mergeRows)", () => {
 
   it("a focused field absent from the incoming row: the payload lands as-is", () => {
     const g = makeEditGuard();
-    g.onFocusCell("r1", "ghost")(ev("x"));
+    g.onFocusCell("rows", "r1", "ghost")(ev("x"));
     const incoming = rows();
-    expect(g.mergeRows(rows(), incoming)).toBe(incoming);
+    expect(g.mergeRows("rows", rows(), incoming)).toBe(incoming);
+  });
+});
+
+// Codex round 1 on PR #154 (P1): the clear-on-absence release is right WITHIN a collection but
+// was destructive ACROSS collections. The customers page merges addresses THEN contacts through
+// ONE guard slot (applyDetail), and a focused contact's rowId is by definition absent from the
+// ADDRESSES array — that absence is not a deletion, yet the unscoped release treated it as one
+// and dropped the registration before the contacts merge could protect the cell (the exact #149
+// defect back again); in the other direction a protected address lost its registration to the
+// contacts merge, so the next payload clobbered it AND blur fired a spurious commit against the
+// cleared slot's atFocus "". The cell identity therefore includes its COLLECTION, and mergeRows
+// acts on the slot — protecting OR releasing — only for its own collection.
+describe("makeEditGuard — cross-collection scoping (Codex PR #154 round 1)", () => {
+  type Row = { id: string; name: string; street: string };
+  const rows = (over: Partial<Record<"r1" | "r2", Partial<Row>>> = {}): Row[] => [
+    { id: "r1", name: "n1", street: "s1", ...over.r1 },
+    { id: "r2", name: "n2", street: "s2", ...over.r2 },
+  ];
+  type ContactRow = { id: string; name: string; phone: string };
+
+  it("a dirty contact cell survives an addresses-then-contacts double merge", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("contacts", "c1", "name")(ev("Bob"));
+    // applyDetail's order: addresses first. c1 is absent from the ADDRESSES array by definition
+    // — not a deletion; the slot must pass through untouched.
+    const addressesIncoming = rows();
+    expect(g.mergeRows("addresses", rows(), addressesIncoming)).toBe(addressesIncoming);
+    // Then contacts: the registration is intact, so the dirty cell is still protected.
+    const contactsCur: ContactRow[] = [{ id: "c1", name: "Bobby", phone: "p1" }];
+    const contactsIncoming: ContactRow[] = [{ id: "c1", name: "SERVER", phone: "P1" }];
+    expect(g.mergeRows("contacts", contactsCur, contactsIncoming))
+      .toEqual([{ id: "c1", name: "Bobby", phone: "P1" }]);
+  });
+
+  it("an unrelated collection's merge leaves the registration — and the blur no-op — intact", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("addresses", "r1", "name")(ev("n1"));
+    // A CONTACTS merge runs while an address cell is focused: r1 absent there by definition.
+    const contactsIncoming: ContactRow[] = [{ id: "c1", name: "C", phone: "p" }];
+    expect(g.mergeRows("contacts", [], contactsIncoming)).toBe(contactsIncoming);
+    // The registration still protects the now-dirty address cell on ITS collection's merge…
+    expect(g.mergeRows("addresses", rows({ r1: { name: "n1-typed" } }), rows({ r1: { name: "SRV" } })))
+      .toEqual(rows({ r1: { name: "n1-typed" } }));
+    // …and the at-focus snapshot survived too: blurring an UNTOUCHED cell after an unrelated
+    // merge stays a no-op — a cleared slot would compare "n1" against "" and fire a spurious
+    // commit for a change the user never typed.
+    const g2 = makeEditGuard();
+    g2.onFocusCell("addresses", "r1", "name")(ev("n1"));
+    g2.mergeRows("contacts", [], [{ id: "c1", name: "C", phone: "p" }] as ContactRow[]);
+    const commit = vi.fn();
+    g2.onBlurSave(ev("n1"), commit);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it("the within-collection release still holds: a genuine deletion in the OWN collection clears the slot", () => {
+    const g = makeEditGuard();
+    g.onFocusCell("addresses", "r1", "name")(ev("n1"));
+    const afterDelete = [{ id: "r2", name: "N2", street: "S2" }];
+    expect(g.mergeRows("addresses", rows({ r1: { name: "n1-typed" } }), afterDelete)).toBe(afterDelete);
+    // Released: a same-id row re-entering merges clean and stays clean (the 9d58d2a contract).
+    const reappeared = [{ id: "r1", name: "BACK", street: "S1" }, ...afterDelete];
+    expect(g.mergeRows("addresses", afterDelete, reappeared)).toBe(reappeared);
+    const fresh = [{ id: "r1", name: "NEWER", street: "S1" }, ...afterDelete];
+    expect(g.mergeRows("addresses", reappeared, fresh)).toBe(fresh);
   });
 });

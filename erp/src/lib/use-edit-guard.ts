@@ -34,16 +34,22 @@
 // address/contact tables) had only the blur no-op half — their cells registered
 // `onFocusField(null)`, so a server array landing mid-typing (`setAddresses(addr)` from a sibling
 // save's rollback, a show-inactive toggle's refetch) still reset the cell under the cursor.
-// `onFocusCell(rowId, field)` registers WHICH row (by id — stable across the reorders and
-// insertions a fresh payload can carry) and WHICH field is under the cursor, and `mergeRows` is
-// `merge`'s array counterpart: the incoming array lands wholesale UNLESS that one cell is
-// dirty-since-focus, in which case it keeps its local text inside the incoming row of the same
-// id. A focused row deleted server-side takes the payload as-is — there is no row left to carry
-// the cell, and resurrecting one would show data the server no longer has — and RELEASES the
-// slot: the unmounting input never blurs through React, and soft-delete means the same id can
-// re-enter the payload later (reactivation, an includeInactive refetch) and must merge clean.
-// One slot still serves both variants — the DOM has one focused element, so a cell registration
-// and a scalar registration displace each other.
+// `onFocusCell(collection, rowId, field)` registers WHICH collection the row belongs to (a
+// page-chosen name — "addresses", "contacts"), WHICH row (by id — stable across the reorders
+// and insertions a fresh payload can carry) and WHICH field is under the cursor, and
+// `mergeRows(collection, cur, incoming)` is `merge`'s array counterpart: the incoming array
+// lands wholesale UNLESS that one cell is dirty-since-focus, in which case it keeps its local
+// text inside the incoming row of the same id. The collection scopes the slot (Codex PR #154
+// round 1): a page can merge SEVERAL keyed arrays through one guard back-to-back, and a row id
+// is by definition absent from every array but its own — so a merge acts on the registration
+// (protecting OR releasing) only when it names the merge's own collection, and passes through
+// otherwise, payload and slot both. A focused row deleted from its OWN collection's payload
+// takes the payload as-is — there is no row left to carry the cell, and resurrecting one would
+// show data the server no longer has — and RELEASES the slot: the unmounting input never blurs
+// through React, and soft-delete means the same id can re-enter the payload later
+// (reactivation, an includeInactive refetch) and must merge clean. One slot still serves both
+// variants — the DOM has one focused element, so a cell registration and a scalar registration
+// displace each other.
 import { useState } from "react";
 
 type EditableElement = HTMLInputElement | HTMLTextAreaElement;
@@ -54,10 +60,16 @@ export type EditGuard = {
    *  e.g. a child row's cell). */
   onFocusField: (key: string | null) => (e: React.FocusEvent<EditableElement>) => void;
   /** onFocus handler factory for a cell bound to a row of a keyed array (`mergeRows`) rather
-   *  than a property of the page's detail object (`merge`): registers WHICH row (by id) and
-   *  WHICH field is under the cursor. Shares the one focused slot with `onFocusField` — the DOM
-   *  has one focused element, so either registration displaces the other. */
-  onFocusCell: (rowId: string, field: string) => (e: React.FocusEvent<EditableElement>) => void;
+   *  than a property of the page's detail object (`merge`): registers WHICH collection the row
+   *  belongs to (a page-chosen name — "addresses", "contacts"), WHICH row (by id), and WHICH
+   *  field is under the cursor. The collection is part of the cell's identity (Codex PR #154
+   *  round 1): a page can merge SEVERAL keyed arrays through one guard, and a row id is by
+   *  definition absent from every array but its own — without the scope, another collection's
+   *  merge would read that absence as a deletion and release the registration. Shares the one
+   *  focused slot with `onFocusField` — the DOM has one focused element, so either registration
+   *  displaces the other. */
+  onFocusCell: (collection: string, rowId: string, field: string) =>
+    (e: React.FocusEvent<EditableElement>) => void;
   /** Blur-save no-op guard: commits only when the value genuinely changed since focus.
    *  `commit` also receives the at-focus snapshot, for callers that roll a bad value back to it.
    *  `opts.trim` mirrors a server-side zod `.trim()` so add-and-remove-a-space is a no-op. */
@@ -73,27 +85,35 @@ export type EditGuard = {
   /** `merge`'s counterpart for array state keyed by row id: the incoming array lands wholesale
    *  UNLESS the focused cell (registered via `onFocusCell`) is dirty-since-focus, in which case
    *  that ONE cell keeps its local value inside the incoming row of the same id — reorders,
-   *  insertions, and every sibling field/row refresh. A focused row absent from the payload
-   *  (deleted server-side) takes the payload as-is and releases the slot — its input is about
-   *  to unmount with no React blur, and the same id can re-enter a later payload. Route EVERY
+   *  insertions, and every sibling field/row refresh. Acts on the slot — protecting OR
+   *  releasing — only when the registration names THIS `collection`; any other registration
+   *  passes through untouched, payload and slot both (Codex PR #154 round 1: a focused
+   *  contact's id is absent from the addresses array by definition, and that absence is not a
+   *  deletion). A focused row absent from its OWN collection's payload (genuinely deleted
+   *  server-side) takes the payload as-is and releases the slot — its input is about to unmount
+   *  with no React blur, and the same id can re-enter a later payload. Route EVERY
    *  set-rows-from-server through this on pages whose cells register with `onFocusCell`. */
-  mergeRows: <R extends { id: string }>(cur: R[], incoming: R[]) => R[];
+  mergeRows: <R extends { id: string }>(collection: string, cur: R[], incoming: R[]) => R[];
 };
 
 export function makeEditGuard(): EditGuard {
   // The ONE focused slot, shared by both variants: `key` names a property of the page's detail
-  // object (`merge`), `cell` names a row-id+field of a keyed array (`mergeRows`). At most one of
-  // the two is set — registering either clears the other, mirroring the DOM's single focus.
-  let focused: { key: string | null; cell: { rowId: string; field: string } | null; atFocus: string } =
-    { key: null, cell: null, atFocus: "" };
+  // object (`merge`), `cell` names a collection+row-id+field of a keyed array (`mergeRows`). At
+  // most one of the two is set — registering either clears the other, mirroring the DOM's
+  // single focus.
+  let focused: {
+    key: string | null;
+    cell: { collection: string; rowId: string; field: string } | null;
+    atFocus: string;
+  } = { key: null, cell: null, atFocus: "" };
 
   return {
     onFocusField: (key) => (e) => {
       focused = { key, cell: null, atFocus: e.target.value };
     },
 
-    onFocusCell: (rowId, field) => (e) => {
-      focused = { key: null, cell: { rowId, field }, atFocus: e.target.value };
+    onFocusCell: (collection, rowId, field) => (e) => {
+      focused = { key: null, cell: { collection, rowId, field }, atFocus: e.target.value };
     },
 
     onBlurSave: (e, commit, opts = {}) => {
@@ -121,9 +141,13 @@ export function makeEditGuard(): EditGuard {
       return { ...incoming, [f.key]: local };
     },
 
-    mergeRows: <R extends { id: string }>(cur: R[], incoming: R[]): R[] => {
+    mergeRows: <R extends { id: string }>(collection: string, cur: R[], incoming: R[]): R[] => {
       const f = focused;
-      if (f.cell === null) return incoming;
+      // Not this collection's registration (or none at all): the payload lands wholesale and
+      // the slot is left ALONE — a focused contact's id is absent from the addresses array by
+      // definition, and treating that absence as a deletion is what re-opened the #149 clobber
+      // (Codex PR #154 round 1). Only a cell's OWN collection may protect or release it.
+      if (f.cell === null || f.cell.collection !== collection) return incoming;
       const { rowId, field } = f.cell;
       const incomingRow = incoming.find((r) => r.id === rowId);
       if (!incomingRow) {
