@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 // Generic keyboard-first typeahead: a plain <select> can't satisfy the design spec's "autocomplete
 // pickers (customer by code/name; part by number)" requirement (no substring filter as you type),
@@ -32,6 +32,14 @@ export function Combobox({
   const normalized = query.trim().toLowerCase();
   const filtered = normalized ? options.filter((o) => o.label.toLowerCase().includes(normalized)) : options;
 
+  // WAI-ARIA editable-combobox semantics (#37) — attributes only, the keyboard/commit machinery
+  // above and below is untouched. One useId per instance keys the listbox and its options'
+  // stable ids; the expanded/activedescendant pair tracks exactly the condition the dropdown
+  // actually renders under, so a screen reader is never told about a popup that isn't there.
+  const listboxId = useId();
+  const showList = open && filtered.length > 0;
+  const activeId = showList && filtered[highlight] ? `${listboxId}-${highlight}` : undefined;
+
   function commit(opt: ComboboxOption) {
     if (opt.disabled) return; // belt to the native `disabled` attribute below, which already
     // blocks the mouse path — this closes the keyboard path (Enter on a highlighted-but-disabled
@@ -58,6 +66,11 @@ export function Combobox({
   return (
     <div className="relative">
       <input
+        role="combobox"
+        aria-expanded={showList}
+        aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={activeId}
         value={open ? query : (selected?.label ?? "")}
         placeholder={placeholder}
         disabled={disabled}
@@ -75,16 +88,23 @@ export function Combobox({
         }}
         className="w-full rounded border px-2 py-1 disabled:cursor-not-allowed disabled:bg-slate-100"
       />
-      {open && filtered.length > 0 && (
-        <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded border bg-white text-sm shadow-lg">
+      {showList && (
+        <ul role="listbox" id={listboxId}
+            className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded border bg-white text-sm shadow-lg">
+          {/* role="presentation" on the li: the option role lives on the button (the element that
+              carries the native `disabled` this pattern keeps), and a bare listitem is not a
+              valid child of a listbox. */}
           {filtered.map((opt, i) => (
-            <li key={opt.value}>
+            <li key={opt.value} role="presentation">
               {/* onMouseDown + preventDefault, not onClick: preventing the mousedown's default
                   stops the input from ever blurring, so there is no blur-closes-before-click race
                   to work around with a timer. A native `disabled` button fires neither mousedown
                   nor click in the first place — commit()'s own `if (opt.disabled) return` above
                   is what closes the keyboard (Enter) path, which never touches this element. */}
-              <button type="button" disabled={opt.disabled} title={opt.disabled ? opt.disabledReason : undefined}
+              <button type="button" role="option" id={`${listboxId}-${i}`}
+                      aria-selected={opt.value === value}
+                      aria-disabled={opt.disabled || undefined}
+                      disabled={opt.disabled} title={opt.disabled ? opt.disabledReason : undefined}
                       onMouseDown={(e) => { e.preventDefault(); commit(opt); }}
                       className={`block w-full px-2 py-1 text-left ${i === highlight ? "bg-slate-100" : ""} ${opt.disabled ? "cursor-not-allowed text-slate-400" : ""}`}>
                 {opt.label}{opt.disabled && opt.disabledReason ? ` — ${opt.disabledReason}` : ""}
