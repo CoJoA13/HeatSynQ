@@ -123,9 +123,32 @@ wording should be corrected for future waves.
 ## For the reviewer to probe
 
 - #146: is the generic wording right for both firing paths? The panel's own `await load()` after
-  `onApplied()` still self-reports via `onError` — the two error surfaces are the same `setError`,
-  last-writer-wins; both messages say "reload", so a double failure still reads correctly.
+  `onApplied()` cannot interact with the new catch at all: it self-catches BOTH fetch stages into
+  the panel-local `loadError` (`BatchDetail.tsx:148/:159`) and never rejects, so there is no
+  double-`setError` path. (Corrected in fix round 1 — the report originally claimed the two
+  surfaces shared `setError` last-writer-wins, which was wrong in the safe direction; the
+  shipped code was and is right. See the fix-round note below.)
 - #147: the errored-state Export title wording, and the choice NOT to clear gaps in the catch.
 - #148: the `before !== undefined && now !== undefined` guard in `rowsAfterSave` — a field
   absent from either snapshot cannot be proven typed-in-flight, so it takes the server value;
   in the component both maps are always populated for every rendered row.
+
+## Fix round 1 (review round 1: Spec ✅ · Approved, one Minor + one report correction)
+
+- **Minor applied — `653e516`**: the field-drafts suite's fixtures all kept server/atSave/current
+  in one shared array order, so an index-keyed (positional) merge would have passed all 12 tests.
+  Added a fixture holding a mid-flight edit while the server returns the rows RE-SORTED (`sort`
+  is server metadata), asserting the kept value follows its fieldId, not its position. Verified
+  it catches the positional variant: with `rowsAfterSave` temporarily rewritten to index keying,
+  exactly this test went red and the original 12 stayed green; leaf restored untouched
+  (`git diff` clean on `src/lib/field-drafts.ts`). Gates: `npx vitest run
+  tests/field-drafts.test.ts` 13/13, `npx tsc --noEmit` exit 0, `npx eslint src tests` exit 0.
+- **Report correction (this commit)**: the #146 probe note claimed the panel's post-`onApplied`
+  `await load()` "self-reports via onError — the two error surfaces are the same setError,
+  last-writer-wins." Reviewer-verified false: the panel's `load` self-catches both fetch stages
+  into the panel-local `loadError` and never rejects, so no double-`setError` path exists. Wrong
+  in the safe direction; no code change. The probe note above is corrected in place.
+- For the record (controller, no action): the month-switch transient stale-affirmative window
+  goes to the ledger record-only — the page's deliberate sibling idiom (`closeTitle`/schedule
+  share the identical window), self-correcting via the ticket, server-backstopped by
+  `exportClose`'s 409.
