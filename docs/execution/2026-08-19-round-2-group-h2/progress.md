@@ -118,6 +118,39 @@ late-round pattern of findings living in code written for the previous round.
 
 Both replied + resolved per the loop; one push carrying both fixes (re-triggering review).
 
+## Codex round 2 (2026-08-19)
+
+One P2, **verified real and accepted — then widened twice** (`d599ec1`):
+
+- Codex's finding: `mergeRows` MUTATES the guard's `focused` slot (the untouched-branch
+  re-snapshot) inside functional setState updaters. React updaters must be pure; Strict Mode
+  (on — Next's default, dev) double-invokes them with the same prev, so call 2 reads call 1's
+  write, judges the untouched cell dirty, preserves the stale local value over the refresh, and
+  a later blur commits it over the server change. React 19's rebasing can re-run updaters in
+  production too — a correctness fix, not dev cosmetics.
+- Widening 1 (controller): the scalar `merge` carries the SAME mutation and has shipped inside
+  functional updaters since Phase 4 across seven consumer pages — Codex flagged only the keyed
+  variant, but the mechanism is one and the orders adoption had just extended the scalar
+  exposure. The whole leaf went pure: `merge`/`mergeRows` read `focused` and never write it;
+  the transition moved to paired companions (`noteMerged`/`noteMergedRows`, called beside every
+  setState, INSIDE accept branches so a dropped payload is never noted); `noteMergedRows` owns
+  the round-1 collection scoping and release-on-absence. All 13 apply sites across the seven
+  consumers paired; the pairing discipline is in the leaf header.
+- Widening 2 (implementer, catching a hole in the controller's design): a single mutable
+  snapshot overwritten by the companion is STILL unsafe — React can defer a batched updater
+  past the companion call (guaranteed for the 2nd/3rd dispatch in one handler, exactly
+  `applyDetail`'s shape), and the deferred updater then reads the transitioned snapshot and
+  misjudges dirty through the other door. Since React fixes neither the order nor the count of
+  updater runs, the slot keeps a per-focus-session **grow-only snapshot set** (at-entry value +
+  every noted server value); "untouched" is membership — the text is a value the box was GIVEN,
+  not typed. Merge results are identical under every note/updater interleaving and any
+  invocation count. Blur semantics: untouched and dirty-typed unchanged; revert-to-server-value
+  becomes a no-op (strictly better — the server already holds it); revert-to-at-entry stays a
+  no-op (the shipped, pinned behavior — deliberately not changed by a purity fix).
+- TDD: 11 failed / 25 passed observed RED (double-invocation purity both variants,
+  note/updater orderings incl. the deferred cases, revert edges), **36/36** after. Full suite
+  **3359/200**, tsc/eslint/build clean, **E2E 23/23 (third run)**.
+
 ## Gates (re-run IN FULL after the Codex round; final tree `cc0e946`)
 
 | Gate | Result |
