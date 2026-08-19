@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
 import { gate } from "@/lib/permission-ui";
+import { rowsAfterSave } from "@/lib/field-drafts";
 import { invalidateHistory } from "@/components/HistoryPanel";
 
 type FieldRow = { fieldId: string; name: string; type: string; sort: number; active: boolean; value: string };
@@ -38,9 +39,14 @@ export function CustomFieldsSection({
   // is applied to the UI as if it had already succeeded, so a failed save has nothing to roll
   // back — the draft simply stays on screen exactly as typed, for the user to fix and retry,
   // same as the reason customers/[id]/page.tsx's add-address/add-contact drafts survive a
-  // rejected POST.
+  // rejected POST. The SUCCESS path carries the mirror-image duty (#148): the inputs stay
+  // editable during the PUT by design (the ProcessStepsSection/editsAfterSave rule), so the
+  // follow-up fetch must not wholesale-replace `rows` — `rowsAfterSave` keeps any field whose
+  // draft moved while the request was in flight and takes the server's value everywhere else,
+  // while `original` is always the server data (a kept in-flight edit stays correctly dirty).
   async function save() {
     if (dirty.length === 0) return;
+    const rowsAtSave = rows;
     setSaving(true);
     try {
       await api(`/api/parts/${partId}/fields`, {
@@ -49,7 +55,9 @@ export function CustomFieldsSection({
       });
       onError(null);
       invalidateHistory(); // #14 item 1 — success path, before the follow-up load
-      await load();
+      const server = await api<FieldRow[]>(`/api/parts/${partId}/fields`);
+      setRows((cur) => rowsAfterSave(server, rowsAtSave, cur));
+      setOriginal(new Map(server.map((r) => [r.fieldId, r.value])));
     } catch (e) {
       onError((e as Error).message);
     } finally {
