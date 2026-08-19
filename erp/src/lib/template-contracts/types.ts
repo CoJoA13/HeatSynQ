@@ -26,10 +26,15 @@
  * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103). LOOSENING is safe: a
  * new knob, field, or section, a widened enum, a raised budget, or flipping removable false→true
  * are all absorbed by the defaults and the backfill (the knob/field growth direction is pinned
- * by the synthetic cases in `tests/template-contracts.test.ts`). TIGHTENING is NOT: a new lock
- * or removable→false, a removed or renamed field key, a narrowed enum, or a lowered `tableBudget`
- * breaks paper the shop has already published, because immutable PUBLISHED configs are
- * re-validated at print-time dereference (`template-assignments.ts` `dereference` →
+ * by the synthetic cases in `tests/template-contracts.test.ts`). One caveat inside that list: a
+ * new COLUMN field backfills visible with `width: null`, so it contributes exactly its
+ * `defaultWidth` to the table total `assertWidthBudgets` checks (a stored config cannot carry an
+ * override for a field that predates it; `"*"` counts 0) — adding one therefore means raising
+ * that table's `tableBudget` by at least the new `defaultWidth` in the same change, or a
+ * published config already near the budget hits the width refusal at print. TIGHTENING is NOT: a
+ * new lock or removable→false, a removed or renamed field key, a narrowed enum, or a lowered
+ * `tableBudget` breaks paper the shop has already published, because immutable PUBLISHED configs
+ * are re-validated at print-time dereference (`template-assignments.ts` `dereference` →
  * `validateConfig`) with no catch on the print path — a previously-valid old config simply stops
  * printing, refusing along the two-kinds split above: `TemplateConfigError` → 500 for rule
  * tightenings, `ZodError` → 400 for shape tightenings. If a tightening is ever genuinely
