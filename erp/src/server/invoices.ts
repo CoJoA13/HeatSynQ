@@ -7,7 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
-import { hasReceivableActivity } from "./invoice-guards";
+import { hasReceivableActivity, WRITE_OFF_VOID_HINT } from "./invoice-guards";
 import { assertPeriodOpen } from "./period-locks";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
@@ -1475,7 +1475,8 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
     // applied to it is never silently discarded. Read under the claim `claimLiveInvoice` holds.
     if (await hasReceivableActivity(tx, id)) {
       throw new HttpError(400,
-        "This invoice has payments or credits applied and cannot be discarded — void them first");
+        "This invoice has payments, credits or write-offs applied and cannot be discarded — "
+        + `void them first${WRITE_OFF_VOID_HINT}`);
     }
     // A printed invoice is paper the customer may hold — it can never be discarded, only credited
     // (§5.5). Any StoredDocument naming this invoice is proof it printed. Read under the claim.
@@ -1632,8 +1633,11 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
   // Read under the claim `claimInvoiceRow` holds: `applyPayment`/`applyCredit` write these rows under
   // the SAME order claim, so this read and the status write it guards see one consistent state.
   if (await hasReceivableActivity(tx, id)) {
+    // Names all three kinds since #77: a standalone bad-debt write-off carries no payment, so
+    // "void the payments" sent the operator to the receipt batches after a row that is not there.
     throw new HttpError(400,
-      `Invoice #${order.orderNumber} has payments applied — void them before unlocking`);
+      `Invoice #${order.orderNumber} has payments, credits or write-offs applied — `
+      + `void them before unlocking${WRITE_OFF_VOID_HINT}`);
   }
   // §4.1 / ruling 8: unlocking reverses the SALES-journal paper that finalize posted, removing the
   // invoice from its FINALIZE month's figures — so the lock must guard `finalizedAt`, NOT

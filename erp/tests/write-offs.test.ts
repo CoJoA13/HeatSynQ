@@ -3,6 +3,8 @@ import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import { writeOffInvoice, voidApplication, openItemsForCustomer } from "@/server/applications";
 import { customerReceivablesSummary } from "@/server/customer-receivables";
+import { unlockInvoice } from "@/server/invoices";
+import { voidOrder } from "@/server/orders";
 import { closePeriod, preliminaryReport } from "@/server/close-periods";
 import { exportClose } from "@/server/gl-export";
 import { agingReport } from "@/server/aging";
@@ -278,6 +280,58 @@ describe("voidApplication on a standalone write-off — the only route back", ()
 });
 
 // -------------------------------------------------------------------------------------------
+// The §5.14 interaction with `hasReceivableActivity` (review round 1). That guard matches ANY live
+// `Application` by invoice, with no type or `paymentId` predicate — so a standalone write-off blocks
+// unlock, discard and void-order, which is correct: paper with money written off it must not become
+// editable underneath the write-off. What was NOT correct was the wording. Before #77 a WRITE_OFF
+// always carried a payment, so "void the payments" was always a true instruction; a null-payment
+// write-off makes those refusals reachable and false, sending the operator to the receipt batches
+// after a row that does not exist. The messages now name write-offs and the screen that voids them.
+// -------------------------------------------------------------------------------------------
+
+const NAMES_THE_ROUTE_OUT =
+  /has payments, credits or write-offs applied — void them before unlocking \(a bad-debt write-off is voided from the customer's Receivables section\)/;
+
+describe("a standalone write-off blocks unlock and void-order, naming the way back", () => {
+  it("refuses to unlock the invoice, naming write-offs AND where they are voided from", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable" }));
+
+    await expect(asSystem(() => unlockInvoice(inv.invoiceId, "correct a line")))
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(NAMES_THE_ROUTE_OUT) });
+    // Refused, not half-applied.
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("FINALIZED");
+  });
+
+  // The other half of §5.14: the route the refusal names has to actually work. A message that sends
+  // the operator somewhere useless is the defect; a message that sends them somewhere that unblocks
+  // them is the fix, and this is what proves the difference.
+  it("permits the unlock once that write-off is voided from the Receivables section", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable" }));
+    const app = await prisma.application.findFirstOrThrow({ where: { invoiceId: inv.invoiceId } });
+
+    await asSystem(() => voidApplication(app.id, "mis-keyed"));
+
+    await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"));
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("DRAFT");
+  });
+
+  it("refuses to void the order, naming write-offs there too", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable" }));
+
+    await expect(asSystem(() => voidOrder(inv.orderId, "entered against the wrong customer")))
+      .rejects.toMatchObject({
+        status: 400,
+        message: expect.stringMatching(
+          /void the payments, credits or write-offs applied to it first \(a bad-debt write-off is voided from the customer's Receivables section\)/),
+      });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // The A/R surface. `openItemsForCustomer` drops anything settled (`open <= 0`), so a wholly
 // written-off invoice VANISHED from the only table that could anchor the undo — the mis-keyed
 // bad-debt write-off was uncorrectable outside SQL. Owner ruling 2026-08-19: the write-off must be
@@ -522,9 +576,17 @@ describe("writeOffInvoice concurrency — the invoice-row claim", () => {
 // invisible to SSI, the write-off's stale snapshot misses the CLOSED row, nothing aborts it, and it
 // posts into the closed month. It is NOT red when `writeOffInvoice` alone is downgraded — measured,
 // not assumed — because a Read Committed write-off takes a FRESH snapshot at its period read and
-// therefore SEES the committed close and refuses on the ordinary guard. No behavioural test can red
-// on that half: the exposure a Serializable posting mutation has is exactly its stale snapshot, and
-// Read Committed does not have one.
+// therefore SEES the committed close and refuses on the ordinary guard, on THIS interleaving.
+//
+// Read Committed is not therefore safe, and the claim here is deliberately narrow: that downgrade is
+// not RED-ABLE FROM A SOURCE-LEVEL CHANGE, which is a statement about what a test can drive, not
+// about what can go wrong (review round 1). The exposure it leaves behind runs the other way round:
+// `closePeriod` fixes its own snapshot at `lockMonth`, its first statement, so an RC posting that
+// already holds the month advisory lock and commits while the close is blocked on it is invisible to
+// SSI — the close then freezes `writeOffTotal`/`endingAr` without it and nothing raises 40001.
+// Driving that deterministically would need the real service paused between `assertPeriodOpen` and
+// its write, which no source-level edit provides. Hence the structural pin below rather than a
+// second behavioural test.
 //
 // So the write-off's OWN half of the pairing is pinned STRUCTURALLY instead (the
 // `tests/attachments.test.ts` `transactionOptions` precedent): the isolation level it opens with is

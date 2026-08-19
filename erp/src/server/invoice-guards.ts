@@ -88,6 +88,24 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
 }
 
 /**
+ * The tail every `hasReceivableActivity` refusal carries — §5.14's rule that a block must name the
+ * route out of itself.
+ *
+ * It exists because of #77. Before the standalone bad-debt write-off there was no way to create a
+ * WRITE_OFF without a payment, so "void the payment" was always a true instruction; now a
+ * null-payment write-off reaches all three refusals (this guard has never had a `type` or
+ * `paymentId` predicate — correctly), and that instruction sends the operator to the receipt
+ * batches to void a payment that does not exist. `BatchDetail` lists applications per PAYMENT, so
+ * the only screen that can reach this one is the customer's Receivables section.
+ *
+ * Shared as ONE constant rather than repeated in three services, because the three sentences must
+ * keep naming the same destination: if the void surface ever moves, this is the single line that
+ * has to move with it.
+ */
+export const WRITE_OFF_VOID_HINT =
+  " (a bad-debt write-off is voided from the customer's Receivables section)";
+
+/**
  * Does this invoice carry LIVE accounts-receivable activity — a payment, early-pay discount, or
  * write-off applied TO it, or a credit that has been applied AGAINST it? `unlockInvoice`,
  * `discardInvoice` and `voidOrder` refuse while it does (P5B §5.3): editing, discarding, or voiding

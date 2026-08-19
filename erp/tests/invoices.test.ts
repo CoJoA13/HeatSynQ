@@ -1092,7 +1092,7 @@ describe("discardInvoice", () => {
     });
 
     await expect(asSystem(() => discardInvoice(draftCredit.id, "raised in error")))
-      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/payments or credits applied/i) });
+      .rejects.toMatchObject({ status: 400, message: expect.stringMatching(/payments, credits or write-offs applied/i) });
     // Refused, not discarded.
     expect((await prisma.invoice.findUniqueOrThrow({ where: { id: draftCredit.id } })).deletedAt).toBeNull();
   });
@@ -1400,7 +1400,9 @@ describe("unlockInvoice", () => {
     await expect(asSystem(() => unlockInvoice(fx.invoice.id, "correct a line")))
       .rejects.toMatchObject({
         status: 400,
-        message: `Invoice #${fx.order.orderNumber} has payments applied — void them before unlocking`,
+        message: `Invoice #${fx.order.orderNumber} has payments, credits or write-offs applied — `
+          + "void them before unlocking (a bad-debt write-off is voided from the customer's "
+          + 'Receivables section)',
       });
     // Refused, not half-applied: still FINALIZED.
     expect((await getInvoice(fx.invoice.id)).status).toBe("FINALIZED");

@@ -50,6 +50,12 @@ type Db = Prisma.TransactionClient;
 
 const cents = (n: number): number => Math.round(n * 100);
 
+/** The refusal both write-off flavors give for a missing reason — the residual one `applyPayment`
+ *  writes (`resolveReason`) and the standalone one `writeOffInvoice` writes. ONE constant, because
+ *  the two are the same act to the operator and must read identically; a test pins it on both
+ *  sides, which would keep passing on two copies that had silently drifted apart. */
+const WRITE_OFF_NEEDS_REASON = "a write-off needs a reason";
+
 /** CRITICAL (Task 5 carry): `Application.amount` is a Prisma `Decimal`; every value crossing into
  *  `ar-balances` must be `.toNumber()`'d first. */
 const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; deletedAt: Date | null }): ApplicationLite =>
@@ -693,7 +699,7 @@ function resolveReason(
 ): string {
   if (line.type === "WRITE_OFF") {
     const why = (line.reason ?? "").trim();
-    if (!why) throw new HttpError(400, "a write-off needs a reason");
+    if (!why) throw new HttpError(400, WRITE_OFF_NEEDS_REASON);
     return why;
   }
   if (line.type === "DISCOUNT") {
@@ -998,11 +1004,11 @@ const WRITE_OFF = z.object({
 type WriteOffInput = z.infer<typeof WRITE_OFF>;
 
 async function writeOffInvoiceInTx(tx: Db, data: WriteOffInput): Promise<void> {
-  // The reason rule, verbatim from `resolveReason`'s WRITE_OFF arm — the two flavors of write-off
-  // must read identically to the operator, so the wording is shared deliberately (a test pins it on
-  // both sides).
+  // The reason rule, sharing `resolveReason`'s WRITE_OFF wording through the ONE constant above —
+  // the two flavors of write-off are the same act to the operator and must read identically (a test
+  // pins the string on both sides, and would keep passing on two copies that had drifted).
   const why = (data.reason ?? "").trim();
-  if (!why) throw new HttpError(400, "a write-off needs a reason");
+  if (!why) throw new HttpError(400, WRITE_OFF_NEEDS_REASON);
 
   // (1) UNLOCKED stub read — learn the order to claim, and refuse an untargetable row before taking
   // any lock. Its kind/status/deletedAt verdict is NOT trusted for the write; it is re-made under
@@ -1082,7 +1088,10 @@ async function writeOffInvoiceInTx(tx: Db, data: WriteOffInput): Promise<void> {
  *
  * `tx` is optional and exists for exactly one caller: the discriminating concurrency test passes a
  * manually-opened (Read Committed) transaction so the INVOICE-ROW claim, not SSI, is what serializes
- * a competing write-off — the `applyPayment` precedent directly above.
+ * a competing write-off — the `applyPayment`/`unlockInvoice` precedent. **A PRODUCTION caller must
+ * never hand this a non-Serializable transaction**: the injected branch inherits the caller's
+ * isolation, and the structural pin in tests/write-offs.test.ts can only observe the no-`tx` branch,
+ * so a Read Committed `tx` would bypass the standing invariant above without reddening anything.
  */
 export async function writeOffInvoice(input: unknown, tx?: Prisma.TransactionClient): Promise<void> {
   const data = WRITE_OFF.parse(input);
