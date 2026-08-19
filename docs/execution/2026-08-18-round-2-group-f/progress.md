@@ -60,3 +60,14 @@ Four implementation tasks, four reviews — **ALL Approved on round 1, zero impl
 rounds** (three controller-applied minors on-branch: the empty-string target hardening, the two
 CI-loop nits). Two issues closed without code by recon/ruling: #34 (already implemented since
 Phase 4) and #107 (owner ruling, not-planned). No schema migration anywhere in the group.
+
+## Gates (final tree `7895d64`, all watched to completion 2026-08-18)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3260 passed / 191 files** (Group D closed at 3249/189) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npm run test:e2e` | **23/23 flows** (regression backstop — no flow exercises the reset path) |
+| Task 3's own gate | watched local image build + `/api/health` 200 boot check (report §2) |
