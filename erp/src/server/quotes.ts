@@ -1333,14 +1333,19 @@ export async function updateQuote(id: string, input: unknown): Promise<QuoteMuta
         ...(data.internalNotes !== undefined ? { internalNotes: data.internalNotes } : {}),
       };
 
-      await auditedUpdate("quote", id, async () => {
-        if (Object.keys(patch).length > 0) {
-          await tx.quote.update({ where: { id }, data: patch });
-        }
-        if (data.lines !== undefined) {
-          await applyQuoteLines(tx, id, data.lines, current!);
-        }
-      }, { tx });
+      // An EMPTY effective patch (a bare {} PATCH, or only the tolerated customerId=<current>
+      // echo) writes nothing, so it mints no audit entry either (#100 item 1) — the wrapper is
+      // skipped entirely, and the response below still carries the full advisory surface.
+      if (Object.keys(patch).length > 0 || data.lines !== undefined) {
+        await auditedUpdate("quote", id, async () => {
+          if (Object.keys(patch).length > 0) {
+            await tx.quote.update({ where: { id }, data: patch });
+          }
+          if (data.lines !== undefined) {
+            await applyQuoteLines(tx, id, data.lines, current!);
+          }
+        }, { tx });
+      }
 
       const detail = await readDetail(tx, id);
       return { ...detail, warnings: await overlapWarnings(tx, id) };

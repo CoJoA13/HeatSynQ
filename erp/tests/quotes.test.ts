@@ -1135,6 +1135,27 @@ describe("updateQuote: guards and header fields", () => {
     expect(same.notes).toBe("kept");
   });
 
+  it("an EMPTY effective patch mints NO audit entry but still answers the full advisory surface (#100 item 1)", async () => {
+    const f = await serviceFixture();
+    const q = await updatableQuote(f);
+    const auditCount = () => prisma.auditLog.count({ where: { entity: "quote", entityId: q.id } });
+    const baseline = await auditCount();
+
+    // customerId=<current> is a tolerated echo, not a change — no entry, same response contract.
+    const same = await asUser(f.quoter, () => updateQuote(q.id, { customerId: f.customer.id }));
+    expect(same.customerId).toBe(f.customer.id);
+    expect(same.warnings).toEqual([]); // the advisory surface still rides every update response
+    expect(await auditCount()).toBe(baseline);
+
+    // The bare {} PATCH is the same empty effective patch.
+    await asUser(f.quoter, () => updateQuote(q.id, {}));
+    expect(await auditCount()).toBe(baseline);
+
+    // A real field change still mints exactly one entry.
+    await asUser(f.quoter, () => updateQuote(q.id, { notes: "a real change" }));
+    expect(await auditCount()).toBe(baseline + 1);
+  });
+
   it("patches header fields; omitted keys stay untouched; explicit nulls clear the nullables", async () => {
     const f = await serviceFixture();
     const q = await updatableQuote(f);
