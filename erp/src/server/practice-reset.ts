@@ -1,4 +1,5 @@
 import { prisma } from "./db";
+import { singleFlight } from "../lib/single-flight";
 import { assertPracticeDatabase } from "./practice-mode";
 import { reseedSingletons } from "./practice-seed";
 import { seedDemoSlice } from "../../prisma/demo-seed";
@@ -30,23 +31,35 @@ export async function resetPracticeDataUnguarded(): Promise<void> {
   await seedDemoSlice(); // through the services
 }
 
+// Concurrent resets are SINGLE-FLIGHTED (#111), not advisory-locked. Two Codex review rounds on
+// PR #109 shaped this. Round 2 ("Serialize practice reset operations") required that overlapping
+// resets "reject or wait" — two interleaved truncate+seed sequences can leave a partial baseline
+// with no usable login; the advisory lock it sketched was its SUGGESTED implementation, not the
+// requirement. Round 3 (filed as #111) then flagged that implementation's cost: a pinned
+// interactive transaction held a pool connection doing nothing for the whole 120s reset, and on
+// this driver-adapter stack the pool is pg-pool's fixed default of 10 (not the Rust engine's
+// num_cpus*2+1 the issue cited), so stacked waiters could starve the ambient seed queries.
+//
+// The module-scoped join satisfies BOTH rounds: a second caller JOINS the running reset (the
+// observable outcome — "my click ended with a fresh baseline, sign in as admin/admin" — is
+// identical), a failed reset clears the slot rather than wedging the endpoint, and ZERO
+// connections are pinned (correct even at pool = 1). It serializes every caller that can invoke
+// this route because practice is ONE process: compose's app-practice is a single container with a
+// host-port bind (8080:3000 — a second replica cannot start) running `node server.js`, no
+// cluster. Accepted residual: a hand-run local server pointed at erp_practice beside the
+// container reverts, at worst, to the pre-round-2 state the Phase 8B merge accepted as
+// design-sanctioned self-healing on a throwaway DB — and the un-locked CLI seed
+// (`npm run db:seed:demo`) always had identical exposure, so the advisory lock never closed that
+// cross-process class either.
+const resetFlight = singleFlight(resetPracticeDataUnguarded);
+
 /**
  * The guarded entry (§5.3): refuses unless the connected database is erp_practice, so a mis-set
  * PRACTICE_MODE on a production-pointed app can NEVER truncate real data. This refusal is the RED
- * safety test (it fires in the erp_test process).
+ * safety test (it fires in the erp_test process), and it runs UN-memoized for EVERY caller —
+ * callers that go on to join an in-flight reset included — before the single-flight engages.
  */
 export async function resetPracticeData(): Promise<void> {
   await assertPracticeDatabase(prisma);
-  // Serialize concurrent resets (Codex): hold a session-spanning advisory lock for the WHOLE
-  // (intentionally non-atomic) reset via a pinned interactive transaction, so two admins' resets can
-  // never interleave and leave a partial baseline. A second reset blocks on the lock rather than
-  // racing. The lock auto-releases when this tx ends; the reset runs on the ambient singleton's own
-  // pooled connections (the timeout is generous — the demo re-seed is many service calls).
-  await prisma.$transaction(
-    async (lock) => {
-      await lock.$executeRaw`SELECT pg_advisory_xact_lock(88018802)`;
-      await resetPracticeDataUnguarded();
-    },
-    { timeout: 120_000, maxWait: 120_000 },
-  );
+  return resetFlight();
 }
