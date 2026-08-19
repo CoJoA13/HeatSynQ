@@ -31,12 +31,12 @@ const stripQuotes = (field: string): string => field.replace(/^"|"$/g, "");
 function uniqueConflictFields(err: Prisma.PrismaClientKnownRequestError): string[] | undefined {
   const meta = err.meta as AdapterMeta;
   const target = meta?.target;
-  if (typeof target === "string") return [target];
-  if (Array.isArray(target) && target.length > 0 && target.every((f) => typeof f === "string")) {
+  if (typeof target === "string" && target.length > 0) return [target];
+  if (Array.isArray(target) && target.length > 0 && target.every((f) => typeof f === "string" && f.length > 0)) {
     return target;
   }
   const fields = meta?.driverAdapterError?.cause?.constraint?.fields;
-  if (Array.isArray(fields) && fields.length > 0 && fields.every((f) => typeof f === "string")) {
+  if (Array.isArray(fields) && fields.length > 0 && fields.every((f) => typeof f === "string" && f.length > 0)) {
     return fields.map(stripQuotes);
   }
   return undefined;
