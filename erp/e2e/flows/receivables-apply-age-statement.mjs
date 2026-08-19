@@ -4,8 +4,15 @@
 // then drives the NEW `/receivables` screens end to end: a deposit batch, a check payment applied
 // as a partial payment + a small write-off (leaving an on-account remainder), the aging report
 // (the invoice's own bucket + the Unapplied column), a printed, archived statement (combined
-// family, finance charges assessed) that reappears in the customer's own Documents list, and
-// finally a SECOND check that settles the invoice and takes the early-pay discount.
+// family, finance charges assessed) that reappears in the customer's own Documents list, a
+// STANDALONE bad-debt write-off and its undo on the customer's A/R section (#77), and finally a
+// SECOND check that settles the invoice and takes the early-pay discount.
+//
+// The #77 round trip is deliberately NET-ZERO and sits between the statement and the settling
+// check: it writes off the whole 470.00 still open (proving the invoice stays listed and flagged
+// at zero instead of vanishing — the reason the owner put the void surface in scope), then voids
+// it, putting the 470.00 back for the settling apply below. All it leaves behind is one
+// soft-deleted Application, which no balance, aging, close or GL read ever sees.
 //
 // Fixture math (e2e/lib/db-fixtures.ts's `arCustomer`/`arPart`/`arTerms`/`arPaymentType`): one
 // priced OPERATION line, unitPrice 100.00 x qty 10 = invoice total 1000.00 (`surchargeOptOut` +
@@ -41,11 +48,15 @@
 // Never `page.waitForURL` for a route -> route/[id] hop (the Phase 3/4/5A trap, spec §13,
 // re-armed in invoice-shipped-order.mjs) — every wait below is for post-navigation-ONLY content.
 import assert from "node:assert/strict";
-import { waitForValue } from "../lib/ui.mjs";
+import { armPrompt, waitForValue } from "../lib/ui.mjs";
 import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const WRITE_OFF_REASON =
   "E2E receivables-apply-age-statement flow: small collection adjustment, demonstrating write-off UX for the demo.";
+const BAD_DEBT_REASON =
+  "E2E receivables-apply-age-statement flow: standalone bad-debt write-off (#77), voided again below.";
+const VOID_REASON =
+  "E2E receivables-apply-age-statement flow: undoing the bad-debt write-off from the screen that made it.";
 
 /** Both `/invoicing`'s two sections are plain `<section>`s, each headed by its own `<h2>` — the
  *  `invoice-shipped-order.mjs` `sectionByHeading` precedent, duplicated here (private there). */
@@ -232,6 +243,68 @@ export async function run(page, shot, ctx) {
   await documentsSection.getByRole("link", { name: "Statement", exact: true })
     .waitFor({ state: "visible", timeout: 15000 });
   await shot("statement-printed-archived");
+
+  // --- The STANDALONE bad-debt write-off and its undo (#77), on the customer's own A/R section.
+  // A deliberate NET-ZERO round trip, inserted here rather than at the tail: the whole point of the
+  // owner's void ruling is that a fully written-off invoice must stay reachable, which can only be
+  // shown while there IS an open balance — and the settling apply below needs the same 470.00 the
+  // void puts back. It leaves nothing behind but one soft-deleted Application (invisible to every
+  // balance, the aging, the close and the GL delta, all of which read live rows only), so every
+  // figure asserted above and below is untouched. ---
+  await page.goto(`${ctx.baseURL}/customers/${fixtures.arCustomerId}`);
+  const receivables = sectionByHeading(page, "Receivables");
+  const netBalance = receivables.locator("p", { hasText: "Net balance:" });
+  await netBalance.waitFor({ state: "visible", timeout: 15000 });
+  assert.match((await netBalance.textContent()) ?? "", /270\.00/,
+    "the customer A/R section must open on the same 270.00 net the aging report and statement showed");
+
+  const invoiceRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
+  await invoiceRow.waitFor({ state: "visible", timeout: 15000 });
+  assert.equal((await invoiceRow.locator("td").nth(5).textContent()).trim(), "470.00",
+    "the open-items row must carry the invoice's live open balance");
+
+  await invoiceRow.getByRole("button", { name: "Write off", exact: true }).click();
+  const writeOffAmount = receivables.getByLabel("Amount to write off", { exact: true });
+  // Owner ruling 2026-08-19: editable, defaulting to the FULL open balance. Asserting the DEFAULT
+  // (rather than typing over it) is what pins that half of the ruling.
+  await waitForValue(writeOffAmount, "470.00");
+  await receivables.getByLabel("Reason for the write-off", { exact: true }).fill(BAD_DEBT_REASON);
+  await shot("write-off-form-filled");
+
+  const wroteOff = page.waitForResponse((res) =>
+    new URL(res.url()).pathname === "/api/receivables/write-offs" && res.request().method() === "POST" && res.ok());
+  await receivables.getByRole("button", { name: "Write off balance", exact: true }).click();
+  await wroteOff;
+
+  // The invoice is settled to zero AND STILL LISTED, flagged — the void ruling's whole substance.
+  // Before #77 this row vanished here, and with it the only handle its undo had.
+  const writtenOffRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
+  await writtenOffRow.getByText("Written off", { exact: true }).waitFor({ state: "visible", timeout: 15000 });
+  assert.equal((await writtenOffRow.locator("td").nth(5).textContent()).trim(), "0.00",
+    "a fully written-off invoice must read 0.00 open and still be on screen");
+  await netBalance.filter({ hasText: "-200.00" }).waitFor({ state: "visible", timeout: 15000 });
+  assert.match((await netBalance.textContent()) ?? "", /-200\.00/,
+    "the net must fall to the on-account cash alone once the receivable is written off");
+  await shot("invoice-written-off");
+
+  // The undo, from the same screen that made it (§5.14).
+  const voidMessage = armPrompt(page, VOID_REASON);
+  const voided = page.waitForResponse((res) =>
+    /^\/api\/receivables\/applications\/[^/]+$/.test(new URL(res.url()).pathname)
+    && res.request().method() === "DELETE" && res.ok());
+  await receivables.getByRole("button", { name: "Void", exact: true }).click();
+  assert.match(await voidMessage, /Void the write-off of 470\.00/);
+  await voided;
+
+  await netBalance.filter({ hasText: "270.00" }).waitFor({ state: "visible", timeout: 15000 });
+  const restoredRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
+  assert.equal((await restoredRow.locator("td").nth(5).textContent()).trim(), "470.00",
+    "voiding the write-off must put the whole open balance back");
+  await assert.rejects(
+    restoredRow.getByText("Written off", { exact: true }).waitFor({ state: "visible", timeout: 1500 }),
+    "the written-off flag must be gone once the write-off is voided",
+  );
+  await shot("write-off-voided");
 
   // --- LAST, and deliberately after every assertion above: a SECOND check that SETTLES the
   // invoice, which is the only way an early-pay discount can be earned since #69. This is the
