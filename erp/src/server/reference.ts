@@ -107,6 +107,9 @@ type RefDelegate = {
   findFirst: (a: { where: object; select?: object }) => Promise<{ id: string } | null>;
   create: (a: { data: object }) => Promise<{ id: string }>;
   update: (a: { where: { id: string }; data: object }) => Promise<{ id: string }>;
+  // The #99 guarded write: conditional on `deletedAt: null`, zero-count = absent (see
+  // updateReference). Every reference model's generated delegate carries it.
+  updateMany: (a: { where: object; data: object }) => Promise<{ count: number }>;
 };
 function delegate(kind: ReferenceKind, db: Prisma.TransactionClient = prisma): RefDelegate {
   return db[kind] as unknown as RefDelegate;
@@ -374,12 +377,16 @@ export async function updateReference(kind: string, id: string, input: Record<st
   const assignsFk = links.some((link) => data[link.column] != null);
   await withDbErrors({ entity: REFERENCE_LABELS[kind].singular, conflictField: "name" }, () =>
     prisma.$transaction(async (tx) => {
-      // #99: the update() below finds rows by BARE id, so without this guard a soft-deleted row
-      // updates and 200s — a "promote the deleted row to default" even used to stick a flag on a
-      // dead row. First statement of the transaction, before the link asserts and both
-      // normalizers, and ON this tx (the #60 rule — a read defaulting to the top-level singleton
-      // escapes the caller's snapshot AND its Serializable read-set). The message matches
-      // db-errors.ts's P2025 mapping so soft-deleted and hard-missing present identically.
+      // #99, two layers. This ENTRY guard 404s a soft-deleted (or hard-missing) row before the
+      // link asserts and both normalizers run — first statement of the transaction, ON this tx
+      // (the #60 rule — a read defaulting to the top-level singleton escapes the caller's
+      // snapshot AND its Serializable read-set), message matching db-errors.ts's P2025 mapping
+      // so the two absences present identically. It is a plain read, though, so a concurrent
+      // deleteReference committing between it and the write could still slip past — the WRITE
+      // below is the guarantee: a guarded updateMany conditional on `deletedAt: null` (the
+      // auditedSoftDelete shape, audit.ts) whose zero-count raises the same 404 and aborts the
+      // transaction entry-less at any isolation (PR #152 Codex round; the task-2 review had
+      // recorded this residue as accepted — now closed).
       const alive = await delegate(kind, tx).findFirst({
         where: { id, deletedAt: null }, select: { id: true },
       });
@@ -390,7 +397,11 @@ export async function updateReference(kind: string, id: string, input: Record<st
       }
       if (kind === "terms") await assertDiscountPairAfterUpdate(tx, id, data);
       if (kind === "endingStatement") await normalizeEndingStatementDefaultOnUpdate(tx, id, data);
-      await auditedUpdate(kind, id, () => delegate(kind, tx).update({ where: { id }, data }), { tx });
+      await auditedUpdate(kind, id, async () => {
+        const updated = await delegate(kind, tx).updateMany({ where: { id, deletedAt: null }, data });
+        if (updated.count === 0) throw new HttpError(404, `${REFERENCE_LABELS[kind].singular} not found`);
+        return updated;
+      }, { tx });
     }, assignsFk ? { isolationLevel: Prisma.TransactionIsolationLevel.Serializable } : undefined));
 }
 
