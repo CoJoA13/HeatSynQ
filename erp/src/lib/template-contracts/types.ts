@@ -23,30 +23,31 @@
  * before a knob existed keeps rendering identically as contracts grow. The parse result is always
  * a COMPLETE `TemplateConfig`; no consumer ever reaches for a contract default at render time.
  *
- * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103). LOOSENING is safe: a
- * new knob, field, or section, a widened enum, a raised budget, or flipping removable false→true
- * are all absorbed by the defaults and the backfill (the knob/field growth direction is pinned
- * by the synthetic cases in `tests/template-contracts.test.ts`). One caveat inside that list: a
- * new COLUMN field backfills visible with `width: null`, so it contributes exactly its
- * `defaultWidth` to the table total `assertWidthBudgets` checks (a config saved before the field
- * existed cannot carry an override for it; `"*"` counts 0) — adding one therefore means raising
- * that table's `tableBudget` by at least the new `defaultWidth` in the same change, or a
- * published config already near the budget hits the width refusal at print. TIGHTENING is NOT:
- * a new lock or removable→false, a removed or renamed field key, a narrowed enum, or a lowered
- * `tableBudget` breaks every published config whose STORED values violate the new rule — all of
- * them for a removed/renamed key (saves store the complete validated parse, so any config saved
- * while the key existed carries the entry), otherwise only those using what was tightened away
- * (hiding the newly-locked element, totals above the lowered budget, a dropped enum value) — and
- * because published versions are immutable and live only in each deployed database, the repo
- * alone cannot prove none is affected. An affected config is re-validated at print-time
- * dereference (`template-assignments.ts` `dereference` → `validateConfig`) with no catch on the
- * print path — previously-valid paper simply stops printing, refusing along the two-kinds split
- * above: `TemplateConfigError` → 500 for rule tightenings, `ZodError` → 400 for shape
- * tightenings. If a
- * tightening that affects (or cannot be ruled out for) stored configs is ever genuinely
- * required, the two sanctioned shapes are: validate a stored config against the contract version
- * it was PUBLISHED under, or make print-time dereference degrade gracefully (log + contract
- * defaults for the offending elements) rather than throw.
+ * THE BACKFILL ONLY COVERS GROWTH, so contracts evolve additively (#103) — and "additive" is a
+ * SEMANTIC test, not a syntactic one: every config valid under the old contract must stay valid,
+ * and stay on the paper, under the new one. Published versions are immutable and live only in
+ * each deployed database, so the repo alone cannot prove no stored config is invalidated; an
+ * invalidated config is re-validated at print-time dereference (`template-assignments.ts`
+ * `dereference` → `validateConfig`) with no catch on the print path, so previously-valid paper
+ * simply stops printing, refusing along the two-kinds split above (`TemplateConfigError` → 500,
+ * `ZodError` → 400). SAFE under that test: a new knob, a new removable non-column field, a new
+ * section of such fields, a widened enum, a raised budget (within the physical width it models),
+ * removable false→true — the defaults and the backfill absorb them (the knob/field direction is
+ * pinned by the synthetic cases in `tests/template-contracts.test.ts`). NOT safe, INCLUDING the
+ * additive-looking cases: a removed or renamed field key (saves store the complete validated
+ * parse, so any config saved while the key existed still carries the entry); a narrowed enum or
+ * a lowered `tableBudget` (bites exactly the configs using a dropped value, or totals above the
+ * new budget); a new lock — removable→false, hideable→false, newly pinning a section, or a new
+ * NON-removable field inside a hideable section (a stored config hiding that section now
+ * shelters a locked field, which `assertLocksHonored` refuses); and a new visible COLUMN on an
+ * existing table — it backfills visible contributing exactly its `defaultWidth` (a config saved
+ * before the field existed cannot carry an override for it; `"*"` counts 0), so every stored
+ * config's total grows by that much, and a table without that much physical headroom cannot
+ * absorb it (raising `tableBudget` past the width the paper can print only disables the
+ * overflow guard). If a change that invalidates (or cannot be ruled out for) stored configs is
+ * ever genuinely required, the two sanctioned shapes are: validate a stored config against the
+ * contract version it was PUBLISHED under, or make print-time dereference degrade gracefully
+ * (log + contract defaults for the offending elements) rather than throw.
  */
 import { z } from "zod";
 

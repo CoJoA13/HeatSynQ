@@ -55,7 +55,19 @@ Two P2s across two rounds, both wording-precision findings on the new warning pa
   matched. The same push corrects two controller-found imprecisions from round 1's own text
   (an inverted predates-clause; the saved-before-the-key-existed edge).
 
-Replied + resolved per the loop both rounds.
+- **Round 3** (two P2s, both real): the round-1 budget-raise remedy was bad guidance (raising
+  `tableBudget` past the physical width only disables the overflow guard — it cannot widen the
+  paper), and a new NON-removable field inside a hideable section is a tightening in disguise
+  (`assertLocksHonored` refuses a stored config that legally hid the section). Third
+  consecutive round on the same mechanism → **lesson 4 applied: fixpoint, not another patch.**
+  The paragraph was rewritten criterion-first — "additive" is a SEMANTIC test (every config
+  valid under the old contract stays valid, and stays on the paper, under the new one) — with
+  the safe/unsafe enumeration demoted to examples of the criterion, the additive-looking traps
+  named (visible column on an existing table; non-removable field in a hideable section; plus
+  newly-pinning a section, controller-added), and the budget-raise remedy replaced by the
+  physical-headroom truth. CLAUDE.md's pointer sentence re-matched.
+
+Replied + resolved per the loop, all rounds.
 
 ## Gates (final tree `c1d66c0`, 2026-08-18; Codex amendment `2629207` is prose-only in the same file)
 
