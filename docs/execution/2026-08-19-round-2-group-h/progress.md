@@ -63,6 +63,56 @@ the poll-filter one was **controller-applied — badly, then fixed** (see incide
    (`CREATE DATABASE` + `migrate deploy` + DATABASE_URL override, dropped after) and clean
    `git worktree`s for suite-level proof — belongs in the next group's brief from the start.
 
-## Gates
+**Task 4 (#14 items 1/2/4 + #37 + #38, parts/attachments/combobox)** — implementer
+`4a05738`/`b6ffe85`/`79824de`/`af22661`/`4d7cb24`/`8d68eee`/`c6194af`. Review: **Spec ✅ ·
+Needs fixes (round 1) → fixed same round** (`c4c30f4`): the one Important was a raw NUL byte
+(0x00) embedded in HistoryPanel.tsx's key template, which made git classify the file as
+BINARY — it blinded the review package's own diff of the very file it needed to read. One
+character; also applied the neutral load-failure wording minor. The substance was clean: the
+FK-suppression leaf's two hard edges pre-pinned, the failed-refetch path honest by
+construction, the blur-save normalize guard genuinely composing with the controlled inputs.
+The `part: { material: true }` hunk rode `8ccd8a2` (the controller sweep, incident 2) and was
+reviewed there under this task's scope.
 
-_(pending)_
+**Task 5 (#33 bounded slice)** — implementer `39788bc`/`7143589`/`57d0ab4`/`e27043d`/
+`8f137da`. Review: **Spec ✅ · Approved (round 1)**. The reviewer independently extracted
+every moved region from the pre-move blob and confirmed byte-parity (only the disclosed
+mechanical deltas exist), verified nothing concurrency-bearing moved and the #115/§5.14
+blocks line-identical, confirmed the orders↔shippers runtime cycle is retired at the import
+sites (not merely re-pointed), and judged the trafficSettings deviation forced-and-sound.
+#33 commented + retitled, stays open for the deferred create/edit split. Three record-only
+minors.
+
+## Group tally
+
+Five implementation tasks, five reviews — **four Approved round 1, one Needs-fixes whose
+single Important was fixed and verified the same round**. Reviewer minors: five
+controller-applied across the group (one badly, then corrected — incident 1), the rest
+record-only. Nine issues closed by the PR (#9, #14, #24, #37, #38, #72, #99, #100, #101);
+#33 partially landed and retitled (owner ruling); stale strikes recorded on #14 item 3 and
+#100 items 3/6/7. One migration (`20260819003000_remove_ar_permission_area`), applied to both
+DBs.
+
+## The group-level E2E catch (why that gate exists)
+
+The first full E2E run failed **14 of 23 flows** — every flow that drives a combobox.
+Diagnosis: #37's (correct) ARIA pass gave the picker options an explicit `role="option"`,
+which REPLACES the implicit button role in the accessibility tree, so the shared
+`pickCombobox` helper's `getByRole("button")` locator stopped matching. Not a product
+regression — the product change is right, the test helper encoded the old semantics. One-line
+helper fix (`5941a52`, mechanism documented in its comment), then **23/23**. Recon had
+predicted "switching the flows to getByRole is the durable assertion" — the helper was the
+one place still holding the old locator.
+
+## Gates (final tree `5941a52`, all run to completion 2026-08-19)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3310 passed / 198 files** (solo run; Group G closed at 3260/191 — a mid-run
+48-failure reading was shared-DB contamination from a concurrently-running reviewer, see
+incident 3) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `npm run build` | clean |
+| `npx prisma migrate status` | clean on both `erp` and `erp_test` |
+| `npm run test:e2e` | **23/23 flows** (after the helper fix above; first run 9/23) |
