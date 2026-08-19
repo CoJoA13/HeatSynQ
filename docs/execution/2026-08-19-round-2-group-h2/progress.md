@@ -22,4 +22,15 @@ queued as a separate PR.
 
 ## Task verdicts
 
-_(pending)_
+**Task 1 (#149, typed-text overlay)** — implementer `2c614d7`/`708d0c7`/`f491e85`/`9dd3d2c`
+(+ fix round `9d58d2a`). Review: **Spec ✅ · Approved (round 1)**. The reviewer verified the
+keyed variant provably additive (the scalar bodies differ only by `cell: null` writes; the
+seven consumers appear in no hunk), the two orders-page invariants character-identical against
+base (travelerPrinted monotonic ternary; mutation-gate/drain byte-identical), and the disclosed
+optimistic-patch deviation behavior-equivalent (blur clears the slot before `commit`, so
+merge-wrapping the patch would be a semantic no-op) — the adoption even removes a latent
+spurious-PATCH the old `focusedValue` ref carried. One Minor applied by the implementer, TDD:
+the disappearing-row branch now RELEASES the cell slot — the reviewer inverted the report's
+dismissal (soft-delete is precisely what lets a same id leave and re-enter the payload via
+`includeInactive`/reactivation), and with the row's input guaranteed to unmount there is
+nothing left to protect. 23/23 leaf tests; two record-only notes.
