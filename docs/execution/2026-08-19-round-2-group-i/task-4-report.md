@@ -168,3 +168,116 @@ database was never touched), a seeded customer with one open 1000.00 invoice. Ob
 4. **Whether the `applyError` row move** reads as an improvement or as churn in #75's code.
 5. **The `tx?` parameter** — whether a test-only seam on a public service is acceptable here given
    `applyPayment`'s identical precedent.
+
+---
+
+# Fix round 1
+
+Review verdict: **Spec ✅ · Needs fixes**, one Important + three minors; plus a group-E2E failure
+reported mid-round. All addressed below. Scratch DB `erp_scratch_i4b`.
+
+## E2E BREAKAGE (reported by the controller, fixed first)
+
+`e2e/flows/receivables-apply-age-statement.mjs` failed to **parse** —
+`SyntaxError: Identifier 'invoiceRow' has already been declared` — so the whole flow never ran
+(22/23). My write-off step declared `const invoiceRow` at ~:261 while the /invoicing section already
+declares one at :99, in the **same function scope**.
+
+Mine is renamed `arInvoiceRow` (three uses updated); :99 and its uses are untouched. A comment at the
+declaration says why the name is what it is, so the next editor of this shared file does not
+re-collide.
+
+**This was my defect, and the cause is instructive:** I verified my selectors against a live DOM in a
+browser, which proves the SELECTORS and proves nothing about the FILE — a parse error is invisible to
+that method. I never parsed the merged file.
+
+Verification, beyond the required check:
+
+```
+$ node --check e2e/flows/receivables-apply-age-statement.mjs
+NODE --CHECK: PASS
+$ for f in e2e/flows/*.mjs e2e/lib/*.mjs e2e/run.mjs; do node --check "$f"; done
+ALL E2E MODULES PARSE
+```
+
+Duplicate sweep over the whole file, by parsing every declaration rather than trusting a list of
+names I might mis-remember (`const|let|var` at any indentation, counted):
+**41 declarations, ZERO duplicates.** The controller's suggested suspects were checked explicitly
+too — `paymentRow`, `panel`, `sectionByHeading` each appear once; `check`, `row`, `net`,
+`applyButton` are not declared at all.
+
+**Worth knowing for the group: `eslint` does not cover `e2e/`.** I re-introduced the exact collision
+and ran `npx eslint e2e/flows/receivables-apply-age-statement.mjs` — it reported **nothing**, exit 0,
+on a file that cannot be parsed. So the standing `npx eslint src tests` gate can never catch this
+class; `node --check` on every touched e2e module is the check that can, and it costs milliseconds.
+Recommend it as a convention for any task touching `e2e/`.
+
+I also re-confirmed my step's arithmetic still holds after Task 1's edits to the same file: the step
+sits immediately after the aging/statement assertions that themselves pin **470.00 open / 270.00
+net**, and before the settling apply — so the state it opens on is asserted by the flow one screen
+earlier, not assumed.
+
+## IMPORTANT — the refusals now name a route that exists
+
+`hasReceivableActivity` has no type or `paymentId` predicate, so a standalone write-off blocks
+unlock / discard / void-order. That behaviour is right; the wording was not. Before #77 a WRITE_OFF
+always carried a payment, so "void the payments" was always true — now it is reachable and **false**,
+and it sends the operator to the receipt batches after a row that does not exist.
+
+- NEW `WRITE_OFF_VOID_HINT` in `invoice-guards.ts` (beside `invoiceBlockMessage`, the leaf both
+  services already import): `" (a bad-debt write-off is voided from the customer's Receivables
+  section)"`. **One constant, not three copies** — if the void surface ever moves, this is the single
+  line that moves with it.
+- `invoices.ts` unlock (~:1638) and discard (~:1477), `orders.ts` void-order (~:1356) now all say
+  "payments, credits or write-offs" and carry the hint. The discard arm stays unreachable by
+  construction (finalized paper is not discardable); fixed for consistency, as directed.
+- Three PRE-EXISTING pins moved with the messages: `tests/invoices.test.ts:1403` (exact-string
+  equality), `tests/invoices.test.ts:1095`, `tests/unlock-concurrency.test.ts:125`.
+
+NEW coverage in `tests/write-offs.test.ts` — a describe of three, which also closes the reviewer's
+minor 6 (the `invoice-guards` interaction was unpinned for this path):
+
+1. a standalone write-off refuses the unlock with the corrected message;
+2. **voiding it then PERMITS the unlock** — the other half of §5.14: a refusal that names a route is
+   only fixed if the route it names actually unblocks the operator;
+3. the same for `voidOrder`.
+
+RED evidence (unlock message reverted to its old wording, everything else in place):
+
+```
+× refuses to unlock the invoice, naming write-offs AND where they are voided from
+  → expected Error: Invoice #520001 has payments appli… to match object { status: 400, …(1) }
+```
+
+That output is the defect itself: the operator's instruction, naming a payment that does not exist.
+Restored → green.
+
+## Minors
+
+1. **DANGEROUS-DIRECTION header narrowed.** The claim "no behavioural test can red on that half" is
+   replaced with the accurate one — not red-able **from a source-level downgrade** — and the header
+   now names the second RC exposure the reviewer identified: `closePeriod` fixes its snapshot at
+   `lockMonth`, so an RC posting that holds the month advisory lock and commits while the close is
+   blocked on it is invisible to SSI, and the close freezes `writeOffTotal`/`endingAr` without it
+   with no 40001. Driving that needs the real service paused between `assertPeriodOpen` and its
+   write, which no source edit provides — hence the structural pin. Conclusion and pin unchanged;
+   only the claim's breadth was wrong.
+2. **`tx?` JSDoc** now states that a production caller must never hand it a non-Serializable
+   transaction, and says why the pin cannot catch that (it observes only the no-`tx` branch).
+3. **The shared refusal string is now genuinely shared** — module-level `WRITE_OFF_NEEDS_REASON`,
+   used by both `resolveReason` and `writeOffInvoiceInTx`; the "shared deliberately" comment now
+   describes what the code does, and notes that a test pinning the string on both sides would keep
+   passing on two copies that had drifted.
+
+## Gates (fix round)
+
+| Gate | Result |
+| --- | --- |
+| `npm test` (scratch `erp_scratch_i4b`) | **3446 passed / 204 files**, 0 failed (420s) |
+| `npx tsc --noEmit` | clean |
+| `npx eslint src tests` | clean |
+| `node --check` (every e2e module) | all parse |
+
+The seven directly-affected suites were also run together first: **365 passed** (`write-offs`,
+`invoices`, `unlock-concurrency`, `orders`, `invoice-guards`, `applications`, `applications-routes`).
+`tests/write-offs.test.ts` is now 30 tests.
