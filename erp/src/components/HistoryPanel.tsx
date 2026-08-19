@@ -1,18 +1,14 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/fetcher";
+// The pure diff logic lives in a client-safe leaf so tests/audit-diff.test.ts can pin it —
+// including the raw-FK suppression (#14 item 2's render half) — without a DOM test env.
+import { changedFields } from "@/lib/audit-diff";
 
 type Entry = {
   id: string; at: string; actorName: string; action: string; reason: string | null;
   before: Record<string, unknown> | null; after: Record<string, unknown> | null;
 };
-
-function changedFields(e: Entry): string[] {
-  if (!e.before || !e.after) return [];
-  const keys = new Set([...Object.keys(e.before), ...Object.keys(e.after)]);
-  return [...keys].filter((k) => JSON.stringify(e.before?.[k]) !== JSON.stringify(e.after?.[k]))
-    .filter((k) => !["updatedAt"].includes(k));
-}
 
 // The audit endpoint is gated on admin.view (a permission-model decision recorded in
 // docs/HANDOFF.md §6, deliberately not revisited here). A user who can view the record this
@@ -53,7 +49,7 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
             <span><b>{e.actorName}</b> — {e.action}{e.reason ? ` (${e.reason})` : ""}</span>
             <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
           </div>
-          {changedFields(e).map((k) => (
+          {changedFields(e.before, e.after).map((k) => (
             <div key={k} className="ml-2 text-xs text-slate-600">
               {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
             </div>
