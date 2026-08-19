@@ -371,10 +371,24 @@ export function Quotes() {
             <ul className="mb-3 list-disc space-y-0.5 pl-5 text-sm text-amber-800">
               {createdQuote.warnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
-            <button type="button" onClick={() => router.push(`/quotes/${createdQuote.id}`)}
-                    className="rounded bg-slate-800 px-4 py-2 text-sm text-white">
-              Go to quote
-            </button>
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={() => router.push(`/quotes/${createdQuote.id}`)}
+                      className="rounded bg-slate-800 px-4 py-2 text-sm text-white">
+                Go to quote
+              </button>
+              {/* The dismiss affordance (#100 item 8): stay put, drop the panel, and refresh the
+                  worklists so the created quote shows below. The draft is cleared with it — the
+                  panel exists to prevent a stray second "New quote" from a kept-alive form. */}
+              <button type="button"
+                      onClick={() => {
+                        setCreatedQuote(null);
+                        setDraft({ customerId: "", partId: "", partNumberText: "" });
+                        void reloadAll();
+                      }}
+                      className="text-sm text-slate-600 underline">
+                Stay on this page
+              </button>
+            </div>
           </div>
         ) : (
         <div className="flex flex-wrap items-end gap-3 text-sm">
