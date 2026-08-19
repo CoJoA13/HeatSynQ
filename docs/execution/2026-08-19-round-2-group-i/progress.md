@@ -93,3 +93,31 @@ recorded the implementer's WRITE_OFF reading inline with the owner's ruled text*
 confirmation. The controller-owned record carried the same class of error and was corrected in
 the same breath: HANDOFF's rolling paragraph still stated the **superseded** first #69 ruling,
 so the handoff and spec §15 asserted opposite policies until it was fixed.
+
+**Task 3 (#153, the parent-history union read)** — implementer `65c28da`/`bbe47d0` (+ fix round
+`3f9ad04`/`fdcaca5`). Review: **Needs fixes (round 1) → Approved (round 2)**. Round 1 verified
+the two load-bearing properties at diff and query level (`readAudit` byte-identical; no
+`deletedAt` filter anywhere in the walk, with no Prisma extension able to reintroduce one),
+re-grepped the consumer list independently, and endorsed the implementer's self-directed
+`receiptBatch → application` entry as the registry's own rule applied consistently.
+
+**The one Important is the group's best finding, and it was about a GUARANTEE, not a defect.**
+The leaf's header stated that the sweep test "executes every hop against the real schema", so
+a typo'd FK could not ship. It didn't: the walk short-circuits on `level.length > 0`, and the
+sweep walked whole chains from a bogus parent id — so the OUTER hop returned `[]`, the loop
+exited, and **the inner hop of every two-hop path never ran**. `application.paymentId` was
+validated by nothing, on exactly the "a future audited child is one registry entry" shape the
+design exists to make safe. No live defect (both column names checked against the schema) —
+the advertised guarantee was simply false. Fixed test-only plus one `export` so the tested
+path is the wired path: every `(model, fk)` pair now executes INDIVIDUALLY, with a
+`covered`-vs-`expected` set comparison whose job is to fire when a future edit reintroduces a
+chain walk. The implementer added the missing negative half too — an unknown model must THROW,
+since an empty list is indistinguishable from a correct hop finding no children.
+**Both sides proved it by injection**: `fk: "paymentIdd"` reds the new sweep, and the reviewer
+re-ran it independently in a scratch copy and found the decisive detail — the round-1-style
+assertion **passed** with the typo in place, confirming the finding from the other direction.
+Six minors applied, incl. three banner comments that still claimed `entries[0]`, a JSDoc
+claiming a runtime re-assertion that never existed, and a CLAUDE.md paragraph trimmed back to
+its prior length. One declined-and-endorsed: scoping the banner fetch was rejected in favour of
+documenting, since a `parentOnly` param would widen a shared route's contract for a state that
+cannot currently arise.
