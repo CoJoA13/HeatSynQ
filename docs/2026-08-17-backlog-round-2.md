@@ -397,18 +397,19 @@ unfixed before arming the tripwire.
 
 ---
 
-## Group H — Polish bundles and small cleanups · **#14, #37, #38, #33, #100, #99, #101, #72, #24, #9**
+## Group H — Polish bundles and small cleanups · **#14, #37, #38, #33, #100, #99, #101, #72, #24, #9** — **MERGED `a8ed769` (PR #152, 2026-08-19)**
 
-Low individual value, but cheap in a batch and they are what the office actually notices.
-
-- **#14** parts UI papercuts (4 items, incl. audit diffs showing a raw cuid) · **#37** combobox ARIA +
-  attachment tooltip wording · **#38** attachment upload cap pre-check · **#33** decompose `orders.ts`
-  and the board page · **#100** the Phase 6 minors bundle (8 items) · **#99** promoting a soft-deleted
-  reference row's `isDefault` 200s silently — fix in the generic path, not per-kind · **#101** re-gate
-  the part page's active-quotes read to `quotes.view` (owner ruling, Phase 6 demo) · **#72** remove the
-  vestigial `ar` permission area · **#24** audit snapshots of `role.permissions` /
-  `processStepCode.fields` have no deterministic ordering, so History can show a spurious diff ·
-  **#9** concurrent edits to different fields absorb each other into their audit diffs.
+All nine closed; **#33 landed its owner-ruled bounded slice** (board components + board-columns
+unit suite + `order-board.ts` barrel extraction + the orders↔shippers cycle retired) and stays
+open, retitled, for the create/edit split deferred past the acceptance month. What went past the
+issue texts: the #9 claim is `FOR NO KEY UPDATE` (plain `FOR UPDATE` deadlocks through FK RI
+trigger probes); #24 grew stable-field projection under a Codex round (delete/recreate re-saves
+mint fresh ids that JSON-differ); #99's guard-to-write race closed by a `deletedAt: null`-
+conditional write (Codex round 2, the task review's accepted residue); the group E2E run caught
+the ARIA option-role displacing the test helper's button locator (14/23 red → one-line fix →
+23/23); #153 filed from Codex round 3 (parent-panel child-history aggregation, pre-existing
+boundary). One migration (the `ar` purge with drift-guard rework). Five reviews: four Approved
+round 1, one same-round fix (the NUL byte). Gates: 3310/198, E2E 23/23.
 
 ---
 
@@ -442,8 +443,8 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
 ~~**D** (stale-load, merged `c0b795e`)~~ →
 ~~**F** (infra, merged `b5a2069`)~~ → ~~**G** (documents/templates, merged `5c54730`)~~ →
-**H** as filler ← **NEXT when asked** (the Group-D-filed #144–#149 are H-territory additions —
-fold them in or run as H2, controller's call at kickoff).
+~~**H** (polish, merged `a8ed769`)~~ → **H2** (#144–#149, split out at H kickoff by controller
+call) ← **NEXT when asked**. H2's kickoff is the Group H brief's own H2 section — recon done.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across

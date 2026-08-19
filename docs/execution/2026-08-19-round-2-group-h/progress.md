@@ -125,6 +125,21 @@ Replied + resolved per the loop.
   entry guard stays as the fast-path 404; `RefDelegate` gained `updateMany`. All six reference
   suites (111 tests) + the full suite (3310/198) green after.
 
+- **Round 3** (one P2, **triaged → filed as #153**, no push): the History invalidation's
+  child-section calls refresh a parent-only query — verified as a PRE-EXISTING display
+  boundary, not a regression (`readAudit` has always been an exact `(entity, entityId)` match;
+  child-entity rows were never visible in the part panel, reload or not). Parent-panel child
+  aggregation is a real enhancement affecting customers/orders panels equally — fix directions
+  recorded on #153; the child-section invalidation wiring deliberately stays so it goes live
+  the day aggregation lands.
+
+## Merge (2026-08-19)
+
+Squash-merged as `a8ed769` (PR #152). GitHub's closing keyword bound only the first reference
+in the PR body's list, so #14/#24/#37/#38/#72/#99/#100/#101 were closed manually as completed
+with the pointer (lesson: one `Closes #n` per issue, not a comma list). #33 stays open,
+retitled. 15 issues open after (the H2 six, the deferred #33, five parked, #134, #137, #153).
+
 ## Gates (final tree `bf72649`; E2E at `5941a52`, unit gates re-run after each Codex fix)
 
 | Gate | Result |
