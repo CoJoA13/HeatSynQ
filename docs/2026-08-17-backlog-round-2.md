@@ -342,7 +342,24 @@ second-reversal creation guard already landed on PR #141, the edit-mutator guard
 
 ---
 
-## Group F — Infrastructure and tooling · **#30, #111, #40, #34, #35, #112, #32, #107**
+## Group F — Infrastructure and tooling · **MERGED as `b5a2069` (PR #150, squash, 2026-08-18)**
+
+#30, #111, #40, #35, #112, #32 closed by the PR; **#34 closed with pointers at kickoff** (already
+implemented since Phase 4's `f129aae` — recon caught it, the #5 pattern again) and **#107 closed
+not-planned by owner ruling** (revisit trigger on the issue). No schema migration. Four tasks,
+four reviews — **all Approved on round 1, zero implementer fix rounds** (three controller minors);
+gates **3260 tests / 191 files**, `tsc`/`eslint`/`build` clean, E2E 23/23; the new `docker` CI
+job passed in 1m53s on its own PR's first run. Ledger:
+`docs/execution/2026-08-18-round-2-group-f/`.
+
+**What went past the issue text:** #111's fix DELETED the round-2 advisory-lock mechanism rather
+than patching it (single-flight join; both rounds' requirements met; the round-4-defense comment
+carries the repo-verified process-model facts); #40's RED watch surfaced a latent translator
+crash (string `meta.target`); #112's fix also corrected an adjacent stale README claim disproven
+against the real image; #32's recon decompiled the current interpreter to confirm upstream is
+unfixed before arming the tripwire.
+
+### The group as originally scoped (historical)
 
 - **#30 — CI never builds the Docker image, though production IS that image.** Dependabot PR #16 showed
   a green check for a Dockerfile change the workflow never touched. ~25s to fix.
@@ -416,8 +433,9 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 ~~**B** (A/R, merged `6bc45ea`)~~ → ~~**C** (shipping/status, merged `4cada64`)~~ →
 ~~**E** (close + GL + tripwires, merged `2d9247c`)~~ →
 ~~**D** (stale-load, merged `c0b795e`)~~ →
-**F** (infra — #111 carries a read-its-warning-first note) ← **NEXT when asked** →
-**G**/**H** as filler.
+~~**F** (infra, merged `b5a2069`)~~ →
+**G**/**H** as filler ← **NEXT when asked** (either; the Group-D-filed #144–#149 are
+H-territory additions).
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across
