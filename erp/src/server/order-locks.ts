@@ -8,7 +8,10 @@
 // the claim itself here — importing nothing but the db types and the zero-import `errors.ts` leaf —
 // means every order-family service (`orders.ts`, `certs.ts`, `attachments.ts`, `order-loads.ts`,
 // `traveler.ts`, and Task 8's `shippers.ts`) can depend on the lock without depending on each
-// other through it.
+// other through it. (The `shippers.ts` <-> `orders.ts` pair this paragraph anticipated did form —
+// `shipmentBlockers` one way, `isDuplicateClientRequestId` back — and lived on the
+// hoisted-function rule until #33, 2026-08-19, moved `isDuplicateClientRequestId` into
+// `db-errors.ts`; that edge is one-directional now, `orders.ts` -> `shippers.ts` only.)
 //
 // Task 7 review (2026-08-04) found the identical shape one file over: `cert-results.ts` imported
 // `claimCertsOrder`/`readCertDetail` from `certs.ts`, while `certs.ts` imported `seedRequirements`

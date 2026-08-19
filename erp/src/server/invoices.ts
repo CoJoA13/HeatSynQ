@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type Order } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors, retryAllocation } from "./db-errors";
+import { withDbErrors, retryAllocation, isDuplicateClientRequestId } from "./db-errors";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
@@ -15,7 +15,6 @@ import { listSurcharges, type SurchargeRow } from "./surcharges";
 import { listPartPrices } from "./part-prices";
 import { listAddresses, type AddressRow } from "./customer-addresses";
 import { getSetting, allocateNumber } from "./settings";
-import { isDuplicateClientRequestId } from "./orders";
 import { shippedTotals, recomputeOrderStatus } from "./ship-ledger";
 import {
   priceOrder, taxOnLines,

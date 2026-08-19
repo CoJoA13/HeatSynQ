@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma, type OrderStatus } from "../../prisma/generated/prisma/client";
 import { prisma } from "./db";
 import { HttpError } from "./errors";
-import { withDbErrors, retryAllocation } from "./db-errors";
+import { withDbErrors, retryAllocation, isDuplicateClientRequestId } from "./db-errors";
 import { orderEntryReadiness } from "./order-entry-readiness";
 import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
@@ -19,9 +19,11 @@ import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
 // `export async function`, and this file never reads it at module-evaluation time (only inside
 // `removeLine`/`updateLine`/`voidOrder`'s bodies, all called well after both modules finish
-// loading) — safe against the cycle this creates with `shippers.ts`'s own pre-existing import of
-// `isDuplicateClientRequestId` FROM this file, for the identical reason (order-locks.ts's own
-// header comment; verified per the task report, not merely assumed).
+// loading). ONE-DIRECTIONAL since #33 (2026-08-19): `isDuplicateClientRequestId` — the
+// shippers.ts -> orders.ts return edge that made this a documented runtime cycle — lives in
+// db-errors.ts now (re-exported below), so shippers.ts no longer imports this file back. Keep it
+// that way: a new shippers.ts -> orders.ts import would re-open the cycle and inherit the
+// hoisted-function-declarations-only rule order-locks.ts's header records for surviving one.
 import { shipmentBlockers } from "./shippers";
 // Type-only, so it is erased at compile time and adds nothing to the runtime cycle above.
 import type { OrderLineShippedToDate } from "./shippers";
@@ -41,6 +43,9 @@ import { INT4_MAX } from "../lib/order-constants";
 import { trafficSettings, type Traffic } from "./order-board";
 export { listOrders, exportOrders, trafficSettings } from "./order-board";
 export type { BoardRow, OrderFilter } from "./order-board";
+// Likewise re-exported (#33): `isDuplicateClientRequestId` is a pure P2002-meta reader and lives
+// in db-errors.ts now — this keeps the historical `@/server/orders` import path working.
+export { isDuplicateClientRequestId } from "./db-errors";
 
 export type OrderWarnings = string[];
 
@@ -585,39 +590,6 @@ export async function readDetail(db: Db, id: string, traffic: Traffic): Promise<
     : [];
   const shipped = await shippedTotals(db, row.lines.map((l) => l.id));
   return toDetail(row, linkedOrders, traffic, shipped);
-}
-
-/**
- * Whether `err` is a unique violation on `Order.clientRequestId` specifically — never on
- * `orderNumber`, which shares the P2002 code and means something else entirely (a genuine
- * numbering collision, still a 400 through `withDbErrors`). Getting this discrimination wrong in
- * the permissive direction would turn a numbering bug into a silent wrong-order response, so the
- * check names the column rather than assuming "the only unique on Order".
- *
- * `meta.target` is EMPTY on this stack — measured, not assumed: under Prisma 7's pg driver adapter
- * a P2002 arrives as `meta = { modelName, driverAdapterError: { cause: { originalCode: "23505",
- * constraint: { fields: ['"clientRequestId"'] }, originalMessage } } }`, with no `target` key at
- * all (which is also why db-errors.ts's own P2002 branch always falls through to its
- * `conflictField` fallback). So the adapter's own `constraint.fields` is what actually carries the
- * answer here — the same place `isRawSerializationFailure` reaches for its SQLSTATE. `meta.target`
- * is still consulted first, so this keeps working if a future adapter populates it; the driver's
- * message is the last resort. Field names arrive quoted, hence substring rather than equality.
- *
- * Exported for shippers.ts's `createShipper` (Task 8) — `Shipper.clientRequestId` is the
- * identical idempotency-nonce shape on a different model, and this function never hardcodes a
- * model name, only the column name, so it discriminates a `Shipper` P2002 exactly as it does an
- * `Order` one. Reused rather than re-derived, per the task brief.
- */
-export function isDuplicateClientRequestId(err: unknown): boolean {
-  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
-  const meta = err.meta as {
-    target?: unknown;
-    driverAdapterError?: { cause?: { constraint?: { fields?: unknown }; originalMessage?: unknown } };
-  } | undefined;
-  const cause = meta?.driverAdapterError?.cause;
-  return [meta?.target, cause?.constraint?.fields, cause?.originalMessage]
-    .flat()
-    .some((candidate) => typeof candidate === "string" && candidate.includes("clientRequestId"));
 }
 
 /**
