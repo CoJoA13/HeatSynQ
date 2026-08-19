@@ -447,9 +447,21 @@ is a spec §15 amendment), **#73 and #80 are UNPARKED into Group E** (`ready-for
 `1ba0d34`, PR #154, 2026-08-19 — all six closed; three reviews all Approved round 1 with zero
 Important; three Codex rounds drove the edit-guard to its captured-session fixpoint, round 4
 clean; ledger `docs/execution/2026-08-19-round-2-group-h2/progress.md`)~~ —
-**ROUND 2's GROUPED WORK IS COMPLETE.** Every issue still open is owner-gated: #33 (create/edit
-split, deferred past the acceptance month), #153, parked #4/#8/#69/#71/#77, #134 (owner
-decision), #137.
+→ ~~**I** (the ready issues — #69, #8, #137, #77, #153, merged `e97a65d`, PR #156, 2026-08-19 —
+all five closed; opened by **eleven owner answers in one sitting**, six of which closed or scoped
+issues outright, #134/#4/#71 among them; four tasks, five reviews, zero Critical; Codex round 1
+accepted and fixed wider than reported, round 2 clean; ledger
+`docs/execution/2026-08-19-round-2-group-i/progress.md`)~~ —
+
+**ROUND 2 IS COMPLETE. Every issue in this document is closed**, and the four still open are
+either owner-gated or were filed by the work itself: **#33** (create/edit split, deliberately
+deferred past the acceptance month), **#155** (the early-pay discount's unreachable two-step
+composition + the §5.14 silent-hide, filed on the Group I branch), **#157** (owner decision:
+how long written-off invoices stay on the A/R screen), **#158** (History panels still stale on a
+parent's own mutations outside the parts page — pre-existing, surfaced by Group I's Codex fix).
+
+The standing §9 items are unchanged and are what remains before the acceptance month: the
+order-to-invoice **practice-copy demo**, and the **3 high Dependabot alerts**.
 
 **A first** because it is the acceptance month's own path and the most expensive to discover live.
 **D is deliberately not early**, despite being tempting: it needs a decision (#31) and a sweep across

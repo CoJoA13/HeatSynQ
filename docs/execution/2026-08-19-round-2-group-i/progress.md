@@ -225,6 +225,31 @@ mounted panel actually refetches — the Task 2 precedent of naming the gap rath
 manufacturing a fake pin. CLAUDE.md's Audit paragraph now says **four** edits, not three, and
 names the manifest as the enforcement so it is a test rather than a doc promise.
 
+## Codex round 2 (2026-08-19)
+
+**CLEAN** — no new comments in the watch window, zero unresolved threads, CI (`ci` + `docker`)
+green, `mergeStateStatus: CLEAN`.
+
+## Merge (2026-08-19)
+
+Squash-merged as `e97a65d` (PR #156). **All five issues auto-closed** — the one-`Closes`-per-issue
+discipline (PR #152's lesson) working for the second group running. Two follow-ups filed at
+close-out, both deliberately kept out of this diff rather than silently dropped:
+
+- **#157** (owner decision): how long written-off invoices stay on the customer A/R screen.
+  Retention is unbounded in two shapes — every full write-off, and a partial that was later
+  settled in cash. Neither affects money (`open` is 0, so they add nothing to the net); the cost
+  is clutter that grows with bad debt. Options recorded: leave unbounded / retain until the
+  write-off's period closes / collapse into a "Written off" group. Both the implementer and the
+  reviewer declined to invent a cutoff — a retention policy is the owner's call.
+- **#158** (ready-for-agent): History panels still go stale on a parent's OWN mutations outside
+  the parts page. Pre-existing — those rows were always the exact-match rows and the panel was
+  always stale for them; #153 only made the CHILD half visible, which is what made the gap
+  conspicuous. The `INVALIDATION_SITES` manifest this group added is the natural place to extend.
+
+Open after: **#33** (deferred create/edit split), **#155** (the discount's unreachable two-step
+composition + the §5.14 silent-hide), **#157**, **#158**.
+
 ## Gates (final tree, re-run in full after the Codex fix)
 
 | Gate | Result |
