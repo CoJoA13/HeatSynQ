@@ -2,10 +2,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api, ApiError } from "@/lib/fetcher";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { ADDRESS_KINDS, ADDRESS_KIND_LABELS, CONTACT_FLAGS, type AddressKind } from "@/lib/customer-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
-import { gate } from "@/lib/permission-ui";
+import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useSaveScope } from "@/lib/save-scope";
@@ -181,6 +181,20 @@ function CustomerDetail({ id }: { id: string }) {
   // the same gate the route enforces, so the control is disabled-with-a-reason (§5.16)
   // rather than offered and then refused.
   const receivablesApplyGate = gate(perms, "receivables.create");
+  // #77: a standalone write-off needs `receivables.create` AND the `write_off` special action — the
+  // exact pair `POST /api/receivables/write-offs` enforces. Combined into ONE gate here (the
+  // `BatchDetail` precedent) so the control renders visible-and-disabled naming whichever half is
+  // actually blocking; "Requires receivables.create" and "Requires write_off" send an operator to
+  // different conversations.
+  const writeOffSpecialGate = gateDo(perms, "write_off");
+  const writeOffBlocked = receivablesApplyGate.disabled || writeOffSpecialGate.disabled;
+  const receivablesWriteOffGate: Gate = {
+    allowed: !writeOffBlocked, disabled: writeOffBlocked,
+    title: receivablesApplyGate.disabled ? receivablesApplyGate.title : writeOffSpecialGate.title,
+  };
+  // Voiding a write-off is a delete of the Application row — `receivables.delete`, what
+  // `DELETE /api/receivables/applications/[id]` enforces.
+  const receivablesVoidGate = gate(perms, "receivables.delete");
   // Terms options are global reference data, not per-customer — fetched once, independent of
   // `load()`. Session-only route (any signed-in user, no admin.view needed): a user holding
   // customers.edit but not admin.view must still see Terms options, and a failure here is
@@ -331,6 +345,11 @@ function CustomerDetail({ id }: { id: string }) {
       inFlight.current.delete(key);
       return false;
     }
+    // #14 item 1, extended by #153: every caller of `call()` writes a `customerAddress` or
+    // `customerContact` row, both registered children of this page's panel, so each one moves a
+    // history the panel is displaying. Wired HERE rather than at the five call sites because
+    // this is the single success path they share; on success, before the follow-up load.
+    invalidateHistory();
     setError(null);
     try {
       await load();
@@ -433,6 +452,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(`contact:${ct.id}:${key}`, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify({ [key]: value }) });
+        invalidateHistory(); // #14 item 1 — success path, before the rollback/refresh branches
         setError(null);
       } catch (e) {
         // Detached no-clear rollback, the save() shape above (§5.13; #15's cross-key clobber —
@@ -457,6 +477,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/addresses/${a.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        invalidateHistory(); // #14 item 1
         setError(null);
         return true;
       } catch (e) {
@@ -483,6 +504,7 @@ function CustomerDetail({ id }: { id: string }) {
     const settled = serial(key, async () => {
       try {
         await api(`/api/customers/${id}/contacts/${ct.id}`, { method: "PUT", body: JSON.stringify(patch) });
+        invalidateHistory(); // #14 item 1
         setError(null);
       } catch (e) {
         // Detached no-clear rollback, the save() shape above (§5.13).
@@ -948,7 +970,13 @@ function CustomerDetail({ id }: { id: string }) {
         </div>
       </section>
 
-      <ReceivablesSection customerId={id} viewGate={receivablesViewGate} applyGate={receivablesApplyGate} />
+      <ReceivablesSection
+        customerId={id}
+        viewGate={receivablesViewGate}
+        applyGate={receivablesApplyGate}
+        writeOffGate={receivablesWriteOffGate}
+        voidGate={receivablesVoidGate}
+      />
 
       <HistoryPanel entity="customer" entityId={c.id} />
     </div>

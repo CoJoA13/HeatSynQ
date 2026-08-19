@@ -80,7 +80,9 @@ export type InvoiceDetailData = {
  *  top comment on why that one is never routed through `applyMutation`. */
 export type InvoiceMutationResult = { invoice: InvoiceDetailData; warnings: string[] };
 
-type AuditEntry = { id: string; action: string; reason: string | null };
+// `entity` since #153 — the single-record audit read is a union over the invoice's child
+// sections (its applications), so a row in it is not necessarily the invoice's own.
+type AuditEntry = { id: string; entity: string; action: string; reason: string | null };
 /** Slice of a future `GET /api/invoices/[id]/documents` (Task 19 — not built yet; the route 404s
  *  until then, exactly like this page's own Print button, both by task-18-brief.md's explicit
  *  license). Shape mirrors `listDocumentsForShipper`'s `DocumentMeta` (src/server/documents.ts). */
@@ -531,13 +533,15 @@ export function InvoiceDetail({ id }: { id: string }) {
   const docsGate = gate(perms, "invoicing.view");
 
   // Discarded banner's reason — the order hub / ShipmentDetail `voidReason` precedent. Safe to
-  // key on `discarded` alone: once discarded, no mutator can touch the invoice again.
+  // key on `discarded` alone: once discarded, no mutator can touch the invoice again. Since #153
+  // this read is a capped union over the invoice's child sections (its applications), so the
+  // delete entry is found by `entity`, not by position — see the order hub's fuller note.
   useEffect(() => {
     if (!discarded) { setDiscardReason(null); return; }
     if (!auditGate.allowed) { setDiscardReason(undefined); return; }
-    api<AuditEntry[]>(`/api/admin/audit?entity=invoice&entityId=${id}`)
-      .then((entries) => {
-        const latest = entries[0];
+    api<{ rows: AuditEntry[]; hasMore: boolean }>(`/api/admin/audit?entity=invoice&entityId=${id}`)
+      .then(({ rows }) => {
+        const latest = rows.find((e) => e.entity === "invoice");
         setDiscardReason(latest?.action === "delete" ? (latest.reason ?? undefined) : undefined);
       })
       .catch(() => setDiscardReason(undefined));

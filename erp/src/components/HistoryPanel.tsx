@@ -4,11 +4,21 @@ import { api } from "@/lib/fetcher";
 // The pure diff logic lives in a client-safe leaf so tests/audit-diff.test.ts can pin it —
 // including the raw-FK suppression (#14 item 2's render half) — without a DOM test env.
 import { changedFields } from "@/lib/audit-diff";
+// The parent → child-section registry the server walked to build this union (#153) — imported
+// here so a foreign row is LABELLED by the same source of truth that decided to include it, and
+// the panel can never render a row it cannot name.
+import { auditChildLabel } from "@/lib/audit-children";
 
 type Entry = {
-  id: string; at: string; actorName: string; action: string; reason: string | null;
+  // `entity` matters now that the read is a union: it is what distinguishes the parent's own
+  // rows from a child section's, and it is what `auditChildLabel` names the latter by.
+  id: string; entity: string; at: string; actorName: string; action: string; reason: string | null;
   before: Record<string, unknown> | null; after: Record<string, unknown> | null;
 };
+
+/** What the audit route's single-record branch answers since #153 — capped rows plus whether the
+ *  cap actually bit, so the panel can state the truncation instead of quietly shortening history. */
+type HistoryResponse = { rows: Entry[]; hasMore: boolean };
 
 // The audit endpoint is gated on admin.view (a permission-model decision recorded in
 // docs/HANDOFF.md §6, deliberately not revisited here). A user who can view the record this
@@ -52,6 +62,9 @@ export function invalidateHistory(): void {
 
 export function HistoryPanel({ entity, entityId }: { entity: string; entityId: string }) {
   const [entries, setEntries] = useState<Entry[]>([]);
+  // Set from the SAME response as `entries`, in the same gated branch, so the two can never
+  // disagree about which read they describe.
+  const [hasMore, setHasMore] = useState(false);
   const [status, setStatus] = useState<Status>("loading");
   // Bumped by an invalidation to re-run the fetch effect below (the SetupBanner refreshNonce
   // shape, minus the one-shot latch — this fetch is cheap enough to simply re-run).
@@ -70,8 +83,14 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
     // gating BOTH paths: a superseded response must not paint stale rows, flip a fresh "ok" to
     // "error", or mask a real 403 with a stale success.
     let stale = false;
-    api<Entry[]>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`)
-      .then((rows) => { if (stale) return; loadedKeyRef.current = key; setEntries(rows); setStatus("ok"); })
+    api<HistoryResponse>(`/api/admin/audit?entity=${entity}&entityId=${entityId}`)
+      .then((res) => {
+        if (stale) return;
+        loadedKeyRef.current = key;
+        setEntries(res.rows);
+        setHasMore(res.hasMore);
+        setStatus("ok");
+      })
       .catch(() => { if (!stale) { loadedKeyRef.current = null; setStatus("error"); } });
     return () => { stale = true; };
   }, [entity, entityId, refreshNonce]);
@@ -83,20 +102,43 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
   }
   if (entries.length === 0) return <p className="text-sm text-slate-500">No history.</p>;
   return (
-    <ul className="divide-y rounded border bg-white text-sm">
-      {entries.map((e) => (
-        <li key={e.id} className="p-2">
-          <div className="flex justify-between">
-            <span><b>{e.actorName}</b> — {e.action}{e.reason ? ` (${e.reason})` : ""}</span>
-            <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
-          </div>
-          {changedFields(e.before, e.after).map((k) => (
-            <div key={k} className="ml-2 text-xs text-slate-600">
-              {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
-            </div>
-          ))}
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="divide-y rounded border bg-white text-sm">
+        {entries.map((e) => {
+          // null for the parent's own rows, which need no label — and for any entity that is not
+          // a registered child of this parent, which renders plainly rather than under a guess.
+          const section = auditChildLabel(entity, e.entity);
+          return (
+            <li key={e.id} className="p-2">
+              <div className="flex justify-between">
+                <span>
+                  {section && (
+                    <span className="mr-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
+                      {section}
+                    </span>
+                  )}
+                  <b>{e.actorName}</b> — {e.action}{e.reason ? ` (${e.reason})` : ""}
+                </span>
+                <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
+              </div>
+              {changedFields(e.before, e.after).map((k) => (
+                <div key={k} className="ml-2 text-xs text-slate-600">
+                  {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
+                </div>
+              ))}
+            </li>
+          );
+        })}
+      </ul>
+      {/* The read is capped (AUDIT_PANEL_LIMIT), and a silently shortened history is the same
+          class of lie as the "No history" on a 403 this panel already refuses to show. Stated
+          from the response's own `hasMore` and the rows actually rendered, so the sentence stays
+          true whatever the cap is set to. */}
+      {hasMore && (
+        <p className="mt-1 text-xs text-slate-500">
+          Showing the most recent {entries.length} changes — older history is not listed.
+        </p>
+      )}
+    </>
   );
 }

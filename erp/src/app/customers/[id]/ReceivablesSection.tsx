@@ -13,6 +13,19 @@
 // that a customer holding only a credit read a negative net over the words "No open invoices".
 // Applying a credit happens here too (#75, owner ruling 2026-08-17): this is the one screen showing
 // a credit and the invoices it could pay down side by side.
+//
+// The standalone bad-debt WRITE-OFF lives here for the same reason (#77): the invoice page has no
+// A/R panel and no open balance at all, so putting it there would mean building that panel first,
+// while this screen already prints the live open balance the operator is deciding about. Its amount
+// is EDITABLE, defaulting to the whole open balance (owner ruling 2026-08-19) — a partial bad-debt
+// write-off is ordinary, and the operator should not have to reach for another screen for it.
+//
+// And the VOID is here too, which is the less obvious half (owner ruling, same day). A fully
+// written-off invoice has a zero open balance, so it used to fall straight out of this table — and
+// `BatchDetail` lists applications per PAYMENT, so a write-off with no payment appeared on no screen
+// at all. A mis-keyed bad debt was uncorrectable outside SQL. `openItemsForCustomer` now retains such
+// an invoice (at zero, carrying its `writeOffs`), and each one renders with a Void control: §5.14's
+// rule that a block must name a route out of itself, applied to an action instead of an error.
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
@@ -30,9 +43,13 @@ type AgingRow = {
   unapplied: number; net: number;
 };
 type OpenItemKind = "INVOICE" | "CREDIT" | "PAYMENT";
+/** One standalone (null-payment) write-off against an invoice — the flag the row renders and the
+ *  `Application` id its Void control acts on (#77). Empty on CREDIT and PAYMENT rows. */
+type OpenItemWriteOff = { id: string; amount: number; appliedDate: string; reason: string | null };
 type CustomerOpenItem = {
   kind: OpenItemKind; id: string; documentNumber: string;
   date: string; dueDate: string | null; original: number; open: number;
+  writeOffs: OpenItemWriteOff[];
 };
 type ReceivablesSummary = { aging: AgingRow; openItems: CustomerOpenItem[] };
 
@@ -46,7 +63,16 @@ const BUCKET_FIELD: Record<AgingBucketValue, MoneyBucketKey> = {
 };
 
 export function ReceivablesSection(
-  { customerId, viewGate, applyGate }: { customerId: string; viewGate: Gate; applyGate: Gate },
+  { customerId, viewGate, applyGate, writeOffGate, voidGate }: {
+    customerId: string;
+    viewGate: Gate;
+    applyGate: Gate;
+    /** #77: `receivables.create` AND the `write_off` special action, combined by the caller so the
+     *  tooltip names whichever one the server would actually refuse on (§5.16). */
+    writeOffGate: Gate;
+    /** #77: `receivables.delete` — what `DELETE /api/receivables/applications/[id]` enforces. */
+    voidGate: Gate;
+  },
 ) {
   const [summary, setSummary] = useState<ReceivablesSummary | null>(null);
   // A `loaded` flag distinct from "no summary yet" — a failed fetch must say so, never render as
@@ -85,8 +111,10 @@ export function ReceivablesSection(
   }
 
   // Computed ONCE rather than per row — every credit row needs the same list of invoices it could
-  // be applied to.
-  const openInvoices = (summary?.openItems ?? []).filter((i) => i.kind === "INVOICE");
+  // be applied to. `open > 0` is load-bearing since #77: an invoice retained purely because it was
+  // written off sits at ZERO, and offering it as a credit target would prefill an amount of 0.00
+  // that `applyCredit` refuses (its schema requires a positive amount).
+  const openInvoices = (summary?.openItems ?? []).filter((i) => i.kind === "INVOICE" && i.open > 0);
 
   return (
     <section className="mb-6 rounded border bg-white p-4">
@@ -159,6 +187,8 @@ export function ReceivablesSection(
                     item={r}
                     invoices={openInvoices}
                     applyGate={applyGate}
+                    writeOffGate={writeOffGate}
+                    voidGate={voidGate}
                     onApplied={() => void load()}
                   />
                 ))}
@@ -173,17 +203,29 @@ export function ReceivablesSection(
 
 /** One open item. A CREDIT with remaining balance carries the Apply control (#75): the credit and
  *  the invoices it can pay down are both on this screen, so applying is a two-field act rather than
- *  a trip to another page. An on-account PAYMENT has no document page to link to, and is applied
- *  through its receipt batch (`BatchDetail.tsx`), which is a different flow. */
-function OpenItemRow({ item, invoices, applyGate, onApplied }: {
+ *  a trip to another page. An INVOICE carries the Write off control and, once written off, the Void
+ *  that undoes it (#77). An on-account PAYMENT has no document page to link to, and is applied
+ *  through its receipt batch (`BatchDetail.tsx`), which is a different flow.
+ *
+ *  The two forms have separate `open` flags rather than one union, because they are already mutually
+ *  exclusive by ROW KIND — the Apply form exists only on a CREDIT row and the write-off form only on
+ *  an INVOICE row, so neither can ever be showing while the other is. They share ONE `inFlight` ref
+ *  and ONE `applyError`, which is correct: a row does one thing at a time, and every failure belongs
+ *  in the same place beneath it. */
+function OpenItemRow({ item, invoices, applyGate, writeOffGate, voidGate, onApplied }: {
   item: CustomerOpenItem;
   invoices: CustomerOpenItem[];
   applyGate: Gate;
+  writeOffGate: Gate;
+  voidGate: Gate;
   onApplied: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState("");
   const [amount, setAmount] = useState("");
+  const [writeOffOpen, setWriteOffOpen] = useState(false);
+  const [writeOffAmount, setWriteOffAmount] = useState("");
+  const [writeOffReason, setWriteOffReason] = useState("");
   const [saving, setSaving] = useState(false);
   // SYNCHRONOUS single-flight. `disabled={saving}` is not one: `setSaving(true)` schedules a render,
   // so two clicks landing in the same tick both pass the check and both POST. `applyCredit`
@@ -201,6 +243,10 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
 
   const remaining = Math.abs(item.open);
   const canApply = item.kind === "CREDIT" && invoices.length > 0;
+  // Nothing left to write off is a real, non-permission reason to disable the control — and the one
+  // a retained written-off row is always in (#77): it is listed for its Void, not for another
+  // write-off.
+  const canWriteOff = item.kind === "INVOICE" && item.open > 0;
 
   function start() {
     // Default to the OLDEST open invoice and the smaller of the two balances — the applying an
@@ -232,6 +278,65 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
     }
   }
 
+  function startWriteOff() {
+    // Owner ruling 2026-08-19: the amount is EDITABLE, defaulting to the FULL open balance — the
+    // bad-debt case in one click, the partial one by typing over it.
+    setWriteOffAmount(item.open.toFixed(2));
+    setWriteOffReason("");
+    setWriteOffOpen(true);
+    setApplyError(null);
+  }
+
+  async function submitWriteOff() {
+    if (inFlight.current) return; // the same synchronous single-flight the credit apply uses
+    inFlight.current = true;
+    setSaving(true);
+    try {
+      // The amount goes as the TYPED STRING, not `Number(...)`: `decimalField` accepts either, and a
+      // string carries a typo to the field-anchored decimal message instead of collapsing to NaN →
+      // null → "expected a number". The reason is sent as typed; the service trims it and is the
+      // one place that decides an empty one is a refusal.
+      await api("/api/receivables/write-offs", {
+        method: "POST",
+        body: JSON.stringify({ invoiceId: item.id, amount: writeOffAmount.trim(), reason: writeOffReason }),
+      });
+      setWriteOffOpen(false);
+      setApplyError(null);
+      onApplied();
+    } catch (e) {
+      setApplyError((e as Error).message); // stays open, correctable in place
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
+    }
+  }
+
+  /** Undo one standalone write-off (#77). `prompt`-then-DELETE is `BatchDetail`'s own
+   *  `voidApplicationAction` shape — the reason is required by `voidApplication` itself, and this
+   *  pre-check only saves a round trip. The prompt is synchronous, so no second click can be
+   *  processed while it is up; the `inFlight` ref still flips before the first `await`. */
+  async function voidWriteOff(w: OpenItemWriteOff) {
+    const reason = prompt(
+      `Void the write-off of ${w.amount.toFixed(2)} against ${item.documentNumber}?\n\n`
+      + "The invoice's open balance comes back.\n\nReason for voiding (recorded in the audit history):",
+    );
+    if (reason === null) return; // cancelled
+    if (!reason.trim()) { setApplyError("A reason is required to void a write-off."); return; }
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSaving(true);
+    try {
+      await api(`/api/receivables/applications/${w.id}`, { method: "DELETE", body: JSON.stringify({ reason }) });
+      setApplyError(null);
+      onApplied();
+    } catch (e) {
+      setApplyError((e as Error).message);
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <tr className="border-t">
@@ -242,7 +347,14 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
             <Link href={`/invoicing/${item.id}`} className="text-blue-700 underline">{item.documentNumber}</Link>
           )}
         </td>
-        <td>{KIND_LABEL[item.kind]}</td>
+        <td>
+          {KIND_LABEL[item.kind]}
+          {item.writeOffs.length > 0 && (
+            // The flag that explains why this row reads the way it does — and, when the balance is
+            // zero, why it is still here at all (#77).
+            <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-xs text-amber-800">Written off</span>
+          )}
+        </td>
         <td>{item.date}</td>
         <td>{item.dueDate ?? "—"}</td>
         <td className="text-right tabular-nums">{item.original.toFixed(2)}</td>
@@ -261,8 +373,51 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
               {open ? "Cancel" : "Apply"}
             </button>
           )}
+          {item.kind === "INVOICE" && (
+            // §5.16: rendered visible-and-disabled, naming whichever blocker the server would
+            // actually hit — the permission pair first (that is what the route refuses on), then
+            // the "nothing left" case.
+            <button
+              type="button"
+              onClick={() => (writeOffOpen ? setWriteOffOpen(false) : startWriteOff())}
+              disabled={!writeOffGate.allowed || !canWriteOff || saving}
+              title={!writeOffGate.allowed ? writeOffGate.title
+                : !canWriteOff ? "Nothing left to write off on this invoice"
+                  : undefined}
+              className="text-xs text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
+            >
+              {writeOffOpen ? "Cancel" : "Write off"}
+            </button>
+          )}
         </td>
       </tr>
+      {item.writeOffs.length > 0 && (
+        // Every standalone write-off on this invoice, each with the Void that undoes it. This is the
+        // ONLY screen that can reach one: `voidApplication` has always accepted a null-payment row,
+        // but `BatchDetail` lists applications per payment, so before #77 nothing rendered these.
+        <tr className="border-t bg-amber-50">
+          <td colSpan={7} className="p-2">
+            <ul className="space-y-1 text-xs text-slate-700">
+              {item.writeOffs.map((w) => (
+                <li key={w.id} className="flex flex-wrap items-center gap-2">
+                  <span className="tabular-nums">Written off {w.amount.toFixed(2)}</span>
+                  <span className="text-slate-500">on {w.appliedDate}</span>
+                  {w.reason && <span className="text-slate-500">— {w.reason}</span>}
+                  <button
+                    type="button"
+                    onClick={() => void voidWriteOff(w)}
+                    disabled={!voidGate.allowed || saving}
+                    title={voidGate.allowed ? undefined : voidGate.title}
+                    className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
+                  >
+                    Void
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
       {open && (
         <tr className="border-t bg-slate-50">
           <td colSpan={7} className="p-2">
@@ -304,9 +459,55 @@ function OpenItemRow({ item, invoices, applyGate, onApplied }: {
               </button>
               <span className="text-xs text-slate-500">{remaining.toFixed(2)} remaining on this credit</span>
             </div>
-            {applyError && (
-              <p className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">{applyError}</p>
-            )}
+          </td>
+        </tr>
+      )}
+      {writeOffOpen && (
+        <tr className="border-t bg-slate-50">
+          <td colSpan={7} className="p-2">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-sm">
+                <span className="mr-2">Amount</span>
+                <input
+                  value={writeOffAmount}
+                  inputMode="decimal"
+                  onChange={(e) => setWriteOffAmount(e.target.value)}
+                  aria-label="Amount to write off"
+                  className="w-28 rounded border px-2 py-1 text-right"
+                />
+              </label>
+              <label className="flex-1 text-sm">
+                <span className="mr-2">Reason</span>
+                <input
+                  value={writeOffReason}
+                  onChange={(e) => setWriteOffReason(e.target.value)}
+                  aria-label="Reason for the write-off"
+                  placeholder="why this balance is being written off"
+                  className="w-full min-w-48 rounded border px-2 py-1"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => void submitWriteOff()}
+                disabled={saving}
+                className="rounded bg-slate-800 px-3 py-1 text-sm text-white disabled:bg-slate-400"
+              >
+                {saving ? "Writing off…" : "Write off balance"}
+              </button>
+              <span className="text-xs text-slate-500">{item.open.toFixed(2)} open on this invoice</span>
+            </div>
+          </td>
+        </tr>
+      )}
+      {applyError && (
+        // ONE error row for the whole item, rather than one inside each form. It used to live inside
+        // the credit form's expanded row, which cannot serve the two actions #77 adds: a failed VOID
+        // has no form open at all, and its message would have rendered into nothing. Still local to
+        // the row (never the section's `error`, which gates the whole summary and would unmount the
+        // very form holding the amount that needs correcting).
+        <tr className="border-t">
+          <td colSpan={7} className="px-2 pb-2">
+            <p className="rounded bg-red-50 p-2 text-sm text-red-700">{applyError}</p>
           </td>
         </tr>
       )}

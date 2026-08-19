@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateHistory } from "@/components/HistoryPanel";
 import { gate, gateDo } from "@/lib/permission-ui";
 import { useLatest } from "@/lib/use-latest";
 import { percentToDecimal, decimalToPercentText } from "@/lib/surcharge-percent";
@@ -117,6 +118,9 @@ export function SurchargeOverridesSection({
         await api(`/api/customers/${customerId}/surcharges`, {
           method: "PUT", body: JSON.stringify({ surchargeId, ...body }),
         });
+        // #14 item 1, extended by #153: `customerSurcharge` is a registered child of the customer
+        // panel (and of the surcharge panel). Success path, before the follow-up load.
+        invalidateHistory();
         onError(null); await load();
       } catch (e) {
         await load().catch(() => {});
@@ -146,6 +150,7 @@ export function SurchargeOverridesSection({
         await api(`/api/customers/${customerId}/surcharges`, {
           method: "DELETE", body: JSON.stringify({ surchargeId }),
         });
+        invalidateHistory(); // #14 item 1
         onError(null); await load();
       } catch (e) {
         await load().catch(() => {});

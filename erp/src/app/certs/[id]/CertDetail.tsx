@@ -56,7 +56,9 @@ export type CertDetailData = {
 
 /** Slice of `GET /api/certs/[id]/documents`'s `DocumentMeta` (src/server/documents.ts). */
 type StoredDoc = { id: string; kind: string; createdAt: string };
-type AuditEntry = { id: string; action: string; reason: string | null };
+// `entity` since #153 — see the order hub's identical note: the single-record audit read is a
+// union, so a row in it is not necessarily the cert's own.
+type AuditEntry = { id: string; entity: string; action: string; reason: string | null };
 
 /** Spec §3.19: a cert has no number of its own — its label is its order number, plus that
  *  order's shipment sequence for SHIPMENT scope (`#72036-3`), the CertList.tsx precedent. */
@@ -210,13 +212,15 @@ export function CertDetail({ id }: { id: string }) {
     : gate(perms, "certs.view");
 
   // Voided banner's reason (ShipmentDetail.tsx precedent) — safe to key on `voided` alone: once
-  // voided, no mutator can touch the cert again, so the delete entry, if readable, is entries[0].
+  // voided, no mutator can touch the cert again, so the delete entry is the cert's own newest.
+  // Since #153 this read is a capped union over the parent's child sections, so it is found by
+  // `entity`, not by position — see the order hub's fuller note on both points.
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }
-    api<AuditEntry[]>(`/api/admin/audit?entity=cert&entityId=${id}`)
-      .then((entries) => {
-        const latest = entries[0];
+    api<{ rows: AuditEntry[]; hasMore: boolean }>(`/api/admin/audit?entity=cert&entityId=${id}`)
+      .then(({ rows }) => {
+        const latest = rows.find((e) => e.entity === "cert");
         setVoidReason(latest?.action === "delete" ? (latest.reason ?? undefined) : undefined);
       })
       .catch(() => setVoidReason(undefined));

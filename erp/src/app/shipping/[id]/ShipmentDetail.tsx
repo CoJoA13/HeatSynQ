@@ -128,7 +128,9 @@ type Address = { id: string; kind: string; name: string; street: string; city: s
 type CarrierOption = { id: string; name: string };
 /** Slice of `GET /api/orders`'s `BoardRow` (src/server/orders.ts) — the "Add order" candidates. */
 type OrderOption = { id: string; orderNumber: number; poNumber: string };
-type AuditEntry = { id: string; action: string; reason: string | null };
+// `entity` since #153 — see the order hub's identical note: the single-record audit read is a
+// union, so a row in it is not necessarily the shipment's own.
+type AuditEntry = { id: string; entity: string; action: string; reason: string | null };
 /** Slice of `GET /api/shippers/[id]/documents`'s `DocumentMeta` (src/server/documents.ts). */
 type StoredDoc = { id: string; kind: string; orderId: string | null; createdAt: string };
 
@@ -443,14 +445,15 @@ export function ShipmentDetail({ id }: { id: string }) {
   }, [onShipmentOrderIds, ordersGate.allowed, catalogsLatest, addLoadError]);
 
   // Voided banner's reason (order hub `voidReason` precedent) — safe to key on `voided` alone:
-  // once voided, no mutator can touch the shipment again, so the delete entry, if readable at
-  // all, is always entries[0].
+  // once voided, no mutator can touch the shipment again, so the delete entry is the shipment's
+  // own newest. Since #153 this read is a capped union over the parent's child sections, so it is
+  // found by `entity`, not by position — see the order hub's fuller note on both points.
   useEffect(() => {
     if (!voided) { setVoidReason(null); return; }
     if (!auditGate.allowed) { setVoidReason(undefined); return; }
-    api<AuditEntry[]>(`/api/admin/audit?entity=shipper&entityId=${id}`)
-      .then((entries) => {
-        const latest = entries[0];
+    api<{ rows: AuditEntry[]; hasMore: boolean }>(`/api/admin/audit?entity=shipper&entityId=${id}`)
+      .then(({ rows }) => {
+        const latest = rows.find((e) => e.entity === "shipper");
         setVoidReason(latest?.action === "delete" ? (latest.reason ?? undefined) : undefined);
       })
       .catch(() => setVoidReason(undefined));

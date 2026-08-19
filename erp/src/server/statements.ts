@@ -466,6 +466,15 @@ export async function printStatementsPerDivision(
   customerId: string, opts: StatementOpts,
 ): Promise<PerDivisionStatement[]> {
   const asOf = opts.asOf ?? formatDateOnly(todayDateOnly());
+  // VALIDATION ONLY, and deliberately up here — above the parent lookup and outside every
+  // per-member `try` below (#137, the `runStatements` shape which has always hoisted its own).
+  // `buildStatementInTx` parses `asOf` too, and that parse sits INSIDE each member's try: one
+  // malformed date therefore became N per-member "failures" answered at HTTP 200, which is
+  // failing while reporting success. The shared date is a property of the REQUEST, not of any
+  // member, so it is refused once, before anything is printed. `buildStatementInTx` keeps its own
+  // parse — it is the boundary for the single-print and preview callers — and the second parse is
+  // idempotent. The returned Date is unused here; only the throw matters.
+  parseAsOf(asOf);
   const parent = await prisma.customer.findFirst({
     where: { id: customerId, deletedAt: null }, select: CUSTOMER_REF_SELECT,
   });

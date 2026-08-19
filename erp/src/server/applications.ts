@@ -50,6 +50,12 @@ type Db = Prisma.TransactionClient;
 
 const cents = (n: number): number => Math.round(n * 100);
 
+/** The refusal both write-off flavors give for a missing reason — the residual one `applyPayment`
+ *  writes (`resolveReason`) and the standalone one `writeOffInvoice` writes. ONE constant, because
+ *  the two are the same act to the operator and must read identically; a test pins it on both
+ *  sides, which would keep passing on two copies that had silently drifted apart. */
+const WRITE_OFF_NEEDS_REASON = "a write-off needs a reason";
+
 /** CRITICAL (Task 5 carry): `Application.amount` is a Prisma `Decimal`; every value crossing into
  *  `ar-balances` must be `.toNumber()`'d first. */
 const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; deletedAt: Date | null }): ApplicationLite =>
@@ -61,6 +67,32 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 // `invoiceDate + discountDays` calendar days (`addDays`, not business days — a terms deadline is a
 // calendar date, the `dueDate` precedent). The eligible amount is `discountPercent% × the invoice's
 // open balance`, integer-cent half-up. Zero out of window, zero with no terms discount.
+//
+// THE SETTLEMENT RULE (#69, owner ruling 2026-08-19; spec §15). **A discount is earned only by a
+// payment that SETTLES the invoice — a partial payment inside the window earns nothing at all.**
+// This is a guard, not a basis change: the eligible figure is still `discountPercent × the open
+// balance`, exactly as it always was. What is new is that it is offered (and accepted) only when
+// this payment's unapplied cash can actually close the remainder net of it — `cash ≥ open − eligible`.
+// Settlement is judged against what is STILL OPEN, never the original total, so a customer who
+// part-paid earlier can still settle the remainder early and earn the percentage on what remains.
+//
+// It is enforced at BOTH read sites, which cap independently: here (the offer the apply grid renders
+// as a "Take 20.00" checkbox) and in `resolveReason` (the save). They must agree PER INVOICE, or the
+// grid offers an amount the save refuses.
+//
+// They deliberately do NOT agree across a WHOLE GRID, and cannot: this function answers about one
+// invoice at a time and measures the payment's entire unapplied cash against it, so a $1,000 check
+// facing two $1,000 invoices renders "Take 20.00" on BOTH — that cash can settle either, just not
+// both. Taking both is then refused by the payment's own unapplied-amount check inside
+// `applyPaymentInTx`, which is the same upper bound the plain amount inputs have always had (the
+// grid has never claimed a per-row figure is affordable alongside every other row's). The invariant
+// that matters is the one-directional one, and it holds: every DISCOUNT the save ACCEPTS satisfies
+// the condition this function offers on, so the save can never accept what the offer would refuse.
+//
+// The issue was originally ruled the other way — a pro-rata percentage of the cash remitted — and
+// re-put to the owner with the arithmetic, because that reading strands $0.40 on the ordinary case
+// (a $1,000 invoice at 2/10 settled by a $980 remittance) and contradicts both this phase's design
+// spec and a pinned test.
 // -------------------------------------------------------------------------------------------
 
 type DiscountTerms = { discountPercent: Prisma.Decimal | null; discountDays: number | null };
@@ -105,11 +137,18 @@ function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDat
  * minus the DISCOUNT already taken. That makes the entitlement a one-time quantity instead of a
  * renewable one.
  *
- * **Deliberately the tighter of the two, never the looser**, because which basis SHOULD apply is a
- * terms-policy question the owner has not ruled on: after a partial payment, today's rule offers 2%
- * of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule alone would
- * allow the full $20. Taking the minimum changes nothing in any case that works today and closes the
- * one that does not — so this is a hole being closed, not a policy being chosen.
+ * **Deliberately the tighter of the two, never the looser.** After a partial payment, the open-balance
+ * rule offers 2% of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule
+ * alone would allow the full $20. Taking the minimum changes nothing in any case that works and closes
+ * the one that does not — a hole closed, not a policy chosen.
+ *
+ * The basis question this docblock used to record as unruled was answered on 2026-08-19 (#69), and
+ * the answer left this function alone: the eligible figure stays `percent × open balance`, and what
+ * the owner added is the SETTLEMENT requirement enforced by the two callers (see the §4.3 block
+ * above). Note the interaction, because it is not obvious — the guard makes a discount takeable only
+ * alongside the payment that settles the invoice, which means the cross-request creep this cap was
+ * built for can no longer be started. The cap stays as the belt: it is what refuses the second bite
+ * after a void reopens an invoice whose entitlement is already spent.
  */
 function remainingDiscountFor(
   terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
@@ -127,7 +166,14 @@ function remainingDiscountFor(
 
 export async function discountAvailable(paymentId: string, invoiceId: string): Promise<number> {
   const payment = await prisma.payment.findFirst({
-    where: { id: paymentId }, select: { receivedDate: true },
+    where: { id: paymentId },
+    select: {
+      receivedDate: true, amount: true,
+      // #69: the cash this receipt still has to spend — its amount less the PAYMENT applications
+      // already sourced from it (`paymentOnAccount`). Cash it has spent on ANOTHER invoice cannot
+      // settle this one.
+      applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+    },
   });
   if (!payment) throw new HttpError(404, "Payment not found");
   const invoice = await prisma.invoice.findFirst({
@@ -142,9 +188,20 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   if (!invoice) throw new HttpError(404, "Invoice not found");
   // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
   // will refuse (#81 / Codex PR #129).
-  return remainingDiscountFor(
-    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate,
-    invoice.total.toNumber(), invoice.applications.map(toLite));
+  const apps = invoice.applications.map(toLite);
+  const eligible = remainingDiscountFor(
+    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate, invoice.total.toNumber(), apps);
+  if (eligible <= 0) return 0;
+
+  // #69: offered only if this payment can actually settle the invoice with it (see the block above).
+  // This is a FEASIBILITY test — "is there enough cash left to close this out" — while the save's
+  // half is an EXACTNESS test (`resolveReason`: the payload's cash + discount must equal the open
+  // balance), because by then the operator has typed the figures. Integer cents: a cent short is
+  // short, and `open − eligible` on floats is exactly where a 979.99 remittance would round its way
+  // into a discount it did not earn.
+  const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), apps));
+  const cashCents = cents(paymentOnAccount(payment.amount.toNumber(), payment.applications.map(toLite)));
+  return cashCents >= openCents - cents(eligible) ? eligible : 0;
 }
 
 /** One invoice's current open balance, by id — the same read `discountAvailable` already does,
@@ -260,7 +317,21 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
  * the same composition `buildStatement` makes for the printed document (§8, "open credits ... and
  * on-account as negatives"), and on the same bases: `invoiceOpenBalance` / `creditRemaining` /
  * `paymentOnAccount` from `ar-balances`, never re-derived here. Settled items drop out; a $0 row is
- * not an open item.
+ * not an open item — with ONE deliberate exception, below.
+ *
+ * **The written-off invoice is retained (#77, owner ruling 2026-08-19).** An invoice closed by a
+ * STANDALONE (null-payment) write-off would otherwise vanish from this table the instant it was
+ * written off — and this table is the only anchor its undo has: `voidApplication` works on a
+ * null-payment row, but `BatchDetail` lists applications per PAYMENT, so a mis-keyed bad-debt
+ * write-off would be uncorrectable outside SQL. So such an invoice stays listed, flagged by a
+ * non-empty `writeOffs`, and the screen that wrote it off can undo it (§5.14: a block must name a
+ * route out of itself). The retained row's `open` is ZERO, so it contributes nothing to the sum and
+ * #83's reconciliation invariant is untouched.
+ *
+ * Scoped to null-payment write-offs on purpose: a RESIDUAL write-off (one sourced from a payment)
+ * is already reachable from its receipt batch, so retaining those too would park every invoice ever
+ * settled with a residual in a table headed "Open items" forever, to duplicate a control that
+ * already exists elsewhere.
  *
  * `db` threads the caller's transaction so the items and the aging strip can be read from ONE
  * snapshot (`customer-receivables.ts`) — the `agingReport` RepeatableRead precedent — and `asOfDate`
@@ -280,6 +351,18 @@ export type CustomerOpenItem = {
   original: number;
   /** Signed the way it moves the net: positive for an invoice, negative for a credit or cash. */
   open: number;
+  /** The STANDALONE (null-payment) write-offs live against this invoice — the flag the row renders
+   *  and the handle its Void control acts on. Always empty for a CREDIT or PAYMENT row. */
+  writeOffs: OpenItemWriteOff[];
+};
+
+/** One standalone write-off, as the A/R section needs it: the `Application` id `voidApplication`
+ *  takes, plus what the operator needs to recognize which one they are undoing. */
+export type OpenItemWriteOff = {
+  id: string;
+  amount: number;
+  appliedDate: string;
+  reason: string | null;
 };
 
 export async function openItemsForCustomer(
@@ -313,7 +396,13 @@ export async function openItemsForCustomer(
     select: {
       id: true, kind: true, creditNumber: true, total: true, invoiceDate: true, dueDate: true,
       order: { select: { orderNumber: true } },
-      applications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
+      // `id`/`reason`/`appliedDate`/`paymentId` beyond the `toLite` trio: the standalone write-offs
+      // this row carries are picked out of the SAME list the balance is derived from, so the flag and
+      // the balance can never describe different sets (and no second query is needed).
+      applications: {
+        where: liveAsOf,
+        select: { id: true, amount: true, type: true, deletedAt: true, reason: true, appliedDate: true, paymentId: true },
+      },
       creditApplications: { where: liveAsOf, select: { amount: true, type: true, deletedAt: true } },
     },
     orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
@@ -324,13 +413,21 @@ export async function openItemsForCustomer(
     const total = inv.total.toNumber();
     if (inv.kind === "INVOICE") {
       const open = invoiceOpenBalance(total, inv.applications.map(toLite));
-      if (cents(open) <= 0) continue; // settled — not an open item
+      const writeOffs: OpenItemWriteOff[] = inv.applications
+        .filter((a) => a.type === "WRITE_OFF" && a.paymentId === null)
+        .map((a) => ({
+          id: a.id, amount: a.amount.toNumber(),
+          appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
+        }));
+      // Settled AND never standalone-written-off — not an open item, and nothing here to undo.
+      // A written-off invoice is retained at zero instead (#77; see the header block).
+      if (cents(open) <= 0 && writeOffs.length === 0) continue;
       items.push({
         kind: "INVOICE", id: inv.id,
         documentNumber: invoiceDocumentNumber("INVOICE", null, inv.order.orderNumber, prefix),
         date: formatDateOnly(inv.invoiceDate),
         dueDate: inv.dueDate ? formatDateOnly(inv.dueDate) : null,
-        original: total, open,
+        original: total, open, writeOffs,
       });
       continue;
     }
@@ -344,6 +441,7 @@ export async function openItemsForCustomer(
       documentNumber: invoiceDocumentNumber("CREDIT", inv.creditNumber, inv.order.orderNumber, prefix),
       date: formatDateOnly(inv.invoiceDate), dueDate: null,
       original: total, open: -remaining, // `creditRemaining` is already positive
+      writeOffs: [], // a credit memo is never written off — only an invoice is
     });
   }
 
@@ -368,6 +466,7 @@ export async function openItemsForCustomer(
       documentNumber: pay.reference !== "" ? pay.reference : "Payment on account",
       date: formatDateOnly(pay.receivedDate), dueDate: null,
       original: amount, open: -onAccount,
+      writeOffs: [], // cash on account is not an invoice
     });
   }
   return items;
@@ -498,6 +597,29 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   // consumes another's entitlement in a multi-invoice apply.
   const discountCents = new Map<string, number>();
 
+  // #69 (owner ruling 2026-08-19): a DISCOUNT is earned only by a payment that SETTLES the invoice,
+  // so each DISCOUNT line is judged against what THIS WHOLE PAYLOAD covers of the invoice's open
+  // balance — cash + discount, both totalled per invoice BEFORE the sequential loop below.
+  //
+  // The pre-aggregation is load-bearing, not tidiness. Derived inside the loop, "cash so far" would
+  // make the verdict depend on the ORDER the lines arrive in: `[DISCOUNT, PAYMENT]` would be refused
+  // while the identical `[PAYMENT, DISCOUNT]` passed. The DISCOUNT total is aggregated for the same
+  // reason one level down — a split entitlement (`980 + 12 + 8`) must not be refused at its first
+  // discount line for leaving 8.00 open.
+  //
+  // A WRITE_OFF deliberately does NOT count toward settling: the ruling earns the discount on a full
+  // early PAYMENT, and a short-pay the shop absorbs is the opposite of being paid early. Such a
+  // payload lands the invoice at zero and still earns nothing.
+  const openAtCallCents = new Map<string, number>(); // invoiceId -> open balance BEFORE this call
+  for (const inv of invoices) {
+    openAtCallCents.set(inv.id, cents(inv.total.toNumber()) - appliedCents.get(inv.id)!);
+  }
+  const settlingCents = new Map<string, number>(); // invoiceId -> Σ this payload's PAYMENT + DISCOUNT
+  for (const line of data.lines) {
+    if (line.type !== "PAYMENT" && line.type !== "DISCOUNT") continue;
+    settlingCents.set(line.invoiceId, (settlingCents.get(line.invoiceId) ?? 0) + cents(line.amount));
+  }
+
   const resolved: { line: ApplyLine; invoice: ClaimedInvoice; reason: string }[] = [];
   let paymentLinesCents = 0;
 
@@ -514,7 +636,9 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
     }
 
     const discountSoFar = discountCents.get(inv.id) ?? 0;
-    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar);
+    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar, {
+      coveredCents: settlingCents.get(inv.id) ?? 0, openCents: openAtCallCents.get(inv.id)!,
+    });
 
     if (line.type === "PAYMENT") paymentLinesCents += lineCents;
     if (line.type === "DISCOUNT") discountCents.set(inv.id, discountSoFar + lineCents);
@@ -560,18 +684,22 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
 }
 
 /** The per-type reason rule: a WRITE_OFF requires a trimmed reason (§4.1); a DISCOUNT must fall
- *  inside the early-pay window and always carries "early-pay terms"; a PAYMENT carries whatever
- *  (optional) note was sent.
+ *  inside the early-pay window, must SETTLE the invoice (#69), and always carries "early-pay terms";
+ *  a PAYMENT carries whatever (optional) note was sent.
  *
  *  `discountSoFarCents` is the DISCOUNT already accepted for THIS invoice by THIS call — the
  *  aggregate half of the cap (#81). Passed in rather than re-derived because `invoice.applications`
- *  is the pre-call snapshot and cannot see the lines this request has already resolved. */
+ *  is the pre-call snapshot and cannot see the lines this request has already resolved.
+ *
+ *  `settlement` is the #69 pair, both pre-aggregated by the caller: what this whole payload's
+ *  PAYMENT + DISCOUNT lines cover of this invoice, and the open balance they have to cover. */
 function resolveReason(
   line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date, discountSoFarCents: number,
+  settlement: { coveredCents: number; openCents: number },
 ): string {
   if (line.type === "WRITE_OFF") {
     const why = (line.reason ?? "").trim();
-    if (!why) throw new HttpError(400, "a write-off needs a reason");
+    if (!why) throw new HttpError(400, WRITE_OFF_NEEDS_REASON);
     return why;
   }
   if (line.type === "DISCOUNT") {
@@ -584,6 +712,16 @@ function resolveReason(
       invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
+    }
+    // #69 (owner ruling 2026-08-19): earned only by a payment that SETTLES the invoice. Checked
+    // AFTER the window/entitlement test above, so a genuine terms or window problem still reports
+    // itself as one rather than as a settlement problem. `coveredCents` is this payload's whole
+    // PAYMENT + DISCOUNT total for this invoice (never its WRITE_OFF — see the caller), so the
+    // verdict does not depend on line order and a split discount is judged as one figure.
+    if (settlement.coveredCents !== settlement.openCents) {
+      throw new HttpError(400,
+        "an early-pay discount is earned only by a payment that settles the invoice — this covers "
+        + `${settlement.coveredCents / 100} of the ${settlement.openCents / 100} open`);
     }
     // Cap the AGGREGATE at the terms-derived eligible amount — the early-pay window opening does NOT
     // license waiving the whole receivable as a "discount". Per-line alone was not enough (#81):
@@ -811,6 +949,155 @@ export async function applyCredit(input: { creditInvoiceId: string; invoiceId: s
   const data = APPLY_CREDIT.parse(input);
   await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
     (tx) => applyCreditInTx(tx, data),
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  ));
+}
+
+// -------------------------------------------------------------------------------------------
+// writeOffInvoice — the STANDALONE bad-debt write-off (#77). Spec §3 ruling 1 calls for write-offs
+// in BOTH flavors — a small residual and a wholly uncollectable invoice — but `applyPayment` is the
+// only path that ever wrote one and it requires a `paymentId`. An operator could write off a
+// residual from an existing receipt panel and nothing else: a wholly uncollectable invoice had no
+// path short of fabricating a receipt. The schema and the tightened `Application_source_check`
+// already PERMIT a WRITE_OFF with a null `paymentId` (no schema change, no migration); this is the
+// writer that was missing.
+//
+// THE CLAIM. `applyCredit` is the closest sibling (one target invoice, no payment row), but the
+// claim is `voidApplicationInTx`'s SINGLE-invoice shape — there is no second guarded balance here,
+// because the source of a write-off is the shop's own P&L, not another row:
+//   1. An UNLOCKED stub read for `orderId`/`kind`/`status`/`deletedAt` — refusing an untargetable
+//      row NOW, so no lock is ever taken for one that can never be written off (`orderId` never
+//      changes once an invoice exists, so it is safe to CLAIM on; everything else is re-read below).
+//   2. `claimOrder(tx, stub.orderId)` — the order behind the invoice, the fixed lock order every
+//      A/R mutation takes (orders, then invoice rows).
+//   3. The invoice row itself `FOR UPDATE`. The guarded balance is derived from the `Application`
+//      rows keyed to the invoice, so THIS is the lock that serializes concurrent write-offs (and a
+//      write-off against a concurrent payment) — never the isolation level.
+//   4. Re-validate kind/status/deletedAt UNDER the claim: a concurrent `unlockInvoice` (back to
+//      DRAFT) or `discardInvoice` committing between the stub and the claim must not let a write-off
+//      settle now-editable or discarded paper.
+// Then the over-application guard against the live open balance, then `assertPeriodOpen` — under
+// the claims, before the write. Serializable, pairing with the period lock's SSI backstop (see
+// `writeOffInvoice` below).
+//
+// THE DATE IS TODAY, never operator-chosen (controller call, matching `applyCredit`). A backdate
+// into an OPEN prior month would silently move that month's aging buckets and roll-forward, and
+// `assertPeriodOpen` would permit it — the guard only refuses a CLOSED month. We decline the
+// capability rather than guard it.
+//
+// THE GL QUESTION DOES NOT EXIST: 5C ruling 3 pinned ONE write-off account
+// (`BillingConfig.writeOffGlAccountId`) and explicitly ruled the residual-vs-bad-debt split out, so
+// this posts DR write-off / CR A/R identically to a residual one. `gl-export.ts`, `close-periods.ts`,
+// `aging.ts` and `statements.ts` all read `Application` without ever consulting `paymentId`, so none
+// of them needs a change (pinned by tests, not assumed — tests/write-offs.test.ts).
+// -------------------------------------------------------------------------------------------
+
+const WRITE_OFF = z.object({
+  invoiceId: z.string().min(1),
+  amount: decimalField(12, 2, { required: true, min: "positive" }),
+  // Optional in the SCHEMA so that a missing reason and a whitespace-only one produce the SAME
+  // refusal from `resolveReason`'s wording below, rather than a zod field error for one and the
+  // house message for the other. §4.1 requires the reason; this is where it is required.
+  reason: z.string().max(4000).optional(),
+}).strict();
+
+type WriteOffInput = z.infer<typeof WRITE_OFF>;
+
+async function writeOffInvoiceInTx(tx: Db, data: WriteOffInput): Promise<void> {
+  // The reason rule, sharing `resolveReason`'s WRITE_OFF wording through the ONE constant above —
+  // the two flavors of write-off are the same act to the operator and must read identically (a test
+  // pins the string on both sides, and would keep passing on two copies that had drifted).
+  const why = (data.reason ?? "").trim();
+  if (!why) throw new HttpError(400, WRITE_OFF_NEEDS_REASON);
+
+  // (1) UNLOCKED stub read — learn the order to claim, and refuse an untargetable row before taking
+  // any lock. Its kind/status/deletedAt verdict is NOT trusted for the write; it is re-made under
+  // the claim below.
+  const stub = await tx.invoice.findFirst({
+    where: { id: data.invoiceId },
+    select: { id: true, orderId: true, kind: true, status: true, deletedAt: true },
+  });
+  if (!stub || stub.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (stub.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a write-off applies to an invoice");
+  }
+  if (stub.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can be written off");
+  }
+
+  // (2) The order, then (3) the invoice row — the fixed lock order, single-invoice shape.
+  await claimOrder(tx, stub.orderId);
+  await tx.$queryRaw`SELECT "id" FROM "Invoice" WHERE "id" = ${data.invoiceId} FOR UPDATE`;
+
+  const invoice = await tx.invoice.findFirstOrThrow({
+    where: { id: data.invoiceId },
+    select: {
+      kind: true, status: true, deletedAt: true, total: true,
+      order: { select: { orderNumber: true } },
+      applications: { where: { deletedAt: null }, select: APPLICATIONS_LITE_SELECT },
+    },
+  });
+
+  // (4) Re-validate under the claim, with the SAME checks the stub pass ran.
+  if (invoice.deletedAt !== null) throw new HttpError(404, "Invoice not found");
+  if (invoice.kind !== "INVOICE") {
+    throw new HttpError(400, "That document is a credit, not an invoice — a write-off applies to an invoice");
+  }
+  if (invoice.status !== "FINALIZED") {
+    throw new HttpError(400, "That invoice is not finalized — only a finalized invoice can be written off");
+  }
+
+  // (5) Over-application: Σ applications must never exceed the invoice total. The message is the
+  // one `applyPaymentInTx`/`applyCreditInTx` already use, so a refused amount reads the same
+  // wherever the operator is standing.
+  const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), invoice.applications.map(toLite)));
+  if (cents(data.amount) > openCents) {
+    throw new HttpError(400, `That exceeds the invoice's open balance of ${openCents / 100}`);
+  }
+
+  // (6) §4.1: a write-off is cash-journal paper effective at `appliedDate` (today), so it is refused
+  // into a CLOSED period. Under the order/invoice claims, before the audited create.
+  const appliedDate = todayDateOnly();
+  await assertPeriodOpen(tx, appliedDate);
+  const auditData = {
+    type: "WRITE_OFF", invoiceId: data.invoiceId, invoiceOrderNumber: invoice.order.orderNumber,
+    // Stated explicitly: the null payment is the FACT that distinguishes this row from the residual
+    // write-off `applyPayment` writes, and the audit entry is where that has to be legible.
+    paymentId: null, amount: data.amount, reason: why, appliedDate: formatDateOnly(appliedDate),
+  };
+  await auditedCreate("application", auditData, () => tx.application.create({
+    data: {
+      invoiceId: data.invoiceId, amount: data.amount, type: "WRITE_OFF", reason: why,
+      paymentId: null, appliedDate,
+    },
+    select: { id: true },
+  }), { tx });
+}
+
+/**
+ * `writeOffInvoice` (#77) — write off all or part of a finalized invoice's open balance with no
+ * payment behind it. Gated `receivables.create` + the `write_off` special action by its route; every
+ * other guard lives here.
+ *
+ * **STANDING INVARIANT: this transaction runs Serializable.** The period lock is a predicate — an
+ * un-closed month has NO `ClosePeriod` row — so `assertPeriodOpen`'s advisory lock cannot stop a
+ * close that commits AFTER this transaction's snapshot is fixed (which happens at the stub read,
+ * before the period read). Only Postgres SSI aborts that phantom cycle, and only while BOTH sides
+ * are Serializable. Downgrade this to Read Committed and the period lock silently breaks — the
+ * dangerous-direction test in tests/write-offs.test.ts goes red if anyone does.
+ *
+ * `tx` is optional and exists for exactly one caller: the discriminating concurrency test passes a
+ * manually-opened (Read Committed) transaction so the INVOICE-ROW claim, not SSI, is what serializes
+ * a competing write-off — the `applyPayment`/`unlockInvoice` precedent. **A PRODUCTION caller must
+ * never hand this a non-Serializable transaction**: the injected branch inherits the caller's
+ * isolation, and the structural pin in tests/write-offs.test.ts can only observe the no-`tx` branch,
+ * so a Read Committed `tx` would bypass the standing invariant above without reddening anything.
+ */
+export async function writeOffInvoice(input: unknown, tx?: Prisma.TransactionClient): Promise<void> {
+  const data = WRITE_OFF.parse(input);
+  if (tx) { await writeOffInvoiceInTx(tx, data); return; }
+  await withDbErrors({ entity: "Application" }, () => prisma.$transaction(
+    (fresh) => writeOffInvoiceInTx(fresh, data),
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   ));
 }

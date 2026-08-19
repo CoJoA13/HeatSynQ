@@ -13,7 +13,9 @@ import { lockCurrentRevision, getRevisionContentUnchecked, type RevisionDetail }
 import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
-import { finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder } from "./invoice-guards";
+import {
+  finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, WRITE_OFF_VOID_HINT,
+} from "./invoice-guards";
 import { judgeQuoteLine, resolveAutoLink, type QuoteLinkCandidate } from "./quote-links";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
 // The `orders.ts -> shippers.ts` edge (Task 10, spec §5.5): `shipmentBlockers` is a hoisted
@@ -1353,7 +1355,7 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
     if (await hasReceivableActivityForOrder(tx, id)) {
       throw new HttpError(400,
         "This order cannot be voided — an invoice or credit on this order has A/R activity; " +
-        "void the payments or credits applied to it first");
+        `void the payments, credits or write-offs applied to it first${WRITE_OFF_VOID_HINT}`);
     }
 
     // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.

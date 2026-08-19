@@ -122,7 +122,7 @@ describe("unlockInvoice concurrency — the invoice-row claim serializes an unlo
     // REFUSES the unlock — deterministically this exact 400, never both committing.
     await expect(competitor).rejects.toMatchObject({
       status: 400,
-      message: expect.stringMatching(/has payments applied — void them before unlocking/),
+      message: expect.stringMatching(/has payments, credits or write-offs applied — void them before unlocking/),
     });
 
     // The invoice is untouched — still FINALIZED — and the holder's one application is still live.

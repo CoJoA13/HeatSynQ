@@ -2,7 +2,9 @@
 // end (5C design spec §4.1/§4.3/§6/§7). Sets the four Admin -> Billing plant-default GL accounts
 // through the real UI, seeds a shipped -> invoiced order against its own fixture customer (the
 // `invoice-shipped-order.mjs`/`receivables-apply-age-statement.mjs` precedent), takes a payment
-// with a partial application, an early-pay discount, and a small write-off, opens
+// with a partial application and a small write-off (no early-pay discount — #69, owner ruling
+// 2026-08-19, earns one only for a payment that SETTLES the invoice, and this 600.00 check cannot
+// settle 1,000.00; the flow asserts the offer's absence), opens
 // `/receivables/close`, confirms the preliminary schedule reconciles (variance 0), closes the
 // current month, exports the GL delta, downloads the CSV and confirms it balances, then reopens the
 // month, VOIDS the write-off application (the reachable correction unit — see the note below on why
@@ -30,8 +32,9 @@
 // WHY THE FIRST EXPORT'S CSV IS ONLY ASSERTED BALANCED, NOT AN EXACT TOTAL, BUT THE SECOND ONE IS:
 // the FIRST export of a brand-new month posts EVERY in-scope event as "new" — including the AR
 // flow's own invoice/payment/discount/write-off, which ran earlier in this same calendar month — so
-// its total is not this flow's own to predict. The SECOND export (after reopening and voiding just
-// THIS flow's own write-off application) is exact: every other event stayes UNCHANGED between the
+// its total is not this flow's own to predict (that flow no longer takes a discount either, but it
+// still contributes its own invoice, payment and write-off). The SECOND export (after reopening and
+// voiding just THIS flow's own write-off application) is exact: every other event stayes UNCHANGED between the
 // two exports (present in both the prior-posted and current-live maps) and so emits nothing, leaving
 // the reversing delta scoped to exactly the one event this flow itself voided — a precise,
 // deterministic assertion, not a flaky one.
@@ -287,10 +290,10 @@ export async function run(page, shot, ctx) {
   await page.getByText("Finalized", { exact: true }).waitFor({ state: "visible", timeout: 15000 });
   await shot("invoice-finalized");
 
-  // --- /receivables: a deposit batch, a check payment, and an apply: a partial PAYMENT + the
-  // early-pay DISCOUNT + a small WRITE_OFF (fixture math: check 600.00, PAYMENT 400.00, DISCOUNT
-  // 2% x 1000.00 open balance = 20.00, WRITE_OFF 30.00 -> applied 450.00, open 550.00, on-account
-  // 200.00 — the receivables-apply-age-statement.mjs fixture-math precedent, own numbers). ---
+  // --- /receivables: a deposit batch, a check payment, and an apply: a partial PAYMENT + a small
+  // WRITE_OFF (fixture math: check 600.00, PAYMENT 400.00, WRITE_OFF 30.00 -> applied 430.00, open
+  // 570.00, on-account 200.00 — the receivables-apply-age-statement.mjs fixture-math precedent, own
+  // numbers). No DISCOUNT: #69 offers one only to a payment that can settle the invoice. ---
   const today = new Date().toISOString().slice(0, 10);
 
   await page.goto(`${ctx.baseURL}/receivables`);
@@ -328,7 +331,12 @@ export async function run(page, shot, ctx) {
   await invoiceCandidateRow.waitFor({ state: "visible", timeout: 15000 });
 
   await invoiceCandidateRow.getByLabel(`${order.number} amount`, { exact: true }).fill(PAYMENT_AMOUNT);
-  await invoiceCandidateRow.locator('input[type="checkbox"]').check(); // take the early-pay discount
+  // #69: the Discount cell renders its "Take …" checkbox only when the server offers a figure, and
+  // a 600.00 check cannot settle a 1,000.00 invoice — so there is nothing to check. Asserted, not
+  // merely skipped: this flow took the discount before the ruling, and the absent affordance is the
+  // visible half of the rule (receivables-apply-age-statement.mjs makes the same assertion).
+  assert.equal(await invoiceCandidateRow.locator('input[type="checkbox"]').count(), 0,
+    "no early-pay discount may be offered on a payment that cannot settle the invoice (#69)");
   await invoiceCandidateRow.getByLabel(`${order.number} write-off amount`, { exact: true }).fill(WRITE_OFF_AMOUNT);
   await invoiceCandidateRow.getByLabel(`${order.number} write-off reason`, { exact: true }).fill(WRITE_OFF_REASON);
   await shot("apply-panel-filled");

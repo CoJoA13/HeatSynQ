@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/fetcher";
+import { invalidateHistory } from "@/components/HistoryPanel";
 import { useLatest } from "@/lib/use-latest";
 import { attachmentSizeError } from "@/lib/upload-limits";
 
@@ -104,6 +105,10 @@ export function AttachmentsSection({
       // needs the browser's own auto-computed `multipart/form-data; boundary=...`, which only
       // happens when nothing has already claimed the Content-Type header.
       await api(basePath, { method: "POST", headers: {}, body: form });
+      // #14 item 1, extended to attachments by #153: `partAttachment`/`orderAttachment` are
+      // registered children of the part and order panels, so this write moves a history the
+      // parent page is displaying. Success path, before the follow-up load.
+      invalidateHistory();
       // Clears an upload or load failure only — never a delete's (#144).
       setError((cur) => (cur?.source === "delete" ? cur : null));
       await load();
@@ -122,6 +127,7 @@ export function AttachmentsSection({
     if (!confirm(`Delete attachment "${att.filename}"?`)) return;
     try {
       await api(`${basePath}/${att.id}`, { method: "DELETE" });
+      invalidateHistory(); // #14 item 1 — success path, before the follow-up load
       // Clears a delete or load failure only — never an upload's (#144).
       setError((cur) => (cur?.source === "upload" ? cur : null));
       await load();

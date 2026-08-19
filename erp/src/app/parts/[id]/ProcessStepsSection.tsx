@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
+import { invalidateHistory } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import {
@@ -240,6 +241,9 @@ export function ProcessStepsSection({
     try {
       const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "PATCH", body: JSON.stringify(patch) });
+      // #14 item 1, extended by #153: every write here is audited against `partProcessRevision`,
+      // a registered child of the part panel. Success path, before the follow-up load.
+      invalidateHistory();
       onError(null);
       // What was submitted is server truth now; anything typed since is not. Through the cut
       // mapping, since a save against a locked revision cuts N+1 and renumbers the step.
@@ -259,6 +263,7 @@ export function ProcessStepsSection({
     try {
       const res = await api<{ revisionNumber: number; stepId: string; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/steps`, { method: "POST", body: JSON.stringify({ codeId: addCodeId }) });
+      invalidateHistory(); // #14 item 1
       setAddCodeId("");
       onError(null);
       remapDrafts(res.stepIdMap);
@@ -270,6 +275,7 @@ export function ProcessStepsSection({
     try {
       const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/steps/${stepId}`, { method: "DELETE" });
+      invalidateHistory(); // #14 item 1
       onError(null);
       remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
@@ -287,6 +293,7 @@ export function ProcessStepsSection({
       const res = await api<{ revisionNumber: number; stepIdMap: Record<string, string> }>(
         `/api/parts/${partId}/process/reorder`,
         { method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }) });
+      invalidateHistory(); // #14 item 1
       onError(null);
       remapDrafts(res.stepIdMap);
       await refreshAfter(res.revisionNumber);
@@ -300,6 +307,7 @@ export function ProcessStepsSection({
       const res = await api<{ revisionNumber: number }>(`/api/parts/${partId}/process/load-template`, {
         method: "POST", body: JSON.stringify({ templateId }),
       });
+      invalidateHistory(); // #14 item 1
       setTemplateId("");
       onError(null);
       await refreshAfter(res.revisionNumber);

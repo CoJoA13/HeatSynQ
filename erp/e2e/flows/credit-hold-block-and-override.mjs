@@ -66,8 +66,10 @@ export async function run(page, shot, ctx) {
   const res = await page.request.get(
     `${ctx.baseURL}/api/admin/audit?entity=shipper&entityId=${shipment.id}`);
   assert.ok(res.ok(), `audit fetch failed: ${res.status()}`);
-  const entries = await res.json();
-  const create = entries.find((e) => e.action === "create");
+  // `{ rows, hasMore }` since #153 — the single-record branch is a capped union over the parent's
+  // child sections, not a bare array.
+  const { rows } = await res.json();
+  const create = rows.find((e) => e.action === "create");
   assert.ok(create, "the shipment's create audit entry must exist");
   assert.equal(create.after?.creditHoldOverrideReason, REASON,
     "the override reason must land in the create audit entry");
