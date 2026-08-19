@@ -114,8 +114,12 @@ checkbox, :95 clear, :103 date, :107 number, :111 text).
 
 - **Per-task scratch DBs**: each implementer creates its own database
   (`CREATE DATABASE erp_scratch_<task>` via psql, `npx prisma migrate deploy` with a
-  DATABASE_URL override, run suites with that override, DROP it when done). Never cycle
-  `npm test` against the shared `erp_test` while other implementers run.
+  DATABASE_URL override, then run suites with a **`DATABASE_URL_TEST`** override — NOT
+  `DATABASE_URL`: `tests/helpers/setup.ts:4` reassigns `DATABASE_URL` from
+  `DATABASE_URL_TEST`, so a `DATABASE_URL=…scratch npm test` silently runs against the shared
+  `erp_test`; Task 3 discovered this mid-group and verified the working override via
+  `pg_stat_activity`. DROP the database when done.) Never cycle `npm test` against the shared
+  `erp_test` while other implementers run.
 - Explicit-pathspec commits ONLY; the controller commits no file an implementer owns;
   controller minors get solo verification.
 - TDD per task: failing test → implement → pass → commit. Conventional messages, no

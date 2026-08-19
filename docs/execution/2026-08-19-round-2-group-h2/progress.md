@@ -20,6 +20,19 @@ queued as a separate PR.
 - Brief committed first (`7cf2b00`). Three parallel implementers dispatched (file-disjoint;
   per-task scratch DBs from the start — the H incident-3 convention, now standing).
 
+## Process incidents
+
+1. **The brief's scratch-DB override was broken as written** (controller's own): the kickoff
+   convention said `DATABASE_URL=…scratch npm test`, but `tests/helpers/setup.ts:4` reassigns
+   `DATABASE_URL` from `.env`'s `DATABASE_URL_TEST`, so the override never redirected the
+   suite — every "scratch" full-suite run silently hit the shared `erp_test`, and two
+   implementers' concurrent runs collided exactly the way the convention exists to prevent
+   (both runs invalid, no durable damage). Task 3's implementer diagnosed it via
+   `pg_stat_activity` and verified the working override is **`DATABASE_URL_TEST=…scratch`**
+   (dotenv doesn't override shell-set vars, so the shell value flows through the reassignment).
+   Brief corrected in place; the convention wording for future groups is
+   `DATABASE_URL_TEST=…scratch npm test`.
+
 ## Task verdicts
 
 **Task 1 (#149, typed-text overlay)** — implementer `2c614d7`/`708d0c7`/`f491e85`/`9dd3d2c`
