@@ -258,3 +258,82 @@ Scratch DB `erp_scratch_i1` recreated + migrated, dropped after.
 The full suite was not re-run this round — the only non-comment changes are E2E `.mjs` files and
 docs, neither of which vitest loads. **The E2E run is still owed at group level, and now has one more
 reason to matter**: the settling second apply is new UI driving, not just re-derived numbers.
+
+---
+
+# Fix round 2 — the red group E2E, and the panel-lifetime trap
+
+The settling-payment step I added in fix round 1 failed the group run at
+`receivables-apply-age-statement.mjs:367`, waiting for the panel summary line
+`Payment 460.60 · Applied 460.60 · On account 0.00`. The apply itself had SUCCEEDED — `await settled`
+resolves only on `res.ok()` — so the money landed and the locator was what was wrong. One commit,
+E2E-only.
+
+## The mechanism, confirmed and corrected
+
+The controller's hypothesis was that a successful apply CLOSES the panel, taking my anchor with it.
+The conclusion was right — the anchor left the DOM — but the mechanism is not panel closure, and the
+difference is what makes the trap worth writing down.
+
+`ApplyPanel.apply()` never touches `expandedPaymentId` (BatchDetail.tsx): on success it resets the
+grid, calls `onApplied()` and reloads. **The panel stays open.** What actually vanished is the
+CANDIDATE TABLE inside it, which renders only under `rows.length > 0` — and my apply settled the
+family's only open invoice, so the candidate list went empty and the table unmounted. Every locator I
+had derived from it went with it, including `settleTable.locator("xpath=ancestor::td[1]")`.
+
+So the rule is sharper than "the panel may close":
+
+> **A settling apply destroys the candidate table it was driven from.** Anchoring post-apply
+> assertions on that table means anchoring them on the very thing your success removes. Pre-apply
+> locators may use it freely — it is alive then by definition.
+
+This is also why the trap did not exist before: the flow's FIRST apply leaves 470.00 open and
+`close-month-end`'s leaves 570.00, so their candidate tables survive, and both assert their summary
+line page-scoped anyway. A grep of `e2e/` finds exactly three anchors on that columnheader
+(`receivables-apply-age-statement.mjs:171` and `:343`, `close-month-end.mjs:327`); only mine settles,
+so only mine was exposed. The other two are latent — they break the day either apply starts settling,
+which the comment now warns about in place.
+
+## The fix
+
+`settlePanel` is now the panel's own wrapper `<tr>`, reached from the payment row that always
+exists — `settlingRow.locator("xpath=following-sibling::tr[1]")`, matching BatchDetail.tsx's
+`<Fragment>` shape (payment `<tr>`, then the `<tr><td colSpan={8}>` panel row while expanded). It
+keeps every benefit the old scope had — in particular disambiguating the panel's "Apply" SUBMIT from
+the other payment row's "Apply" TOGGLE, which is why the assertions are scoped rather than
+page-scoped — while surviving the settlement.
+
+Two smaller hardenings went in with it, both races the first version would have hit intermittently
+rather than deterministically:
+
+- **The candidate row's `detached` wait now runs FIRST**, before the two content assertions. It
+  doubles as the wait for the panel's post-apply reload, so those assertions read a settled DOM
+  instead of racing it.
+- **The discount row is filtered on the amount as well as the type.** Before the reload lands, the
+  stale candidate table's own **"Discount" COLUMN HEADER** row would satisfy a type-only filter —
+  and `.locator("td").nth(2)` on a header row of `<th>`s finds nothing. Filtering on both `Discount`
+  and `9.40` can only ever match the applications table's data row.
+
+## Verification
+
+`node --check` on the file (Task 4's finding stands: `npx eslint src tests` does not cover `e2e/` at
+all and returns 0 on a file that cannot be parsed — worth remembering that neither gate would have
+caught this one either, since it was a live-DOM fact, not a syntax or type fact).
+
+Then the **full group E2E**, not just the flow I touched, per the controller's instruction:
+
+```
+All 23 flows passed. Artifacts: erp/e2e-artifacts
+EXIT=0
+```
+
+`receivables-apply-age-statement` **PASS** (the flow that was red), `close-month-end` **PASS** (the
+other flow this task edited), and the 21 others unaffected. Run against a throwaway `next dev` on
+port 3100 and the dev DB, the harness's own arrangement; fixtures cleaned up by `run.mjs`.
+
+**A gap worth naming while it is fresh**, since Task 4 already found half of it: `npx eslint src tests`
+does not cover `e2e/` and returns 0 on an unparseable flow file (Task 4's duplicate declaration), and
+`node --check` would not have caught THIS one either — a locator that resolves to a real element at
+write time and to nothing after the DOM changes is neither a syntax nor a type fact. Only running the
+flow finds it. That is an argument for the controller's instruction (run the full suite, don't reason
+about it) rather than for a new gate.

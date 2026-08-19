@@ -353,24 +353,42 @@ export async function run(page, shot, ctx) {
   await settleCandidateRow.locator('input[type="checkbox"]').check();
   await shot("settling-apply-panel-filled");
 
-  // Scoped to the panel's own `<td colSpan={8}>` (the candidate table's nearest ancestor `td`),
-  // NOT `page.getByRole(...)` as the first apply above could safely do: with a second payment row
-  // on screen, the page now carries the OTHER row's "Apply" toggle as well as this panel's submit
-  // button, and an unscoped locator goes strict-mode ambiguous.
-  const settlePanel = settleTable.locator("xpath=ancestor::td[1]");
+  // Scoped to the panel's own wrapper `<tr>` — the `<tr><td colSpan={8}>` BatchDetail.tsx renders
+  // the ApplyPanel into, reached from the PAYMENT ROW rather than from the candidate table.
+  //
+  // THE PANEL-LIFETIME TRAP (cost this flow a red group E2E run): the obvious anchor is the
+  // candidate table, since `settleTable` is already in hand — but that table renders only while
+  // `rows.length > 0` (BatchDetail.tsx), and a settling apply empties the candidate list by
+  // construction. So the very success being asserted is what unmounts the anchor, and every
+  // locator derived from it (`ancestor::td[1]` included) resolves to nothing the moment the apply
+  // lands. The panel itself stays open — `apply()` never touches `expandedPaymentId` — which is
+  // why the summary line and the applications table below are still there to be found once the
+  // scope is anchored on something that survives. Anchor POST-apply assertions on the payment row;
+  // PRE-apply ones may keep using the candidate table, which is alive then by definition.
+  //
+  // The scope also disambiguates the submit button, which an unscoped `page.getByRole` cannot: with
+  // a second payment row on screen the page carries the OTHER row's "Apply" toggle too. The wrapper
+  // row holds the panel's submit button and nothing else called "Apply".
+  const settlePanel = settlingRow.locator("xpath=following-sibling::tr[1]");
   const settled = page.waitForResponse((res) =>
     new URL(res.url()).pathname === "/api/receivables/applications" && res.request().method() === "POST" && res.ok());
   await settlePanel.getByRole("button", { name: "Apply", exact: true }).click();
   await settled;
 
+  // Asserted FIRST, and deliberately: a settled invoice drops out of the candidate list, so this
+  // waits out the panel's post-apply reload as well as pinning the outcome — the two assertions
+  // below then read a settled DOM rather than racing the refresh (before the reload lands, the
+  // stale candidate table's own "Discount" COLUMN HEADER would make the row filter ambiguous).
+  await settleCandidateRow.waitFor({ state: "detached", timeout: 15000 });
   await settlePanel.getByText("Payment 460.60 · Applied 460.60 · On account 0.00", { exact: true })
     .waitFor({ state: "visible", timeout: 15000 });
-  // The DISCOUNT actually landed as its own application row, at the offered figure.
-  const discountRow = settlePanel.locator("tr").filter({ has: page.getByText("Discount", { exact: true }) });
+  // The DISCOUNT actually landed as its own application row, at the offered figure. Filtered on the
+  // amount as well as the type, so it can only ever match the applications table's own data row.
+  const discountRow = settlePanel.locator("tr")
+    .filter({ has: page.getByText("Discount", { exact: true }) })
+    .filter({ hasText: "9.40" });
   await discountRow.waitFor({ state: "visible", timeout: 15000 });
   assert.equal((await discountRow.locator("td").nth(2).textContent()).trim(), "9.40",
     "the DISCOUNT application must be written for the offered early-pay amount (#69)");
-  // Settled invoices drop out of the candidate list, so the row that carried the offer is gone.
-  await settleCandidateRow.waitFor({ state: "detached", timeout: 15000 });
   await shot("settling-payment-applied");
 }
