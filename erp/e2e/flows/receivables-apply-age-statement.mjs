@@ -2,30 +2,30 @@
 // order (the 5A `invoice-shipped-order.mjs` precedent — same createOrderViaUi/startNewShipment/
 // waitForShipmentPage helpers, same /invoicing "Ready to invoice" -> Create -> Finalize path),
 // then drives the NEW `/receivables` screens end to end: a deposit batch, a check payment applied
-// as a partial payment + an early-pay discount + a small write-off (leaving an on-account
-// remainder), the aging report (the invoice's own bucket + the Unapplied column), and a printed,
-// archived statement (combined family, finance charges assessed) that reappears in the
-// customer's own Documents list.
+// as a partial payment + a small write-off (leaving an on-account remainder), the aging report
+// (the invoice's own bucket + the Unapplied column), and a printed, archived statement (combined
+// family, finance charges assessed) that reappears in the customer's own Documents list.
 //
 // Fixture math (e2e/lib/db-fixtures.ts's `arCustomer`/`arPart`/`arTerms`/`arPaymentType`): one
 // priced OPERATION line, unitPrice 100.00 x qty 10 = invoice total 1000.00 (`surchargeOptOut` +
 // `taxable: false` on the fixture customer keep this exact — no surcharge/tax line rides along).
-// Terms are 2/10/30 (netDays 30, discountPercent 2, discountDays 10): the payment is received
-// today, well inside the 10-day window, so the early-pay discount is 2% of the invoice's OPEN
-// balance at apply time (the owner-ruling-owed basis — see the demo doc) = 2% x 1000.00 = 20.00.
+// Terms are 2/10/30 (netDays 30, discountPercent 2, discountDays 10) and the payment is received
+// today, well inside the 10-day window — but **no discount is offered or taken**, and the flow now
+// asserts its ABSENCE: #69 (owner ruling 2026-08-19) earns the early-pay discount only for a
+// payment that SETTLES the invoice, and a 700.00 check cannot settle 1,000.00. Before that ruling
+// this flow took 20.00 here; the DISCOUNT column is the visible half of the rule now.
 //
 //   check received:              700.00
 //   PAYMENT applied to invoice:  500.00
-//   DISCOUNT applied:             20.00  (2% x 1000.00 open balance)
 //   WRITE_OFF applied:            30.00
 //   ---------------------------------------
-//   applied to the invoice:      550.00  -> invoice open balance 1000.00 - 550.00 = 450.00
+//   applied to the invoice:      530.00  -> invoice open balance 1000.00 - 530.00 = 470.00
 //                                            (CURRENT bucket: dueDate = invoiceDate + 30 days,
 //                                            not yet past due)
 //   on-account (unapplied cash): 700.00 (check) - 500.00 (PAYMENT-type applications) = 200.00
 //
-// So the aging report's row for this customer must show Current 450.00, Unapplied 200.00, Net
-// 250.00 — the exact figures asserted below.
+// So the aging report's row for this customer must show Current 470.00, Unapplied 200.00, Net
+// 270.00 — the exact figures asserted below.
 //
 // Never `page.waitForURL` for a route -> route/[id] hop (the Phase 3/4/5A trap, spec §13,
 // re-armed in invoice-shipped-order.mjs) — every wait below is for post-navigation-ONLY content.
@@ -135,8 +135,8 @@ export async function run(page, shot, ctx) {
   await paymentRow.waitFor({ state: "visible", timeout: 15000 });
   await shot("payment-added");
 
-  // --- Apply: a partial payment + an early-pay discount + a small write-off, leaving an
-  // on-account remainder (see the file-header fixture-math comment for the exact figures). ---
+  // --- Apply: a partial payment + a small write-off, leaving an on-account remainder (see the
+  // file-header fixture-math comment for the exact figures). ---
   await paymentRow.getByRole("button", { name: "Apply", exact: true }).click();
   // Scoped to the ApplyPanel's OWN nested `<table>` (found via its unique "Write-off" column
   // header's NEAREST ancestor `<table>`), not a bare `page.locator("tr")` and not even
@@ -153,7 +153,13 @@ export async function run(page, shot, ctx) {
   await invoiceCandidateRow.waitFor({ state: "visible", timeout: 15000 });
 
   await invoiceCandidateRow.getByLabel(`${order.number} amount`, { exact: true }).fill("500.00");
-  await invoiceCandidateRow.locator('input[type="checkbox"]').check();
+  // #69: the "Take 20.00" checkbox is the ONLY thing rendered in the Discount cell, and it renders
+  // only when `discountAvailable > 0` (BatchDetail.tsx). This 700.00 check cannot settle the
+  // 1,000.00 invoice, so the server offers nothing and the affordance is absent — asserted rather
+  // than merely not-clicked, because a silently reappearing checkbox is exactly how the pre-ruling
+  // behavior would creep back in.
+  assert.equal(await invoiceCandidateRow.locator('input[type="checkbox"]').count(), 0,
+    "no early-pay discount may be offered on a payment that cannot settle the invoice (#69)");
   await invoiceCandidateRow.getByLabel(`${order.number} write-off amount`, { exact: true }).fill("30.00");
   await invoiceCandidateRow.getByLabel(`${order.number} write-off reason`, { exact: true }).fill(WRITE_OFF_REASON);
   await shot("apply-panel-filled");
@@ -174,9 +180,9 @@ export async function run(page, shot, ctx) {
   assert.equal((await onAccountCell.textContent()).trim(), "200.00",
     "the payment's on-account column must show the 200.00 unapplied remainder");
 
-  // --- Aging report: the invoice's open balance (1000.00 - 550.00 = 450.00) sits in the CURRENT
+  // --- Aging report: the invoice's open balance (1000.00 - 530.00 = 470.00) sits in the CURRENT
   // bucket (dueDate = invoiceDate + 30 days, not yet past due); Unapplied carries the payment's
-  // 200.00 on-account cash; Net = 450.00 - 200.00 = 250.00. ---
+  // 200.00 on-account cash; Net = 470.00 - 200.00 = 270.00. ---
   await page.goto(`${ctx.baseURL}/receivables/aging`);
   await page.getByRole("heading", { name: "A/R Aging", exact: true }).waitFor({ state: "visible" });
   // Scoped `label ... select`, not `getByLabel(..., { exact: true })` — the same wrapping-label
@@ -186,10 +192,10 @@ export async function run(page, shot, ctx) {
   const agingRow = page.locator("tbody tr").filter({ has: page.getByText(fixtures.arCustomerCode, { exact: false }) });
   await agingRow.waitFor({ state: "visible", timeout: 15000 });
   const agingCells = agingRow.locator("td");
-  assert.equal((await agingCells.nth(1).textContent()).trim(), "450.00", "Current bucket must hold the open balance");
+  assert.equal((await agingCells.nth(1).textContent()).trim(), "470.00", "Current bucket must hold the open balance");
   assert.equal((await agingCells.nth(2).textContent()).trim(), "0.00", "1–30 bucket must be empty — nothing is past due yet");
   assert.equal((await agingCells.nth(6).textContent()).trim(), "200.00", "Unapplied column must carry the on-account cash");
-  assert.equal((await agingCells.nth(7).textContent()).trim(), "250.00", "Net column must be buckets minus unapplied");
+  assert.equal((await agingCells.nth(7).textContent()).trim(), "270.00", "Net column must be buckets minus unapplied");
   await shot("aging-report");
 
   // --- Statement: combined family, finance charges assessed. Preselected via `?customerId=`
@@ -201,7 +207,7 @@ export async function run(page, shot, ctx) {
 
   const totalDueLine = page.locator("p", { hasText: "Total due:" });
   await totalDueLine.waitFor({ state: "visible", timeout: 15000 });
-  assert.match((await totalDueLine.textContent()) ?? "", /250\.00/, "the statement's total due must match the aging report's Net");
+  assert.match((await totalDueLine.textContent()) ?? "", /270\.00/, "the statement's total due must match the aging report's Net");
   await shot("statement-preview");
 
   const documentsSection = sectionByHeading(page, "Documents");

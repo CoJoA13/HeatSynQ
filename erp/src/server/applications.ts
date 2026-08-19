@@ -61,6 +61,21 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 // `invoiceDate + discountDays` calendar days (`addDays`, not business days — a terms deadline is a
 // calendar date, the `dueDate` precedent). The eligible amount is `discountPercent% × the invoice's
 // open balance`, integer-cent half-up. Zero out of window, zero with no terms discount.
+//
+// THE SETTLEMENT RULE (#69, owner ruling 2026-08-19; spec §15). **A discount is earned only by a
+// payment that SETTLES the invoice — a partial payment inside the window earns nothing at all.**
+// This is a guard, not a basis change: the eligible figure is still `discountPercent × the open
+// balance`, exactly as it always was. What is new is that it is offered (and accepted) only when
+// this payment's unapplied cash can actually close the remainder net of it — `cash ≥ open − eligible`.
+// Settlement is judged against what is STILL OPEN, never the original total, so a customer who
+// part-paid earlier can still settle the remainder early and earn the percentage on what remains.
+//
+// It is enforced at BOTH read sites, which cap independently: here (the offer the apply grid renders
+// as a "Take 20.00" checkbox) and in `resolveReason` (the save). They must agree, or the grid offers
+// an amount the save refuses. The issue was originally ruled the other way — a pro-rata percentage
+// of the cash remitted — and re-put to the owner with the arithmetic, because that reading strands
+// $0.40 on the ordinary case (a $1,000 invoice at 2/10 settled by a $980 remittance) and contradicts
+// both this phase's design spec and a pinned test.
 // -------------------------------------------------------------------------------------------
 
 type DiscountTerms = { discountPercent: Prisma.Decimal | null; discountDays: number | null };
@@ -105,11 +120,18 @@ function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDat
  * minus the DISCOUNT already taken. That makes the entitlement a one-time quantity instead of a
  * renewable one.
  *
- * **Deliberately the tighter of the two, never the looser**, because which basis SHOULD apply is a
- * terms-policy question the owner has not ruled on: after a partial payment, today's rule offers 2%
- * of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule alone would
- * allow the full $20. Taking the minimum changes nothing in any case that works today and closes the
- * one that does not — so this is a hole being closed, not a policy being chosen.
+ * **Deliberately the tighter of the two, never the looser.** After a partial payment, the open-balance
+ * rule offers 2% of what remains (e.g. $10 on a half-paid $1,000 invoice) while the entitlement rule
+ * alone would allow the full $20. Taking the minimum changes nothing in any case that works and closes
+ * the one that does not — a hole closed, not a policy chosen.
+ *
+ * The basis question this docblock used to record as unruled was answered on 2026-08-19 (#69), and
+ * the answer left this function alone: the eligible figure stays `percent × open balance`, and what
+ * the owner added is the SETTLEMENT requirement enforced by the two callers (see the §4.3 block
+ * above). Note the interaction, because it is not obvious — the guard makes a discount takeable only
+ * alongside the payment that settles the invoice, which means the cross-request creep this cap was
+ * built for can no longer be started. The cap stays as the belt: it is what refuses the second bite
+ * after a void reopens an invoice whose entitlement is already spent.
  */
 function remainingDiscountFor(
   terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
@@ -127,7 +149,14 @@ function remainingDiscountFor(
 
 export async function discountAvailable(paymentId: string, invoiceId: string): Promise<number> {
   const payment = await prisma.payment.findFirst({
-    where: { id: paymentId }, select: { receivedDate: true },
+    where: { id: paymentId },
+    select: {
+      receivedDate: true, amount: true,
+      // #69: the cash this receipt still has to spend — its amount less the PAYMENT applications
+      // already sourced from it (`paymentOnAccount`). Cash it has spent on ANOTHER invoice cannot
+      // settle this one.
+      applications: { where: { deletedAt: null }, select: { amount: true, type: true, deletedAt: true } },
+    },
   });
   if (!payment) throw new HttpError(404, "Payment not found");
   const invoice = await prisma.invoice.findFirst({
@@ -142,9 +171,20 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   if (!invoice) throw new HttpError(404, "Invoice not found");
   // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
   // will refuse (#81 / Codex PR #129).
-  return remainingDiscountFor(
-    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate,
-    invoice.total.toNumber(), invoice.applications.map(toLite));
+  const apps = invoice.applications.map(toLite);
+  const eligible = remainingDiscountFor(
+    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate, invoice.total.toNumber(), apps);
+  if (eligible <= 0) return 0;
+
+  // #69: offered only if this payment can actually settle the invoice with it (see the block above).
+  // This is a FEASIBILITY test — "is there enough cash left to close this out" — while the save's
+  // half is an EXACTNESS test (`resolveReason`: the payload's cash + discount must equal the open
+  // balance), because by then the operator has typed the figures. Integer cents: a cent short is
+  // short, and `open − eligible` on floats is exactly where a 979.99 remittance would round its way
+  // into a discount it did not earn.
+  const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), apps));
+  const cashCents = cents(paymentOnAccount(payment.amount.toNumber(), payment.applications.map(toLite)));
+  return cashCents >= openCents - cents(eligible) ? eligible : 0;
 }
 
 /** One invoice's current open balance, by id — the same read `discountAvailable` already does,
@@ -498,6 +538,29 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
   // consumes another's entitlement in a multi-invoice apply.
   const discountCents = new Map<string, number>();
 
+  // #69 (owner ruling 2026-08-19): a DISCOUNT is earned only by a payment that SETTLES the invoice,
+  // so each DISCOUNT line is judged against what THIS WHOLE PAYLOAD covers of the invoice's open
+  // balance — cash + discount, both totalled per invoice BEFORE the sequential loop below.
+  //
+  // The pre-aggregation is load-bearing, not tidiness. Derived inside the loop, "cash so far" would
+  // make the verdict depend on the ORDER the lines arrive in: `[DISCOUNT, PAYMENT]` would be refused
+  // while the identical `[PAYMENT, DISCOUNT]` passed. The DISCOUNT total is aggregated for the same
+  // reason one level down — a split entitlement (`980 + 12 + 8`) must not be refused at its first
+  // discount line for leaving 8.00 open.
+  //
+  // A WRITE_OFF deliberately does NOT count toward settling: the ruling earns the discount on a full
+  // early PAYMENT, and a short-pay the shop absorbs is the opposite of being paid early. Such a
+  // payload lands the invoice at zero and still earns nothing.
+  const openAtCallCents = new Map<string, number>(); // invoiceId -> open balance BEFORE this call
+  for (const inv of invoices) {
+    openAtCallCents.set(inv.id, cents(inv.total.toNumber()) - appliedCents.get(inv.id)!);
+  }
+  const settlingCents = new Map<string, number>(); // invoiceId -> Σ this payload's PAYMENT + DISCOUNT
+  for (const line of data.lines) {
+    if (line.type !== "PAYMENT" && line.type !== "DISCOUNT") continue;
+    settlingCents.set(line.invoiceId, (settlingCents.get(line.invoiceId) ?? 0) + cents(line.amount));
+  }
+
   const resolved: { line: ApplyLine; invoice: ClaimedInvoice; reason: string }[] = [];
   let paymentLinesCents = 0;
 
@@ -514,7 +577,9 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
     }
 
     const discountSoFar = discountCents.get(inv.id) ?? 0;
-    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar);
+    const reason = resolveReason(line, inv, payment.receivedDate, discountSoFar, {
+      coveredCents: settlingCents.get(inv.id) ?? 0, openCents: openAtCallCents.get(inv.id)!,
+    });
 
     if (line.type === "PAYMENT") paymentLinesCents += lineCents;
     if (line.type === "DISCOUNT") discountCents.set(inv.id, discountSoFar + lineCents);
@@ -560,14 +625,18 @@ async function applyPaymentInTx(tx: Db, data: ApplyInput): Promise<void> {
 }
 
 /** The per-type reason rule: a WRITE_OFF requires a trimmed reason (§4.1); a DISCOUNT must fall
- *  inside the early-pay window and always carries "early-pay terms"; a PAYMENT carries whatever
- *  (optional) note was sent.
+ *  inside the early-pay window, must SETTLE the invoice (#69), and always carries "early-pay terms";
+ *  a PAYMENT carries whatever (optional) note was sent.
  *
  *  `discountSoFarCents` is the DISCOUNT already accepted for THIS invoice by THIS call — the
  *  aggregate half of the cap (#81). Passed in rather than re-derived because `invoice.applications`
- *  is the pre-call snapshot and cannot see the lines this request has already resolved. */
+ *  is the pre-call snapshot and cannot see the lines this request has already resolved.
+ *
+ *  `settlement` is the #69 pair, both pre-aggregated by the caller: what this whole payload's
+ *  PAYMENT + DISCOUNT lines cover of this invoice, and the open balance they have to cover. */
 function resolveReason(
   line: ApplyLine, invoice: ClaimedInvoice, receivedDate: Date, discountSoFarCents: number,
+  settlement: { coveredCents: number; openCents: number },
 ): string {
   if (line.type === "WRITE_OFF") {
     const why = (line.reason ?? "").trim();
@@ -584,6 +653,16 @@ function resolveReason(
       invoice.total.toNumber(), invoice.applications.map(toLite));
     if (elig <= 0) {
       throw new HttpError(400, "no early-pay discount applies");
+    }
+    // #69 (owner ruling 2026-08-19): earned only by a payment that SETTLES the invoice. Checked
+    // AFTER the window/entitlement test above, so a genuine terms or window problem still reports
+    // itself as one rather than as a settlement problem. `coveredCents` is this payload's whole
+    // PAYMENT + DISCOUNT total for this invoice (never its WRITE_OFF — see the caller), so the
+    // verdict does not depend on line order and a split discount is judged as one figure.
+    if (settlement.coveredCents !== settlement.openCents) {
+      throw new HttpError(400,
+        "an early-pay discount is earned only by a payment that settles the invoice — this covers "
+        + `${settlement.coveredCents / 100} of the ${settlement.openCents / 100} open`);
     }
     // Cap the AGGREGATE at the terms-derived eligible amount — the early-pay window opening does NOT
     // license waiving the whole receivable as a "discount". Per-line alone was not enough (#81):

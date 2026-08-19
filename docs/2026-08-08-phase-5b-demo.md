@@ -220,6 +220,16 @@ genuine billing-policy choice with at least three defensible readings.
 No code change until you rule — this is the discount-computation function itself
 (`applications.ts`'s `discountFor`), not a display issue.
 
+> **RULED 2026-08-19 (issue #69, spec §15) — this question is closed; the answer is none of the
+> three options above.** The basis stays the **open balance**, and the owner added a *settlement
+> guard* on top of it: **the discount is earned only by a payment that settles the invoice**, so a
+> partial payment inside the window earns nothing at all. In this demo's own numbers, the 500.00
+> part-payment above would now be offered — and allowed — **no discount**; the 2% is earned by
+> remitting 980.00 against the 1,000.00. Both read sites enforce it (`discountAvailable` offers,
+> `applyPayment` caps independently), and the two E2E flows that used to take 20.00 on a partial now
+> assert that the offer is absent. Left in place because the reasoning above is still the record of
+> what was asked and why.
+
 ### 3. `runStatements` sends a statement to a customer with a CREDIT balance (you owe them), not just an open balance
 
 **What it does today:** the "run for everyone with a balance" batch print skips only customers with
