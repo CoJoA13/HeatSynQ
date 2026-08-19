@@ -53,4 +53,24 @@ Brief committed first (`cce4bad`). Wave 1 dispatched as three file-disjoint impl
 
 ## Task verdicts
 
-_(pending)_
+**Task 2 (#137, the statements screen)** — implementer `bb62c9c`/`3cf699a` (+ fix round
+`03de2fe`). Review: **Spec ✅ · Approved (round 1)**, zero Important. The reviewer verified all
+three fixes line by line, checked the #136 server 409 at its source rather than trusting the
+brief, and confirmed gate precedence unchanged. Both implementer deviations judged correct in
+the real code: gating on `preview === null` rather than the issue's literal `error` (a shared
+bucket the customer-options catch also writes — gating on it would permanently disable Print
+for exactly the caller fix 2 unlocks, with no re-fetch path), and the tri-state falling open on
+`"unknown"`. The implementer also strengthened beyond the brief: an effect-scoped `stale` flag
+on a fetch-into-state effect that had neither ticket nor flag. Fix round applied two Minors,
+**one of which is a lesson**: a comment asserted a React Compiler constraint that does not
+exist — the reviewer varied TWO things where the implementer's bisect varied one, and an
+object-taking signature lints clean; the alias alone is the trigger, and the cited precedent
+(`runControlState`) takes a gate-shaped object. In this repo a wrong reason in a comment is a
+defect in its own right, so it was corrected in the report too rather than quietly softened.
+The second Minor names `loadPreview`'s catch as load-bearing and UNPINNED — deleting
+`setPreview(null)` leaves all ten gate tests green while restoring the filed defect; no pin was
+manufactured, since a genuine one needs a DOM env this repo deliberately does not have.
+Four record-only: the defect-1/2 RED was structural (all cases failed on "not a function")
+though verified non-vacuous analytically; the divisions-route document-count assertion pins
+less than it appears; the 409's "use Print per division" half is unreachable for the caller the
+gate opens; and the `stale` race needs StrictMode's double-invoke to be reachable.
