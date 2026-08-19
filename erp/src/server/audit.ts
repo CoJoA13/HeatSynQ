@@ -31,15 +31,18 @@ export type AuditableModel =
 // name or `orderBy` field compiles cleanly and would otherwise only explode at the first
 // `audited*` call against that model, in whatever later task happens to be the first to touch it.
 export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
-  // Ordered — issue #24: setRolePermissions delete/recreates the rows, so scan order tracks
-  // insertion order and a same-set re-save delivered in a different order rendered as a diff.
-  // `permission` is unique within a role (@@unique([roleId, permission])), so it orders alone.
-  role: { permissions: { orderBy: { permission: "asc" } } },
-  // Ordered — issue #24's class (found in the Group H recon sweep, not the issue body): same
-  // delete/recreate shape via setUserOverrides; `permission` unique within a user. The
-  // SNAPSHOT_SELECT.user entry below carries the identical orderBy — user snapshots actually go
-  // through THAT map (the signatureImage exclusion), this one is the include-map twin.
-  user: { overrides: { orderBy: { permission: "asc" } } },
+  // Ordered AND projected onto stable fields — issue #24 + the PR #152 Codex round:
+  // setRolePermissions delete/recreates the rows, so scan order tracks insertion order (the
+  // orderBy) AND every re-save mints fresh generated ids (the select) — either alone leaves a
+  // same-set re-save rendering as a spurious diff under HistoryPanel's whole-key
+  // JSON.stringify. `permission` is unique within a role (@@unique([roleId, permission])), so
+  // it orders alone and IS the row's whole meaning.
+  role: { permissions: { select: { permission: true }, orderBy: { permission: "asc" } } },
+  // Same delete/recreate shape via setUserOverrides (the Group H recon find + the same Codex
+  // round); `permission` unique within a user, `mode` the only other meaning the row carries.
+  // The SNAPSHOT_SELECT.user entry below is the one user snapshots actually take (the
+  // signatureImage exclusion) — keep the two in step by hand.
+  user: { overrides: { select: { permission: true, mode: true }, orderBy: { permission: "asc" } } },
   setting: undefined,
   glAccount: undefined,
   material: undefined,
@@ -56,8 +59,16 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // include, before/after snapshots would both omit `fields` and the diff would show no change
   // for the exact operation most worth auditing. Ordered — issue #24: `sort` matches the live
   // read (listStepCodes, process-step-codes.ts); it is not unique within a code, so `id` breaks
-  // ties deterministically.
-  processStepCode: { fields: { orderBy: [{ sort: "asc" }, { id: "asc" }] } },
+  // ties deterministically (ordering by an unselected column is fine). Projected onto stable
+  // fields (the PR #152 Codex round's class): delete/recreate mints fresh ids every save, so
+  // the snapshot carries only the columns that MEAN something — id/codeId churn would render a
+  // same-set re-save as a spurious diff.
+  processStepCode: {
+    fields: {
+      select: { label: true, type: true, unit: true, sort: true },
+      orderBy: [{ sort: "asc" }, { id: "asc" }],
+    },
+  },
   // Addresses and contacts (Task 5/6) are audited as their own models, so the parent snapshot
   // needs no relations.
   customer: undefined,
@@ -358,9 +369,10 @@ export const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   user: {
     id: true, username: true, passwordHash: true, displayName: true, title: true, roleId: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
-    // Ordered — issue #24, in step with SNAPSHOT_INCLUDE.user (this SELECT is the entry user
-    // snapshots actually take; see that entry's comment).
-    overrides: { orderBy: { permission: "asc" } },
+    // Ordered + stable-field-projected — issue #24 and the PR #152 Codex round, in step with
+    // SNAPSHOT_INCLUDE.user (this SELECT is the entry user snapshots actually take; see that
+    // entry's comment).
+    overrides: { select: { permission: true, mode: true }, orderBy: { permission: "asc" } },
   },
   // Phase 7 (spec §4.2): `logoImage` is a bytes column exactly like signatureImage/fileData —
   // every scalar EXCEPT it, so a draft edit's before→after snapshot carries the real `config`

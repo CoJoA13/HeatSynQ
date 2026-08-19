@@ -125,10 +125,12 @@ describe("snapshot order — behavioral pin (#24)", () => {
   const asSystem = <T>(fn: () => Promise<T>) =>
     runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
-  // The delete/recreate inside setRolePermissions mints NEW RolePermission rows every save, so
-  // the comparison is per permission KEY, not per row (ids legitimately differ). With the
-  // ordered include, a re-save of the same set — whatever order the client delivered it in —
-  // snapshots the same key sequence on both sides of the entry: no spurious diff.
+  // The delete/recreate inside setRolePermissions mints NEW RolePermission rows every save —
+  // ordering alone was not enough (PR #152 Codex round): rows re-created with fresh generated
+  // ids still JSON-differ, and HistoryPanel diffs whole keys via JSON.stringify, so the
+  // snapshot must carry only STABLE fields (the select) for a same-set re-save to compare
+  // equal. This asserts FULL deep-equality of the snapshot value, not mapped keys — the exact
+  // comparison the panel makes.
   it("re-saving the same permission set in a different delivery order snapshots identically", async () => {
     const role = await prisma.role.create({ data: { name: "Ops" } });
     await asSystem(() => setRolePermissions(role.id, ["parts.view", "orders.view", "customers.view"]));
@@ -140,8 +142,7 @@ describe("snapshot order — behavioral pin (#24)", () => {
     });
     expect(entries).toHaveLength(2);
 
-    const perms = (snap: unknown) =>
-      (snap as { permissions: { permission: string }[] }).permissions.map((p) => p.permission);
+    const perms = (snap: unknown) => (snap as { permissions: unknown[] }).permissions;
     expect(perms(entries[1].after)).toEqual(perms(entries[1].before));
   });
 });
