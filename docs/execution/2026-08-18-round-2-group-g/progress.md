@@ -8,13 +8,38 @@ not-reproducible-at-HEAD at kickoff** (owner ruling on the recon evidence — se
 
 - Recon: three parallel agents (root-cause + repro, blast radius, #103 verification).
   Headline: #102's blank trailing page does not reproduce at HEAD — controller re-verified the
-  sweep independently before taking the ruling. Full evidence in the brief.
+  sweep independently before taking the ruling (n=30..70 identical page counts incl. the
+  reported 40/61; the only boundary behavior is legitimate Total-Due spill at 77/78 and
+  122–124). Full evidence in the brief; findings + revisit trigger recorded on the closed
+  issue.
 - Owner ruling: **#102 → close + fix the stale test comment** (recommended option taken).
 
 ## Task verdicts
 
-_(pending)_
+**Task 1 (#103 notes + #102 comment correction, prose-only)** — implementer
+`954c5a1`/`494b4d3`. Review: **Spec ✅ · Approved (round 1)**, zero fixes. The reviewer
+verified every hunk is comment/markdown (zero executable-code changes), line-by-line verified
+every factual claim in the new prose against HEAD (the uncaught print-path deref with exactly
+two editor-side catch sites; the TemplateConfigError→500 / ZodError→400 split per tightening
+kind; the synthetic contract-growth pins; the tightening→error-class mapping through
+`assertLocksHonored`/`assertWidthBudgets`/the `.strict()` schemas; the 77/78 + 122–124
+boundary counts), and confirmed placement/voice (98-col header extension referencing — not
+duplicating — the two-kinds paragraph; CLAUDE.md displaced not appended). One minor
+(the "pinned by the synthetic cases" claim read wider than the two cases pin) —
+**controller-applied on-branch** (`c1d66c0`).
 
-## Gates
+## Group tally
 
-_(pending)_
+One implementation task, one review — **Approved on round 1, zero implementer fix rounds**
+(one controller-applied wording minor). One issue closed without code at kickoff (#102,
+not-reproducible, owner ruling). No schema migration; no executable-code change anywhere in
+the group.
+
+## Gates (final tree `c1d66c0`, 2026-08-18)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **3260 passed / 191 files** (unchanged — prose-only diff) |
+| `npx tsc --noEmit` | clean (re-verified by the reviewer) |
+| `npx eslint src tests` | clean |
+| `npm run test:e2e` | **not run — brief ruling**: the diff touches no UI, function, or flow (comments + markdown only; reviewer-verified) |
