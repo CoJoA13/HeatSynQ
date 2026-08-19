@@ -25,13 +25,21 @@ export type AuditableModel =
 // model row itself. `undefined` means "no relations" — snapshot() falls back to a bare
 // findUnique for that model. These relations carry no sensitive fields (permission/mode keys
 // only), so redact() doesn't need new patterns to keep snapshots safe.
-// Exported for tests/certs-schema.test.ts's smoke test: this map is typed `object | undefined`
+// Exported for tests/certs-schema.test.ts's smoke test and tests/snapshot-order-sweep.test.ts's
+// list-relation orderBy sweep (issue #24): this map is typed `object | undefined`
 // per entry (Prisma's own `include` shape has no useful common supertype), so a wrong relation
 // name or `orderBy` field compiles cleanly and would otherwise only explode at the first
 // `audited*` call against that model, in whatever later task happens to be the first to touch it.
 export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
-  role: { permissions: true },
-  user: { overrides: true },
+  // Ordered — issue #24: setRolePermissions delete/recreates the rows, so scan order tracks
+  // insertion order and a same-set re-save delivered in a different order rendered as a diff.
+  // `permission` is unique within a role (@@unique([roleId, permission])), so it orders alone.
+  role: { permissions: { orderBy: { permission: "asc" } } },
+  // Ordered — issue #24's class (found in the Group H recon sweep, not the issue body): same
+  // delete/recreate shape via setUserOverrides; `permission` unique within a user. The
+  // SNAPSHOT_SELECT.user entry below carries the identical orderBy — user snapshots actually go
+  // through THAT map (the signatureImage exclusion), this one is the include-map twin.
+  user: { overrides: { orderBy: { permission: "asc" } } },
   setting: undefined,
   glAccount: undefined,
   material: undefined,
@@ -46,8 +54,10 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
   // Field definitions are mutated through the parent (setStepFields deletes/recreates
   // ProcessStepFieldDef rows), not via a scalar column on ProcessStepCode itself — without this
   // include, before/after snapshots would both omit `fields` and the diff would show no change
-  // for the exact operation most worth auditing.
-  processStepCode: { fields: true },
+  // for the exact operation most worth auditing. Ordered — issue #24: `sort` matches the live
+  // read (listStepCodes, process-step-codes.ts); it is not unique within a code, so `id` breaks
+  // ties deterministically.
+  processStepCode: { fields: { orderBy: [{ sort: "asc" }, { id: "asc" }] } },
   // Addresses and contacts (Task 5/6) are audited as their own models, so the parent snapshot
   // needs no relations.
   customer: undefined,
@@ -314,8 +324,12 @@ export const SNAPSHOT_INCLUDE: Record<AuditableModel, object | undefined> = {
  * (`auditedCreate` never calls `snapshot()` — see its own doc comment), so this entry is
  * currently unreached; it is defined anyway so the exclusion already exists the moment that
  * changes, rather than being something a future phase has to remember to add.
+ *
+ * Exported for tests/snapshot-order-sweep.test.ts (issue #24): the sweep walks BOTH maps, because
+ * a list relation projected through a `select` (user.overrides here) can carry an unordered
+ * collection into a snapshot exactly as an `include` can.
  */
-const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
+export const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   partAttachment: {
     id: true, partId: true, filename: true, mimeType: true, size: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true,
@@ -342,7 +356,9 @@ const SNAPSHOT_SELECT: Partial<Record<AuditableModel, object>> = {
   user: {
     id: true, username: true, passwordHash: true, displayName: true, title: true, roleId: true,
     active: true, deletedAt: true, createdAt: true, updatedAt: true, signatureMimeType: true,
-    overrides: true,
+    // Ordered — issue #24, in step with SNAPSHOT_INCLUDE.user (this SELECT is the entry user
+    // snapshots actually take; see that entry's comment).
+    overrides: { orderBy: { permission: "asc" } },
   },
   // Phase 7 (spec §4.2): `logoImage` is a bytes column exactly like signatureImage/fileData —
   // every scalar EXCEPT it, so a draft edit's before→after snapshot carries the real `config`
