@@ -114,7 +114,7 @@ type DiscountOfferView = { amount: number; settlingAmount: number | null; wouldE
 
 type ApplyLineFields = {
   documentNumber: string; customerCode: string; customerName: string; dueDate: string;
-  open: string; discountAvailable: string;
+  open: string; discountAmount: string;
   /** #155 arm 2 — both "" unless the server offered a route out. `useBulkGrid`'s fields are strings,
    *  so "absent" is the empty string rather than null. NEVER re-derived on the client: the figure
    *  that earns the discount is measured against this receipt's UNAPPLIED cash, which the grid does
@@ -126,7 +126,7 @@ type ApplyLineFields = {
 function toApplyFields(row: OpenInvoiceRow & { discount: DiscountOfferView }): ApplyLineFields {
   return {
     documentNumber: row.documentNumber, customerCode: row.customerCode, customerName: row.customerName,
-    dueDate: row.dueDate ?? "", open: String(row.open), discountAvailable: String(row.discount.amount),
+    dueDate: row.dueDate ?? "", open: String(row.open), discountAmount: String(row.discount.amount),
     discountSettlingAmount: row.discount.settlingAmount === null ? "" : String(row.discount.settlingAmount),
     discountWouldEarn: row.discount.wouldEarn === null ? "" : String(row.discount.wouldEarn),
     amount: "", takeDiscount: "false", writeOffAmount: "", writeOffReason: "",
@@ -202,7 +202,7 @@ function ApplyPanel({
         lines.push({ invoiceId: row.key, type: "PAYMENT", amount: n });
       }
       if (row.takeDiscount === "true") {
-        const d = Number(row.discountAvailable);
+        const d = Number(row.discountAmount);
         if (d > 0) lines.push({ invoiceId: row.key, type: "DISCOUNT", amount: d });
       }
       const writeOff = row.writeOffAmount.trim();
@@ -322,7 +322,7 @@ function ApplyPanel({
             </thead>
             <tbody>
               {rows.map((row) => {
-                const discountAvailable = Number(row.discountAvailable);
+                const discountAmount = Number(row.discountAmount);
                 return (
                   <tr key={row.key} className="border-t">
                     <td className="py-1 pr-2 font-mono">{row.documentNumber}</td>
@@ -350,12 +350,12 @@ function ApplyPanel({
                         receipt's UNAPPLIED cash, so a receipt part-spent on another invoice needs a
                         bigger face than X. Both figures come from the server for that reason. */}
                     <td className="pr-2">
-                      {discountAvailable > 0 ? (
+                      {discountAmount > 0 ? (
                         <label className="flex items-center gap-1 whitespace-nowrap">
                           <input type="checkbox" checked={row.takeDiscount === "true"}
                                  disabled={!moneyGate.allowed || disabled} title={moneyGate.title}
                                  onChange={(e) => patchRow(row, { takeDiscount: e.target.checked ? "true" : "false" })} />
-                          Take {discountAvailable.toFixed(2)}
+                          Take {discountAmount.toFixed(2)}
                         </label>
                       ) : row.discountSettlingAmount !== "" && (
                         <div className="max-w-[14rem] text-xs text-slate-600">

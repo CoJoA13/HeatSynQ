@@ -238,6 +238,15 @@ describe("closedMonthsForDisplay — the display read (#157)", () => {
   //
   // An ALLOWLIST, the `invoice-guards` leaf-test and `audit-children`'s INVALIDATION_SITES idiom:
   // both sanctioned callers are page/wording reads that permit nothing.
+  //
+  // TWO THINGS IT DOES NOT PROVE, stated so the next reader knows the boundary rather than trusting
+  // it further than it goes. It fixes the FILE SET, not the usage — a new guard written INSIDE
+  // `period-locks.ts` itself (excluded below, since it declares the function) or inside the already
+  // allowlisted `invoice-guards.ts` would pass both this test and the held-lock one above. Neither
+  // is reachable today: this module is short enough to read in one pass and its docblock is
+  // unambiguous. The held-lock test covers the likelier mistake — re-routing `assertPeriodOpen`
+  // through the display read — and this one covers the other likely mistake, a new module importing
+  // it. What is left over is a deliberate decision by someone who has read both.
   it("is imported by exactly the two callers that only DISPLAY it", () => {
     const src = join(process.cwd(), "src");
     const importers = tsFiles(src)
