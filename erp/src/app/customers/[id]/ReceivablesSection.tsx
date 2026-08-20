@@ -59,10 +59,10 @@ type OpenItemKind = "INVOICE" | "CREDIT" | "PAYMENT";
  *  `voidable` is the server's answer to "would `voidApplication` still accept this one" (#174) —
  *  false once the write-off's OWN month is closed. Keep it in step with `OpenItemWriteOff` in
  *  src/server/applications.ts. */
-type OpenItemWriteOff = {
+export type OpenItemWriteOff = {
   id: string; amount: number; appliedDate: string; reason: string | null; voidable: boolean;
 };
-type CustomerOpenItem = {
+export type CustomerOpenItem = {
   kind: OpenItemKind; id: string; documentNumber: string;
   date: string; dueDate: string | null; original: number; open: number;
   writeOffs: OpenItemWriteOff[];
@@ -78,10 +78,13 @@ const KIND_LABEL: Record<OpenItemKind, string> = {
  *  The month is sliced off `appliedDate` rather than sent as its own field: `periodLabel` lives in
  *  `src/server/period-locks.ts` and a `"use client"` file must not import from `src/server/**`, and
  *  the two agree by construction — the wire's `appliedDate` is `formatDateOnly`'s UTC `yyyy-mm-dd`
- *  and `periodLabel` is that same UTC year and month. `write-offs.test.ts`'s "names the same month
- *  the void refusal names" pins this composed sentence character-for-character against the 409, so
- *  neither the label format nor the refusal's wording can drift away from it unnoticed. */
-const closedPeriodTitle = (w: OpenItemWriteOff) =>
+ *  and `periodLabel` is that same UTC year and month.
+ *
+ *  Exported so `write-offs.test.ts` can assert THIS function against the 409 `voidApplication`
+ *  actually throws, rather than against a copy of it. It re-declared the rule at first, which pinned
+ *  the copy: a paraphrase here would have left it green while this comment claimed otherwise
+ *  (#174 review). `tests/receivables-void-control.test.tsx` renders the control itself. */
+export const closedPeriodTitle = (w: OpenItemWriteOff) =>
   `The accounting period ${w.appliedDate.slice(0, 7)} is closed — reopen it to make this change`;
 
 type MoneyBucketKey = "current" | "d1_30" | "d31_60" | "d61_90" | "d90_plus";
@@ -239,7 +242,7 @@ export function ReceivablesSection(
  *  an INVOICE row, so neither can ever be showing while the other is. They share ONE `inFlight` ref
  *  and ONE `applyError`, which is correct: a row does one thing at a time, and every failure belongs
  *  in the same place beneath it. */
-function OpenItemRow({ item, invoices, applyGate, writeOffGate, voidGate, onApplied }: {
+export function OpenItemRow({ item, invoices, applyGate, writeOffGate, voidGate, onApplied }: {
   item: CustomerOpenItem;
   invoices: CustomerOpenItem[];
   applyGate: Gate;

@@ -598,8 +598,12 @@ describe("openItemsForCustomer — retention is bounded by the write-off's own p
 /** The tooltip `ReceivablesSection.tsx` renders on a dead Void — composed HERE the way the client
  *  composes it, from the wire fields alone, so the test exercises that derivation rather than a
  *  server-side copy of it. */
-const closedPeriodTitleFor = (w: { appliedDate: string }) =>
-  `The accounting period ${w.appliedDate.slice(0, 7)} is closed — reopen it to make this change`;
+// IMPORTED, not re-declared. A local copy of the client's rule pins the copy: it still reds on a
+// `periodLabel` format change or an `assertPeriodOpen` re-wording, but a paraphrase in the .tsx
+// alone leaves it green — while the comment above it claimed to cover exactly that. Importing the
+// real one makes the claim true (#174 review, Minor 1). A "use client" module in a node test is the
+// tests/loads-section.test.tsx precedent; this file pulls only the pure string helper.
+import { closedPeriodTitle as closedPeriodTitleFor } from "@/app/customers/[id]/ReceivablesSection";
 
 describe("openItemsForCustomer — each write-off says whether its Void still works (#174)", () => {
   // THE DEFECT. An invoice with a live balance is an open item on its own merits, so #157's

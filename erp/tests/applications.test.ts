@@ -1150,9 +1150,17 @@ describe("applyPayment — DISCOUNT line", () => {
       expect(offer.amount).toBe(0);
 
       const liveBefore = await prisma.application.count({ where: { deletedAt: null } });
-      // THE LOAD-BEARING LINE: the expectation is composed from `offer.blockedBy`, not from
-      // `c.block`. Resolve a different blocker on the save side and this fails even though the
-      // sentence thrown is a real one from the same table.
+      // Composing from `offer.blockedBy` rather than `c.block` is a CONVENIENCE, not the thing that
+      // makes this bite — an earlier comment here claimed it was. By this point `expect(offer
+      // .blockedBy).toBe(c.block)` above has already thrown on any mismatch, so the two forms are
+      // exactly equivalent (#175 review, Minor 1; corrected because the commit right before this one
+      // fixed the same class of overclaim in a test comment).
+      //
+      // WHAT ACTUALLY PINS AGREEMENT, and why both sides cannot be wrong together: the offer is
+      // pinned to a hard-coded label on the line above, and each of the four sentences is pinned to
+      // its own literal elsewhere in this file. So the save must throw exactly THAT cause's literal —
+      // resolve a different blocker and this fails, even though the sentence thrown is a real one
+      // from the same table.
       await expect(asSystem(() => applyPayment({
         paymentId: f.paymentId,
         lines: [{ invoiceId: f.invoiceId, type: "DISCOUNT", amount: f.discount }],
