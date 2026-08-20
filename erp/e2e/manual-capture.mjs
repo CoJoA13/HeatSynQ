@@ -130,17 +130,13 @@ const isNoise = (text) => NOISE_PATTERNS.some((re) => re.test(text));
  * Note what this is NOT: it is not a whitelist. An annotated screen still counts as a FAIL and the
  * run still exits non-zero, because suppressing the route would weaken the gate for every other
  * screen that might one day 404 the same way. The annotation buys the reader context, not a pass.
+ *
+ * Currently EMPTY, and that is the healthy state — an entry here is a standing FAIL waiting to be
+ * fixed, not a resting place. Its one occupant, `admin-users` (#160, the signature route's one 404
+ * per signature-less user), was removed when #160 landed: `listUsers` now carries a `hasSignature`
+ * flag, so the preview `<img>` is only requested when there is something to fetch.
  */
-const KNOWN_EXPECTED = {
-  "admin-users": {
-    issue: "#160",
-    why: "`UserSignatureControl` points an <img> at the signature route and uses its 404 as the " +
-      "\"no signature\" signal — there is no existence flag on the users list to check first — so " +
-      "every signature-less user yields one 404 per page load. Real, already filed, and NOT a " +
-      "regression. Its consequence is why it stays a FAIL rather than being filtered: a completely " +
-      "healthy page can never pass this sweep until #160 lands.",
-  },
-};
+const KNOWN_EXPECTED = {};
 
 /** Screens whose empty/near-empty flag a human has already checked in the browser and cleared. The
  *  heuristic is deliberately left alone — it flagged them for human judgement and a human judged

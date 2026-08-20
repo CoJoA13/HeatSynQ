@@ -14,19 +14,35 @@ import type { Gate } from "@/lib/permission-ui";
  * browser's own computed `multipart/form-data; boundary=...` Content-Type, and `api()` always
  * forces `application/json`.
  *
- * There is no "does a signature exist" flag from the users list to check first — GET .../signature
- * either streams the bytes or 404s "No signature on file" (src/app/api/admin/users/[id]/signature/
- * route.ts). The preview is a plain `<img>` pointed at that URL; the 404 case is exactly what
- * `onError` reports as "No signature on file" instead of a broken-image icon.
+ * `hasSignature` (#160) is the users list's own flag, derived server-side from `signatureMimeType`
+ * (listUsers, src/server/users.ts). It replaces what this docblock used to describe: there being no
+ * existence flag to check, so the preview `<img>` was pointed at GET .../signature optimistically
+ * and its 404 WAS the discovery mechanism. That cost one failed request per signature-less user on
+ * every page load — the normal case for most of a shop's staff — which made a completely healthy
+ * screen unable to pass any console/failed-request health gate (`npm run manual:capture`).
+ * The `<img>` now renders only when there is something to fetch, and `onError` stays as the belt
+ * for a race (a signature cleared in another tab between the list read and the image request).
+ *
+ * `hasSignature` seeds `useState` and is deliberately NOT re-baselined on later loads. The
+ * tempting precedent is the page's `TitleCell`, which is remounted via
+ * `key={`${u.id}-${u.title}`}` so a reload re-seeds its draft. Copying that here would be WRONG:
+ * this control's own upload/clear are what move the truth, they move it locally first, and the
+ * page's `patch()`-driven reloads do not refetch on upload at all — so a keyed remount would drop
+ * a just-uploaded signature back to the page's stale `false`. `<tr key={u.id}>` is stable and this
+ * control is unkeyed, so the seed happens once at mount, which is what we want.
  *
  * `gate`: passed straight from the page's own `gateDo(perms, "manage_users")` (§5.16) — every
  * verb on this route requires that same special action, upload and clear both disabled with its
  * tooltip when it's missing, never hidden.
  */
-export function UserSignatureControl({ userId, gate }: { userId: string; gate: Gate }) {
+export function UserSignatureControl(
+  { userId, hasSignature, gate }: { userId: string; hasSignature: boolean; gate: Gate },
+) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [hasImage, setHasImage] = useState(true); // optimistic; the <img>'s onError flips it
+  // Seeded from the list read (#160), not optimistically true; the <img>'s onError is now only
+  // the race belt. See the docblock on why this is not re-baselined by a keyed remount.
+  const [hasImage, setHasImage] = useState(hasSignature);
   const [version, setVersion] = useState(0); // cache-busts the <img> src after upload/clear
   const fileInputRef = useRef<HTMLInputElement>(null);
   const path = `/api/admin/users/${userId}/signature`;

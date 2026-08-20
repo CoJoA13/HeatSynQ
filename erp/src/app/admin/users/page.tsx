@@ -8,9 +8,12 @@ import { useLatest } from "@/lib/use-latest";
 import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
+// Hand-maintained mirror of listUsers' return shape (src/server/users.ts) — a "use client" file
+// must not import from src/server/** (the Shell.tsx precedent). `hasSignature` is a boolean, never
+// the bytes: see that function's comment and #160.
 type User = {
   id: string; username: string; displayName: string; title: string; roleId: string | null;
-  roleName: string | null; active: boolean;
+  roleName: string | null; active: boolean; hasSignature: boolean;
   overrides: { permission: string; mode: "GRANT" | "DENY" }[];
 };
 
@@ -126,7 +129,11 @@ export default function UsersPage() {
                        onChange={(e) => patch(u.id, { active: e.target.checked })} />
               </td>
               <td className="p-2">
-                <UserSignatureControl userId={u.id} gate={manageUsersGate} />
+                {/* Deliberately UNKEYED, unlike TitleCell above: the control owns the truth after
+                    mount (its own upload/clear move it), so a keyed remount would reset a
+                    just-uploaded signature to this row's stale `false`. #160, and the control's
+                    own docblock. */}
+                <UserSignatureControl userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate} />
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
