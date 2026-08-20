@@ -287,6 +287,8 @@ export async function voidBatch(id: string, reason: string): Promise<void>;   //
 ```
 `enteredTotal` = Σ live payment amounts; `balance` = `(controlTotal ?? enteredTotal) − enteredTotal` (zero when it foots or no control total set).
 
+> **SUPERSEDED by #163 (2026-08-20) — kept as the record of what this phase built, not as the contract.** That `?? enteredTotal` fallback is exactly the defect: with no control total it collapsed to `enteredTotal − enteredTotal` = 0, so a batch proved against **nothing** rendered identically to one that foots to the cent, on the screen where money is proved. `balance` is now `controlTotal − enteredTotal`, or **`null`** when there is no control total. The binding statements are P5B design spec §4.1 and `ReceiptBatch`'s own schema comment, both of which said `controlTotal − Σ payments` all along — the service was the one that disagreed.
+
 - [ ] **Step 1: Failing test — create + add payment + live balance.** Create a batch with `controlTotal 500`; add a payment of `300`; assert `enteredTotal 300`, `balance 200`. Add another of `200`; assert `balance 0`.
 - [ ] **Step 2: Run — Expected: FAIL.**
 - [ ] **Step 3: Implement `createBatch`/`getBatch`/`addPayment`** — Serializable `$transaction`, `allocateNumber` under the transaction for `batchNumber`, `assertRefExists("customer", …)` / `assertRefExists("paymentType", …)` on a payment (the FK-writer pattern), audited. On-account per payment via `ar-balances.paymentOnAccount` over its (initially empty) applications.
