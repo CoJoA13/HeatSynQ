@@ -169,7 +169,7 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 
 ## 13. Testing and parallel-run acceptance
 
-- **TDD throughout**: every business rule in §7 (pricing resolution, load math, status transitions, ship-line-complete, payment application, FC idempotency, export idempotency, permission checks) gets automated tests written before implementation.
+- **TDD throughout**: every business rule in §7 (pricing resolution, load math, status transitions, ship-line-complete, payment application, the finance charge's exclusion from Total Due, export idempotency, permission checks) gets automated tests written before implementation.
 - Seeded demo data for the practice database.
 - **Parallel run**: real work entered in both systems for an owner-chosen period; a built-in **comparison page** (orders entered, shipped, invoiced dollars by date range) checked weekly against Visual Shop's reports.
 - **Acceptance criterion: one full month closed in the new system — A/R aging and the QuickBooks summary export agreeing with the books — before any cutover conversation.** Visual Shop remains system of record throughout.
