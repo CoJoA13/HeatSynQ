@@ -132,6 +132,12 @@ export async function run(page, shot, ctx) {
   // `ReceiptBatch` this flow creates but a later step fails before ever paying into is otherwise
   // invisible to the customer-scoped `deleteReceivables` sweep (no `Payment` row to find it by).
   ctx.created.receivablesBatchId = page.url().split("/").pop();
+  // #163: this batch was opened with the Control total left blank, so it has been proved against
+  // NOTHING — and the Balance tile has to say so instead of rendering the reassuring 0.00 that
+  // `(controlTotal ?? enteredTotal) − enteredTotal` used to collapse to. Asserted here rather than
+  // merely screenshotted: this is the ONE content-level check on #163's third display state.
+  await page.getByText("Not proved — no control total", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
   await shot("batch-created");
 
   // --- Add a check payment. ---
@@ -176,13 +182,21 @@ export async function run(page, shot, ctx) {
   await invoiceCandidateRow.waitFor({ state: "visible", timeout: 15000 });
 
   await invoiceCandidateRow.getByLabel(`${order.number} amount`, { exact: true }).fill("500.00");
-  // #69: the "Take 20.00" checkbox is the ONLY thing rendered in the Discount cell, and it renders
-  // only when `discountAvailable > 0` (BatchDetail.tsx). This 700.00 check cannot settle the
-  // 1,000.00 invoice, so the server offers nothing and the affordance is absent — asserted rather
-  // than merely not-clicked, because a silently reappearing checkbox is exactly how the pre-ruling
-  // behavior would creep back in.
+  // #69: the "Take 20.00" checkbox renders only when the server has a figure to offer
+  // (BatchDetail.tsx). This 700.00 check cannot settle the 1,000.00 invoice, so the affordance is
+  // absent — asserted rather than merely not-clicked, because a silently reappearing checkbox is
+  // exactly how the pre-ruling behavior would creep back in.
   assert.equal(await invoiceCandidateRow.locator('input[type="checkbox"]').count(), 0,
     "no early-pay discount may be offered on a payment that cannot settle the invoice (#69)");
+  // #155 arm 2: the checkbox is NOT the only thing the Discount cell can render any more, and its
+  // absence used to be the whole of what this cell said — an operator saw an empty column and had
+  // no way to learn that 20.00 was within reach. The hint is text (never a disabled control, which
+  // would break the count assertion directly above, correctly). Its figures are the SERVER's:
+  // 980.00 = the 1,000.00 open net of the 20.00 it would earn. The sentence deliberately says
+  // "applying … here", not "remit …", because the guard measures the receipt's UNAPPLIED cash —
+  // see `DiscountOffer`'s docblock in applications.ts.
+  await invoiceCandidateRow.getByText("Applying 980.00 here would earn 20.00.", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
   await invoiceCandidateRow.getByLabel(`${order.number} write-off amount`, { exact: true }).fill("30.00");
   await invoiceCandidateRow.getByLabel(`${order.number} write-off reason`, { exact: true }).fill(WRITE_OFF_REASON);
   await shot("apply-panel-filled");

@@ -62,7 +62,7 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
   ({ amount: a.amount.toNumber(), type: a.type, deletedAt: a.deletedAt });
 
 // -------------------------------------------------------------------------------------------
-// discountAvailable — the early-pay window (§4.3). Terms carry a discount iff BOTH `discountPercent`
+// discountOffer — the early-pay window (§4.3). Terms carry a discount iff BOTH `discountPercent`
 // and `discountDays` are set; the window is open iff the payment was received on or before
 // `invoiceDate + discountDays` calendar days (`addDays`, not business days — a terms deadline is a
 // calendar date, the `dueDate` precedent). The eligible amount is `discountPercent% × the invoice's
@@ -112,15 +112,29 @@ function issuedTerms(invoice: {
   return { discountPercent: invoice.termsDiscountPercent, discountDays: invoice.termsDiscountDays };
 }
 
-/** Pure over already-read state — one definition shared by the public `discountAvailable` (which
+/** The two blockers that live in the TERMS themselves, rather than in this receipt or this
+ *  invoice's history — ONE definition, shared by `discountFor` (which only needs to know the answer
+ *  is zero) and `discountOffer` (which has to tell the two apart, #155 arm 2). Null means the
+ *  early-pay window is open. Splitting them is why this is a named function instead of two inline
+ *  guards: a second copy of the deadline arithmetic is exactly how the offer and the save drift. */
+function termsBlockFor(
+  terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
+): "no_terms_discount" | "window_closed" | null {
+  if (!terms || terms.discountPercent === null || terms.discountDays === null) return "no_terms_discount";
+  const deadline = addDays(invoiceDate, terms.discountDays);
+  return receivedDate.getTime() > deadline.getTime() ? "window_closed" : null;
+}
+
+/** Pure over already-read state — one definition shared by the public `discountOffer` (which
  *  reads that state) and the DISCOUNT guard inside `applyPayment` (which already holds it under the
  *  claim), so the two can never drift. `settledOpen` is the invoice's open balance in dollars. */
 function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date, settledOpen: number): number {
-  if (!terms || terms.discountPercent === null || terms.discountDays === null) return 0;
-  const deadline = addDays(invoiceDate, terms.discountDays);
-  if (receivedDate.getTime() > deadline.getTime()) return 0;
+  // `percent == null` is redundant with `termsBlockFor`'s `no_terms_discount` arm and is here only
+  // to narrow the type — TypeScript cannot carry a narrowing across the call.
+  const percent = terms?.discountPercent;
+  if (percent == null || termsBlockFor(terms, invoiceDate, receivedDate) !== null) return 0;
   // Integer-cent, half-up: percent (2 = 2%) on the open-balance cents, then back to dollars.
-  return Math.round((cents(settledOpen) * terms.discountPercent.toNumber()) / 100) / 100;
+  return Math.round((cents(settledOpen) * percent.toNumber()) / 100) / 100;
 }
 
 /**
@@ -164,7 +178,54 @@ function remainingDiscountFor(
   return Math.max(0, Math.min(cents(offered), remaining)) / 100;
 }
 
-export async function discountAvailable(paymentId: string, invoiceId: string): Promise<number> {
+/**
+ * Why an offer of zero is zero (#155 arm 2, owner ruling 2026-08-19). The apply grid rendered a
+ * bare empty Discount cell for all four, so "there is nothing here for you" and "there is something
+ * you could reach" looked identical — a §5.14 block that named neither the blocker nor a route out.
+ *
+ * **Only `would_not_settle` speaks on screen.** §5.14 asks a block to name a route that EXISTS; it
+ * does not ask you to narrate a dead end, and three of these are dead ends:
+ *  - `no_terms_discount` — the invoice was ISSUED under terms carrying none (#79's frozen pair).
+ *    Nothing the operator does to this receipt changes what the paper offered.
+ *  - `window_closed` — the receipt is dated past `invoiceDate + discountDays`. The remittance date
+ *    is the customer's, not the operator's; back-dating a receipt is not a route out.
+ *  - `entitlement_spent` — the window is open but `remainingDiscountFor` has nothing left. In
+ *    practice that is the #81 cap (the discount was already taken on this invoice, and a void
+ *    reopened it); degenerately it is also what an invoice with too little still open to round to a
+ *    cent reports. Neither has a route out — the money was already given away, or there is none
+ *    left to give. This is the case the ruling does not enumerate; it is silent for the same reason
+ *    the other two are, and it deliberately gets no message of its own.
+ *  - `would_not_settle` — #69: this receipt's unapplied cash cannot close the invoice net of the
+ *    discount. THIS one the operator can act on, and `settlingAmount`/`wouldEarn` name how.
+ */
+export type DiscountBlock = "no_terms_discount" | "window_closed" | "entitlement_spent" | "would_not_settle";
+
+export type DiscountOffer = {
+  /** Dollars takeable in THIS call — 0 whenever `blockedBy` is set. */
+  amount: number;
+  /** Null exactly when `amount > 0`. */
+  blockedBy: DiscountBlock | null;
+  /**
+   * Non-null ONLY for `would_not_settle`: the cash that must reach THIS invoice (`open − eligible`)
+   * and what reaching it earns (`eligible`).
+   *
+   * **They are returned rather than re-derived on the client, and this is the load-bearing part of
+   * the wording.** The quantity the guard below tests is this receipt's UNAPPLIED cash, never its
+   * face amount — so "remit 980.00" is FALSE the moment the receipt has spent some of itself on
+   * another invoice (a 1,000.00 check with 300.00 already applied elsewhere has 700.00 to give, and
+   * would need a 1,280.00 face to leave 980.00). What stays true in every case is the conditional
+   * the client renders from these two figures: applying `settlingAmount` to THIS invoice earns
+   * `wouldEarn`. Arm 1's closure is what makes that a single stable sentence — a discount is only
+   * ever takeable in the settling call, so there is exactly one figure that earns it.
+   */
+  settlingAmount: number | null;
+  wouldEarn: number | null;
+};
+
+const blockedOffer = (blockedBy: DiscountBlock): DiscountOffer =>
+  ({ amount: 0, blockedBy, settlingAmount: null, wouldEarn: null });
+
+export async function discountOffer(paymentId: string, invoiceId: string): Promise<DiscountOffer> {
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId },
     select: {
@@ -186,12 +247,20 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
     },
   });
   if (!invoice) throw new HttpError(404, "Invoice not found");
+  const apps = invoice.applications.map(toLite);
+  const terms = issuedTerms(invoice);
+
+  // The two terms-side blockers first, so the offer can tell them apart (#155 arm 2). Both are
+  // silent on screen; they are distinguished here because a read that answers "zero, and I cannot
+  // tell you why" is the defect being fixed, not a shape to preserve one level down.
+  const termsBlock = termsBlockFor(terms, invoice.invoiceDate, payment.receivedDate);
+  if (termsBlock !== null) return blockedOffer(termsBlock);
+
   // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
   // will refuse (#81 / Codex PR #129).
-  const apps = invoice.applications.map(toLite);
   const eligible = remainingDiscountFor(
-    issuedTerms(invoice), invoice.invoiceDate, payment.receivedDate, invoice.total.toNumber(), apps);
-  if (eligible <= 0) return 0;
+    terms, invoice.invoiceDate, payment.receivedDate, invoice.total.toNumber(), apps);
+  if (eligible <= 0) return blockedOffer("entitlement_spent");
 
   // #69: offered only if this payment can actually settle the invoice with it (see the block above).
   // This is a FEASIBILITY test — "is there enough cash left to close this out" — while the save's
@@ -199,16 +268,28 @@ export async function discountAvailable(paymentId: string, invoiceId: string): P
   // balance), because by then the operator has typed the figures. Integer cents: a cent short is
   // short, and `open − eligible` on floats is exactly where a 979.99 remittance would round its way
   // into a discount it did not earn.
+  //
+  // **ARM 1 OF #155 IS CLOSED HERE (owner ruling 2026-08-19) — do not re-derive this and file it
+  // again.** Composing this feasibility test with `remainingDiscountFor`'s entitlement cap makes the
+  // two-step remittance ("pay 980 today, take the 20 tomorrow") an EMPTY SET *by construction*, and
+  // that is intended rather than a boundary to revisit. A DISCOUNT-only call brings no cash, so the
+  // test reduces to `0 ≥ open − eligible`, i.e. `eligible ≥ open`; but `eligible ≤ percent × open`,
+  // which is strictly less than `open` for every percentage below 100. A discount can therefore
+  // never settle an invoice on its own at any terms this shop writes. The owner's reason it does not
+  // matter: customers remit the net figure in ONE payment, which is the shape this grid takes.
   const openCents = cents(invoiceOpenBalance(invoice.total.toNumber(), apps));
   const cashCents = cents(paymentOnAccount(payment.amount.toNumber(), payment.applications.map(toLite)));
-  return cashCents >= openCents - cents(eligible) ? eligible : 0;
+  const settlingCents = openCents - cents(eligible);
+  if (cashCents >= settlingCents) return { amount: eligible, blockedBy: null, settlingAmount: null, wouldEarn: null };
+  return { amount: 0, blockedBy: "would_not_settle", settlingAmount: settlingCents / 100, wouldEarn: eligible };
 }
 
-/** One invoice's current open balance, by id — the same read `discountAvailable` already does,
- *  pulled out standalone (Task 13's batch-apply screen reads this ALONGSIDE `discountAvailable`
- *  for the same pair, via the GET route below, so the two live side by side rather than folding
- *  `discountAvailable`'s own return shape into `{ open, discount }` and rippling into its four
- *  direct callers in tests/applications.test.ts). */
+/** One invoice's current open balance, by id — the same read `discountOffer` already does, pulled
+ *  out standalone (Task 13's batch-apply screen reads this ALONGSIDE `discountOffer` for the same
+ *  pair, via the GET route below, so the two live side by side). It stays separate now that
+ *  `discountOffer` answers with a record of its own: the open balance is a fact about the INVOICE,
+ *  while the offer is a fact about this receipt meeting that invoice, and the route is the one
+ *  place that needs both. */
 export async function invoiceOpenBalanceById(invoiceId: string): Promise<number> {
   const invoice = await prisma.invoice.findFirst({
     where: { id: invoiceId },
@@ -528,7 +609,7 @@ type ApplyLine = ApplyInput["lines"][number];
 const INVOICE_CLAIM_SELECT = {
   id: true, total: true, invoiceDate: true, kind: true, status: true, deletedAt: true,
   // #79: frozen at finalize, read here — `applyPayment` caps the DISCOUNT line independently of
-  // `discountAvailable`, so both sides have to read the same frozen pair or the save would still let
+  // `discountOffer`, so both sides have to read the same frozen pair or the save would still let
   // through a discount the paper never offered.
   termsDiscountPercent: true, termsDiscountDays: true,
   order: { select: { orderNumber: true } },

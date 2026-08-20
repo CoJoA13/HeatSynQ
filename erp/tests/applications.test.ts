@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
-  applyPayment, voidApplication, discountAvailable, applyCredit,
+  applyPayment, voidApplication, discountOffer, applyCredit,
   invoiceOpenBalanceById, openInvoicesForPayer,
 } from "@/server/applications";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "@/server/ar-balances";
@@ -297,33 +297,33 @@ describe("applyPayment — family scoping", () => {
 // Step 5: the early-pay discount window.
 // -------------------------------------------------------------------------------------------
 
-describe("discountAvailable — the early-pay window", () => {
+describe("discountOffer — the early-pay window", () => {
   it("returns discountPercent × the invoice open balance inside the window", async () => {
     const terms = await makeTerms("2.00", 10); // 2/10 Net 30
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20); // 2% × 1000
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20); // 2% × 1000
   });
 
   it("returns 0 once the window has closed", async () => {
     const terms = await makeTerms("2.00", 10);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-28"); // invoiceDate + 20 days
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
   });
 
   it("returns 0 when the terms carry no discount", async () => {
     const terms = await makeTerms(null, null);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
   });
 
   it("is inclusive of the last day of the window", async () => {
     const terms = await makeTerms("2.00", 10);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-18"); // invoiceDate + 10 days exactly
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20);
   });
 
   // #79. The discount read the invoice CUSTOMER's current terms relation, so reassigning a customer
@@ -333,27 +333,27 @@ describe("discountAvailable — the early-pay window", () => {
     const issued = await makeTerms("2.00", 10); // 2/10 Net 30 on the day it was sent
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20);
 
     // The customer is moved to plain Net 30 AFTER the paper went out.
     const now = await makeTerms(null, null);
     await prisma.customer.update({ where: { id: inv.customerId }, data: { termsId: now.id } });
 
     // Before the fix this collapsed to 0 — a discount the customer had been promised in writing.
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20);
   });
 
   it("does not GRANT a discount the paper never offered (#79, the other direction)", async () => {
     const issued = await makeTerms(null, null); // plain Net 30 on the day it was sent
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
     const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
 
     const now = await makeTerms("2.00", 10);
     await prisma.customer.update({ where: { id: inv.customerId }, data: { termsId: now.id } });
 
     // Before the fix this became 20 — money off an invoice that never offered any.
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
   });
 
   /**
@@ -370,7 +370,7 @@ describe("discountAvailable — the early-pay window", () => {
     const terms = await makeTerms("2.00", 10);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 500, "2026-08-08"); // a part payment, in window
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
   });
 
   it("offers the figure when the cash covers the remainder net of the discount (#69)", async () => {
@@ -378,14 +378,14 @@ describe("discountAvailable — the early-pay window", () => {
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     // 980.00 is exactly what a customer taking 2/10 on a 1,000.00 invoice remits.
     const payment = await makePayment(inv.customerId, 980, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20);
   });
 
   it("offers nothing one cent short of settling (#69, the boundary)", async () => {
     const terms = await makeTerms("2.00", 10);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
     const payment = await makePayment(inv.customerId, 979.99, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
   });
 
   /** The half of the ruling that is easy to lose: settlement is judged against what is STILL OPEN,
@@ -400,7 +400,7 @@ describe("discountAvailable — the early-pay window", () => {
     }));
     // 490 settles the remaining 500 net of 2% of it.
     const second = await makePayment(inv.customerId, 490, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(second.id, inv.invoiceId))).toBe(10);
+    expect((await asSystem(() => discountOffer(second.id, inv.invoiceId))).amount).toBe(10);
   });
 
   /** Cash this payment has ALREADY spent elsewhere is not available to settle this invoice. */
@@ -410,17 +410,17 @@ describe("discountAvailable — the early-pay window", () => {
     const b = await finalizedInvoice({
       total: 1000, invoiceDate: "2026-08-08", termsId: terms.id, customerId: a.customerId });
     const payment = await makePayment(a.customerId, 1000, "2026-08-08");
-    expect(await asSystem(() => discountAvailable(payment.id, b.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, b.invoiceId))).amount).toBe(20);
 
     // Spend 500 of it on invoice A: 500 is left, which no longer settles B's 1,000.
     await asSystem(() => applyPayment({
       paymentId: payment.id, lines: [{ invoiceId: a.invoiceId, type: "PAYMENT", amount: 500 }],
     }));
-    expect(await asSystem(() => discountAvailable(payment.id, b.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, b.invoiceId))).amount).toBe(0);
   });
 
   it("refuses to APPLY a discount the issued terms never offered, not just to display none (#79)", async () => {
-    // The guard that matters: `discountAvailable` feeds the UI, but `applyPayment` caps the DISCOUNT
+    // The guard that matters: `discountOffer` feeds the UI, but `applyPayment` caps the DISCOUNT
     // line independently. Both must read the frozen pair or the save would still let one through.
     const issued = await makeTerms(null, null);
     const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: issued.id });
@@ -434,6 +434,137 @@ describe("discountAvailable — the early-pay window", () => {
     // Pinned to the exact refusal: several other messages in `resolveReason` also say "discount",
     // so a loose /discount/i could pass through the wrong branch entirely.
     }))).rejects.toThrow(/no early-pay discount applies/i);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // #155 arm 2 — the offer says WHY it is zero. Every `.amount` assertion above is unchanged; what
+  // is new is the blocker beside it and, for the one operator-fixable blocker, the two figures the
+  // apply grid's hint is built from. This is the ONLY mechanised coverage arm 2 can have below the
+  // E2E flows: the rendering itself lives in a `.tsx` and there is no DOM test environment here.
+  // -----------------------------------------------------------------------------------------
+
+  it("carries no blocker when it has a figure to offer (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 980, "2026-08-08");
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 20, blockedBy: null, settlingAmount: null, wouldEarn: null,
+    });
+  });
+
+  it("names the settling figure and what it earns when the receipt is too small (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 500, "2026-08-08");
+    // 980.00 = the 1,000.00 open, net of the 20.00 the settling call would earn. Both figures come
+    // from here rather than the client, which knows neither the entitlement cap nor this receipt's
+    // unapplied cash.
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "would_not_settle", settlingAmount: 980, wouldEarn: 20,
+    });
+  });
+
+  it("names the figure one cent short of settling, where the offer itself vanishes (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 979.99, "2026-08-08");
+    // The hint is at its most useful exactly here: 0.01 more reaching this invoice earns 20.00, and
+    // before arm 2 the cell rendered nothing at all to say so.
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "would_not_settle", settlingAmount: 980, wouldEarn: 20,
+    });
+  });
+
+  /**
+   * **The wording constraint, pinned as arithmetic.** The guard measures this receipt's UNAPPLIED
+   * cash, never its face amount — so the natural sentence "remit 980.00 to earn 20.00" is FALSE for
+   * a receipt that has already spent part of itself: this 1,000.00 check has a face amount ABOVE the
+   * 980.00 figure and is still refused, because 500.00 of it is committed to another invoice.
+   *
+   * What the hint therefore says is `Applying 980.00 HERE would earn 20.00`, which stays true in
+   * both halves below — and the second half proves 980.00 is the real threshold rather than a
+   * decorative number: put the 500.00 back and the offer appears, at exactly the promised 20.00.
+   */
+  it("names a figure that stays true for a receipt already part-spent elsewhere (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const a = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const b = await finalizedInvoice({
+      total: 1000, invoiceDate: "2026-08-08", termsId: terms.id, customerId: a.customerId });
+    const payment = await makePayment(a.customerId, 1000, "2026-08-08");
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: a.invoiceId, type: "PAYMENT", amount: 500 }],
+    }));
+
+    const offer = await asSystem(() => discountOffer(payment.id, b.invoiceId));
+    expect(offer).toEqual({ amount: 0, blockedBy: "would_not_settle", settlingAmount: 980, wouldEarn: 20 });
+    // The discrepancy the sentence has to survive: the check is BIG enough on paper and still blocked.
+    expect(payment.amount.toNumber()).toBeGreaterThan(Number(offer.settlingAmount));
+
+    const spent = await prisma.application.findFirstOrThrow({
+      where: { invoiceId: a.invoiceId, type: "PAYMENT", deletedAt: null } });
+    await asSystem(() => voidApplication(spent.id, "applied to the wrong invoice"));
+    expect(await asSystem(() => discountOffer(payment.id, b.invoiceId))).toEqual({
+      amount: 20, blockedBy: null, settlingAmount: null, wouldEarn: null,
+    });
+  });
+
+  it("names the REMAINING open balance's figure, not the original total's (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const first = await makePayment(inv.customerId, 500, "2026-08-08");
+    await asSystem(() => applyPayment({
+      paymentId: first.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 500 }],
+    }));
+    // 500.00 still open -> 10.00 eligible -> 490.00 settles it. A hint naming 980.00/20.00 here
+    // would send the operator after a figure twice what the invoice still needs.
+    const second = await makePayment(inv.customerId, 400, "2026-08-08");
+    expect(await asSystem(() => discountOffer(second.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "would_not_settle", settlingAmount: 490, wouldEarn: 10,
+    });
+  });
+
+  /** The three SILENT blockers (owner ruling: §5.14 does not ask you to narrate a dead end). Each
+   *  is named on the server anyway — a read that cannot say why it answered zero is the defect —
+   *  and each carries NEITHER figure, which is what keeps the apply grid's cell empty for them. */
+  it("blames the issued terms, silently, when they carry no discount (#155 arm 2)", async () => {
+    const terms = await makeTerms(null, null);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "no_terms_discount", settlingAmount: null, wouldEarn: null,
+    });
+  });
+
+  it("blames the closed window, silently, when the receipt is late (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    // A receipt that could settle it outright — so the ONLY thing wrong is the date, and naming
+    // `window_closed` rather than `would_not_settle` is what keeps the cell silent.
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-28");
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "window_closed", settlingAmount: null, wouldEarn: null,
+    });
+  });
+
+  it("blames the spent entitlement, silently, after a void reopens the invoice (#155 arm 2)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    await asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [
+        { invoiceId: inv.invoiceId, type: "PAYMENT", amount: 980 },
+        { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 },
+      ],
+    }));
+    // Voiding the PAYMENT reopens 980.00 with the 20.00 entitlement already given away (#81). The
+    // receipt's whole 1,000.00 is unapplied again, so the SETTLEMENT test would pass — proving the
+    // blocker is ordered correctly and the operator is not told to remit more for nothing.
+    const paid = await prisma.application.findFirstOrThrow({
+      where: { invoiceId: inv.invoiceId, type: "PAYMENT", deletedAt: null } });
+    await asSystem(() => voidApplication(paid.id, "applied to the wrong invoice"));
+    expect(await asSystem(() => discountOffer(payment.id, inv.invoiceId))).toEqual({
+      amount: 0, blockedBy: "entitlement_spent", settlingAmount: null, wouldEarn: null,
+    });
   });
 });
 
@@ -775,7 +906,7 @@ describe("applyPayment — DISCOUNT line", () => {
 
     // The entitlement is spent, so the UI is offered nothing — it must never show an amount the
     // save would refuse.
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
 
     // Measured before the #81 fix: this second request took its 19.60 and left the invoice at
     // 960.40 on a nominal 2% entitlement. It settles (960.40 + 19.60 = 980), so #69's guard passes
@@ -813,7 +944,7 @@ describe("applyPayment — DISCOUNT line", () => {
       paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 980 }],
     }));
     expect(await openBalance(inv.invoiceId)).toBe(20);
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0.4);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0.4);
 
     await expect(asSystem(() => applyPayment({
       paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
@@ -845,7 +976,7 @@ describe("applyPayment — DISCOUNT line", () => {
       paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "PAYMENT", amount: 500 }],
     }));
     // 2% of the remaining 500 = 10, which is BELOW the 20 entitlement — so 10 is the answer.
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(10);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(10);
     // 480 + 20 settles the remaining 500, so #69's guard passes and the CAP is what refuses the 20.
     await expect(asSystem(() => applyPayment({
       paymentId: payment.id, lines: [
@@ -870,7 +1001,7 @@ describe("applyPayment — DISCOUNT line", () => {
         { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 },
       ],
     }));
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0);
 
     const app = await prisma.application.findFirstOrThrow({
       where: { invoiceId: inv.invoiceId, type: "DISCOUNT", deletedAt: null } });
@@ -878,13 +1009,13 @@ describe("applyPayment — DISCOUNT line", () => {
 
     // The entitlement is free again: 0.40 is 2% of the 20.00 the void reopened, which is only
     // offered at all because the consumed 20.00 no longer counts (it would be a flat 0 otherwise).
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(0.4);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(0.4);
 
     // Void the payment too and the invoice is back where it started — a full 2% of 1,000.00.
     const paid = await prisma.application.findFirstOrThrow({
       where: { invoiceId: inv.invoiceId, type: "PAYMENT", deletedAt: null } });
     await asSystem(() => voidApplication(paid.id, "keyed the wrong invoice"));
-    expect(await asSystem(() => discountAvailable(payment.id, inv.invoiceId))).toBe(20);
+    expect((await asSystem(() => discountOffer(payment.id, inv.invoiceId))).amount).toBe(20);
   });
 
   it("caps each invoice on its own — one invoice's discount does not consume another's", async () => {

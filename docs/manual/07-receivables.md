@@ -132,9 +132,21 @@ earned nothing on the first payment, but the remainder can still be settled earl
 The entitlement does not regrow as the balance drops, though: it is 2% of the invoice **total**, less
 any discount already taken, and once spent it is gone.
 
-When the discount does not apply, the checkbox simply is not offered. If you try to force one
-through anyway the message names the arithmetic — *"an early-pay discount is earned only by a
-payment that settles the invoice — this covers 500 of the 1000 open"*.
+When the discount does not apply, the checkbox is not offered — but the column no longer goes
+silent on the one case you can do something about. A cheque that is simply too small to settle the
+invoice now reads:
+
+> Not enough cash left on this receipt to settle.
+> Applying 980.00 here would earn 20.00.
+
+That figure is the cash that has to reach **this invoice**, not what the cheque has to be worth: a
+receipt that has already paid part of itself onto another invoice needs a bigger cheque again to
+leave that much unapplied. The other three cases stay blank on purpose — a closed window, terms
+carrying no discount, and an entitlement already spent are not things a larger remittance fixes.
+
+If you try to force a discount through anyway the message names the arithmetic — *"an early-pay
+discount is earned only by a payment that settles the invoice — this covers 500 of the 1000
+open"*.
 
 **Two further things worth knowing.**
 
@@ -146,10 +158,13 @@ And the offer is **per invoice, not per grid**. A $1,000 cheque facing two $1,00
 show "Take 20.00" on both, because that cash could settle either one — just not both. Tick both and
 the save refuses, correctly, because the cheque is not big enough.
 
-> **A known rough edge:** when no discount applies, the message is the same three words —
-> *"no early-pay discount applies"* — whether the window has passed, the invoice has no discount
-> terms at all, or the entitlement is already spent. It does not tell you which. Check the invoice's
-> terms and its date. This is filed as [#155](https://github.com/CoJoA13/HeatSynQ/issues/155).
+> **A known rough edge:** the *refusal* you get from forcing a discount through is still the same
+> three words — *"no early-pay discount applies"* — whether the window has passed, the invoice has
+> no discount terms at all, or the entitlement is already spent. It does not tell you which. Check
+> the invoice's terms and its date. The apply **column** does now distinguish the one of those
+> cases you can act on (above); that was
+> [#155](https://github.com/CoJoA13/HeatSynQ/issues/155) arm 2, ruled 2026-08-19. The refusal's
+> wording was not part of that ruling.
 
 ## Write-offs
 
