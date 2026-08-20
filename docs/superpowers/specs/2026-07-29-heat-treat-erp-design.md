@@ -177,7 +177,7 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 ## 14. Open items (inputs needed during implementation, none blocking design)
 
 1. **Samples of the current printed traveler, shipper, cert, and invoice** (owner to drop scans/PDFs into the project folder) — drives default template layouts and the cert field set (heat/lot numbers on serials, etc.).
-2. **Finance-charge treatment in the QBO export** — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely; confirm desired behavior).
+2. ~~**Finance-charge treatment in the QBO export** — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely; confirm desired behavior).~~ **RESOLVED 2026-08-19 (§15, issue #162): finance charges are informational and post NOTHING**, so there is nothing to treat in the export — the same answer Visual Shop reached. Collecting interest means raising a real invoice, which posts as any other invoice does. Do not reopen this during acceptance work.
 3. **Go-to report list** — which reports the office actually runs today.
 4. **GL account list** for operations, surcharges, payment types, and plant defaults.
 5. Confirm no shipping-label printing is needed (not selected; assumed out).

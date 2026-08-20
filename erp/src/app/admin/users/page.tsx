@@ -137,17 +137,25 @@ export default function UsersPage() {
                 <UserSignatureControl
                   userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate}
                   onSignatureChange={(next) => {
-                    // SUPERSEDE any in-flight load before applying (#3/#15 class, Codex round 3).
-                    // `patch()` fires `load()`, and a load that READ before this upload committed
-                    // can still RESOLVE after it — `isCurrent` would say true, and `setUsers(u)`
-                    // would put the row back to the pre-upload flag, hiding a signature that is
-                    // safely on the server. Taking a ticket here makes that load non-current, so
-                    // it is discarded exactly like a superseded load. No refetch is needed: the
-                    // PUT/DELETE already succeeded, so this value IS the server's.
-                    latest.next();
+                    // Apply optimistically, then RELOAD — do not merely cancel (#3/#15 class,
+                    // Codex rounds 3 and 4). The signature route has already committed, so this
+                    // value is the server's; showing it at once is honest, not a guess.
+                    //
+                    // The reload is what makes it safe, and it does two jobs at once. `load()`
+                    // takes its own `latest` ticket, so an OLDER in-flight load — one that read
+                    // before this upload committed and would otherwise still count as current —
+                    // is discarded rather than putting the row back to the pre-upload flag. And
+                    // because it then re-reads, the OTHER half of that discarded load is not lost:
+                    // `load()` fetches users AND roles together, so a concurrent title/role/active
+                    // edit's refreshed data arrives here instead of being cancelled with it.
+                    //
+                    // An earlier fix called `latest.next()` alone. That closed the clobber and
+                    // opened a quieter hole — the shared refresh was thrown away while only
+                    // `hasSignature` was written, so a just-saved role could sit visibly stale.
                     setUsers((prev) => prev.map(
                       (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
                     ));
+                    load().catch((e) => setError(e.message));
                   }} />
               </td>
               <td className="p-2">

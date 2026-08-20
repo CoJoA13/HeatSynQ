@@ -1053,13 +1053,27 @@ function build() {
 
   // The chapter order is derived twice — from the filenames and from README's contents table —
   // and the two must agree. That disagreement is how a new chapter goes missing from the manual.
-  const listed = contents.map((c) => `${c.number}|${c.file}|${c.title}`).sort();
-  const found = chapters.map((c) => `${c.number}|${c.file}|${c.title}`).sort();
+  //
+  // Compared IN ORDER, not as sorted sets (Codex round 4). Sorting both sides first made this
+  // check blind to the very thing its name claims to validate: a README row moved out of sequence
+  // still passed, and the manual then shipped TWO conflicting chapter orders — README's on the
+  // front page, filename order in the sidebar and the bodies. The sorted copies survive only to
+  // tell the two failures apart in the message, which is a genuinely useful distinction: "you
+  // reordered a row" and "you added a chapter and forgot the contents table" want different fixes.
+  const key = (c) => `${c.number}|${c.file}|${c.title}`;
+  const listed = contents.map(key);
+  const found = chapters.map(key);
   if (listed.join("\n") !== found.join("\n")) {
+    const sameSet = [...listed].sort().join("\n") === [...found].sort().join("\n");
     fail(
-      `README.md's contents table and the NN-*.md files disagree.\n` +
-        `        README lists: ${listed.join(", ") || "(none)"}\n` +
-        `        on disk:      ${found.join(", ")}`,
+      sameSet
+        ? `README.md's contents table lists the same chapters as the NN-*.md files but in a ` +
+          `DIFFERENT ORDER, which would publish two conflicting sequences.\n` +
+          `        README order: ${listed.join(", ")}\n` +
+          `        file order:   ${found.join(", ")}`
+        : `README.md's contents table and the NN-*.md files disagree.\n` +
+          `        README lists: ${listed.join(", ") || "(none)"}\n` +
+          `        on disk:      ${found.join(", ")}`,
     );
   }
   chapters.forEach((c, n) => {
