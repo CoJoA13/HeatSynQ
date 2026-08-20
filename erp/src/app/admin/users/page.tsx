@@ -136,9 +136,19 @@ export default function UsersPage() {
                     genuinely its own. */}
                 <UserSignatureControl
                   userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate}
-                  onSignatureChange={(next) => setUsers((prev) => prev.map(
-                    (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
-                  ))} />
+                  onSignatureChange={(next) => {
+                    // SUPERSEDE any in-flight load before applying (#3/#15 class, Codex round 3).
+                    // `patch()` fires `load()`, and a load that READ before this upload committed
+                    // can still RESOLVE after it — `isCurrent` would say true, and `setUsers(u)`
+                    // would put the row back to the pre-upload flag, hiding a signature that is
+                    // safely on the server. Taking a ticket here makes that load non-current, so
+                    // it is discarded exactly like a superseded load. No refetch is needed: the
+                    // PUT/DELETE already succeeded, so this value IS the server's.
+                    latest.next();
+                    setUsers((prev) => prev.map(
+                      (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
+                    ));
+                  }} />
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"

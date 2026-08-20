@@ -613,7 +613,18 @@ function stripBackMatter(blocks, file) {
   if (last === -1) return blocks;
 
   const tail = blocks.slice(last + 1);
-  const structural = tail.find((b) => ["heading", "figure", "table", "quote", "code"].includes(b.type));
+  // `list` counts as structural for CHAPTERS (Codex round 3). It did not, which meant a chapter
+  // ending its last section with `---` and then a short list of instructions was silently deleted
+  // whenever the tail came in under the size cap — the precise failure this function's docblock
+  // promises cannot happen. Only README is exempt, because its back matter genuinely IS a list:
+  // the italic supporting-material links for maintainers. The exemption is by file rather than by
+  // shape on purpose — README is the contents file, not a chapter, and its tail is fixed prose
+  // this build already validates in other ways. The size cap still applies to it, so the residual
+  // is "someone adds under 1200 characters of real instructions to README's back matter", which
+  // is a far smaller hole than "every chapter's post-rule list".
+  const STRUCTURAL = ["heading", "figure", "table", "quote", "code"];
+  const structuralTypes = file === "README.md" ? STRUCTURAL : [...STRUCTURAL, "list"];
+  const structural = tail.find((b) => structuralTypes.includes(b.type));
   if (structural) {
     fail(`${file}: the final "---" is followed by a ${structural.type}, so it is content, not back matter`);
     return blocks;

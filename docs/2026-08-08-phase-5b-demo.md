@@ -76,7 +76,8 @@ Applied 500.00 · On account 200.00") and its Payments table both confirm it.
 Opens the **aging report**, filters to this customer, and asserts the row precisely: **Current
 450.00** (the invoice's remaining open balance — 1000.00 − 550.00 applied — not yet past due, since
 its due date is 30 days out), **1–30 empty**, **Unapplied 200.00** (the payment's on-account cash),
-**Net 250.00**. Opens **Statements**, ticks **Combine family** and **Assess finance charges**,
+**Net 250.00**. Opens **Statements**, ticks **Combine family** and **Show finance charge (not
+billed)** (renamed from "Assess finance charges" by #162 — the figure is shown, never levied),
 confirms the preview's total due (250.00) matches the aging report's own Net, **prints** — the
 statement archives and reappears in the customer's own **Documents** list.
 
