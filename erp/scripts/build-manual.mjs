@@ -75,14 +75,6 @@ const MIME_BY_EXT = {
   ".svg": "image/svg+xml",
 };
 
-/**
- * Back matter after a file's final `---` is navigation, not content, and is never carried in.
- * The structural check in `stripBackMatter` is the real guard — this size cap is a second one for
- * the case of a plain prose section sitting under a trailing rule. README.md's maintainer note is
- * the largest legitimate tail today, at ~740.
- */
-const BACK_MATTER_MAX_CHARS = 1200;
-
 const problems = [];
 const warnings = [];
 const fail = (msg) => problems.push(msg);
@@ -613,28 +605,56 @@ function stripBackMatter(blocks, file) {
   if (last === -1) return blocks;
 
   const tail = blocks.slice(last + 1);
-  // `list` counts as structural for CHAPTERS (Codex round 3). It did not, which meant a chapter
-  // ending its last section with `---` and then a short list of instructions was silently deleted
-  // whenever the tail came in under the size cap — the precise failure this function's docblock
-  // promises cannot happen. Only README is exempt, because its back matter genuinely IS a list:
-  // the italic supporting-material links for maintainers. The exemption is by file rather than by
-  // shape on purpose — README is the contents file, not a chapter, and its tail is fixed prose
-  // this build already validates in other ways. The size cap still applies to it, so the residual
-  // is "someone adds under 1200 characters of real instructions to README's back matter", which
-  // is a far smaller hole than "every chapter's post-rule list".
-  const STRUCTURAL = ["heading", "figure", "table", "quote", "code"];
-  const structuralTypes = file === "README.md" ? STRUCTURAL : [...STRUCTURAL, "list"];
-  const structural = tail.find((b) => structuralTypes.includes(b.type));
-  if (structural) {
-    fail(`${file}: the final "---" is followed by a ${structural.type}, so it is content, not back matter`);
-    return blocks;
-  }
-  const size = JSON.stringify(tail).length;
-  if (size > BACK_MATTER_MAX_CHARS) {
-    fail(`${file}: the ${size} characters after the final "---" look like content, not back matter`);
+  const bad = backMatterViolation(tail, file);
+  if (bad) {
+    fail(`${file}: the content after the final "---" is not back matter — ${bad}`);
     return blocks;
   }
   return blocks.slice(0, last);
+}
+
+/**
+ * One nav line: an optional "Next:"/"Previous:" label and a link, repeated, separated by "·".
+ * Matches every chapter tail in the manual today, e.g.
+ *   Next: [2. Orders →](02-orders.md)
+ *   Previous: [13. Document templates](13-templates.md) · [← Back to contents](README.md)
+ */
+const NAV_LINE =
+  /^(?:(?:Next|Previous):\s*)?\[[^\]]+\]\([^)]+\)(?:\s*·\s*(?:(?:Next|Previous):\s*)?\[[^\]]+\]\([^)]+\))*$/;
+
+/**
+ * Returns a reason string when the tail is NOT recognisable back matter, or null when it is.
+ *
+ * This is a POSITIVE rule — "back matter looks exactly like this" — and that is the point (Codex
+ * rounds 3, 5 and 6). It replaces a negative one: "no structural block, and under 1200 characters".
+ * That heuristic was wrong three times in the same way. It first let a trailing LIST be deleted
+ * silently, then — after `list` was added to the forbidden set — a short trailing PARAGRAPH, which
+ * is the ordinary way someone appends a closing note. Enumerating what must not appear can only
+ * ever be as complete as the last review; stating what MAY appear cannot rot, because anything
+ * unrecognised fails loudly by default. The size cap is gone with it: shape decides now, so a cap
+ * would only be a second, weaker opinion about the same question.
+ */
+function backMatterViolation(tail, file) {
+  if (tail.length === 0) return null;
+
+  if (file === README) {
+    // README's back matter is maintainer-facing supporting material: an italic lead-in paragraph
+    // and a list of italic links. Recognised by that lead-in, so real instructions appended here
+    // still fail rather than vanishing.
+    const [lead, ...rest] = tail;
+    if (lead.type !== "paragraph" || !/^\*Supporting material\b/.test(lead.text.trim())) {
+      return `README's back matter must open with the italic "*Supporting material…" line, found a ${lead.type}`;
+    }
+    const offender = rest.find((b) => b.type !== "list" && b.type !== "paragraph");
+    return offender ? `README's supporting material may only be paragraphs and lists, found a ${offender.type}` : null;
+  }
+
+  const offender = tail.find((b) => b.type !== "paragraph" || !NAV_LINE.test(b.text.trim()));
+  return offender
+    ? offender.type !== "paragraph"
+      ? `a ${offender.type} is content, not navigation`
+      : `"${offender.text.trim().slice(0, 60)}…" is not a Next/Previous navigation line`
+    : null;
 }
 
 /** Drop the standalone "[← Back to contents](README.md)" paragraph each chapter opens with. */

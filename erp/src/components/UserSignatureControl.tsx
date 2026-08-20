@@ -54,9 +54,18 @@ import type { Gate } from "@/lib/permission-ui";
  * carrying two meanings). Splitting the channel is what finally makes both unrepresentable: a
  * render failure cannot move server state, and a mutation cannot be undone by a stale read.
  *
- * `brokenSrc` is keyed to the exact URL that failed, not a boolean, so a new upload or a
- * server-side change yields a new URL and retries BY CONSTRUCTION — there is no staleness rule
- * here to get wrong, which is the mistake rounds 1–3 kept making.
+ * `brokenSrc` is keyed to the exact URL that failed, not a boolean, so a LOCAL upload yields a new
+ * URL (`version` bumps) and retries by construction — no staleness rule to get wrong, which is the
+ * mistake rounds 1–3 kept making.
+ *
+ * **That does NOT extend to a server-side change, and an earlier draft of this note wrongly said it
+ * did** (caught in review). The URL carries only the local `version` counter, so if a preview fails
+ * and ANOTHER administrator then clears and re-uploads, the flag round-trips false→true while the
+ * URL stays identical — and this branch keeps showing "Preview unavailable" without ever
+ * re-requesting. It needs a corrupt image plus two other-session mutations to reach, and a reload
+ * clears it. Filed rather than patched, because the honest fix is a server-side revision in the URL
+ * (which `listUsers` does not yet expose) and this component has already taken five rounds of
+ * local rules that each looked right and were not.
  *
  * The page's `TitleCell` keyed-remount precedent is still not copied: a remount would discard
  * `error`, `busy`, `version` and `brokenSrc`, all of which are genuinely this component's own.
