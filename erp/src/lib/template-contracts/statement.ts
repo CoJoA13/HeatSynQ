@@ -100,10 +100,14 @@ export const STATEMENT_CONTRACT: TemplateContract = {
       //
       // FIXED IN THE LABEL, DELIBERATELY NOT BY MOVING THIS SECTION BELOW `total`. A stored
       // config renders in ITS OWN stored section order, so a re-order here would reach the
-      // default template and silently miss every already-published version; a `defaultLabel` is
-      // a null-sentinel in every stored config and re-resolves against this contract at every
-      // print, so it reaches all of them alike (#103 — see `types.ts`'s evolution header, which
-      // names "changing an existing contract default" as NOT rendering-neutral). That is the
+      // default template and silently miss every already-published version; a `defaultLabel`
+      // re-resolves against this contract at every print for every config that has NOT overridden
+      // it (the editor does expose a per-field label override — `types.ts` puts it exactly: a
+      // stored config pins only what it explicitly stores, so a typed label keeps its own wording
+      // and this relabel does not reach it). For the seeded Standard template the stored label is
+      // `null`, so it re-resolves; that is the case that matters today. (#103 — see `types.ts`'s
+      // evolution header, which names "changing an existing contract default" as NOT
+      // rendering-neutral.) That is the
       // whole reason this landed before acceptance: nothing has published a custom statement
       // template yet, so the relabel changes no paper anyone has already designed. Once one has,
       // this same edit would silently relabel their published version too.
@@ -113,8 +117,10 @@ export const STATEMENT_CONTRACT: TemplateContract = {
           key: "finance_charge", name: "Finance charge",
           // Sized to `totalLine`'s 200pt label column at 10pt (measured: 174pt Roboto, 175pt
           // Liberation Sans, 161pt Liberation Serif) so it does not wrap on the three
-          // proportional families; "Total Due" is referenced in lower case because that label is
-          // itself overridable.
+          // proportional families. **Roboto Mono is 252pt and DOES wrap** — accepted: it is
+          // selectable per template but no seeded template uses it, and the cost is a two-line
+          // label with the amount beside the first line, not a wrong figure. "Total Due" is
+          // referenced in lower case because that label is itself overridable.
           defaultLabel: "Finance Charge (not billed, not in total):",
           removable: true,
         },

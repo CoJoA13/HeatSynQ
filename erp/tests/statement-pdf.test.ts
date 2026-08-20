@@ -7,6 +7,11 @@ import { textRunsWithY } from "./helpers/pdf";
 // pdfmake definition out. Content pins live on the DEFINITION (`allText`, copied from
 // tests/cert-pdf.test.ts), never on rendered bytes (pdfkit writes TTF-subset glyph ids, so a
 // rendered PDF carries no character text to grep for) — the global-constraints.md rule.
+//
+// ONE deliberate exception, added with #162: the no-wrap pin near the end of this file asserts a
+// rendered LAYOUT fact (does the finance-charge label stay on one baseline in its 200pt column?),
+// which the definition cannot express — it reads geometry via `textRunsWithY`, not characters, so
+// the TTF-subset rule above is not violated. Its own docblock carries the reasoning.
 
 /** Every `text` string anywhere in a document definition, flattened. */
 function allText(node: unknown, out: string[] = []): string[] {

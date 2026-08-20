@@ -25,11 +25,19 @@ import type { Gate } from "@/lib/permission-ui";
  *
  * `hasSignature` seeds `useState` and is deliberately NOT re-baselined on later loads. The
  * tempting precedent is the page's `TitleCell`, which is remounted via
- * `key={`${u.id}-${u.title}`}` so a reload re-seeds its draft. Copying that here would be WRONG:
- * this control's own upload/clear are what move the truth, they move it locally first, and the
- * page's `patch()`-driven reloads do not refetch on upload at all — so a keyed remount would drop
- * a just-uploaded signature back to the page's stale `false`. `<tr key={u.id}>` is stable and this
- * control is unkeyed, so the seed happens once at mount, which is what we want.
+ * `key={`${u.id}-${u.title}`}` so a reload re-seeds its draft. Not copied here, and the honest
+ * reason is an ORDERING one rather than a broken-remount one: this control's own upload/clear
+ * move the truth LOCALLY first (`:49`, `:68`) and the page never refetches the list on either
+ * event, so the page's `hasSignature` is strictly BEHIND this component's state from the first
+ * upload onward. Re-baselining from a value that can only be staler can only lose information —
+ * whatever key expression drives it. `<tr key={u.id}>` is stable and this control is unkeyed, so
+ * the seed is taken once at mount, which is what we want.
+ *
+ * (An earlier draft of this note claimed a keyed remount would reset a just-uploaded signature to
+ * `false`. That mechanism is NOT reachable — a `${u.id}-${u.hasSignature}` key only remounts when
+ * the flag itself changes, so it would always re-seed from the fresh value. The conclusion was
+ * right and the stated reason was not; corrected here so nobody disproves the reason and concludes
+ * that keying is therefore safe.)
  *
  * `gate`: passed straight from the page's own `gateDo(perms, "manage_users")` (§5.16) — every
  * verb on this route requires that same special action, upload and clear both disabled with its
