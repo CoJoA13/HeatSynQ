@@ -207,7 +207,43 @@ describe("applications routes", () => {
     const paymentId = await makePayment(customer.id, 1000);
     const res = await discountRoute(getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${invoice.id}`, cookie), noParams);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ open: 1000, discount: 20 });
+    // #155 arm 2: the WHOLE envelope, not just `discount.amount`. This assertion is the reason the
+    // rename to `discountOffer` was not, on its own, the forcing function it looked like: `tsc` types
+    // `res.json()` as `any`, so a widened wire shape breaks nothing at compile time and only a
+    // route-level test can see it. It asserted the old flat `discount: 20` and went red on the full
+    // suite, having been missed because the task's own gate ran a neighbouring file.
+    expect(await res.json()).toEqual({
+      open: 1000,
+      discount: { amount: 20, blockedBy: null, settlingAmount: null, wouldEarn: null },
+    });
+  });
+
+  // The other side of the envelope, over the wire: when the offer is blocked because this receipt
+  // cannot settle, the two figures the screen renders its hint from must actually arrive. The
+  // service test pins the arithmetic; this pins that it survives serialization.
+  it("GET ?paymentId=&invoiceId= carries the settling figures when the receipt cannot settle", async () => {
+    const cookie = await signInWith(["receivables.view"]);
+    const terms = await prisma.terms.create({ data: { name: `RB2/10-${seq}`, netDays: 30, discountPercent: "2.00", discountDays: 10 } });
+    seq += 1;
+    const customer = await prisma.customer.create({ data: { code: `ARB${seq}`, name: "Blocked", termsId: terms.id } });
+    const order = await prisma.order.create({
+      data: { orderNumber: 630000 + seq, customerId: customer.id, status: "SHIPPED", receivedDate: parseDateOnly("2026-08-01"), requestDate: parseDateOnly("2026-08-01") },
+    });
+    const invoice = await prisma.invoice.create({
+      data: {
+        kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId: customer.id,
+        invoiceDate: parseDateOnly("2026-08-08"), total: 1000, finalizedAt: new Date(),
+        termsDiscountPercent: "2.00", termsDiscountDays: 10,
+      },
+    });
+    // 500.00 against a 1,000.00 invoice: inside the window, but nowhere near settling it.
+    const paymentId = await makePayment(customer.id, 500);
+    const res = await discountRoute(getReq(`http://t/api/receivables/applications?paymentId=${paymentId}&invoiceId=${invoice.id}`, cookie), noParams);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      open: 1000,
+      discount: { amount: 0, blockedBy: "would_not_settle", settlingAmount: 980, wouldEarn: 20 },
+    });
   });
 
   it("GET ?paymentId=&invoiceId= reflects a balance already reduced by a prior application", async () => {

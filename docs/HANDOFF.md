@@ -437,7 +437,8 @@ route/export entry, `8229413`). **#81 leaves a measured SCOPE BOUNDARY that is t
 cap is per-REQUEST, and `elig` is recomputed each call as a percentage of the CURRENT open balance, so
 a second call after a $20 discount is still offered $19.60 and takes it — the series converges on the
 whole receivable. Closing it means ruling whether the entitlement is 2% of the invoice total ONCE or
-2% of whatever is open (what is built, and what `discountAvailable` shows). Pinned as a test so any
+2% of whatever is open (what is built, and what `discountOffer` shows — renamed from
+`discountAvailable` by #155 arm 2, 2026-08-20, when it widened to carry the block reason). Pinned as a test so any
 change is deliberate. Full triage: `docs/execution/2026-08-08-phase-5b-accounts-receivable/progress.md`.
 
 **Phase 5C (close + QBO export) follow-ups — GitHub issues #88–#93 (2026-08-10), all deferred, none
