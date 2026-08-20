@@ -1187,21 +1187,33 @@ async function orderBook(env: Env, cust: Cust, parts: Parts, quotes: Quotes) {
 
   // --- Plain SHIPPED-complete work that is never invoiced, so the Turnaround report (which only
   // counts orders CURRENTLY `SHIPPED`) has a population.
-  const shippedOnly = [];
-  const shippedSpec: { c: string; p: string; qty: number; w: string; po: string; recv: number; ship: number }[] = [
-    { c: cust.midst, p: parts.mfRing, qty: 300, w: "3840.00", po: "MF-5688", recv: 72, ship: 58 },
-    { c: cust.titan, p: parts.tdPunch, qty: 120, w: "768.00", po: "TT-8840", recv: 64, ship: 52 },
-    { c: cust.valley, p: parts.vmGear, qty: 1600, w: "8960.00", po: "VMW-733", recv: 58, ship: 41 },
-    { c: cust.aeroSe, p: parts.asFitting, qty: 3000, w: "3300.00", po: "ADSE-3320", recv: 49, ship: 33 },
-    { c: cust.harbor, p: parts.hmShaft, qty: 8, w: "352.00", po: "HM-215", recv: 37, ship: 26 },
-    { c: cust.midst, p: parts.mfBracket, qty: 900, w: "2790.00", po: "MF-5733", recv: 29, ship: 15 },
-    { c: cust.titan, p: parts.tdDie, qty: 30, w: "546.00", po: "TT-8890", recv: 20, ship: 7 },
+  // Shipped-complete work. The FIRST SEVEN are invoiced in `invoicing` — they are the invoiced
+  // volume that keeps the A/R aging the right shape (see that function's header). The LAST FOUR
+  // are deliberately never invoiced, so the Turnaround report — whose population is orders
+  // CURRENTLY `SHIPPED` — still has a real spread of completion dates once the first seven have
+  // moved on to INVOICED. Keyed, because `invoicing` has to address specific ones by name rather
+  // than by a positional index that a later edit would silently shift.
+  const shippedSpec: {
+    key: string; c: string; p: string; qty: number; w: string; po: string; recv: number; ship: number;
+  }[] = [
+    { key: "midstA", c: cust.midst, p: parts.mfRing, qty: 300, w: "3840.00", po: "MF-5688", recv: 72, ship: 58 },
+    { key: "titanA", c: cust.titan, p: parts.tdPunch, qty: 120, w: "768.00", po: "TT-8840", recv: 64, ship: 52 },
+    { key: "valleyA", c: cust.valley, p: parts.vmGear, qty: 1600, w: "8960.00", po: "VMW-733", recv: 58, ship: 41 },
+    { key: "aeroSeA", c: cust.aeroSe, p: parts.asFitting, qty: 3000, w: "3300.00", po: "ADSE-3320", recv: 49, ship: 33 },
+    { key: "harborA", c: cust.harbor, p: parts.hmShaft, qty: 8, w: "352.00", po: "HM-215", recv: 37, ship: 26 },
+    { key: "midstB", c: cust.midst, p: parts.mfBracket, qty: 900, w: "2790.00", po: "MF-5733", recv: 29, ship: 15 },
+    { key: "titanB", c: cust.titan, p: parts.tdDie, qty: 30, w: "546.00", po: "TT-8890", recv: 20, ship: 7 },
+    { key: "valleyB", c: cust.valley, p: parts.vmPlate, qty: 60, w: "540.00", po: "VMW-755", recv: 66, ship: 50 },
+    { key: "aeroSeB", c: cust.aeroSe, p: parts.asRing, qty: 3000, w: "1200.00", po: "ADSE-3335", recv: 44, ship: 29 },
+    { key: "midstC", c: cust.midst, p: parts.mfRing, qty: 220, w: "2816.00", po: "MF-5760", recv: 33, ship: 18 },
+    { key: "titanC", c: cust.titan, p: parts.tdPunch, qty: 90, w: "576.00", po: "TT-8915", recv: 24, ship: 11 },
   ];
+  const shippedOnly: Record<string, { order: Awaited<ReturnType<typeof mk>>; shipDay: number }> = {};
   for (const s of shippedSpec) {
-    shippedOnly.push({ order: await mk({
+    shippedOnly[s.key] = { order: await mk({
       customerId: s.c, poNumber: s.po, receivedDate: d(s.recv), requestDate: d(s.recv - 14),
       lines: [{ partId: s.p, qty: s.qty, weight: s.w }],
-    }), shipDay: s.ship });
+    }), shipDay: s.ship };
   }
 
   // Travelers — printed on a handful so /orders shows the printed marker and the Documents tab
@@ -1264,7 +1276,7 @@ async function shippingAndCerts(
   }, { canOverrideCreditHold: true });
 
   // --- Plain SHIPPED-complete work (drives the Turnaround report).
-  for (const s of orders.shippedOnly) {
+  for (const s of Object.values(orders.shippedOnly)) {
     const c = await prisma.order.findFirstOrThrow({
       where: { id: s.order.id }, select: { customerId: true },
     });
@@ -1541,6 +1553,28 @@ async function invoicing(orders: Orders) {
   const invReopen = await raise(orders.reopenTarget.id, d(52));
   await finalizeInvoice(invReopen.id);
 
+  // --- INVOICED VOLUME. Seven of the shipped-complete orders are billed here, and the reason is
+  // the A/R AGING'S SHAPE, not variety for its own sake.
+  //
+  // Net = bucketed receivables − unapplied cash. A seed that creates more cash than invoiced work
+  // shows every customer with a NEGATIVE net — a shop that owes its customers money — which is
+  // arithmetically correct and teaches exactly the wrong thing on one of the most-read screens in
+  // the manual. The fix is NOT to apply more of the cash: an application reduces the open invoice
+  // and the unapplied cash by the same amount, so Net does not move. The only levers are more
+  // invoiced work or less cash, and this is the first of the two (the on-account payments in
+  // `receivables` are the second).
+  //
+  // Dates: mostly recent, so most of the balance sits in `current` — the healthy shape — with two
+  // deliberately older so the 1–30 bucket stays populated.
+  const billed: [key: string, invoiceDate: string][] = [
+    ["midstA", d(12)], ["titanA", d(20)], ["valleyA", d(38)], ["aeroSeA", d(15)],
+    ["harborA", d(44)], ["midstB", d(8)], ["titanB", d(5)],
+  ];
+  for (const [key, invoiceDate] of billed) {
+    const inv = await raise(orders.shippedOnly[key].order.id, invoiceDate);
+    await finalizeInvoice(inv.id);
+  }
+
   // --- The CREDIT MEMO: a full credit against the 31–60 invoice's customer, raised from the
   // invoice itself (a credit copies the source lines with the money sign flipped) and finalized.
   const credit = await createCredit(inv31.id);
@@ -1596,7 +1630,10 @@ async function receivables(env: Env, cust: Cust, inv: Invoices) {
   const oneOpen = await openBalanceOf(inv.inv1.id);
   const shortPay = round2(oneOpen - RESIDUAL);
 
-  const PARTIAL = 1200, ON_ACCOUNT = 2500;
+  // Deliberately MODEST. On-account cash is a concept the manual must show (and #159's trap
+  // depends on it), but every dollar of it subtracts from Net — see `invoicing`'s header — so it
+  // is sized to stay visible without inverting the aging.
+  const PARTIAL = 1200, ON_ACCOUNT = 400;
   const controlTotal = round2(PARTIAL + cash + shortPay + ON_ACCOUNT);
 
   // --- Batch 1: POSTED, current month, the working batch that pays real invoices.
@@ -1660,7 +1697,13 @@ async function receivables(env: Env, cust: Cust, inv: Invoices) {
   // The CREDIT MEMO applied against its own customer's open invoice.
   const creditOpen = Math.abs(await totalOf(inv.credit.id));
   const target31Open = await openBalanceOf(inv.inv31.id);
-  const creditApply = round2(Math.min(creditOpen, target31Open));
+  // PARTIAL on purpose, two reasons. A fully-applied credit zeroes its target invoice, and that
+  // invoice is the only one sitting in the 31–60 aging bucket — applying the whole credit empties
+  // that bucket off the report. Applying part of it leaves a real balance there AND leaves the
+  // credit itself partly unapplied, which is the more instructive state anyway: the credit memo
+  // shows a remaining balance the operator can still spend. (Net is unmoved either way — an
+  // application reduces the open invoice and the unapplied credit equally.)
+  const creditApply = round2(Math.min(creditOpen, target31Open, 400));
   if (creditApply > 0) {
     // `applyCredit` takes a plain typed object (a real `number`), not a zod-parsed decimal string
     // like `applyPayment`'s lines — the two argument shapes genuinely differ.
@@ -1683,14 +1726,14 @@ async function receivables(env: Env, cust: Cust, inv: Invoices) {
   // --- Batch 2: OPEN (never posted), current month. The manual's "unposted deposit" example.
   // Dated in the CURRENT month deliberately — see this section's header.
   const openBatch = await createBatch({
-    depositDate: TODAY_STR, controlTotal: "4200.00", notes: "Friday deposit — not yet posted",
+    depositDate: TODAY_STR, controlTotal: "1250.00", notes: "Friday deposit — not yet posted",
   });
   await addPayment(openBatch.id, {
-    customerId: cust.midst, paymentTypeId: env.ptCheck, amount: "3100.00",
+    customerId: cust.midst, paymentTypeId: env.ptCheck, amount: "850.00",
     reference: "CHK 100512", receivedDate: TODAY_STR,
   });
   await addPayment(openBatch.id, {
-    customerId: cust.titan, paymentTypeId: env.ptCheck, amount: "1100.00",
+    customerId: cust.titan, paymentTypeId: env.ptCheck, amount: "400.00",
     reference: "CHK 44120", receivedDate: TODAY_STR,
   });
 

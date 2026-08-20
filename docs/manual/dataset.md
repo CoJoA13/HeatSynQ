@@ -56,7 +56,7 @@ re-derived. There is deliberately no override flag.
 
 ## What it contains
 
-Order numbers 1000–1045, shippers 1000–1023, quotes 1000–1004. Closed period: 2026-07.
+Order numbers 1000–1049, shippers 1000–1027, quotes 1000–1004. Closed period: 2026-07.
 
 ### Customers
 
@@ -96,11 +96,13 @@ Order numbers 1000–1045, shippers 1000–1023, quotes 1000–1004. Closed peri
 | Status | Count |
 |---|---|
 | OPEN | 22 |
-| SHIPPED | 11 |
-| INVOICED | 8 |
+| INVOICED | 15 |
+| SHIPPED | 8 |
 | PARTIAL_SHIPPED | 3 |
 | REOPENED | 1 |
 | *voided (soft-deleted)* | 1 |
+
+50 orders in total.
 
 **`OrderStatus` has no `VOIDED` member.** The five values above are the whole enum. Voiding an order
 is a **soft delete** — `deletedAt` is set, the order keeps its number, stays readable, and renders
@@ -112,7 +114,7 @@ when the order carries a **finalized invoice**. The dataset builds that pair del
 1013 is shipped, invoiced, finalized, and then its shipment reversed. A reversal is a live
 negative-quantity shipment that never voids the original, so both pieces of paper stay readable.
 
-Supporting rows: 47 order lines (9 quote-linked), 89 auto-split loads, 6 serials, 2 container rows,
+Supporting rows: 51 order lines (9 quote-linked), 93 auto-split loads, 6 serials, 2 container rows,
 1 charge. Received dates span ~165 days, so the backlog's received-month slices, the traffic-light
 colouring and the turnaround measure all have a real distribution.
 
@@ -134,13 +136,13 @@ on a CLOSED quote. The won quote's line is linked to an order line, priced throu
 
 | | Count |
 |---|---|
-| Shipper (live) | 23 |
+| Shipper (live) | 27 |
 | — multi-order (one shipment, two orders) | 1 |
 | — voided | 1 |
 | — reversal | 1 |
 | — BOL printed | 1 |
 | ShipperLine / ShipperContainer / ShipperSerial | 25 / 1 / 6 |
-| Cert — ORDER / LOAD / SHIPMENT scope | 8 / 2 / 3 |
+| Cert — ORDER / LOAD / SHIPMENT scope | 10 / 2 / 3 |
 | — printed | 1 |
 | CertRequirement / CertReading | 23 / 7 |
 
@@ -150,12 +152,13 @@ Cert states: pending (requirements seeded, no readings), results entered, and pr
 
 | | Count |
 |---|---|
-| Invoice — FINALIZED | 9 |
+| Invoice — FINALIZED | 16 |
 | Invoice — DRAFT | 1 |
-| Credit memo — FINALIZED | 1 |
-| InvoiceLine | 71 |
+| Credit memo — FINALIZED | 1 (partly applied) |
+| InvoiceLine | 114 |
 | — MANUAL override | 1 |
-| — TAX / SURCHARGE / FREIGHT | 11 / 27 / 4 |
+| — PART / OPERATION / SURCHARGE | 18 / 25 / 44 |
+| — FREIGHT / CERT / TAX | 4 / 6 / 17 |
 
 Also present: one invoice **unlocked and re-finalized**, and one carrying a **manual override line**
 that survives a subsequent `recalculateInvoice` (the #61 rule — a manual line is an override that
@@ -176,15 +179,66 @@ Includes a settling payment that **takes the 2% early-pay discount**, a short pa
 written off** in the same act, a **standalone bad-debt write-off** left live so the manual can show
 the flagged row and its Void control, and on-account cash.
 
-Aging, as of the build date — all five buckets populated:
+Aging, as of the build date — all five buckets populated, and **every customer shows a positive
+Net**:
 
-| Bucket | Invoices | Open |
-|---|---|---|
-| current | 4 | 7,711.37 |
-| 1–30 | 2 | 4,587.09 |
-| 31–60 | 1 | 834.96 |
-| 61–90 | 1 | 1,416.68 |
-| 90+ | 1 | 2,953.52 |
+| Bucket | Open |
+|---|---|
+| current | 14,635.96 |
+| 1–30 | 6,595.19 |
+| 31–60 | 434.96 |
+| 61–90 | 1,416.68 |
+| 90+ | 1,753.52 |
+| **Total receivables** | **24,836.31** |
+| less unapplied cash | 11,334.96 |
+| **Net** | **+13,501.35** |
+
+The balance of those two figures is deliberate and was tuned, because it is easy to get wrong in a
+way that is arithmetically perfect and pedagogically backwards. **Net = bucketed receivables −
+unapplied cash**, so a seed that creates more cash than invoiced work shows every customer with a
+*negative* net — a shop that owes its customers money — on one of the manual's most-read screens.
+
+The fix is **not** to apply more of the cash. An application reduces the open invoice and the
+unapplied cash by the same amount, so Net does not move at all. The only two levers are more
+invoiced work and less cash, and the seed uses both: seven shipped-complete orders are billed in the
+current month, and the on-account payments are sized modestly. Receivables now cover unapplied cash
+about 2.2×, with enough still on account that the concept — and the trap in #159 — stay
+demonstrable.
+
+Per customer:
+
+| | Receivables | Unapplied | Net |
+|---|---|---|---|
+| AERO-MW | 2,667.87 | 2,500.00 | +167.87 |
+| AERO-SE | 4,637.25 | 0.00 | +4,637.25 |
+| HARB | 1,180.46 | 834.96 | +345.50 |
+| MIDST | 6,360.89 | 3,600.00 | +2,760.89 |
+| TITAN | 4,901.99 | 2,900.00 | +2,001.99 |
+| VALLEY | 5,087.85 | 1,500.00 | +3,587.85 |
+
+### Month end — use August's preview as the teaching figure
+
+July is closed and structurally cash-only (see the limits section). The better illustration is the
+**current month's preliminary report**, where every line is populated:
+
+| | |
+|---|---|
+| Beginning A/R | −6,750.00 |
+| Invoiced | 33,282.39 |
+| Credits | 834.96 |
+| Payments | 10,353.49 |
+| Discounts | 50.42 |
+| Write-offs | 542.17 |
+| Ending A/R | 14,751.35 |
+| Aging ending A/R | 13,501.35 |
+| **Variance** | **1,250.00** |
+
+The variance is **not** a fault, and the screen says so itself: *"1 open receipt batch dated in this
+month is not yet posted."* That is the OPEN batch, left deliberately unposted — it makes the preview
+teach the reconciliation rather than just show a clean zero. Do not post it while capturing.
+
+The negative beginning A/R is July's ending balance: on-account cash and no invoices, for the reason
+given below.
 
 ### Admin, documents, audit
 
@@ -198,7 +252,7 @@ Aging, as of the build date — all five buckets populated:
 | CustomerTemplateAssignment | 3 |
 | StoredDocument | 18 across **all 8 kinds** |
 | Backup archive | 1 (integrity-verified, health green) |
-| AuditLog | 466 |
+| AuditLog | 501 |
 
 The four extra roles carry genuinely different permission sets, not graded copies of one another —
 Office Clerk holds no special actions at all, Shipping Lead holds the shop-floor ones and nothing
@@ -286,7 +340,7 @@ prior-month payments are on account permanently. `applyPayment` uses the payment
 the application's `appliedDate`, and `assertPeriodOpen` refuses an application dated into a closed
 month — so once the month closes, that cash cannot be applied to anything, ever, without reopening
 the period. Worth stating explicitly in the manual's receivables chapter, because a clerk will hit
-it.
+it. Filed as **#159** (owner decision pending).
 
 ---
 
