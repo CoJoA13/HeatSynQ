@@ -6,7 +6,10 @@ import { runWithContext } from "@/server/context";
 import { finalizeInvoice } from "@/server/invoices";
 import { createBatch, addPayment, postBatch } from "@/server/receipts";
 import { parseDateOnly, todayDateOnly } from "@/lib/business-days";
-import { assertPeriodOpen, closedPeriodFor, lockMonth } from "@/server/period-locks";
+import {
+  assertPeriodOpen, closedMonthsForDisplay, closedPeriodFor, lockMonth, monthKey, periodLabel,
+} from "@/server/period-locks";
+import type { Prisma } from "../prisma/generated/prisma/client";
 
 const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
@@ -103,6 +106,104 @@ it("finalizes normally when the finalize month (today) is open, even though a DI
   await closeMonth(2020, 1); // a clearly different (past) month is closed — today's month stays open
   const done = await asSystem(() => finalizeInvoice(invoiceId));
   expect(done.status).toBe("FINALIZED");
+});
+
+// ---------------------------------------------------------------------------------------------
+// #157: `closedMonthsForDisplay` — the LOCK-FREE sibling. Three properties are pinned here, and the
+// third is the one that matters for safety: the lock-free read must not have quietly become the way
+// `assertPeriodOpen` answers its question.
+// ---------------------------------------------------------------------------------------------
+
+describe("closedMonthsForDisplay — the display read (#157)", () => {
+  it("returns only CLOSED months among the dates asked about, keyed by monthKey", async () => {
+    await closeMonth(2026, 7);
+    await closeMonth(2026, 5);          // closed, but never asked about below
+    const reopened = await closeMonth(2026, 6);
+    await prisma.closePeriod.update({ where: { id: reopened.id }, data: { status: "REOPENED" } });
+
+    const closed = await closedMonthsForDisplay(prisma, [
+      new Date("2026-06-15"), // REOPENED — open again (§4.1)
+      new Date("2026-07-01"), // CLOSED
+      new Date("2026-08-31"), // no row at all
+    ]);
+    expect([...closed.keys()]).toEqual([monthKey(new Date("2026-07-15"))]);
+    expect(closed.get(202607)).toMatchObject({ year: 2026, month: 7 });
+    expect(closed.has(202605)).toBe(false); // a closed month nobody asked about is not volunteered
+  });
+
+  it("answers an empty date list without touching the database", async () => {
+    // `finalizedInvoicesFor`'s "without touching the database" pin: a client that would throw on any
+    // access proves the early return is real and not merely fast.
+    const explodes = new Proxy({}, { get() { throw new Error("queried the database"); } });
+    expect(await closedMonthsForDisplay(explodes as Prisma.TransactionClient, [])).toEqual(new Map());
+  });
+
+  it("issues ONE query for the DISTINCT months, however many dates it is handed", async () => {
+    // The retention branch runs inside a loop over invoices; one query per row is the shape this
+    // exists to avoid, and only a call recorder can see the difference.
+    const calls: unknown[] = [];
+    const recorder = {
+      closePeriod: {
+        findMany: async (args: unknown) => { calls.push(args); return []; },
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await closedMonthsForDisplay(recorder, [
+      new Date("2026-07-01"), new Date("2026-07-15"), new Date("2026-07-31"), // one month
+      new Date("2026-08-02"),
+      new Date("2025-12-31"),
+    ]);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as { where: { OR: unknown[] } }).where.OR).toEqual([
+      { year: 2026, month: 7 }, { year: 2026, month: 8 }, { year: 2025, month: 12 },
+    ]);
+  });
+
+  it("labels a month the way the refusal does", () => {
+    expect(periodLabel({ year: 2026, month: 8 })).toBe("2026-08");
+  });
+
+  // THE SAFETY PIN. `closedMonthsForDisplay` must take no month lock (so a customer page cannot be
+  // serialized behind a running close), and `assertPeriodOpen` must still take one (so the period
+  // lock's standing invariant survives). Both halves in ONE test, against a held lock, because the
+  // pair is the property — a lock-free guard is the failure this file exists to prevent.
+  //
+  // RED-VERIFIED both ways: adding `await lockMonth(db, …)` to `closedMonthsForDisplay` hangs the
+  // display half; routing `assertPeriodOpen` at `closedMonthsForDisplay` instead of
+  // `closedPeriodFor` makes `guardBlockedWhileHeld` read false.
+  it("takes NO month lock, while assertPeriodOpen still does", async () => {
+    let hasLock!: () => void;
+    const locked = new Promise<void>((r) => { hasLock = r; });
+    let release!: () => void;
+    const mayRelease = new Promise<void>((r) => { release = r; });
+
+    const holder = prisma.$transaction(async (tx) => {
+      await lockMonth(tx, 2026, 7);
+      hasLock();
+      await mayRelease;
+    }, { timeout: 15000 });
+    await locked;
+
+    // The display read completes while the month lock is held by someone else.
+    const displayed = await closedMonthsForDisplay(prisma, [new Date("2026-07-15")]);
+    expect(displayed.size).toBe(0); // nothing closed — and, crucially, it answered at all
+
+    // The GUARD does not: it blocks on the same lock until the holder commits.
+    let guardDone = false;
+    const guard = prisma.$transaction(async (tx) => {
+      await assertPeriodOpen(tx, new Date("2026-07-15"));
+      guardDone = true;
+    }, { timeout: 15000 });
+    await new Promise((r) => setTimeout(r, 200));
+    const guardBlockedWhileHeld = !guardDone;
+
+    release();
+    await holder;
+    await guard;
+
+    expect(guardBlockedWhileHeld).toBe(true);
+    expect(guardDone).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

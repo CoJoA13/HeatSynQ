@@ -11,6 +11,7 @@ import {
 import {
   finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage,
   hasReceivableActivity, hasReceivableActivityForOrder,
+  writeOffVoidHint, writeOffVoidHintForOrder,
 } from "@/server/invoice-guards";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -275,6 +276,80 @@ describe("hasReceivableActivityForOrder", () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// #157: the hint is a function of the write-off's own period, not a constant. The three services'
+// end-to-end wording is pinned in tests/write-offs.test.ts; what is pinned HERE is the scoping —
+// each form must see exactly the rows its sibling guard sees, and nothing else.
+// ---------------------------------------------------------------------------------------------
+
+describe("writeOffVoidHint / writeOffVoidHintForOrder", () => {
+  const OPEN_ROUTE = " (a bad-debt write-off is voided from the customer's Receivables section)";
+  const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => writeOffVoidHint(tx, invoiceId));
+  const forOrder = (orderId: string) => prisma.$transaction((tx) => writeOffVoidHintForOrder(tx, orderId));
+
+  async function standaloneWriteOff(invoiceId: string, dateStr: string) {
+    return prisma.application.create({
+      data: {
+        invoiceId, amount: "50.00", type: "WRITE_OFF", paymentId: null,
+        appliedDate: new Date(`${dateStr}T00:00:00.000Z`),
+      },
+    });
+  }
+
+  async function closedMonth(year: number, month: number) {
+    return prisma.closePeriod.create({
+      data: { year, month, beginningAr: 0, invoicedTotal: 0, creditTotal: 0, paymentTotal: 0,
+        discountTotal: 0, writeOffTotal: 0, endingAr: 0, agingEndingAr: 0 },
+    });
+  }
+
+  it("is today's sentence with no write-off at all, and with one in an open month", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
+    expect(await forOrder(order.id)).toBe(OPEN_ROUTE);
+
+    await standaloneWriteOff(inv.id, "2026-08-08");
+    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
+    expect(await forOrder(order.id)).toBe(OPEN_ROUTE);
+  });
+
+  it("names the closed period once the write-off's own month is closed", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    await standaloneWriteOff(inv.id, "2026-08-08");
+    await closedMonth(2026, 8);
+
+    const expected = " (a bad-debt write-off is voided from the customer's Receivables section, "
+      + "but period 2026-08 is closed — reopen it first)";
+    expect(await forInvoice(inv.id)).toBe(expected);
+    expect(await forOrder(order.id)).toBe(expected); // the order form reaches through invoice.orderId
+  });
+
+  it("ignores a VOIDED write-off — a soft-deleted row is not a route out of anything", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    const app = await standaloneWriteOff(inv.id, "2026-08-08");
+    await closedMonth(2026, 8);
+    await prisma.application.update({ where: { id: app.id }, data: { deletedAt: new Date() } });
+    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
+  });
+
+  it("scopes to the invoice / the order asked about", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    const other = await orderFor(customer);
+    const otherInv = await finalizedInvoice(other.id, customer.id);
+    await standaloneWriteOff(otherInv.id, "2026-08-08");
+    await closedMonth(2026, 8);
+
+    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);        // another invoice's is not this one's
+    expect(await forOrder(order.id)).toBe(OPEN_ROUTE);        // nor another order's
+    expect(await forInvoice(otherInv.id)).toMatch(/2026-08/);
+    expect(await forOrder(other.id)).toMatch(/2026-08/);
+  });
+});
+
 describe("invoiceBlockMessage", () => {
   it("names the action, the invoice and the page that unlocks it", () => {
     const msg = invoiceBlockMessage(
@@ -483,6 +558,11 @@ describe("invoice-guards — the module is a leaf", () => {
     for (const forbidden of ["./orders", "./shippers", "./invoices"]) {
       expect(imports).not.toContain(forbidden);
     }
+    // An ALLOWLIST, not just three names (#157 added the first non-type import). `./period-locks` is
+    // itself a leaf — `type Prisma` plus the `HttpError` leaf, and nothing from here or any service
+    // — so the edge adds no cycle; anything ELSE arriving here must be a deliberate decision, not a
+    // convenience import that quietly drags a service graph behind this file.
+    expect(imports.sort()).toEqual(["../../prisma/generated/prisma/client", "./period-locks"]);
     // Static `import … from "…"` is one way in; `require(…)` and dynamic `import(…)` are the
     // others, and either would reintroduce the cycle this module exists to prevent.
     expect(/\brequire\s*\(/.test(src)).toBe(false);

@@ -7,7 +7,7 @@ import { auditedCreate, auditedSoftDelete } from "./audit";
 import { decimalField } from "./decimal-field";
 import { claimOrder, claimOrdersInOrder, sortedClaimIds } from "./order-locks";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "./ar-balances";
-import { assertPeriodOpen } from "./period-locks";
+import { assertPeriodOpen, closedMonthsForDisplay, monthKey } from "./period-locks";
 import { getSetting } from "./settings";
 import { addDays, formatDateOnly, todayDateOnly } from "../lib/business-days";
 import { invoiceDocumentNumber } from "../lib/invoice-constants";
@@ -328,6 +328,15 @@ export async function openInvoicesForCustomer(customerId: string): Promise<OpenI
  * route out of itself). The retained row's `open` is ZERO, so it contributes nothing to the sum and
  * #83's reconciliation invariant is untouched.
  *
+ * **And the retention is BOUNDED by the write-off's own period (#157, owner ruling 2026-08-19,
+ * option b).** `voidApplication` guards `assertPeriodOpen(live.appliedDate)` and `writeOffInvoice`
+ * dates a write-off at `todayDateOnly()`, so the undo this row anchors dies the moment the
+ * WRITE-OFF's month closes — correcting it then needs a reopen anyway, which is not a route this
+ * table offers. Past that point the row is clutter with no purpose, so it drops out like any other
+ * settled invoice. The bound is on the write-off's `appliedDate`, never the invoice's own date: they
+ * are routinely different months, and it is the void guard's date that decides whether the undo
+ * still works.
+ *
  * Scoped to null-payment write-offs on purpose: a RESIDUAL write-off (one sourced from a payment)
  * is already reachable from its receipt batch, so retaining those too would park every invoice ever
  * settled with a residual in a table headed "Open items" forever, to duplicate a control that
@@ -364,6 +373,12 @@ export type OpenItemWriteOff = {
   appliedDate: string;
   reason: string | null;
 };
+
+/** The write-off flavor this surface is about: no payment behind it, so no receipt batch can reach
+ *  it. Stated once — the retention decision and the `writeOffs` it exposes must pick out the SAME
+ *  rows, and a second inline copy of the predicate is how those two drift. */
+const isStandaloneWriteOff = (a: { type: string; paymentId: string | null }): boolean =>
+  a.type === "WRITE_OFF" && a.paymentId === null;
 
 export async function openItemsForCustomer(
   customerId: string, db: Prisma.TransactionClient = prisma, asOfDate: Date = todayDateOnly(),
@@ -408,20 +423,41 @@ export async function openItemsForCustomer(
     orderBy: [{ invoiceDate: "asc" }, { id: "asc" }],
   });
 
+  // #157's retention bound, read ONCE for every candidate rather than per invoice inside the loop
+  // below. `closedMonthsForDisplay` is the LOCK-FREE sibling of `assertPeriodOpen`'s read and may
+  // never guard a write: this runs on a page view, and `closedPeriodFor`'s per-month advisory lock
+  // would serialize every render of this section against a running close.
+  //
+  // LIVE, NOT POINT-IN-TIME — the one deliberate asymmetry in this function, since every filter
+  // above is cut at `asOfDate`. `ClosePeriod` records no history to reconstruct "was August closed
+  // as of June" from, and the question retention answers — *can I still undo this?* — is a NOW
+  // question, not an as-of one. An `asOfDate` cut here would be inventing an answer, and a
+  // back-dated read would offer an undo the void guard refuses this instant.
+  const closedWriteOffMonths = await closedMonthsForDisplay(db, invoices.flatMap((inv) =>
+    inv.kind === "INVOICE"
+      ? inv.applications.filter(isStandaloneWriteOff).map((a) => a.appliedDate)
+      : []));
+
   const items: CustomerOpenItem[] = [];
   for (const inv of invoices) {
     const total = inv.total.toNumber();
     if (inv.kind === "INVOICE") {
       const open = invoiceOpenBalance(total, inv.applications.map(toLite));
-      const writeOffs: OpenItemWriteOff[] = inv.applications
-        .filter((a) => a.type === "WRITE_OFF" && a.paymentId === null)
-        .map((a) => ({
-          id: a.id, amount: a.amount.toNumber(),
-          appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
-        }));
-      // Settled AND never standalone-written-off — not an open item, and nothing here to undo.
-      // A written-off invoice is retained at zero instead (#77; see the header block).
-      if (cents(open) <= 0 && writeOffs.length === 0) continue;
+      const standalone = inv.applications.filter(isStandaloneWriteOff);
+      const writeOffs: OpenItemWriteOff[] = standalone.map((a) => ({
+        id: a.id, amount: a.amount.toNumber(),
+        appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
+      }));
+      // ANY of them, never `[0]`: an invoice can carry several standalone write-offs in DIFFERENT
+      // months, and the row is worth keeping while even one of them is still voidable — that one is
+      // the route out. Do not "simplify" this to the first write-off.
+      const stillVoidable = standalone.some((a) => !closedWriteOffMonths.has(monthKey(a.appliedDate)));
+      // Settled, with no write-off left that can still be undone — not an open item, and nothing
+      // here to undo. A written-off invoice is retained at zero instead while its undo lives (#77,
+      // bounded by #157; see the header block). `writeOffs` still lists the closed-month siblings of
+      // a retained row: they are part of why it reads the way it does, and their Void refuses with
+      // `assertPeriodOpen`'s message, which names the month to reopen — a true route, not a dead end.
+      if (cents(open) <= 0 && !stillVoidable) continue;
       items.push({
         kind: "INVOICE", id: inv.id,
         documentNumber: invoiceDocumentNumber("INVOICE", null, inv.order.orderNumber, prefix),

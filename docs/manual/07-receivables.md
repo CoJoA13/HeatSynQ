@@ -169,11 +169,17 @@ The two differ in one way that matters at month end:
 Both need the month to be open, and neither counts toward settling an invoice for discount purposes
 — absorbing a short payment is the opposite of being paid early.
 
-**A fully written-off invoice stays on the list.** It does not disappear at zero. It stays in the
-customer's open items carrying an amber **Written off** badge, and expands to show each write-off
-— *"Written off 412.60 · on 2026-08-12 — customer in receivership"* — each with its own **Void**
-control. That control is the only way to undo a write-off keyed by mistake, which is exactly why the
-row is kept: an invoice that vanished at zero would be uncorrectable.
+**A fully written-off invoice stays on the list — while the write-off can still be undone.** It does
+not disappear at zero. It stays in the customer's open items carrying an amber **Written off** badge,
+and expands to show each write-off — *"Written off 412.60 · on 2026-08-12 — customer in
+receivership"* — each with its own **Void** control. That control is the only way to undo a write-off
+keyed by mistake, which is exactly why the row is kept: an invoice that vanished at zero would be
+uncorrectable.
+
+Once the month the write-off is dated in closes, the row drops off the list like any other settled
+invoice. Nothing is lost by that: **Void** would be refused in a closed month anyway, so correcting
+the write-off needs the month reopened first, and a row that advertises an undo it can no longer
+perform is worse than no row. Reopen the month and it comes back.
 
 Voiding one warns you what will happen — *"The invoice's open balance comes back."* — and requires a
 reason.

@@ -10,6 +10,11 @@
 // anywhere without dragging a service graph behind it — the import-shape test in
 // tests/invoice-guards.test.ts pins it.
 import type { Prisma } from "../../prisma/generated/prisma/client";
+// The ONE non-type import, and a leaf-to-leaf edge: period-locks.ts imports only `type Prisma` and
+// the `HttpError` leaf, and imports nothing from here or from any service, so this adds no cycle.
+// `closedMonthsForDisplay` is the LOCK-FREE read — see its docblock; nothing in this file guards a
+// write with it.
+import { closedMonthsForDisplay, periodLabel } from "./period-locks";
 
 export type FinalizedInvoice = { id: string; orderId: string; orderNumber: number };
 
@@ -98,12 +103,82 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
  * batches to void a payment that does not exist. `BatchDetail` lists applications per PAYMENT, so
  * the only screen that can reach this one is the customer's Receivables section.
  *
- * Shared as ONE constant rather than repeated in three services, because the three sentences must
- * keep naming the same destination: if the void surface ever moves, this is the single line that
- * has to move with it.
+ * Stated once rather than repeated in three services, because the three sentences must keep naming
+ * the same destination: if the void surface ever moves, this is the single line that has to move
+ * with it.
+ *
+ * **MODULE-PRIVATE since #157, deliberately.** The destination is no longer unconditional — a
+ * write-off whose own month has closed cannot be voided there at all — so every refusal site now
+ * goes through `writeOffVoidHint` / `writeOffVoidHintForOrder` below, which return exactly this
+ * sentence in the ordinary case and widen it only when the route really is blocked. Un-exporting it
+ * is what makes "append the unconditional sentence" un-typeable rather than merely discouraged.
  */
-export const WRITE_OFF_VOID_HINT =
-  " (a bad-debt write-off is voided from the customer's Receivables section)";
+const WRITE_OFF_VOID_ROUTE = "a bad-debt write-off is voided from the customer's Receivables section";
+const WRITE_OFF_VOID_HINT = ` (${WRITE_OFF_VOID_ROUTE})`;
+
+/** The rows the hint is about: LIVE, standalone (null-payment) write-offs. A residual write-off is
+ *  voided from its receipt batch, where no period wording of ours applies, so it is not in scope. */
+const LIVE_STANDALONE_WRITE_OFF = { deletedAt: null, type: "WRITE_OFF", paymentId: null } as const;
+
+/**
+ * The §5.14 hazard #157 made worse, and the reason this is a function and not a constant.
+ *
+ * `voidApplication` guards `assertPeriodOpen(appliedDate)`, so the Receivables section this sentence
+ * names refuses a write-off whose own month has closed — and the REACHABLE case is ordinary, not
+ * exotic: `unlockInvoice` guards the invoice's `finalizedAt` while a write-off is dated at its own
+ * creation, so a July-finalized invoice with an August write-off in a closed August passes unlock's
+ * period guard, gets refused for the write-off, and sends the operator to a screen that refuses them
+ * again. Since #157 the row is not even listed there.
+ *
+ * So the sentence names the route that ACTUALLY exists. Unchanged — byte for byte — while every
+ * standalone write-off in scope is still voidable (the common case, and the one the three services'
+ * existing messages and tests pin); widened to name the closed month, and the reopen, only when at
+ * least one is not. Appending "or reopen the period" unconditionally would be cheaper and is the
+ * wrong trade: it points the common case at a heavyweight month reopen it does not need, which is
+ * §5.14's other failure — naming the wrong route.
+ *
+ * Read on the CALLER'S OWN `tx`, under the claim it already holds, exactly like the guards above;
+ * the period read is `period-locks.ts`'s LOCK-FREE `closedMonthsForDisplay`, never `closedPeriodFor`
+ * — this decides WORDING, not whether a write may happen, and taking the month's advisory lock to
+ * phrase a refusal would serialize it against a running close for nothing. That import is the only
+ * one this module has beyond `type Prisma`, and `period-locks.ts` is itself a leaf that imports
+ * neither this file nor any service, so the edge adds no cycle.
+ */
+async function writeOffVoidHintFor(
+  tx: Prisma.TransactionClient, scope: Prisma.ApplicationWhereInput,
+): Promise<string> {
+  const rows = await tx.application.findMany({
+    where: { ...LIVE_STANDALONE_WRITE_OFF, ...scope }, select: { appliedDate: true },
+  });
+  // No standalone write-off in scope (a payment or a credit is what blocked): "every one of them is
+  // still voidable" holds vacuously, and the sentence stays as it reads today.
+  if (rows.length === 0) return WRITE_OFF_VOID_HINT;
+  const closed = await closedMonthsForDisplay(tx, rows.map((r) => r.appliedDate));
+  if (closed.size === 0) return WRITE_OFF_VOID_HINT;
+  // Ascending, and ALL of them — the `finalizedInvoicesFor` rule that a refusal must not change
+  // wording between identical attempts, plus the plain fact that naming one of two closed months
+  // would leave the operator to discover the second the hard way.
+  const months = [...closed.values()]
+    .sort((a, b) => a.year - b.year || a.month - b.month)
+    .map(periodLabel);
+  const one = months.length === 1;
+  return ` (${WRITE_OFF_VOID_ROUTE}, but ${one ? "period" : "periods"} ${months.join(", ")} `
+    + `${one ? "is" : "are"} closed — reopen ${one ? "it" : "them"} first)`;
+}
+
+/** Per-INVOICE, the `hasReceivableActivity` scope — `discardInvoice` and `unlockInvoice`. Only the
+ *  `invoiceId` arm: a write-off never carries a `creditInvoiceId`, so the credit arm cannot hold
+ *  one. */
+export function writeOffVoidHint(tx: Prisma.TransactionClient, invoiceId: string): Promise<string> {
+  return writeOffVoidHintFor(tx, { invoiceId });
+}
+
+/** Per-ORDER, the `hasReceivableActivityForOrder` scope — `voidOrder`, which blocks on any
+ *  invoice-family document on the order. A write-off names an INVOICE, so it reaches through that
+ *  relation; the credit arm of the guard contributes none. */
+export function writeOffVoidHintForOrder(tx: Prisma.TransactionClient, orderId: string): Promise<string> {
+  return writeOffVoidHintFor(tx, { invoice: { orderId } });
+}
 
 /**
  * Does this invoice carry LIVE accounts-receivable activity — a payment, early-pay discount, or

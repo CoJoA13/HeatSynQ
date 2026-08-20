@@ -26,6 +26,11 @@
 // at all. A mis-keyed bad debt was uncorrectable outside SQL. `openItemsForCustomer` now retains such
 // an invoice (at zero, carrying its `writeOffs`), and each one renders with a Void control: §5.14's
 // rule that a block must name a route out of itself, applied to an action instead of an error.
+//
+// That retention is BOUNDED (#157, owner ruling 2026-08-19): the server keeps the row only while the
+// write-off's own month is open, because `voidApplication` refuses once it closes and the row would
+// then be advertising an undo that no longer works. Nothing to do here — the row simply stops
+// arriving — but do not "restore" it in the client when a zero-balance invoice goes missing.
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
