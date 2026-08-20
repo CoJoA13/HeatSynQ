@@ -20,35 +20,46 @@ import type { Gate } from "@/lib/permission-ui";
  * and its 404 WAS the discovery mechanism. That cost one failed request per signature-less user on
  * every page load — the normal case for most of a shop's staff — which made a completely healthy
  * screen unable to pass any console/failed-request health gate (`npm run manual:capture`).
- * The `<img>` now renders only when there is something to fetch, and `onError` stays as the belt
- * for a race (a signature cleared in another tab between the list read and the image request).
+ * The `<img>` now renders only when there is something to fetch.
  *
- * **THIS COMPONENT KEEPS NO COPY OF "does a signature exist".** `hasSignature` is rendered
- * directly, and every change — a local upload, a local clear, the `<img>`'s 404 belt — is reported
- * up through `onSignatureChange` so the PAGE's row is the one and only truth. Local state here is
- * `error`, `busy` and the cache-busting `version`: things the server has no opinion about.
+ * **TWO KINDS OF EVENT, AND THEY MUST NOT BE CONFLATED** — this is the whole design, and it took
+ * five review rounds to see it:
  *
- * That shape was arrived at the hard way, and the history is the point (Phase-4 lesson 4 — when
- * three rounds land on one mechanism, the DESIGN is the finding). Three successive attempts to keep
- * a local `hasImage` in step with the prop were each wrong in a way the previous one could not see:
+ *   - A **MUTATION** (upload or clear succeeded). The server's answer changed. Reported up through
+ *     `onSignatureChange`; the PAGE's row is the one and only copy of "does a signature exist".
+ *     This component keeps none.
+ *   - A **RENDER FAILURE** (`<img> onError`). The server's answer did NOT change — this browser
+ *     could not display these bytes. Handled locally in `brokenSrc`, reported to nobody.
  *
- *   1. Seed once, never re-baseline. Justified with a keyed-remount hazard that is not reachable
- *      (a `${u.id}-${u.hasSignature}` key only remounts when the flag changes, so it would always
- *      re-seed FRESH). Wrong reason; and the rule itself missed every later server change.
- *   2. Seed once, "the page's flag is strictly behind us". True within one session only — another
- *      administrator's upload or clear makes the PROP the fresher value, and the pre-#160 code had
- *      been self-correcting that by accident, because it always rendered the `<img>` and let the
- *      404 tell it the truth. Removing that probe removed the correction with it.
- *   3. Adopt when the prop CHANGES (`lastSeen` compare). Misses a change that round-trips: upload
- *      locally (prop still `false`), another administrator clears, the list reloads `false` — equal
- *      to `lastSeen`, so nothing fires and a cached image shows indefinitely. The clear-then-upload
- *      inverse strands the placeholder the same way.
+ * The history, because each fix was correct about the defect in front of it and created the next
+ * (Phase-4 lesson 4: when successive rounds keep landing on one mechanism, the DESIGN is the
+ * finding):
  *
- * Every one of those is the same bug: two copies of one fact, reconciled by a rule. Deleting the
- * second copy deletes the class — there is no longer any state that CAN diverge, so none of the
- * three scenarios above is expressible. The page's `TitleCell` keyed-remount precedent is still not
- * copied, and now for a plain reason: a remount would also discard `error`, `busy` and `version`,
- * which are genuinely this component's own.
+ *   1. Seed a local `hasImage` once, never re-baseline — justified by a keyed-remount hazard that
+ *      is not even reachable, and blind to every later server change.
+ *   2. Seed once, "the page's flag is strictly behind us" — true within ONE session; another
+ *      administrator's upload or clear makes the prop the fresher value. (The pre-#160 code had
+ *      been self-correcting this by accident, by always rendering the `<img>` and letting the 404
+ *      speak. Removing that wasteful probe removed the correction with it.)
+ *   3. Adopt when the prop CHANGES — misses a change that ROUND-TRIPS: upload locally (prop still
+ *      `false`), another administrator clears, the list reloads `false`, equal to the last seen
+ *      value, so nothing fires and a cached image shows forever.
+ *   4. Lift the state away entirely — right, but the lifted write then sat outside the page's
+ *      `useLatest` load discipline and an in-flight list load could put the row back.
+ *   5. Reload after the write — right, but `onError` was still routed through the SAME callback, so
+ *      a genuinely undecodable image (upload validation checks magic bytes, not decodability) set
+ *      the row false, reloaded, got `true` back, remounted, errored again: an unbounded loop.
+ *
+ * 1–3 were one bug (two copies of a fact, reconciled by a rule). 4–5 were a second (one channel
+ * carrying two meanings). Splitting the channel is what finally makes both unrepresentable: a
+ * render failure cannot move server state, and a mutation cannot be undone by a stale read.
+ *
+ * `brokenSrc` is keyed to the exact URL that failed, not a boolean, so a new upload or a
+ * server-side change yields a new URL and retries BY CONSTRUCTION — there is no staleness rule
+ * here to get wrong, which is the mistake rounds 1–3 kept making.
+ *
+ * The page's `TitleCell` keyed-remount precedent is still not copied: a remount would discard
+ * `error`, `busy`, `version` and `brokenSrc`, all of which are genuinely this component's own.
  *
  * ONE residual, stated rather than hidden: `version` cache-busts only on a LOCAL upload, so if
  * another administrator REPLACES a signature (the flag stays `true` throughout), the browser may
@@ -66,10 +77,16 @@ export function UserSignatureControl(
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // NO local copy of "does a signature exist" — see the docblock. `hasSignature` is rendered
-  // directly and every change is reported up through `onSignatureChange`.
+  // directly and every MUTATION is reported up through `onSignatureChange`.
   const [version, setVersion] = useState(0); // cache-busts the <img> src after a local upload
+  // A RENDER failure, which is a different thing from a mutation and must not be reported up
+  // (Codex round 5 — doing so was an unbounded request loop; see the docblock). Keyed to the exact
+  // src that failed, so a new upload or a server-side change produces a new URL and retries by
+  // construction, with no comparison rule to get wrong.
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const path = `/api/admin/users/${userId}/signature`;
+  const src = `${path}?v=${version}`;
 
   async function readError(res: Response, fallback: string): Promise<never> {
     const body = await res.json().catch(() => ({}));
@@ -115,18 +132,25 @@ export function UserSignatureControl(
 
   return (
     <span className="flex items-center gap-2">
-      {hasSignature ? (
+      {!hasSignature ? (
+        <span className="text-xs text-slate-400">No signature</span>
+      ) : brokenSrc === src ? (
+        // The server HAS a signature; this browser could not render these bytes. Saying "No
+        // signature" here would be a lie, and Clear stays enabled because there is something to
+        // clear.
+        <span className="text-xs text-amber-700" title="The stored image could not be displayed.">
+          Preview unavailable
+        </span>
+      ) : (
         // A same-origin API byte stream, not a static asset next/image's optimizer has any
         // business rewriting.
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={`${path}?v=${version}`}
+          src={src}
           alt={`Signature for user ${userId}`}
-          onError={() => onSignatureChange(false)}
+          onError={() => setBrokenSrc(src)}
           className="h-8 w-20 rounded border bg-white object-contain"
         />
-      ) : (
-        <span className="text-xs text-slate-400">No signature</span>
       )}
       <input
         ref={fileInputRef}

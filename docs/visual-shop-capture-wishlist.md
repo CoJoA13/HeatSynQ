@@ -28,7 +28,7 @@ the **Billing menu**:
 | **A/R → A/R Batch Entry** | The cash-receipts batch (checks/cash/card/ACH) — the core of 5B (spec §7.6). | The batch header + a line; how check/card/ACH type is chosen; the live batch balance. |
 | **A/R → Apply Payments to A/R** | Applying a payment to invoices — the heart of A/R. | **Partial** application, **discount**, **write-off**, and **on-account / on-account credit** — spec §3 names all four; each is likely its own dialog/field. |
 | **A/R → Close the Batch** | Committing a batch. | The confirmation/summary before commit. |
-| **A/R → Finance Charges** | Finance-charge assessment run (plant rate + per-customer override; idempotent; printable — §7.6). | The run parameters and the per-invoice dispute/exempt handling. |
+| ~~**A/R → Finance Charges**~~ **HISTORICAL — do not capture** | ~~Finance-charge assessment run (plant rate + per-customer override; idempotent; printable — §7.6).~~ **Superseded by the #162 ruling (2026-08-19, spec §15): the finance charge is INFORMATIONAL — computed at statement print, shown as a figure the customer is not billed, never posted, never aged.** There is no assessment run, nothing is stored, and there is no dispute/exempt handling to mirror. | — Visual Shop's screens here would document a feature this project deliberately does not have; capturing them invites rebuilding it. |
 | **A/R → Statements** | Customer statements (a document type, §10). | The statement layout/preview and its selection criteria. |
 | **A/R → Aging / Summaries** (submenu, **run it**) | We only have the *warning*; 5B builds aging-with-cutoff. | The actual aging output with the as-of/cutoff parameter dialog. |
 | **A/R → Payment Report** / **Credit / On Account Report** | A/R read models 5B will mirror. | — |
