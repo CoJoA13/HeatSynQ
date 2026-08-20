@@ -118,7 +118,7 @@ Every invoice line names its source (quote #, part price, manual). **Surcharges*
 
 - Create-from-shipments in bulk with configurable grouping (per shipper / per order / per PO); manual invoices and credits; credits derived from invoices (sign handled).
 - Lifecycle: draft → **finalized** (numbered, locked, posts to A/R) → paid. Unlock = permissioned, audited action.
-- **Finance charges**: plant rate + per-customer override; per-invoice dispute/exempt; idempotent run (re-running cannot duplicate); printable.
+- **Finance charges**: plant rate + per-customer override; **informational only** — computed at statement print, printed on the statement as a figure the customer is not being billed (and excluded from Total Due), never posted, never aged. There is no run and nothing is stored, so nothing can duplicate; collecting interest means raising a real invoice. (Ratifies P5B §3 ruling 9 and P5C §3 ruling 4; owner ruling 2026-08-19 on #162, which removed this line's earlier promise of a per-invoice dispute/exempt and an idempotent run.)
 - A/R: batches (check/card/ACH); apply with partials, discounts, write-offs, on-account credits; batch balance shown live; aging with cutoff; statements; **guided month-end close** showing invoiced / paid / ending A/R side-by-side with the close record saved.
 - **QBO export**: summary journal entries (GL, date, amount) — detail stays in the ERP. Via QBO API connection or downloadable file (bookkeeper's choice). Idempotent — once marked sent, can never double-post. GL sourced from operations, surcharges, payment types, plus plant-level defaults.
 
@@ -163,13 +163,13 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 
 - Order entry **autosaves drafts** — a crash or closed tab loses nothing.
 - Inline validation while typing; save-time errors are specific and field-anchored.
-- All multi-step operations (invoice creation run, finance-charge run, QBO export) are **idempotent** — re-running or double-clicking cannot duplicate.
+- All multi-step operations (invoice creation run, QBO export) are **idempotent** — re-running or double-clicking cannot duplicate. (The finance-charge run was struck here on #162: finance charges are informational, computed at print and never stored, so there is no run and nothing that could duplicate — §7.6.)
 - No repair tools by design: void/unlock/reverse paths with audit cover every correction scenario identified in Visual Shop's documentation (Fix Invoices, AR Utilities, MOS corrections, purges).
 - Reads never mutate (no report side effects — a Visual Shop defect class explicitly designed out).
 
 ## 13. Testing and parallel-run acceptance
 
-- **TDD throughout**: every business rule in §7 (pricing resolution, load math, status transitions, ship-line-complete, payment application, FC idempotency, export idempotency, permission checks) gets automated tests written before implementation.
+- **TDD throughout**: every business rule in §7 (pricing resolution, load math, status transitions, ship-line-complete, payment application, the finance charge's exclusion from Total Due, export idempotency, permission checks) gets automated tests written before implementation.
 - Seeded demo data for the practice database.
 - **Parallel run**: real work entered in both systems for an owner-chosen period; a built-in **comparison page** (orders entered, shipped, invoiced dollars by date range) checked weekly against Visual Shop's reports.
 - **Acceptance criterion: one full month closed in the new system — A/R aging and the QuickBooks summary export agreeing with the books — before any cutover conversation.** Visual Shop remains system of record throughout.
@@ -177,7 +177,7 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 ## 14. Open items (inputs needed during implementation, none blocking design)
 
 1. **Samples of the current printed traveler, shipper, cert, and invoice** (owner to drop scans/PDFs into the project folder) — drives default template layouts and the cert field set (heat/lot numbers on serials, etc.).
-2. **Finance-charge treatment in the QBO export** — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely; confirm desired behavior).
+2. ~~**Finance-charge treatment in the QBO export** — settle with the bookkeeper (Visual Shop excludes FC from GL export entirely; confirm desired behavior).~~ **RESOLVED 2026-08-19 (§15, issue #162): finance charges are informational and post NOTHING**, so there is nothing to treat in the export — the same answer Visual Shop reached. Collecting interest means raising a real invoice, which posts as any other invoice does. Do not reopen this during acceptance work.
 3. **Go-to report list** — which reports the office actually runs today.
 4. **GL account list** for operations, surcharges, payment types, and plant defaults.
 5. Confirm no shipping-label printing is needed (not selected; assumed out).

@@ -506,9 +506,13 @@ function StatementsScreen() {
             <input type="checkbox" checked={combineFamily} onChange={(e) => setCombineFamily(e.target.checked)} />
             Combine family
           </label>
+          {/* #162 — "Assess" means TO LEVY in every accounting context, and this ticks nothing of
+              the sort: the figure is computed, printed, and excluded from Total Due (owner ruling
+              2026-08-19, informational). The API field keeps its name (`assessFinanceCharges`, a
+              wire contract); only what the operator reads changes. */}
           <label className="flex items-center gap-1">
             <input type="checkbox" checked={assessFinanceCharges} onChange={(e) => setAssessFinanceCharges(e.target.checked)} />
-            Assess finance charges
+            Show finance charge (not billed)
           </label>
           {/* A family head printed UN-combined is the per-division choice, and it prints one
               statement per member (#85). Every other case — a division, a standalone customer, or
@@ -595,9 +599,14 @@ function StatementsScreen() {
                 </table>
               )}
 
+              {/* #162 — the preview has to read exactly like the paper, and the paper's own label
+                  (the statement contract's `finance_charge` default) now carries both facts: the
+                  figure is not billed, and the Total Due printed under it does not include it.
+                  Same reason it is not simply moved BELOW Total due here: the printed order is
+                  the template's, and the screen must mirror the print, not diverge from it. */}
               {preview.financeCharge !== null && (
                 <p className="mb-1 text-sm">
-                  Finance charge: <span className="font-medium">{preview.financeCharge.toFixed(2)}</span>
+                  Finance charge (not billed, not in total): <span className="font-medium">{preview.financeCharge.toFixed(2)}</span>
                 </p>
               )}
               <p className="text-sm">Total due: <span className="font-medium">{preview.totalDue.toFixed(2)}</span></p>

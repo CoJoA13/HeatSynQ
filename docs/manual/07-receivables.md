@@ -253,7 +253,7 @@ actually owe.
 | Control | What it does |
 |---|---|
 | **Combine family** | One statement covering a parent and all its divisions together |
-| **Assess finance charges** | Works out an interest figure and prints it on the statement |
+| **Show finance charge (not billed)** | Works out an interest figure and prints it on the statement — as information only; see below |
 
 For a parent customer with the family box unticked, the button changes to **Print per division** and
 produces one statement each — the parent and every division separately. **Run for everyone with a
@@ -266,7 +266,9 @@ which you meant.
 
 The **Preview** below shows exactly what will print: the aging strip across the buckets, then
 **Open items** — Document, Date, Due, Original, Open — then **Total due**. The open-item lines sum
-to the total, because credits and on-account cash are in the list as negatives.
+to the total, because credits and on-account cash are in the list as negatives. If the finance-charge
+box is ticked, a **Finance charge (not billed, not in total)** line appears above **Total due** on
+both the preview and the paper — that wording is the point, and the next paragraph explains it.
 
 Printed statements are listed under **Documents**. Re-opening one gives you the exact bytes that
 printed, unchanged.
@@ -276,14 +278,21 @@ printed, unchanged.
 > and the second statement will show the corrected figures. Both PDFs stay on file exactly as they
 > were sent, so you can always show a customer what they were actually given.
 
-> **The finance charge is printed, not charged.** Tick **Assess finance charges** and a **Finance
-> charge** figure is computed from past-due balances at a monthly rate — the customer's own
-> **Finance charge rate** if one is set, otherwise the plant default from Administration → Billing.
-> But it is **not added to Total due**, it is **not posted** to the customer's account, and it
-> **never ages**. It appears nowhere in the aging, the month-end schedule or the GL export, and it is
-> recalculated from scratch on every print. It is a line on a piece of paper. **If the shop genuinely
-> wants to collect interest, somebody must raise a real invoice for it.** The box is off by default,
-> so nothing appears unless it is deliberately ticked.
+> **The finance charge is shown, never billed — by design, not by omission.** Tick **Show finance
+> charge (not billed)** and a **Finance charge (not billed, not in total)** figure is computed from
+> past-due balances at a monthly rate — the customer's own **Finance charge rate** if one is set,
+> otherwise the plant default from Administration → Billing. It is **not added to Total due**, it is
+> **not posted** to the customer's account, and it **never ages**. It appears nowhere in the aging,
+> the month-end schedule or the GL export, and it is recalculated from scratch on every print. There
+> is no finance-charge *run* to re-run and nothing is stored, so there is nothing that could be
+> duplicated or need reversing. It is a line on a piece of paper, and both the control and the
+> printed label say so, so nobody — yours or the customer's — reads it as money owed. **If the shop
+> genuinely wants to collect interest, somebody must raise a real invoice for it.** The box is off by
+> default, so nothing appears unless it is deliberately ticked.
+>
+> For the same reason there is **no per-invoice exemption or dispute switch**: with nothing being
+> levied there is nothing to be exempt from. If interest is ever really charged, that is a new
+> decision, and the exemption comes with it.
 
 ## The customer's own A/R
 

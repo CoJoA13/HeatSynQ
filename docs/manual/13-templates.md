@@ -142,7 +142,7 @@ document is stored, nothing is marked as printed. Preview freely.
 
 ## Locked elements
 
-A few things cannot be hidden, and the editor marks them with a **padlock and the word *locked***.
+A few things cannot be hidden, and the editor marks them with a **padlock** and the word *locked*.
 Hover it and it tells you why.
 
 **All of them are on the traveler**; every other document type is entirely free.

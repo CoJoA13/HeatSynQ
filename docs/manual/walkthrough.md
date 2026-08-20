@@ -14,11 +14,12 @@ invoice ×2, credit memo, statement ×2, quote ×2. The paper is the heart of th
 whole pipeline produces real documents.
 
 **The screens.** The sweep discovered **45 routes** from `src/app/**/page.tsx` and captured **50
-screens** from them (a dynamic route yields one screen per discovered id). **49 PASS** — real
-content, clean console, no failed requests — and **1 FAIL**, `/admin/users`, which is #160: the
-page renders correctly and the failure is five signature 404s it fires by design. See `sweep.md`
-for the per-screen table; the four screens its heuristic flagged as sparse were checked by hand
-and cleared (below).
+screens** from them (a dynamic route yields one screen per discovered id). **50 PASS** — real
+content, clean console, no failed requests — and **no FAIL**. The walkthrough itself found one:
+`/admin/users`, which was #160 — the page rendered correctly and the failure was five signature
+404s it fired by design. That is fixed (below), and the sweep has had a clean gate since. See
+`sweep.md` for the per-screen table; the four screens its heuristic flagged as sparse were checked
+by hand and cleared (below).
 
 **The money screens agree with each other.** The A/R aging, the customer A/R sections and the
 month-end continuity schedule are drawn from the same reads and reconcile — the continuity
@@ -33,21 +34,29 @@ order.
 
 | # | What | Kind |
 |---|---|---|
-| [#159](https://github.com/CoJoA13/HeatSynQ/issues/159) | On-account cash is stranded once its month closes — an application inherits the payment's date, so a closed month freezes that cash permanently | **Owner decision** |
-| [#160](https://github.com/CoJoA13/HeatSynQ/issues/160) | The Users page emits one 404 per signature-less user, so a healthy page can never pass a console/request health gate | Defect |
-| [#161](https://github.com/CoJoA13/HeatSynQ/issues/161) | Shipment reversal is implemented and tested but has **no UI control** — and the refusal messages instruct operators to "re-reverse", a step with no button | **Owner decision** |
-| [#162](https://github.com/CoJoA13/HeatSynQ/issues/162) | **"Assess finance charges" prints a finance charge that is never charged** — excluded from the total due, never posted, never aged, never exported | **Owner decision** |
-| [#163](https://github.com/CoJoA13/HeatSynQ/issues/163) | A receipt batch with no control total shows a Balance of 0.00, identical to one that balances | Defect |
+| [#159](https://github.com/CoJoA13/HeatSynQ/issues/159) | On-account cash is stranded once its month closes — an application inherits the payment's date, so a closed month freezes that cash permanently | **Ruled — not a defect, closed.** The cash-journal entry belongs to the date the cash arrived, and a late allocation genuinely does move a closed month's aging. The lock is working; the reopen is the sanctioned route. Procedure: allocate on-account cash before its month closes |
+| [#160](https://github.com/CoJoA13/HeatSynQ/issues/160) | The Users page emits one 404 per signature-less user, so a healthy page can never pass a console/request health gate | Defect — **fixed** (round 3 group C): the users list now carries a `hasSignature` boolean, so the preview image is requested only when there is one |
+| [#161](https://github.com/CoJoA13/HeatSynQ/issues/161) | Shipment reversal is implemented and tested but has **no UI control** — and the refusal messages instruct operators to "re-reverse", a step with no button | **Ruled — reversal gets a screen** (round 3 group B). That also makes `REOPENED` reachable from a UI for the first time, and makes the "re-reverse" refusals true rather than impossible. The cert half split to [#165](https://github.com/CoJoA13/HeatSynQ/issues/165) |
+| [#162](https://github.com/CoJoA13/HeatSynQ/issues/162) | The statement printed a finance charge that is never billed — excluded from the total due, never posted, never aged, never exported | **Ruled informational — fixed** (round 3 group C): the figure is shown, never levied. The control and the printed line now say so, and the spec no longer promises a persisted, idempotent finance-charge run |
+| [#163](https://github.com/CoJoA13/HeatSynQ/issues/163) | A receipt batch with no control total shows a Balance of 0.00, identical to one that balances | Defect — scheduled, round 3 group A |
 
 ### About #162 — the most consequential finding
 
 Verified independently: `statements.ts:309` returns `totalDue: aging.net`, and `financeCharge`
-appears nowhere in the server outside its own calculator and the statement printer. So the
-statement shows a finance charge above a total that excludes it, and nothing records that a
-charge was ever made. A shop ticking that box monthly would believe it had been charging
-interest and have billed nothing. Either the control is mislabelled (it is informational) or
-the posting half was never built — that is the owner's call, and it should be made before the
-parallel-run month.
+appeared nowhere in the server outside its own calculator and the statement printer. So the
+statement showed a finance charge above a total that excludes it, and nothing recorded that a
+charge was ever made. A shop ticking that box monthly would have believed it was charging
+interest and have billed nothing.
+
+**Ruled 2026-08-19: the figure is informational — shown, never levied.** That ratifies two
+earlier rulings the issue had not found (P5B §3 ruling 9 and P5C §3 ruling 4, the latter saying
+in as many words that it is *not* an open question), so the defect was never the missing posting
+— it was that a deliberately informational figure was presented as a levy. Fixed in round 3
+group C: the control and the printed line both say the charge is not billed, and the main spec's
+two remaining promises of a persisted, idempotent finance-charge run are struck.
+
+Collecting interest means raising a real invoice. If that ever becomes routine, building the
+posting half is a spec amendment reversing three rulings, not a bug fix.
 
 ### About #161
 

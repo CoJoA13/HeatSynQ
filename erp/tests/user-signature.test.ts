@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
-import { createUser } from "@/server/users";
+import { createUser, listUsers } from "@/server/users";
 import {
   setSignature, clearSignature, getSignature, SIGNATURE_MAX_BYTES, SIGNATURE_MIME,
 } from "@/server/users";
@@ -246,6 +246,70 @@ describe("per-user signature image (Task 12)", () => {
         uploadReq(base, manager, "big.png", "image/png", tooBig), withParams({ id: userId }));
       expect(capped.status).toBe(400);
       expect((await capped.json()).error).toMatch(/2 MB/);
+    });
+  });
+
+  /**
+   * #160 — the users list carries the FLAG, never the bytes.
+   *
+   * `UserSignatureControl` used to seed `hasImage` optimistically `true` and discover the truth
+   * from the `<img>`'s 404, costing one failed request per signature-less user on every
+   * /admin/users load. `listUsers` now derives `hasSignature` from `signatureMimeType` — the
+   * `templates.ts` `hasLogo` precedent, where the mime column stands proxy for bytes that are only
+   * ever written and cleared together with it.
+   */
+  describe("listUsers' hasSignature flag (#160)", () => {
+    it("is false on a fresh user, true after setSignature, false again after clearSignature", async () => {
+      const userId = await makeUser("flagged");
+      const flag = async () => (await listUsers()).find((u) => u.id === userId)?.hasSignature;
+
+      expect(await flag()).toBe(false);
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+      expect(await flag()).toBe(true);
+      await asSystem(() => clearSignature(userId));
+      expect(await flag()).toBe(false);
+    });
+
+    /**
+     * The guard that did not exist before #160, and the reason it is written against the SELECT
+     * rather than the returned row: `listUsers`' explicit `select` (see its own comment) was
+     * narrowed precisely to keep up to SIGNATURE_MAX_BYTES per row out of a list that renders no
+     * bytes, and nothing pinned that. Asserting only that the RETURNED row lacks `signatureImage`
+     * is not enough, and this was checked by deliberately writing the regression: `listUsers` maps
+     * to an explicit object literal, so `select: { signatureImage: true }` + `hasSignature:
+     * u.signatureImage !== null` leaves the payload assertions below GREEN while hauling every
+     * signature out of Postgres on every page load. Only the SELECT assertion catches it. So both
+     * halves are pinned — the query shape first, then the payload shape.
+     *
+     * Plain wrap/restore of the bound method, never `vi.spyOn` on a Prisma model delegate
+     * (CLAUDE.md; request-context.test.ts carries the descriptor rationale). Restored in `finally`
+     * so a failure here cannot corrupt the shared singleton for the rest of the run.
+     */
+    it("derives the flag from the mime column — the bytes never leave Postgres", async () => {
+      const userId = await makeUser("byte-guard");
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+
+      const originalFindMany = prisma.user.findMany.bind(prisma.user);
+      const selects: Record<string, unknown>[] = [];
+      prisma.user.findMany = ((args: { select?: Record<string, unknown> }) => {
+        if (args?.select) selects.push(args.select);
+        return originalFindMany(args as Parameters<typeof originalFindMany>[0]);
+      }) as unknown as typeof prisma.user.findMany;
+      let rows: Awaited<ReturnType<typeof listUsers>>;
+      try {
+        rows = await listUsers();
+      } finally {
+        prisma.user.findMany = originalFindMany;
+      }
+
+      expect(selects).toHaveLength(1);
+      expect(selects[0]).not.toHaveProperty("signatureImage");
+      expect(selects[0]).toHaveProperty("signatureMimeType", true);
+
+      const row = rows.find((u) => u.id === userId)!;
+      expect(row.hasSignature).toBe(true);
+      expect(row).not.toHaveProperty("signatureImage");
+      expect(row).not.toHaveProperty("signatureMimeType");
     });
   });
 });

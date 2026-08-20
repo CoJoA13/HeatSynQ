@@ -223,6 +223,40 @@ describe("buildStatement — finance charge assessed", () => {
     const data = await buildStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: true });
     expect(data.financeCharge).toBeNull();
   });
+
+  /**
+   * #162 — the exclusion is DELIBERATE, and this is the pin that says so.
+   *
+   * Owner ruling 2026-08-19: the finance charge is INFORMATIONAL. It is a sibling field on the
+   * statement payload, never a component of the money owed — `totalDue` stays `aging.net`, the
+   * open-item lines still sum to it, and the aging strip printed beside it is untouched. Nothing
+   * is posted, nothing ages, no GL source type exists for it (`POSTING_SOURCE_TYPES` has five
+   * members and none is a finance charge), and it is recomputed from scratch on every print.
+   *
+   * Without this case, "the statement shows an interest figure that the total ignores" reads as a
+   * bug in every future review, which is exactly how #162 was filed. It is a ruling, not an
+   * oversight: if the shop ever wants to COLLECT the interest, somebody raises a real invoice.
+   * The paper says so too — the contract's default label is "Finance Charge (not billed, not in
+   * total):" (tests/template-contracts.test.ts).
+   */
+  it("EXCLUDES the assessed charge from totalDue — informational by ruling, not a bug (#162)", async () => {
+    await prisma.billingConfig.update({ where: { id: "singleton" }, data: { financeChargeRate: "1.5" } });
+    const { customer } = await fixture();
+
+    const assessed = await buildStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: true });
+    expect(assessed.financeCharge).toBe(6.00); // non-zero, so the exclusion below is not vacuous
+
+    // The whole point: Total Due is the aging net, with the charge nowhere in it.
+    expect(assessed.totalDue).toBe(assessed.aging.net);
+
+    // And assessing changes NOTHING else — same total, same aging, same open items as an
+    // un-assessed run of the identical data. The charge adds a line, never a number.
+    const plain = await buildStatement(customer.id, { asOf: ASOF, combineFamily: false, assessFinanceCharges: false });
+    expect(plain.financeCharge).toBeNull();
+    expect(assessed.totalDue).toBe(plain.totalDue);
+    expect(assessed.aging).toEqual(plain.aging);
+    expect(assessed.openItems).toEqual(plain.openItems);
+  });
 });
 
 // -------------------------------------------------------------------------------------------

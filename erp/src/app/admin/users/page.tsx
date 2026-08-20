@@ -8,9 +8,12 @@ import { useLatest } from "@/lib/use-latest";
 import { UserSignatureControl } from "@/components/UserSignatureControl";
 
 type Role = { id: string; name: string };
+// Hand-maintained mirror of listUsers' return shape (src/server/users.ts) — a "use client" file
+// must not import from src/server/** (the Shell.tsx precedent). `hasSignature` is a boolean, never
+// the bytes: see that function's comment and #160.
 type User = {
   id: string; username: string; displayName: string; title: string; roleId: string | null;
-  roleName: string | null; active: boolean;
+  roleName: string | null; active: boolean; hasSignature: boolean;
   overrides: { permission: string; mode: "GRANT" | "DENY" }[];
 };
 
@@ -126,7 +129,34 @@ export default function UsersPage() {
                        onChange={(e) => patch(u.id, { active: e.target.checked })} />
               </td>
               <td className="p-2">
-                <UserSignatureControl userId={u.id} gate={manageUsersGate} />
+                {/* THIS ROW owns the signature flag; the control keeps no copy of it and reports
+                    every change back here (#160, three Codex rounds — its docblock carries why two
+                    copies reconciled by a rule kept being wrong). Unkeyed on purpose: a remount
+                    would also throw away the control's error, busy and cache-bust state, which are
+                    genuinely its own. */}
+                <UserSignatureControl
+                  userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate}
+                  onSignatureChange={(next) => {
+                    // Apply optimistically, then RELOAD — do not merely cancel (#3/#15 class,
+                    // Codex rounds 3 and 4). The signature route has already committed, so this
+                    // value is the server's; showing it at once is honest, not a guess.
+                    //
+                    // The reload is what makes it safe, and it does two jobs at once. `load()`
+                    // takes its own `latest` ticket, so an OLDER in-flight load — one that read
+                    // before this upload committed and would otherwise still count as current —
+                    // is discarded rather than putting the row back to the pre-upload flag. And
+                    // because it then re-reads, the OTHER half of that discarded load is not lost:
+                    // `load()` fetches users AND roles together, so a concurrent title/role/active
+                    // edit's refreshed data arrives here instead of being cancelled with it.
+                    //
+                    // An earlier fix called `latest.next()` alone. That closed the clobber and
+                    // opened a quieter hole — the shared refresh was thrown away while only
+                    // `hasSignature` was written, so a just-saved role could sit visibly stale.
+                    setUsers((prev) => prev.map(
+                      (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
+                    ));
+                    load().catch((e) => setError(e.message));
+                  }} />
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"

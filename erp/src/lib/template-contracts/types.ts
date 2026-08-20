@@ -65,6 +65,15 @@
  * sanctioned shapes are: validate AND resolve a stored config against the contract version it
  * was PUBLISHED under (which preserves its defaults too), or make print-time dereference
  * degrade gracefully (log + contract defaults for the offending elements) rather than throw.
+ *
+ * THE THIRD CASE, and the only one exercised so far (#162, owner ruling 2026-08-19): a default
+ * whose current text is simply WRONG — the statement's finance-charge label read as a levied
+ * charge above a Total Due that excludes it. Reaching every published version is then the POINT,
+ * not the hazard, and neither sanctioned shape above applies because both preserve the old paper.
+ * What makes it safe is timing, not mechanism: it landed while nothing had published a custom
+ * statement template, so it changed no paper anyone had designed. Cite this as licence only under
+ * the same two conditions — the existing default is wrong rather than merely improvable, AND no
+ * published version depends on it yet.
  */
 import { z } from "zod";
 
