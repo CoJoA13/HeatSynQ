@@ -18,9 +18,11 @@ import { ReceivablesNav } from "./ReceivablesNav";
 // Local mirror of src/server/receipts.ts's `BatchListRow` — not imported from src/server/**
 // (CLAUDE.md "Constraints that will bite you": a client component pulling from there drags
 // node:async_hooks and Prisma into the browser bundle).
+/** `balance` mirrors the server's `number | null` (#163): null = no control total, so nothing has
+ *  been proved — rendered as words, never as a 0 that would read as "checked and correct". */
 type BatchListRow = {
   id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
-  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number | null;
 };
 
 type StatusFilter = ReceiptBatchStatusValue | "";
@@ -161,7 +163,15 @@ export function ReceivablesList() {
                   <td className="p-2">{RECEIPT_BATCH_STATUS_LABELS[b.status]}</td>
                   <td className="p-2">{b.controlTotal === null ? "—" : b.controlTotal.toFixed(2)}</td>
                   <td className="p-2">{b.enteredTotal.toFixed(2)}</td>
-                  <td className="p-2">{b.balance.toFixed(2)}</td>
+                  {/* #163: words, not a number. A `—` here (the Control total column's own null
+                      rendering, two cells left) would read as "nothing to report" in a BALANCE
+                      column, which is the wrong message — this batch was proved against nothing.
+                      "Not proved" shares the batch page's lead phrase so the two screens teach one
+                      term, and stands out among a column of figures without borrowing a colour:
+                      this column carries no colour semantics at all today (an out-of-balance batch
+                      is plain text here too), and colouring one state of three would invent a
+                      hierarchy the rest of the column does not have. */}
+                  <td className="p-2">{b.balance === null ? "Not proved" : b.balance.toFixed(2)}</td>
                 </tr>
               ))}
               {batches.length === 0 && loaded && !error && (

@@ -15,11 +15,17 @@ import type { ReceiptBatchStatusValue, ApplicationTypeValue } from "../lib/ar-co
 // -------------------------------------------------------------------------------------------
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding many Payments. Neither
 // table stores a balance — `enteredTotal` (Σ live payment amounts) and `balance`
-// (`controlTotal ?? enteredTotal` minus `enteredTotal`, zero when it foots or no control total
-// was set) are recomputed on every read, the same "derive from live rows" rule ar-balances.ts
-// enforces for Invoice/Payment/Credit. A payment's own `onAccount` is `ar-balances.
-// paymentOnAccount` over its (currently always empty — Task 7 builds applications) live
-// Application rows.
+// (`controlTotal − enteredTotal`, or NULL when there is no control total) are recomputed on every
+// read, the same "derive from live rows" rule ar-balances.ts enforces for Invoice/Payment/Credit.
+// A payment's own `onAccount` is `ar-balances.paymentOnAccount` over its (currently always empty —
+// Task 7 builds applications) live Application rows.
+//
+// #163: `balance` is the PROOF figure — the operator's control total against what was actually
+// keyed — so with no control total there is nothing to prove against and the honest answer is
+// `null`, not a number. It used to read `(controlTotal ?? enteredTotal) − enteredTotal`, which
+// collapsed to `enteredTotal − enteredTotal` = 0: a batch checked against NOTHING rendered exactly
+// like a batch that foots to the cent, on the screen where money is proved. Never `?? 0` it back —
+// the null IS the state, and both read shapes below carry it.
 //
 // `ReceiptBatch.status` is a plain `String` column, not a Prisma enum (schema comment) — POSTED
 // locks payment entry, enforced under a row claim taken the same way `claimOrder` takes one
@@ -56,9 +62,11 @@ export type PaymentRow = {
   onAccount: number; applications: PaymentApplicationRow[];
 };
 
+/** `balance` is `number | null` deliberately (#163) — null means "no control total, so nothing has
+ *  been proved", a state the UI must render distinctly from a proved 0. See the file header. */
 export type BatchDetail = {
   id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
-  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number; notes: string;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number | null; notes: string;
   payments: PaymentRow[]; deletedAt: string | null;
 };
 
@@ -121,15 +129,14 @@ function toPaymentRow(p: PaymentRowShape, prefix: string): PaymentRow {
 }
 
 /** `enteredTotal` = Σ live payment amounts (integer-cents, the `ar-balances` rounding rule);
- *  `balance` = `(controlTotal ?? enteredTotal) − enteredTotal`, zero when it foots or no control
- *  total was ever set. */
+ *  `balance` = `controlTotal − enteredTotal`, zero when it foots and NULL when no control total was
+ *  ever set (#163 — see the file header; the two are different states and must stay so). */
 function toBatchDetail(row: DetailRow, prefix: string): BatchDetail {
   const payments = row.payments.map((p) => toPaymentRow(p, prefix));
   const enteredCents = payments.reduce((sum, p) => sum + cents(p.amount), 0);
   const enteredTotal = enteredCents / 100;
   const controlTotal = row.controlTotal === null ? null : row.controlTotal.toNumber();
-  const controlCents = controlTotal === null ? enteredCents : cents(controlTotal);
-  const balance = (controlCents - enteredCents) / 100;
+  const balance = controlTotal === null ? null : (cents(controlTotal) - enteredCents) / 100;
   return {
     id: row.id, batchNumber: row.batchNumber, depositDate: formatDateOnly(row.depositDate),
     controlTotal, status: row.status as ReceiptBatchStatusValue,
@@ -167,9 +174,11 @@ export async function getBatch(id: string): Promise<BatchDetail> {
 // the list but its own page still reads it").
 // -------------------------------------------------------------------------------------------
 
+/** `balance` carries `BatchDetail`'s own `number | null` contract (#163) — the worklist is the
+ *  OTHER screen that prints this figure, and the two must never disagree about the unproved case. */
 export type BatchListRow = {
   id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
-  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number | null;
 };
 
 export type BatchFilter = { status?: ReceiptBatchStatusValue };
@@ -184,8 +193,9 @@ function toBatchListRow(row: ListRow): BatchListRow {
   const enteredCents = row.payments.reduce((sum, p) => sum + cents(p.amount.toNumber()), 0);
   const enteredTotal = enteredCents / 100;
   const controlTotal = row.controlTotal === null ? null : row.controlTotal.toNumber();
-  const controlCents = controlTotal === null ? enteredCents : cents(controlTotal);
-  const balance = (controlCents - enteredCents) / 100;
+  // `toBatchDetail`'s arithmetic, verbatim (#163 included) — the two shapes are read by two
+  // different screens and a divergence here is a screen that lies about half the batches.
+  const balance = controlTotal === null ? null : (cents(controlTotal) - enteredCents) / 100;
   return {
     id: row.id, batchNumber: row.batchNumber, depositDate: formatDateOnly(row.depositDate),
     controlTotal, status: row.status as ReceiptBatchStatusValue, enteredTotal, balance,
@@ -444,7 +454,9 @@ async function postBatchInTx(tx: Db, id: string): Promise<BatchDetail> {
   // row and the sum is taken under that same claim — `addPayment`/`voidPayment` claim this row
   // too, so the figure cannot move mid-check. Integer cents, `toBatchDetail`'s own arithmetic;
   // voided payments never count (every sum in this file filters `deletedAt: null`). A null
-  // controlTotal posts freely — balance is defined 0 (file header). The message names the two
+  // controlTotal still posts freely — #163 changed only what the SCREEN says about such a batch
+  // (`balance` is null, "not proved", rather than a reassuring 0); the posting rule here is the
+  // owner's Q18 answer and is untouched by it. The message names the two
   // ways out (§5.14): controlTotal is immutable (createBatch is its only writer; the batch
   // header has no edit path), and the FIRST clause matches the direction — under-entered wants
   // the missing payments keyed, over-entered wants the extra payment voided (no re-key needed).

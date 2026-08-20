@@ -49,9 +49,11 @@ type PaymentRow = {
   onAccount: number; applications: PaymentApplicationRow[];
 };
 
+/** `balance` mirrors the server's `number | null` (#163): null = no control total, so nothing has
+ *  been proved. It is a THIRD state, rendered distinctly from a proved 0 in the header tile below. */
 type BatchDetailData = {
   id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
-  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number; notes: string;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number | null; notes: string;
   payments: PaymentRow[]; deletedAt: string | null;
 };
 
@@ -626,10 +628,25 @@ export function BatchDetail({ id }: { id: string }) {
             Entered
             <div className="mt-1 rounded border bg-slate-50 px-2 py-1">{batch.enteredTotal.toFixed(2)}</div>
           </div>
+          {/* #163: THREE states, never two. Balance is the PROOF figure, so:
+                null  — no control total was entered, so this deposit was checked against NOTHING.
+                        Deliberately NOT the slate branch (slate is "proved, and it agrees") and
+                        deliberately NOT amber either: amber on this screen means "the figures
+                        disagree — resolve it before posting", and an unproved batch posts freely
+                        by the owner's Q18 answer, so amber would invent a blocker that does not
+                        exist. Blue is this app's informational note colour (orders/new,
+                        QuoteDetail, ShipmentDetail) — it stands out from both without claiming an
+                        error. The WORDS carry the meaning on their own; the colour is a redundant
+                        cue, so nothing is lost to a colour-blind reader or a greyscale print.
+                0     — a real control total that foots to the cent. Proved.
+                other — the control total and what was keyed disagree by this much. */}
           <div className="block">
             Balance
-            <div className={`mt-1 rounded border px-2 py-1 ${batch.balance === 0 ? "bg-slate-50" : "bg-amber-50 text-amber-800"}`}>
-              {batch.balance.toFixed(2)}
+            <div className={`mt-1 rounded border px-2 py-1 ${
+              batch.balance === null ? "bg-blue-50 text-blue-800"
+                : batch.balance === 0 ? "bg-slate-50"
+                  : "bg-amber-50 text-amber-800"}`}>
+              {batch.balance === null ? "Not proved — no control total" : batch.balance.toFixed(2)}
             </div>
           </div>
         </div>

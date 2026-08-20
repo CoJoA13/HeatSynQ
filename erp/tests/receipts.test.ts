@@ -8,8 +8,9 @@ import { parseDateOnly, formatDateOnly, todayDateOnly, addDays } from "@/lib/bus
 import type { Customer, PaymentType } from "../prisma/generated/prisma/client";
 
 // Task 6 (P5B §4.1/§4.2): a ReceiptBatch is a deposit session holding Payments. `enteredTotal`
-// is the live sum, `balance` is what's left to foot against the operator's controlTotal — both
-// derived, never stored. A POSTED batch locks payment entry; voiding a payment is a soft delete
+// is the live sum, `balance` is what's left to foot against the operator's controlTotal — or NULL
+// when no control total was set, because nothing has then been proved (#163) — both derived, never
+// stored. A POSTED batch locks payment entry; voiding a payment is a soft delete
 // with a reason, and voiding an empty batch is too. Applications (Task 7) don't exist yet, so
 // every payment's `onAccount` here equals its full `amount`.
 
@@ -105,14 +106,18 @@ describe("addPayment — live balance", () => {
     expect(afterSecond.payments).toHaveLength(2);
   });
 
-  it("balance is zero when no control total was set", async () => {
+  // #163: with no control total there is nothing to foot against, so `balance` is NULL — "nothing
+  // has been proved" — never 0. This assertion read `toBe(0)` for five phases, which was the defect
+  // written down as an expectation: a batch checked against nothing rendered exactly like a batch
+  // that foots to the cent, on the screen where money is proved.
+  it("balance is null when no control total was set — nothing has been proved", async () => {
     const batch = await openBatch(null);
     const customer = await makeCustomer();
     const paymentType = await makePaymentType();
     const after = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 75)));
     expect(after.controlTotal).toBeNull();
     expect(after.enteredTotal).toBe(75);
-    expect(after.balance).toBe(0);
+    expect(after.balance).toBeNull();
   });
 
   it("refuses an unregistered customer — the FK-writer pattern (assertRefExists)", async () => {
@@ -280,8 +285,9 @@ describe("postBatch — locks payment entry", () => {
 // #80 (owner answer Q18, 2026-08-17: refusing is the safer default): posting a batch whose
 // NON-NULL controlTotal does not foot against the live payment sum is refused under the batch
 // claim, with a message naming both figures and the difference (shown as its absolute value —
-// over vs under is readable from the two figures). Null controlTotal posts freely (balance is
-// defined 0), and voided payments never count — every sum in this file filters `deletedAt: null`.
+// over vs under is readable from the two figures). Null controlTotal posts freely (balance is null
+// — nothing to prove against, #163), and voided payments never count — every sum in this file
+// filters `deletedAt: null`.
 // `controlTotal` is immutable (createBatch is its only writer; the batch header has no edit
 // path), so the refusal names the two ways out (§5.14): enter the missing payments, or void and
 // re-key.
@@ -330,14 +336,19 @@ describe("postBatch — refuses an un-footed control total (#80)", () => {
     expect(posted.status).toBe("POSTED");
   });
 
-  it("posts freely with no control total — balance is defined 0", async () => {
+  // The posting rule is deliberately unchanged by #163: a batch with no control total still posts
+  // freely (owner answer Q18). What changed is only what the screen SAYS about it — `balance` is
+  // null, not a reassuring 0.
+  it("posts freely with no control total — balance is null, nothing to prove against", async () => {
     const batch = await openBatch(null);
     const customer = await makeCustomer();
     const paymentType = await makePaymentType();
-    await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    const added = await asSystem(() => addPayment(batch.id, paymentInput(customer, paymentType, 300)));
+    expect(added.balance).toBeNull();
 
     const posted = await asSystem(() => postBatch(batch.id));
     expect(posted.status).toBe("POSTED");
+    expect(posted.balance).toBeNull();
   });
 
   it("refuses a batch that footed and then had a payment VOIDED — the voided payment never counts", async () => {
@@ -751,10 +762,35 @@ describe("listBatches", () => {
     expect(rows.map((r) => r.id)).toEqual([newer.id, older.id]); // depositDate desc
     const newerRow = rows.find((r) => r.id === newer.id)!;
     expect(newerRow.enteredTotal).toBe(300);
-    expect(newerRow.balance).toBe(0); // no controlTotal — balance foots against enteredTotal itself
+    expect(newerRow.balance).toBeNull(); // #163: no controlTotal — nothing was proved against
     const olderRow = rows.find((r) => r.id === older.id)!;
     expect(olderRow.enteredTotal).toBe(0);
     expect(olderRow.balance).toBe(500);
+  });
+
+  /**
+   * #163: the two "zeros" must never collapse into each other again. A batch whose control total
+   * FOOTS reports a real `0` (proved, and it agrees); a batch with no control total reports `null`
+   * (nothing to prove against). Pinned on BOTH read shapes in one test — `toBatchListRow` and
+   * `toBatchDetail` each carried their own copy of the old arithmetic, and only one of them being
+   * fixed is the exact half-migration that would leave the list screen still lying.
+   *
+   * A `?? 0` reintroduced on either side reds this rather than silently restoring the defect.
+   */
+  it("distinguishes a footed 0 from an unproved null — both read shapes", async () => {
+    const proved = await asSystem(() => createBatch({ depositDate: "2026-08-02", controlTotal: "300.00" }));
+    const unproved = await asSystem(() => createBatch({ depositDate: "2026-08-01", controlTotal: null }));
+    const customer = await makeCustomer();
+    const paymentType = await makePaymentType();
+    await asSystem(() => addPayment(proved.id, paymentInput(customer, paymentType, 300)));
+    await asSystem(() => addPayment(unproved.id, paymentInput(customer, paymentType, 300)));
+
+    const rows = await listBatches();
+    expect(rows.find((r) => r.id === proved.id)!.balance).toBe(0);
+    expect(rows.find((r) => r.id === unproved.id)!.balance).toBeNull();
+
+    expect((await asSystem(() => getBatch(proved.id))).balance).toBe(0);
+    expect((await asSystem(() => getBatch(unproved.id))).balance).toBeNull();
   });
 
   it("filters by status", async () => {

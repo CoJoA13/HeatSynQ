@@ -133,6 +133,22 @@ describe("GET /api/receivables/batches/[id]", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).id).toBe(batch.id);
   });
+
+  // #163: an unproved batch answers `balance: null` over the wire, and the key must be PRESENT.
+  // The distinction has to survive JSON, not just the service boundary — a `balance?: number`
+  // shape would serialize `undefined` away entirely, and a client reading `body.balance` could not
+  // then tell "nothing was proved" from "the field moved".
+  it("answers balance: null — a present null — for a batch with no control total", async () => {
+    const creator = await signInWith(["receivables.create", "receivables.view"], "rb-get-unproved");
+    const batch = await createdBatch(creator, null);
+
+    const res = await getRoute(getReq("http://t/api/receivables/batches/x", creator), withParams({ id: batch.id }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.controlTotal).toBeNull();
+    expect(body.balance).toBeNull();
+    expect(Object.hasOwn(body, "balance")).toBe(true);
+  });
 });
 
 describe("PATCH /api/receivables/batches/[id] — post", () => {
