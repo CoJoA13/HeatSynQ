@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { prisma, truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
 import {
-  applyPayment, voidApplication, discountOffer, applyCredit,
-  invoiceOpenBalanceById, openInvoicesForPayer,
+  applyPayment, voidApplication, discountOffer, applyCredit, discountBlockMessage,
+  invoiceOpenBalanceById, openInvoicesForPayer, type DiscountBlock,
 } from "@/server/applications";
 import { invoiceOpenBalance, paymentOnAccount, creditRemaining, type ApplicationLite } from "@/server/ar-balances";
 import { parseDateOnly } from "@/lib/business-days";
@@ -432,8 +432,13 @@ describe("discountOffer — the early-pay window", () => {
       paymentId: payment.id,
       lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
     // Pinned to the exact refusal: several other messages in `resolveReason` also say "discount",
-    // so a loose /discount/i could pass through the wrong branch entirely.
-    }))).rejects.toThrow(/no early-pay discount applies/i);
+    // so a loose /discount/i could pass through the wrong branch entirely. Since #175 the three
+    // date/history causes are three different sentences, so the exact string also pins WHICH of
+    // them refused — this one is the frozen terms, not the window and not a spent entitlement.
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "this invoice was issued under terms that carry no early-pay discount",
+    });
   });
 
   // -----------------------------------------------------------------------------------------
@@ -661,7 +666,12 @@ describe("applyPayment — DISCOUNT line", () => {
     const payment = await makePayment(inv.customerId, 1000, "2026-08-28");
     await expect(asSystem(() => applyPayment({
       paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
-    }))).rejects.toMatchObject({ status: 400, message: "no early-pay discount applies" });
+      // #175: the window, not the terms and not the entitlement. These terms DO carry a discount and
+      // nothing has been taken, so a message naming either of those would be false here.
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "this payment is dated after the invoice's early-pay discount window",
+    });
   });
 
   it("applies a DISCOUNT inside the window and stamps reason 'early-pay terms'", async () => {
@@ -704,8 +714,9 @@ describe("applyPayment — DISCOUNT line", () => {
    * This DISCOUNT line is inside the window, is exactly the eligible 20.00, and was ACCEPTED before
    * the ruling. It is refused now because nothing in the call settles the invoice: 20.00 of discount
    * against a 1,000.00 open balance is a 980.00 receivable the shop was never paid for early. The
-   * message names the rule — a bare "no early-pay discount applies" would send the operator hunting
-   * for a terms or window problem that isn't there.
+   * message names the rule — the flat "no early-pay discount applies" this branch threw for every
+   * other cause until #175 would have sent the operator hunting for a terms or window problem that
+   * isn't there.
    */
   it("refuses a DISCOUNT that does not settle the invoice — the settlement rule (#69)", async () => {
     const terms = await makeTerms("2.00", 10);
@@ -916,7 +927,12 @@ describe("applyPayment — DISCOUNT line", () => {
         { invoiceId: inv.invoiceId, type: "PAYMENT", amount: 960.4 },
         { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 19.6 },
       ],
-    }))).rejects.toMatchObject({ status: 400, message: "no early-pay discount applies" });
+      // #175: the ENTITLEMENT, named as such. The window is open and the terms carry 2/10 — the only
+      // thing wrong is that the 20.00 has already been given away, and the refusal now says so.
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "this invoice has no early-pay discount left to take",
+    });
     expect(await openBalance(inv.invoiceId)).toBe(980); // unmoved
   });
 
@@ -1040,6 +1056,134 @@ describe("applyPayment — DISCOUNT line", () => {
     expect(await openBalance(a.invoiceId)).toBe(0);
     expect(await openBalance(b.invoiceId)).toBe(0);
     expect(await prisma.application.count({ where: { type: "DISCOUNT", deletedAt: null } })).toBe(2);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // #175 — the offer and the save name the SAME blocker.
+  //
+  // `discountOffer` has told the four blockers apart since #155 arm 2; `resolveReason`, one function
+  // later, threw one flat sentence for three of them. The fix is not the wording. It is that both
+  // now read the eligible figure AND its blocker from one composition (`eligibleDiscountFor`), so
+  // they cannot drift into disagreeing about a single invoice — which is what #69 and #81 were both
+  // about, and what a second copy of the window/cap arithmetic would reintroduce.
+  //
+  // These four pin the agreement rather than the prose: each asserts the save's message is
+  // `discountBlockMessage` OF THE BLOCK THE OFFER JUST REPORTED, so a save that resolved some other
+  // blocker fails here however good its own sentence is. The exact strings are pinned separately —
+  // three by the cause-specific tests above (#79 terms / outside the window / entitlement spent) and
+  // the fourth by the byte-exact settlement test below.
+  //
+  // `would_not_settle` is the one whose two sides are not the same TEST — the offer asks whether this
+  // receipt's unapplied cash could settle the invoice, the save whether the payload exactly does —
+  // so it is included precisely because agreement there is a claim worth checking rather than a
+  // tautology.
+  // -----------------------------------------------------------------------------------------
+
+  const agreementCases: {
+    block: DiscountBlock;
+    what: string;
+    /** `coveredCents`/`openCents` are what the save will compute for the forced line; they reach the
+     *  message only for `would_not_settle`, and are the real figures in every case regardless. */
+    build: () => Promise<{
+      paymentId: string; invoiceId: string; discount: number; coveredCents: number; openCents: number;
+    }>;
+  }[] = [
+    {
+      block: "no_terms_discount",
+      what: "the issued terms carry none",
+      build: async () => {
+        const terms = await makeTerms(null, null);
+        const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+        const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+        return { paymentId: payment.id, invoiceId: inv.invoiceId, discount: 20, coveredCents: 2000, openCents: 100000 };
+      },
+    },
+    {
+      block: "window_closed",
+      what: "the receipt is dated past the deadline",
+      build: async () => {
+        const terms = await makeTerms("2.00", 10);
+        const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+        // Big enough to settle outright, so the ONLY thing wrong is the date.
+        const payment = await makePayment(inv.customerId, 1000, "2026-08-28");
+        return { paymentId: payment.id, invoiceId: inv.invoiceId, discount: 20, coveredCents: 2000, openCents: 100000 };
+      },
+    },
+    {
+      block: "entitlement_spent",
+      what: "a void reopened an invoice whose 20.00 is already given away",
+      build: async () => {
+        const terms = await makeTerms("2.00", 10);
+        const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+        const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+        await asSystem(() => applyPayment({
+          paymentId: payment.id, lines: [
+            { invoiceId: inv.invoiceId, type: "PAYMENT", amount: 980 },
+            { invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 },
+          ],
+        }));
+        const paid = await prisma.application.findFirstOrThrow({
+          where: { invoiceId: inv.invoiceId, type: "PAYMENT", deletedAt: null } });
+        await asSystem(() => voidApplication(paid.id, "applied to the wrong invoice"));
+        // 980.00 open again (the live 20.00 DISCOUNT still counts), and 19.60 is 2% of it — a figure
+        // the window and the open balance both allow, so ONLY the spent entitlement refuses it.
+        return { paymentId: payment.id, invoiceId: inv.invoiceId, discount: 19.6, coveredCents: 1960, openCents: 98000 };
+      },
+    },
+    {
+      block: "would_not_settle",
+      what: "the receipt is too small to close the invoice",
+      build: async () => {
+        const terms = await makeTerms("2.00", 10);
+        const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+        const payment = await makePayment(inv.customerId, 500, "2026-08-08");
+        return { paymentId: payment.id, invoiceId: inv.invoiceId, discount: 20, coveredCents: 2000, openCents: 100000 };
+      },
+    },
+  ];
+
+  for (const c of agreementCases) {
+    it(`refuses with the blocker the offer reports — ${c.block}: ${c.what} (#175)`, async () => {
+      const f = await c.build();
+      const offer = await asSystem(() => discountOffer(f.paymentId, f.invoiceId));
+      expect(offer.blockedBy).toBe(c.block);
+      expect(offer.amount).toBe(0);
+
+      const liveBefore = await prisma.application.count({ where: { deletedAt: null } });
+      // THE LOAD-BEARING LINE: the expectation is composed from `offer.blockedBy`, not from
+      // `c.block`. Resolve a different blocker on the save side and this fails even though the
+      // sentence thrown is a real one from the same table.
+      await expect(asSystem(() => applyPayment({
+        paymentId: f.paymentId,
+        lines: [{ invoiceId: f.invoiceId, type: "DISCOUNT", amount: f.discount }],
+      }))).rejects.toMatchObject({
+        status: 400,
+        message: discountBlockMessage(offer.blockedBy!, {
+          coveredCents: f.coveredCents, openCents: f.openCents,
+        }),
+      });
+      // Nothing landed: the refusal rolls the whole call back, in every one of the four.
+      expect(await prisma.application.count({ where: { deletedAt: null } })).toBe(liveBefore);
+    });
+  }
+
+  /**
+   * #175 moved #69's settlement sentence into `discountBlockMessage` VERBATIM. Pinned byte-exact
+   * here, independently of that function, because the agreement test above composes its expectation
+   * from the implementation and would therefore pass on any two strings that happened to match —
+   * including a re-worded pair. This one fails if the sentence changes at all.
+   */
+  it("leaves #69's settlement sentence exactly as it was (#175)", async () => {
+    const terms = await makeTerms("2.00", 10);
+    const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
+    const payment = await makePayment(inv.customerId, 1000, "2026-08-08");
+    await expect(asSystem(() => applyPayment({
+      paymentId: payment.id, lines: [{ invoiceId: inv.invoiceId, type: "DISCOUNT", amount: 20 }],
+    }))).rejects.toMatchObject({
+      status: 400,
+      message: "an early-pay discount is earned only by a payment that settles the invoice"
+        + " — this covers 20 of the 1000 open",
+    });
   });
 });
 
