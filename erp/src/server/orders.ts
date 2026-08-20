@@ -14,7 +14,7 @@ import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
 import {
-  finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, writeOffVoidHintForOrder,
+  finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, applicationVoidHintForOrder,
 } from "./invoice-guards";
 import { judgeQuoteLine, resolveAutoLink, type QuoteLinkCandidate } from "./quote-links";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
@@ -1358,7 +1358,7 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
       // the Receivables section it points at would refuse the void.
       throw new HttpError(400,
         "This order cannot be voided — an invoice or credit on this order has A/R activity; " +
-        `void the payments, credits or write-offs applied to it first${await writeOffVoidHintForOrder(tx, id)}`);
+        `void the payments, credits or write-offs applied to it first${await applicationVoidHintForOrder(tx, id)}`);
     }
 
     // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.

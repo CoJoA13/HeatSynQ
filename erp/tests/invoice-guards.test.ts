@@ -11,7 +11,7 @@ import {
 import {
   finalizedInvoiceFor, finalizedInvoicesFor, invoiceBlockMessage,
   hasReceivableActivity, hasReceivableActivityForOrder,
-  writeOffVoidHint, writeOffVoidHintForOrder,
+  applicationVoidHint, applicationVoidHintForOrder,
 } from "@/server/invoice-guards";
 import type { Customer, Part } from "../prisma/generated/prisma/client";
 
@@ -282,10 +282,10 @@ describe("hasReceivableActivityForOrder", () => {
 // each form must see exactly the rows its sibling guard sees, and nothing else.
 // ---------------------------------------------------------------------------------------------
 
-describe("writeOffVoidHint / writeOffVoidHintForOrder", () => {
+describe("applicationVoidHint / applicationVoidHintForOrder", () => {
   const OPEN_ROUTE = " (a bad-debt write-off is voided from the customer's Receivables section)";
-  const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => writeOffVoidHint(tx, invoiceId));
-  const forOrder = (orderId: string) => prisma.$transaction((tx) => writeOffVoidHintForOrder(tx, orderId));
+  const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => applicationVoidHint(tx, invoiceId));
+  const forOrder = (orderId: string) => prisma.$transaction((tx) => applicationVoidHintForOrder(tx, orderId));
 
   async function standaloneWriteOff(invoiceId: string, dateStr: string) {
     return prisma.application.create({

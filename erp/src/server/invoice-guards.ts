@@ -109,7 +109,7 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
  *
  * **MODULE-PRIVATE since #157, deliberately.** The destination is no longer unconditional — a
  * write-off whose own month has closed cannot be voided there at all — so every refusal site now
- * goes through `writeOffVoidHint` / `writeOffVoidHintForOrder` below, which return exactly this
+ * goes through `applicationVoidHint` / `applicationVoidHintForOrder` below, which return exactly this
  * sentence in the ordinary case and widen it only when the route really is blocked. Un-exporting it
  * is what makes "append the unconditional sentence" un-typeable rather than merely discouraged.
  */
@@ -144,7 +144,7 @@ const LIVE_STANDALONE_WRITE_OFF = { deletedAt: null, type: "WRITE_OFF", paymentI
  * one this module has beyond `type Prisma`, and `period-locks.ts` is itself a leaf that imports
  * neither this file nor any service, so the edge adds no cycle.
  */
-async function writeOffVoidHintFor(
+async function applicationVoidHintFor(
   tx: Prisma.TransactionClient, scope: Prisma.ApplicationWhereInput,
 ): Promise<string> {
   const rows = await tx.application.findMany({
@@ -169,15 +169,15 @@ async function writeOffVoidHintFor(
 /** Per-INVOICE, the `hasReceivableActivity` scope — `discardInvoice` and `unlockInvoice`. Only the
  *  `invoiceId` arm: a write-off never carries a `creditInvoiceId`, so the credit arm cannot hold
  *  one. */
-export function writeOffVoidHint(tx: Prisma.TransactionClient, invoiceId: string): Promise<string> {
-  return writeOffVoidHintFor(tx, { invoiceId });
+export function applicationVoidHint(tx: Prisma.TransactionClient, invoiceId: string): Promise<string> {
+  return applicationVoidHintFor(tx, { invoiceId });
 }
 
 /** Per-ORDER, the `hasReceivableActivityForOrder` scope — `voidOrder`, which blocks on any
  *  invoice-family document on the order. A write-off names an INVOICE, so it reaches through that
  *  relation; the credit arm of the guard contributes none. */
-export function writeOffVoidHintForOrder(tx: Prisma.TransactionClient, orderId: string): Promise<string> {
-  return writeOffVoidHintFor(tx, { invoice: { orderId } });
+export function applicationVoidHintForOrder(tx: Prisma.TransactionClient, orderId: string): Promise<string> {
+  return applicationVoidHintFor(tx, { invoice: { orderId } });
 }
 
 /**

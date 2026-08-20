@@ -7,7 +7,7 @@ import { auditedCreate, auditedUpdate, auditedSoftDelete } from "./audit";
 import { assertRefExists } from "./reference-guards";
 import { decimalField } from "./decimal-field";
 import { claimOrder } from "./order-locks";
-import { hasReceivableActivity, writeOffVoidHint } from "./invoice-guards";
+import { hasReceivableActivity, applicationVoidHint } from "./invoice-guards";
 import { assertPeriodOpen } from "./period-locks";
 import { currentActor } from "./context";
 import { getBillingConfig, type BillingConfigRow } from "./billing-config";
@@ -1478,7 +1478,7 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
       // write-off in scope sits in a closed month and the Receivables section would refuse it.
       throw new HttpError(400,
         "This invoice has payments, credits or write-offs applied and cannot be discarded — "
-        + `void them first${await writeOffVoidHint(tx, id)}`);
+        + `void them first${await applicationVoidHint(tx, id)}`);
     }
     // A printed invoice is paper the customer may hold — it can never be discarded, only credited
     // (§5.5). Any StoredDocument naming this invoice is proof it printed. Read under the claim.
@@ -1643,7 +1643,7 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
     // is sent to a Receivables section that refuses the void because August is closed.
     throw new HttpError(400,
       `Invoice #${order.orderNumber} has payments, credits or write-offs applied — `
-      + `void them before unlocking${await writeOffVoidHint(tx, id)}`);
+      + `void them before unlocking${await applicationVoidHint(tx, id)}`);
   }
   // §4.1 / ruling 8: unlocking reverses the SALES-journal paper that finalize posted, removing the
   // invoice from its FINALIZE month's figures — so the lock must guard `finalizedAt`, NOT
