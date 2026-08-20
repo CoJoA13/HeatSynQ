@@ -55,6 +55,13 @@ reviewer. Task 1 had to wait for Task 3 to release `BatchDetail.tsx`.)
   committed on the first task, not at the end).
 - **2026-08-20** — All four tasks done, three reviews taken, one Critical fixed, full gates + E2E
   green, PR opened.
+- **2026-08-20** — Whole-branch review: Approved, zero Critical, zero Important, five Minor. Four
+  taken in-branch (`4925d54`) rather than filed: the stale walkthrough row, the allowlist test's
+  stated blind spots, a dead field name, and #155's title narrowed to arm 2 as the owner asked.
+- **2026-08-20** — **Merged `8a14e7c` (PR #176, squash).** All three issues auto-closed — one
+  `Closes` keyword each, since GitHub binds a keyword to ONE reference. **Codex came back clean on
+  the first push**: zero inline threads, which on this repo is a pass and not an absence. Branch
+  deleted, scratch DB `erp_test_a3` dropped, dev DB restored to pristine.
 
 ## What this group is worth remembering for
 
