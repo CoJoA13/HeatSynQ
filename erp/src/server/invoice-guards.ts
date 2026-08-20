@@ -199,9 +199,14 @@ async function applicationVoidHintFor(
     .sort((a, b) => a.year - b.year || a.month - b.month)
     .map(periodLabel);
   const one = months.length === 1;
-  return ` (${WRITE_OFF_VOID_ROUTE}; what is applied in ${one ? "period" : "periods"} `
+  // "CLOSED period", not bare "period" — the refusal this restates says "The accounting period
+  // 2026-01 is closed — reopen it to make this change" (`assertPeriodOpen`), and the manual teaches
+  // that vocabulary. Leaving closure implied gave the operator two words for one condition and made
+  // them infer the link; reviewer-caught. Same reason `periodLabel` is shared rather than formatted
+  // here: one condition, one name for it, wherever they meet it.
+  return ` (${WRITE_OFF_VOID_ROUTE}; what is applied in closed ${one ? "period" : "periods"} `
     + `${months.join(", ")} cannot be voided until `
-    + `${one ? "that period is" : "those periods are"} reopened)`;
+    + `${one ? "it is" : "they are"} reopened)`;
 }
 
 /** Per-INVOICE — `discardInvoice` and `unlockInvoice`, whose guard is `hasReceivableActivity`. The

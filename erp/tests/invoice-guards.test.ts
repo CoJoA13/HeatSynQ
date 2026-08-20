@@ -292,7 +292,7 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
   const OPEN_ROUTE = " (a bad-debt write-off is voided from the customer's Receivables section)";
   const closedIn = (label: string) =>
     " (a bad-debt write-off is voided from the customer's Receivables section; "
-    + `what is applied in period ${label} cannot be voided until that period is reopened)`;
+    + `what is applied in closed period ${label} cannot be voided until it is reopened)`;
   const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => applicationVoidHint(tx, invoiceId));
   const forOrder = (orderId: string) => prisma.$transaction((tx) => applicationVoidHintForOrder(tx, orderId));
 

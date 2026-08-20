@@ -728,7 +728,7 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
     expect((err as HttpError).status).toBe(400);
     expect((err as HttpError).message).toContain(
       " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
     // Refused, not half-applied.
     expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("FINALIZED");
   });
@@ -746,7 +746,7 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
     // the second the hard way, and scan order must not decide which one they hear about.
     expect((err as HttpError).message).toContain(
       " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in periods 2026-01, 2026-02 cannot be voided until those periods are reopened)");
+      + "what is applied in closed periods 2026-01, 2026-02 cannot be voided until they are reopened)");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
   });
 
@@ -781,7 +781,7 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
       .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).message).toContain(
       " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
   });
 });
 
@@ -811,7 +811,7 @@ describe("the period clause covers every live application, not only write-offs (
     expect((err as HttpError).status).toBe(400);
     expect((err as HttpError).message).toContain(
       " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
     // The ROUTE clause must NOT have been re-pointed at the payment on the way past: a payment is
     // voided from its receipt batch, and the sentence never claims otherwise.
     expect((err as HttpError).message).not.toMatch(/payment is voided|batch/i);
@@ -829,7 +829,7 @@ describe("the period clause covers every live application, not only write-offs (
     expect((err as HttpError).status).toBe(400);
     expect((err as HttpError).message).toContain(
       " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
   });
 
@@ -850,8 +850,8 @@ describe("the period clause covers every live application, not only write-offs (
     expect((err as HttpError).message).toBe(
       `Invoice #${inv.orderNumber} has payments, credits or write-offs applied — `
       + "void them before unlocking (a bad-debt write-off is voided from the customer's "
-      + "Receivables section; what is applied in periods 2026-01, 2026-02 cannot be voided until "
-      + "those periods are reopened)");
+      + "Receivables section; what is applied in closed periods 2026-01, 2026-02 cannot be voided "
+      + "until they are reopened)");
   });
 
   // The discriminating negative on the widened scope: cash in an OPEN month must not start widening
@@ -879,20 +879,53 @@ describe("the period clause covers every live application, not only write-offs (
    */
   it("costs nothing on a successful unlock — the hint never runs off the refusal path", async () => {
     const inv = await invoiceFixture({ total: 1000 });   // no applications at all: unlock succeeds
-    const original = prisma.application.findMany.bind(prisma.application);
     let calls = 0;
-    prisma.application.findMany = ((args: unknown) => {
-      calls += 1;
-      return original(args as Parameters<typeof original>[0]);
-    }) as unknown as typeof prisma.application.findMany;
-    try {
-      await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"));
-    } finally {
-      prisma.application.findMany = original;
-    }
+    // The counter goes on the TRANSACTION's delegate, and the unlock takes the injected-`tx`
+    // signature so it runs on that same client.
+    //
+    // An earlier version of this test patched the `prisma` singleton and ran the public no-`tx`
+    // path. It could not fail. `unlockInvoice` opens `prisma.$transaction(fresh => …)` and the hint
+    // queries on `fresh`, whose `.application` is a DIFFERENT object from the singleton's — measured:
+    // `tx.application === prisma.application` is false, and the singleton patch observed zero of the
+    // transaction's calls. So `calls` was 0 whether the hint sat inside the `if` or above it, and the
+    // docblock in invoice-guards.ts cited it as a guarantee. Reviewer-caught; the reason it survived
+    // is that this is the one assertion in the file nobody RED-verified, because doing so means
+    // hoisting the hint by hand rather than reasoning about it. It has now been hoisted and watched
+    // go red.
+    //
+    // Patching a per-transaction client is also the safe half of CLAUDE.md's `vi.spyOn` rule: the
+    // object dies with the transaction, so the shared singleton is never touched at all.
+    await asSystem(() => prisma.$transaction(async (tx) => {
+      const original = tx.application.findMany.bind(tx.application);
+      tx.application.findMany = ((args: unknown) => {
+        calls += 1;
+        return original(args as Parameters<typeof original>[0]);
+      }) as unknown as typeof tx.application.findMany;
+      await unlockInvoice(inv.invoiceId, "correct a line", tx);
+    }));
 
+    // Non-vacuous on both halves: the unlock really happened (so the path under test ran at all),
+    // and it cost no application read (so the hint did not).
     expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("DRAFT");
     expect(calls).toBe(0);
+  });
+
+  // The counter's own control. Without this, "0 calls" could mean "the counter never worked" just
+  // as easily as "the hint stayed off the path" — the failure that let the previous version pass.
+  // A REFUSED unlock must move it.
+  it("...and the counter proves it can see the hint: a refused unlock does read applications", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable" }));
+    let calls = 0;
+    await asSystem(() => prisma.$transaction(async (tx) => {
+      const original = tx.application.findMany.bind(tx.application);
+      tx.application.findMany = ((args: unknown) => {
+        calls += 1;
+        return original(args as Parameters<typeof original>[0]);
+      }) as unknown as typeof tx.application.findMany;
+      await expect(unlockInvoice(inv.invoiceId, "correct a line", tx)).rejects.toMatchObject({ status: 400 });
+    }));
+    expect(calls).toBeGreaterThan(0);
   });
 });
 
