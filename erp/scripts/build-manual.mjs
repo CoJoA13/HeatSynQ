@@ -1185,3 +1185,39 @@ if (unused.length > 0) {
   console.log(`  note: ${unused.length} captured screenshot(s) no chapter references: ${unused.join(", ")}`);
 }
 for (const w of warnings) console.log(`  warning: ${w}`);
+
+// ---------------------------------------------------------------------------------------------
+// The publishing ceiling (#169). A rendered page above PUBLISH_LIMIT cannot be published as a
+// shareable artifact at all, and the failure is invisible from here — you find out at publish
+// time, with no clue why. So the build states it.
+//
+// This is a REAL cliff today, not a theoretical one: `manual:capture` writes 2x PNGs (~24 MB of
+// screenshots), and the committed `img/` is roughly half that only because it was compressed by
+// hand with an external `magick` call that exists nowhere in this repository. Follow the
+// documented capture -> build workflow on a fresh checkout and the output lands near 28 MB.
+//
+// It WARNS at the soft threshold rather than only failing at the hard one, because the useful
+// moment to hear about this is while there is still headroom to spend, not after a chapter has
+// been written against figures that cannot ship.
+// ---------------------------------------------------------------------------------------------
+const PUBLISH_LIMIT = 16 * 1024 * 1024;
+const SOFT_LIMIT = Math.floor(PUBLISH_LIMIT * 0.85);
+const asMb = (n) => `${(n / 1024 / 1024).toFixed(2)} MB`;
+
+if (bytes > PUBLISH_LIMIT) {
+  console.error("");
+  console.error(`ERROR: ${asMb(bytes)} exceeds the ${asMb(PUBLISH_LIMIT)} publishing ceiling.`);
+  console.error("The page was still written, but it cannot be published as a shareable artifact.");
+  console.error("");
+  console.error("Almost certainly the screenshots: `manual:capture` writes 2x PNGs and the");
+  console.error("committed ones were reduced by an external step that is not in this repo (#169).");
+  console.error("Shrink docs/manual/img/ — or fix the capture scale, which is the real fix.");
+  console.error("");
+  process.exit(1);
+}
+if (bytes > SOFT_LIMIT) {
+  console.log(
+    `  warning: ${asMb(bytes)} of the ${asMb(PUBLISH_LIMIT)} publishing ceiling ` +
+      `(${asMb(PUBLISH_LIMIT - bytes)} left — see #169 before adding figures)`,
+  );
+}

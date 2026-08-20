@@ -23,21 +23,20 @@ import type { Gate } from "@/lib/permission-ui";
  * The `<img>` now renders only when there is something to fetch, and `onError` stays as the belt
  * for a race (a signature cleared in another tab between the list read and the image request).
  *
- * `hasSignature` seeds `useState` and is deliberately NOT re-baselined on later loads. The
- * tempting precedent is the page's `TitleCell`, which is remounted via
- * `key={`${u.id}-${u.title}`}` so a reload re-seeds its draft. Not copied here, and the honest
- * reason is an ORDERING one rather than a broken-remount one: this control's own upload/clear
- * move the truth LOCALLY first (`:49`, `:68`) and the page never refetches the list on either
- * event, so the page's `hasSignature` is strictly BEHIND this component's state from the first
- * upload onward. Re-baselining from a value that can only be staler can only lose information —
- * whatever key expression drives it. `<tr key={u.id}>` is stable and this control is unkeyed, so
- * the seed is taken once at mount, which is what we want.
+ * `hasSignature` SEEDS the state and is then adopted again whenever it actually CHANGES — see the
+ * adopt-on-change block below, which carries the full reasoning. The page's `TitleCell` precedent
+ * (remount via `key={`${u.id}-${u.title}`}`) is still not copied: a remount would also discard the
+ * error banner, the busy flag and the cache-busting `version`, none of which the server has an
+ * opinion about. Comparing one prop during render adopts the server's truth without throwing away
+ * state the server does not own.
  *
- * (An earlier draft of this note claimed a keyed remount would reset a just-uploaded signature to
- * `false`. That mechanism is NOT reachable — a `${u.id}-${u.hasSignature}` key only remounts when
- * the flag itself changes, so it would always re-seed from the fresh value. The conclusion was
- * right and the stated reason was not; corrected here so nobody disproves the reason and concludes
- * that keying is therefore safe.)
+ * This note has been wrong twice, so both corrections are recorded rather than overwritten. It
+ * first claimed a keyed remount would reset a just-uploaded signature to `false`; that mechanism is
+ * NOT reachable, since a `${u.id}-${u.hasSignature}` key only remounts when the flag changes and so
+ * would always re-seed from the fresh value. It then claimed the page's flag is "strictly behind"
+ * this component's state, which holds only within ONE session — another administrator's upload or
+ * clear makes the prop the fresher value. The conclusion (do not remount) survived both; the
+ * reasoning did not.
  *
  * `gate`: passed straight from the page's own `gateDo(perms, "manage_users")` (§5.16) — every
  * verb on this route requires that same special action, upload and clear both disabled with its
@@ -51,6 +50,25 @@ export function UserSignatureControl(
   // Seeded from the list read (#160), not optimistically true; the <img>'s onError is now only
   // the race belt. See the docblock on why this is not re-baselined by a keyed remount.
   const [hasImage, setHasImage] = useState(hasSignature);
+  // ADOPT-ON-CHANGE (Codex round 1 on PR #168). The React "adjust state when a prop changes"
+  // idiom — compared during render, not in an effect, so there is no extra commit and no flash.
+  //
+  // Why it is needed, and why the docblock's "strictly behind" claim was too strong: it holds only
+  // within one session. ANOTHER administrator can upload or clear this user's signature, and this
+  // page reloads its list after any unrelated edit (title, role, active) — so the prop can arrive
+  // NEWER than local state, and a seed-once control would show the stale placeholder or a cached
+  // image indefinitely. The pre-#160 code self-corrected here by accident: it always rendered the
+  // <img> and let the 404 tell it the truth, so every reload re-probed. Seeding from the flag
+  // removed that probe, which removed the correction with it — this puts the correction back
+  // deliberately instead.
+  //
+  // Local upload/clear move `hasImage` WITHOUT moving `hasSignature`, so `lastSeen` still matches
+  // and nothing here fires: a local edit still wins over a server value that has not changed since.
+  const [lastSeen, setLastSeen] = useState(hasSignature);
+  if (hasSignature !== lastSeen) {
+    setLastSeen(hasSignature);
+    setHasImage(hasSignature);
+  }
   const [version, setVersion] = useState(0); // cache-busts the <img> src after upload/clear
   const fileInputRef = useRef<HTMLInputElement>(null);
   const path = `/api/admin/users/${userId}/signature`;
