@@ -202,8 +202,8 @@ The fix is **not** to apply more of the cash. An application reduces the open in
 unapplied cash by the same amount, so Net does not move at all. The only two levers are more
 invoiced work and less cash, and the seed uses both: seven shipped-complete orders are billed in the
 current month, and the on-account payments are sized modestly. Receivables now cover unapplied cash
-about 2.2×, with enough still on account that the concept — and the trap in #159 — stay
-demonstrable.
+about 2.2×, with enough still on account that the concept — and the closed-month freeze ruled on in
+#159, section 4 below — stay demonstrable.
 
 Per customer:
 
@@ -333,14 +333,26 @@ the audit history for the reopen.
 
 (Not to be confused with `OrderStatus.REOPENED`, which is present and unrelated — see Orders above.)
 
-### 4. Prior-month on-account cash can never be applied
+### 4. Prior-month on-account cash, frozen by its closed month — on purpose
 
-Not a seeding limitation but a **live operational trap** the dataset now embodies: the three
-prior-month payments are on account permanently. `applyPayment` uses the payment's `receivedDate` as
-the application's `appliedDate`, and `assertPeriodOpen` refuses an application dated into a closed
-month — so once the month closes, that cash cannot be applied to anything, ever, without reopening
-the period. Worth stating explicitly in the manual's receivables chapter, because a clerk will hit
-it. Filed as **#159** (owner decision pending).
+The three prior-month payments are on account permanently: `applyPayment` dates an application at
+the payment's `receivedDate`, and `assertPeriodOpen` refuses one dated into a closed month, so once
+the month closes that cash cannot be applied without reopening the period.
+
+**This is the period lock working, not a defect and not a seeding artefact** — owner ruling
+2026-08-19 on #159, option (a), now closed. The cash-journal entry belongs to the date the cash
+arrived, and a late allocation genuinely *does* change a closed month's aging; the reopen is the
+correct, visible, audited route rather than a workaround. So the $6,750 sitting frozen in closed
+2026-07 is **correct data, and a deliberate demonstration** of the lock — one of the few places the
+dataset can show it biting.
+
+The office procedure that follows is the thing to teach: **allocate on-account cash before the month
+closes.** Cash that cannot be allocated the day it lands should be allocated before month end, not
+left to outlive its period. The manual's Receivables and Month-end chapters state it that way.
+
+Also deliberate, and asked about every time the two are read side by side: `applyPayment` dates at
+`receivedDate` while `applyCredit` dates at `todayDateOnly()`. For cash the date is when the money
+arrived; for a credit it is when the allocation happened. Both functions carry the answer.
 
 ---
 

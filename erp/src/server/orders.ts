@@ -14,7 +14,7 @@ import { resolveCertSettings, createCert, type CertResolution } from "./certs";
 import { seedLineIntoLiveCerts } from "./cert-results";
 import { claimOrder } from "./order-locks";
 import {
-  finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, WRITE_OFF_VOID_HINT,
+  finalizedInvoiceFor, invoiceBlockMessage, hasReceivableActivityForOrder, writeOffVoidHintForOrder,
 } from "./invoice-guards";
 import { judgeQuoteLine, resolveAutoLink, type QuoteLinkCandidate } from "./quote-links";
 import { recomputeOrderStatus, shippedTotals } from "./ship-ledger";
@@ -1353,9 +1353,12 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
     // the order claim `claimOrder` already holds — the same claim `applyPayment`/`applyCredit` take —
     // so the check and the void it guards serialize through it.
     if (await hasReceivableActivityForOrder(tx, id)) {
+      // #157: the tail is computed at the ORDER scope, matching the guard above — it names a reopen
+      // only when a standalone write-off on one of this order's invoices sits in a closed month, so
+      // the Receivables section it points at would refuse the void.
       throw new HttpError(400,
         "This order cannot be voided — an invoice or credit on this order has A/R activity; " +
-        `void the payments, credits or write-offs applied to it first${WRITE_OFF_VOID_HINT}`);
+        `void the payments, credits or write-offs applied to it first${await writeOffVoidHintForOrder(tx, id)}`);
     }
 
     // P5A spec §5.7: an order with a finalized invoice cannot be voided — credit or unlock first.

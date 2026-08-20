@@ -49,9 +49,11 @@ type PaymentRow = {
   onAccount: number; applications: PaymentApplicationRow[];
 };
 
+/** `balance` mirrors the server's `number | null` (#163): null = no control total, so nothing has
+ *  been proved. It is a THIRD state, rendered distinctly from a proved 0 in the header tile below. */
 type BatchDetailData = {
   id: string; batchNumber: number; depositDate: string; controlTotal: number | null;
-  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number; notes: string;
+  status: ReceiptBatchStatusValue; enteredTotal: number; balance: number | null; notes: string;
   payments: PaymentRow[]; deletedAt: string | null;
 };
 
@@ -90,7 +92,8 @@ function statusLocked(g: Gate, posted: boolean): Gate {
 // ---------------------------------------------------------------------------------------------
 // ApplyPanel — one payment's apply-and-settle grid (design spec: "apply a payment across one or
 // more invoices, including across the divisions of a parent customer"; task-13-brief.md: "an
-// amount input, a 'take discount' affordance shown only when discountAvailable > 0, and a
+// amount input, a 'take discount' affordance shown only when the server offers a figure — with a
+// hint in its place when a bigger remittance would earn one, #155 arm 2 — and a
 // write-off input (reason required)"). `useBulkGrid` composes the payer's/family's open finalized
 // invoices — fetched fresh whenever the panel opens or a submission lands — with whatever the
 // operator has typed so far, the `InvoiceLinesGrid` shape (a whole batch of edited rows submitted
@@ -99,16 +102,33 @@ function statusLocked(g: Gate, posted: boolean): Gate {
 // orphan-detection if the candidate set changes under the operator mid-edit.
 // ---------------------------------------------------------------------------------------------
 
+/** The discount half of `GET /api/receivables/applications?paymentId=&invoiceId=` — the server's
+ *  `DiscountOffer` (applications.ts), re-declared here because a client component may not import
+ *  from `src/server/**` (permission-constants.ts is the precedent for the shared-shape rule).
+ *
+ *  `settlingAmount`/`wouldEarn` are non-null EXACTLY when the server's blocker is `would_not_settle`
+ *  — #155 arm 2's one operator-fixable case — so the cell branches on their presence rather than
+ *  re-declaring the four-way blocker union it would otherwise have to keep in step by hand. The
+ *  three silent blockers are silent by ruling, not by omission; see `DiscountBlock`'s docblock. */
+type DiscountOfferView = { amount: number; settlingAmount: number | null; wouldEarn: number | null };
+
 type ApplyLineFields = {
   documentNumber: string; customerCode: string; customerName: string; dueDate: string;
-  open: string; discountAvailable: string;
+  open: string; discountAmount: string;
+  /** #155 arm 2 — both "" unless the server offered a route out. `useBulkGrid`'s fields are strings,
+   *  so "absent" is the empty string rather than null. NEVER re-derived on the client: the figure
+   *  that earns the discount is measured against this receipt's UNAPPLIED cash, which the grid does
+   *  not know (see `DiscountOffer`'s docblock for why re-deriving it produces a false sentence). */
+  discountSettlingAmount: string; discountWouldEarn: string;
   amount: string; takeDiscount: string; writeOffAmount: string; writeOffReason: string;
 };
 
-function toApplyFields(row: OpenInvoiceRow & { discountAvailable: number }): ApplyLineFields {
+function toApplyFields(row: OpenInvoiceRow & { discount: DiscountOfferView }): ApplyLineFields {
   return {
     documentNumber: row.documentNumber, customerCode: row.customerCode, customerName: row.customerName,
-    dueDate: row.dueDate ?? "", open: String(row.open), discountAvailable: String(row.discountAvailable),
+    dueDate: row.dueDate ?? "", open: String(row.open), discountAmount: String(row.discount.amount),
+    discountSettlingAmount: row.discount.settlingAmount === null ? "" : String(row.discount.settlingAmount),
+    discountWouldEarn: row.discount.wouldEarn === null ? "" : String(row.discount.wouldEarn),
     amount: "", takeDiscount: "false", writeOffAmount: "", writeOffReason: "",
   };
 }
@@ -127,7 +147,7 @@ function ApplyPanel({
   onApplied: () => void;
   onError: (message: string | null) => void;
 }) {
-  const [candidates, setCandidates] = useState<(OpenInvoiceRow & { discountAvailable: number })[]>([]);
+  const [candidates, setCandidates] = useState<(OpenInvoiceRow & { discount: DiscountOfferView })[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
@@ -136,7 +156,7 @@ function ApplyPanel({
   const grid = useBulkGrid<ApplyLineFields>();
 
   // Two reads per open call: the family's open invoices (`?customerId=`), then — per candidate,
-  // in parallel — THIS payment's eligible discount on it (`?paymentId=&invoiceId=`, which also
+  // in parallel — THIS payment's discount OFFER on it (`?paymentId=&invoiceId=`, which also
   // answers with `open`; only `discount` is used here, since the customerId-mode read above is
   // already the fresher of the two open-balance figures at panel-open time).
   const load = useCallback(async () => {
@@ -148,12 +168,12 @@ function ApplyPanel({
       if (latest.isCurrent(t)) { setLoadError((e as Error).message); setLoaded(true); }
       return;
     }
-    let withDiscount: (OpenInvoiceRow & { discountAvailable: number })[];
+    let withDiscount: (OpenInvoiceRow & { discount: DiscountOfferView })[];
     try {
       withDiscount = await Promise.all(rows.map(async (row) => {
-        const d = await api<{ open: number; discount: number }>(
+        const d = await api<{ open: number; discount: DiscountOfferView }>(
           `/api/receivables/applications?paymentId=${payment.id}&invoiceId=${row.id}`);
-        return { ...row, discountAvailable: d.discount };
+        return { ...row, discount: d.discount };
       }));
     } catch (e) {
       if (latest.isCurrent(t)) { setLoadError((e as Error).message); setLoaded(true); }
@@ -182,7 +202,7 @@ function ApplyPanel({
         lines.push({ invoiceId: row.key, type: "PAYMENT", amount: n });
       }
       if (row.takeDiscount === "true") {
-        const d = Number(row.discountAvailable);
+        const d = Number(row.discountAmount);
         if (d > 0) lines.push({ invoiceId: row.key, type: "DISCOUNT", amount: d });
       }
       const writeOff = row.writeOffAmount.trim();
@@ -302,7 +322,7 @@ function ApplyPanel({
             </thead>
             <tbody>
               {rows.map((row) => {
-                const discountAvailable = Number(row.discountAvailable);
+                const discountAmount = Number(row.discountAmount);
                 return (
                   <tr key={row.key} className="border-t">
                     <td className="py-1 pr-2 font-mono">{row.documentNumber}</td>
@@ -316,14 +336,38 @@ function ApplyPanel({
                              aria-label={`${row.documentNumber} amount`}
                              className="w-full rounded border px-2 py-1 text-right disabled:cursor-not-allowed disabled:bg-slate-100" />
                     </td>
+                    {/* #155 arm 2: THREE renderings, never two. An empty cell used to mean both
+                        "nothing is on offer here" and "something is on offer, but not to a receipt
+                        this size" — and the second is a §5.14 block that named neither what was
+                        blocking it nor the way through, on a screen where 20.00 was reachable.
+                          amount > 0        — the offer, as the "Take N" checkbox.
+                          settling present  — `would_not_settle`: the hint below. TEXT, never a
+                                              disabled checkbox — two E2E flows assert a row-scoped
+                                              checkbox count of 0 here, and rightly.
+                          otherwise         — silent. The remaining blockers have no route out, and
+                                              §5.14 does not ask you to narrate a dead end.
+                        The sentence says "applying X HERE", not "remit X": the server measures this
+                        receipt's UNAPPLIED cash, so a receipt part-spent on another invoice needs a
+                        bigger face than X. Both figures come from the server for that reason. */}
                     <td className="pr-2">
-                      {discountAvailable > 0 && (
+                      {discountAmount > 0 ? (
                         <label className="flex items-center gap-1 whitespace-nowrap">
                           <input type="checkbox" checked={row.takeDiscount === "true"}
                                  disabled={!moneyGate.allowed || disabled} title={moneyGate.title}
                                  onChange={(e) => patchRow(row, { takeDiscount: e.target.checked ? "true" : "false" })} />
-                          Take {discountAvailable.toFixed(2)}
+                          Take {discountAmount.toFixed(2)}
                         </label>
+                      ) : row.discountSettlingAmount !== "" && (
+                        <div className="max-w-[14rem] text-xs text-slate-600">
+                          <span className="block">Not enough cash left on this receipt to settle.</span>
+                          {/* ONE template literal, not interleaved JSX text and expressions: the
+                              sentence is asserted verbatim by two E2E flows, and JSX's line-joining
+                              rules are not something an exact-text assertion should depend on. */}
+                          <span className="block">
+                            {`Applying ${Number(row.discountSettlingAmount).toFixed(2)} here would earn ` +
+                             `${Number(row.discountWouldEarn).toFixed(2)}.`}
+                          </span>
+                        </div>
                       )}
                     </td>
                     <td className="w-24 pr-2">
@@ -626,10 +670,25 @@ export function BatchDetail({ id }: { id: string }) {
             Entered
             <div className="mt-1 rounded border bg-slate-50 px-2 py-1">{batch.enteredTotal.toFixed(2)}</div>
           </div>
+          {/* #163: THREE states, never two. Balance is the PROOF figure, so:
+                null  — no control total was entered, so this deposit was checked against NOTHING.
+                        Deliberately NOT the slate branch (slate is "proved, and it agrees") and
+                        deliberately NOT amber either: amber on this screen means "the figures
+                        disagree — resolve it before posting", and an unproved batch posts freely
+                        by the owner's Q18 answer, so amber would invent a blocker that does not
+                        exist. Blue is this app's informational note colour (orders/new,
+                        QuoteDetail, ShipmentDetail) — it stands out from both without claiming an
+                        error. The WORDS carry the meaning on their own; the colour is a redundant
+                        cue, so nothing is lost to a colour-blind reader or a greyscale print.
+                0     — a real control total that foots to the cent. Proved.
+                other — the control total and what was keyed disagree by this much. */}
           <div className="block">
             Balance
-            <div className={`mt-1 rounded border px-2 py-1 ${batch.balance === 0 ? "bg-slate-50" : "bg-amber-50 text-amber-800"}`}>
-              {batch.balance.toFixed(2)}
+            <div className={`mt-1 rounded border px-2 py-1 ${
+              batch.balance === null ? "bg-blue-50 text-blue-800"
+                : batch.balance === 0 ? "bg-slate-50"
+                  : "bg-amber-50 text-amber-800"}`}>
+              {batch.balance === null ? "Not proved — no control total" : batch.balance.toFixed(2)}
             </div>
           </div>
         </div>

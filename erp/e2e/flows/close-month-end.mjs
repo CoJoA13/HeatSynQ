@@ -308,6 +308,11 @@ export async function run(page, shot, ctx) {
   // (`closeBatchId`), never `receivablesBatchId`, so the two A/R flows' backstops cannot clobber
   // each other.
   ctx.created.closeBatchId = page.url().split("/").pop();
+  // #163: no Control total was entered, so this deposit has been proved against NOTHING and the
+  // Balance tile must say so rather than showing the 0.00 that reads as "balances perfectly"
+  // (receivables-apply-age-statement.mjs makes the same assertion on its own batch).
+  await page.getByText("Not proved — no control total", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
   await shot("batch-created");
 
   await page.locator("label", { hasText: "Payer customer" }).locator("select").selectOption(fixtures.closeCustomerId);
@@ -337,6 +342,13 @@ export async function run(page, shot, ctx) {
   // visible half of the rule (receivables-apply-age-statement.mjs makes the same assertion).
   assert.equal(await invoiceCandidateRow.locator('input[type="checkbox"]').count(), 0,
     "no early-pay discount may be offered on a payment that cannot settle the invoice (#69)");
+  // #155 arm 2: what the cell says INSTEAD. The checkbox's absence is no longer the cell's whole
+  // content — an empty Discount column could not tell "nothing is on offer" from "20.00 is within
+  // reach". Text, never a disabled control, so the count assertion above stays true. The 980.00 is
+  // the server's figure (the 1,000.00 open net of the 20.00 it earns), and the sentence says
+  // "applying … here" rather than "remit …" because the guard tests the receipt's UNAPPLIED cash.
+  await invoiceCandidateRow.getByText("Applying 980.00 here would earn 20.00.", { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
   await invoiceCandidateRow.getByLabel(`${order.number} write-off amount`, { exact: true }).fill(WRITE_OFF_AMOUNT);
   await invoiceCandidateRow.getByLabel(`${order.number} write-off reason`, { exact: true }).fill(WRITE_OFF_REASON);
   await shot("apply-panel-filled");

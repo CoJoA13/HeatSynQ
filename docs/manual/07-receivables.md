@@ -31,9 +31,15 @@ offers **Posted** and **All**.
 
 ![A deposit batch, with a payment's apply panel open](img/receivables-batches-detail.png)
 
-The header repeats the four figures. **Balance** turns amber whenever it is not zero: that is the
-difference between the control total and what you have actually keyed, and it is the number you are
-working down.
+The header repeats the four figures. **Balance** has three states, because it is the *proof* figure —
+what you told the system the deposit came to, against what you actually keyed:
+
+- **A figure in amber** — the two disagree by that much. It is the number you are working down.
+- **0.00, plain** — they agree to the cent. The deposit is proved.
+- **"Not proved — no control total", in blue** — you entered no control total, so this deposit has
+  been checked against nothing. It is not an error and the batch will still post; it simply has not
+  been proved, and the screen says so rather than showing a reassuring zero. The batch list says
+  **Not proved** in the same column for the same reason.
 
 **Add payment** takes the **Payer customer**, **Payment type**, **Amount**, **Check #** and
 **Received date**. The received date will not accept a future date — *"The received date must be on
@@ -126,9 +132,21 @@ earned nothing on the first payment, but the remainder can still be settled earl
 The entitlement does not regrow as the balance drops, though: it is 2% of the invoice **total**, less
 any discount already taken, and once spent it is gone.
 
-When the discount does not apply, the checkbox simply is not offered. If you try to force one
-through anyway the message names the arithmetic — *"an early-pay discount is earned only by a
-payment that settles the invoice — this covers 500 of the 1000 open"*.
+When the discount does not apply, the checkbox is not offered — but the column no longer goes
+silent on the one case you can do something about. A cheque that is simply too small to settle the
+invoice now reads:
+
+> Not enough cash left on this receipt to settle.
+> Applying 980.00 here would earn 20.00.
+
+That figure is the cash that has to reach **this invoice**, not what the cheque has to be worth: a
+receipt that has already paid part of itself onto another invoice needs a bigger cheque again to
+leave that much unapplied. The other three cases stay blank on purpose — a closed window, terms
+carrying no discount, and an entitlement already spent are not things a larger remittance fixes.
+
+If you try to force a discount through anyway the message names the arithmetic — *"an early-pay
+discount is earned only by a payment that settles the invoice — this covers 500 of the 1000
+open"*.
 
 **Two further things worth knowing.**
 
@@ -140,10 +158,13 @@ And the offer is **per invoice, not per grid**. A $1,000 cheque facing two $1,00
 show "Take 20.00" on both, because that cash could settle either one — just not both. Tick both and
 the save refuses, correctly, because the cheque is not big enough.
 
-> **A known rough edge:** when no discount applies, the message is the same three words —
-> *"no early-pay discount applies"* — whether the window has passed, the invoice has no discount
-> terms at all, or the entitlement is already spent. It does not tell you which. Check the invoice's
-> terms and its date. This is filed as [#155](https://github.com/CoJoA13/HeatSynQ/issues/155).
+> **A known rough edge:** the *refusal* you get from forcing a discount through is still the same
+> three words — *"no early-pay discount applies"* — whether the window has passed, the invoice has
+> no discount terms at all, or the entitlement is already spent. It does not tell you which. Check
+> the invoice's terms and its date. The apply **column** does now distinguish the one of those
+> cases you can act on (above); that was
+> [#155](https://github.com/CoJoA13/HeatSynQ/issues/155) arm 2, ruled 2026-08-19. The refusal's
+> wording was not part of that ruling.
 
 ## Write-offs
 
@@ -169,16 +190,22 @@ The two differ in one way that matters at month end:
 Both need the month to be open, and neither counts toward settling an invoice for discount purposes
 — absorbing a short payment is the opposite of being paid early.
 
-**A fully written-off invoice stays on the list.** It does not disappear at zero. It stays in the
-customer's open items carrying an amber **Written off** badge, and expands to show each write-off
-— *"Written off 412.60 · on 2026-08-12 — customer in receivership"* — each with its own **Void**
-control. That control is the only way to undo a write-off keyed by mistake, which is exactly why the
-row is kept: an invoice that vanished at zero would be uncorrectable.
+**A fully written-off invoice stays on the list — while the write-off can still be undone.** It does
+not disappear at zero. It stays in the customer's open items carrying an amber **Written off** badge,
+and expands to show each write-off — *"Written off 412.60 · on 2026-08-12 — customer in
+receivership"* — each with its own **Void** control. That control is the only way to undo a write-off
+keyed by mistake, which is exactly why the row is kept: an invoice that vanished at zero would be
+uncorrectable.
+
+Once the month the write-off is dated in closes, the row drops off the list like any other settled
+invoice. Nothing is lost by that: **Void** would be refused in a closed month anyway, so correcting
+the write-off needs the month reopened first, and a row that advertises an undo it can no longer
+perform is worse than no row. Reopen the month and it comes back.
 
 Voiding one warns you what will happen — *"The invoice's open balance comes back."* — and requires a
 reason.
 
-## The trap: cash stranded by a closed month
+## On-account cash has a deadline: the month-end close
 
 This one will happen to somebody in your office, so it is worth understanding before it does.
 
@@ -190,19 +217,23 @@ But a closed month accepts no postings. So:
 > **Once the month a payment arrived in is closed, cash still sitting on account from that payment
 > can never be applied to anything — ever — unless the month is reopened.**
 
-The refusal is correct and the guard is doing its job. But the practical consequence is a real trap:
-on-account cash has a deadline, and the deadline is the month-end close. **Clear on-account cash
-before you close the month it arrived in.**
+The refusal is correct and the guard is doing its job — a late allocation genuinely *does* change a
+closed month's aging, and this is how that change is kept visible and audited instead of silent. The
+practical consequence is a deadline: **clear on-account cash before you close the month it arrived
+in.** Treat it as the last job before a close, not as a hazard to work around.
+
+When cash does outlive its month, the way out is to reopen the month, apply it, and close again. It
+is deliberately heavyweight; the Month-end chapter covers the reopen.
 
 Two details soften the edges slightly. A **credit memo** applied to an invoice dates from *today*,
 not from the credit's own date, so credits are not stranded the same way. And a standalone bad-debt
 write-off also dates from today. It is specifically *payment* applications that inherit the old
 date.
 
-The demonstration data contains exactly this situation — the three payments in the closed July
-batch are on account permanently. This is filed as
-[#159](https://github.com/CoJoA13/HeatSynQ/issues/159) and is awaiting an owner decision; it is
-documented here as behaviour, not as a recommendation.
+The demonstration data contains exactly this situation — the three payments in the closed July batch
+are on account permanently, and that is deliberate, so the lock can be seen working. It was raised as
+[#159](https://github.com/CoJoA13/HeatSynQ/issues/159) and settled on 2026-08-19: the behaviour
+stands as designed, and the procedure above is the answer to it.
 
 ## The aging report
 
