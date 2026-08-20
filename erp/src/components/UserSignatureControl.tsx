@@ -23,53 +23,51 @@ import type { Gate } from "@/lib/permission-ui";
  * The `<img>` now renders only when there is something to fetch, and `onError` stays as the belt
  * for a race (a signature cleared in another tab between the list read and the image request).
  *
- * `hasSignature` SEEDS the state and is then adopted again whenever it actually CHANGES — see the
- * adopt-on-change block below, which carries the full reasoning. The page's `TitleCell` precedent
- * (remount via `key={`${u.id}-${u.title}`}`) is still not copied: a remount would also discard the
- * error banner, the busy flag and the cache-busting `version`, none of which the server has an
- * opinion about. Comparing one prop during render adopts the server's truth without throwing away
- * state the server does not own.
+ * **THIS COMPONENT KEEPS NO COPY OF "does a signature exist".** `hasSignature` is rendered
+ * directly, and every change — a local upload, a local clear, the `<img>`'s 404 belt — is reported
+ * up through `onSignatureChange` so the PAGE's row is the one and only truth. Local state here is
+ * `error`, `busy` and the cache-busting `version`: things the server has no opinion about.
  *
- * This note has been wrong twice, so both corrections are recorded rather than overwritten. It
- * first claimed a keyed remount would reset a just-uploaded signature to `false`; that mechanism is
- * NOT reachable, since a `${u.id}-${u.hasSignature}` key only remounts when the flag changes and so
- * would always re-seed from the fresh value. It then claimed the page's flag is "strictly behind"
- * this component's state, which holds only within ONE session — another administrator's upload or
- * clear makes the prop the fresher value. The conclusion (do not remount) survived both; the
- * reasoning did not.
+ * That shape was arrived at the hard way, and the history is the point (Phase-4 lesson 4 — when
+ * three rounds land on one mechanism, the DESIGN is the finding). Three successive attempts to keep
+ * a local `hasImage` in step with the prop were each wrong in a way the previous one could not see:
+ *
+ *   1. Seed once, never re-baseline. Justified with a keyed-remount hazard that is not reachable
+ *      (a `${u.id}-${u.hasSignature}` key only remounts when the flag changes, so it would always
+ *      re-seed FRESH). Wrong reason; and the rule itself missed every later server change.
+ *   2. Seed once, "the page's flag is strictly behind us". True within one session only — another
+ *      administrator's upload or clear makes the PROP the fresher value, and the pre-#160 code had
+ *      been self-correcting that by accident, because it always rendered the `<img>` and let the
+ *      404 tell it the truth. Removing that probe removed the correction with it.
+ *   3. Adopt when the prop CHANGES (`lastSeen` compare). Misses a change that round-trips: upload
+ *      locally (prop still `false`), another administrator clears, the list reloads `false` — equal
+ *      to `lastSeen`, so nothing fires and a cached image shows indefinitely. The clear-then-upload
+ *      inverse strands the placeholder the same way.
+ *
+ * Every one of those is the same bug: two copies of one fact, reconciled by a rule. Deleting the
+ * second copy deletes the class — there is no longer any state that CAN diverge, so none of the
+ * three scenarios above is expressible. The page's `TitleCell` keyed-remount precedent is still not
+ * copied, and now for a plain reason: a remount would also discard `error`, `busy` and `version`,
+ * which are genuinely this component's own.
+ *
+ * ONE residual, stated rather than hidden: `version` cache-busts only on a LOCAL upload, so if
+ * another administrator REPLACES a signature (the flag stays `true` throughout), the browser may
+ * keep serving the previously fetched bytes for this URL until a reload. Fixing that would mean
+ * re-requesting every signature on every list load, which is exactly the cost #160 removed.
  *
  * `gate`: passed straight from the page's own `gateDo(perms, "manage_users")` (§5.16) — every
  * verb on this route requires that same special action, upload and clear both disabled with its
  * tooltip when it's missing, never hidden.
  */
 export function UserSignatureControl(
-  { userId, hasSignature, gate }: { userId: string; hasSignature: boolean; gate: Gate },
+  { userId, hasSignature, gate, onSignatureChange }:
+    { userId: string; hasSignature: boolean; gate: Gate; onSignatureChange: (next: boolean) => void },
 ) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Seeded from the list read (#160), not optimistically true; the <img>'s onError is now only
-  // the race belt. See the docblock on why this is not re-baselined by a keyed remount.
-  const [hasImage, setHasImage] = useState(hasSignature);
-  // ADOPT-ON-CHANGE (Codex round 1 on PR #168). The React "adjust state when a prop changes"
-  // idiom — compared during render, not in an effect, so there is no extra commit and no flash.
-  //
-  // Why it is needed, and why the docblock's "strictly behind" claim was too strong: it holds only
-  // within one session. ANOTHER administrator can upload or clear this user's signature, and this
-  // page reloads its list after any unrelated edit (title, role, active) — so the prop can arrive
-  // NEWER than local state, and a seed-once control would show the stale placeholder or a cached
-  // image indefinitely. The pre-#160 code self-corrected here by accident: it always rendered the
-  // <img> and let the 404 tell it the truth, so every reload re-probed. Seeding from the flag
-  // removed that probe, which removed the correction with it — this puts the correction back
-  // deliberately instead.
-  //
-  // Local upload/clear move `hasImage` WITHOUT moving `hasSignature`, so `lastSeen` still matches
-  // and nothing here fires: a local edit still wins over a server value that has not changed since.
-  const [lastSeen, setLastSeen] = useState(hasSignature);
-  if (hasSignature !== lastSeen) {
-    setLastSeen(hasSignature);
-    setHasImage(hasSignature);
-  }
-  const [version, setVersion] = useState(0); // cache-busts the <img> src after upload/clear
+  // NO local copy of "does a signature exist" — see the docblock. `hasSignature` is rendered
+  // directly and every change is reported up through `onSignatureChange`.
+  const [version, setVersion] = useState(0); // cache-busts the <img> src after a local upload
   const fileInputRef = useRef<HTMLInputElement>(null);
   const path = `/api/admin/users/${userId}/signature`;
 
@@ -88,7 +86,7 @@ export function UserSignatureControl(
       const res = await fetch(path, { method: "PUT", body: form });
       if (!res.ok) await readError(res, `Upload failed (${res.status})`);
       setError(null);
-      setHasImage(true);
+      onSignatureChange(true);
       setVersion((v) => v + 1);
     } catch (err) {
       setError((err as Error).message);
@@ -107,7 +105,7 @@ export function UserSignatureControl(
       const res = await fetch(path, { method: "DELETE" });
       if (!res.ok) await readError(res, `Clear failed (${res.status})`);
       setError(null);
-      setHasImage(false);
+      onSignatureChange(false);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -117,14 +115,14 @@ export function UserSignatureControl(
 
   return (
     <span className="flex items-center gap-2">
-      {hasImage ? (
+      {hasSignature ? (
         // A same-origin API byte stream, not a static asset next/image's optimizer has any
         // business rewriting.
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={`${path}?v=${version}`}
           alt={`Signature for user ${userId}`}
-          onError={() => setHasImage(false)}
+          onError={() => onSignatureChange(false)}
           className="h-8 w-20 rounded border bg-white object-contain"
         />
       ) : (
@@ -142,7 +140,7 @@ export function UserSignatureControl(
       <button
         type="button"
         onClick={() => void clear()}
-        disabled={gate.disabled || busy || !hasImage}
+        disabled={gate.disabled || busy || !hasSignature}
         title={gate.title}
         className="text-xs text-red-600 underline disabled:cursor-not-allowed disabled:text-slate-400"
       >

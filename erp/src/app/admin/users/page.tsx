@@ -129,13 +129,16 @@ export default function UsersPage() {
                        onChange={(e) => patch(u.id, { active: e.target.checked })} />
               </td>
               <td className="p-2">
-                {/* Deliberately UNKEYED, unlike TitleCell above: the control owns the truth after
-                    mount (its own upload/clear move it locally, and the page never refetches on
-                    either), so this row's `hasSignature` is strictly BEHIND the control's own
-                    state — re-baselining from it can only lose information. #160, and the
-                    control's own docblock for why that, not a broken-remount story, is the
-                    reason. */}
-                <UserSignatureControl userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate} />
+                {/* THIS ROW owns the signature flag; the control keeps no copy of it and reports
+                    every change back here (#160, three Codex rounds — its docblock carries why two
+                    copies reconciled by a rule kept being wrong). Unkeyed on purpose: a remount
+                    would also throw away the control's error, busy and cache-bust state, which are
+                    genuinely its own. */}
+                <UserSignatureControl
+                  userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate}
+                  onSignatureChange={(next) => setUsers((prev) => prev.map(
+                    (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
+                  ))} />
               </td>
               <td className="p-2">
                 <button className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
