@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { prisma } from "@/server/db";
 import { truncateAll } from "./helpers/db";
 import { runWithContext } from "@/server/context";
@@ -15,6 +16,16 @@ const asSystem = <T>(fn: () => Promise<T>) =>
   runWithContext({ actor: { id: null, name: "test" }, user: null }, fn);
 
 beforeEach(truncateAll);
+
+/** Every .ts/.tsx under a directory — the `partial-unique-sweep.test.ts` walk, copied rather than
+ *  shared because that file's copy is itself private to it. */
+function tsFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) return tsFiles(full);
+    return entry.endsWith(".ts") || entry.endsWith(".tsx") ? [full] : [];
+  });
+}
 
 async function closeMonth(year: number, month: number) {
   return prisma.closePeriod.create({
@@ -154,9 +165,14 @@ describe("closedMonthsForDisplay — the display read (#157)", () => {
       new Date("2025-12-31"),
     ]);
     expect(calls).toHaveLength(1);
-    expect((calls[0] as { where: { OR: unknown[] } }).where.OR).toEqual([
+    // Order-INDEPENDENT: the contract is "one query, each distinct month exactly once", and the
+    // order the `OR` arms come out in is an artefact of how the dates were handed in. Pinning it
+    // would couple this test to something the function does not promise.
+    const or = (calls[0] as { where: { OR: unknown[] } }).where.OR;
+    expect(or).toHaveLength(3);
+    expect(or).toEqual(expect.arrayContaining([
       { year: 2026, month: 7 }, { year: 2026, month: 8 }, { year: 2025, month: 12 },
-    ]);
+    ]));
   });
 
   it("labels a month the way the refusal does", () => {
@@ -172,6 +188,12 @@ describe("closedMonthsForDisplay — the display read (#157)", () => {
   // display half; routing `assertPeriodOpen` at `closedMonthsForDisplay` instead of
   // `closedPeriodFor` makes `guardBlockedWhileHeld` read false.
   it("takes NO month lock, while assertPeriodOpen still does", async () => {
+    // A month closed BEFORE the lock is taken, and in a DIFFERENT month from the one held — so the
+    // display half below can assert the read is still CORRECT under a held lock, not merely that it
+    // returned. "It answered" and "it answered right" are different properties, and a lock-free read
+    // that started returning an empty map would pass the weaker one.
+    await closeMonth(2026, 5);
+
     let hasLock!: () => void;
     const locked = new Promise<void>((r) => { hasLock = r; });
     let release!: () => void;
@@ -184,9 +206,12 @@ describe("closedMonthsForDisplay — the display read (#157)", () => {
     }, { timeout: 15000 });
     await locked;
 
-    // The display read completes while the month lock is held by someone else.
-    const displayed = await closedMonthsForDisplay(prisma, [new Date("2026-07-15")]);
-    expect(displayed.size).toBe(0); // nothing closed — and, crucially, it answered at all
+    // The display read completes while the month lock is held by someone else — and answers
+    // correctly: 2026-05 is closed, the held 2026-07 is not.
+    const displayed = await closedMonthsForDisplay(prisma, [
+      new Date("2026-05-20"), new Date("2026-07-15"),
+    ]);
+    expect([...displayed.keys()]).toEqual([monthKey(new Date("2026-05-20"))]);
 
     // The GUARD does not: it blocks on the same lock until the holder commits.
     let guardDone = false;
@@ -203,6 +228,34 @@ describe("closedMonthsForDisplay — the display read (#157)", () => {
 
     expect(guardBlockedWhileHeld).toBe(true);
     expect(guardDone).toBe(true);
+  });
+
+  // The OTHER half of the safety property, and the likelier future mistake. The test above catches
+  // `assertPeriodOpen` being re-routed through the lock-free read; it cannot see a NEW mutation
+  // importing `closedMonthsForDisplay` directly instead of `assertPeriodOpen` — which is the same
+  // breach arriving by the front door. The docblock says "never a guard"; this makes a third caller
+  // a decision rather than a convenience.
+  //
+  // An ALLOWLIST, the `invoice-guards` leaf-test and `audit-children`'s INVALIDATION_SITES idiom:
+  // both sanctioned callers are page/wording reads that permit nothing.
+  it("is imported by exactly the two callers that only DISPLAY it", () => {
+    const src = join(process.cwd(), "src");
+    const importers = tsFiles(src)
+      .map((f) => f.slice(src.length + 1))
+      // Any MENTION, not just an `import { … }` line — a namespace import, a re-export or a
+      // dynamic import would all reach it, and this errs deliberately toward over-sensitive: the
+      // property being protected is the period lock's standing invariant, so a name-drop in a
+      // comment failing loudly is the cheap direction to be wrong in. `period-locks.ts` itself is
+      // excluded because it DECLARES the function; every other file here consumes it.
+      .filter((f) => f !== join("server", "period-locks.ts"))
+      .filter((f) => /\bclosedMonthsForDisplay\b/.test(readFileSync(join(src, f), "utf8")))
+      .sort();
+    expect(importers).toEqual([
+      // The customer A/R section's retention branch — a pure page read (#157).
+      "server/applications.ts",
+      // Chooses the WORDING of a refusal already decided by `hasReceivableActivity`; permits nothing.
+      "server/invoice-guards.ts",
+    ]);
   });
 });
 

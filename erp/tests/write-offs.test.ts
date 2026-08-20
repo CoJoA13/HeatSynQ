@@ -578,10 +578,16 @@ describe("openItemsForCustomer — retention is bounded by the write-off's own p
 // the retention bound above means the row is not even on that screen any more.
 //
 // The reachable case is ordinary: `unlockInvoice` guards the INVOICE's `finalizedAt` while a
-// write-off is dated at its own creation, so a January-finalized invoice with a write-off in a
-// closed January... reaches unlock's own period guard. The one that actually bites is the reverse —
-// a currently-finalized invoice carrying an older write-off in a closed month: unlock is permitted
-// to try, the A/R guard refuses it, and the Receivables section it names refuses the void.
+// write-off is dated at its own creation, so a July-finalized invoice carrying an August write-off
+// in a closed August is permitted to TRY the unlock (July is open) — and is then refused by the A/R
+// guard, which sends the operator to a Receivables section that refuses the void because August is
+// closed. Since the retention bound above, the row is not even listed there.
+//
+// A live write-off ALWAYS meets the A/R refusal first, whatever the months are:
+// `hasReceivableActivity` runs at invoices.ts:1637 and `assertPeriodOpen(finalizedAt)` only at
+// :1654. So unlock's own period guard is never what an operator hits while a write-off is live, and
+// the hint is the only thing that can tell them where the real wall is. (An earlier draft of this
+// comment had that ordering backwards — caught in review.)
 // -------------------------------------------------------------------------------------------
 
 /** The sentence as it reads when the route really is open — unchanged since #77, and pinned here so
