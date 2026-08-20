@@ -356,7 +356,7 @@ const startsBlock = (line) =>
   line.trimStart().startsWith("|");
 
 /** Parse a list of source lines into a flat array of block objects. */
-function parseBlocks(lines) {
+function parseBlocks(lines, file = null) {
   const blocks = [];
   let i = 0;
 
@@ -384,13 +384,22 @@ function parseBlocks(lines) {
     const fence = RE_FENCE.exec(line);
     if (fence) {
       const marker = fence[1][0];
+      const fenceLine = i + 1;
       const body = [];
       i += 1;
       while (i < lines.length && !new RegExp(`^ {0,3}${marker}{${fence[1].length},}\\s*$`).test(lines[i])) {
         body.push(lines[i]);
         i += 1;
       }
-      i += 1; // closing fence (or end of file)
+      // EOF is NOT a closing fence (Codex round 7). Treating it as one meant a chapter with a
+      // forgotten closer still built, publishing the whole remainder of the file as a code block —
+      // silent corruption, in the generator whose contract is to be loud about exactly this.
+      if (i >= lines.length) {
+        fail(`${file ?? "source"}: unterminated \`\`\` code fence opened at line ${fenceLine} — the rest of the file would render as code`);
+        blocks.push({ type: "code", lang: fence[2], body });
+        continue;
+      }
+      i += 1; // the closing fence
       blocks.push({ type: "code", lang: fence[2], body });
       continue;
     }
@@ -401,7 +410,7 @@ function parseBlocks(lines) {
         inner.push(lines[i].replace(/^ {0,3}> ?/, ""));
         i += 1;
       }
-      blocks.push({ type: "quote", blocks: parseBlocks(inner) });
+      blocks.push({ type: "quote", blocks: parseBlocks(inner, file) });
       continue;
     }
 
@@ -416,7 +425,7 @@ function parseBlocks(lines) {
     }
 
     if (RE_BULLET.test(line) || RE_ORDERED.test(line)) {
-      const [list, next] = parseList(lines, i);
+      const [list, next] = parseList(lines, i, file);
       blocks.push(list);
       i = next;
       continue;
@@ -469,7 +478,7 @@ function parseTable(rows) {
 const indentWidth = (s) => s.replace(/\t/g, "    ").length;
 
 /** Parse one list starting at `start`. Returns [block, indexAfter]. */
-function parseList(lines, start) {
+function parseList(lines, start, file = null) {
   const first = RE_ORDERED.exec(lines[start]) ?? RE_BULLET.exec(lines[start]);
   const ordered = RE_ORDERED.test(lines[start]);
   const baseIndent = indentWidth(first[1]);
@@ -513,7 +522,7 @@ function parseList(lines, start) {
   }
 
   return [
-    { type: "list", ordered, start: startNumber, items: items.map((it) => parseBlocks(it.lines)) },
+    { type: "list", ordered, start: startNumber, items: items.map((it) => parseBlocks(it.lines, file)) },
     i,
   ];
 }
@@ -638,15 +647,18 @@ function backMatterViolation(tail, file) {
   if (tail.length === 0) return null;
 
   if (file === README) {
-    // README's back matter is maintainer-facing supporting material: an italic lead-in paragraph
-    // and a list of italic links. Recognised by that lead-in, so real instructions appended here
-    // still fail rather than vanishing.
-    const [lead, ...rest] = tail;
-    if (lead.type !== "paragraph" || !/^\*Supporting material\b/.test(lead.text.trim())) {
-      return `README's back matter must open with the italic "*Supporting material…" line, found a ${lead.type}`;
+    // README's back matter is EXACTLY two blocks: the italic lead-in, then one list of italic
+    // links. Pinned to that exact shape rather than "the lead-in, then any paragraphs and lists"
+    // (Codex round 7) — the looser version accepted anything appended AFTER the supporting
+    // material and deleted it silently, which is the same silent amputation this whole function
+    // exists to prevent, and it contradicted the comment sitting right here claiming otherwise.
+    if (tail.length !== 2 || tail[0].type !== "paragraph" || tail[1].type !== "list") {
+      return `README's back matter must be exactly the "*Supporting material…" line and one list, `
+        + `found ${tail.length} block(s): ${tail.map((b) => b.type).join(", ")}`;
     }
-    const offender = rest.find((b) => b.type !== "list" && b.type !== "paragraph");
-    return offender ? `README's supporting material may only be paragraphs and lists, found a ${offender.type}` : null;
+    return /^\*Supporting material\b/.test(tail[0].text.trim())
+      ? null
+      : `README's back matter must open with the italic "*Supporting material…" line`;
   }
 
   const offender = tail.find((b) => b.type !== "paragraph" || !NAV_LINE.test(b.text.trim()));
@@ -669,7 +681,7 @@ function loadChapters() {
   if (files.length === 0) fail("no NN-*.md chapters found in docs/manual");
 
   return files.map((file) => {
-    const blocks = stripBackMatter(parseBlocks(read(file).split("\n")), file);
+    const blocks = stripBackMatter(parseBlocks(read(file).split("\n"), file), file);
     const head = blocks[0];
     if (!head || head.type !== "heading" || head.level !== 1) {
       fail(`${file}: does not open with a level-1 heading`);
@@ -1068,7 +1080,7 @@ function build() {
   };
 
   // ---- front page, from README.md -----------------------------------------
-  const frontBlocks = stripBackMatter(parseBlocks(read(README).split("\n")), README);
+  const frontBlocks = stripBackMatter(parseBlocks(read(README).split("\n"), README), README);
   const contents = readmeContents(frontBlocks);
 
   // The chapter order is derived twice — from the filenames and from README's contents table —
