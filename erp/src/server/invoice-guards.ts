@@ -93,8 +93,8 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
 }
 
 /**
- * The tail every `hasReceivableActivity` refusal carries — §5.14's rule that a block must name the
- * route out of itself.
+ * The ROUTE clause of the tail every `hasReceivableActivity` refusal carries — §5.14's rule that a
+ * block must name the route out of itself.
  *
  * It exists because of #77. Before the standalone bad-debt write-off there was no way to create a
  * WRITE_OFF without a payment, so "void the payment" was always a true instruction; now a
@@ -107,35 +107,74 @@ export function invoiceBlockMessage(inv: FinalizedInvoice, action: string): stri
  * the same destination: if the void surface ever moves, this is the single line that has to move
  * with it.
  *
- * **MODULE-PRIVATE since #157, deliberately.** The destination is no longer unconditional — a
- * write-off whose own month has closed cannot be voided there at all — so every refusal site now
- * goes through `applicationVoidHint` / `applicationVoidHintForOrder` below, which return exactly this
- * sentence in the ordinary case and widen it only when the route really is blocked. Un-exporting it
- * is what makes "append the unconditional sentence" un-typeable rather than merely discouraged.
+ * IT SPEAKS FOR EXACTLY ONE KIND, and always has: a payment and a residual (payment-sourced)
+ * write-off are voided from their receipt batch, not here. That is why it survives #173's widening
+ * unaltered — see the two-clause rule on `applicationVoidHintFor`.
+ *
+ * **MODULE-PRIVATE since #157, deliberately.** The sentence is no longer unconditional — what is
+ * applied in a closed month cannot be voided anywhere — so every refusal site goes through
+ * `applicationVoidHint` / `applicationVoidHintForOrder` below, which return exactly this sentence in
+ * the ordinary case and add to it only when something in scope really is blocked. Un-exporting it is
+ * what makes "append the unconditional sentence" un-typeable rather than merely discouraged.
  */
 const WRITE_OFF_VOID_ROUTE = "a bad-debt write-off is voided from the customer's Receivables section";
 const WRITE_OFF_VOID_HINT = ` (${WRITE_OFF_VOID_ROUTE})`;
 
-/** The rows the hint is about: LIVE, standalone (null-payment) write-offs. A residual write-off is
- *  voided from its receipt batch, where no period wording of ours applies, so it is not in scope. */
-const LIVE_STANDALONE_WRITE_OFF = { deletedAt: null, type: "WRITE_OFF", paymentId: null } as const;
+/**
+ * The rows all three refusals actually fire on: LIVE applications reaching this invoice from EITHER
+ * side. Stated ONCE and consumed by both the boolean guard (`hasReceivableActivity`) and the hint,
+ * so the sentence can never describe a set the guard did not consider — and, the direction #173 was
+ * filed for, can never fall SILENT about one it did.
+ *
+ * The two arms and why each is here are documented on `hasReceivableActivity` below; this is the
+ * same predicate hoisted, not a second opinion about it.
+ */
+const liveActivityForInvoice = (invoiceId: string): Prisma.ApplicationWhereInput =>
+  ({ deletedAt: null, OR: [{ invoiceId }, { creditInvoiceId: invoiceId }] });
+
+/** The ORDER-level companion — `hasReceivableActivityForOrder`'s two arms, hoisted for the same
+ *  reason and consumed by the same pair. */
+const liveActivityForOrder = (orderId: string): Prisma.ApplicationWhereInput =>
+  ({ deletedAt: null, OR: [{ invoice: { orderId } }, { creditInvoice: { orderId } }] });
 
 /**
- * The §5.14 hazard #157 made worse, and the reason this is a function and not a constant.
+ * The §5.14 hazard, and the reason this is a function and not a constant.
  *
- * `voidApplication` guards `assertPeriodOpen(appliedDate)`, so the Receivables section this sentence
- * names refuses a write-off whose own month has closed — and the REACHABLE case is ordinary, not
- * exotic: `unlockInvoice` guards the invoice's `finalizedAt` while a write-off is dated at its own
- * creation, so a July-finalized invoice with an August write-off in a closed August passes unlock's
- * period guard, gets refused for the write-off, and sends the operator to a screen that refuses them
- * again. Since #157 the row is not even listed there.
+ * `voidApplicationInTx` guards `assertPeriodOpen(live.appliedDate)` with NO type or `paymentId`
+ * predicate, so anything the three refusals fire on may already be un-voidable — and the REACHABLE
+ * case is ordinary, not exotic: `unlockInvoice` guards the INVOICE's `finalizedAt` while an
+ * application is dated at its own event, so a July-finalized invoice carrying an August payment in a
+ * closed August passes unlock's period guard, is refused for the payment, and is sent to a screen
+ * that refuses it again.
  *
- * So the sentence names the route that ACTUALLY exists. Unchanged — byte for byte — while every
- * standalone write-off in scope is still voidable (the common case, and the one the three services'
- * existing messages and tests pin); widened to name the closed month, and the reopen, only when at
- * least one is not. Appending "or reopen the period" unconditionally would be cheaper and is the
- * wrong trade: it points the common case at a heavyweight month reopen it does not need, which is
- * §5.14's other failure — naming the wrong route.
+ * **EVERY CLAUSE MUST BE TRUE OF THE SET IN SCOPE** (#173; #157 shipped one that was true of only
+ * part of what it described). Two clauses, deliberately sharing no subject:
+ *
+ *  1. **the ROUTE clause** — where a standalone bad-debt write-off is voided. A standing fact about
+ *     ONE kind, stated as one, and asserted of nothing in scope: a payment and a residual write-off
+ *     are voided from their receipt batch. It rides on every refusal exactly as it did before #157,
+ *     which is why the common-case sentence stays byte-identical to the one three services' tests
+ *     already pin — including on a payment-only refusal, where it is navigation rather than an
+ *     instruction about the blocking row.
+ *  2. **the PERIOD clause** — which months among the rows in scope are closed, and that what is
+ *     applied in them cannot be voided until they are reopened. TRUE OF EVERY KIND, because the
+ *     guard it restates is kind-blind. So the scope read here is the caller's own guard predicate,
+ *     never a write-off filter (that was #173: scoped to standalone write-offs, the sentence went
+ *     silent about the cash that was actually blocking you — and cash is the commoner blocker).
+ *
+ * A semicolon, not the ", but … — reopen it first" #157 used: that chained the obstacle onto the
+ * route just named, which reads as though the Receivables section were what the closed month blocks
+ * — false the moment the closed-month row is a payment. **Do not try to name a destination per kind
+ * here.** A mixed set (a payment and two write-offs across two closed months) turns that into a
+ * sentence nobody reads; the months and the reopen are what every kind has in common.
+ *
+ * Appending a reopen unconditionally would be cheaper and is the wrong trade: it points the common
+ * case at a heavyweight month reopen it does not need, which is §5.14's other failure — naming the
+ * wrong route.
+ *
+ * **ON THE REFUSAL PATH ONLY.** All three call sites compute this INSIDE the `if`, in the `throw`
+ * expression; a successful discard/unlock/void must not pay for two reads it will not use. Pinned by
+ * a query counter in tests/write-offs.test.ts.
  *
  * Read on the CALLER'S OWN `tx`, under the claim it already holds, exactly like the guards above;
  * the period read is `period-locks.ts`'s LOCK-FREE `closedMonthsForDisplay`, never `closedPeriodFor`
@@ -147,12 +186,10 @@ const LIVE_STANDALONE_WRITE_OFF = { deletedAt: null, type: "WRITE_OFF", paymentI
 async function applicationVoidHintFor(
   tx: Prisma.TransactionClient, scope: Prisma.ApplicationWhereInput,
 ): Promise<string> {
-  const rows = await tx.application.findMany({
-    where: { ...LIVE_STANDALONE_WRITE_OFF, ...scope }, select: { appliedDate: true },
-  });
-  // No standalone write-off in scope (a payment or a credit is what blocked): "every one of them is
-  // still voidable" holds vacuously, and the sentence stays as it reads today.
-  if (rows.length === 0) return WRITE_OFF_VOID_HINT;
+  const rows = await tx.application.findMany({ where: scope, select: { appliedDate: true } });
+  // Nothing in scope is in a closed month — or, on a caller whose guard did not actually fire,
+  // nothing is in scope at all (`closedMonthsForDisplay` answers an empty list without a query).
+  // Either way "what is applied here can still be voided" holds, and the sentence stays as it reads.
   const closed = await closedMonthsForDisplay(tx, rows.map((r) => r.appliedDate));
   if (closed.size === 0) return WRITE_OFF_VOID_HINT;
   // Ascending, and ALL of them — the `finalizedInvoicesFor` rule that a refusal must not change
@@ -162,22 +199,21 @@ async function applicationVoidHintFor(
     .sort((a, b) => a.year - b.year || a.month - b.month)
     .map(periodLabel);
   const one = months.length === 1;
-  return ` (${WRITE_OFF_VOID_ROUTE}, but ${one ? "period" : "periods"} ${months.join(", ")} `
-    + `${one ? "is" : "are"} closed — reopen ${one ? "it" : "them"} first)`;
+  return ` (${WRITE_OFF_VOID_ROUTE}; what is applied in ${one ? "period" : "periods"} `
+    + `${months.join(", ")} cannot be voided until `
+    + `${one ? "that period is" : "those periods are"} reopened)`;
 }
 
-/** Per-INVOICE, the `hasReceivableActivity` scope — `discardInvoice` and `unlockInvoice`. Only the
- *  `invoiceId` arm: a write-off never carries a `creditInvoiceId`, so the credit arm cannot hold
- *  one. */
+/** Per-INVOICE — `discardInvoice` and `unlockInvoice`, whose guard is `hasReceivableActivity`. The
+ *  SAME predicate, both arms: the hint must see exactly the rows that refused the caller. */
 export function applicationVoidHint(tx: Prisma.TransactionClient, invoiceId: string): Promise<string> {
-  return applicationVoidHintFor(tx, { invoiceId });
+  return applicationVoidHintFor(tx, liveActivityForInvoice(invoiceId));
 }
 
-/** Per-ORDER, the `hasReceivableActivityForOrder` scope — `voidOrder`, which blocks on any
- *  invoice-family document on the order. A write-off names an INVOICE, so it reaches through that
- *  relation; the credit arm of the guard contributes none. */
+/** Per-ORDER — `voidOrder`, whose guard is `hasReceivableActivityForOrder`. The same predicate
+ *  again, both arms, so the order-scoped sentence and the order-scoped guard cannot disagree. */
 export function applicationVoidHintForOrder(tx: Prisma.TransactionClient, orderId: string): Promise<string> {
-  return applicationVoidHintFor(tx, { invoice: { orderId } });
+  return applicationVoidHintFor(tx, liveActivityForOrder(orderId));
 }
 
 /**
@@ -202,12 +238,14 @@ export function applicationVoidHintForOrder(tx: Prisma.TransactionClient, orderI
  *
  * A single existence query — the guard cares only WHETHER any live row exists, never how much or
  * what type (that is `ar-balances`' job), so `select: { id }` and a boolean is the whole contract.
+ * **A boolean and nothing else**: the sentence the caller raises is `applicationVoidHint`'s job, and
+ * the two share `liveActivityForInvoice` rather than this function growing a second return value.
  */
 export async function hasReceivableActivity(
   tx: Prisma.TransactionClient, invoiceId: string,
 ): Promise<boolean> {
   const row = await tx.application.findFirst({
-    where: { deletedAt: null, OR: [{ invoiceId }, { creditInvoiceId: invoiceId }] },
+    where: liveActivityForInvoice(invoiceId),
     select: { id: true },
   });
   return !!row;
@@ -234,7 +272,7 @@ export async function hasReceivableActivityForOrder(
   tx: Prisma.TransactionClient, orderId: string,
 ): Promise<boolean> {
   const row = await tx.application.findFirst({
-    where: { deletedAt: null, OR: [{ invoice: { orderId } }, { creditInvoice: { orderId } }] },
+    where: liveActivityForOrder(orderId),
     select: { id: true },
   });
   return !!row;

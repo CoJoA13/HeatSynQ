@@ -1353,9 +1353,9 @@ export async function voidOrder(id: string, reason: string): Promise<void> {
     // the order claim `claimOrder` already holds — the same claim `applyPayment`/`applyCredit` take —
     // so the check and the void it guards serialize through it.
     if (await hasReceivableActivityForOrder(tx, id)) {
-      // #157: the tail is computed at the ORDER scope, matching the guard above — it names a reopen
-      // only when a standalone write-off on one of this order's invoices sits in a closed month, so
-      // the Receivables section it points at would refuse the void.
+      // #157/#173: the tail is computed at the ORDER scope, off the SAME predicate as the guard
+      // above — it names a reopen only when something the guard just refused on sits in a closed
+      // month, so the void it points at would refuse too. Inside the `if`, never before it.
       throw new HttpError(400,
         "This order cannot be voided — an invoice or credit on this order has A/R activity; " +
         `void the payments, credits or write-offs applied to it first${await applicationVoidHintForOrder(tx, id)}`);

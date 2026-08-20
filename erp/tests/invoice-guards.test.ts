@@ -277,13 +277,22 @@ describe("hasReceivableActivityForOrder", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// #157: the hint is a function of the write-off's own period, not a constant. The three services'
-// end-to-end wording is pinned in tests/write-offs.test.ts; what is pinned HERE is the scoping —
-// each form must see exactly the rows its sibling guard sees, and nothing else.
+// #157: the hint is a function of the blocked rows' own periods, not a constant. The three
+// services' end-to-end wording is pinned in tests/write-offs.test.ts; what is pinned HERE is the
+// SCOPING — each form must see exactly the rows its sibling guard refused on, and nothing else.
+//
+// #173 made that identity literal: `applicationVoidHint` reads `hasReceivableActivity`'s own
+// predicate and `applicationVoidHintForOrder` reads `hasReceivableActivityForOrder`'s, both arms
+// included. Two directions to get that wrong, and both are pinned below — a scope NARROWER than the
+// guard's goes silent about a row that really did block you (#173's defect, and why the credit-arm
+// and payment tests are here); a scope WIDER speaks about rows the guard never considered.
 // ---------------------------------------------------------------------------------------------
 
 describe("applicationVoidHint / applicationVoidHintForOrder", () => {
   const OPEN_ROUTE = " (a bad-debt write-off is voided from the customer's Receivables section)";
+  const closedIn = (label: string) =>
+    " (a bad-debt write-off is voided from the customer's Receivables section; "
+    + `what is applied in period ${label} cannot be voided until that period is reopened)`;
   const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => applicationVoidHint(tx, invoiceId));
   const forOrder = (orderId: string) => prisma.$transaction((tx) => applicationVoidHintForOrder(tx, orderId));
 
@@ -303,7 +312,7 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     });
   }
 
-  it("is today's sentence with no write-off at all, and with one in an open month", async () => {
+  it("is today's sentence with no application at all, and with one in an open month", async () => {
     const { order, customer } = await savedOrder();
     const inv = await finalizedInvoice(order.id, customer.id);
     expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
@@ -320,13 +329,70 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     await standaloneWriteOff(inv.id, "2026-08-08");
     await closedMonth(2026, 8);
 
-    const expected = " (a bad-debt write-off is voided from the customer's Receivables section, "
-      + "but period 2026-08 is closed — reopen it first)";
-    expect(await forInvoice(inv.id)).toBe(expected);
-    expect(await forOrder(order.id)).toBe(expected); // the order form reaches through invoice.orderId
+    expect(await forInvoice(inv.id)).toBe(closedIn("2026-08"));
+    // The order form reaches through invoice.orderId.
+    expect(await forOrder(order.id)).toBe(closedIn("2026-08"));
   });
 
-  it("ignores a VOIDED write-off — a soft-deleted row is not a route out of anything", async () => {
+  // #173, at the scope level: a PAYMENT is not a write-off, is voided somewhere else entirely, and
+  // is refused by the same kind-blind `assertPeriodOpen(appliedDate)`. The period clause has to see
+  // it; the route clause still says only what it always said.
+  it("names the closed period for a PAYMENT, with no write-off in scope at all", async () => {
+    const { order, customer } = await savedOrder();
+    const inv = await finalizedInvoice(order.id, customer.id);
+    const batch = await prisma.receiptBatch.create({
+      data: { batchNumber: 940001, depositDate: new Date("2026-08-08T00:00:00.000Z") },
+    });
+    const paymentType = await prisma.paymentType.create({ data: { name: "GHPT" } });
+    const payment = await prisma.payment.create({
+      data: {
+        batchId: batch.id, customerId: customer.id, paymentTypeId: paymentType.id,
+        amount: "50.00", receivedDate: new Date("2026-08-08T00:00:00.000Z"),
+      },
+    });
+    await prisma.application.create({
+      data: {
+        invoiceId: inv.id, paymentId: payment.id, amount: "50.00", type: "PAYMENT",
+        appliedDate: new Date("2026-08-08T00:00:00.000Z"),
+      },
+    });
+    await closedMonth(2026, 8);
+
+    expect(await forInvoice(inv.id)).toBe(closedIn("2026-08"));
+    expect(await forOrder(order.id)).toBe(closedIn("2026-08"));
+  });
+
+  // The SECOND arm of both guards, which the pre-#173 scope could not reach at all: this row is a
+  // CREDIT applied against ANOTHER order's invoice. `hasReceivableActivity(credit.id)` is true
+  // through `creditInvoiceId`, so the refusal fires — and the hint must be able to say why the
+  // credit's own void is dead, not go quiet.
+  it("reaches the creditInvoiceId arm, on both scopes", async () => {
+    const { order, customer } = await savedOrder();
+    const credit = await prisma.invoice.create({
+      data: {
+        orderId: order.id, customerId: customer.id, kind: "CREDIT", status: "FINALIZED",
+        creditNumber: 9310, invoiceDate: new Date("2026-08-06"), finalizedAt: new Date(),
+      },
+    });
+    const otherOrder = await orderFor(customer);
+    const otherInv = await finalizedInvoice(otherOrder.id, customer.id);
+    await prisma.application.create({
+      data: {
+        invoiceId: otherInv.id, creditInvoiceId: credit.id, amount: "25.00", type: "CREDIT",
+        appliedDate: new Date("2026-08-08T00:00:00.000Z"),
+      },
+    });
+    await closedMonth(2026, 8);
+
+    // Asked about the CREDIT: only the creditInvoiceId arm can find that row.
+    expect(await forInvoice(credit.id)).toBe(closedIn("2026-08"));
+    expect(await forOrder(order.id)).toBe(closedIn("2026-08"));
+    // And about the target invoice, through the ordinary invoiceId arm.
+    expect(await forInvoice(otherInv.id)).toBe(closedIn("2026-08"));
+    expect(await forOrder(otherOrder.id)).toBe(closedIn("2026-08"));
+  });
+
+  it("ignores a VOIDED application — a soft-deleted row is not a route out of anything", async () => {
     const { order, customer } = await savedOrder();
     const inv = await finalizedInvoice(order.id, customer.id);
     const app = await standaloneWriteOff(inv.id, "2026-08-08");

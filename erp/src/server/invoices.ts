@@ -1474,8 +1474,9 @@ export async function discardInvoice(id: string, reason: string): Promise<void> 
     // unreachable by construction, but the spec mandates it belt-and-suspenders: paper with money
     // applied to it is never silently discarded. Read under the claim `claimLiveInvoice` holds.
     if (await hasReceivableActivity(tx, id)) {
-      // #157: the tail is computed, not a constant — it names a reopen only when a standalone
-      // write-off in scope sits in a closed month and the Receivables section would refuse it.
+      // #157/#173: the tail is computed, not a constant — it names a reopen only when something in
+      // scope sits in a closed month and `voidApplication` would refuse it. INSIDE the `if`: on the
+      // success path the hint must cost nothing (invoice-guards.ts).
       throw new HttpError(400,
         "This invoice has payments, credits or write-offs applied and cannot be discarded — "
         + `void them first${await applicationVoidHint(tx, id)}`);
@@ -1638,9 +1639,10 @@ async function unlockInvoiceInTx(tx: Db, id: string, why: string): Promise<Invoi
     // Names all three kinds since #77: a standalone bad-debt write-off carries no payment, so
     // "void the payments" sent the operator to the receipt batches after a row that is not there.
     // And since #157 the tail is conditional: THIS is the refusal where the closed-period hazard is
-    // reachable — unlock guards the invoice's `finalizedAt` while a write-off is dated at its own
-    // creation, so a July-finalized invoice with an August write-off gets past the guard below and
-    // is sent to a Receivables section that refuses the void because August is closed.
+    // reachable — unlock guards the invoice's `finalizedAt` while an application is dated at its own
+    // event, so a July-finalized invoice with an August payment or write-off gets past the guard
+    // below and is sent to a void that refuses it because August is closed. #173 widened that from
+    // write-offs to every kind: cash is the commoner blocker, and it said nothing about cash.
     throw new HttpError(400,
       `Invoice #${order.orderNumber} has payments, credits or write-offs applied — `
       + `void them before unlocking${await applicationVoidHint(tx, id)}`);

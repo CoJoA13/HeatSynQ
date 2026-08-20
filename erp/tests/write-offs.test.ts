@@ -95,21 +95,27 @@ async function invoiceFixture(opts: {
 }
 
 /** A real receipt + PAYMENT application — the only way to reduce an invoice with CASH, and the
- *  shape a RESIDUAL (payment-sourced) write-off rides alongside. */
-async function payInvoice(inv: Fixture, amount: number): Promise<string> {
+ *  shape a RESIDUAL (payment-sourced) write-off rides alongside.
+ *
+ *  `dateStr` defaults to TODAY, which is what every pre-#173 caller wants. It is a parameter because
+ *  `applyPayment` will not date a receipt into a prior month any more than `writeOffInvoice` will
+ *  (both stamp their own date), and #173's subject is precisely a PAYMENT whose month has since
+ *  closed — a state the shop reaches by closing the month, not by backdating the receipt. */
+async function payInvoice(inv: Fixture, amount: number, dateStr: string = TODAY): Promise<string> {
   seq += 1;
+  const on = parseDateOnly(dateStr);
   const batch = await prisma.receiptBatch.create({
-    data: { batchNumber: 920000 + seq, depositDate: parseDateOnly(TODAY) },
+    data: { batchNumber: 920000 + seq, depositDate: on },
   });
   const paymentType = await prisma.paymentType.create({ data: { name: `WOPT-${seq}` } });
   const payment = await prisma.payment.create({
     data: {
       batchId: batch.id, customerId: inv.customerId, paymentTypeId: paymentType.id,
-      amount, receivedDate: parseDateOnly(TODAY),
+      amount, receivedDate: on,
     },
   });
   await prisma.application.create({
-    data: { invoiceId: inv.invoiceId, amount, type: "PAYMENT", paymentId: payment.id, appliedDate: parseDateOnly(TODAY) },
+    data: { invoiceId: inv.invoiceId, amount, type: "PAYMENT", paymentId: payment.id, appliedDate: on },
   });
   return payment.id;
 }
@@ -588,10 +594,19 @@ describe("openItemsForCustomer — retention is bounded by the write-off's own p
 // :1654. So unlock's own period guard is never what an operator hits while a write-off is live, and
 // the hint is the only thing that can tell them where the real wall is. (An earlier draft of this
 // comment had that ordering backwards — caught in review.)
+//
+// #173 WIDENED THE PERIOD HALF TO EVERY KIND. All three refusals fire on ANY live application and
+// `voidApplicationInTx` guards `assertPeriodOpen(appliedDate)` for every one of them, so scoping the
+// period clause to standalone write-offs left the far commoner blocker — CASH — silently pointing at
+// a route that refuses you. The sentence now carries two clauses that share no subject: the ROUTE
+// clause (a standing fact about ONE kind, exactly as before) and the PERIOD clause (true of every
+// kind, because the guard it restates is kind-blind). Their JOIN is the load-bearing bit — the
+// pre-#173 ", but period X is closed — reopen it first" read as though the Receivables route were
+// what X blocked, which is false the moment the closed-month row is a payment.
 // -------------------------------------------------------------------------------------------
 
-/** The sentence as it reads when the route really is open — unchanged since #77, and pinned here so
- *  a widening of the common case cannot slip through. */
+/** The sentence as it reads when everything in scope is still voidable — unchanged since #77, and
+ *  pinned here so a widening of the common case cannot slip through. */
 const OPEN_ROUTE = " (a bad-debt write-off is voided from the customer's Receivables section)";
 
 describe("the write-off hint names the route that actually exists (#157)", () => {
@@ -616,8 +631,8 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
       .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).status).toBe(400);
     expect((err as HttpError).message).toContain(
-      " (a bad-debt write-off is voided from the customer's Receivables section, "
-      + "but period 2026-01 is closed — reopen it first)");
+      " (a bad-debt write-off is voided from the customer's Receivables section; "
+      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
     // Refused, not half-applied.
     expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("FINALIZED");
   });
@@ -634,8 +649,8 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
     // Ascending and complete: naming only one of two closed months leaves the operator to discover
     // the second the hard way, and scan order must not decide which one they hear about.
     expect((err as HttpError).message).toContain(
-      " (a bad-debt write-off is voided from the customer's Receivables section, "
-      + "but periods 2026-01, 2026-02 are closed — reopen them first)");
+      " (a bad-debt write-off is voided from the customer's Receivables section; "
+      + "what is applied in periods 2026-01, 2026-02 cannot be voided until those periods are reopened)");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
   });
 
@@ -650,9 +665,12 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
     expect((err as HttpError).message).not.toMatch(/reopen/);
   });
 
-  // A RESIDUAL write-off is voided from its receipt batch, not from the Receivables section, so a
-  // closed month behind one says nothing about the route this sentence names.
-  it("ignores a payment-sourced residual write-off in a closed month", async () => {
+  // A RESIDUAL write-off is voided from its receipt batch, NOT from the Receivables section — which
+  // is why the ROUTE clause still says nothing about it. But its void is refused by the same
+  // kind-blind `assertPeriodOpen(appliedDate)`, so the PERIOD clause covers it. Before #173 this
+  // test asserted the opposite: the closed month behind the residual row was simply not mentioned,
+  // and the operator was sent to a batch that refused them with no warning it would.
+  it("counts a payment-sourced residual write-off — the period guard is kind-blind", async () => {
     const inv = await invoiceFixture({ total: 1000 });
     const paymentId = await payInvoice(inv, 995);
     await prisma.application.create({
@@ -665,8 +683,120 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
 
     const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
       .catch((e: unknown) => e as HttpError);
+    expect((err as HttpError).message).toContain(
+      " (a bad-debt write-off is voided from the customer's Receivables section; "
+      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// #173 — the period clause is about EVERY live application blocking the refusal, because
+// `voidApplicationInTx`'s `assertPeriodOpen(live.appliedDate)` has no type or `paymentId` predicate.
+// CASH is the commoner blocker of the three refusals, and before this it was the one the sentence
+// said nothing about.
+//
+// A payment cannot be BACKDATED into a prior month through the services any more than a write-off
+// can (`applyPayment` stamps the receipt's own date), so these fixtures build the payment raw —
+// `payInvoice(inv, amount, dateStr)` — for the reason its docblock gives: the shop reaches this
+// state by CLOSING the month the payment already sits in, not by backdating a receipt.
+// -------------------------------------------------------------------------------------------
+
+describe("the period clause covers every live application, not only write-offs (#173)", () => {
+  it("unlock: names the closed period when a PAYMENT is what sits in it", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    // No write-off anywhere in scope — cash alone, in a month that has since closed. The invoice is
+    // finalized TODAY, so unlock's own `assertPeriodOpen(finalizedAt)` is happy and the A/R refusal
+    // is what the operator meets.
+    await payInvoice(inv, 400, "2026-01-20");
+    await closeMonthRaw(2026, 1);
+
+    const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
+      .catch((e: unknown) => e as HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toContain(
+      " (a bad-debt write-off is voided from the customer's Receivables section; "
+      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+    // The ROUTE clause must NOT have been re-pointed at the payment on the way past: a payment is
+    // voided from its receipt batch, and the sentence never claims otherwise.
+    expect((err as HttpError).message).not.toMatch(/payment is voided|batch/i);
+    // Refused, not half-applied.
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("FINALIZED");
+  });
+
+  it("void-order: the ORDER scope reaches the payment too", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await payInvoice(inv, 400, "2026-01-20");
+    await closeMonthRaw(2026, 1);
+
+    const err = await asSystem(() => voidOrder(inv.orderId, "entered against the wrong customer"))
+      .catch((e: unknown) => e as HttpError);
+    expect((err as HttpError).status).toBe(400);
+    expect((err as HttpError).message).toContain(
+      " (a bad-debt write-off is voided from the customer's Receivables section; "
+      + "what is applied in period 2026-01 cannot be voided until that period is reopened)");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
+  });
+
+  // THE MIXED SET, the shape the brief singles out: a PAYMENT in one closed month and a STANDALONE
+  // write-off in another. Every clause has to survive it — the route clause is true of the write-off
+  // and says nothing about the payment; the period clause names BOTH months, ascending, and is true
+  // of both rows. This is also why the two clauses share no subject: chained with "but … reopen it
+  // first", this sentence would be claiming the Receivables section is what 2026-01 blocks.
+  it("names both months when a payment and a write-off sit in different closed ones", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await payInvoice(inv, 400, "2026-01-20");
+    await writeOffDated(inv, 600, "2026-02-10", "the rest is uncollectable");
+    await closeMonthRaw(2026, 2);
+    await closeMonthRaw(2026, 1);
+
+    const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
+      .catch((e: unknown) => e as HttpError);
+    expect((err as HttpError).message).toBe(
+      `Invoice #${inv.orderNumber} has payments, credits or write-offs applied — `
+      + "void them before unlocking (a bad-debt write-off is voided from the customer's "
+      + "Receivables section; what is applied in periods 2026-01, 2026-02 cannot be voided until "
+      + "those periods are reopened)");
+  });
+
+  // The discriminating negative on the widened scope: cash in an OPEN month must not start widening
+  // the common sentence just because the scope now sees it.
+  it("keeps today's sentence when the payment's own month is open", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await payInvoice(inv, 400);                 // TODAY
+    await closeMonthRaw(2026, 1);               // a closed month with nothing of this invoice's in it
+
+    const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
+      .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).message).toContain(OPEN_ROUTE);
     expect((err as HttpError).message).not.toMatch(/reopen/);
+  });
+
+  /**
+   * ON THE REFUSAL PATH ONLY. The hint costs two reads and must never run on a successful
+   * discard/unlock/void — it is computed inside the `if`, in the `throw` expression, at all three
+   * sites. Nothing about the widened scope shows up in a message when there is no refusal, so only a
+   * query counter can see the difference between "inside the if" and "hoisted above it".
+   *
+   * Plain property save/restore on the delegate, never `vi.spyOn` (CLAUDE.md: `mockRestore` does not
+   * put the original back on this client and corrupts the shared singleton for the rest of the run).
+   * Restored in `finally` so a failure here cannot leak.
+   */
+  it("costs nothing on a successful unlock — the hint never runs off the refusal path", async () => {
+    const inv = await invoiceFixture({ total: 1000 });   // no applications at all: unlock succeeds
+    const original = prisma.application.findMany.bind(prisma.application);
+    let calls = 0;
+    prisma.application.findMany = ((args: unknown) => {
+      calls += 1;
+      return original(args as Parameters<typeof original>[0]);
+    }) as unknown as typeof prisma.application.findMany;
+    try {
+      await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"));
+    } finally {
+      prisma.application.findMany = original;
+    }
+
+    expect((await prisma.invoice.findUniqueOrThrow({ where: { id: inv.invoiceId } })).status).toBe("DRAFT");
+    expect(calls).toBe(0);
   });
 });
 
