@@ -158,13 +158,22 @@ And the offer is **per invoice, not per grid**. A $1,000 cheque facing two $1,00
 show "Take 20.00" on both, because that cash could settle either one — just not both. Tick both and
 the save refuses, correctly, because the cheque is not big enough.
 
-> **A known rough edge:** the *refusal* you get from forcing a discount through is still the same
-> three words — *"no early-pay discount applies"* — whether the window has passed, the invoice has
-> no discount terms at all, or the entitlement is already spent. It does not tell you which. Check
-> the invoice's terms and its date. The apply **column** does now distinguish the one of those
-> cases you can act on (above); that was
-> [#155](https://github.com/CoJoA13/HeatSynQ/issues/155) arm 2, ruled 2026-08-19. The refusal's
-> wording was not part of that ruling.
+**If you force a discount through anyway, the refusal names which of the four it is.** It used to
+say the same three words for all of them and leave you to work it out:
+
+| What is wrong | What it says |
+|---|---|
+| The invoice's terms carry no discount | *this invoice was issued under terms that carry no early-pay discount* |
+| The cheque is dated too late | *this payment is dated after the invoice's early-pay discount window* |
+| The discount was already taken | *this invoice has no early-pay discount left to take* |
+| The cheque does not settle the invoice | *an early-pay discount is earned only by a payment that settles the invoice — this covers 500 of the 1000 open* |
+
+Each one tells you where to look next: the invoice's terms, the receipt's date, or what has already
+been taken. The column above stays silent for the first three because there is nothing you can do
+about them from that screen — but once you have *asked* for the discount, you are owed the reason.
+
+The out-of-window message does not yet tell you *when* the window closed — you still have to open
+the invoice to work that out. That is [#178](https://github.com/CoJoA13/HeatSynQ/issues/178).
 
 ## Write-offs
 
@@ -201,6 +210,14 @@ Once the month the write-off is dated in closes, the row drops off the list like
 invoice. Nothing is lost by that: **Void** would be refused in a closed month anyway, so correcting
 the write-off needs the month reopened first, and a row that advertises an undo it can no longer
 perform is worse than no row. Reopen the month and it comes back.
+
+**An invoice that is still open keeps its row either way** — it is listed because money is owed on
+it, not because of the write-off. There, a write-off whose month has closed shows its **Void**
+greyed out, and hovering says why: *"The accounting period 2026-07 is closed — reopen it to make
+this change."* The control is disabled rather than hidden, so you can see that the write-off is real
+and that undoing it is a month-reopen away, instead of clicking a live-looking button and being
+refused. If you also lack permission to void, that is what the tooltip names instead — it is the
+first thing a click would hit.
 
 Voiding one warns you what will happen — *"The invoice's open balance comes back."* — and requires a
 reason.

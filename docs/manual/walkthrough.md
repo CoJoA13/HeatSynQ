@@ -112,9 +112,11 @@ time:
 
 1. **`applyPayment` and `applyCredit` disagree about how to type money**, in the same file: one
    takes a decimal string, the other a number. Two adjacent money entrypoints, two contracts.
-2. **"no early-pay discount applies" covers three distinct causes** — outside the window, no
-   terms on the customer, entitlement already consumed. Reading `discountFor` is the only way
-   to tell which. A clerk cannot. (Related to [#155](https://github.com/CoJoA13/HeatSynQ/issues/155).)
+2. **~~"no early-pay discount applies" covers three distinct causes~~ — fixed
+   ([#175](https://github.com/CoJoA13/HeatSynQ/issues/175), 2026-08-20).** Outside the window, no
+   terms on the invoice, and entitlement already consumed each name themselves now, off the same
+   composition the offer read uses. What is left is that the out-of-window one does not say when the
+   window closed ([#178](https://github.com/CoJoA13/HeatSynQ/issues/178)).
 3. `process-templates.ts` and `templates.ts` both export `createTemplate` for unrelated
    concepts.
 4. **There is no supported way to seed the demo slice into the dev database.** The guarded
