@@ -31,6 +31,12 @@
 // write-off's own month is open, because `voidApplication` refuses once it closes and the row would
 // then be advertising an undo that no longer works. Nothing to do here — the row simply stops
 // arriving — but do not "restore" it in the client when a zero-balance invoice goes missing.
+//
+// The bound covers the SETTLED row only, though, and #174 is the rest of it: an invoice with a live
+// balance is an open item on its own merits, so it is retained whatever its write-offs' months are,
+// and it kept rendering an ENABLED Void that always 409s. Each write-off now arrives carrying
+// `voidable`, and a dead one renders disabled with the month to reopen — §5.16's convention, which
+// rules out precisely the enabled-control-that-always-fails variant.
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/fetcher";
@@ -49,8 +55,13 @@ type AgingRow = {
 };
 type OpenItemKind = "INVOICE" | "CREDIT" | "PAYMENT";
 /** One standalone (null-payment) write-off against an invoice — the flag the row renders and the
- *  `Application` id its Void control acts on (#77). Empty on CREDIT and PAYMENT rows. */
-type OpenItemWriteOff = { id: string; amount: number; appliedDate: string; reason: string | null };
+ *  `Application` id its Void control acts on (#77). Empty on CREDIT and PAYMENT rows.
+ *  `voidable` is the server's answer to "would `voidApplication` still accept this one" (#174) —
+ *  false once the write-off's OWN month is closed. Keep it in step with `OpenItemWriteOff` in
+ *  src/server/applications.ts. */
+type OpenItemWriteOff = {
+  id: string; amount: number; appliedDate: string; reason: string | null; voidable: boolean;
+};
 type CustomerOpenItem = {
   kind: OpenItemKind; id: string; documentNumber: string;
   date: string; dueDate: string | null; original: number; open: number;
@@ -61,6 +72,17 @@ type ReceivablesSummary = { aging: AgingRow; openItems: CustomerOpenItem[] };
 const KIND_LABEL: Record<OpenItemKind, string> = {
   INVOICE: "Invoice", CREDIT: "Credit", PAYMENT: "On account",
 };
+
+/** Why a Void is dead, for the tooltip — the sentence `assertPeriodOpen` itself throws (#174).
+ *
+ *  The month is sliced off `appliedDate` rather than sent as its own field: `periodLabel` lives in
+ *  `src/server/period-locks.ts` and a `"use client"` file must not import from `src/server/**`, and
+ *  the two agree by construction — the wire's `appliedDate` is `formatDateOnly`'s UTC `yyyy-mm-dd`
+ *  and `periodLabel` is that same UTC year and month. `write-offs.test.ts`'s "names the same month
+ *  the void refusal names" pins this composed sentence character-for-character against the 409, so
+ *  neither the label format nor the refusal's wording can drift away from it unnoticed. */
+const closedPeriodTitle = (w: OpenItemWriteOff) =>
+  `The accounting period ${w.appliedDate.slice(0, 7)} is closed — reopen it to make this change`;
 
 type MoneyBucketKey = "current" | "d1_30" | "d31_60" | "d61_90" | "d90_plus";
 const BUCKET_FIELD: Record<AgingBucketValue, MoneyBucketKey> = {
@@ -408,11 +430,20 @@ function OpenItemRow({ item, invoices, applyGate, writeOffGate, voidGate, onAppl
                   <span className="tabular-nums">Written off {w.amount.toFixed(2)}</span>
                   <span className="text-slate-500">on {w.appliedDate}</span>
                   {w.reason && <span className="text-slate-500">— {w.reason}</span>}
+                  {/* §5.16, the same ladder the Apply and Write off controls use: visible and
+                      disabled, naming whichever blocker the server would ACTUALLY hit. The
+                      permission comes first because that is the order the route refuses in —
+                      `mustCan(…, "receivables", "delete")` runs before `voidApplication` ever sees
+                      the period — so when both apply, a 403 is what a click would have produced.
+                      The period reason is #174: before it, a closed-month write-off on a row
+                      retained for its own open balance rendered an ENABLED Void that always 409s. */}
                   <button
                     type="button"
                     onClick={() => void voidWriteOff(w)}
-                    disabled={!voidGate.allowed || saving}
-                    title={voidGate.allowed ? undefined : voidGate.title}
+                    disabled={!voidGate.allowed || !w.voidable || saving}
+                    title={!voidGate.allowed ? voidGate.title
+                      : !w.voidable ? closedPeriodTitle(w)
+                        : undefined}
                     className="text-blue-700 underline disabled:cursor-not-allowed disabled:text-slate-400"
                   >
                     Void

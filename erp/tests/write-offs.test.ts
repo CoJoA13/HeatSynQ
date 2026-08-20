@@ -578,6 +578,102 @@ describe("openItemsForCustomer — retention is bounded by the write-off's own p
 });
 
 // -------------------------------------------------------------------------------------------
+// #174 — the per-write-off `voidable` flag. #157 bounded RETENTION, which covers the settled row:
+// once every write-off on it is dead the row leaves the screen. It does not cover the row retained
+// on its OWN open balance, which keeps listing its closed-month write-offs — each with a Void that
+// always 409s. §5.16's convention is disabled-with-the-reason, never an enabled control that always
+// fails, so the row now carries per-write-off whether its undo still works.
+//
+// Same map, no second read: `closedMonthsForDisplay` is already consulted for the retention
+// decision, and retention is now DERIVED from these flags (`writeOffs.some((w) => w.voidable)`) so
+// the two cannot disagree about one write-off.
+//
+// THE CLIENT COMPOSES THE TOOLTIP, and it may not import `periodLabel` (a `"use client"` file must
+// not reach into `src/server/**`). It slices `YYYY-MM` off `appliedDate` instead — exact by
+// construction, since `formatDateOnly` and `period-locks`' `ym` both read the same UTC date — and
+// `names the same month the void refusal names` below is what pins that against drift in either the
+// label format or the refusal wording.
+// -------------------------------------------------------------------------------------------
+
+/** The tooltip `ReceivablesSection.tsx` renders on a dead Void — composed HERE the way the client
+ *  composes it, from the wire fields alone, so the test exercises that derivation rather than a
+ *  server-side copy of it. */
+const closedPeriodTitleFor = (w: { appliedDate: string }) =>
+  `The accounting period ${w.appliedDate.slice(0, 7)} is closed — reopen it to make this change`;
+
+describe("openItemsForCustomer — each write-off says whether its Void still works (#174)", () => {
+  // THE DEFECT. An invoice with a live balance is an open item on its own merits, so #157's
+  // retention bound never reaches it — and before this its closed-month write-off rendered an
+  // ENABLED Void that always 409s. Two write-offs in different months on ONE such row, so the flag
+  // is proved per write-off rather than per row: a row-level constant would fail one of the two.
+  it("flags each write-off by ITS OWN month, on a row retained for its own open balance", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await writeOffDated(inv, 300, "2026-01-20", "disputed surcharge");
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 200, reason: "the rest" }));
+    await closeMonthRaw(2026, 1); // the January one is dead; today's is not
+
+    const row = (await openItemsForCustomer(inv.customerId)).find((i) => i.id === inv.invoiceId)!;
+    expect(row.open).toBe(500); // still open on its own merits — #157 never gets a say here
+    const byDate = new Map(row.writeOffs.map((w) => [w.appliedDate, w]));
+    expect(byDate.get("2026-01-20")!.voidable).toBe(false);
+    expect(byDate.get(TODAY)!.voidable).toBe(true);
+  });
+
+  // The tooltip has to name the month the operator would actually have to reopen. The client builds
+  // it from `appliedDate` alone; this asserts that sentence is character-for-character what
+  // `voidApplication` refuses with, so neither `periodLabel`'s format nor `assertPeriodOpen`'s
+  // wording can drift away from the tooltip unnoticed.
+  it("names the same month the void refusal names", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    const dead = await writeOffDated(inv, 300, "2026-01-20", "disputed surcharge");
+    await closeMonthRaw(2026, 1);
+
+    const row = (await openItemsForCustomer(inv.customerId)).find((i) => i.id === inv.invoiceId)!;
+    const w = row.writeOffs.find((x) => x.id === dead.id)!;
+    expect(w.voidable).toBe(false);
+    await expect(asSystem(() => voidApplication(w.id, "changed my mind")))
+      .rejects.toMatchObject({ status: 409, message: closedPeriodTitleFor(w) });
+  });
+
+  // The retained SETTLED row — #157's own shape — carries the flags too, and this is where the
+  // retention rule and the flag meet: the row survives EXACTLY while one of them is `voidable`, so a
+  // derived `stillVoidable` cannot drift from what the screen enables. The closed sibling is still
+  // listed (it is part of why the row reads the way it does) — just no longer as a live control.
+  it("flags the retained settled row's write-offs, and drops the row when the last one dies", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    await writeOffDated(inv, 600, "2026-01-20", "first tranche");
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 400, reason: "the rest" }));
+    expect(await openBalance(inv.invoiceId)).toBe(0);
+
+    await closeMonthRaw(2026, 1);
+    const row = (await openItemsForCustomer(inv.customerId)).find((i) => i.id === inv.invoiceId)!;
+    expect(row.open).toBe(0); // retained purely by the live undo, which is the today-dated one
+    expect(row.writeOffs.map((w) => w.voidable).sort()).toEqual([false, true]);
+
+    // Raw again (see the section header): with 2026-01 closed, a real close of today's month refuses
+    // on the prior-month chain rule this test has no stake in.
+    await closeMonthRaw(CURRENT_YEAR, CURRENT_MONTH);
+    expect(await idsFor(inv.customerId)).not.toContain(inv.invoiceId);
+  });
+
+  // The discriminating negative. #174 adds a flag and a tooltip; it must not change WHICH rows
+  // arrive. With nothing closed at all, every write-off is voidable and the #77/#157 set is intact —
+  // the settled-but-retained row included.
+  it("changes nothing about which rows appear while no month is closed", async () => {
+    const inv = await invoiceFixture({ total: 1000 });
+    const other = await invoiceFixture({ total: 250, customerId: inv.customerId });
+    await asSystem(() => writeOffInvoice({ invoiceId: inv.invoiceId, amount: 1000, reason: "uncollectable" }));
+
+    const items = await openItemsForCustomer(inv.customerId);
+    expect(items.map((i) => i.id).sort()).toEqual([inv.invoiceId, other.invoiceId].sort());
+    const retained = items.find((i) => i.id === inv.invoiceId)!;
+    expect(retained.open).toBe(0);
+    expect(retained.writeOffs.map((w) => w.voidable)).toEqual([true]);
+    expect(items.find((i) => i.id === other.invoiceId)!.writeOffs).toEqual([]);
+  });
+});
+
+// -------------------------------------------------------------------------------------------
 // #157's §5.14 half: the hint has to name a route that EXISTS. `WRITE_OFF_VOID_HINT` used to be one
 // unconditional constant pointing at the customer's Receivables section — but `voidApplication`
 // refuses a write-off whose own month is closed, so that sentence was already false for those, and

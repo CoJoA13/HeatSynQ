@@ -453,6 +453,20 @@ export type OpenItemWriteOff = {
   amount: number;
   appliedDate: string;
   reason: string | null;
+  /**
+   * Whether `voidApplication` would still accept this one — false once its OWN month is closed,
+   * which is exactly what `assertPeriodOpen(appliedDate)` refuses (#174).
+   *
+   * The section renders the Void DISABLED with that month in its tooltip rather than enabled and
+   * always-409ing (§5.16: an enabled control that always fails is the one variant the convention
+   * rules out). #157's retention bound covers only the SETTLED row — one retained on its own open
+   * balance keeps listing its dead write-offs, and this is what tells the screen which they are.
+   *
+   * Derived from the same `closedMonthsForDisplay` map the retention decision reads, never a second
+   * query — and the retention decision is now derived from THESE flags, so a row can never be kept
+   * for an undo the screen has disabled, or dropped while one it enables still works.
+   */
+  voidable: boolean;
 };
 
 /** The write-off flavor this surface is about: no payment behind it, so no receipt batch can reach
@@ -528,16 +542,24 @@ export async function openItemsForCustomer(
       const writeOffs: OpenItemWriteOff[] = standalone.map((a) => ({
         id: a.id, amount: a.amount.toNumber(),
         appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
+        // #174: the same map, per write-off. `voidApplication` guards `assertPeriodOpen` on THIS
+        // row's own `appliedDate`, so this is precisely the question the Void control needs asked.
+        voidable: !closedWriteOffMonths.has(monthKey(a.appliedDate)),
       }));
       // ANY of them, never `[0]`: an invoice can carry several standalone write-offs in DIFFERENT
       // months, and the row is worth keeping while even one of them is still voidable — that one is
       // the route out. Do not "simplify" this to the first write-off.
-      const stillVoidable = standalone.some((a) => !closedWriteOffMonths.has(monthKey(a.appliedDate)));
+      //
+      // Read off the FLAGS above rather than re-testing the map (#174): retention exists to keep a
+      // live undo reachable, so "is this row still worth keeping" and "is this control still live"
+      // must be one decision. Two spellings of it are how a row gets retained for an undo the screen
+      // has already disabled.
+      const stillVoidable = writeOffs.some((w) => w.voidable);
       // Settled, with no write-off left that can still be undone — not an open item, and nothing
       // here to undo. A written-off invoice is retained at zero instead while its undo lives (#77,
       // bounded by #157; see the header block). `writeOffs` still lists the closed-month siblings of
-      // a retained row: they are part of why it reads the way it does, and their Void refuses with
-      // `assertPeriodOpen`'s message, which names the month to reopen — a true route, not a dead end.
+      // a retained row: they are part of why it reads the way it does, and each carries `voidable`
+      // so the section can render its Void disabled, naming the month to reopen (#174).
       if (cents(open) <= 0 && !stillVoidable) continue;
       items.push({
         kind: "INVOICE", id: inv.id,
