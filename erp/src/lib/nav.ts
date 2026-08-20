@@ -17,7 +17,7 @@
 // "view")` — the nav is never the authorization.
 //
 // PHASE 8C ADDENDUM — gating on a special ACTION, not just an area: Backups (Task 6) has no
-// `backups.view` and never will — `manage_backups` is one of the 10 named special actions
+// `backups.view` and never will — `manage_backups` is one of the named special actions
 // (permission-constants.ts), not one of the 12 permission areas. Gating the Backups entry on
 // `admin.view` instead would repeat the exact §5.15 silent-dead-end mistake the Templates entry
 // above exists to avoid: a user granted `manage_backups` but not `admin.view` could use the page
