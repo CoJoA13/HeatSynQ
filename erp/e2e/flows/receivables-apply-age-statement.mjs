@@ -4,7 +4,8 @@
 // then drives the NEW `/receivables` screens end to end: a deposit batch, a check payment applied
 // as a partial payment + a small write-off (leaving an on-account remainder), the aging report
 // (the invoice's own bucket + the Unapplied column), a printed, archived statement (combined
-// family, finance charges assessed) that reappears in the customer's own Documents list, a
+// family, the finance-charge figure shown — never billed, #162) that reappears in the customer's
+// own Documents list, a
 // STANDALONE bad-debt write-off and its undo on the customer's A/R section (#77), and finally a
 // SECOND check that settles the invoice and takes the early-pay discount.
 //
@@ -220,12 +221,13 @@ export async function run(page, shot, ctx) {
   assert.equal((await agingCells.nth(7).textContent()).trim(), "270.00", "Net column must be buckets minus unapplied");
   await shot("aging-report");
 
-  // --- Statement: combined family, finance charges assessed. Preselected via `?customerId=`
-  // (Statements.tsx reads it straight off the URL — no dropdown pick needed). ---
+  // --- Statement: combined family, finance charge shown (not billed). Preselected via
+  // `?customerId=` (Statements.tsx reads it straight off the URL — no dropdown pick needed). ---
   await page.goto(`${ctx.baseURL}/receivables/statements?customerId=${fixtures.arCustomerId}`);
   await page.getByRole("heading", { name: "Statements", exact: true }).waitFor({ state: "visible" });
   await page.getByLabel("Combine family", { exact: true }).check();
-  await page.getByLabel("Assess finance charges", { exact: true }).check();
+  // #162 relabelled this control — "Assess" read as "levy", and the figure is only ever shown.
+  await page.getByLabel("Show finance charge (not billed)", { exact: true }).check();
 
   const totalDueLine = page.locator("p", { hasText: "Total due:" });
   await totalDueLine.waitFor({ state: "visible", timeout: 15000 });

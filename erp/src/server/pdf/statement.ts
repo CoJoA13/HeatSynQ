@@ -325,9 +325,18 @@ function totalLine(label: string, value: string, opts: { bold?: boolean; big?: b
   };
 }
 
-/** The finance-charge line prints ONLY when the run assessed one (spec §8) — `null` means either the
- *  run didn't opt in, or nothing non-exempt was past due; either way, no line. Gated on its own
- *  field's visibility on top. */
+/**
+ * The finance-charge line prints ONLY when the run assessed one (spec §8) — `null` means either the
+ * run didn't opt in, or nothing non-exempt was past due; either way, no line. Gated on its own
+ * field's visibility on top.
+ *
+ * #162: it is INFORMATIONAL (owner ruling 2026-08-19) — `d.totalDue` is `aging.net` and excludes it,
+ * nothing is posted, nothing ages. This block deliberately renders it in the CONFIG's section order,
+ * which by default is directly above Total Due; the honesty lives in the LABEL the contract supplies
+ * ("Finance Charge (not billed, not in total):"), never in a re-order — a stored config keeps its
+ * own order, so a re-order would fix the default template and miss every published one, while the
+ * label re-resolves for all of them (#103). Do not "fix" it by moving the section.
+ */
 function financeChargeBlock(ctx: Ctx, d: StatementData): Content[] {
   const v = ctx.sections.get("finance_charge")!;
   if (d.financeCharge === null || !v.field("finance_charge").visible) return [];

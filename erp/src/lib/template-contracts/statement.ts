@@ -91,10 +91,31 @@ export const STATEMENT_CONTRACT: TemplateContract = {
     {
       // The finance-charge line — its own section (see the file comment); prints only when the
       // statement run assessed one.
+      //
+      // #162 (owner ruling 2026-08-19): the figure is INFORMATIONAL — nothing is posted, nothing
+      // ages, and `statements.ts` returns `totalDue: aging.net`, which excludes it. The line
+      // therefore prints directly above a Total Due that does not contain it, and the LABEL is
+      // what has to say so; "Finance Charge:" alone read as a levied charge, and a customer
+      // paying the Total Due below it would have been right to.
+      //
+      // FIXED IN THE LABEL, DELIBERATELY NOT BY MOVING THIS SECTION BELOW `total`. A stored
+      // config renders in ITS OWN stored section order, so a re-order here would reach the
+      // default template and silently miss every already-published version; a `defaultLabel` is
+      // a null-sentinel in every stored config and re-resolves against this contract at every
+      // print, so it reaches all of them alike (#103 — see `types.ts`'s evolution header, which
+      // names "changing an existing contract default" as NOT rendering-neutral). That is the
+      // whole reason this landed before acceptance: nothing has published a custom statement
+      // template yet, so the relabel changes no paper anyone has already designed. Once one has,
+      // this same edit would silently relabel their published version too.
       key: "finance_charge", name: "Finance charge", hideable: true, reorderable: true,
       fields: [
         {
-          key: "finance_charge", name: "Finance charge", defaultLabel: "Finance Charge:",
+          key: "finance_charge", name: "Finance charge",
+          // Sized to `totalLine`'s 200pt label column at 10pt (measured: 174pt Roboto, 175pt
+          // Liberation Sans, 161pt Liberation Serif) so it does not wrap on the three
+          // proportional families; "Total Due" is referenced in lower case because that label is
+          // itself overridable.
+          defaultLabel: "Finance Charge (not billed, not in total):",
           removable: true,
         },
       ],

@@ -1068,7 +1068,10 @@ describe("the statement contract", () => {
     expect(labels.due_date).toBe("Due Date");
     expect(labels.original).toBe("Original");
     expect(labels.open).toBe("Open");
-    expect(labels.finance_charge).toBe("Finance Charge:");
+    // #162 — informational by owner ruling: the figure is shown, never levied, and Total Due
+    // (printed directly beneath it) excludes it. The default label says both, because that is what
+    // every stored config re-resolves to at print time.
+    expect(labels.finance_charge).toBe("Finance Charge (not billed, not in total):");
     expect(labels.total_due).toBe("Total Due:");
   });
 

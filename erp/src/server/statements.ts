@@ -253,6 +253,15 @@ async function buildStatementInTx(
       // The finance-charge base: non-exempt, PAST-DUE (dueDate < asOf — `bucketFor`'s own
       // daysPastDue > 0 line) open invoices only. Collected regardless of `assessFinanceCharges`
       // so the gate below stays a single, obvious branch.
+      //
+      // `Invoice.financeChargeExempt` is a LIVE INPUT WITH NO WRITER, and that is deliberate
+      // (#162, owner ruling 2026-08-19). It is read right here — so it is not inert, and it is not
+      // safe to delete on the grounds that "nothing sets it" — but no service and no screen writes
+      // it, and under the informational reading nothing needs to: there is no levy to dispute.
+      // Do NOT add a UI writer for it. The main spec's §7.6 promise of a "per-invoice
+      // dispute/exempt" finance-charge run was REMOVED in this same change, precisely because
+      // nothing delivers it; if the shop ever wants the exemption, that is a new decision with a
+      // real levy behind it, not a missing checkbox.
       const dueMs = inv.dueDate ? parseDateOnly(inv.dueDate).getTime() : null;
       if (dueMs !== null && dueMs < asOfMs) {
         pastDueBalances.push({ open, exempt: inv.financeChargeExempt });
@@ -292,6 +301,13 @@ async function buildStatementInTx(
   // Finance charges — informational-only, opt-in per run (spec §7/§8). `null` unless the caller
   // assessed them AND something non-exempt is actually past due (a computed $0.00 line is not
   // printed either — `financeCharge` returning exactly 0 collapses to the same `null`).
+  //
+  // "Informational-only" is the WHOLE contract (P5B ruling 9, P5C ruling 4, re-affirmed on #162):
+  // there is no run, nothing is stored, and nothing can therefore duplicate — the figure is
+  // recomputed from scratch on every print. It reaches the payload as a SIBLING of `totalDue`
+  // below and is never summed into it, never bucketed by `bucketAging`, never rolled forward by
+  // `computeRollForward`, and has no `POSTING_SOURCE_TYPES` member. The screen and the paper both
+  // SAY so now (#162); if that ever stops being true, this is the line that changes first.
   let financeChargeAmount: number | null = null;
   if (opts.assessFinanceCharges) {
     const rate = financeChargeRateFor(customer.financeChargeRate?.toNumber() ?? null, billingConfig.financeChargeRate);
@@ -306,7 +322,10 @@ async function buildStatementInTx(
     customer: { code: customer.code, name: customer.name, billTo },
     openItems, aging,
     financeCharge: financeChargeAmount,
-    totalDue: aging.net, // buckets − unapplied = the net owed (the SAME number `aging.net` is)
+    // buckets − unapplied = the net owed (the SAME number `aging.net` is). It EXCLUDES
+    // `financeCharge` deliberately (#162) — pinned by tests/statements.test.ts so the next reader
+    // does not re-file the exclusion as a bug.
+    totalDue: aging.net,
   };
 }
 

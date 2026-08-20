@@ -118,7 +118,7 @@ Every invoice line names its source (quote #, part price, manual). **Surcharges*
 
 - Create-from-shipments in bulk with configurable grouping (per shipper / per order / per PO); manual invoices and credits; credits derived from invoices (sign handled).
 - Lifecycle: draft → **finalized** (numbered, locked, posts to A/R) → paid. Unlock = permissioned, audited action.
-- **Finance charges**: plant rate + per-customer override; per-invoice dispute/exempt; idempotent run (re-running cannot duplicate); printable.
+- **Finance charges**: plant rate + per-customer override; **informational only** — computed at statement print, printed on the statement as a figure the customer is not being billed (and excluded from Total Due), never posted, never aged. There is no run and nothing is stored, so nothing can duplicate; collecting interest means raising a real invoice. (Ratifies P5B §3 ruling 9 and P5C §3 ruling 4; owner ruling 2026-08-19 on #162, which removed this line's earlier promise of a per-invoice dispute/exempt and an idempotent run.)
 - A/R: batches (check/card/ACH); apply with partials, discounts, write-offs, on-account credits; batch balance shown live; aging with cutoff; statements; **guided month-end close** showing invoiced / paid / ending A/R side-by-side with the close record saved.
 - **QBO export**: summary journal entries (GL, date, amount) — detail stays in the ERP. Via QBO API connection or downloadable file (bookkeeper's choice). Idempotent — once marked sent, can never double-post. GL sourced from operations, surcharges, payment types, plus plant-level defaults.
 
@@ -163,7 +163,7 @@ Company/plant info; document numbering (order, shipper, invoice, cert, quote); d
 
 - Order entry **autosaves drafts** — a crash or closed tab loses nothing.
 - Inline validation while typing; save-time errors are specific and field-anchored.
-- All multi-step operations (invoice creation run, finance-charge run, QBO export) are **idempotent** — re-running or double-clicking cannot duplicate.
+- All multi-step operations (invoice creation run, QBO export) are **idempotent** — re-running or double-clicking cannot duplicate. (The finance-charge run was struck here on #162: finance charges are informational, computed at print and never stored, so there is no run and nothing that could duplicate — §7.6.)
 - No repair tools by design: void/unlock/reverse paths with audit cover every correction scenario identified in Visual Shop's documentation (Fix Invoices, AR Utilities, MOS corrections, purges).
 - Reads never mutate (no report side effects — a Visual Shop defect class explicitly designed out).
 

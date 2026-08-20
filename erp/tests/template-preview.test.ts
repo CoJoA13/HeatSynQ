@@ -266,7 +266,9 @@ describe("POST /api/templates/[id]/preview — the statement preview (finance of
     const tpl = await draftTemplate("STATEMENT");
     const res = await previewRoute(previewReq(tpl.id, full, { recordId: id, asOf: ASOF, config: cfgOf("STATEMENT") }), withParams({ id: tpl.id }));
     expect(res.status).toBe(200);
-    expect(drawnText(await pdfOf(res))).not.toContain("Finance Charge:");
+    // Matched on the label's STEM, not its full text: #162 relabelled the contract default, and a
+    // negative assertion pinned to the old literal would have gone vacuously green instead of red.
+    expect(drawnText(await pdfOf(res))).not.toContain("Finance Charge");
   });
 
   it("honors asOf — an invoice not yet finalized as of the date does not appear", async () => {
