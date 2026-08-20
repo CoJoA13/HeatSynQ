@@ -13,8 +13,12 @@ valid `%PDF` header at a sensible size: traveler ×7, shipper ticket ×2, BOL, c
 invoice ×2, credit memo, statement ×2, quote ×2. The paper is the heart of this system and the
 whole pipeline produces real documents.
 
-**The screens.** 47 of the app's screens rendered real content with a clean console and no
-failed requests. See `sweep.md` for the per-screen table.
+**The screens.** The sweep discovered **45 routes** from `src/app/**/page.tsx` and captured **50
+screens** from them (a dynamic route yields one screen per discovered id). **49 PASS** — real
+content, clean console, no failed requests — and **1 FAIL**, `/admin/users`, which is #160: the
+page renders correctly and the failure is five signature 404s it fires by design. See `sweep.md`
+for the per-screen table; the four screens its heuristic flagged as sparse were checked by hand
+and cleared (below).
 
 **The money screens agree with each other.** The A/R aging, the customer A/R sections and the
 month-end continuity schedule are drawn from the same reads and reconcile — the continuity
