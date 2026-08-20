@@ -31,9 +31,15 @@ offers **Posted** and **All**.
 
 ![A deposit batch, with a payment's apply panel open](img/receivables-batches-detail.png)
 
-The header repeats the four figures. **Balance** turns amber whenever it is not zero: that is the
-difference between the control total and what you have actually keyed, and it is the number you are
-working down.
+The header repeats the four figures. **Balance** has three states, because it is the *proof* figure —
+what you told the system the deposit came to, against what you actually keyed:
+
+- **A figure in amber** — the two disagree by that much. It is the number you are working down.
+- **0.00, plain** — they agree to the cent. The deposit is proved.
+- **"Not proved — no control total", in blue** — you entered no control total, so this deposit has
+  been checked against nothing. It is not an error and the batch will still post; it simply has not
+  been proved, and the screen says so rather than showing a reassuring zero. The batch list says
+  **Not proved** in the same column for the same reason.
 
 **Add payment** takes the **Payer customer**, **Payment type**, **Amount**, **Check #** and
 **Received date**. The received date will not accept a future date — *"The received date must be on
@@ -184,7 +190,7 @@ perform is worse than no row. Reopen the month and it comes back.
 Voiding one warns you what will happen — *"The invoice's open balance comes back."* — and requires a
 reason.
 
-## The trap: cash stranded by a closed month
+## On-account cash has a deadline: the month-end close
 
 This one will happen to somebody in your office, so it is worth understanding before it does.
 
@@ -196,19 +202,23 @@ But a closed month accepts no postings. So:
 > **Once the month a payment arrived in is closed, cash still sitting on account from that payment
 > can never be applied to anything — ever — unless the month is reopened.**
 
-The refusal is correct and the guard is doing its job. But the practical consequence is a real trap:
-on-account cash has a deadline, and the deadline is the month-end close. **Clear on-account cash
-before you close the month it arrived in.**
+The refusal is correct and the guard is doing its job — a late allocation genuinely *does* change a
+closed month's aging, and this is how that change is kept visible and audited instead of silent. The
+practical consequence is a deadline: **clear on-account cash before you close the month it arrived
+in.** Treat it as the last job before a close, not as a hazard to work around.
+
+When cash does outlive its month, the way out is to reopen the month, apply it, and close again. It
+is deliberately heavyweight; the Month-end chapter covers the reopen.
 
 Two details soften the edges slightly. A **credit memo** applied to an invoice dates from *today*,
 not from the credit's own date, so credits are not stranded the same way. And a standalone bad-debt
 write-off also dates from today. It is specifically *payment* applications that inherit the old
 date.
 
-The demonstration data contains exactly this situation — the three payments in the closed July
-batch are on account permanently. This is filed as
-[#159](https://github.com/CoJoA13/HeatSynQ/issues/159) and is awaiting an owner decision; it is
-documented here as behaviour, not as a recommendation.
+The demonstration data contains exactly this situation — the three payments in the closed July batch
+are on account permanently, and that is deliberate, so the lock can be seen working. It was raised as
+[#159](https://github.com/CoJoA13/HeatSynQ/issues/159) and settled on 2026-08-19: the behaviour
+stands as designed, and the procedure above is the answer to it.
 
 ## The aging report
 

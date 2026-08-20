@@ -76,6 +76,21 @@ nothing before it. After that, no skipping.
 Closing a month that is already closed is allowed and simply re-freezes it — the screen warns
 *"This period is already closed — closing again re-freezes its schedule."*
 
+### Before you close: allocate the cash on account
+
+An application is dated at the **payment's** received date, not at the day you allocate it. So the
+moment a month closes, cash still sitting on account from a payment received in that month can no
+longer be applied to anything — the application would be dated into a closed period, and the period
+lock refuses it.
+
+**So the last job before a close is to allocate on-account cash.** A cheque that arrives too late in
+the month to match against an invoice should still be applied before month end. The Receivables
+chapter says the same thing from the other side.
+
+If cash does outlive its month, the route out is the sanctioned one and not a workaround: reopen the
+month, apply it, close again. That is heavyweight on purpose — a late allocation genuinely changes a
+closed month's aging, and the lock exists so that change is visible and audited rather than silent.
+
 ## Closed periods
 
 Every month ever closed is listed at the bottom, newest first, with its frozen figures — Beginning,
