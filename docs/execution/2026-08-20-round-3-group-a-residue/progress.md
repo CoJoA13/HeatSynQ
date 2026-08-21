@@ -25,6 +25,18 @@ Three tasks, strictly sequential (Tasks 2 and 3 share `applications.ts`), plus d
 | `48be5ae` | #175 — four causes, four sentences, one composition |
 | `e1f8c3a` | Task 3 report |
 | `803e9c4` | #174/#175 review round — the render test my brief said was impossible |
+| `81b6afb` | Docs: the four chapters these fixes falsified + handoff |
+| `735b57c` | Whole-branch round — a fourth false comment, and two of my own in the chapters |
+
+## Outcome
+
+**MERGED `c3ad03b` (PR #180, squash, 2026-08-20).** All three issues auto-closed. Codex returned
+zero inline threads on the first push — a pass, not an absence. Branch deleted, scratch DBs
+`erp_test_r1`/`erp_test_r2` dropped, dev DB left pristine (0 orders, 0 ClosePeriod rows — the
+condition #174 made the void E2E flow depend on).
+
+Gates at merge: **3508 tests / 205 files**, `tsc`/`eslint` clean, **E2E 23/23**, manual 14.60 MB.
+Filed on the way: **#178**, **#179**.
 
 ## Filed from this group
 
