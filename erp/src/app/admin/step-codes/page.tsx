@@ -9,7 +9,7 @@ import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 
 type Field = { id?: string; label: string; type: StepFieldType; unit: string | null; sort: number };
 type Code = {
@@ -142,6 +142,10 @@ export default function StepCodesPage() {
       const { body, fieldCtx } = payload;
       try {
         await api(`/api/admin/step-codes/${id}`, { method: "PUT", body: JSON.stringify(body) });
+        // #158 — success path, before the follow-up load (#124/#131). Every scalar edit, active
+        // toggle and field-def change on this page comes through here, and each writes a
+        // `processStepCode` row: exactly the entity the panel below is showing.
+        invalidateHistory();
         setError(null); setBlocked(null); setFieldBlocked(null); await load();
       } catch (e) {
         await load().catch(() => {});

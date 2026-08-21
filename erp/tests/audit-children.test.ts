@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -144,6 +144,12 @@ describe("#153 — the registry is the whole design", () => {
  * absent: `ReceivablesSection.tsx` writes `application` rows, but it lives on the CUSTOMER page,
  * whose panel is `customer` — which does not register `application` — so there is no stale panel
  * to refresh there.
+ *
+ * The per-entity file list is BEST EFFORT and the check below requires only that ONE named file
+ * wires the call — nothing here can derive "every file that writes this entity" from source, so
+ * do not read the lists as complete. #158's page-keyed sweep further down is what IS complete,
+ * over the files that mount a panel; it exists because a second writer slipped through exactly
+ * this gap (`admin/surcharges/page.tsx`, added below after the fact).
  */
 const INVALIDATION_SITES: Record<string, readonly string[]> = {
   partSpecification: ["src/app/parts/[id]/SpecsSection.tsx"],
@@ -155,7 +161,13 @@ const INVALIDATION_SITES: Record<string, readonly string[]> = {
   partProcessRevision: ["src/app/parts/[id]/ProcessStepsSection.tsx"],
   customerAddress: ["src/app/customers/[id]/page.tsx"],
   customerContact: ["src/app/customers/[id]/page.tsx"],
-  customerSurcharge: ["src/app/customers/[id]/SurchargeOverridesSection.tsx"],
+  customerSurcharge: [
+    "src/app/customers/[id]/SurchargeOverridesSection.tsx",
+    // The surcharge admin page's "Clear override" (#158): a `customerSurcharge` write on a page
+    // whose panel is `surcharge`, which registers that same child. It was live and unwired while
+    // this map stayed green, because the check below is satisfied by the file above alone.
+    "src/app/admin/surcharges/page.tsx",
+  ],
   customerTemplateAssignment: ["src/app/customers/[id]/TemplateAssignmentsSection.tsx"],
   orderAttachment: ["src/components/AttachmentsSection.tsx"],
   payment: ["src/app/receivables/batches/[id]/BatchDetail.tsx"],
@@ -189,6 +201,173 @@ describe("#153 — a registered child implies invalidation wiring", () => {
         .toMatch(/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/);
       expect(src, `${file} must call invalidateHistory()`).toMatch(/invalidateHistory\(\)/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// #158 — the PAGE-keyed sweep. Read the two sweeps as a pair; the division is stated below.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every `.tsx` under `src/` that MOUNTS a History panel, enumerated from the tree rather than
+ * hand-listed (the `manual-capture` route-enumeration precedent). A hand list is precisely how a
+ * census silently omits the one file nobody remembered — which is the defect this sweep exists to
+ * catch, so it must not commit that defect itself.
+ */
+function panelMountingFiles(): string[] {
+  const root = join(process.cwd(), "src");
+  return readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((rel) => rel.endsWith(".tsx"))
+    .map((rel) => rel.split(sep).join("/"))
+    .filter((rel) => /<HistoryPanel[\s/>]/.test(readFileSync(join(root, rel), "utf8")))
+    .map((rel) => `src/${rel}`)
+    .sort();
+}
+
+/**
+ * WHAT COUNTS AS "ISSUES A MUTATING REQUEST" (design call 1, recorded here rather than improvised).
+ *
+ * Deliberately an OVER-match: the bare, word-bounded token, anywhere in the file — not
+ * `method: "POST"` specifically. A precise regex is the failure mode being fixed one level up; a
+ * mutation built from a variable (`method: del ? "DELETE" : "PUT"`), assembled in a helper defined
+ * in the same file, or written in a shape nobody has invented yet still carries one of these four
+ * words, and over-matching fails CLOSED — the file is called mutating and must wire the call.
+ * The cost of over-matching is a false positive, and design call 2's allowlist is where a false
+ * positive gets written down with a reason instead of quietly exempting the file.
+ *
+ * `PUT` inside `INPUT`/`OUTPUT` and `POST` inside `POSTED` are excluded by the word boundaries;
+ * lowercase prose ("Delete", "post") never matches, which is why the match is case-sensitive.
+ */
+const MUTATING_TOKEN = /\b(?:POST|PUT|PATCH|DELETE)\b/;
+
+/** Every `method:` value in a file, as raw source text. Used only by the loud guard below. */
+const METHOD_VALUE = /\bmethod:\s*([^,}\n]+)/g;
+
+/** The HTTP method literals this sweep knows how to classify. Anything else is a loud failure. */
+const KNOWN_METHOD_LITERALS = new Set(
+  ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"].map((m) => `"${m}"`),
+);
+
+/**
+ * Request transports whose mutations this sweep would NOT see: they carry no HTTP-method literal
+ * at all. None is used anywhere in this codebase today (every client write goes through `api()`
+ * or `fetch()` with a literal method), so their appearance in a panel-mounting file means the
+ * detection above has gone blind and must be extended before the file can be judged.
+ */
+const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buseActionState\b|\buseFormState\b|<form[^>]*\saction=/;
+
+/**
+ * Panel-mounting files that issue NO mutating request (design call 2). An exclusion is an ENTRY
+ * WITH A REASON, never a silent absence — a file that drops out of the census by being forgotten
+ * looks identical to a file that is genuinely read-only, and the checks below refuse both an
+ * entry that is not actually mutation-free and an entry naming a file that mounts no panel.
+ *
+ * Empty on purpose as of #158: all twelve panel-mounting files mutate. The mechanism exists so
+ * that the FIRST read-only panel page is written down rather than discovered by its absence.
+ */
+const NON_MUTATING_PANEL_PAGES: Record<string, string> = {};
+
+describe("#158 — a page with a panel that mutates must invalidate", () => {
+  /**
+   * WHY A SECOND SWEEP RATHER THAN A WIDER ONE (design call 3). `INVALIDATION_SITES` above is
+   * keyed by registered CHILD entity and asserts exact key equality with the registry, so it
+   * cannot grow parent keys; and its file check requires AT LEAST ONE named file, never all of
+   * them. The two sit beside each other with this division:
+   *
+   *  - This sweep is complete over the files that MOUNT a panel — the file set is derived from
+   *    the tree, so there is no list to under-fill. It catches the parent-own gap (#158's title:
+   *    a page whose panel entity has no registered children at all — `cert`, `shipper`, `quote`,
+   *    `processTemplate`, `processStepCode`, the reference kinds — was invisible to the entity
+   *    map entirely) and it catches a SECOND page writing an already-covered child entity, which
+   *    the "at least one file" rule cannot see (`admin/surcharges/page.tsx` clearing a
+   *    `customerSurcharge` was live and unwired, and the entity map was green throughout).
+   *
+   *  - The entity map catches what this one cannot: a file that mounts NO panel but writes a
+   *    registered child of a panel mounted elsewhere — every `parts/[id]/*Section.tsx`, and
+   *    `customers/[id]/SurchargeOverridesSection.tsx`. Nothing here looks at those files.
+   *
+   * WHAT NEITHER SWEEP PINS, stated plainly rather than papered over (the same statement the
+   * entity-keyed describe above carries, and for the same reason): there is no DOM test
+   * environment here, so nothing below proves the call sits on the SUCCESS path of the right
+   * mutation, nor that a mounted panel actually refetches. The listener contract is pinned in
+   * tests/history-invalidation.test.ts, and the panel subscribes through that same export. And
+   * neither sweep can see a mutation issued by an imported helper that carries none of the tokens
+   * below in the calling file — the `OPAQUE_TRANSPORT` guard covers the transports, not that.
+   */
+
+  const panelFiles = panelMountingFiles();
+  const read = (file: string) => readFileSync(join(process.cwd(), file), "utf8");
+
+  it("finds the panel-mounting files by walking the tree", () => {
+    // A broken walk would answer an empty list and every check below would pass vacuously.
+    expect(panelFiles.length).toBeGreaterThan(5);
+    expect(panelFiles).toContain("src/app/parts/[id]/page.tsx"); // the wired precedent
+    expect(panelFiles).toContain("src/components/ReferenceTable.tsx"); // a shared component, not a page
+  });
+
+  it("understands every request shape in the panel-mounting files", () => {
+    // The loud half of design call 1. A `method:` this sweep cannot classify, or a transport that
+    // carries no method at all, means the detector has gone blind — fail here rather than let the
+    // census quietly shrink.
+    const unclassified: string[] = [];
+    for (const file of panelFiles) {
+      const src = read(file);
+      for (const [, value] of src.matchAll(METHOD_VALUE)) {
+        if (!KNOWN_METHOD_LITERALS.has(value.trim())) unclassified.push(`${file}: method: ${value.trim()}`);
+      }
+      if (OPAQUE_TRANSPORT.test(src)) unclassified.push(`${file}: mutation transport with no HTTP method literal`);
+    }
+    expect(unclassified).toEqual([]);
+  });
+
+  it("every panel-mounting file that mutates imports and calls invalidateHistory", () => {
+    const unwired: string[] = [];
+    for (const file of panelFiles) {
+      const src = read(file);
+      if (!MUTATING_TOKEN.test(src)) continue;
+      if (Object.hasOwn(NON_MUTATING_PANEL_PAGES, file)) continue; // judged below, not here
+      if (!/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/.test(src)) {
+        unwired.push(`${file} must import invalidateHistory`);
+      } else if (!/invalidateHistory\(\)/.test(src)) {
+        unwired.push(`${file} must call invalidateHistory()`);
+      }
+    }
+    expect(unwired).toEqual([]);
+  });
+
+  it("every allowlisted page really mounts a panel and really does not mutate", () => {
+    // The allowlist cannot rot into a blanket exemption: an entry that starts mutating, or that
+    // names a file no longer mounting a panel, fails here.
+    for (const [file, reason] of Object.entries(NON_MUTATING_PANEL_PAGES)) {
+      expect(reason.length, `${file} needs a reason`).toBeGreaterThan(10);
+      expect(panelFiles, `${file} must mount a panel`).toContain(file);
+      expect(MUTATING_TOKEN.test(read(file)), `${file} mutates — remove the allowlist entry`).toBe(false);
+    }
+  });
+
+  it("the mutation detector matches every shape it claims to, and no prose", () => {
+    // The detector is the load-bearing part of the census, and today's allowlist is empty, so
+    // these synthetic cases are the only place its behaviour is actually exercised.
+    for (const src of [
+      `api("/x", { method: "POST" })`,
+      `api("/x", { method: "PUT", body })`,
+      `fetch("/x", { method: "PATCH" })`,
+      `api("/x", { method: "DELETE" })`,
+      `const method = hard ? "DELETE" : "PUT"; fetch("/x", { method })`, // built from a variable
+      `const init: RequestInit = { method: "POST" }; fetch("/x", init)`, // init hoisted out
+    ]) expect(MUTATING_TOKEN.test(src), src).toBe(true);
+
+    for (const src of [
+      `api("/x")`,
+      `<button>Delete</button>`,
+      `<input value={x} />`, // INPUT must not read as PUT
+      `const output = post(x);`,
+      `// posted, deleted, patched`,
+    ]) expect(MUTATING_TOKEN.test(src), src).toBe(false);
+
+    expect(OPAQUE_TRANSPORT.test(`navigator.sendBeacon("/x", b)`)).toBe(true);
+    expect(OPAQUE_TRANSPORT.test(`<form action={save}>`)).toBe(true);
+    expect(OPAQUE_TRANSPORT.test(`<form onSubmit={submit}>`)).toBe(false);
   });
 });
 

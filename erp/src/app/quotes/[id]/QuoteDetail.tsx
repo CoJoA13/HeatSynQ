@@ -26,7 +26,7 @@ import Link from "next/link";
 import { api, ApiError } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
 import { PRICE_PER, PRICE_PER_LABELS, type PricePerValue } from "@/lib/part-constants";
 import { QUOTE_STATUS_LABELS, QUOTE_EXPIRED_LABEL } from "@/lib/quote-constants";
@@ -287,6 +287,10 @@ export function QuoteDetail({ id }: { id: string }) {
       const res = await api<QuoteMutationData>(`/api/quotes/${id}`, {
         method: "PATCH", body: JSON.stringify(body),
       });
+      // #158 — success path, before the adopt (#124/#131 ordering). One `auditedUpdate("quote", …)`
+      // wraps the header and the whole lines/prices/breaks tree (quotes.ts), so this is exactly
+      // the history the panel at the bottom of this page renders.
+      invalidateHistory();
       adopt(res);
       setOverlapWarnings(res.warnings);
       setError(null);
@@ -321,6 +325,7 @@ export function QuoteDetail({ id }: { id: string }) {
       const res = await api<QuoteCloseResultData>(`/api/quotes/${id}/close`, {
         method: "POST", body: JSON.stringify({ reason }),
       });
+      invalidateHistory(); // #158 — the close's success path (an audited `quote` update, with its reason)
       adopt(res.quote);
       setCloseWarning(res.linkedOpenOrders.length > 0 ? res.linkedOpenOrders : null);
       // Overlap warnings describe a SAVE on an OPEN quote — stale beside a closed one (#100
@@ -354,9 +359,11 @@ export function QuoteDetail({ id }: { id: string }) {
     if (reason === null) return; // cancelled
     if (!reason.trim()) { setError("A reason is required to reopen a quote."); return; }
     try {
-      adopt(await api<QuoteDetailData>(`/api/quotes/${id}/reopen`, {
+      const reopened = await api<QuoteDetailData>(`/api/quotes/${id}/reopen`, {
         method: "POST", body: JSON.stringify({ reason }),
-      }));
+      });
+      invalidateHistory(); // #158 — the reopen's success path (an audited `quote` update, with its reason)
+      adopt(reopened);
       setError(null);
       setCloseWarning(null);
       // Any lingering warnings described the state before the close/reopen cycle — the next
@@ -567,6 +574,7 @@ export function QuoteDetail({ id }: { id: string }) {
       const res = await api<QuoteMutationData>(`/api/quotes/${id}/attach-part`, {
         method: "POST", body: JSON.stringify({ lineId: line.id, partId }),
       });
+      invalidateHistory(); // #158 — attach-part is an `auditedUpdate("quote", …)` (quotes.ts)
       adopt(res);
       setOverlapWarnings(res.warnings);
       setAttachPicks((cur) => ({ ...cur, [line.key]: "" }));

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { useLatest } from "@/lib/use-latest";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
@@ -151,6 +151,11 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       await api(`/api/admin/reference/${kind}/${row.id}`, {
         method: "PUT", body: JSON.stringify({ [key]: !row[key] }),
       });
+      // #158 — success path, before the follow-up load (#124/#131). The row stays on screen after
+      // a toggle, so its open History panel (mounted per-row, right beside this checkbox) would
+      // otherwise keep showing the pre-toggle history. Flipping `isDefault` ON also demotes
+      // another row; the signal is global, so that row's panel refreshes too.
+      invalidateHistory();
       // Retiring a row via the Active toggle is the sanctioned alternative to deleting it (§4.2)
       // — it must not leave a blocker panel from an earlier failed delete attempt on screen.
       setError(null); setBlocked(null); await load();

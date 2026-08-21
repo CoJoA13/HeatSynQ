@@ -426,6 +426,15 @@ export function BatchDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<BatchDetailData>) => {
     const ticket = mutations.next();
     const res = await run();
+    // #158 — success path, the instant the mutation resolves and BEFORE the accept gate: the
+    // server state has certainly changed even when this response is superseded and its payload
+    // dropped. Covers all four actions routed through here (add payment, void payment, post,
+    // reopen) — a `receiptBatch` row, or a `payment` row that is a registered child of this
+    // page's panel. The per-action calls that used to sit at the add-payment and void-payment
+    // sites were REMOVED when this landed: two signals per mutation read as intentional and are
+    // not. The Apply/void-application panel above is a separate component that does NOT route
+    // through this callback, so its own two calls stay where they are.
+    invalidateHistory();
     if (!mutations.accept(ticket)) return;
     setBatch(editGuard.applyPayload(res));
   }, [mutations, editGuard]);
@@ -524,7 +533,6 @@ export function BatchDetail({ id }: { id: string }) {
           reference: payReference, receivedDate: payReceivedDate,
         }),
       }));
-      invalidateHistory(); // #14 item 1 — `payment` is a registered child of the batch panel
       setPayCustomerId(""); setPayTypeId(""); setPayAmount(""); setPayReference(""); setPayReceivedDate("");
       setError(null);
     } catch (e) {
@@ -547,7 +555,6 @@ export function BatchDetail({ id }: { id: string }) {
       await applyMutation(() => api<BatchDetailData>(`/api/receivables/batches/${id}/payments/${payment.id}`, {
         method: "DELETE", body: JSON.stringify({ reason }),
       }));
-      invalidateHistory(); // #14 item 1
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -602,6 +609,9 @@ export function BatchDetail({ id }: { id: string }) {
       setError((e as Error).message);
       return;
     }
+    // #158 — success path, before the follow-up load. Void does NOT route through `applyMutation`
+    // (DELETE answers `{ ok: true }`, not a fresh detail), and this page stays mounted read-only.
+    invalidateHistory();
     setError(null);
     try {
       await load();

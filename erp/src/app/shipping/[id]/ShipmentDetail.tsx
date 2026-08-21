@@ -19,7 +19,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { FREIGHT_TERMS, FREIGHT_TERMS_LABELS, type FreightTermsValue } from "@/lib/cert-constants";
 import { ShipmentOrderPanel } from "./ShipmentOrderPanel";
 
@@ -316,6 +316,12 @@ export function ShipmentDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<ShipperMutationResult>) => {
     const ticket = mutations.next();
     const res = await run();
+    // #158 — success path, the instant the mutation resolves and BEFORE the accept gate: the
+    // server state has certainly changed even when this response is superseded and its payload
+    // dropped. This one seam covers the header PATCH, Add order and Remove order here AND every
+    // write `ShipmentOrderPanel` makes through the same callback — all of them the shipper's own
+    // before/after diff, which is what the panel at the bottom of this page renders.
+    invalidateHistory();
     if (!mutations.accept(ticket)) return;
     setShipper(editGuard.applyPayload(res.shipper));
     setWarnings(res.warnings);
@@ -411,6 +417,10 @@ export function ShipmentDetail({ id }: { id: string }) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
       }
+      // #158 — success path, the instant the print resolves. The FIRST BOL print allocates
+      // `bolNumber` through `auditedUpdate("shipper", …)` (shippers.ts `printBol`); a reprint
+      // writes no shipper row, and an invalidation that finds nothing new is one gated GET.
+      invalidateHistory();
       const url = URL.createObjectURL(await res.blob());
       const opened = window.open(url, "_blank");
       if (opened) opened.opener = null;
@@ -651,6 +661,9 @@ export function ShipmentDetail({ id }: { id: string }) {
       setError((e as Error).message);
       return;
     }
+    // #158 — success path, before the follow-up load. The void is an `auditedSoftDelete("shipper", …)`
+    // carrying the typed reason, and this page stays mounted (read-only) to show it.
+    invalidateHistory();
     setError(null);
     try {
       await load();
