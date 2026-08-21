@@ -74,10 +74,20 @@ guard at all; it reads finalized-invoice state only to decide which orders becom
 unit test pins the absence rather than the behaviour, deep-equalling the gate with and without the
 block, so the field cannot creep back into the decision.
 
-A second unreachable route was found in the same sweep and is noted on #161: `POST /api/certs`
-has no UI caller either, and the order hub's "Create cert for Load N" is hardcoded to LOAD
-scope — so no screen can manually create an ORDER- or SHIPMENT-scope certificate if the
-automatic creation ever misses one.
+A second unreachable route was found in the same sweep, split out as
+[#165](https://github.com/CoJoA13/HeatSynQ/issues/165) and **fixed in the same group**: `POST
+/api/certs` had no UI caller, and the order hub's "Create cert for Load N" was hardcoded to LOAD
+scope, so no screen could raise an ORDER- or SHIPMENT-scope certificate when automatic creation
+missed one. SHIPMENT scope needed a **new route** rather than a relaxed schema — `POST /api/certs`
+is `.strict()` and omits `shipperId` by a decision recorded in that file's own docblock, so it was
+routed around instead of reversed.
+
+Building the picker also exposed a guard that had never been needed: a hand-raised SHIPMENT cert can
+name any (order, shipment) pair, where the two automatic callers always passed a pairing they had
+just written. An unpaired one prints every quantity as zero under a bare order label, so `createCert`
+now refuses it. **A new surface finding a latent gap in the service beneath it** is the useful shape
+here — the guard was not missing because anyone overlooked it, but because nothing could reach the
+state until this control existed.
 
 ## Judged and cleared — not defects
 
@@ -131,7 +141,7 @@ time:
    right; the dev-side convenience script is missing.
 5. `postBatch`'s control-total match inverts the natural order of writing a caller, and fails
    late.
-6. A blind `createCert` collides with the eagerly-created cert without hinting one exists.
+6. ~~A blind `createCert` collides with the eagerly-created cert without hinting one exists.~~ **Fixed** ([#165](https://github.com/CoJoA13/HeatSynQ/issues/165), round 3 group B): the refusal now names which live cert covers that scope instance, with a link to it. The UI still does not pre-check — uniqueness is settled server-side under the order claim and a client-side guess would be a second opinion that can disagree with it.
 7. `createQuote` needs a real user in the actor context, so the demo seed's system actor cannot
    create one.
 
