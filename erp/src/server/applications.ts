@@ -298,6 +298,24 @@ function eligibleDiscountFor(
  * date, or what has already been taken. One sentence for all three sent them hunting through all
  * three, which is the defect.
  */
+/**
+ * **Which shape a THIRD "why is this blocked" surface should copy** — there are now two in this
+ * codebase and they are not competing, so the rule is worth stating once rather than left to be
+ * re-derived from their docblocks:
+ *
+ *  - **A SCREEN has to branch on it** → return a discriminant and let the client compose, the
+ *    `DiscountBlock` shape above. The apply grid renders a hint for one blocker and nothing for the
+ *    other three, which is a decision only the client can make; a pre-composed sentence would have
+ *    forced it to string-match to decide whether to render at all.
+ *  - **Only a MESSAGE is needed** → compose server-side and return the string, the
+ *    `applicationVoidHintFor` / `invoiceBlockMessage` shape (`invoice-guards.ts`). Nothing branches
+ *    on the void hint; it is read by a human, once, inside an `HttpError`.
+ *
+ * This function is the seam between them: the block is the discriminant, and this is the table that
+ * turns it into the sentence for the one caller that only needs the sentence. That is why exporting
+ * it is right and widening `DiscountOffer` to carry the message would not be — the screen would then
+ * receive prose it must not render.
+ */
 export function discountBlockMessage(
   block: DiscountBlock, settlement: { coveredCents: number; openCents: number },
 ): string {

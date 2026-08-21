@@ -877,9 +877,12 @@ describe("the period clause covers every live application, not only write-offs (
    * sites. Nothing about the widened scope shows up in a message when there is no refusal, so only a
    * query counter can see the difference between "inside the if" and "hoisted above it".
    *
-   * Plain property save/restore on the delegate, never `vi.spyOn` (CLAUDE.md: `mockRestore` does not
+   * Plain property assignment on the delegate, never `vi.spyOn` (CLAUDE.md: `mockRestore` does not
    * put the original back on this client and corrupts the shared singleton for the rest of the run).
-   * Restored in `finally` so a failure here cannot leak.
+   * **Nothing is restored, and nothing needs to be** — the patch goes on the per-transaction client,
+   * which is discarded when the transaction ends, so there is no shared state to leak into the rest
+   * of the run. (An earlier draft of this comment promised a `finally` that does not exist, in the
+   * file whose whole lesson is comments claiming protection they do not provide.)
    */
   it("costs nothing on a successful unlock — the hint never runs off the refusal path", async () => {
     const inv = await invoiceFixture({ total: 1000 });   // no applications at all: unlock succeeds

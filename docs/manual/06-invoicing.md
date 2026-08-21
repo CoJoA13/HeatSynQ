@@ -156,12 +156,12 @@ Two things stop it:
   July-finalized invoice in August needs July reopened.
 
 The first refusal also tells you when voiding that money is itself blocked: *"…what is applied in
-closed period 2026-07 cannot be voided until it is reopened."* Those are two different months and
+closed period 2026-08 cannot be voided until it is reopened."* Those are two different months and
 they catch people out — an application is dated when the **money moved**, while the unlock is
 guarded by when the **invoice was finalized**. A July-finalized invoice paid in August can pass the
 unlock's own period check and still be stuck, because August is closed and the payment cannot be
-voided until it reopens. The sentence names the month to reopen so you are not left guessing which
-of the two it means.
+voided until it reopens. That is why the sentence names the month: the one to reopen is the month
+the *payment* landed in, which is not the month the unlock was checking.
 
 ## Credit memos
 

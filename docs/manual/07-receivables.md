@@ -158,8 +158,9 @@ And the offer is **per invoice, not per grid**. A $1,000 cheque facing two $1,00
 show "Take 20.00" on both, because that cash could settle either one — just not both. Tick both and
 the save refuses, correctly, because the cheque is not big enough.
 
-**If you force a discount through anyway, the refusal names which of the four it is.** It used to
-say the same three words for all of them and leave you to work it out:
+**If you force a discount through anyway, the refusal names which of the four it is.** The bottom
+row has always said its own piece; the other three used to share one sentence — *"no early-pay
+discount applies"* — and leave you to work out which:
 
 | What is wrong | What it says |
 |---|---|
@@ -168,9 +169,10 @@ say the same three words for all of them and leave you to work it out:
 | The discount was already taken | *this invoice has no early-pay discount left to take* |
 | The cheque does not settle the invoice | *an early-pay discount is earned only by a payment that settles the invoice — this covers 500 of the 1000 open* |
 
-Each one tells you where to look next: the invoice's terms, the receipt's date, or what has already
-been taken. The column above stays silent for the first three because there is nothing you can do
-about them from that screen — but once you have *asked* for the discount, you are owed the reason.
+Each one tells you where to look next: the invoice's terms, the receipt's date, what has already
+been taken, or the cheque itself. The column above stays silent for the first three because there is
+nothing you can do about them from that screen — but once you have *asked* for the discount, you are
+owed the reason.
 
 The out-of-window message does not yet tell you *when* the window closed — you still have to open
 the invoice to work that out. That is [#178](https://github.com/CoJoA13/HeatSynQ/issues/178).
