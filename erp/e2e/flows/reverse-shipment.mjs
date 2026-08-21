@@ -53,7 +53,17 @@ const VOID_REVERSAL_REASON =
 function armPromptOnce(page, responseText) {
   return new Promise((resolve, reject) => {
     page.once("dialog", (dialog) => {
-      if (dialog.type() !== "prompt") { reject(new Error(`Expected a prompt dialog, got ${dialog.type()}`)); return; }
+      if (dialog.type() !== "prompt") {
+        // DISMISS BEFORE REJECTING. Playwright blocks the page until a dialog is handled, so
+        // rejecting while it is still open leaves the flow hanging on the next action rather than
+        // failing here with the message that says what went wrong — a wrong diagnosis for whoever
+        // reads the timeout. Reviewer-caught; reachable only if a `confirm` ever replaces one of
+        // these four prompts, which is exactly when a clear failure matters most.
+        dialog.dismiss()
+          .catch(() => {})
+          .finally(() => reject(new Error(`Expected a prompt dialog, got ${dialog.type()}`)));
+        return;
+      }
       const message = dialog.message();
       dialog.accept(responseText).then(() => resolve(message)).catch(reject);
     });
@@ -209,6 +219,15 @@ export async function run(page, shot, ctx) {
   assert.equal(
     await reverseButton(page).getAttribute("title"),
     `This shipment is itself a reversal of Packing List ${shipment.shipperNumber} — reverse the original shipment instead`);
+  // The REVERSAL's own Void, while the invoice is still finalized. `voidShipper` runs
+  // `refuseIfInvoiced` over the pair's orders BEFORE its #65 blocker, and a reversal's orders are
+  // its original's — so the invoice sentence wins here too, and "voiding a reversal is the blessed
+  // undo" is true only once the invoice is out of the way (step 7 does that, and step 9 then voids
+  // it for real). This is the half that makes #182 concrete: the pair-freeze BANNER says "void the
+  // reversal first" unconditionally, while both Void buttons correctly say "unlock the invoice
+  // first". Pinned here so the follow-up changes a state this flow already describes.
+  assert.match(await voidButton(page).getAttribute("title"), /^This shipment cannot be voided — Invoice /,
+    "the reversal's own Void must name the invoice too while it is finalized — the banner's 'void the reversal first' is one step short here (#182)");
   await shot("reversal-created");
 
   // --- 5. `OrderStatus.REOPENED`, reachable from a screen for the first time — and the board's

@@ -364,6 +364,12 @@ export function ShipmentDetail({ id }: { id: string }) {
         : gateDo(perms, "void_shipper");
   // #161: the Reverse control's own ladder — see `reverseGate` above for why it is NOT `voidGate`
   // with a different label (the §5.7 invoice block is deliberately absent).
+  //
+  // The null arm is unreachable — the component early-returns below before anything renders this —
+  // and is kept only to satisfy `reverseGate`'s non-null parameter at a point where the compiler
+  // cannot see that. `voidGate` handles the same condition with inline `shipper != null` guards
+  // instead; two shapes for one condition, noted rather than unified because collapsing them means
+  // touching the Void ladder, which is not this task's to move (review Minor 2).
   const reverseControlGate = shipper === null
     ? { allowed: false, disabled: true, title: undefined }
     : reverseGate(perms, shipper);
