@@ -188,9 +188,24 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
   // Task 11 Step 0 (carried from Task 8's review): `shipperId` deliberately carries no
   // `assertRefExists` — that helper is exclusively the REFERENCE_LINKS pattern and spec §7 omits
   // shipper from it — but `Shipper` is soft-deletable, so the raw foreign key below only catches
-  // a NONEXISTENT id, never a VOIDED one. Safe until now only because the sole caller
-  // (shippers.ts's `saveNewShipper`) always passed its own uncommitted row, which by
-  // construction cannot yet be voided by anyone. `assertScopeShape` (createCert, below) already
+  // a NONEXISTENT id, never a VOIDED one.
+  //
+  // **#165 RETIRED THE ARGUMENT THAT USED TO MAKE THIS SAFE, and replaced it with a different
+  // one.** It used to read: safe because the only callers (`saveNewShipper`/`addOrderToShipper`)
+  // passed their own uncommitted row, which by construction nobody could yet have voided. A
+  // `shipperId` now arrives from a client path, so that no longer holds.
+  //
+  // What holds instead: the pairing guard below proves this shipment carries this order, and
+  // `voidShipper` claims every one of a shipment's order rows (`claimOrdersInOrder`) before it
+  // voids — so a concurrent void serializes against the `claimOrder` this function already took,
+  // and both sides run Serializable. The residual (a void that writes no
+  // `recomputeOrderStatus` row, so the re-claim raises no 40001) is caught by SSI through
+  // `voidShipper`'s own `cert.findMany({ shipperId, deletedAt: null })` predicate read.
+  //
+  // That is a longer chain than "the caller owns the row", and it rests on the pairing guard
+  // staying below. **If that guard is ever removed or made conditional, this read needs its own
+  // `claimShipperRow` after the order claim** — CLAUDE.md's rule that the guarded state must live
+  // on, or be locked with, the claimed row. `assertScopeShape` (createCert, below) already
   // guarantees `data.shipperId !== null` whenever `data.scope === "SHIPMENT"`, so the assertion
   // here is documentation, not a runtime possibility this function has to branch on.
   if (data.scope === "SHIPMENT") {
