@@ -91,6 +91,17 @@ const FLOWS = [
   { name: "void-shipment", as: "admin", module: "./flows/void-shipment.mjs" },
   { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
   { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
+  // Round 3 Group B (#161) adds `reverse-shipment`, as admin (needs `void_shipper`, held via
+  // ALL_PERMISSIONS) — the reversing shipment, whose route and service have been complete and
+  // 17-test-covered since Phase 4 with no screen able to call either. It creates its own order
+  // against the invoicing fixture customer, invoices and FINALIZES it (the only state in which
+  // `Order.status = REOPENED` is reachable — this flow is that status's only writer), reverses,
+  // then unlocks/voids/re-reverses. Placed here, directly after `invoice-shipped-order` and well
+  // before `close-month-end`, for the same reason that flow's own header gives: it ends with its
+  // invoice UNLOCKED, so — having no `finalizedAt` — it can never enter the close's readiness or
+  // export scope, and its step codes/surcharge are nobody else's fixture to backfill. Nothing
+  // after it depends on its state.
+  { name: "reverse-shipment", as: "admin", module: "./flows/reverse-shipment.mjs" },
   { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
   { name: "close-month-end", as: "admin", module: "./flows/close-month-end.mjs" },
   { name: "quotes", as: "admin", module: "./flows/quotes.mjs" },
