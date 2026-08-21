@@ -188,9 +188,24 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
   // Task 11 Step 0 (carried from Task 8's review): `shipperId` deliberately carries no
   // `assertRefExists` — that helper is exclusively the REFERENCE_LINKS pattern and spec §7 omits
   // shipper from it — but `Shipper` is soft-deletable, so the raw foreign key below only catches
-  // a NONEXISTENT id, never a VOIDED one. Safe until now only because the sole caller
-  // (shippers.ts's `saveNewShipper`) always passed its own uncommitted row, which by
-  // construction cannot yet be voided by anyone. `assertScopeShape` (createCert, below) already
+  // a NONEXISTENT id, never a VOIDED one.
+  //
+  // **#165 RETIRED THE ARGUMENT THAT USED TO MAKE THIS SAFE, and replaced it with a different
+  // one.** It used to read: safe because the only callers (`saveNewShipper`/`addOrderToShipper`)
+  // passed their own uncommitted row, which by construction nobody could yet have voided. A
+  // `shipperId` now arrives from a client path, so that no longer holds.
+  //
+  // What holds instead: the pairing guard below proves this shipment carries this order, and
+  // `voidShipper` claims every one of a shipment's order rows (`claimOrdersInOrder`) before it
+  // voids — so a concurrent void serializes against the `claimOrder` this function already took,
+  // and both sides run Serializable. The residual (a void that writes no
+  // `recomputeOrderStatus` row, so the re-claim raises no 40001) is caught by SSI through
+  // `voidShipper`'s own `cert.findMany({ shipperId, deletedAt: null })` predicate read.
+  //
+  // That is a longer chain than "the caller owns the row", and it rests on the pairing guard
+  // staying below. **If that guard is ever removed or made conditional, this read needs its own
+  // `claimShipperRow` after the order claim** — CLAUDE.md's rule that the guarded state must live
+  // on, or be locked with, the claimed row. `assertScopeShape` (createCert, below) already
   // guarantees `data.shipperId !== null` whenever `data.scope === "SHIPMENT"`, so the assertion
   // here is documentation, not a runtime possibility this function has to branch on.
   if (data.scope === "SHIPMENT") {
@@ -198,6 +213,20 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
     if (shipperId === null) throw new HttpError(400, "shipperId: shipment scope requires a shipper");
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId, deletedAt: null }, select: { id: true } });
     if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
+
+    // #165: and it must actually CARRY this order. Until the SHIPMENT-scope route existed, the
+    // only callers were `saveNewShipper`/`addOrderToShipper`, which pass a pairing they wrote a
+    // statement earlier — so an unpaired (order, shipment) was unreachable and unguarded. A
+    // hand-raised cert can name any pair, and a cert for a shipment that never carried the order
+    // prints every line's shipped quantity as zero under a bare order label (`readCertPdfData`'s
+    // own SHIPMENT branch) — a printable record of nothing, which is exactly why the LOAD branch
+    // below refuses a load number the order does not have. Read under the `claimOrder` above, so
+    // a concurrent `addOrderToShipper`/`removeOrderFromShipper` (both of which claim this same
+    // order row) serializes with it.
+    const pairing = await tx.shipperOrder.findFirst({
+      where: { shipperId, orderId: data.orderId }, select: { id: true },
+    });
+    if (!pairing) throw new HttpError(400, "orderId: that shipment does not carry this order");
   }
 
   // LOAD scope must name a load the order CURRENTLY has — checked under the claim above, so a

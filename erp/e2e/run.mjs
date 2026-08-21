@@ -88,9 +88,30 @@ const FLOWS = [
   { name: "ship-partial-then-complete", as: "admin", module: "./flows/ship-partial-then-complete.mjs" },
   { name: "multi-order-shipment", as: "admin", module: "./flows/multi-order-shipment.mjs" },
   { name: "cert-results-print", as: "admin", module: "./flows/cert-results-print.mjs" },
+  // Round 3 Group B (#165) adds `cert-scope-create`, as admin (needs certs.create + shipping.*,
+  // all held via ALL_PERMISSIONS) — raising a certification by hand at a chosen scope, which is
+  // the other half of "an implemented route with no button": `POST /api/certs` had no caller
+  // anywhere, and SHIPMENT scope had no route at all until this task added
+  // `POST /api/shippers/[id]/certs`. Sits beside the other cert flow deliberately. It keys its own
+  // order against the shipping fixture customer and ships it (the `cert-results-print` /
+  // `ship-partial-then-complete` pattern), finalizes no invoice and touches no period, close or
+  // template state, and leaves nothing any later flow reads — so its position is a readability
+  // choice, not a dependency.
+  { name: "cert-scope-create", as: "admin", module: "./flows/cert-scope-create.mjs" },
   { name: "void-shipment", as: "admin", module: "./flows/void-shipment.mjs" },
   { name: "credit-hold-block-and-override", as: "clerk", module: "./flows/credit-hold-block-and-override.mjs" },
   { name: "invoice-shipped-order", as: "admin", module: "./flows/invoice-shipped-order.mjs" },
+  // Round 3 Group B (#161) adds `reverse-shipment`, as admin (needs `void_shipper`, held via
+  // ALL_PERMISSIONS) — the reversing shipment, whose route and service have been complete and
+  // 17-test-covered since Phase 4 with no screen able to call either. It creates its own order
+  // against the invoicing fixture customer, invoices and FINALIZES it (the only state in which
+  // `Order.status = REOPENED` is reachable — this flow is that status's only writer), reverses,
+  // then unlocks/voids/re-reverses. Placed here, directly after `invoice-shipped-order` and well
+  // before `close-month-end`, for the same reason that flow's own header gives: it ends with its
+  // invoice UNLOCKED, so — having no `finalizedAt` — it can never enter the close's readiness or
+  // export scope, and its step codes/surcharge are nobody else's fixture to backfill. Nothing
+  // after it depends on its state.
+  { name: "reverse-shipment", as: "admin", module: "./flows/reverse-shipment.mjs" },
   { name: "receivables-apply-age-statement", as: "admin", module: "./flows/receivables-apply-age-statement.mjs" },
   { name: "close-month-end", as: "admin", module: "./flows/close-month-end.mjs" },
   { name: "quotes", as: "admin", module: "./flows/quotes.mjs" },

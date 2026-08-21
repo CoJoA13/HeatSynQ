@@ -36,7 +36,7 @@ order.
 |---|---|---|
 | [#159](https://github.com/CoJoA13/HeatSynQ/issues/159) | On-account cash is stranded once its month closes — an application inherits the payment's date, so a closed month freezes that cash permanently | **Ruled — not a defect, closed.** The cash-journal entry belongs to the date the cash arrived, and a late allocation genuinely does move a closed month's aging. The lock is working; the reopen is the sanctioned route. Procedure: allocate on-account cash before its month closes |
 | [#160](https://github.com/CoJoA13/HeatSynQ/issues/160) | The Users page emits one 404 per signature-less user, so a healthy page can never pass a console/request health gate | Defect — **fixed** (round 3 group C): the users list now carries a `hasSignature` boolean, so the preview image is requested only when there is one |
-| [#161](https://github.com/CoJoA13/HeatSynQ/issues/161) | Shipment reversal is implemented and tested but has **no UI control** — and the refusal messages instruct operators to "re-reverse", a step with no button | **Ruled — reversal gets a screen** (round 3 group B). That also makes `REOPENED` reachable from a UI for the first time, and makes the "re-reverse" refusals true rather than impossible. The cert half split to [#165](https://github.com/CoJoA13/HeatSynQ/issues/165) |
+| [#161](https://github.com/CoJoA13/HeatSynQ/issues/161) | Shipment reversal is implemented and tested but has **no UI control** — and the refusal messages instruct operators to "re-reverse", a step with no button | **Fixed** (round 3 group B): a Reverse control beside Void, on the same permission the route enforces. `REOPENED` is now reachable from a screen and matched by the board's own Reopened filter, and the "void the reversal, edit, re-reverse" refusals now name steps an operator can take — except the pair-freeze BANNER on an invoiced pair, where the Void buttons correctly name the invoice first and the banner does not ([#182](https://github.com/CoJoA13/HeatSynQ/issues/182)). **Its gate deliberately omits the invoice block Void carries** — reversal is the correction for an invoiced shipment, so blocking it there would disable the control in the one case it exists for. Cert half: [#165](https://github.com/CoJoA13/HeatSynQ/issues/165) |
 | [#162](https://github.com/CoJoA13/HeatSynQ/issues/162) | The statement printed a finance charge that is never billed — excluded from the total due, never posted, never aged, never exported | **Ruled informational — fixed** (round 3 group C): the figure is shown, never levied. The control and the printed line now say so, and the spec no longer promises a persisted, idempotent finance-charge run |
 | [#163](https://github.com/CoJoA13/HeatSynQ/issues/163) | A receipt batch with no control total shows a Balance of 0.00, identical to one that balances | Defect — **fixed** (round 3 group A): `balance` is `null` when there is no control total, and both screens say **Not proved** instead of a zero that reads as checked. The schema comment and the 5B design spec had both said `controlTotal − Σ payments` all along — the service was the one that disagreed |
 
@@ -60,17 +60,34 @@ posting half is a spec amendment reversing three rulings, not a bug fix.
 
 ### About #161
 
-Verified three ways: `grep -rn "/reverse" src/app src/components` returns nothing, no client file
-references the route, and no E2E flow exercises it. The route is covered by 17 unit tests. The
-shipment page renders the whole *read* side — pair-freeze banners, the "void the reversal first"
-Void precedence — so the UI explains reversals to an operator who cannot create one. It is also
-the only writer of the `REOPENED` order status, which is therefore equally unreachable in
-practice.
+Verified three ways when filed: `grep -rn "/reverse" src/app src/components` returned nothing, no
+client file referenced the route, and no E2E flow exercised it. The route was already covered by 17
+unit tests. The shipment page rendered the whole *read* side — pair-freeze banners, the "void the
+reversal first" Void precedence — so the UI explained reversals to an operator who could not create
+one. It was also the only writer of the `REOPENED` order status, equally unreachable in practice.
 
-A second unreachable route was found in the same sweep and is noted on #161: `POST /api/certs`
-has no UI caller either, and the order hub's "Create cert for Load N" is hardcoded to LOAD
-scope — so no screen can manually create an ORDER- or SHIPMENT-scope certificate if the
-automatic creation ever misses one.
+**Fixed in round 3 group B.** The one judgement worth recording: the new control's gate does **not**
+carry the invoice block that Void's does. It is the same page, the same permission, and the button
+directly beside it — so cloning that ladder was the obvious move, and it would have disabled Reverse
+on precisely the invoiced shipments reversal exists to correct. `reverseShipper` carries no invoice
+guard at all; it reads finalized-invoice state only to decide which orders become `REOPENED`. The
+unit test pins the absence rather than the behaviour, deep-equalling the gate with and without the
+block, so the field cannot creep back into the decision.
+
+A second unreachable route was found in the same sweep, split out as
+[#165](https://github.com/CoJoA13/HeatSynQ/issues/165) and **fixed in the same group**: `POST
+/api/certs` had no UI caller, and the order hub's "Create cert for Load N" was hardcoded to LOAD
+scope, so no screen could raise an ORDER- or SHIPMENT-scope certificate when automatic creation
+missed one. SHIPMENT scope needed a **new route** rather than a relaxed schema — `POST /api/certs`
+is `.strict()` and omits `shipperId` by a decision recorded in that file's own docblock, so it was
+routed around instead of reversed.
+
+Building the picker also exposed a guard that had never been needed: a hand-raised SHIPMENT cert can
+name any (order, shipment) pair, where the two automatic callers always passed a pairing they had
+just written. An unpaired one prints every quantity as zero under a bare order label, so `createCert`
+now refuses it. **A new surface finding a latent gap in the service beneath it** is the useful shape
+here — the guard was not missing because anyone overlooked it, but because nothing could reach the
+state until this control existed.
 
 ## Judged and cleared — not defects
 
@@ -124,7 +141,7 @@ time:
    right; the dev-side convenience script is missing.
 5. `postBatch`'s control-total match inverts the natural order of writing a caller, and fails
    late.
-6. A blind `createCert` collides with the eagerly-created cert without hinting one exists.
+6. ~~A blind `createCert` collides with the eagerly-created cert without hinting one exists.~~ **Fixed** ([#165](https://github.com/CoJoA13/HeatSynQ/issues/165), round 3 group B): the refusal now names which live cert covers that scope instance, with a link to it. The UI still does not pre-check — uniqueness is settled server-side under the order claim and a client-side guess would be a second opinion that can disagree with it.
 7. `createQuote` needs a real user in the actor context, so the demo seed's system actor cannot
    create one.
 

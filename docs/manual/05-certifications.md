@@ -42,11 +42,13 @@ frozen onto the order from then on. There are three scopes:
 |---|---|---|---|
 | ORDER | By order | The whole order | Automatically, when the order is saved |
 | SHIPMENT | By shipment | Each shipment of the order | Automatically, when the shipment is saved |
-| LOAD | By load | Each furnace load | **By hand**, from the order |
+| LOAD | By load | Each furnace load | By hand, from the order |
 
-Order-scope and shipment-scope certificates simply appear; nobody creates them. Load-scope ones
-are the exception, and the order's **Certifications** section is where you make them. It shows
-the gap plainly —
+Order-scope and shipment-scope certificates normally appear on their own; load-scope ones are
+always made by hand. All three can be raised by hand when something is missing — see **Raising one
+yourself**, below.
+
+The order's **Certifications** section is where all of that happens. It shows the load gap plainly —
 
 > by load · 4 loads · 2 certs
 
@@ -61,6 +63,34 @@ that no longer exists. The section flags it rather than tidying it away:
 
 An order can only hold one live cert per scope instance; a second attempt is refused with *"This
 order already has a certification for that scope."*
+
+### Raising one yourself
+
+Automatic creation covers the ordinary case, but it is not the only way a cert can be missing — one
+can be voided and need re-raising, or an order's requirement can be set after the fact. So the
+Certifications section carries **Raise a certification**: pick the scope, press the button.
+
+The picker offers **By order**, one **By load** entry per load, and one **By shipment** entry per
+live shipment of this order. Shipment entries need permission to view shipments — if you do not
+have it, the picker says so rather than quietly listing fewer choices.
+
+**It does not pre-check whether a cert already exists.** That question is settled by the server, at
+the moment of writing, under a lock — so the screen deliberately does not guess. Press the button
+and if one is already there you are told, and told *which*:
+
+> A live certification already covers this order. · Load 3. · Shipper #1042.
+
+with a link straight to it. The point is that "already done" and "cannot be done" look different.
+
+The control appears on every order, including ones whose section reads *"None — this order does not
+require a certification."* That is deliberate: the whole reason it exists is for the case where
+automatic creation did not happen, and that includes an order whose requirement was set late.
+
+> **A cert raised on a reversal shipment will print negative quantities.** A reversal is mirror
+> paper, and its shipment entry currently looks like any other in the picker. Whether the app should
+> label those or refuse them outright is
+> [#183](https://github.com/CoJoA13/HeatSynQ/issues/183) — until it is settled, check the packing
+> list number against the shipment list if an order has a reversal on it.
 
 ## Requirements come from the part
 
@@ -150,10 +180,10 @@ Certificates are also voided *for* you in two situations, carrying the reason ac
 
 A voided cert stays visible on the order and, with **Show voided** ticked, on the list.
 
-> **There is no "New certification" button anywhere.** Order-scope and shipment-scope certs are
-> made for you; load-scope ones come from the order's Certifications section. If an order has no
-> cert and you think it should, the answer is on the order — its certification requirement and
-> scope — not on this screen.
+> **Certificates are raised from the order, never from this screen.** This list is for finding and
+> reading them. If an order has no cert and you think it should, go to the order — its
+> Certifications section carries both the automatic ones and **Raise a certification** for the
+> cases automatic creation did not cover.
 
 ---
 

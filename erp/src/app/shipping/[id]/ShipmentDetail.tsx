@@ -12,6 +12,7 @@
 // composed with server state at render (`useBulkGrid`, src/lib/bulk-grid.ts).
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
 import { gate, gateDo, type Gate } from "@/lib/permission-ui";
 import { usePermissions } from "@/lib/use-permissions";
@@ -151,6 +152,63 @@ function pairLocked(g: Gate, freeze: string | null): Gate {
   return freeze !== null ? { allowed: false, disabled: true, title: freeze } : g;
 }
 
+/**
+ * The Reverse gate (#161) — built from what refuses a REVERSAL, and deliberately NOT a clone of
+ * `voidGate` below.
+ *
+ * **`invoiceVoidBlock` is NOT a rung here, and adding it would be a bug.** That block exists
+ * because a finalized invoice freezes the shipment against a VOID (`voidShipper`'s
+ * `refuseIfInvoiced`); a reversal is the correction for exactly that situation, and
+ * `reverseShipper` (shippers.ts) carries no invoice guard at all — its own tests finalize an
+ * invoice and then reverse, which is what writes `Order.status = REOPENED`. Cloning the Void
+ * ladder would disable this control in the one case it exists for, and would look right in review
+ * because it matches the button beside it.
+ *
+ * The rungs, in `reverseShipperInTx`'s OWN guard order, each carrying that guard's wording so the
+ * title and the refusal cannot drift (§5.16 — disabled with the reason, never hidden):
+ *   1. voided — step 3's `deletedAt` re-read 404s ("Shipment not found"); a voided shipment already
+ *      contributes 0 to the ledger, so there is nothing to net down. This rung is also what keeps
+ *      `e2e/flows/void-shipment.mjs`'s lock-every-control sweep green.
+ *   2. this document IS a reversal — step 3's `reversesShipperId` refusal.
+ *   3. already reversed — step 3b's at-most-one-live-reversal refusal (Codex PR #141 round 2).
+ *   4. otherwise the route's own check, `mustDo(user, "void_shipper")` — the SAME special action as
+ *      Void, and no `shipping.*` CRUD grant substitutes for it.
+ *
+ * The two remaining server refusals are data conditions no client can evaluate honestly — a voided
+ * ORDER on the shipment, and the below-zero ledger guard — so they stay the server's to report
+ * through the error banner rather than becoming a guessed-at disabled title.
+ */
+export function reverseGate(perms: string[] | undefined, shipper: ShipperDetail): Gate {
+  if (shipper.deletedAt !== null) {
+    return { allowed: false, disabled: true, title: "Shipment is voided" };
+  }
+  if (shipper.reversesShipperId !== null) {
+    return { allowed: false, disabled: true,
+      title: `This shipment is itself a reversal of Packing List ${shipper.reversesShipperNumber ?? "?"} — ` +
+        "reverse the original shipment instead" };
+  }
+  if (shipper.reversedByShipperNumber !== null) {
+    return { allowed: false, disabled: true,
+      title: `This shipment has already been reversed by Packing List ${shipper.reversedByShipperNumber} — ` +
+        "void that reversal first" };
+  }
+  return gateDo(perms, "void_shipper");
+}
+
+/** The Reverse control itself. Split out — the `OpenItemRow` precedent — so `reverseGate`'s ladder
+ *  can be pinned all the way to the rendered `disabled` attribute by a `renderToStaticMarkup` test
+ *  (tests/shipment-reverse-control.test.tsx) rather than only as a plain object. */
+export function ReverseShipmentButton({ gate: g, busy, onClick }: {
+  gate: Gate; busy: boolean; onClick: () => void;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={g.disabled || busy} title={g.title}
+            className="rounded border border-amber-600 px-3 py-1.5 text-sm text-amber-700 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
+      {busy ? "Reversing…" : "Reverse shipment"}
+    </button>
+  );
+}
+
 /** The stored-documents list (spec §11) — `GET /api/shippers/[id]/documents` (Task 14; no other
  *  caller existed for `listDocumentsForShipper` before this page needed one). Not printing itself
  *  (Tasks 18–19 own that); a plain link to the existing, already-gated `GET /api/documents/[id]`
@@ -203,6 +261,7 @@ function ShipmentDocumentsList({ shipperId, viewGate, refresh }: {
 
 export function ShipmentDetail({ id }: { id: string }) {
   const { permissions: perms, error: permsError } = usePermissions();
+  const router = useRouter();
 
   const [shipper, setShipper] = useState<ShipperDetail | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -303,6 +362,18 @@ export function ShipmentDetail({ id }: { id: string }) {
         ? { allowed: false, disabled: true,
             title: `This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first` }
         : gateDo(perms, "void_shipper");
+  // #161: the Reverse control's own ladder — see `reverseGate` above for why it is NOT `voidGate`
+  // with a different label (the §5.7 invoice block is deliberately absent).
+  //
+  // The null arm is unreachable — the component early-returns below before anything renders this —
+  // and is kept only to satisfy `reverseGate`'s non-null parameter at a point where the compiler
+  // cannot see that. `voidGate` handles the same condition with inline `shipper != null` guards
+  // instead; two shapes for one condition, noted rather than unified because collapsing them means
+  // touching the Void ladder, which is not this task's to move (review Minor 2).
+  const reverseControlGate = shipper === null
+    ? { allowed: false, disabled: true, title: undefined }
+    : reverseGate(perms, shipper);
+  const [reversing, setReversing] = useState(false);
 
   // Ticket printing (Task 18; spec §9's POST /api/shippers/[id]/print). Gated shipping.view like
   // the route; a voided shipment refuses NEW prints while stored ones stay downloadable (§5.6), so
@@ -588,6 +659,40 @@ export function ShipmentDetail({ id }: { id: string }) {
     }
   }
 
+  /**
+   * Reverse (#161; spec §5.2/§5.6). Non-optimistic and NOT `applyMutation`'s shape: the response is
+   * a DIFFERENT document — the newly created reversal — so folding it into this page's `shipper`
+   * state would leave the reversal's detail rendered under the original's URL. Navigate to it
+   * instead, exactly as NewShipment does after a save; `page.tsx`'s `key={id}` remounts, and the
+   * reversal's own GET recomputes the same §5.7 warning array through `shipperResponse` (the GET is
+   * wrapped too), so nothing is raced past by the navigate.
+   */
+  async function reverseAction() {
+    if (!shipper) return;
+    const reason = prompt(
+      `Reverse shipment (Packing List ${shipper.shipperNumber})?\n\n` +
+      "A reversal is a NEW shipment carrying the negative of every line on this one: it un-ships " +
+      "the goods, un-marks the completions this shipment made, and reopens the order — it is the " +
+      "correction to use once an invoice has been raised and a void is refused. Both documents " +
+      "then freeze as a pair until the reversal is voided, and each keeps its own packing-list " +
+      "number forever.\n\n" +
+      "Reason for reversing (recorded in the audit history):",
+    );
+    if (reason === null) return; // cancelled
+    // The server's own sentence (`reverseShipper`), so the two cannot drift.
+    if (!reason.trim()) { setError("A reason is required to reverse a shipment."); return; }
+    setReversing(true);
+    try {
+      const res = await api<ShipperMutationResult>(
+        `/api/shippers/${id}/reverse`, { method: "POST", body: JSON.stringify({ reason }) });
+      setError(null);
+      router.push(`/shipping/${res.shipper.id}`);
+    } catch (e) {
+      setError((e as Error).message);
+      setReversing(false);
+    }
+  }
+
   if (!shipper) return <div className="p-6">{error ?? permsError ?? "Loading…"}</div>;
 
   const containerSum = shipper.orders.reduce((sum, o) => sum + o.containers.reduce((s, c) => s + c.count, 0), 0);
@@ -608,10 +713,15 @@ export function ShipmentDetail({ id }: { id: string }) {
             </Link>
           </span>
         </h1>
-        <button onClick={() => void voidAction()} disabled={voidGate.disabled} title={voidGate.title}
-                className="rounded border border-red-600 px-3 py-1.5 text-sm text-red-600 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
-          Void shipment
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* #161: beside Void, on the SAME `void_shipper` special action the reverse route
+              enforces — but on its own ladder, which is not Void's (see `reverseGate`). */}
+          <ReverseShipmentButton gate={reverseControlGate} busy={reversing} onClick={() => void reverseAction()} />
+          <button onClick={() => void voidAction()} disabled={voidGate.disabled} title={voidGate.title}
+                  className="rounded border border-red-600 px-3 py-1.5 text-sm text-red-600 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400">
+            Void shipment
+          </button>
+        </div>
       </div>
 
       {(error ?? permsError) && (
