@@ -367,11 +367,14 @@ test does not. None of it blocked the dataset. Ordered roughly by how much they 
    contracts is a trap for any new caller; the compiler catches it, but only after you have written
    it the other way.
 
-2. **"no early-pay discount applies" covers three different causes.** Out of the discount window, no
-   discount terms on the invoice at all, and entitlement already consumed all produce the identical
-   message. I hit the first and had to read `discountFor` to find out which of the three it was. A
-   clerk cannot do that. Naming the cause ("payment received 37 days after the invoice date; the
-   discount window is 10 days") would be a small change with real value.
+2. **~~"no early-pay discount applies" covers three different causes.~~ FIXED, #175 (2026-08-20).**
+   Out of the discount window, no discount terms on the invoice at all, and entitlement already
+   consumed used to produce the identical message; I hit the first and had to read `discountFor` to
+   find out which. Each now names its own cause, and the offer read and the save refusal derive that
+   cause from one composition, so they cannot disagree about the same invoice. The richer wording
+   wished for here — naming the deadline, not just that it passed — is filed as
+   [#178](https://github.com/CoJoA13/HeatSynQ/issues/178); it needs the deadline threaded out of the
+   single `addDays` rather than computed a second time.
 
 3. **`process-templates.ts` and `templates.ts` both export `createTemplate`.** They are unrelated
    concepts — a reusable step recipe versus a document layout — and importing both in one module

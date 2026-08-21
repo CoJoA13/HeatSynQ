@@ -78,7 +78,9 @@ const toLite = (a: { amount: Prisma.Decimal; type: ApplicationLite["type"]; dele
 //
 // It is enforced at BOTH read sites, which cap independently: here (the offer the apply grid renders
 // as a "Take 20.00" checkbox) and in `resolveReason` (the save). They must agree PER INVOICE, or the
-// grid offers an amount the save refuses.
+// grid offers an amount the save refuses — and since #175 they must agree about WHY as well as about
+// how much, which is why both read the eligible figure and its blocker from the one
+// `eligibleDiscountFor` composition rather than from two copies of the same arithmetic.
 //
 // They deliberately do NOT agree across a WHOLE GRID, and cannot: this function answers about one
 // invoice at a time and measures the payment's entire unapplied cash against it, so a $1,000 check
@@ -197,6 +199,12 @@ function remainingDiscountFor(
  *    the other two are, and it deliberately gets no message of its own.
  *  - `would_not_settle` — #69: this receipt's unapplied cash cannot close the invoice net of the
  *    discount. THIS one the operator can act on, and `settlingAmount`/`wouldEarn` name how.
+ *
+ * **Silent on the OFFER is not silent on the REFUSAL** (#175). All four name themselves in
+ * `discountBlockMessage` when a save is actually refused: an operator who has asked for the discount
+ * and been told no needs to know which of the three dead ends they are in, because each sends them
+ * to a different place to check. The screen-level silence is about not narrating a dead end nobody
+ * walked into.
  */
 export type DiscountBlock = "no_terms_discount" | "window_closed" | "entitlement_spent" | "would_not_settle";
 
@@ -225,6 +233,105 @@ export type DiscountOffer = {
 const blockedOffer = (blockedBy: DiscountBlock): DiscountOffer =>
   ({ amount: 0, blockedBy, settlingAmount: null, wouldEarn: null });
 
+/** Every `DiscountBlock` except `would_not_settle` — the three decided by the invoice alone, with no
+ *  cash figure involved. See `eligibleDiscountFor` for why the fourth is not decided there. */
+type PreSettlementBlock = Exclude<DiscountBlock, "would_not_settle">;
+
+/** The frozen-terms columns plus the two figures the entitlement is measured against — the shape
+ *  both the offer read's own select and `INVOICE_CLAIM_SELECT` satisfy. */
+type DiscountingInvoice = {
+  invoiceDate: Date; total: Prisma.Decimal;
+  termsDiscountPercent: Prisma.Decimal | null; termsDiscountDays: number | null;
+};
+
+/**
+ * The discount still eligible on this invoice for this receipt's date and, when that is zero, WHICH
+ * blocker made it zero. Pure over already-read state and deliberately SYNCHRONOUS, so `resolveReason`
+ * consumes it inside the claimed transaction on its pre-call snapshot without a query of its own.
+ *
+ * **This is the single composition point, which is the whole reason it is a named function** (#175).
+ * The no-terms/window split is stated ONCE, in `termsBlockFor`; the entitlement cap is stated ONCE,
+ * in `remainingDiscountFor`; neither is restated here or in either caller. A second copy of either
+ * is exactly how the offer read (`discountOffer`) and the save refusal (`resolveReason`) drift into
+ * disagreeing about one invoice — the class #69 and #81 were both about, and the reason the §4.3
+ * block above requires the two to agree per invoice.
+ *
+ * **`would_not_settle` is deliberately NOT decided here**, because the two callers measure different
+ * cash and must go on doing so: the offer asks whether this receipt's UNAPPLIED cash could close the
+ * invoice net of the discount (feasibility, before the operator has typed anything), while the save
+ * asks whether the payload's cash + discount EXACTLY covers the open balance (exactness, after they
+ * have). Same blocker, two tests, agreeing in the one direction that matters — every discount the
+ * save accepts satisfies the condition the offer offers on.
+ */
+function eligibleDiscountFor(
+  invoice: DiscountingInvoice, receivedDate: Date, apps: ApplicationLite[],
+): { amount: number; blockedBy: PreSettlementBlock | null } {
+  const terms = issuedTerms(invoice);
+  const termsBlock = termsBlockFor(terms, invoice.invoiceDate, receivedDate);
+  if (termsBlock !== null) return { amount: 0, blockedBy: termsBlock };
+  const amount = remainingDiscountFor(terms, invoice.invoiceDate, receivedDate, invoice.total.toNumber(), apps);
+  // The window is open and the terms carry a percentage, so a zero can only be the entitlement:
+  // spent (#81's cap, after a void reopened the invoice), or — degenerately — an open balance too
+  // small for the percentage to round to a cent. "Nothing left to take" is true of both.
+  if (amount <= 0) return { amount: 0, blockedBy: "entitlement_spent" };
+  return { amount, blockedBy: null };
+}
+
+/**
+ * The sentence a blocked discount is REFUSED with (#175). One table, beside the fact, so the offer
+ * read and the save refusal cannot describe the same blocker differently — `invoice-guards.ts`'s
+ * `invoiceBlockMessage` is the precedent for composing the sentence next to the rule rather than at
+ * each throw site.
+ *
+ * Three of these are new. The fourth is #69's settlement sentence, moved here verbatim: it is the
+ * one blocker that already named its own cause, and it stays byte-identical.
+ *
+ * Exported for one reason — the test that pins the agreement composes its expectation from the block
+ * `discountOffer` reported, so the save is checked against the OFFER's verdict rather than against a
+ * string the test also hard-codes. (The exact sentences are pinned by their own literal assertions.)
+ *
+ * **Why the save speaks where the offer stays silent.** §5.14 asks a block to name a route that
+ * EXISTS, and three of these have none — which is why `discountOffer` renders nothing at all for
+ * them (see `DiscountBlock`). A refusal is a different question. The operator has already asked for
+ * the discount, so they are no longer being told what they could do; they are being told why they
+ * cannot, and the answer decides where to look next — the invoice's issued terms, the receipt's
+ * date, or what has already been taken. One sentence for all three sent them hunting through all
+ * three, which is the defect.
+ */
+/**
+ * **Which shape a THIRD "why is this blocked" surface should copy** — there are now two in this
+ * codebase and they are not competing, so the rule is worth stating once rather than left to be
+ * re-derived from their docblocks:
+ *
+ *  - **A SCREEN has to branch on it** → return a discriminant and let the client compose, the
+ *    `DiscountBlock` shape above. The apply grid renders a hint for one blocker and nothing for the
+ *    other three, which is a decision only the client can make; a pre-composed sentence would have
+ *    forced it to string-match to decide whether to render at all.
+ *  - **Only a MESSAGE is needed** → compose server-side and return the string, the
+ *    `applicationVoidHintFor` / `invoiceBlockMessage` shape (`invoice-guards.ts`). Nothing branches
+ *    on the void hint; it is read by a human, once, inside an `HttpError`.
+ *
+ * This function is the seam between them: the block is the discriminant, and this is the table that
+ * turns it into the sentence for the one caller that only needs the sentence. That is why exporting
+ * it is right and widening `DiscountOffer` to carry the message would not be — the screen would then
+ * receive prose it must not render.
+ */
+export function discountBlockMessage(
+  block: DiscountBlock, settlement: { coveredCents: number; openCents: number },
+): string {
+  switch (block) {
+    case "no_terms_discount":
+      return "this invoice was issued under terms that carry no early-pay discount";
+    case "window_closed":
+      return "this payment is dated after the invoice's early-pay discount window";
+    case "entitlement_spent":
+      return "this invoice has no early-pay discount left to take";
+    case "would_not_settle":
+      return "an early-pay discount is earned only by a payment that settles the invoice — this covers "
+        + `${settlement.coveredCents / 100} of the ${settlement.openCents / 100} open`;
+  }
+}
+
 export async function discountOffer(paymentId: string, invoiceId: string): Promise<DiscountOffer> {
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId },
@@ -248,19 +355,16 @@ export async function discountOffer(paymentId: string, invoiceId: string): Promi
   });
   if (!invoice) throw new HttpError(404, "Invoice not found");
   const apps = invoice.applications.map(toLite);
-  const terms = issuedTerms(invoice);
 
-  // The two terms-side blockers first, so the offer can tell them apart (#155 arm 2). Both are
+  // The three blockers the invoice itself decides — the terms-side pair first, so the offer can tell
+  // them apart (#155 arm 2), then the REMAINING entitlement rather than the raw percentage, because
+  // the UI must never offer an amount the save will refuse (#81 / Codex PR #129). All three are
   // silent on screen; they are distinguished here because a read that answers "zero, and I cannot
-  // tell you why" is the defect being fixed, not a shape to preserve one level down.
-  const termsBlock = termsBlockFor(terms, invoice.invoiceDate, payment.receivedDate);
-  if (termsBlock !== null) return blockedOffer(termsBlock);
-
-  // The REMAINING entitlement, not the raw percentage — the UI must never offer an amount the save
-  // will refuse (#81 / Codex PR #129).
-  const eligible = remainingDiscountFor(
-    terms, invoice.invoiceDate, payment.receivedDate, invoice.total.toNumber(), apps);
-  if (eligible <= 0) return blockedOffer("entitlement_spent");
+  // tell you why" is the defect being fixed, not a shape to preserve one level down. The save
+  // (`resolveReason`) reads this SAME composition and turns each blocker into its own sentence
+  // (#175) — one arithmetic, two consumers, so the grid and the refusal cannot disagree.
+  const { amount: eligible, blockedBy } = eligibleDiscountFor(invoice, payment.receivedDate, apps);
+  if (blockedBy !== null) return blockedOffer(blockedBy);
 
   // #69: offered only if this payment can actually settle the invoice with it (see the block above).
   // This is a FEASIBILITY test — "is there enough cash left to close this out" — while the save's
@@ -453,6 +557,20 @@ export type OpenItemWriteOff = {
   amount: number;
   appliedDate: string;
   reason: string | null;
+  /**
+   * Whether `voidApplication` would still accept this one — false once its OWN month is closed,
+   * which is exactly what `assertPeriodOpen(appliedDate)` refuses (#174).
+   *
+   * The section renders the Void DISABLED with that month in its tooltip rather than enabled and
+   * always-409ing (§5.16: an enabled control that always fails is the one variant the convention
+   * rules out). #157's retention bound covers only the SETTLED row — one retained on its own open
+   * balance keeps listing its dead write-offs, and this is what tells the screen which they are.
+   *
+   * Derived from the same `closedMonthsForDisplay` map the retention decision reads, never a second
+   * query — and the retention decision is now derived from THESE flags, so a row can never be kept
+   * for an undo the screen has disabled, or dropped while one it enables still works.
+   */
+  voidable: boolean;
 };
 
 /** The write-off flavor this surface is about: no payment behind it, so no receipt batch can reach
@@ -528,16 +646,24 @@ export async function openItemsForCustomer(
       const writeOffs: OpenItemWriteOff[] = standalone.map((a) => ({
         id: a.id, amount: a.amount.toNumber(),
         appliedDate: formatDateOnly(a.appliedDate), reason: a.reason,
+        // #174: the same map, per write-off. `voidApplication` guards `assertPeriodOpen` on THIS
+        // row's own `appliedDate`, so this is precisely the question the Void control needs asked.
+        voidable: !closedWriteOffMonths.has(monthKey(a.appliedDate)),
       }));
       // ANY of them, never `[0]`: an invoice can carry several standalone write-offs in DIFFERENT
       // months, and the row is worth keeping while even one of them is still voidable — that one is
       // the route out. Do not "simplify" this to the first write-off.
-      const stillVoidable = standalone.some((a) => !closedWriteOffMonths.has(monthKey(a.appliedDate)));
+      //
+      // Read off the FLAGS above rather than re-testing the map (#174): retention exists to keep a
+      // live undo reachable, so "is this row still worth keeping" and "is this control still live"
+      // must be one decision. Two spellings of it are how a row gets retained for an undo the screen
+      // has already disabled.
+      const stillVoidable = writeOffs.some((w) => w.voidable);
       // Settled, with no write-off left that can still be undone — not an open item, and nothing
       // here to undo. A written-off invoice is retained at zero instead while its undo lives (#77,
       // bounded by #157; see the header block). `writeOffs` still lists the closed-month siblings of
-      // a retained row: they are part of why it reads the way it does, and their Void refuses with
-      // `assertPeriodOpen`'s message, which names the month to reopen — a true route, not a dead end.
+      // a retained row: they are part of why it reads the way it does, and each carries `voidable`
+      // so the section can render its Void disabled, naming the month to reopen (#174).
       if (cents(open) <= 0 && !stillVoidable) continue;
       items.push({
         kind: "INVOICE", id: inv.id,
@@ -824,11 +950,15 @@ function resolveReason(
     // stable invoice total minus what has already been discounted, floored against the current
     // per-call offer. `discountSoFarCents` then adds this request's own accepted lines on top, so
     // the cap holds both WITHIN one payload and ACROSS separate calls.
-    const elig = remainingDiscountFor(
-      issuedTerms(invoice), invoice.invoiceDate, receivedDate,
-      invoice.total.toNumber(), invoice.applications.map(toLite));
-    if (elig <= 0) {
-      throw new HttpError(400, "no early-pay discount applies");
+    //
+    // Read through `eligibleDiscountFor` — the SAME composition `discountOffer` reads, which is what
+    // stops the grid's answer and this refusal from disagreeing about one invoice. It hands back the
+    // blocker as well as the figure, so a zero here refuses with the sentence for THAT blocker
+    // instead of one flat message covering three unrelated causes (#175).
+    const { amount: elig, blockedBy } = eligibleDiscountFor(
+      invoice, receivedDate, invoice.applications.map(toLite));
+    if (blockedBy !== null) {
+      throw new HttpError(400, discountBlockMessage(blockedBy, settlement));
     }
     // #69 (owner ruling 2026-08-19): earned only by a payment that SETTLES the invoice. Checked
     // AFTER the window/entitlement test above, so a genuine terms or window problem still reports
@@ -836,9 +966,7 @@ function resolveReason(
     // PAYMENT + DISCOUNT total for this invoice (never its WRITE_OFF — see the caller), so the
     // verdict does not depend on line order and a split discount is judged as one figure.
     if (settlement.coveredCents !== settlement.openCents) {
-      throw new HttpError(400,
-        "an early-pay discount is earned only by a payment that settles the invoice — this covers "
-        + `${settlement.coveredCents / 100} of the ${settlement.openCents / 100} open`);
+      throw new HttpError(400, discountBlockMessage("would_not_settle", settlement));
     }
     // Cap the AGGREGATE at the terms-derived eligible amount — the early-pay window opening does NOT
     // license waiving the whole receivable as a "discount". Per-line alone was not enough (#81):

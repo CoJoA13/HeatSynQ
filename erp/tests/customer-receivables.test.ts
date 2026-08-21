@@ -11,9 +11,15 @@ beforeEach(async () => await truncateAll());
 
 let seq = 0;
 
-/** A finalized INVOICE of `total` on its own order, for `customerId`. */
-async function invoice(customerId: string, total: number): Promise<string> {
+/** A finalized INVOICE of `total` on its own order, for `customerId`. The dates are overridable
+ *  (#174 needs two invoices in DIFFERENT months so one write-off's month can be closed while the
+ *  other's stays open); every other caller takes the defaults, which the aging buckets are cut to. */
+async function invoice(
+  customerId: string, total: number,
+  dates: { invoiceDate?: string; dueDate?: string } = {},
+): Promise<string> {
   seq += 1;
+  const invoiceDate = parseDateOnly(dates.invoiceDate ?? "2026-08-08");
   const order = await prisma.order.create({
     data: {
       orderNumber: 810000 + seq, customerId, status: "SHIPPED",
@@ -23,11 +29,32 @@ async function invoice(customerId: string, total: number): Promise<string> {
   const row = await prisma.invoice.create({
     data: {
       kind: "INVOICE", status: "FINALIZED", orderId: order.id, customerId,
-      invoiceDate: parseDateOnly("2026-08-08"), dueDate: parseDateOnly("2026-09-07"),
-      total, finalizedAt: parseDateOnly("2026-08-08"),
+      invoiceDate, dueDate: parseDateOnly(dates.dueDate ?? "2026-09-07"),
+      total, finalizedAt: invoiceDate,
     },
   });
   return row.id;
+}
+
+/** One STANDALONE (null-payment) bad-debt write-off, dated wherever the test needs it —
+ *  `writeOffInvoice` stamps `todayDateOnly()` on purpose, so a dated one is raw by necessity. */
+async function standaloneWriteOff(invoiceId: string, amount: number, dateStr: string): Promise<string> {
+  const row = await prisma.application.create({
+    data: {
+      invoiceId, amount, type: "WRITE_OFF", reason: "uncollectable",
+      paymentId: null, appliedDate: parseDateOnly(dateStr),
+    },
+  });
+  return row.id;
+}
+
+/** A CLOSED month with no roll-forward machinery behind it (`write-offs.test.ts`'s own helper) —
+ *  the retention read and `assertPeriodOpen` both look for exactly this row. */
+async function closeMonthRaw(year: number, month: number): Promise<void> {
+  await prisma.closePeriod.create({
+    data: { year, month, beginningAr: 0, invoicedTotal: 0, creditTotal: 0, paymentTotal: 0,
+      discountTotal: 0, writeOffTotal: 0, endingAr: 0, agingEndingAr: 0 },
+  });
 }
 
 /** A finalized CREDIT of `total` (stored NEGATIVE, as `createCredit` writes it). */
@@ -268,5 +295,30 @@ describe("customerReceivablesSummary — the customer page's A/R section", () =>
     const parent = await asSystem(() => customerReceivablesSummary(parentId));
     expect(cents(parent.aging.net)).toBe(cents(1000)); // its own only, no roll-up
     expect(parent.openItems).toHaveLength(1);
+  });
+
+  // #174 — the per-write-off `voidable` flag has to survive the COMPOSITION, because this is the
+  // function the route hands straight to `NextResponse.json` and the A/R section renders from. The
+  // flag is what turns a Void that always 409s into a disabled control naming the month to reopen
+  // (§5.16), so a field lost between `openItemsForCustomer` and here would put the dead control back
+  // with nothing to show for it. Both invoices are retained on their OWN open balances — #157's
+  // retention bound never gets a say — which is exactly the shape #174 is about.
+  it("carries each write-off's `voidable` through the composed read (#174)", async () => {
+    const customerId = await makeCustomer();
+    const openMonth = await invoice(customerId, 1000);
+    const closedMonth = await invoice(customerId, 500,
+      { invoiceDate: "2026-07-05", dueDate: "2026-08-04" });
+    await standaloneWriteOff(openMonth, 400, "2026-08-13");
+    await standaloneWriteOff(closedMonth, 200, "2026-07-20");
+    await closeMonthRaw(2026, 7); // only the July one loses its undo
+
+    const { aging, openItems } = await asSystem(() => customerReceivablesSummary(customerId));
+    const byId = new Map(openItems.map((i) => [i.id, i]));
+    expect(cents(byId.get(openMonth)!.open)).toBe(cents(600));
+    expect(byId.get(openMonth)!.writeOffs.map((w) => w.voidable)).toEqual([true]);
+    expect(cents(byId.get(closedMonth)!.open)).toBe(cents(300));
+    expect(byId.get(closedMonth)!.writeOffs.map((w) => w.voidable)).toEqual([false]);
+    // …and #83's property is untouched: a flag moves no money.
+    expect(openItems.reduce((t, i) => t + cents(i.open), 0)).toBe(cents(aging.net));
   });
 });
