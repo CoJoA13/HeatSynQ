@@ -221,7 +221,7 @@ npx eslint src tests                             PASS
 node --check e2e/flows/reverse-shipment.mjs      PASS
 node --check e2e/run.mjs                         PASS
 DATABASE_URL_TEST=…/erp_test_b1 npx vitest run   PASS — 206 files, 3518 tests, 430.92s
-npm run test:e2e                                 23 of 24 PASS — see below
+npm run test:e2e                                 23 of 24 PASS — NOT clean; see below
 ```
 
 ### `npm run test:e2e` in full
@@ -262,10 +262,27 @@ same instant is a network-level failure, not an assertion about the DOM; `Failed
 `printDoc`'s `fetch` rejects with when the connection dies, and nothing this task added can produce
 it (the diff is a client-side button and one pure gate function — no server code at all).
 
-**Confirmed by re-running that flow in isolation, with the change still in place: PASS.** It also
-sits at position 12 in `FLOWS` while `reverse-shipment` is at 17, so the new flow cannot influence
-it even in principle. Recorded as an environmental flake on a heavy PDF-rendering route under
-`next dev`, not a regression — but recorded, not waved away.
+**Confirmed twice.** (a) Re-running that flow **in isolation, with the change still in place:
+PASS**. (b) A second full run reached 19 of the 24 flows — `multi-order-shipment` among them, this
+time **passing** — with **no failure screenshot anywhere** before it was killed by a command
+timeout during the tail of the list. It also sits at position 12 in `FLOWS` while `reverse-shipment`
+is at 17, so the new flow cannot influence it even in principle. Recorded as an environmental flake
+on the heaviest PDF-rendering route under `next dev`, not a regression — but recorded, not waved
+away.
+
+**So the honest statement is: one complete full run, 23/24, with the single failure reproduced as a
+pass twice over. I do not have a clean 24/24 to point at.** The confirming run did not finish.
+
+**Dev-DB hygiene after the killed run.** Being killed mid-flight, that run's `teardown()` never
+completed, and it left fixtures behind (8 `E2E*` customers, the 4 `e2e_*` users, 21 sessions, 2
+reversal shippers, and — the one that would have bitten the next run — a `ClosePeriod`, whose
+existence makes `close-month-end.mjs`'s pre-flight guard refuse to run at all). Reaped by hand: the
+`ClosePeriod` and its `GlExportBatch`/`GlPosting`/audit children first (mirroring
+`db-fixtures.ts`'s own `deleteClosePeriodFixture`, scoped to periods closed by an `e2e_` user —
+`reapLeftovers` deliberately does not sweep those, and the period's FK would otherwise block
+deleting the fixture admin), then the harness's own `create()` self-heal followed by a full
+`cleanup()`. **Verified empty afterwards**: 0 `E2E*` customers, 0 `e2e_*` users, 0 close periods, 0
+sessions, 0 orders, 0 shippers, 0 invoices. The DEV database is as it was found.
 
 ---
 
