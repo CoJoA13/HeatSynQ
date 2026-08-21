@@ -199,7 +199,7 @@ describe("#153 — a registered child implies invalidation wiring", () => {
       const src = readFileSync(join(process.cwd(), file), "utf8");
       expect(src, `${file} must import invalidateHistory`)
         .toMatch(/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/);
-      expect(src, `${file} must call invalidateHistory()`).toMatch(/invalidateHistory\(\)/);
+      expect(callsInvalidate(src), `${file} must call invalidateHistory()`).toBe(true);
     }
   });
 });
@@ -257,6 +257,62 @@ const KNOWN_METHOD_LITERALS = new Set(
 const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buseActionState\b|\buseFormState\b|<form[^>]*\saction=/;
 
 /**
+ * A `method` the `method: <literal>` form cannot read: ES6 SHORTHAND in an object literal
+ * (`fetch(url, { method })`) or a COMPUTED KEY (`init["method"]`). Either carries no
+ * `POST|PUT|PATCH|DELETE` token and trips no other guard, so the file reads as non-mutating and
+ * drops out of the census silently — the exact failure shape #158 is about (reviewer-caught).
+ *
+ * DELIBERATELY NARROW, unlike `MUTATING_TOKEN`. The first attempt was `\bmethod\b(?!\s*:)`, which
+ * fired twice on one file: once on the word in a prose comment, once on `init.method ?? "GET"` — a
+ * property READ, not a request shape. A guard whose failures are usually noise gets silenced, so
+ * over-matching is the wrong trade HERE even though it is the right one for the token detector.
+ *
+ * Still invisible, and not claimed otherwise: an init object arriving as a PROP, and a mutation
+ * issued through an imported helper. Nothing static sees either.
+ */
+const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]/;
+
+/**
+ * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment?
+ *
+ * `/invalidateHistory\(\)/` on raw source matches inside a comment, so a file that loses its real
+ * call but keeps a comment mentioning it stays green: the one place this sweep failed OPEN, while
+ * everything else in it is built to fail closed (reviewer-caught).
+ *
+ * LINE-SCOPED on purpose. The first attempt stripped block comments first and a `/*` sitting inside
+ * a `//` line comment opened a bogus block that swallowed 23,140 characters of a real file — the
+ * stricter check was itself wrong, and reported five genuine calls as missing. A per-line rule
+ * cannot over-eat: a call is real when it appears on a line before any `//` on that line.
+ */
+function callsInvalidate(src: string): boolean {
+  return src.split("\n").some((line) => {
+    const code = line.slice(0, line.includes("//") ? line.indexOf("//") : undefined);
+    return /invalidateHistory\(\)/.test(code);
+  });
+}
+
+/**
+ * The pure rule behind the allowlist check, lifted out so it can be exercised against synthetic
+ * entries while the real allowlist is empty. An empty `Record` makes a `for…of` body unreachable,
+ * and a test whose body never runs passes with zero assertions — which is the defect this whole
+ * file exists to prevent, committed by the file itself.
+ */
+function allowlistProblems(
+  entries: Record<string, string>, panelFiles: string[], read: (f: string) => string,
+): string[] {
+  const problems: string[] = [];
+  for (const [file, reason] of Object.entries(entries)) {
+    if (reason.trim().length <= 10) problems.push(`${file}: the reason is too short to be a reason`);
+    if (!panelFiles.includes(file)) {
+      problems.push(`${file}: mounts no panel — remove the allowlist entry`);
+      continue; // cannot read a mutation verdict off a file that is not in the census
+    }
+    if (MUTATING_TOKEN.test(read(file))) problems.push(`${file}: mutates — remove the allowlist entry`);
+  }
+  return problems;
+}
+
+/**
  * Panel-mounting files that issue NO mutating request (design call 2). An exclusion is an ENTRY
  * WITH A REASON, never a silent absence — a file that drops out of the census by being forgotten
  * looks identical to a file that is genuinely read-only, and the checks below refuse both an
@@ -305,6 +361,22 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(panelFiles).toContain("src/components/ReferenceTable.tsx"); // a shared component, not a page
   });
 
+  it("sees a panel mount two independent ways, so neither can miss one silently", () => {
+    // The MUTATION side of this sweep has two loud guards; the MOUNT side had none, and a page that
+    // drops out of the census is exactly as invisible as an unwired one (reviewer-caught). The tag
+    // regex misses an aliased import (`HistoryPanel as Panel`) and a wrapper component that renders
+    // the panel; the IMPORT set misses nothing the tag set catches. Asserting the two agree turns
+    // either kind of silent miss into a named failure.
+    const importers = readdirSync(join(process.cwd(), "src"), { recursive: true, encoding: "utf8" })
+      .filter((rel) => rel.endsWith(".tsx"))
+      .map((rel) => rel.split(sep).join("/"))
+      .filter((rel) => /^import\s*\{[^}]*\bHistoryPanel\b/m
+        .test(readFileSync(join(process.cwd(), "src", rel), "utf8")))
+      .map((rel) => `src/${rel}`)
+      .sort();
+    expect(importers).toEqual(panelFiles);
+  });
+
   it("understands every request shape in the panel-mounting files", () => {
     // The loud half of design call 1. A `method:` this sweep cannot classify, or a transport that
     // carries no method at all, means the detector has gone blind — fail here rather than let the
@@ -316,6 +388,7 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
         if (!KNOWN_METHOD_LITERALS.has(value.trim())) unclassified.push(`${file}: method: ${value.trim()}`);
       }
       if (OPAQUE_TRANSPORT.test(src)) unclassified.push(`${file}: mutation transport with no HTTP method literal`);
+      if (OPAQUE_METHOD.test(src)) unclassified.push(`${file}: a \`method\` this sweep cannot read (shorthand, computed key, or a prop)`);
     }
     expect(unclassified).toEqual([]);
   });
@@ -328,7 +401,7 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
       if (Object.hasOwn(NON_MUTATING_PANEL_PAGES, file)) continue; // judged below, not here
       if (!/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/.test(src)) {
         unwired.push(`${file} must import invalidateHistory`);
-      } else if (!/invalidateHistory\(\)/.test(src)) {
+      } else if (!callsInvalidate(src)) {
         unwired.push(`${file} must call invalidateHistory()`);
       }
     }
@@ -338,11 +411,26 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
   it("every allowlisted page really mounts a panel and really does not mutate", () => {
     // The allowlist cannot rot into a blanket exemption: an entry that starts mutating, or that
     // names a file no longer mounting a panel, fails here.
-    for (const [file, reason] of Object.entries(NON_MUTATING_PANEL_PAGES)) {
-      expect(reason.length, `${file} needs a reason`).toBeGreaterThan(10);
-      expect(panelFiles, `${file} must mount a panel`).toContain(file);
-      expect(MUTATING_TOKEN.test(read(file)), `${file} mutates — remove the allowlist entry`).toBe(false);
-    }
+    expect(allowlistProblems(NON_MUTATING_PANEL_PAGES, panelFiles, read)).toEqual([]);
+  });
+
+  it("...and that check is not vacuous while the allowlist is empty", () => {
+    // THE POINT OF THIS TEST. `NON_MUTATING_PANEL_PAGES` is `{}` today, so the check above iterates
+    // nothing and passes with ZERO assertions — vitest is not configured to reject that. Its own
+    // RED evidence therefore lives only in whoever ran it by hand once. Exercising the pure rule
+    // against synthetic entries is what keeps it honest before the first real entry exists, and is
+    // the same shape as the detector self-test below (reviewer-caught; the sixth such assertion
+    // found in this session, and the one this file was most at risk of).
+    const stub = "src/app/parts/[id]/page.tsx";          // really mounts a panel, really mutates
+    expect(allowlistProblems({ [stub]: "too short" }, panelFiles, read))
+      .toContain(`${stub}: the reason is too short to be a reason`);
+    expect(allowlistProblems({ [stub]: "a properly stated reason for the exclusion" }, panelFiles, read))
+      .toContain(`${stub}: mutates — remove the allowlist entry`);
+    expect(allowlistProblems(
+      { "src/app/login/page.tsx": "a properly stated reason for the exclusion" }, panelFiles, read))
+      .toContain("src/app/login/page.tsx: mounts no panel — remove the allowlist entry");
+    // And the shape that must PASS, or the three above would prove nothing.
+    expect(allowlistProblems({}, panelFiles, read)).toEqual([]);
   });
 
   it("the mutation detector matches every shape it claims to, and no prose", () => {
@@ -368,6 +456,15 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(OPAQUE_TRANSPORT.test(`navigator.sendBeacon("/x", b)`)).toBe(true);
     expect(OPAQUE_TRANSPORT.test(`<form action={save}>`)).toBe(true);
     expect(OPAQUE_TRANSPORT.test(`<form onSubmit={submit}>`)).toBe(false);
+
+    // The narrowed method guard: the two shapes that hide a mutation, and the two that are noise.
+    expect(OPAQUE_METHOD.test(`fetch(url, { method })`), "shorthand").toBe(true);
+    expect(OPAQUE_METHOD.test(`fetch(url, { method, body })`), "shorthand, then more").toBe(true);
+    expect(OPAQUE_METHOD.test(`fetch(url, { body, method })`), "shorthand, trailing").toBe(true);
+    expect(OPAQUE_METHOD.test(`init["method"] = verb`), "computed key").toBe(true);
+    expect(OPAQUE_METHOD.test(`api(url, { method: "PUT" })`), "the readable form").toBe(false);
+    expect(OPAQUE_METHOD.test(`const key = init.method ?? "GET";`), "a property READ").toBe(false);
+    expect(OPAQUE_METHOD.test(`// keyed by path+method`), "prose").toBe(false);
   });
 });
 
