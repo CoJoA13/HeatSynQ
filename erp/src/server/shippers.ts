@@ -1056,9 +1056,14 @@ export async function addOrderToShipper(
 
     // The saveNewShipper rule (spec §6.2), symmetric with `removeOrderFromShipper`'s void: an
     // order whose frozen scope is SHIPMENT gets its shipment-scope cert the moment it joins the
-    // shipment — the HTTP cert routes deliberately refuse a client-supplied `shipperId`, so
-    // nothing else could create it later. The order is already claimed (`extraOrderIds` above)
-    // and the shipper row is claim-held live, so `createCert` can never see a voided shipperId.
+    // shipment, eagerly rather than on demand. (Until #165 this comment also said nothing else
+    // COULD create one later, because every HTTP cert route refused a client-supplied
+    // `shipperId`. That still holds — `shipperId` is still never read off a body — but
+    // `POST /api/shippers/[id]/certs` now resolves one from its PATH, so a cert voided in error
+    // or missed by a scope change can be raised by hand. This eager create is unchanged: it is
+    // what keeps the normal case from needing that.) The order is already claimed
+    // (`extraOrderIds` above) and the shipper row is claim-held live, so `createCert` can never
+    // see a voided shipperId.
     if (order.certRequired && order.certScope === "SHIPMENT") {
       await createCert({ orderId, scope: "SHIPMENT", shipperId: id }, tx);
     }

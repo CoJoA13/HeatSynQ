@@ -19,6 +19,13 @@ export const GET = handle(async (req) => {
  * `shipperId` finds out immediately, not by way of the cert it created mysteriously having none.
  * A SHIPMENT-scope request therefore always fails `createCert`'s own `assertScopeShape`
  * ("Shipper is required...") — this route structurally cannot produce a SHIPMENT-scope cert.
+ *
+ * #165 did NOT relax any of the above: SHIPMENT scope got its own route,
+ * `POST /api/shippers/[id]/certs`, which resolves the shipper from its PATH the way
+ * `POST /api/orders/[id]/certs` resolves the order for LOAD. Three scopes, three endpoints, and
+ * `shipperId` still never read off a body. `tests/cert-routes.test.ts`'s "rejects a
+ * client-supplied shipperId outright" is the pin that keeps it that way. This route's own first
+ * UI caller arrived with #165 too — the order hub's Certifications scope picker.
  */
 const CREATE_BODY = z.object({
   orderId: z.string().min(1),

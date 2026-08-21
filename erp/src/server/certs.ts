@@ -198,6 +198,20 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
     if (shipperId === null) throw new HttpError(400, "shipperId: shipment scope requires a shipper");
     const shipper = await tx.shipper.findFirst({ where: { id: shipperId, deletedAt: null }, select: { id: true } });
     if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
+
+    // #165: and it must actually CARRY this order. Until the SHIPMENT-scope route existed, the
+    // only callers were `saveNewShipper`/`addOrderToShipper`, which pass a pairing they wrote a
+    // statement earlier — so an unpaired (order, shipment) was unreachable and unguarded. A
+    // hand-raised cert can name any pair, and a cert for a shipment that never carried the order
+    // prints every line's shipped quantity as zero under a bare order label (`readCertPdfData`'s
+    // own SHIPMENT branch) — a printable record of nothing, which is exactly why the LOAD branch
+    // below refuses a load number the order does not have. Read under the `claimOrder` above, so
+    // a concurrent `addOrderToShipper`/`removeOrderFromShipper` (both of which claim this same
+    // order row) serializes with it.
+    const pairing = await tx.shipperOrder.findFirst({
+      where: { shipperId, orderId: data.orderId }, select: { id: true },
+    });
+    if (!pairing) throw new HttpError(400, "orderId: that shipment does not carry this order");
   }
 
   // LOAD scope must name a load the order CURRENTLY has — checked under the claim above, so a

@@ -700,6 +700,10 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
         orderId={id} loads={order.loads} certRequired={order.certRequired} certScope={order.certScope}
         viewGate={gate(perms, "certs.view")}
         createGate={voidLocked(gate(perms, "certs.create"), voided)}
+        // #165: what it takes to LIST this order's shipments, which is the only way the section's
+        // scope picker can name a SHIPMENT-scope target. NOT void-locked — it gates a read, and
+        // the create it feeds is already void-locked by `createGate` above.
+        shipmentsGate={gate(perms, "shipping.view")}
       />
 
       <ShipmentsSection orderId={id} orderNumber={order.orderNumber} viewGate={gate(perms, "shipping.view")} />
