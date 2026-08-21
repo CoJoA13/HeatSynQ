@@ -189,10 +189,32 @@ reversal itself; the original's own Void does not.
 A shipment can only be reversed once while the reversal is live, a reversal cannot itself be
 reversed, and a reversal that would drive a line's shipped-to-date below zero is refused by name.
 
-> **There is no Reverse button on any screen in this build.** Reversals exist, are visible, and
-> behave exactly as above — the demonstration data contains one, on order 1013 — but nothing in
-> the shipping screens raises a new one. If a shipment needs reversing, that is a call to whoever
-> administers the system, not something the shipping desk can do today.
+### Reversing one
+
+**Reverse** sits beside **Void** at the top of the shipment page. It asks for a reason, which goes
+into the audit history, and then takes you straight to the reversal it just created — a new
+document with its own packing list number, which is the thing you will want to look at next.
+
+It needs the same permission Void does. No amount of ordinary shipping permission substitutes for
+it: reversing is a correction to paper the customer already holds, so it is deliberately held with
+voiding rather than with editing.
+
+**Reverse stays available on an invoiced shipment, and that is the point.** Void does not — a
+finalized invoice freezes the shipment against being erased, and the Void button says so. Reversal
+is the answer to exactly that situation: it corrects by adding paper rather than removing it, which
+is why the invoice does not block it.
+
+The button greys out, saying which, when:
+
+| Why | What the tooltip says |
+|---|---|
+| The shipment is voided | *Shipment is voided* |
+| You are looking at a reversal | *This shipment is itself a reversal of Packing List 1024 — reverse the original shipment instead* |
+| It has already been reversed | *This shipment has already been reversed by Packing List 1027 — void that reversal first* |
+| You lack the permission | the permission it needs |
+
+Two refusals are not predicted on screen and arrive when you press the button — a shipment on a
+**voided order**, and a reversal that would drive a line below zero. Both name themselves.
 
 ---
 
