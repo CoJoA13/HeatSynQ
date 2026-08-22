@@ -213,15 +213,22 @@ const SRC_ROOT = join(process.cwd(), "src");
 const readRepoFile = (file: string) => readFileSync(join(process.cwd(), file), "utf8");
 
 /**
- * Every `.tsx` under `src/`, repo-relative and slash-separated. The single enumeration the mount
- * scan and the import graph below both run over, so neither can be looking at a different tree.
+ * Every file under `src/` with this extension, repo-relative and slash-separated. `".ts"` really
+ * does exclude `.tsx` — `"CertDetail.tsx".endsWith(".ts")` is false, the last three characters
+ * being `tsx` — which is what lets the barrel guard below ask about `.ts` modules alone.
  */
-function allTsxFiles(): string[] {
+function srcFiles(ext: ".ts" | ".tsx"): string[] {
   return readdirSync(SRC_ROOT, { recursive: true, encoding: "utf8" })
-    .filter((rel) => rel.endsWith(".tsx"))
+    .filter((rel) => rel.endsWith(ext))
     .map((rel) => `src/${rel.split(sep).join("/")}`)
     .sort();
 }
+
+/**
+ * Every `.tsx` under `src/`. The single enumeration the mount scan and the import graph below both
+ * run over, so neither can be looking at a different tree.
+ */
+const allTsxFiles = (): string[] => srcFiles(".tsx");
 
 /**
  * Every `.tsx` under `src/` that MOUNTS a History panel, enumerated from the tree rather than
@@ -250,10 +257,19 @@ function panelMountingFiles(): string[] {
  * A side-effect import (`import "./x"`) and a namespace import both count as value edges: neither
  * is erased, and over-counting an edge only ever ADDS a file to the census, which is the closed
  * direction.
+ *
+ * THE SCRIPT KIND IS TAKEN FROM THE FILENAME, and that matters as soon as a `.ts` file is asked
+ * about — which the barrel guard below does. `const id = <T>(x: T) => x;` is a generic arrow in a
+ * `.ts` file and an unclosed JSX element in a `.tsx` one, and the TSX reading SWALLOWS every import
+ * after it: measured, `<T>(x: T) => x` above two imports answers `["./a", "./b"]` as TS and `[]` as
+ * TSX. That is a fail-QUIET in a guard, so the kind is chosen rather than assumed. No `.ts` in this
+ * tree parses differently either way today (369 files, zero specifier-list differences, zero parse
+ * diagnostics) — this is closing the shape, not fixing a live miss.
  */
-export function valueModuleSpecifiers(src: string): string[] {
+export function valueModuleSpecifiers(src: string, fileName = "candidate.tsx"): string[] {
   const parsed = ts.createSourceFile(
-    "candidate.tsx", src, ts.ScriptTarget.Latest, /* setParentNodes */ false, ts.ScriptKind.TSX,
+    fileName, src, ts.ScriptTarget.Latest, /* setParentNodes */ false,
+    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const out: string[] = [];
   const bringsValue = (clause: ts.ImportClause | undefined): boolean => {
@@ -285,50 +301,94 @@ export function valueModuleSpecifiers(src: string): string[] {
   return out;
 }
 
+/** A specifier this resolver is willing to be asked about: the `@/` alias, or a relative path. */
+const isLocalSpecifier = (spec: string) => spec.startsWith("@/") || spec.startsWith(".");
+
 /**
- * Resolve one module specifier to a real `.tsx` under `src/`, or `null`.
+ * The real file a LOCAL module specifier names, repo-relative, or `null` if nothing is there.
  *
- * `@/` is the repo's alias for `src/` (`tsconfig.json` `paths`); relative specifiers exist too.
- * A bare package name is never a file in this tree. Extensions are tried in the bundler's order,
- * and anything landing outside `src/` or on a non-`.tsx` file is dropped — a panel is rendered
- * from JSX, so a panel-mounting file is always a `.tsx`. The one shape this therefore cannot
- * follow is a re-export BARREL written as `.ts`; there is no `.tsx`-re-exporting barrel in this
- * tree today (`src/lib/template-contracts/index.ts` re-exports types only), and the mount
- * cross-check below would still see the barrel's own importer only if it imported the panel
- * directly. Stated rather than papered over, in the house style of this file.
+ * `@/` is the repo's alias for `src/` (`tsconfig.json` `paths` — that it is still the ONLY alias
+ * is asserted below, which is what makes `isLocalSpecifier` exhaustive). Extensions are tried in
+ * the bundler's order, then the specifier as written, so an extension-carrying `"./X.tsx"` and a
+ * non-code asset both land somewhere real rather than reading as unresolvable.
  */
-function resolveToTsx(fromFile: string, spec: string): string | null {
+function resolveLocal(fromFile: string, spec: string): string | null {
   let base: string;
   if (spec.startsWith("@/")) base = join(SRC_ROOT, spec.slice(2));
   else if (spec.startsWith(".")) base = resolve(process.cwd(), dirname(fromFile), spec);
   else return null;
   for (const candidate of [
-    `${base}.tsx`, `${base}.ts`, join(base, "index.tsx"), join(base, "index.ts"),
+    `${base}.tsx`, `${base}.ts`, join(base, "index.tsx"), join(base, "index.ts"), base,
   ]) {
     if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
-    const rel = relative(process.cwd(), candidate).split(sep).join("/");
-    return rel.startsWith("src/") && rel.endsWith(".tsx") ? rel : null;
+    return relative(process.cwd(), candidate).split(sep).join("/");
   }
   return null;
+}
+
+/**
+ * Resolve one module specifier to a real `.tsx` under `src/`, or `null` — the graph's edge test.
+ * Anything landing outside `src/` or on a non-`.tsx` file is dropped: a panel is rendered from
+ * JSX, so a panel-mounting file is always a `.tsx`.
+ *
+ * WHAT THIS DROPS SILENTLY, enumerated rather than summarised — the first version of this comment
+ * said "the one shape" and named only the first, which is the same over-claim this round exists to
+ * remove. Each of the four takes a consumer out of the census with NO failure:
+ *
+ *  1. a re-export BARREL written as `.ts` that forwards a `.tsx` — the barrel resolves fine and is
+ *     then dropped by the `.tsx` filter, so guard (a) below cannot see it; the `.ts`-forwards-`.tsx`
+ *     guard beside it is the one that can;
+ *  2. a SECOND tsconfig path alias — only `@/` is hardcoded, and any other non-relative specifier
+ *     answers `null` as though it were a package; guard (a) asserts `@/` is still the only one;
+ *  3. an EXTENSION-CARRYING specifier — `"./CertDetail.js"`, which `moduleResolution: "bundler"`
+ *     accepts and `tsc` does not red. `"./X.tsx"` now resolves (the trailing candidate above);
+ *     a `.js` spelling of a `.tsx` file still does not, and guard (a) names it;
+ *  4. `require()` or a dynamic `import(variable)` — no string literal, so `valueModuleSpecifiers`
+ *     never yields a specifier to resolve. NOTHING guards this one: it is stated and left, these
+ *     being ESM client components (`grep -rn "require(" src` is empty, measured).
+ *
+ * All four are empty on this tree today, and 1–3 are empty BY ASSERTION rather than by belief.
+ */
+function resolveToTsx(fromFile: string, spec: string): string | null {
+  const rel = resolveLocal(fromFile, spec);
+  return rel !== null && rel.startsWith("src/") && rel.endsWith(".tsx") ? rel : null;
 }
 
 /** file -> the `src/**.tsx` files it value-imports. The whole `.tsx` tree, one pass. */
 function tsxImportGraph(files: string[]): Map<string, Set<string>> {
   return new Map(files.map((file) => [
     file,
-    new Set(valueModuleSpecifiers(readRepoFile(file))
+    new Set(valueModuleSpecifiers(readRepoFile(file), file)
       .map((spec) => resolveToTsx(file, spec))
       .filter((r): r is string => r !== null)),
   ]));
 }
 
-/** The files that CONSUME a panel-mounting component. ONE level — see the sufficiency test. */
+/**
+ * The files that CONSUME a panel-mounting component — TRANSITIVELY, so a wrapper of a wrapper is a
+ * panel page too. A fixpoint: seed with the mounts, then keep adding any file that value-imports
+ * something already reached, until a round adds nothing.
+ *
+ * One level was enough for this tree (no consumer is itself imported: all six are Next route entry
+ * points, which the router reaches by file convention rather than by an import edge) and the first
+ * version of this walk shipped that way, with an assertion that said so the day it stopped being
+ * true. The closure costs five lines and covers the case instead of reporting it — a check that
+ * says "I do not cover this, but I will tell you when it matters" is the weaker of the two.
+ *
+ * It terminates because `reached` only ever grows and is bounded by the graph, so an import CYCLE
+ * is fine (pinned below).
+ */
 function panelConsumers(graph: Map<string, Set<string>>, mounts: readonly string[]): string[] {
+  const reached = new Set<string>(mounts);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [file, deps] of graph) {
+      if (reached.has(file)) continue;
+      if ([...deps].some((dep) => reached.has(dep))) { reached.add(file); grew = true; }
+    }
+  }
   const mounted = new Set(mounts);
-  return [...graph]
-    .filter(([file, deps]) => !mounted.has(file) && [...deps].some((dep) => mounted.has(dep)))
-    .map(([file]) => file)
-    .sort();
+  return [...reached].filter((file) => !mounted.has(file)).sort();
 }
 
 /**
@@ -613,24 +673,79 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
       .toContain("src/app/certs/[id]/CertDetail.tsx");
   });
 
-  it("proves ONE level of consumer is enough, and says so the day it stops being", () => {
-    // THE DECISION, with its evidence attached (#188 part 2). One level is complete only while no
-    // consumer is ITSELF rendered by a further file; a consumer-of-a-consumer would need the
-    // transitive closure. Measured, not assumed: all six consumers are Next route entry points
-    // (`page.tsx`), which nothing in `src/` imports — the router reaches them by file convention,
-    // which is not an import edge. So the fixpoint terminates after one round TODAY.
+  it("follows a consumer OF a consumer — the walk is a transitive closure, not one level", () => {
+    // THE PROPERTY, pinned rather than believed. The first version of this walk went one level and
+    // carried a tripwire saying "no consumer is itself imported today, and I will red when one
+    // is". That was honest and it was weaker: covering the case beats reporting it. This tree
+    // still answers the same six files either way (nothing imports a `page.tsx` — the router
+    // reaches route entry points by file convention), so the closure has to be exercised on a
+    // synthetic graph, exactly as the allowlist and the detector are.
+    const chain = new Map<string, Set<string>>([
+      ["src/x/Detail.tsx", new Set()],                       // mounts the panel
+      ["src/x/page.tsx", new Set(["src/x/Detail.tsx"])],      // level 1 — the shipped walk saw this
+      ["src/x/Wrapper.tsx", new Set(["src/x/page.tsx"])],     // level 2 — and dropped this
+      ["src/x/Outer.tsx", new Set(["src/x/Wrapper.tsx"])],    // level 3
+      ["src/x/Elsewhere.tsx", new Set(["src/lib/format.tsx"])], // reaches no panel at all
+    ]);
+    expect(panelConsumers(chain, ["src/x/Detail.tsx"])).toEqual([
+      "src/x/Outer.tsx", "src/x/Wrapper.tsx", "src/x/page.tsx",
+    ]);
+
+    // A CYCLE must not hang the fixpoint, and must not invent a consumer out of nothing.
+    const cyclic = new Map<string, Set<string>>([
+      ["src/y/Detail.tsx", new Set()],
+      ["src/y/a.tsx", new Set(["src/y/b.tsx"])],
+      ["src/y/b.tsx", new Set(["src/y/a.tsx"])],
+    ]);
+    expect(panelConsumers(cyclic, ["src/y/Detail.tsx"]), "a cycle reaching nothing").toEqual([]);
+    cyclic.set("src/y/a.tsx", new Set(["src/y/b.tsx", "src/y/Detail.tsx"]));
+    expect(panelConsumers(cyclic, ["src/y/Detail.tsx"]), "a cycle reaching the panel")
+      .toEqual(["src/y/a.tsx", "src/y/b.tsx"]);
+
+    // A mount is never listed as its own consumer, however it is reached.
+    expect(panelConsumers(chain, ["src/x/Detail.tsx", "src/x/page.tsx"]))
+      .toEqual(["src/x/Outer.tsx", "src/x/Wrapper.tsx"]);
+  });
+
+  it("resolves every local import in the tree, so a new alias cannot go quiet", () => {
+    // GUARD (a) for shapes 2 and 3 of `resolveToTsx`'s enumeration. An unresolvable specifier is
+    // DROPPED, not reported, so a consumer would leave the census in silence — the failure mode
+    // this whole sweep is about, committed by the sweep's own resolver.
     //
-    // This assertion is what keeps that a fact rather than an assumption — the same "two
-    // independent ways" trick the mount cross-check above uses. The day someone wraps a wrapper,
-    // this goes red BY NAME and the walk gets promoted to a closure deliberately, instead of the
-    // census silently missing a file again, which is the whole failure mode #188 part 2 is about.
-    const census = new Set(panelFiles);
-    const missedByOneLevel = [...importGraph]
-      .filter(([file, deps]) => !census.has(file) && [...deps].some((d) => consumerFiles.includes(d)))
-      .map(([file, deps]) =>
-        `${file} renders a panel CONSUMER (${[...deps].filter((d) => consumerFiles.includes(d)).join(", ")})`
-        + " — one level is no longer enough; make panelConsumers() a transitive closure");
-    expect(missedByOneLevel).toEqual([]);
+    // The alias assertion is what makes the resolution assertion complete: `isLocalSpecifier` calls
+    // anything non-relative and non-`@/` a package and never asks where it lives, which is only
+    // true while `@/` is the only path alias.
+    const tsconfig = JSON.parse(readRepoFile("tsconfig.json")) as
+      { compilerOptions?: { paths?: Record<string, string[]> } };
+    expect(Object.keys(tsconfig.compilerOptions?.paths ?? {}), "add the new alias to resolveLocal")
+      .toEqual(["@/*"]);
+
+    const unresolved: string[] = [];
+    for (const file of [...allTsxFiles(), ...srcFiles(".ts")]) {
+      for (const spec of valueModuleSpecifiers(read(file), file)) {
+        if (!isLocalSpecifier(spec)) continue;               // a package, never a file in this tree
+        if (resolveLocal(file, spec) === null) unresolved.push(`${file} → ${spec}`);
+      }
+    }
+    expect(unresolved).toEqual([]);
+  });
+
+  it("has no `.ts` module forwarding a `.tsx`, the shape the graph genuinely cannot follow", () => {
+    // GUARD (b) for shape 1 — the re-export barrel. Guard (a) does NOT catch it: `index.ts`
+    // resolves perfectly well and is then dropped by the `.tsx` filter, so the edge from the
+    // barrel's importer to the panel-mounting component disappears with nothing said. This is the
+    // check that turns that into a named failure, and it is the reason the enumeration above can
+    // claim all four shapes are empty here rather than merely asserting it.
+    const forwards: string[] = [];
+    for (const file of srcFiles(".ts")) {
+      for (const spec of valueModuleSpecifiers(read(file), file)) {
+        const target = resolveLocal(file, spec);
+        if (target?.endsWith(".tsx")) {
+          forwards.push(`${file} → ${target}: a .ts module carrying a .tsx; teach the graph about it`);
+        }
+      }
+    }
+    expect(forwards).toEqual([]);
   });
 
   it("understands every request shape in the panel pages", () => {
@@ -699,8 +814,14 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(allowlistProblems(
       { "src/app/login/page.tsx": "a properly stated reason for the exclusion" }, panelFiles, read))
       .toContain("src/app/login/page.tsx: not a panel page — remove the allowlist entry");
-    // And the shape that must PASS, or the three above would prove nothing.
-    expect(allowlistProblems({}, panelFiles, read)).toEqual([]);
+    // And the shape that must PASS, or the three above would prove nothing — a VALID entry, not an
+    // empty record. `allowlistProblems({})` iterates nothing and answers `[]` for the same reason
+    // this test exists at all, so it demonstrated exactly nothing about a valid entry (reviewer-
+    // caught, and in a test whose subject is claims matching assertions). A real census member that
+    // issues no mutating request, with a reason long enough to be one, has to clear all three.
+    const shell = "src/app/certs/[id]/page.tsx";  // a real consumer; every cert write is in CertDetail
+    expect(allowlistProblems({ [shell]: "a properly stated reason for the exclusion" }, panelFiles, read))
+      .toEqual([]);
   });
 
   it("lets a detector FALSE POSITIVE be allowlisted, which is what the allowlist is for", () => {
@@ -861,6 +982,15 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     // And the #188 lesson once more, free from the parser: a path-shaped STRING is not an import.
     expect(valueModuleSpecifiers(`const p = "./CertDetail";`), "a string that looks like one")
       .toEqual([]);
+
+    // The SCRIPT KIND, which starts mattering the moment a `.ts` file is asked about (the barrel
+    // guard asks about 369 of them). A generic arrow is an unclosed JSX element to a TSX parse, and
+    // it swallows every import BELOW it — the specifier list comes back empty and the guard goes
+    // quiet. Reading the kind off the filename is what makes these two answers differ.
+    const generic = `const id = <T>(x: T) => x;\nimport { a } from "./a";\nimport { b } from "./b";\n`;
+    expect(valueModuleSpecifiers(generic, "src/lib/x.ts"), "a .ts generic arrow above its imports")
+      .toEqual(["./a", "./b"]);
+    expect(valueModuleSpecifiers(generic, "src/lib/x.tsx"), "the same text read as TSX").toEqual([]);
   });
 });
 
