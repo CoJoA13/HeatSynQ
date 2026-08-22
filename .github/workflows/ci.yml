@@ -107,3 +107,210 @@ jobs:
             sleep 3
           done
           echo "timed out waiting for /api/health"; docker logs app-boot; exit 1
+
+  # #167b: the E2E flows. The owner made `npm run test:e2e` mandatory on 2026-08-06 — "whenever a
+  # change touches any UI, function, or flow" — and until this job `grep -n e2e .github/workflows/*.yml`
+  # returned nothing, so the gate had never once run in CI. PR #164 was green while shipping the
+  # dataset breakage #167a fixed, because CI had neither the dataset nor the flows.
+  #
+  # A THIRD SEPARATE PARALLEL job, the `docker` job's precedent and for its stated reason: the main
+  # `ci` job already runs 12+ minutes against its 15-minute cap, so a serial E2E step would blow it,
+  # while a parallel job costs no wall clock. No path filter, same argument as `docker`: the flows
+  # drive the whole app through a browser, so nearly every change affects them.
+  #
+  # NOTHING MAY START OR STOP A CONTAINER WHILE THE SUITE RUNS. This is not a style preference.
+  # Chromium flushes its socket pools and aborts every in-flight request — 127.0.0.1 included — when
+  # the HOST's network configuration changes, and on Linux every container start or stop creates or
+  # destroys a `veth` pair, which is exactly such a change. That is the measured cause of the
+  # `net::ERR_NETWORK_CHANGED` false failures behind #184 (gate-infrastructure Task 2 reproduced it
+  # against a 30-line static Node server with no Next.js and no load: 36 of 1380 localhost requests
+  # lost in 90 s while another workload churned containers). This job is immune only because it
+  # brings the database up ONCE, before the suite, and then leaves it alone. Do not add a mid-run
+  # `docker` step, a service container that restarts, or a compose down/up between flows — it would
+  # deliberately reintroduce the exact flake this group removed.
+  #
+  # TIMEOUTS — two numbers, and the reason there are two.
+  #   Measured: 298 s / 301 s / 317 s of wall clock across three clean local runs of all the flows
+  #   on a 16-core dev box, of which the route warm-up is 21–31 s. Call the suite 5.3 min.
+  #   CI is slower on both halves. Setup is ~5–7 min (the postgres:18 pull, the pg client install,
+  #   `npm ci`, `prisma generate` + `migrate deploy`, the seed, and `playwright install --with-deps`,
+  #   which downloads Chromium and apt-installs its system libraries). The suite itself runs on a
+  #   4-core runner against a 16-core box, and `next dev`'s per-route compiles are the dominant cost:
+  #   3x is the working estimate and 4x the pessimistic one, i.e. 16–21 min.
+  #   So 25 minutes on the SUITE STEP (pessimistic 21 plus margin) and 35 on the JOB (setup + that +
+  #   the upload). The step number MUST stay below the job number, and that is the load-bearing
+  #   part: a JOB timeout CANCELS the job, and a cancelled job skips its remaining steps — including
+  #   the artifact upload — so a hung suite would produce a red run with no screenshots, no video and
+  #   no dev-server log, which is precisely the outcome this job exists to prevent. A STEP timeout
+  #   fails one step and lets the `always()`/`failure()` steps below it run.
+  #   Both are estimates until this job has run for real. Tighten them against the first handful of
+  #   green runs rather than leaving generous headroom forever.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        # `bash` and not the default `bash -e {0}`: this is `bash --noprofile --norc -eo pipefail`,
+        # and pipefail is required by the `tee` in the suite step below — without it a failing suite
+        # behind a successful `tee` would report success, i.e. the gate would lie on its first day.
+        shell: bash
+        working-directory: erp
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: erp/package-lock.json
+
+      - name: Configure environment
+        run: cp .env.example .env
+
+      # ONCE, before the suite, and never touched again — see the veth/ERR_NETWORK_CHANGED note
+      # above. db-init/ creates erp_test as well, but the E2E suite uses the DEV database (`erp`)
+      # and nothing in its path reads erp_test, so that one is deliberately left unmigrated.
+      - name: Start Postgres (creates erp + erp_test via db-init/)
+        run: docker compose up -d --wait db
+
+      # The `backups` flow clicks "Back up now", which spawns a REAL pg_dump inside the app — it is
+      # the only place the real binary is exercised, vitest injecting a fake precisely because the
+      # runner image's own pg_dump is older than the server. pg_dump hard-refuses a server newer than
+      # itself, so the client MAJOR is version-locked to docker-compose.yml's `postgres:` tag, the
+      # same rule Dockerfile's `apk add postgresql18-client` follows (and the reason dependabot is
+      # told not to auto-bump the postgres image). Assert the major rather than trusting the
+      # alternatives wrapper to pick the newest: a silent 16 here reds one flow ~8 minutes in, with
+      # a failure that looks nothing like its cause.
+      - name: Install PostgreSQL 18 client tools (pg_dump, for the backups flow)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+          pg_dump --version
+          pg_dump --version | grep -qE '\(PostgreSQL\) 18([^0-9]|$)' || {
+            echo "pg_dump's major is not 18 — it will refuse the postgres:18 server and red the backups flow"
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Migrate dev database
+        run: npx prisma migrate deploy
+
+      # A migrated-and-seeded `erp` is the WHOLE precondition, verified against a freshly dropped
+      # local database rather than assumed (gate-infrastructure Tasks 3 and 4): the harness seeds its
+      # own order-entry-gate prerequisites (company identity, GL accounts, arGlAccountId) and
+      # restores them at cleanup, and the eight Standard document templates come from the migrations.
+      #
+      # It also cannot trip the #167a dev-DB pre-flight, by construction. That refuses on a
+      # ClosePeriod row covering the current month, an OPEN receipt batch carrying a payment dated in
+      # it, or a non-zero continuity variance — and a fresh database has no ClosePeriod, no
+      # PaymentBatch, no Invoice and no Payment, so all three read null/0/0. The refusal exists for a
+      # dev box carrying the demonstration dataset; a CI database is pristine by definition.
+      - name: Seed the dev database (admin/admin)
+        run: npm run db:seed
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # `tee` so the console log survives as an artifact alongside the screenshots — GitHub's own log
+      # is not downloadable next to them, and the harness's per-flow classification lines are the
+      # first thing anyone reads after a red. Written to RUNNER_TEMP rather than into e2e-artifacts/,
+      # which run.mjs rotates and recreates at startup.
+      - name: Run the E2E flows
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee "$RUNNER_TEMP/e2e-console.log"
+
+      - name: Collect the console log into the artifacts
+        if: always()
+        run: |
+          mkdir -p e2e-artifacts
+          if [ -f "$RUNNER_TEMP/e2e-console.log" ]; then
+            cp "$RUNNER_TEMP/e2e-console.log" e2e-artifacts/console.log
+          fi
+
+      # #184's retry gate grants a second attempt ONLY when the failure was transport-level AND the
+      # flow had provably mutated nothing, and it prints the flow as RETRIED rather than PASS.
+      # Locally that exits 0, because the diagnosed cause is host container churn the developer does
+      # not control. In CI the reasoning does not carry over: this job starts one container before
+      # the suite and none during it, so a granted retry here is evidence about the RUNNER or the
+      # harness, never about the PR's diff.
+      #
+      # DECISION: CI SURFACES a retry and does not fail on it — provisionally, and the condition to
+      # flip it is named below rather than left to taste.
+      #   * The flows passed. A retry is a statement about the transport, not about the app under
+      #     test, and reddening someone's PR for a runner-level fact is the "gate that lies" failure
+      #     this whole group exists to remove. Task 2 landed before this job for exactly that reason:
+      #     a gate with a false-failure rate in front of every PR is worse than no gate.
+      #   * On the day this job is introduced there is no measurement of how often CI retries, and a
+      #     4-core runner can produce a slow `page.goto` that the classifier calls network-level. A
+      #     hard failure built on that inference would be a guess.
+      #   * But an invisible retry is worthless, so it is made impossible to miss: a ::warning::
+      #     annotation on the run summary, a line in the job summary, and the FULL artifact package —
+      #     the same one a failure gets.
+      # TO FLIP IT, once a baseline of clean CI runs exists and the expected retry rate is zero:
+      # change the `exit 0` at the end of this step to `exit 1`. Nothing else needs to move.
+      #
+      # Two detectors, OR'd, because each is a coupling to something the harness owns and neither
+      # should be the only one: the `<flow>__attempt-2/` directory run.mjs creates for a second
+      # attempt (fires whether the retry passed or failed), and the `RETRIED` verdict in its results
+      # table (fires only when the run went green BECAUSE of a retry — the case that would otherwise
+      # be silent).
+      - name: Check for retried flows
+        id: retries
+        if: always()
+        run: |
+          shopt -s nullglob
+          granted=(e2e-artifacts/*__attempt-*)
+          green_on_retry=0
+          if [ -f "$RUNNER_TEMP/e2e-console.log" ] \
+             && grep -qE '^  RETRIED ' "$RUNNER_TEMP/e2e-console.log"; then
+            green_on_retry=1
+          fi
+          if [ ${#granted[@]} -eq 0 ] && [ "$green_on_retry" -eq 0 ]; then
+            echo "retried=false" >> "$GITHUB_OUTPUT"
+            echo "No flow needed a retry."
+            exit 0
+          fi
+          echo "retried=true" >> "$GITHUB_OUTPUT"
+          msg="A flow was retried. CI starts no container while the suite runs, so the ERR_NETWORK_CHANGED cause behind #184 should be absent here — treat this as a signal about the runner or the harness, not as routine. Artifacts (both attempts, screenshots, video, dev-server.log) are attached to this run."
+          echo "::warning title=E2E flow retried::${msg}"
+          {
+            echo "### E2E: a flow was retried"
+            echo
+            echo "${msg}"
+            echo
+            if [ ${#granted[@]} -gt 0 ]; then
+              echo "Retry artifact directories:"
+              for d in "${granted[@]}"; do echo "- \`${d}\`"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      # On a failure OR a retry, never on a clean green run — the artifacts are ~65 MB of video per
+      # run, and nobody watches the green ones. Without them a red E2E run is a red run nobody can
+      # act on, which is half of what #167b is about.
+      # `erp/e2e-artifacts/` and not `e2e-artifacts/`: `defaults.run.working-directory` applies to
+      # `run` steps only, and an action's inputs resolve against the workspace root.
+      # `e2e-artifacts-prev/` is deliberately NOT uploaded and is not an oversight: run.mjs rotates
+      # the PREVIOUS run's artifacts there instead of deleting them (#184 fix b), and a CI workspace
+      # is fresh every run, so the rename hits ENOENT and the directory is never created. It is an
+      # affordance for the developer habit of re-running after a red, which CI does not have.
+      - name: Upload E2E artifacts
+        if: failure() || steps.retries.outputs.retried == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-artifacts
+          path: erp/e2e-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
