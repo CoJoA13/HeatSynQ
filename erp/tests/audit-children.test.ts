@@ -267,10 +267,15 @@ const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buse
  * property READ, not a request shape. A guard whose failures are usually noise gets silenced, so
  * over-matching is the wrong trade HERE even though it is the right one for the token detector.
  *
+ * The third arm is a dot-property ASSIGNMENT (`init.method = verb`, Codex P2 on PR #187): the verb
+ * can come from an import and carry no uppercase literal at all, so nothing else here sees it. The
+ * `(?!=)` is what separates it from the READ that made the first attempt noisy — `init.method ??
+ * "GET"` and `init.method === x` are not assignments and must stay quiet.
+ *
  * Still invisible, and not claimed otherwise: an init object arriving as a PROP, and a mutation
  * issued through an imported helper. Nothing static sees either.
  */
-const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]/;
+const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]|\.method\s*=(?!=)/;
 
 /**
  * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment of either form?
@@ -368,9 +373,16 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
   it("sees a panel mount two independent ways, so neither can miss one silently", () => {
     // The MUTATION side of this sweep has two loud guards; the MOUNT side had none, and a page that
     // drops out of the census is exactly as invisible as an unwired one (reviewer-caught). The tag
-    // regex misses an aliased import (`HistoryPanel as Panel`) and a wrapper component that renders
-    // the panel; the IMPORT set misses nothing the tag set catches. Asserting the two agree turns
-    // either kind of silent miss into a named failure.
+    // regex misses an ALIASED IMPORT (`HistoryPanel as Panel`), which the import set still sees, so
+    // asserting the two agree turns that silent miss into a named failure.
+    //
+    // **IT DOES NOT CATCH A WRAPPER**, and an earlier version of this comment said it did (Codex P2
+    // on PR #187 — an over-claim shipped in the same commit that fixed three others). If a page
+    // rendered the panel through, say, `<HistorySection />`, BOTH sets would contain only the
+    // wrapper and neither would contain the consuming page: the page is invisible to this census
+    // rather than caught by it, and allowlisting the non-mutating wrapper would close the loop
+    // green. No wrapper exists today — every one of the twelve mounts the panel directly — and
+    // tracing consumers needs an import graph this file does not build. Filed rather than faked.
     const importers = readdirSync(join(process.cwd(), "src"), { recursive: true, encoding: "utf8" })
       .filter((rel) => rel.endsWith(".tsx"))
       .map((rel) => rel.split(sep).join("/"))
@@ -477,6 +489,9 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(OPAQUE_METHOD.test(`api(url, { method: "PUT" })`), "the readable form").toBe(false);
     expect(OPAQUE_METHOD.test(`const key = init.method ?? "GET";`), "a property READ").toBe(false);
     expect(OPAQUE_METHOD.test(`// keyed by path+method`), "prose").toBe(false);
+    expect(OPAQUE_METHOD.test(`init.method = verb;`), "dot assignment").toBe(true);
+    expect(OPAQUE_METHOD.test(`if (init.method === "GET") return;`), "a comparison, not an assignment")
+      .toBe(false);
   });
 
   it("sees a real invalidateHistory call, and no comment that merely mentions one", () => {
