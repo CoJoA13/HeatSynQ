@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
@@ -209,6 +209,20 @@ describe("#153 — a registered child implies invalidation wiring", () => {
 // #158 — the PAGE-keyed sweep. Read the two sweeps as a pair; the division is stated below.
 // ---------------------------------------------------------------------------------------------
 
+const SRC_ROOT = join(process.cwd(), "src");
+const readRepoFile = (file: string) => readFileSync(join(process.cwd(), file), "utf8");
+
+/**
+ * Every `.tsx` under `src/`, repo-relative and slash-separated. The single enumeration the mount
+ * scan and the import graph below both run over, so neither can be looking at a different tree.
+ */
+function allTsxFiles(): string[] {
+  return readdirSync(SRC_ROOT, { recursive: true, encoding: "utf8" })
+    .filter((rel) => rel.endsWith(".tsx"))
+    .map((rel) => `src/${rel.split(sep).join("/")}`)
+    .sort();
+}
+
 /**
  * Every `.tsx` under `src/` that MOUNTS a History panel, enumerated from the tree rather than
  * hand-listed (the `manual-capture` route-enumeration precedent). A hand list is precisely how a
@@ -216,12 +230,104 @@ describe("#153 — a registered child implies invalidation wiring", () => {
  * catch, so it must not commit that defect itself.
  */
 function panelMountingFiles(): string[] {
-  const root = join(process.cwd(), "src");
-  return readdirSync(root, { recursive: true, encoding: "utf8" })
-    .filter((rel) => rel.endsWith(".tsx"))
-    .map((rel) => rel.split(sep).join("/"))
-    .filter((rel) => /<HistoryPanel[\s/>]/.test(readFileSync(join(root, rel), "utf8")))
-    .map((rel) => `src/${rel}`)
+  return allTsxFiles().filter((file) => /<HistoryPanel[\s/>]/.test(readRepoFile(file)));
+}
+
+/**
+ * Every module specifier a file imports FOR ITS VALUE — parsed, never pattern-matched (#188's
+ * whole point: `const s = "./CertDetail"` is text, not an import, and the parser knows).
+ *
+ * **TYPE-ONLY IMPORTS ARE EXCLUDED, and that exclusion is load-bearing** (#188 part 2). A type
+ * import is erased before anything runs, so it can never render the component it names — and in
+ * this tree the type edge points the WRONG WAY: every `orders/[id]/*Section.tsx` carries
+ * `import type { OrderLine } from "./page"`, and `parts/[id]/IdentitySection.tsx`,
+ * `certs/[id]/RequirementBlock.tsx` and `shipping/[id]/ShipmentOrderPanel.tsx` do the same to
+ * their own panel-mounting parent. Counting those edges folded TEN CHILD SECTIONS into the census
+ * as though they wrapped the page that renders them (measured while building this — the naive
+ * graph answered 16 consumers, six of them real). A child section is the entity-keyed sweep's
+ * business, not this one's.
+ *
+ * A side-effect import (`import "./x"`) and a namespace import both count as value edges: neither
+ * is erased, and over-counting an edge only ever ADDS a file to the census, which is the closed
+ * direction.
+ */
+export function valueModuleSpecifiers(src: string): string[] {
+  const parsed = ts.createSourceFile(
+    "candidate.tsx", src, ts.ScriptTarget.Latest, /* setParentNodes */ false, ts.ScriptKind.TSX,
+  );
+  const out: string[] = [];
+  const bringsValue = (clause: ts.ImportClause | undefined): boolean => {
+    if (!clause) return true;                                  // `import "./x"` — a side effect
+    if (clause.isTypeOnly) return false;                       // `import type { X } from "./x"`
+    if (clause.name) return true;                              // a default binding
+    const bindings = clause.namedBindings;
+    if (!bindings) return true;
+    if (ts.isNamespaceImport(bindings)) return true;
+    return bindings.elements.some((el) => !el.isTypeOnly);     // `import { type A, B }` still B
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      if (bringsValue(node.importClause)) out.push(node.moduleSpecifier.text);
+    } else if (
+      ts.isExportDeclaration(node) && node.moduleSpecifier
+      && ts.isStringLiteral(node.moduleSpecifier) && !node.isTypeOnly
+    ) {
+      out.push(node.moduleSpecifier.text);                     // a value re-export is a value edge
+    } else if (
+      ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments.length > 0 && ts.isStringLiteral(node.arguments[0])
+    ) {
+      out.push(node.arguments[0].text);                        // `await import("./x")`
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(parsed, visit);
+  return out;
+}
+
+/**
+ * Resolve one module specifier to a real `.tsx` under `src/`, or `null`.
+ *
+ * `@/` is the repo's alias for `src/` (`tsconfig.json` `paths`); relative specifiers exist too.
+ * A bare package name is never a file in this tree. Extensions are tried in the bundler's order,
+ * and anything landing outside `src/` or on a non-`.tsx` file is dropped — a panel is rendered
+ * from JSX, so a panel-mounting file is always a `.tsx`. The one shape this therefore cannot
+ * follow is a re-export BARREL written as `.ts`; there is no `.tsx`-re-exporting barrel in this
+ * tree today (`src/lib/template-contracts/index.ts` re-exports types only), and the mount
+ * cross-check below would still see the barrel's own importer only if it imported the panel
+ * directly. Stated rather than papered over, in the house style of this file.
+ */
+function resolveToTsx(fromFile: string, spec: string): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = join(SRC_ROOT, spec.slice(2));
+  else if (spec.startsWith(".")) base = resolve(process.cwd(), dirname(fromFile), spec);
+  else return null;
+  for (const candidate of [
+    `${base}.tsx`, `${base}.ts`, join(base, "index.tsx"), join(base, "index.ts"),
+  ]) {
+    if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;
+    const rel = relative(process.cwd(), candidate).split(sep).join("/");
+    return rel.startsWith("src/") && rel.endsWith(".tsx") ? rel : null;
+  }
+  return null;
+}
+
+/** file -> the `src/**.tsx` files it value-imports. The whole `.tsx` tree, one pass. */
+function tsxImportGraph(files: string[]): Map<string, Set<string>> {
+  return new Map(files.map((file) => [
+    file,
+    new Set(valueModuleSpecifiers(readRepoFile(file))
+      .map((spec) => resolveToTsx(file, spec))
+      .filter((r): r is string => r !== null)),
+  ]));
+}
+
+/** The files that CONSUME a panel-mounting component. ONE level — see the sufficiency test. */
+function panelConsumers(graph: Map<string, Set<string>>, mounts: readonly string[]): string[] {
+  const mounted = new Set(mounts);
+  return [...graph]
+    .filter(([file, deps]) => !mounted.has(file) && [...deps].some((dep) => mounted.has(dep)))
+    .map(([file]) => file)
     .sort();
 }
 
@@ -312,9 +418,16 @@ const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]|\.method\s*
  * direction the rest of this sweep is built in.
  *
  * The source is parsed as TSX because every file this is asked about is a `.tsx` client component.
- * `createSourceFile` recovers from syntax errors rather than throwing, so an unparseable file
- * yields a tree in which the call is most likely NOT found — again the closed direction: the sweep
- * names the file as unwired instead of passing it silently.
+ * `createSourceFile` recovers from syntax errors rather than throwing, and error recovery is good
+ * enough that a real call usually SURVIVES a syntax error elsewhere in the file — so "unparseable
+ * therefore reported unwired" is not a claim this makes, and the reviewer could not construct a
+ * fail-open from a broken file either.
+ *
+ * **The backstop for an unparseable file is not this function; it is the rest of the gate set.** A
+ * `.tsx` under `src/` that does not parse reds `npx tsc --noEmit` and `npx eslint src tests`,
+ * loudly and by name, and both run beside this suite on every change. Nothing here needs to
+ * re-detect a syntax error, and reaching for `parsed.parseDiagnostics` (an internal API) to do so
+ * would duplicate a check that already fails harder.
  */
 export function callsInvalidate(src: string): boolean {
   const parsed = ts.createSourceFile(
@@ -369,7 +482,7 @@ function allowlistProblems(
   for (const [file, reason] of Object.entries(entries)) {
     if (reason.trim().length <= 10) problems.push(`${file}: the reason is too short to be a reason`);
     if (!panelFiles.includes(file)) {
-      problems.push(`${file}: mounts no panel — remove the allowlist entry`);
+      problems.push(`${file}: not a panel page — remove the allowlist entry`);
       continue; // cannot read a mutation verdict off a file that is not in the census
     }
     if (issuesMutatingRequest(read(file))) problems.push(`${file}: mutates — remove the allowlist entry`);
@@ -378,15 +491,38 @@ function allowlistProblems(
 }
 
 /**
- * Panel-mounting files that issue NO mutating request (design call 2). An exclusion is an ENTRY
- * WITH A REASON, never a silent absence — a file that drops out of the census by being forgotten
- * looks identical to a file that is genuinely read-only, and the checks below refuse both an
- * entry that is not actually mutation-free and an entry naming a file that mounts no panel.
+ * Panel pages that issue NO mutating request (design call 2). An exclusion is an ENTRY WITH A
+ * REASON, never a silent absence — a file that drops out of the census by being forgotten looks
+ * identical to a file that is genuinely read-only, and the checks below refuse both an entry that
+ * is not actually mutation-free and an entry naming a file outside the census.
  *
- * Empty on purpose as of #158: all twelve panel-mounting files mutate. The mechanism exists so
- * that the FIRST read-only panel page is written down rather than discovered by its absence.
+ * Every entry today is a CONSUMER folded in by #188 part 2, and they share one shape: a thin route
+ * shell whose whole body is `<XDetail key={id} id={id} />`. That is not a coincidence — it is the
+ * idiom this repo writes every keyed detail route in (the §5.12 remount lesson), and it is exactly
+ * the shape that was invisible to the census while the comment above claimed no wrapper existed.
+ * Add a mutating control to any of them and the entry stops being valid: the check below refuses
+ * it, and the file has to wire `invalidateHistory()` like any other panel page.
  */
-const NON_MUTATING_PANEL_PAGES: Record<string, string> = {};
+const NON_MUTATING_PANEL_PAGES: Record<string, string> = {
+  "src/app/admin/reference/page.tsx":
+    "Kind-picker shell around <ReferenceTable>; every reference write is issued inside the table, "
+    + "which mounts the panel and wires the call itself.",
+  "src/app/certs/[id]/page.tsx":
+    "Thin keyed route shell around <CertDetail>; reads the id from the route and renders. All "
+    + "cert writes and the panel wiring live in CertDetail.tsx.",
+  "src/app/invoicing/[id]/page.tsx":
+    "Thin keyed route shell around <InvoiceDetail>; reads the id from the route and renders. All "
+    + "invoice writes and the panel wiring live in InvoiceDetail.tsx.",
+  "src/app/quotes/[id]/page.tsx":
+    "Thin keyed route shell around <QuoteDetail>; reads the id from the route and renders. All "
+    + "quote writes and the panel wiring live in QuoteDetail.tsx.",
+  "src/app/receivables/batches/[id]/page.tsx":
+    "Thin keyed route shell around <BatchDetail>; reads the id from the route and renders. All "
+    + "batch writes and the panel wiring live in BatchDetail.tsx.",
+  "src/app/shipping/[id]/page.tsx":
+    "Thin keyed route shell around <ShipmentDetail>; reads the id from the route and renders. All "
+    + "shipment writes and the panel wiring live in ShipmentDetail.tsx.",
+};
 
 describe("#158 — a page with a panel that mutates must invalidate", () => {
   /**
@@ -395,8 +531,9 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
    * cannot grow parent keys; and its file check requires AT LEAST ONE named file, never all of
    * them. The two sit beside each other with this division:
    *
-   *  - This sweep is complete over the files that MOUNT a panel — the file set is derived from
-   *    the tree, so there is no list to under-fill. It catches the parent-own gap (#158's title:
+   *  - This sweep is complete over the PANEL PAGES — the files that mount a panel, plus (since
+   *    #188 part 2) the files that render one of those. Both sets are derived from the tree, so
+   *    there is no list to under-fill. It catches the parent-own gap (#158's title:
    *    a page whose panel entity has no registered children at all — `cert`, `shipper`, `quote`,
    *    `processTemplate`, `processStepCode`, the reference kinds — was invisible to the entity
    *    map entirely) and it catches a SECOND page writing an already-covered child entity, which
@@ -416,14 +553,21 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
    * below in the calling file — the `OPAQUE_TRANSPORT` guard covers the transports, not that.
    */
 
-  const panelFiles = panelMountingFiles();
-  const read = (file: string) => readFileSync(join(process.cwd(), file), "utf8");
+  const read = readRepoFile;
+  const mountFiles = panelMountingFiles();
+  const importGraph = tsxImportGraph(allTsxFiles());
+  const consumerFiles = panelConsumers(importGraph, mountFiles);
+  /** THE CENSUS: what mounts a panel, and what renders something that does. */
+  const panelFiles = [...mountFiles, ...consumerFiles].sort();
 
   it("finds the panel-mounting files by walking the tree", () => {
     // A broken walk would answer an empty list and every check below would pass vacuously.
-    expect(panelFiles.length).toBeGreaterThan(5);
-    expect(panelFiles).toContain("src/app/parts/[id]/page.tsx"); // the wired precedent
-    expect(panelFiles).toContain("src/components/ReferenceTable.tsx"); // a shared component, not a page
+    expect(mountFiles.length).toBeGreaterThan(5);
+    expect(mountFiles).toContain("src/app/parts/[id]/page.tsx"); // the wired precedent
+    expect(mountFiles).toContain("src/components/ReferenceTable.tsx"); // a shared component, not a page
+    // The census is the union, and nothing is in it twice.
+    expect(panelFiles).toEqual([...new Set([...mountFiles, ...consumerFiles])].sort());
+    expect(mountFiles.filter((f) => consumerFiles.includes(f))).toEqual([]);
   });
 
   it("sees a panel mount two independent ways, so neither can miss one silently", () => {
@@ -432,24 +576,64 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     // regex misses an ALIASED IMPORT (`HistoryPanel as Panel`), which the import set still sees, so
     // asserting the two agree turns that silent miss into a named failure.
     //
-    // **IT DOES NOT CATCH A WRAPPER**, and an earlier version of this comment said it did (Codex P2
-    // on PR #187 — an over-claim shipped in the same commit that fixed three others). If a page
-    // rendered the panel through, say, `<HistorySection />`, BOTH sets would contain only the
-    // wrapper and neither would contain the consuming page: the page is invisible to this census
-    // rather than caught by it, and allowlisting the non-mutating wrapper would close the loop
-    // green. No wrapper exists today — every one of the twelve mounts the panel directly — and
-    // tracing consumers needs an import graph this file does not build. Filed rather than faked.
-    const importers = readdirSync(join(process.cwd(), "src"), { recursive: true, encoding: "utf8" })
-      .filter((rel) => rel.endsWith(".tsx"))
-      .map((rel) => rel.split(sep).join("/"))
-      .filter((rel) => /^import\s*\{[^}]*\bHistoryPanel\b/m
-        .test(readFileSync(join(process.cwd(), "src", rel), "utf8")))
-      .map((rel) => `src/${rel}`)
+    // This pair is about the MOUNT set only. It cannot see a CONSUMER — a file rendering a
+    // component that mounts the panel — because neither the tag nor the import appears in the
+    // consumer at all; that is the next test's job, and it was the second half of #188.
+    const importers = allTsxFiles()
+      .filter((file) => /^import\s*\{[^}]*\bHistoryPanel\b/m.test(read(file)))
       .sort();
-    expect(importers).toEqual(panelFiles);
+    expect(importers).toEqual(mountFiles);
   });
 
-  it("understands every request shape in the panel-mounting files", () => {
+  it("folds a panel component's CONSUMERS into the census, so a wrapper cannot hide one", () => {
+    // #188 part 2. The comment this replaces said "No wrapper exists today — every one of the
+    // twelve mounts the panel directly", and DEFERRED the import-graph walk on that premise. The
+    // premise was false: SIX files render a panel-mounting component and were invisible to the
+    // census, sitting in exactly the blind spot the comment described as hypothetical. Benign only
+    // because all six are 13–25 line shells that issue no request — add one mutating control to
+    // any of them and nothing would ever have required it to invalidate.
+    //
+    // The fix is deliberately the smallest correct one: a consumer is treated as a panel page, and
+    // then EVERY existing rule applies to it unchanged — mutating means wire the call, non-mutating
+    // means an allowlist entry with a reason.
+    expect(consumerFiles).toEqual([
+      "src/app/admin/reference/page.tsx",          // via the `@/` alias
+      "src/app/certs/[id]/page.tsx",               // via a relative specifier
+      "src/app/invoicing/[id]/page.tsx",
+      "src/app/quotes/[id]/page.tsx",
+      "src/app/receivables/batches/[id]/page.tsx",
+      "src/app/shipping/[id]/page.tsx",
+    ]);
+    // Both resolution branches really resolved, against real files. A resolver that answered null
+    // for everything would leave `consumerFiles` empty and every check over the census would go
+    // back to being blind to exactly these six.
+    expect(importGraph.get("src/app/admin/reference/page.tsx"))
+      .toContain("src/components/ReferenceTable.tsx");
+    expect(importGraph.get("src/app/certs/[id]/page.tsx"))
+      .toContain("src/app/certs/[id]/CertDetail.tsx");
+  });
+
+  it("proves ONE level of consumer is enough, and says so the day it stops being", () => {
+    // THE DECISION, with its evidence attached (#188 part 2). One level is complete only while no
+    // consumer is ITSELF rendered by a further file; a consumer-of-a-consumer would need the
+    // transitive closure. Measured, not assumed: all six consumers are Next route entry points
+    // (`page.tsx`), which nothing in `src/` imports — the router reaches them by file convention,
+    // which is not an import edge. So the fixpoint terminates after one round TODAY.
+    //
+    // This assertion is what keeps that a fact rather than an assumption — the same "two
+    // independent ways" trick the mount cross-check above uses. The day someone wraps a wrapper,
+    // this goes red BY NAME and the walk gets promoted to a closure deliberately, instead of the
+    // census silently missing a file again, which is the whole failure mode #188 part 2 is about.
+    const census = new Set(panelFiles);
+    const missedByOneLevel = [...importGraph]
+      .filter(([file, deps]) => !census.has(file) && [...deps].some((d) => consumerFiles.includes(d)))
+      .map(([file, deps]) =>
+        `${file} renders a panel CONSUMER (${[...deps].filter((d) => consumerFiles.includes(d)).join(", ")})`
+        + " — one level is no longer enough; make panelConsumers() a transitive closure");
+    expect(missedByOneLevel).toEqual([]);
+  });
+
+  it("understands every request shape in the panel pages", () => {
     // The loud half of design call 1. A `method:` this sweep cannot classify, or a transport that
     // carries no method at all, means the detector has gone blind — fail here rather than let the
     // census quietly shrink.
@@ -465,7 +649,7 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(unclassified).toEqual([]);
   });
 
-  it("every panel-mounting file that mutates imports and calls invalidateHistory", () => {
+  it("every panel page that mutates imports and calls invalidateHistory", () => {
     const unwired: string[] = [];
     for (const file of panelFiles) {
       const src = read(file);
@@ -488,19 +672,25 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(unwired).toEqual([]);
   });
 
-  it("every allowlisted page really mounts a panel and really does not mutate", () => {
+  it("every allowlisted page really is a panel page and really does not mutate", () => {
     // The allowlist cannot rot into a blanket exemption: an entry that starts mutating, or that
-    // names a file no longer mounting a panel, fails here.
+    // names a file no longer in the census, fails here. Every entry today is one of the six
+    // consumers #188 part 2 folded in, so this now runs over real data as well as the synthetic
+    // cases below — and it is the check that catches the day one of those shells grows a control.
     expect(allowlistProblems(NON_MUTATING_PANEL_PAGES, panelFiles, read)).toEqual([]);
   });
 
-  it("...and that check is not vacuous while the allowlist is empty", () => {
-    // THE POINT OF THIS TEST. `NON_MUTATING_PANEL_PAGES` is `{}` today, so the check above iterates
-    // nothing and passes with ZERO assertions — vitest is not configured to reject that. Its own
-    // RED evidence therefore lives only in whoever ran it by hand once. Exercising the pure rule
-    // against synthetic entries is what keeps it honest before the first real entry exists, and is
-    // the same shape as the detector self-test below (reviewer-caught; the sixth such assertion
-    // found in this session, and the one this file was most at risk of).
+  it("...and that check is not vacuous, whatever the allowlist happens to hold", () => {
+    // THE POINT OF THIS TEST, and it OUTLIVED the condition it was written for. It was added
+    // (reviewer-caught, #158) because `NON_MUTATING_PANEL_PAGES` was `{}`, so the check above
+    // iterated nothing and passed with ZERO assertions — vitest is not configured to reject that.
+    // #188 part 2 populated the allowlist with six real entries, so the check above is no longer
+    // vacuous and this test is no longer load-bearing for THAT reason.
+    //
+    // It stays anyway, and the reason is the general one: this exercises the RULE, not the current
+    // data. Each of the three failure shapes below is a shape no real entry has — that is what
+    // makes them worth pinning, and it is why emptying the allowlist again (perfectly possible: a
+    // shell grows a control and gets wired instead) must not silently take the evidence with it.
     const stub = "src/app/parts/[id]/page.tsx";          // really mounts a panel, really mutates
     expect(allowlistProblems({ [stub]: "too short" }, panelFiles, read))
       .toContain(`${stub}: the reason is too short to be a reason`);
@@ -508,7 +698,7 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
       .toContain(`${stub}: mutates — remove the allowlist entry`);
     expect(allowlistProblems(
       { "src/app/login/page.tsx": "a properly stated reason for the exclusion" }, panelFiles, read))
-      .toContain("src/app/login/page.tsx: mounts no panel — remove the allowlist entry");
+      .toContain("src/app/login/page.tsx: not a panel page — remove the allowlist entry");
     // And the shape that must PASS, or the three above would prove nothing.
     expect(allowlistProblems({}, panelFiles, read)).toEqual([]);
   });
@@ -643,6 +833,34 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     // `/*` inside a string opened a block that ran to the next real `*/`, eating the call between.
     expect(callsInvalidate(`const a = "/*"; invalidateHistory(); /* note */`), "slash-star in a string")
       .toBe(true);
+  });
+
+  it("counts a VALUE import as an edge and a type-only import as none", () => {
+    // The load-bearing half of the consumer walk (#188 part 2), exercised as a pure rule the way
+    // the allowlist and the detector are — the real graph is one snapshot of this tree, and these
+    // are the shapes it has to keep answering.
+    //
+    // MEASURED, not reasoned: a graph that counts type edges answers SIXTEEN consumers here, not
+    // six. The ten extras are `orders/[id]/*Section.tsx`, `parts/[id]/IdentitySection.tsx`,
+    // `certs/[id]/RequirementBlock.tsx` and `shipping/[id]/ShipmentOrderPanel.tsx`, every one of
+    // which does `import type { … } from` its own panel-mounting PARENT. That edge points the
+    // wrong way — those are child sections, and folding them in would have demanded an allowlist
+    // entry per section for a wrapper relationship that does not exist.
+    expect(valueModuleSpecifiers(`import { CertDetail } from "./CertDetail";`)).toEqual(["./CertDetail"]);
+    expect(valueModuleSpecifiers(`import Detail from "./CertDetail";`)).toEqual(["./CertDetail"]);
+    expect(valueModuleSpecifiers(`import * as D from "./CertDetail";`)).toEqual(["./CertDetail"]);
+    expect(valueModuleSpecifiers(`import "./side-effect";`)).toEqual(["./side-effect"]);
+    expect(valueModuleSpecifiers(`export { X } from "./X";`)).toEqual(["./X"]);
+    expect(valueModuleSpecifiers(`const D = await import("./D");`)).toEqual(["./D"]);
+    // `import { type A, B }` still brings B, so the module is still a value dependency.
+    expect(valueModuleSpecifiers(`import { type A, B } from "./x";`)).toEqual(["./x"]);
+
+    expect(valueModuleSpecifiers(`import type { OrderLine } from "./page";`), "type-only").toEqual([]);
+    expect(valueModuleSpecifiers(`import { type A } from "./x";`), "all specifiers type-only").toEqual([]);
+    expect(valueModuleSpecifiers(`export type { X } from "./X";`), "a type re-export").toEqual([]);
+    // And the #188 lesson once more, free from the parser: a path-shaped STRING is not an import.
+    expect(valueModuleSpecifiers(`const p = "./CertDetail";`), "a string that looks like one")
+      .toEqual([]);
   });
 });
 
