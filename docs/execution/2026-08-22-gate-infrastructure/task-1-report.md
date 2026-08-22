@@ -31,10 +31,15 @@ export function callsInvalidate(src: string): boolean {
 }
 ```
 
-`tests/audit-children.test.ts:319`, docblock at `:290`, `import ts from "typescript"` at `:4`.
+**Every line cite in this report is against the file as it stands after the fix round below**
+(the Task 1 commit's own numbers moved when §8 landed): `callsInvalidate` at
+`tests/audit-children.test.ts:432`, docblock at `:396`, `import ts from "typescript"` at `:4`.
 `typescript` was already a devDependency (5.9.3); nothing was installed. The signature is unchanged
 (`(src: string) => boolean`), so both call sites — the entity-keyed sweep at `:203` and the
-page-keyed sweep at `:488` — are untouched.
+page-keyed sweep at `:668` — are untouched.
+
+(The cite corrected in the fix round: this said the page-keyed call site was `:488`, which was
+`expect(unwired).toEqual([])`. In the Task 1 commit it was `:484`.)
 
 ### Why the shipped version was wrong in BOTH directions
 
@@ -67,7 +72,7 @@ every shape nobody has thought of yet comes for free.
 ## 2. The decision on property-access calls
 
 **`x.invalidateHistory()` does NOT count. Neither does an uncalled reference
-(`onSaved={invalidateHistory}`).** Recorded in a comment at `tests/audit-children.test.ts:609` and
+(`onSaved={invalidateHistory}`).** Recorded in a comment at `tests/audit-children.test.ts:800` and
 pinned by four assertions.
 
 Reasoning: both sweeps separately assert the file carries
@@ -89,7 +94,9 @@ file is named as unwired rather than passing silently.
 
 ### 3a. The new cases, RED on the shipped detector
 
-Added first, run against the old regex before it was replaced. Verbatim, trimmed to the assertions:
+Added first, run against the old regex before it was replaced. Verbatim, trimmed to the
+assertions — the `:567` / `:595` / `:613` in this output are vitest's own, from that transient
+tree, and are deliberately left as printed rather than re-numbered:
 
 ```
  FAIL  tests/audit-children.test.ts > … > tells a call from TEXT that spells one — strings, templates, JSX, a regex
@@ -178,7 +185,7 @@ The file was then restored from a byte copy taken before the edit; `git status` 
 
 ## 4. The test cases
 
-**All seven existing detector cases are kept verbatim** (`:570`) — the two comment forms, the
+**All seven existing detector cases are kept verbatim** (`:760`) — the two comment forms, the
 docblock, the multi-line docblock, the `/*`-inside-a-`//` ordering trap, and the docblock-plus-real-
 call pair. Their leading comment now says why they stay: the parser removes the strip-order trap as
 a *mechanism*, but the evidence that those shapes are answered correctly is the point.
@@ -216,28 +223,27 @@ would collide on the dev database and port 3100. This change touches no `src/` f
 
 ## 6. Found and not fixed
 
-- **The wrapper-tracing half of #188 (part 2) is untouched, by instruction.** No wrapper exists —
-  all twelve panel-mounting files mount `<HistoryPanel>` directly — and the comment at
-  `tests/audit-children.test.ts:435` saying plainly that a wrapper is NOT covered stays exactly as
-  it is. **A reviewer/owner call the PR needs to make: the brief says this group "Closes … #188",
-  but only part 1 of that issue is built.** Either the close-out records part 2 as a deliberate
-  non-fix (the shape #158 → #188 already took), or part 2 is re-filed before #188 is closed. I did
-  not decide this.
+- ~~**The wrapper-tracing half of #188 (part 2) is untouched, by instruction.** No wrapper exists —
+  all twelve panel-mounting files mount `<HistoryPanel>` directly …~~ **WITHDRAWN in the fix round
+  (§8): that claim was false, and repeating it uncritically here was Finding 1.** Six files render a
+  panel-mounting component and were invisible to the census. Part 2 is now built; #188 closes whole.
 - **`issuesMutatingRequest` / `MUTATING_TOKEN` / `OPAQUE_METHOD` are still regexes**, by
   instruction. They are deliberately broad and fail CLOSED; `MUTATING_TOKEN` in particular is
   *designed* to match prose, and re-cutting it on the AST is a different decision than this one.
   Note for whoever takes it: an AST rewrite of `MUTATING_TOKEN` would be a *narrowing*, so it would
   need its own allowlist reasoning, not just a parse.
 - **The `import { … invalidateHistory … } from "@/components/HistoryPanel"` assertion is still a
-  regex** at `:201` and `:482`. Left alone deliberately: parsing it would be a second, unrelated
+  regex** at `:201`–`:202` and `:666`. Left alone deliberately: parsing it would be a second, unrelated
   change, and the pair is coherent as it stands — every way the regex can be wrong about the import
   makes the file fail the *call* check, which is loud (see §2, the aliased-import case).
-- **`ts.createSourceFile` recovers from syntax errors rather than throwing**, so an unparseable file
-  yields a tree in which the call is most likely not found and the sweep names the file as unwired.
-  That is the closed direction and it is documented in the docblock, but it is not *asserted* — a
-  file that fails to parse is reported as "must call invalidateHistory()", not as "does not parse".
-  If that ever bites, the fix is to surface `parsed.parseDiagnostics`, which is an internal API; I
-  judged that not worth reaching for on a hypothetical.
+- ~~**`ts.createSourceFile` recovers from syntax errors rather than throwing**, so an unparseable
+  file yields a tree in which the call is most likely not found …~~ **REWRITTEN in the fix round
+  (§8, Finding 3).** "Most likely" was doing load-bearing work it could not do: error recovery
+  generally *finds* a real call in a file with a syntax error elsewhere, so this was neither the
+  closed direction nor a claim worth making. The real backstop is that an unparseable `.tsx` under
+  `src/` reds `npx tsc --noEmit` and `npx eslint src tests` in the same gate set, loudly and by
+  name. The docblock now says that instead, and `parseDiagnostics` stays unreached — not on a
+  hypothetical, but because a stronger check already runs.
 
 ## 7. Docs
 
@@ -246,3 +252,254 @@ that "calls `invalidateHistory()`" is decided by **parsing** the file, never by 
 text (#188), with the reason and a "do not add a regex back" instruction. No other doc changed —
 `docs/HANDOFF.md` takes its one-line update at the group close-out (the Group D precedent,
 `9090a4d`), and this amends no spec contract, so §15 is untouched.
+
+---
+
+# Task 1 fix round — the four review findings, and #188 part 2
+
+Four findings, one of them carrying a scope decision from the owner: **close the wrapper gap
+mechanically rather than re-wording the comment that denied it.**
+
+## 8. Finding 1 (Important) — the census could not see a panel CONSUMER, and said so was hypothetical
+
+### 8.1 The false claim
+
+`tests/audit-children.test.ts` carried, in the mount cross-check, the sentence *"No wrapper exists
+today — every one of the twelve mounts the panel directly."* It was **false**, and #188 deferred the
+import-graph walk on that exact premise. Six files consume a panel-mounting component and were
+invisible to the census:
+
+| panel-mounting component (in the census) | consumer (was invisible to it) |
+|---|---|
+| `src/components/ReferenceTable.tsx` | `src/app/admin/reference/page.tsx` |
+| `src/app/certs/[id]/CertDetail.tsx` | `src/app/certs/[id]/page.tsx` |
+| `src/app/invoicing/[id]/InvoiceDetail.tsx` | `src/app/invoicing/[id]/page.tsx` |
+| `src/app/quotes/[id]/QuoteDetail.tsx` | `src/app/quotes/[id]/page.tsx` |
+| `src/app/receivables/batches/[id]/BatchDetail.tsx` | `src/app/receivables/batches/[id]/page.tsx` |
+| `src/app/shipping/[id]/ShipmentDetail.tsx` | `src/app/shipping/[id]/page.tsx` |
+
+Benign only because all six are 13–25 line shells whose whole body is `<XDetail key={id} id={id} />`.
+The premise for deferring was that the shape of the real case was unknown; the shape is a thin keyed
+route shell, it is the idiom this repo writes every detail route in, and there are already six.
+
+### 8.2 What was built
+
+The smallest correct thing: **a file that imports a panel-mounting file is folded into the same file
+set the existing rules already run over.** No rule changed. Mutating still means "import and call
+`invalidateHistory()`"; non-mutating still means an allowlist entry with a reason.
+
+- `valueModuleSpecifiers(src)` (`tests/audit-children.test.ts:254`) — exported and self-tested. Every
+  module specifier a file imports **for its value**, taken from the same `ts.createSourceFile` parse
+  the detector uses, so a path-shaped string literal is not an import here either.
+- `resolveToTsx(fromFile, spec)` (`:300`) — resolves `@/` (the repo's `src/` alias) and relative
+  specifiers against real files on disk, trying `.tsx`, `.ts`, `index.tsx`, `index.ts`, and dropping
+  anything that is not a `.tsx` under `src/`.
+- `tsxImportGraph(files)` (`:316`) and `panelConsumers(graph, mounts)` (`:326`).
+- The census in the `#158` describe is now `mountFiles ∪ consumerFiles`. The mount cross-check
+  (`<HistoryPanel` tag set vs. `HistoryPanel` import set) still runs over `mountFiles` **only** —
+  it is a check on the mount detection, not on the census — and its comment now says that plainly
+  instead of claiming no wrapper exists.
+- `NON_MUTATING_PANEL_PAGES` (`:506`) carries the six entries, each naming the component the writes
+  actually live in.
+- `allowlistProblems`' membership message became `not a panel page` (was `mounts no panel`), since a
+  census member need no longer mount one itself.
+
+### 8.3 TYPE-ONLY imports are excluded, and that is the load-bearing part
+
+**Measured, not assumed.** A graph counting every import edge answers **sixteen** consumers here, not
+six. The ten extras are `orders/[id]/{Certifications,Charges,Containers,Documents,Lines,Loads,
+Serials}Section.tsx`, `parts/[id]/IdentitySection.tsx`, `certs/[id]/RequirementBlock.tsx` and
+`shipping/[id]/ShipmentOrderPanel.tsx` — every one of which does `import type { … } from` its own
+panel-mounting **parent**. That edge points the wrong way: those are child sections of the page, not
+wrappers of it, and folding them in would have demanded an allowlist entry per section for a
+relationship that does not exist. A type import is erased before anything runs and can never render
+the component it names, so it is not an edge. Pinned by eleven synthetic assertions at `:838`
+(default/namespace/side-effect/value-re-export/dynamic import count; `import type`, an all-`type`
+specifier list, and a type re-export do not; `import { type A, B }` still does).
+
+### 8.4 One level vs. the transitive closure — the decision, and its evidence
+
+**One level, plus an assertion that one level is still enough** (`:616`).
+
+Evidence, from the real graph: **no consumer is itself imported by any `.tsx`.** All six are Next
+route entry points (`page.tsx`); the router reaches them by file convention, which is not an import
+edge. The fixpoint therefore terminates after one round, and computing the transitive closure over
+this tree returns **exactly the same six files** — verified by running both:
+
+```
+mounts: 12
+one-level consumers (6): [ admin/reference/page.tsx, certs/[id]/page.tsx, invoicing/[id]/page.tsx,
+                           quotes/[id]/page.tsx, receivables/batches/[id]/page.tsx,
+                           shipping/[id]/page.tsx ]
+transitive consumers (6): [ …the same six… ]
+SAME? true
+--- importers of each one-level consumer: (all six) []
+```
+
+The sufficiency assertion is the "two independent ways" trick the file already uses on the mount
+set: it names any `.tsx` outside the census that renders a consumer, and asks for the closure by
+name. So the day the premise stops holding, the suite says so — which is precisely what did *not*
+happen the first time.
+
+### 8.5 RED verification
+
+**(a) The gap was real.** A mutating control added to one of the six shells —
+`src/app/certs/[id]/page.tsx`, given a `fetch(…, { method: "DELETE" })` button — and the census **as
+shipped at `bcef639`** run against it:
+
+```
+ RUN  v3.2.7 /home/cojoa13/Desktop/HeatSynQ/erp
+
+ ✓ tests/audit-children-OLD.test.ts (38 tests) 2427ms
+
+ Test Files  1 passed (1)
+      Tests  38 passed (38)
+```
+
+Green. A DELETE on a panel page, with no `invalidateHistory()` anywhere, and nothing said a word.
+
+**(b) The new census, same broken file, allowlist entry still in place** — the entry stops being
+valid and the file is named:
+
+```
+ FAIL  tests/audit-children.test.ts > #158 — a page with a panel that mutates must invalidate > every allowlisted page really is a panel page and really does not mutate
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "src/app/certs/[id]/page.tsx: mutates — remove the allowlist entry",
++ ]
+```
+
+**(c) …and with the allowlist entry deleted too**, so the loop cannot be closed green from either
+side — the main sweep takes it:
+
+```
+ FAIL  tests/audit-children.test.ts > #158 — a page with a panel that mutates must invalidate > every panel page that mutates imports and calls invalidateHistory
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "src/app/certs/[id]/page.tsx must import invalidateHistory",
++ ]
+```
+
+**(d) The sufficiency assertion has been seen to fail.** A throwaway
+`src/app/certs/[id]/Wrapper.tsx` rendering `<CertDetailPage />` — a consumer of a consumer:
+
+```
+ FAIL  tests/audit-children.test.ts > #158 — a page with a panel that mutates must invalidate > proves ONE level of consumer is enough, and says so the day it stops being
+AssertionError: expected [ Array(1) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "src/app/certs/[id]/Wrapper.tsx renders a panel CONSUMER (src/app/certs/[id]/page.tsx) — one level is no longer enough; make panelConsumers() a transitive closure",
++ ]
+```
+
+Every injected file was restored from a byte copy taken before the edit and the throwaway deleted;
+`git status` under `erp/` shows only `tests/audit-children.test.ts` modified.
+
+### 8.6 The synthetic allowlist test — kept, and its comment says why
+
+The test titled *"…and that check is not vacuous"* was written because `NON_MUTATING_PANEL_PAGES`
+was `{}`, so the real check iterated nothing and passed with zero assertions. **That condition is
+gone** — the allowlist now holds six real entries — and the comment now records exactly that: the
+test is no longer load-bearing for the reason it was written, and stays anyway because it exercises
+the **rule**, not the current data. Each of its three failure shapes is a shape no real entry has,
+and emptying the allowlist again (perfectly possible: a shell grows a control and gets wired instead
+of exempted) must not silently take the evidence with it. Its title lost "while the allowlist is
+empty", which was about to become false.
+
+### 8.7 What this still does not see
+
+Stated in the code and here: a re-export **barrel written as `.ts`** that forwards a panel-mounting
+`.tsx`. There is no such barrel in this tree (`src/lib/template-contracts/index.ts` is the only
+`index.*` under `src/`, and it re-exports types), and the brief's instruction is to ignore anything
+not resolving to a `.tsx` under `src/`. Also unchanged: a mutation issued by an imported helper that
+carries none of the mutation tokens in the calling file — the standing limit both sweeps already
+declare.
+
+## 9. Finding 2 (Minor) — `CLAUDE.md` mis-attributed the string-literal defect
+
+The clause read *"four defects were injected into these guards by hand-munging source across two
+review rounds, **the last of them** counting `const hint = "invalidateHistory()"` as a call."* The
+string-literal fail-open is **not** one of those four. #188 enumerates the four (a block-first strip
+ate 23,140 characters; a `//`-only strip let a docblock pass; the first `method` guard fired on
+prose; a read-only panel page dropped silently); the string literal is the **shipped** behavior #188
+was filed about, never injected. The test docblock had this right and the summary did not.
+
+The clause now names all four explicitly and states the string literal separately as the shipped
+defect — in the file whose own rule is "count them, never from memory". The same sentence also
+gained the part-2 facts: consumers folded in through a parsed value-import graph, the type-only
+exclusion and why it is load-bearing, and one-level-plus-sufficiency-assertion.
+
+## 10. Finding 3 (Minor) — the parse-error docblock rested on "most likely"
+
+It claimed an unparseable file *"yields a tree in which the call is most likely NOT found"* — the
+closed direction. The reviewer measured that error recovery generally **does** find a real call in a
+file with a syntax error elsewhere, and could not construct a fail-open in five attempts. So the
+sentence was asserting a safety property it does not have, in the direction of comfort.
+
+Replaced with the backstop that actually exists: **a `.tsx` under `src/` that does not parse reds
+`npx tsc --noEmit` and `npx eslint src tests`**, loudly and by name, and both run beside this suite
+in the same gate set. Nothing here needs to re-detect a syntax error, and reaching for
+`parsed.parseDiagnostics` (an internal API) would duplicate a check that already fails harder.
+
+## 11. Finding 4 (Minor) — cite drift in this report
+
+`§1` cited the page-keyed call site as `:488`; at `bcef639` it was `:484` (`:488` was
+`expect(unwired).toEqual([])`). Corrected, and **every cite in §1–§6 re-anchored to the file as it
+stands after this fix round**, since the fix-round edits moved all of them:
+
+| was | now | what it points at |
+|---|---|---|
+| `:319` | `:432` | `callsInvalidate` |
+| `:290` | `:396` | its docblock |
+| `:203` | `:203` | the entity-keyed call site (unmoved) |
+| `:488` → `:484` | `:668` | the page-keyed call site |
+| `:609` | `:800` | the property-access design-call comment |
+| `:570` | `:760` | the seven kept detector cases |
+| `:201` / `:482` | `:201`–`:202` / `:666` | the import assertions, still regexes |
+
+The `:567` / `:595` / `:613` inside §3a's pasted output are vitest's own, printed by a transient
+tree that no longer exists; they are left verbatim rather than re-numbered, and §3a now says so.
+
+§6's first bullet — which repeated the "no wrapper exists" claim uncritically, and asked the PR to
+decide whether #188 could be closed on part 1 alone — is struck through and withdrawn. Part 2 is
+built; #188 closes whole.
+
+## 12. Gate results (fix round)
+
+| Gate | Result |
+|---|---|
+| `npx vitest run tests/audit-children.test.ts` | **41 passed / 41** (1 file), 2.67s. Was 38 before the three new fix-round `it` blocks. |
+| `npx tsc --noEmit` | clean, exit 0 |
+| `npx eslint src tests` | clean, exit 0 |
+| `npx vitest run` (full) | **3552 passed / 3552**, **208 files passed / 208**, 444.22s |
+
+`npm run test:e2e` was **not** run, by instruction — Task 2 owns the E2E harness this group and a
+concurrent run collides on the dev database and port 3100. This change touches no `src/` file.
+
+## 13. Found and not fixed (fix round)
+
+- **The census now reads the whole `.tsx` tree twice**: once for the `<HistoryPanel` tag scan and
+  once to parse the import graph. 115 files; the suite went from 2.43s to 2.67s. Not worth a cache.
+- **`resolveToTsx` reimplements a slice of module resolution** (alias + relative + four extensions)
+  rather than asking `ts.resolveModuleName`. The real resolver would need the parsed `tsconfig` and
+  a compiler host, which is a much larger dependency for a graph whose every edge in this tree is
+  one of two trivial shapes — and both shapes are pinned against real files at `:588`. Worth
+  revisiting only if a specifier form appears that this cannot follow, which would show up as a
+  consumer silently missing rather than as a failure. That is the one place this mechanism can still
+  go quiet, and it is the honest residual.
+- **`issuesMutatingRequest` / `MUTATING_TOKEN` / `OPAQUE_METHOD` are still regexes**, unchanged from
+  §6 and still by instruction.
