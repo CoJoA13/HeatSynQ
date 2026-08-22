@@ -240,8 +240,16 @@ function panelMountingFiles(): string[] {
  */
 const MUTATING_TOKEN = /\b(?:POST|PUT|PATCH|DELETE)\b/;
 
-/** Every `method:` value in a file, as raw source text. Used only by the loud guard below. */
-const METHOD_VALUE = /\bmethod:\s*([^,}\n]+)/g;
+/**
+ * Every `method:` value in a file, as raw source text. Used by the loud guard below and by
+ * `issuesMutatingRequest`.
+ *
+ * The optional quotes matter: `fetch(url, { "method": "POST" })` is a perfectly valid object key,
+ * and the unquoted-only form missed it — so an allowlisted file could start writing that way and
+ * `issuesMutatingRequest` would still call it read-only (Codex P2 on PR #187). `\bmethod\b` stays
+ * case-sensitive and word-bounded, so `someMethod:` does not match.
+ */
+const METHOD_VALUE = /["']?\bmethod\b["']?\s*:\s*([^,}\n]+)/g;
 
 /** The HTTP method literals this sweep knows how to classify. Anything else is a loud failure. */
 const KNOWN_METHOD_LITERALS = new Set(
@@ -487,6 +495,10 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(issuesMutatingRequest(`api("/x", { method: "POST" })`), "a real request").toBe(true);
     expect(issuesMutatingRequest(`api("/x", { method: "GET" })`), "a read").toBe(false);
     expect(issuesMutatingRequest(`fetch(url, { method })`), "an opaque shape").toBe(true);
+    expect(issuesMutatingRequest(`fetch(url, { "method": "POST" })`), "a QUOTED key").toBe(true);
+    expect(issuesMutatingRequest(`fetch(url, { 'method': 'GET' })`.replace(/'/g, '"')), "quoted read")
+      .toBe(false);
+    expect(issuesMutatingRequest(`const someMethod: string = "POST";`), "a lookalike key").toBe(false);
   });
 
   it("the mutation detector matches every shape it claims to, and no prose", () => {

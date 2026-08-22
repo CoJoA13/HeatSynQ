@@ -175,6 +175,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       await api(`/api/admin/reference/${kind}/${row.id}`, { method: "DELETE" });
       // #110: deleting the last row of a counted kind can UN-complete a readiness step.
       if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+      // #158 — the soft-delete has COMMITTED, so the row's own delete entry exists and its open
+      // panel is showing pre-delete history. `load()` below swallows a GET failure and returns, so
+      // on a failed reload the deleted row and its stale panel both stay on screen (Codex P2 on
+      // PR #187). Signalling here, before the load, means the panel is right even when the reload
+      // is not. This is the THIRD mutation in this file; the previous round wired the two it was
+      // asked about instead of sweeping all three.
+      invalidateHistory();
       setError(null); setBlocked(null); await load();
     } catch (e) {
       // A refusal is not a dead end here: say what is blocking, and make the list exportable.
