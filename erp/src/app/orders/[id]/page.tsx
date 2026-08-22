@@ -24,7 +24,7 @@ import { drainOtherKeys } from "@/lib/drain-queue";
 import { ORDER_STATUS_LABELS, type OrderStatusValue } from "@/lib/order-constants";
 import { CERT_SCOPES, CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { LIGHT_DOT_CLASS, LIGHT_LABELS, type TrafficLight } from "@/lib/traffic-light";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { AttachmentsSection } from "@/components/AttachmentsSection";
 import { LinesSection } from "./LinesSection";
 import { ProcessSection } from "./ProcessSection";
@@ -236,6 +236,13 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
   const applyMutation = useCallback(async (run: () => Promise<OrderMutationResult>) => {
     const ticket = mutations.next();
     const res = await run();
+    // #158 — success path, the instant the mutation resolves and BEFORE the accept gate: the
+    // server state has certainly changed even when this response is superseded and its payload
+    // dropped. This one seam covers the header PATCH, Link and Unlink here AND every write the
+    // five co-located sections make through the same callback (lines, containers, serials,
+    // charges, loads) — all of them the order's own before/after diff, which is exactly what the
+    // panel at the bottom of this page renders.
+    invalidateHistory();
     if (!mutations.accept(ticket)) return;
     const { order: fresh, warnings: w } = unwrapMutation(res);
     // `travelerPrinted` merges MONOTONICALLY (Codex PR #141 round 5): a mutation dispatched
@@ -430,6 +437,9 @@ function OrderHub({ id, autoPrint }: { id: string; autoPrint: boolean }) {
       setError((e as Error).message);
       return;
     }
+    // #158 — success path, before the follow-up load. The void is an `auditedSoftDelete("order", …)`
+    // carrying the typed reason, and this page stays mounted (read-only) to show it.
+    invalidateHistory();
     setError(null);
     try {
       await load();

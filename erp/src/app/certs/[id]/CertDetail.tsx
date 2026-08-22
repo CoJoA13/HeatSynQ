@@ -21,7 +21,7 @@ import { usePermissions } from "@/lib/use-permissions";
 import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { CERT_SCOPE_LABELS, type CertScopeValue } from "@/lib/cert-constants";
 import { RequirementBlock, type ReadingPayload } from "./RequirementBlock";
 
@@ -265,6 +265,10 @@ export function CertDetail({ id }: { id: string }) {
           `/api/certs/${id}`, { method: "PATCH", body: JSON.stringify(patch) }));
         inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
         await req;
+        // #158 — success path, the instant the PATCH resolves (#124/#131 ordering). Every
+        // mutation on this page writes a `cert` row (notes, readings, the first print's
+        // `printedAt`, the void), which is exactly what the panel at the bottom shows.
+        invalidateHistory();
         setError(null);
       } catch (e) {
         // §5.13 rollback-drain (Task 7): wait out every OTHER key's in-flight request before
@@ -298,6 +302,7 @@ export function CertDetail({ id }: { id: string }) {
         }));
         inFlight.current.set(key, req.then(() => {}, () => {})); // request-settled signal, at dispatch
         await req;
+        invalidateHistory(); // #158 — a readings save is an `auditedUpdate("cert", …)` (cert-results.ts)
         setError(null);
         bumpReset(requirementId); // re-seed the block from the fresh server truth (computed passed)
       } catch (e) {
@@ -332,6 +337,10 @@ export function CertDetail({ id }: { id: string }) {
         const body = await res.json().catch(() => ({}));
         throw new Error((body as { error?: string }).error ?? `Print failed (${res.status})`);
       }
+      // #158 — success path, the instant the print resolves. The FIRST print stamps `printedAt`
+      // through `auditedUpdate("cert", …)` (certs.ts); a reprint writes no cert row, and an
+      // invalidation that finds nothing new is one gated GET.
+      invalidateHistory();
       const url = URL.createObjectURL(await res.blob());
       const opened = window.open(url, "_blank");
       if (opened) opened.opener = null;
@@ -378,6 +387,9 @@ export function CertDetail({ id }: { id: string }) {
       setError((e as Error).message);
       return;
     }
+    // #158 — success path, before the follow-up load. The void is an `auditedSoftDelete("cert", …)`
+    // carrying the typed reason, and this page stays mounted (read-only) to show it.
+    invalidateHistory();
     setError(null);
     try {
       await load();

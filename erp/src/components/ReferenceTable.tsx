@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/fetcher";
 import { useLatest } from "@/lib/use-latest";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { invalidateSetupBanner } from "@/components/SetupBanner";
 import { PasteGrid } from "@/components/PasteGrid";
 import { REFERENCE_LABELS, REFERENCE_EXTRA_FIELDS, type ReferenceKind } from "@/lib/reference-constants";
@@ -102,6 +102,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       // #110: a create on a counted kind can complete a readiness step — fired the instant the
       // POST resolves, before load() (the #124/#131 ordering).
       if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+      // #158 — a CREATE can rewrite ANOTHER row's history. `normalizeEndingStatementDefaultOnCreate`
+      // (reference.ts) demotes the current default through `auditedUpdate` when the new row is
+      // flagged, so the demoted row's own open panel goes stale on a change it did not make. The
+      // first pass wired only `toggleFlag`, whose demotion is the same write reached the other way
+      // (Codex P2 on PR #187). Success path, before load (#124/#131); the signal is global, so the
+      // demoted row's panel refreshes wherever it is mounted.
+      invalidateHistory();
       setDraft({}); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
   }
@@ -151,6 +158,11 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       await api(`/api/admin/reference/${kind}/${row.id}`, {
         method: "PUT", body: JSON.stringify({ [key]: !row[key] }),
       });
+      // #158 — success path, before the follow-up load (#124/#131). The row stays on screen after
+      // a toggle, so its open History panel (mounted per-row, right beside this checkbox) would
+      // otherwise keep showing the pre-toggle history. Flipping `isDefault` ON also demotes
+      // another row; the signal is global, so that row's panel refreshes too.
+      invalidateHistory();
       // Retiring a row via the Active toggle is the sanctioned alternative to deleting it (§4.2)
       // — it must not leave a blocker panel from an earlier failed delete attempt on screen.
       setError(null); setBlocked(null); await load();
@@ -163,6 +175,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       await api(`/api/admin/reference/${kind}/${row.id}`, { method: "DELETE" });
       // #110: deleting the last row of a counted kind can UN-complete a readiness step.
       if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+      // #158 — the soft-delete has COMMITTED, so the row's own delete entry exists and its open
+      // panel is showing pre-delete history. `load()` below swallows a GET failure and returns, so
+      // on a failed reload the deleted row and its stale panel both stay on screen (Codex P2 on
+      // PR #187). Signalling here, before the load, means the panel is right even when the reload
+      // is not. This is the THIRD mutation in this file; the previous round wired the two it was
+      // asked about instead of sweeping all three.
+      invalidateHistory();
       setError(null); setBlocked(null); await load();
     } catch (e) {
       // A refusal is not a dead end here: say what is blocking, and make the list exportable.
@@ -303,6 +322,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           onDone={() => {
             // #110: PasteGrid fires onDone only after a successful POST — same rule as add().
             if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+            // #158: and a pasted batch creates rows the same way `add()` does, so it can demote an
+            // existing default just as invisibly.
+            invalidateHistory();
             void load();
           }}
         />

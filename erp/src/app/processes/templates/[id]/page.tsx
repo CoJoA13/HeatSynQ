@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/fetcher";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import { gate } from "@/lib/permission-ui";
 import { swapAt } from "@/lib/reorder";
 import { usePermissions } from "@/lib/use-permissions";
@@ -101,6 +101,11 @@ function Detail({ id }: { id: string }) {
       await api(`/api/process-templates/${id}`, {
         method: "PATCH", body: JSON.stringify({ name: nameDraft.trim() }),
       });
+      // #158 — success path, before the follow-up load (#124/#131). Every mutation on this page
+      // except the template delete (which navigates away) writes a `processTemplate` row — its
+      // steps are audited as the template's own before/after diff — so each one moves the history
+      // the panel at the bottom of this page is showing.
+      invalidateHistory();
       setError(null);
       await load();
     } catch (e) { setError((e as Error).message); }
@@ -121,6 +126,7 @@ function Detail({ id }: { id: string }) {
     setTemplate((cur) => (cur ? { ...cur, active } : cur));
     try {
       await api(`/api/process-templates/${id}`, { method: "PATCH", body: JSON.stringify({ active }) });
+      invalidateHistory(); // #158 — the active toggle's success path, before the reconcile load
       // Reconcile from the server on success too, not only on failure (Codex, PR #22). The name
       // and step controls stay live during this PATCH and their handlers call load(); one landing
       // mid-flight reads the OLD active value and overwrites the optimistic checkbox, and with no
@@ -159,6 +165,7 @@ function Detail({ id }: { id: string }) {
     setAddingStep(true);
     try {
       await api(`/api/process-templates/${id}/steps`, { method: "POST", body: JSON.stringify({ codeId: addCodeId }) });
+      invalidateHistory(); // #158 — the add-step success path, before the follow-up load
       setAddCodeId("");
       setError(null);
       await load();
@@ -174,6 +181,7 @@ function Detail({ id }: { id: string }) {
       await api(`/api/process-templates/${id}/steps/${stepId}`, {
         method: "PATCH", body: JSON.stringify({ boilerplate: submitted }),
       });
+      invalidateHistory(); // #158 — the boilerplate save's success path, before the follow-up load
       setBoilerplateEdits((cur) => {
         if (cur.get(stepId) !== submitted) return cur; // typed since — keep it
         const next = new Map(cur);
@@ -188,6 +196,7 @@ function Detail({ id }: { id: string }) {
   async function removeStep(stepId: string) {
     try {
       await api(`/api/process-templates/${id}/steps/${stepId}`, { method: "DELETE" });
+      invalidateHistory(); // #158 — the remove-step success path, before the follow-up load
       setError(null);
       await load();
     } catch (e) { setError((e as Error).message); }
@@ -204,6 +213,7 @@ function Detail({ id }: { id: string }) {
       await api(`/api/process-templates/${id}/reorder`, {
         method: "POST", body: JSON.stringify({ orderedStepIds: reordered.map((s) => s.id) }),
       });
+      invalidateHistory(); // #158 — the reorder's success path, before the follow-up load
       setError(null);
       await load();
     } catch (e) { setError((e as Error).message); }

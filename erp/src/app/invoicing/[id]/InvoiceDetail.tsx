@@ -28,7 +28,7 @@ import { useLatest, useMutationGate } from "@/lib/use-latest";
 import { drainOtherKeys } from "@/lib/drain-queue";
 import { useEditGuard } from "@/lib/use-edit-guard";
 import { useBulkGrid, type ComposedRow } from "@/lib/bulk-grid";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 import {
   INVOICE_KIND_LABELS, INVOICE_STATUS_LABELS, INVOICE_LINE_KIND_LABELS, PRICE_SOURCE_LABELS,
   type InvoiceKindValue, type InvoiceStatusValue, type InvoiceLineKindValue, type PriceSourceValue,
@@ -472,6 +472,12 @@ export function InvoiceDetail({ id }: { id: string }) {
   const applyMutation = useCallback(async (run: () => Promise<InvoiceMutationResult>) => {
     const ticket = mutations.next();
     const res = await run();
+    // #158 — success path, the instant the mutation resolves and BEFORE the accept gate: the five
+    // actions that route through here (the lines save, the header PATCH, Recalculate, Finalize,
+    // Unlock) each write an `invoice` row, and the server state has certainly changed even when
+    // this response is superseded and its payload dropped. The panel at the bottom of this page
+    // is that same entity.
+    invalidateHistory();
     if (!mutations.accept(ticket)) return;
     setInvoice(editGuard.applyPayload(res.invoice));
     setWarnings(res.warnings);
@@ -660,6 +666,9 @@ export function InvoiceDetail({ id }: { id: string }) {
       setError((e as Error).message);
       return;
     }
+    // #158 — success path, before the follow-up load. The discard is an `auditedSoftDelete`
+    // carrying the typed reason, and this page stays mounted (read-only) to show it.
+    invalidateHistory();
     setError(null);
     try {
       await load();

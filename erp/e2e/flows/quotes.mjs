@@ -306,7 +306,19 @@ export async function run(page, shot, ctx) {
   // links the SAME order number, so a page-wide link lookup resolves two elements.
   const warnBanner = page.locator("div.border-amber-300");
   await warnBanner.getByRole("link", { name: `#${order.number}`, exact: true }).waitFor({ state: "visible" });
-  await page.getByText(CLOSE_REASON).waitFor({ state: "visible" });
+  // Scoped to the CLOSED banner, for the same reason as the amber one above — and this scoping is
+  // newly REQUIRED by #158. A page-wide lookup for the reason used to resolve one element; it now
+  // resolves three, because the History panel refetches on close and shows the same text twice more
+  // (the `update` row and its `closeReason: "" → …` diff). That the locator went ambiguous is the
+  // fix working end to end: before this group the panel sat stale until a reload, so those two rows
+  // simply were not on the page. Assert the banner, and assert the panel separately below.
+  const closedBanner = page.locator("p.bg-slate-100").filter({ hasText: "Closed —" });
+  await closedBanner.getByText(CLOSE_REASON).waitFor({ state: "visible" });
+  // The other half, now that it is real: the panel shows the close WITHOUT a reload (#158). This is
+  // the only end-to-end proof of the invalidation — the sweep cannot see an effect, and there is no
+  // DOM test environment for one.
+  await page.getByText(`closeReason: "" → "${CLOSE_REASON}"`, { exact: true })
+    .waitFor({ state: "visible", timeout: 15000 });
   await shot("quote-closed-linked-order-warning");
 
   // ---------------------------------------------------------------------------------------

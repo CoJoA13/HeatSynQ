@@ -15,7 +15,7 @@ import {
   type SurchargeKindValue, type SurchargeScopeValue,
 } from "@/lib/invoice-constants";
 import { BlockerPanel, type Blocker } from "@/components/BlockerPanel";
-import { HistoryPanel } from "@/components/HistoryPanel";
+import { HistoryPanel, invalidateHistory } from "@/components/HistoryPanel";
 
 type Gl = { id: string; name: string; description?: string };
 type StepCodeOption = { id: string; name: string; active: boolean };
@@ -152,6 +152,9 @@ export default function SurchargesPage() {
       setBlocked(null);
       try {
         await api(`/api/admin/surcharges/${id}`, { method: "PUT", body: JSON.stringify(body) });
+        // #158 — success path, before the follow-up load (#124/#131). Every scalar edit on this
+        // page comes through here and writes a `surcharge` row: the panel's own entity.
+        invalidateHistory();
         setError(null); await load();
       } catch (e) {
         await load().catch(() => {});
@@ -186,6 +189,10 @@ export default function SurchargesPage() {
       const next = has ? row.stepCodeIds.filter((s) => s !== stepCodeId) : [...row.stepCodeIds, stepCodeId];
       try {
         await api(`/api/admin/surcharges/${id}/step-codes`, { method: "PUT", body: JSON.stringify({ stepCodeIds: next }) });
+        // #158 — success path, before the follow-up load. The step-code grid is a replace-grid
+        // audited through the surcharge itself (SNAPSHOT_INCLUDE.surcharge), so a toggle here
+        // moves the very history the panel below renders.
+        invalidateHistory();
         setError(null); await load();
       } catch (e) {
         await load().catch(() => {});
@@ -263,6 +270,12 @@ export default function SurchargesPage() {
       await api(`/api/customers/${customerId}/surcharges`, {
         method: "DELETE", body: JSON.stringify({ surchargeId }),
       });
+      // #158 — success path, the instant the DELETE resolves and before the blocker refetch.
+      // `customerSurcharge` is a REGISTERED CHILD of `surcharge` (audit-children.ts), so the
+      // panel below already advertises customer-override history — and went stale on exactly the
+      // overrides this control clears. The entity-keyed manifest could not see it: it names only
+      // the customer page's own section, and requires just one file per entity.
+      invalidateHistory();
       setError(null);
     } catch (e) {
       // The DELETE's own failure is a mutation report, not a stale fetch — surfaced regardless.

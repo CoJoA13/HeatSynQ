@@ -222,6 +222,22 @@ export function CertificationsSection({
    * met a wall with nothing behind it — the eagerly-created cert was often already there and the
    * screen never said so. Reloading makes the row present, and the render resolves it into a
    * named link beside the server's own words (never instead of them).
+   *
+   * **NO `invalidateHistory()` HERE, BY OWNER RULING (2026-08-21, #158's review).** This section
+   * writes `cert` rows and sits on a page mounting an `order` panel, so the question was asked
+   * directly: should raising a certification show in the ORDER's History?
+   *
+   * It should not. `audit-children.ts` deliberately keeps child DOCUMENTS off the parent panel — a
+   * cert is its own document, with its own page and its own History panel, and raising one from
+   * here is navigation to a different document rather than an edit to this order. The order panel
+   * would gain rows it structurally cannot explain.
+   *
+   * So this is a deliberate absence, not an oversight, and it is written here because the #158
+   * page-keyed sweep (tests/audit-children.test.ts) does not reach a SECTION that mounts no panel
+   * of its own — which means nothing mechanical will re-raise the question, and the next reader
+   * would otherwise re-derive it from scratch. Registering `cert` as a child of `order` is the
+   * FOUR-edit change CLAUDE.md's audit paragraph describes, and it reverses this ruling; do not do
+   * it as a one-liner.
    */
   async function createCertFor(target: CertTarget) {
     setCreating(targetKey(target));

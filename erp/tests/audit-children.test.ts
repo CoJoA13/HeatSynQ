@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -144,6 +144,12 @@ describe("#153 — the registry is the whole design", () => {
  * absent: `ReceivablesSection.tsx` writes `application` rows, but it lives on the CUSTOMER page,
  * whose panel is `customer` — which does not register `application` — so there is no stale panel
  * to refresh there.
+ *
+ * The per-entity file list is BEST EFFORT and the check below requires only that ONE named file
+ * wires the call — nothing here can derive "every file that writes this entity" from source, so
+ * do not read the lists as complete. #158's page-keyed sweep further down is what IS complete,
+ * over the files that mount a panel; it exists because a second writer slipped through exactly
+ * this gap (`admin/surcharges/page.tsx`, added below after the fact).
  */
 const INVALIDATION_SITES: Record<string, readonly string[]> = {
   partSpecification: ["src/app/parts/[id]/SpecsSection.tsx"],
@@ -155,7 +161,13 @@ const INVALIDATION_SITES: Record<string, readonly string[]> = {
   partProcessRevision: ["src/app/parts/[id]/ProcessStepsSection.tsx"],
   customerAddress: ["src/app/customers/[id]/page.tsx"],
   customerContact: ["src/app/customers/[id]/page.tsx"],
-  customerSurcharge: ["src/app/customers/[id]/SurchargeOverridesSection.tsx"],
+  customerSurcharge: [
+    "src/app/customers/[id]/SurchargeOverridesSection.tsx",
+    // The surcharge admin page's "Clear override" (#158): a `customerSurcharge` write on a page
+    // whose panel is `surcharge`, which registers that same child. It was live and unwired while
+    // this map stayed green, because the check below is satisfied by the file above alone.
+    "src/app/admin/surcharges/page.tsx",
+  ],
   customerTemplateAssignment: ["src/app/customers/[id]/TemplateAssignmentsSection.tsx"],
   orderAttachment: ["src/components/AttachmentsSection.tsx"],
   payment: ["src/app/receivables/batches/[id]/BatchDetail.tsx"],
@@ -187,8 +199,360 @@ describe("#153 — a registered child implies invalidation wiring", () => {
       const src = readFileSync(join(process.cwd(), file), "utf8");
       expect(src, `${file} must import invalidateHistory`)
         .toMatch(/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/);
-      expect(src, `${file} must call invalidateHistory()`).toMatch(/invalidateHistory\(\)/);
+      expect(callsInvalidate(src), `${file} must call invalidateHistory()`).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// #158 — the PAGE-keyed sweep. Read the two sweeps as a pair; the division is stated below.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every `.tsx` under `src/` that MOUNTS a History panel, enumerated from the tree rather than
+ * hand-listed (the `manual-capture` route-enumeration precedent). A hand list is precisely how a
+ * census silently omits the one file nobody remembered — which is the defect this sweep exists to
+ * catch, so it must not commit that defect itself.
+ */
+function panelMountingFiles(): string[] {
+  const root = join(process.cwd(), "src");
+  return readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((rel) => rel.endsWith(".tsx"))
+    .map((rel) => rel.split(sep).join("/"))
+    .filter((rel) => /<HistoryPanel[\s/>]/.test(readFileSync(join(root, rel), "utf8")))
+    .map((rel) => `src/${rel}`)
+    .sort();
+}
+
+/**
+ * WHAT COUNTS AS "ISSUES A MUTATING REQUEST" (design call 1, recorded here rather than improvised).
+ *
+ * Deliberately an OVER-match: the bare, word-bounded token, anywhere in the file — not
+ * `method: "POST"` specifically. A precise regex is the failure mode being fixed one level up; a
+ * mutation built from a variable (`method: del ? "DELETE" : "PUT"`), assembled in a helper defined
+ * in the same file, or written in a shape nobody has invented yet still carries one of these four
+ * words, and over-matching fails CLOSED — the file is called mutating and must wire the call.
+ * The cost of over-matching is a false positive, and design call 2's allowlist is where a false
+ * positive gets written down with a reason instead of quietly exempting the file.
+ *
+ * `PUT` inside `INPUT`/`OUTPUT` and `POST` inside `POSTED` are excluded by the word boundaries;
+ * lowercase prose ("Delete", "post") never matches, which is why the match is case-sensitive.
+ */
+const MUTATING_TOKEN = /\b(?:POST|PUT|PATCH|DELETE)\b/;
+
+/**
+ * Every `method:` value in a file, as raw source text. Used by the loud guard below and by
+ * `issuesMutatingRequest`.
+ *
+ * The optional quotes matter: `fetch(url, { "method": "POST" })` is a perfectly valid object key,
+ * and the unquoted-only form missed it — so an allowlisted file could start writing that way and
+ * `issuesMutatingRequest` would still call it read-only (Codex P2 on PR #187). `\bmethod\b` stays
+ * case-sensitive and word-bounded, so `someMethod:` does not match.
+ */
+const METHOD_VALUE = /["']?\bmethod\b["']?\s*:\s*([^,}\n]+)/g;
+
+/** The HTTP method literals this sweep knows how to classify. Anything else is a loud failure. */
+const KNOWN_METHOD_LITERALS = new Set(
+  ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"].map((m) => `"${m}"`),
+);
+
+/**
+ * Request transports whose mutations this sweep would NOT see: they carry no HTTP-method literal
+ * at all. None is used anywhere in this codebase today (every client write goes through `api()`
+ * or `fetch()` with a literal method), so their appearance in a panel-mounting file means the
+ * detection above has gone blind and must be extended before the file can be judged.
+ */
+const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buseActionState\b|\buseFormState\b|<form[^>]*\saction=/;
+
+/**
+ * A `method` the `method: <literal>` form cannot read: ES6 SHORTHAND in an object literal
+ * (`fetch(url, { method })`) or a COMPUTED KEY (`init["method"]`). Either carries no
+ * `POST|PUT|PATCH|DELETE` token and trips no other guard, so the file reads as non-mutating and
+ * drops out of the census silently — the exact failure shape #158 is about (reviewer-caught).
+ *
+ * DELIBERATELY NARROW, unlike `MUTATING_TOKEN`. The first attempt was `\bmethod\b(?!\s*:)`, which
+ * fired twice on one file: once on the word in a prose comment, once on `init.method ?? "GET"` — a
+ * property READ, not a request shape. A guard whose failures are usually noise gets silenced, so
+ * over-matching is the wrong trade HERE even though it is the right one for the token detector.
+ *
+ * The third arm is a dot-property ASSIGNMENT (`init.method = verb`, Codex P2 on PR #187): the verb
+ * can come from an import and carry no uppercase literal at all, so nothing else here sees it. The
+ * `(?!=)` is what separates it from the READ that made the first attempt noisy — `init.method ??
+ * "GET"` and `init.method === x` are not assignments and must stay quiet.
+ *
+ * Still invisible, and not claimed otherwise: an init object arriving as a PROP, and a mutation
+ * issued through an imported helper. Nothing static sees either.
+ */
+const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]|\.method\s*=(?!=)/;
+
+/**
+ * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment of either form?
+ *
+ * A raw `/invalidateHistory\(\)/` matches inside a comment, so a file that loses its real call but
+ * keeps a note stays green: the one place this sweep failed OPEN, while everything else in it is
+ * built to fail closed.
+ *
+ * **ORDER MATTERS, and getting it wrong is how the first two attempts failed.** Line comments are
+ * stripped FIRST, block comments SECOND. Reversed, a `/*` sitting inside a `//` comment opens a
+ * block that runs to the next real `*\/` — on one real file that swallowed 23,140 characters and
+ * reported five genuine calls as missing. Stripping `//` first removes that `/*` before it can open
+ * anything. And stripping only `//` (the second attempt, Codex P2 on PR #187) let a docblock
+ * *mentioning* the call read as the call itself.
+ */
+export function callsInvalidate(src: string): boolean {
+  const withoutLineComments = src
+    .split("\n")
+    .map((line) => line.slice(0, line.includes("//") ? line.indexOf("//") : undefined))
+    .join("\n");
+  const code = withoutLineComments.replace(/\/\*[\s\S]*?\*\//g, " ");
+  return /invalidateHistory\(\)/.test(code);
+}
+
+/**
+ * Does this file issue a mutating REQUEST — as opposed to merely containing the word?
+ *
+ * `MUTATING_TOKEN` is deliberately broad and fails CLOSED: it screens which files must be wired or
+ * allowlisted. But validating an allowlist ENTRY with that same broad token made the allowlist
+ * self-defeating (Codex P2 on PR #187): a genuinely read-only page that renders `<code>POST</code>`
+ * in prose is flagged as mutating, and then its allowlist entry is rejected for "mutating" — so the
+ * false positive the allowlist is documented to absorb had no valid representation anywhere.
+ *
+ * The two checks want different precisions, which is the whole point: broad to decide "this needs a
+ * decision", precise to decide "the decision recorded is honest".
+ */
+function issuesMutatingRequest(src: string): boolean {
+  for (const [, value] of src.matchAll(METHOD_VALUE)) {
+    if (/^"(?:POST|PUT|PATCH|DELETE)"$/.test(value.trim())) return true;
+  }
+  return OPAQUE_TRANSPORT.test(src) || OPAQUE_METHOD.test(src);
+}
+
+/**
+ * The pure rule behind the allowlist check, lifted out so it can be exercised against synthetic
+ * entries while the real allowlist is empty. An empty `Record` makes a `for…of` body unreachable,
+ * and a test whose body never runs passes with zero assertions — which is the defect this whole
+ * file exists to prevent, committed by the file itself.
+ */
+function allowlistProblems(
+  entries: Record<string, string>, panelFiles: string[], read: (f: string) => string,
+): string[] {
+  const problems: string[] = [];
+  for (const [file, reason] of Object.entries(entries)) {
+    if (reason.trim().length <= 10) problems.push(`${file}: the reason is too short to be a reason`);
+    if (!panelFiles.includes(file)) {
+      problems.push(`${file}: mounts no panel — remove the allowlist entry`);
+      continue; // cannot read a mutation verdict off a file that is not in the census
+    }
+    if (issuesMutatingRequest(read(file))) problems.push(`${file}: mutates — remove the allowlist entry`);
+  }
+  return problems;
+}
+
+/**
+ * Panel-mounting files that issue NO mutating request (design call 2). An exclusion is an ENTRY
+ * WITH A REASON, never a silent absence — a file that drops out of the census by being forgotten
+ * looks identical to a file that is genuinely read-only, and the checks below refuse both an
+ * entry that is not actually mutation-free and an entry naming a file that mounts no panel.
+ *
+ * Empty on purpose as of #158: all twelve panel-mounting files mutate. The mechanism exists so
+ * that the FIRST read-only panel page is written down rather than discovered by its absence.
+ */
+const NON_MUTATING_PANEL_PAGES: Record<string, string> = {};
+
+describe("#158 — a page with a panel that mutates must invalidate", () => {
+  /**
+   * WHY A SECOND SWEEP RATHER THAN A WIDER ONE (design call 3). `INVALIDATION_SITES` above is
+   * keyed by registered CHILD entity and asserts exact key equality with the registry, so it
+   * cannot grow parent keys; and its file check requires AT LEAST ONE named file, never all of
+   * them. The two sit beside each other with this division:
+   *
+   *  - This sweep is complete over the files that MOUNT a panel — the file set is derived from
+   *    the tree, so there is no list to under-fill. It catches the parent-own gap (#158's title:
+   *    a page whose panel entity has no registered children at all — `cert`, `shipper`, `quote`,
+   *    `processTemplate`, `processStepCode`, the reference kinds — was invisible to the entity
+   *    map entirely) and it catches a SECOND page writing an already-covered child entity, which
+   *    the "at least one file" rule cannot see (`admin/surcharges/page.tsx` clearing a
+   *    `customerSurcharge` was live and unwired, and the entity map was green throughout).
+   *
+   *  - The entity map catches what this one cannot: a file that mounts NO panel but writes a
+   *    registered child of a panel mounted elsewhere — every `parts/[id]/*Section.tsx`, and
+   *    `customers/[id]/SurchargeOverridesSection.tsx`. Nothing here looks at those files.
+   *
+   * WHAT NEITHER SWEEP PINS, stated plainly rather than papered over (the same statement the
+   * entity-keyed describe above carries, and for the same reason): there is no DOM test
+   * environment here, so nothing below proves the call sits on the SUCCESS path of the right
+   * mutation, nor that a mounted panel actually refetches. The listener contract is pinned in
+   * tests/history-invalidation.test.ts, and the panel subscribes through that same export. And
+   * neither sweep can see a mutation issued by an imported helper that carries none of the tokens
+   * below in the calling file — the `OPAQUE_TRANSPORT` guard covers the transports, not that.
+   */
+
+  const panelFiles = panelMountingFiles();
+  const read = (file: string) => readFileSync(join(process.cwd(), file), "utf8");
+
+  it("finds the panel-mounting files by walking the tree", () => {
+    // A broken walk would answer an empty list and every check below would pass vacuously.
+    expect(panelFiles.length).toBeGreaterThan(5);
+    expect(panelFiles).toContain("src/app/parts/[id]/page.tsx"); // the wired precedent
+    expect(panelFiles).toContain("src/components/ReferenceTable.tsx"); // a shared component, not a page
+  });
+
+  it("sees a panel mount two independent ways, so neither can miss one silently", () => {
+    // The MUTATION side of this sweep has two loud guards; the MOUNT side had none, and a page that
+    // drops out of the census is exactly as invisible as an unwired one (reviewer-caught). The tag
+    // regex misses an ALIASED IMPORT (`HistoryPanel as Panel`), which the import set still sees, so
+    // asserting the two agree turns that silent miss into a named failure.
+    //
+    // **IT DOES NOT CATCH A WRAPPER**, and an earlier version of this comment said it did (Codex P2
+    // on PR #187 — an over-claim shipped in the same commit that fixed three others). If a page
+    // rendered the panel through, say, `<HistorySection />`, BOTH sets would contain only the
+    // wrapper and neither would contain the consuming page: the page is invisible to this census
+    // rather than caught by it, and allowlisting the non-mutating wrapper would close the loop
+    // green. No wrapper exists today — every one of the twelve mounts the panel directly — and
+    // tracing consumers needs an import graph this file does not build. Filed rather than faked.
+    const importers = readdirSync(join(process.cwd(), "src"), { recursive: true, encoding: "utf8" })
+      .filter((rel) => rel.endsWith(".tsx"))
+      .map((rel) => rel.split(sep).join("/"))
+      .filter((rel) => /^import\s*\{[^}]*\bHistoryPanel\b/m
+        .test(readFileSync(join(process.cwd(), "src", rel), "utf8")))
+      .map((rel) => `src/${rel}`)
+      .sort();
+    expect(importers).toEqual(panelFiles);
+  });
+
+  it("understands every request shape in the panel-mounting files", () => {
+    // The loud half of design call 1. A `method:` this sweep cannot classify, or a transport that
+    // carries no method at all, means the detector has gone blind — fail here rather than let the
+    // census quietly shrink.
+    const unclassified: string[] = [];
+    for (const file of panelFiles) {
+      const src = read(file);
+      for (const [, value] of src.matchAll(METHOD_VALUE)) {
+        if (!KNOWN_METHOD_LITERALS.has(value.trim())) unclassified.push(`${file}: method: ${value.trim()}`);
+      }
+      if (OPAQUE_TRANSPORT.test(src)) unclassified.push(`${file}: mutation transport with no HTTP method literal`);
+      if (OPAQUE_METHOD.test(src)) unclassified.push(`${file}: a \`method\` this sweep cannot read (shorthand, computed key, or a prop)`);
+    }
+    expect(unclassified).toEqual([]);
+  });
+
+  it("every panel-mounting file that mutates imports and calls invalidateHistory", () => {
+    const unwired: string[] = [];
+    for (const file of panelFiles) {
+      const src = read(file);
+      if (Object.hasOwn(NON_MUTATING_PANEL_PAGES, file)) continue; // judged below, not here
+      if (!MUTATING_TOKEN.test(src)) {
+        // NOT a silent skip (Codex P2 on PR #187). The stated design is that a panel page which
+        // genuinely does not mutate is an allowlist ENTRY WITH A REASON, never an absence — and the
+        // first implementation just `continue`d, so a new read-only panel page would drop out of the
+        // census with no review point, and could later start mutating through a shape the detector
+        // does not see with nothing recorded. Non-mutating now MEANS allowlisted.
+        unwired.push(`${file} mutates nothing — add a NON_MUTATING_PANEL_PAGES entry with a reason`);
+        continue;
+      }
+      if (!/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/.test(src)) {
+        unwired.push(`${file} must import invalidateHistory`);
+      } else if (!callsInvalidate(src)) {
+        unwired.push(`${file} must call invalidateHistory()`);
+      }
+    }
+    expect(unwired).toEqual([]);
+  });
+
+  it("every allowlisted page really mounts a panel and really does not mutate", () => {
+    // The allowlist cannot rot into a blanket exemption: an entry that starts mutating, or that
+    // names a file no longer mounting a panel, fails here.
+    expect(allowlistProblems(NON_MUTATING_PANEL_PAGES, panelFiles, read)).toEqual([]);
+  });
+
+  it("...and that check is not vacuous while the allowlist is empty", () => {
+    // THE POINT OF THIS TEST. `NON_MUTATING_PANEL_PAGES` is `{}` today, so the check above iterates
+    // nothing and passes with ZERO assertions — vitest is not configured to reject that. Its own
+    // RED evidence therefore lives only in whoever ran it by hand once. Exercising the pure rule
+    // against synthetic entries is what keeps it honest before the first real entry exists, and is
+    // the same shape as the detector self-test below (reviewer-caught; the sixth such assertion
+    // found in this session, and the one this file was most at risk of).
+    const stub = "src/app/parts/[id]/page.tsx";          // really mounts a panel, really mutates
+    expect(allowlistProblems({ [stub]: "too short" }, panelFiles, read))
+      .toContain(`${stub}: the reason is too short to be a reason`);
+    expect(allowlistProblems({ [stub]: "a properly stated reason for the exclusion" }, panelFiles, read))
+      .toContain(`${stub}: mutates — remove the allowlist entry`);
+    expect(allowlistProblems(
+      { "src/app/login/page.tsx": "a properly stated reason for the exclusion" }, panelFiles, read))
+      .toContain("src/app/login/page.tsx: mounts no panel — remove the allowlist entry");
+    // And the shape that must PASS, or the three above would prove nothing.
+    expect(allowlistProblems({}, panelFiles, read)).toEqual([]);
+  });
+
+  it("lets a detector FALSE POSITIVE be allowlisted, which is what the allowlist is for", () => {
+    // The contradiction this fixes (Codex P2 on PR #187): a read-only page rendering `POST` in
+    // prose is flagged by the broad screen, and validating its allowlist entry with that SAME
+    // broad token rejected it for "mutating" — so the case the allowlist exists to absorb could
+    // not be written down at all. Broad to decide "needs a decision", precise to judge it.
+    const prose = `<code>POST</code> and <code>DELETE</code> are shown here as documentation.`;
+    expect(MUTATING_TOKEN.test(prose), "the broad screen still flags it").toBe(true);
+    expect(issuesMutatingRequest(prose), "but it issues no request").toBe(false);
+    expect(issuesMutatingRequest(`api("/x", { method: "POST" })`), "a real request").toBe(true);
+    expect(issuesMutatingRequest(`api("/x", { method: "GET" })`), "a read").toBe(false);
+    expect(issuesMutatingRequest(`fetch(url, { method })`), "an opaque shape").toBe(true);
+    expect(issuesMutatingRequest(`fetch(url, { "method": "POST" })`), "a QUOTED key").toBe(true);
+    expect(issuesMutatingRequest(`fetch(url, { 'method': 'GET' })`.replace(/'/g, '"')), "quoted read")
+      .toBe(false);
+    expect(issuesMutatingRequest(`const someMethod: string = "POST";`), "a lookalike key").toBe(false);
+  });
+
+  it("the mutation detector matches every shape it claims to, and no prose", () => {
+    // The detector is the load-bearing part of the census, and today's allowlist is empty, so
+    // these synthetic cases are the only place its behaviour is actually exercised.
+    for (const src of [
+      `api("/x", { method: "POST" })`,
+      `api("/x", { method: "PUT", body })`,
+      `fetch("/x", { method: "PATCH" })`,
+      `api("/x", { method: "DELETE" })`,
+      `const method = hard ? "DELETE" : "PUT"; fetch("/x", { method })`, // built from a variable
+      `const init: RequestInit = { method: "POST" }; fetch("/x", init)`, // init hoisted out
+    ]) expect(MUTATING_TOKEN.test(src), src).toBe(true);
+
+    for (const src of [
+      `api("/x")`,
+      `<button>Delete</button>`,
+      `<input value={x} />`, // INPUT must not read as PUT
+      `const output = post(x);`,
+      `// posted, deleted, patched`,
+    ]) expect(MUTATING_TOKEN.test(src), src).toBe(false);
+
+    expect(OPAQUE_TRANSPORT.test(`navigator.sendBeacon("/x", b)`)).toBe(true);
+    expect(OPAQUE_TRANSPORT.test(`<form action={save}>`)).toBe(true);
+    expect(OPAQUE_TRANSPORT.test(`<form onSubmit={submit}>`)).toBe(false);
+
+    // The narrowed method guard: the two shapes that hide a mutation, and the two that are noise.
+    expect(OPAQUE_METHOD.test(`fetch(url, { method })`), "shorthand").toBe(true);
+    expect(OPAQUE_METHOD.test(`fetch(url, { method, body })`), "shorthand, then more").toBe(true);
+    expect(OPAQUE_METHOD.test(`fetch(url, { body, method })`), "shorthand, trailing").toBe(true);
+    expect(OPAQUE_METHOD.test(`init["method"] = verb`), "computed key").toBe(true);
+    expect(OPAQUE_METHOD.test(`api(url, { method: "PUT" })`), "the readable form").toBe(false);
+    expect(OPAQUE_METHOD.test(`const key = init.method ?? "GET";`), "a property READ").toBe(false);
+    expect(OPAQUE_METHOD.test(`// keyed by path+method`), "prose").toBe(false);
+    expect(OPAQUE_METHOD.test(`init.method = verb;`), "dot assignment").toBe(true);
+    expect(OPAQUE_METHOD.test(`if (init.method === "GET") return;`), "a comparison, not an assignment")
+      .toBe(false);
+  });
+
+  it("sees a real invalidateHistory call, and no comment that merely mentions one", () => {
+    // Both comment forms, and the ordering trap that broke two earlier attempts at this.
+    expect(callsInvalidate(`await save(); invalidateHistory();`), "a real call").toBe(true);
+    expect(callsInvalidate(`// invalidateHistory();`), "line comment").toBe(false);
+    expect(callsInvalidate(`/* invalidateHistory(); */`), "block comment").toBe(false);
+    expect(callsInvalidate(`/** calls invalidateHistory() on the success path */`), "a docblock")
+      .toBe(false);
+    expect(callsInvalidate(`/**\n * calls invalidateHistory() here\n */\nconst x = 1;`), "multi-line")
+      .toBe(false);
+    // The trap: a `/*` INSIDE a line comment must not open a block that eats the real call below.
+    expect(callsInvalidate(`// see /* the note\ninvalidateHistory();`), "slash-star in a line comment")
+      .toBe(true);
+    // ...and a real call must survive a docblock that also mentions it.
+    expect(callsInvalidate(`/** calls invalidateHistory() */\ninvalidateHistory();`), "both")
+      .toBe(true);
   });
 });
 
