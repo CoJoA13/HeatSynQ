@@ -301,6 +301,25 @@ export function callsInvalidate(src: string): boolean {
 }
 
 /**
+ * Does this file issue a mutating REQUEST — as opposed to merely containing the word?
+ *
+ * `MUTATING_TOKEN` is deliberately broad and fails CLOSED: it screens which files must be wired or
+ * allowlisted. But validating an allowlist ENTRY with that same broad token made the allowlist
+ * self-defeating (Codex P2 on PR #187): a genuinely read-only page that renders `<code>POST</code>`
+ * in prose is flagged as mutating, and then its allowlist entry is rejected for "mutating" — so the
+ * false positive the allowlist is documented to absorb had no valid representation anywhere.
+ *
+ * The two checks want different precisions, which is the whole point: broad to decide "this needs a
+ * decision", precise to decide "the decision recorded is honest".
+ */
+function issuesMutatingRequest(src: string): boolean {
+  for (const [, value] of src.matchAll(METHOD_VALUE)) {
+    if (/^"(?:POST|PUT|PATCH|DELETE)"$/.test(value.trim())) return true;
+  }
+  return OPAQUE_TRANSPORT.test(src) || OPAQUE_METHOD.test(src);
+}
+
+/**
  * The pure rule behind the allowlist check, lifted out so it can be exercised against synthetic
  * entries while the real allowlist is empty. An empty `Record` makes a `for…of` body unreachable,
  * and a test whose body never runs passes with zero assertions — which is the defect this whole
@@ -316,7 +335,7 @@ function allowlistProblems(
       problems.push(`${file}: mounts no panel — remove the allowlist entry`);
       continue; // cannot read a mutation verdict off a file that is not in the census
     }
-    if (MUTATING_TOKEN.test(read(file))) problems.push(`${file}: mutates — remove the allowlist entry`);
+    if (issuesMutatingRequest(read(file))) problems.push(`${file}: mutates — remove the allowlist entry`);
   }
   return problems;
 }
@@ -455,6 +474,19 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
       .toContain("src/app/login/page.tsx: mounts no panel — remove the allowlist entry");
     // And the shape that must PASS, or the three above would prove nothing.
     expect(allowlistProblems({}, panelFiles, read)).toEqual([]);
+  });
+
+  it("lets a detector FALSE POSITIVE be allowlisted, which is what the allowlist is for", () => {
+    // The contradiction this fixes (Codex P2 on PR #187): a read-only page rendering `POST` in
+    // prose is flagged by the broad screen, and validating its allowlist entry with that SAME
+    // broad token rejected it for "mutating" — so the case the allowlist exists to absorb could
+    // not be written down at all. Broad to decide "needs a decision", precise to judge it.
+    const prose = `<code>POST</code> and <code>DELETE</code> are shown here as documentation.`;
+    expect(MUTATING_TOKEN.test(prose), "the broad screen still flags it").toBe(true);
+    expect(issuesMutatingRequest(prose), "but it issues no request").toBe(false);
+    expect(issuesMutatingRequest(`api("/x", { method: "POST" })`), "a real request").toBe(true);
+    expect(issuesMutatingRequest(`api("/x", { method: "GET" })`), "a read").toBe(false);
+    expect(issuesMutatingRequest(`fetch(url, { method })`), "an opaque shape").toBe(true);
   });
 
   it("the mutation detector matches every shape it claims to, and no prose", () => {

@@ -102,6 +102,13 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
       // #110: a create on a counted kind can complete a readiness step — fired the instant the
       // POST resolves, before load() (the #124/#131 ordering).
       if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+      // #158 — a CREATE can rewrite ANOTHER row's history. `normalizeEndingStatementDefaultOnCreate`
+      // (reference.ts) demotes the current default through `auditedUpdate` when the new row is
+      // flagged, so the demoted row's own open panel goes stale on a change it did not make. The
+      // first pass wired only `toggleFlag`, whose demotion is the same write reached the other way
+      // (Codex P2 on PR #187). Success path, before load (#124/#131); the signal is global, so the
+      // demoted row's panel refreshes wherever it is mounted.
+      invalidateHistory();
       setDraft({}); setError(null); await load();
     } catch (e) { setError((e as Error).message); }
   }
@@ -308,6 +315,9 @@ export function ReferenceTable({ kind }: { kind: ReferenceKind }) {
           onDone={() => {
             // #110: PasteGrid fires onDone only after a successful POST — same rule as add().
             if (READINESS_COUNTED_KINDS.has(kind)) invalidateSetupBanner();
+            // #158: and a pasted batch creates rows the same way `add()` does, so it can demote an
+            // existing default just as invisibly.
+            invalidateHistory();
             void load();
           }}
         />
