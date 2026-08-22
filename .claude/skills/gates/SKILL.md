@@ -16,7 +16,7 @@ and report everything.
 cd erp
 npm test                 # vitest — full suite against the real erp_test DB (serial; never parallelize)
 npx tsc --noEmit
-npx eslint src tests
+npx eslint src tests e2e
 npm run build            # the standalone build the Docker image ships
 ```
 

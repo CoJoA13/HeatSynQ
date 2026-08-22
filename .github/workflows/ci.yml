@@ -54,7 +54,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Lint
-        run: npx eslint src tests
+        run: npx eslint src tests e2e
 
       - name: Build
         run: npm run build
