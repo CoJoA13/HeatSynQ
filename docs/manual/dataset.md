@@ -54,6 +54,49 @@ re-derived. There is deliberately no override flag.
 
 ---
 
+## This dataset and the E2E suite cannot share a database
+
+Both are pinned to `erp`, and only one of them can own it at a time (#167a). This is a standing
+fact about the two tools, not a defect left unfixed:
+
+- **`manual:capture` reads the dev DB by design** — the manual documents the production app, not
+  the watermarked practice copy, so the pictures have to come from `erp`.
+- **The E2E fixtures refuse any other database** (`e2e/lib/db-fixtures.ts`'s `assertDevDb`: name
+  exactly `erp`, host local). That guard is right — the fixtures hard-delete — and a dedicated
+  `erp_e2e` was tried and correctly refused.
+- **`close-month-end` asserts figures that are global by definition.** A month-end close *is* a
+  plant-wide reconciliation: `unpostedBatchCount` and the continuity `variance` cannot be scoped to
+  one flow's own rows without ceasing to test the close. This dataset leaves one receipt batch OPEN
+  on purpose (see "Month end" below — it is what makes the preview teach the reconciliation), and
+  that single row is enough to red the flow.
+
+Everything that *could* be scoped has been: `invoice-shipped-order` now counts only its own
+surcharge row, so the three plant-wide surcharges here are no longer a problem for it.
+
+**Going from this dataset to a suite-passing database:**
+
+```bash
+cd erp && npm run db:reset      # truncate + restore the singletons + db:seed. ~1s.
+npm run test:e2e
+```
+
+`db:reset` reaches exactly the state a fresh `migrate deploy && npm run db:seed` leaves behind, and
+refuses any database that is not `erp` on localhost — twice, once on the URL shape and once on the
+database's own `current_database()` answer.
+
+**Going the other way** — from a pristine or E2E-run database back to this dataset — is the
+"Rebuilding it" sequence above, unchanged. It drops the database itself, so it does not care what
+was there before.
+
+**You do not have to remember this.** `npm run test:e2e` reads the dev database's ambient state
+before it starts anything and refuses the run by name, in about a second, listing what it found and
+printing the `db:reset` recipe (`e2e/lib/preflight.mjs`). The three conditions it checks are the
+three that `close-month-end` itself asserts about the whole plant: a `ClosePeriod` already covering
+the current month, an OPEN receipt batch carrying a payment dated in it, and a non-zero continuity
+variance.
+
+---
+
 ## What it contains
 
 Order numbers 1000–1049, shippers 1000–1027, quotes 1000–1004. Closed period: 2026-07.

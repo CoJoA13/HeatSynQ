@@ -30,6 +30,7 @@ npx prisma generate                # client is gitignored; generate before typec
 npx prisma migrate deploy          # dev DB
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed                   # admin/admin
+npm run db:reset                  # truncate + restore singletons + db:seed — back to the line above
 npm run dev                       # http://localhost:3000
 ```
 
@@ -41,6 +42,22 @@ npx tsc --noEmit
 npx eslint src tests e2e          # `e2e` since 2026-08-22: the harness was never linted by the gate
 npm run test:e2e                  # Playwright flows against `npm run dev` + the DEV db (erp, not erp_test); bundled Chromium
 ```
+
+**The E2E suite and the demonstration dataset cannot share the dev database, and `test:e2e` refuses
+rather than discovers that at flow 20** (#167a). Almost every ambient-state assertion in the suite is
+scoped to the flow's own fixtures — `invoice-shipped-order` counts only ITS surcharge row, and
+`boardRow` (`e2e/lib/orders.mjs`) matches the board's order-number CELL, never "any cell holding
+these digits" (an order whose Weight cell read `1200` collided with order #1200 for real). But
+`close-month-end`'s figures are global by definition — a month-end close IS a plant-wide
+reconciliation — so `run.mjs` reads the dev DB's ambient state BEFORE flow 1 and refuses the whole
+run by name in about a second: a `ClosePeriod` already covering the current month, an OPEN receipt
+batch carrying a payment dated in it, or a non-zero continuity variance. The policy is the pure leaf
+`e2e/lib/preflight.mjs` (the `warmupRefusal` shape, pinned in `tests/e2e-harness.test.ts`); the
+evidence comes from `db-fixtures.ts`'s read-only `preflight` command, which calls the close service's
+OWN `preliminaryReport` so the check can never drift from the assertion it hoists. **Do not widen it**
+— a pre-flight that over-refuses is one people disable. The recipe it prints is `npm run db:reset`
+(guarded twice: URL shape, then the database's own `current_database()`); the way back to the dataset
+is `docs/manual/dataset.md`.
 
 Single test file or single case:
 
