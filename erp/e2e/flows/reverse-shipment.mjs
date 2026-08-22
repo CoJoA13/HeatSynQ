@@ -29,7 +29,7 @@
 // and nothing later depends on its state.
 import assert from "node:assert/strict";
 import { waitForValue } from "../lib/ui.mjs";
-import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
+import { boardRow, createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const REVERSE_REASON =
   "E2E reverse-shipment flow: wrong parts loaded, demonstrating the reversal UX for the demo.";
@@ -111,7 +111,11 @@ async function boardRowFor(page, ctx, orderNumber) {
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
   await page.getByPlaceholder("Order #, PO, VS #, lead part, customer").fill(String(orderNumber));
-  return page.locator("tr").filter({ has: page.getByText(String(orderNumber), { exact: true }) });
+  // #167a: narrowing by the board's own search is not enough on its own — the search matches PO,
+  // VS #, lead part and customer too, so it can still return several rows, and the row picked out
+  // of them must be picked by the ORDER-NUMBER CELL (e2e/lib/orders.mjs's `boardRow`), never by
+  // "any cell holding these digits".
+  return boardRow(page, orderNumber);
 }
 
 async function assertBoardStatus(page, ctx, orderNumber, statusText) {

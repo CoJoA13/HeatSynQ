@@ -5,6 +5,7 @@
 // is live and unvoided either way — this flow doesn't care about print state) and before
 // void-order, which needs the order still live to void it.
 import assert from "node:assert/strict";
+import { boardRow } from "../lib/orders.mjs";
 
 export async function run(page, shot, ctx) {
   const { created } = ctx;
@@ -17,7 +18,10 @@ export async function run(page, shot, ctx) {
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
 
-  const row = page.locator("tr", { hasText: String(created.orderNumber) });
+  // #167a: was `page.locator("tr", { hasText: ... })` — a SUBSTRING match against every cell of
+  // every row, the loosest member of the family that collision belongs to. `boardRow` matches the
+  // order-number cell exactly (e2e/lib/orders.mjs).
+  const row = await boardRow(page, created.orderNumber);
   await row.waitFor({ state: "visible", timeout: 10000 });
   // The light is a colored dot (rounded-full) beside the status word — rendered only for a live
   // order (a voided one renders the plain word "Voided" instead, no dot at all; asserted by

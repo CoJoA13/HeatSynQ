@@ -23,7 +23,7 @@
 // `e2e/lib/db-fixtures.ts` for why.
 import assert from "node:assert/strict";
 import { armPrompt, waitForValue } from "../lib/ui.mjs";
-import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
+import { boardRow, createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const UNLOCK_REASON =
   "E2E invoice-shipped-order flow: intentional unlock, demonstrating the unlock UX for the demo.";
@@ -31,7 +31,9 @@ const UNLOCK_REASON =
 async function assertBoardStatus(page, ctx, orderNumber, statusText, absentText) {
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
-  const row = page.locator("tr").filter({ has: page.getByText(String(orderNumber), { exact: true }) });
+  // #167a: `boardRow` matches the ORDER-NUMBER CELL, never "any cell holding these digits" — see
+  // its comment in e2e/lib/orders.mjs for the collision that shape produced for real.
+  const row = await boardRow(page, orderNumber);
   await row.waitFor({ state: "visible", timeout: 10000 });
   await row.getByText(statusText, { exact: true }).waitFor({ state: "visible" });
   if (absentText) {
@@ -103,18 +105,36 @@ export async function run(page, shot, ctx) {
   // SALES TAX row (the fixture customer's own salesTaxRate). ---
   assert.equal(await page.locator("td", { hasText: "Operation" }).count(), 2,
     "the two-PartPrice part must produce two OPERATION rows on the invoice");
-  assert.equal(await page.locator("td", { hasText: "Surcharge" }).count(), 1,
-    "the one active plant-wide surcharge must produce one SURCHARGE row");
   assert.equal(await page.locator("td", { hasText: "Sales tax" }).count(), 1,
     "the customer's own salesTaxRate must produce one TAX row");
-  // The description cell is a controlled <input> (InvoiceLinesGrid's `otherRow`), so its text
-  // never reaches `getByText` (React controlled inputs don't expose `value` as an HTML attribute
-  // or as text content — HANDOFF §5a's own documented trap). Locate the SURCHARGE row by its
-  // static kind-label cell, then read its description input's live value directly.
-  const surchargeRow = page.locator("tr").filter({ has: page.locator("td", { hasText: "Surcharge" }) });
-  const surchargeDescription = await surchargeRow.locator("input").first().inputValue();
-  assert.equal(surchargeDescription, fixtures.invSurchargeName,
-    "the surcharge row must carry the surcharge's own name");
+  // --- The fixture's OWN surcharge produced exactly one SURCHARGE row. ---
+  //
+  // #167a: this used to assert `count() === 1` over EVERY surcharge row on the invoice, which is a
+  // statement about the plant rather than about this flow — every active plant-wide surcharge lands
+  // on every invoice, and the demonstration dataset (docs/manual/dataset.md) seeds three, so the
+  // documented demo data red this flow at `4 !== 1`. What the flow actually owns is its own
+  // surcharge, so that is what is counted.
+  //
+  // The description cell is a controlled <input> (InvoiceLinesGrid's `otherRow`), so its value
+  // never reaches `getByText` and cannot be filtered on in a locator (React controlled inputs don't
+  // expose `value` as an HTML attribute or as text content — HANDOFF §5a's own documented trap):
+  // every SURCHARGE row's description input is read, and the matches counted here. That also closes
+  // the latent half of the same bug — the old `.locator("input").first()` read whichever surcharge
+  // row happened to sort first, which was only ever the fixture's own by luck.
+  // No `waitFor` before the read, deliberately: both tables render in the same commit as the h1
+  // this flow already waited on, and the two `count()` assertions above are equally unretried —
+  // an empty list here is a real failure and its message says so, where a 15s timeout would not.
+  const surchargeRows = page.locator("tr").filter({ has: page.locator("td", { hasText: "Surcharge" }) });
+  const surchargeDescriptions = [];
+  for (let i = 0; i < await surchargeRows.count(); i += 1) {
+    surchargeDescriptions.push(await surchargeRows.nth(i).locator("input").first().inputValue());
+  }
+  assert.equal(
+    surchargeDescriptions.filter((d) => d === fixtures.invSurchargeName).length, 1,
+    `exactly one SURCHARGE row must carry this run's own surcharge name ` +
+    `(${JSON.stringify(fixtures.invSurchargeName)}) — rows on this invoice: ` +
+    `${JSON.stringify(surchargeDescriptions)}`,
+  );
   assert.equal(await page.locator("td", { hasText: "needs price" }).count(), 0,
     "both priced operations must resolve a price — nothing should need one");
 
