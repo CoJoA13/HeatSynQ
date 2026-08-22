@@ -16,7 +16,7 @@ export async function run(page, shot, ctx) {
   const { fixtures } = ctx;
 
   // --- The order; its save creates the order-scope cert (§6.2). ---
-  const order = await createOrderViaUi(page, ctx, {
+  await createOrderViaUi(page, ctx, {
     customerCode: fixtures.shipCustomerCode,
     lines: [{ partNumber: fixtures.certPartNumber, qty: 12 }],
   });

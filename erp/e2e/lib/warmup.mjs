@@ -42,8 +42,17 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
-// Kept in sync with `SESSION_COOKIE` in src/server/http.ts and src/proxy.ts, which read the same
-// env var (the practice copy sets SESSION_COOKIE_NAME=erp_practice_session).
+// Derived the SAME way as `SESSION_COOKIE` in src/server/http.ts and src/proxy.ts — all three read
+// this one env var (the practice copy sets SESSION_COOKIE_NAME=erp_practice_session), so the only
+// thing actually duplicated is the fallback default. That makes THREE hand-synced literals, not the
+// two CLAUDE.md's Edge-runtime constraint used to name, and the fix is not to delete this one: a
+// shared `src/lib/` leaf would dissolve the very duplication four other modules cite as the
+// precedent for their own re-declared literals (`template-contracts/types.ts`'s CONTENT_WIDTH,
+// quote.ts/cert.ts/shipper.ts's standing texts, manual-ids.ts's dev-DB guard). So this copy is
+// VERIFIED instead of removed: `warmupRefusal` below refuses the run if the cookie fails to defeat
+// the proxy redirect, which is what a drift here would look like. Without that check a renamed
+// cookie would leave every page 307ing to /login, the warm-up compiling nothing, and fix (a)
+// silently doing no work at all.
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME ?? "erp_session";
 // Presence is all the Edge proxy checks; this value matches no Session row on purpose.
 const WARMUP_COOKIE = `${SESSION_COOKIE}=e2e-warmup-not-a-real-session`;
@@ -89,7 +98,14 @@ async function warmOne(baseURL, route, isPage, timeoutMs) {
     // Drain the body: an un-consumed response holds its socket open, and we want the server to
     // have genuinely finished with this route before the pool moves on.
     await res.arrayBuffer();
-    return { route, ms: Date.now() - started, status: res.status };
+    return {
+      route,
+      ms: Date.now() - started,
+      status: res.status,
+      // The cookie self-check's evidence: a page that 3xx'd to /login compiled nothing.
+      redirectedToLogin: res.status >= 300 && res.status < 400 &&
+        (res.headers.get("location") ?? "").includes("/login"),
+    };
   } catch (err) {
     // A warm-up failure is never fatal — the route may simply be slow, and the flow that really
     // needs it has its own (longer) timeout. Recorded so the harness can say so out loud.
@@ -98,15 +114,66 @@ async function warmOne(baseURL, route, isPage, timeoutMs) {
 }
 
 /**
- * Requests every route once, discarding the answers. Returns timing and any warm-up-level
- * failures so the caller can report them.
+ * The warm-up's own refusal (fix-round finding 4). `warmRoutes` used to compute a `failures` list
+ * and return it, and the caller threw it away — so a dev server that died the instant after
+ * `waitForServer` produced 243 "not fatal" lines and then 25 flow failures with no named cause.
+ * There was also no AGGREGATE deadline: at concurrency 4 the worst case was 243/4 × the 120s
+ * per-request timeout, unbounded in practice, where the phase before it had a 60s budget.
+ *
+ * Pure, and returns the reason rather than throwing, so `tests/e2e-harness.test.ts` can pin the
+ * policy and `run.mjs` owns the refusal. Three refusals, in the order a run hits them:
+ *
+ *  - the budget blew, so routes were never issued at all;
+ *  - most requests failed, so the server is not answering;
+ *  - most PAGES 3xx'd to /login, which is what a drift in this file's session-cookie literal looks
+ *    like from the outside — the warm-up would otherwise report 45 warmed pages having compiled
+ *    none of them.
+ *
+ * A handful of failures stays NOT fatal, deliberately: one slow route is a slow route, and the
+ * flow that really needs it has its own, longer timeout.
+ */
+export function warmupRefusal({ count, failures, skipped, budgetMs, pages = 0, pagesRedirected = 0 }) {
+  const budgetLabel = `${Math.round(budgetMs / 1000)}s`;
+  if (skipped > 0) {
+    return `the dev-server warm-up blew its ${budgetLabel} budget: ${skipped} of ` +
+      `${count + skipped} route(s) were never issued. A server that cannot answer a plain GET per ` +
+      `route inside that budget will not survive the flows` +
+      (failures.length > 0 ? ` (first failure: ${failures[0].route} — ${failures[0].error})` : "");
+  }
+  if (count > 0 && failures.length * 2 > count) {
+    return `${failures.length} of ${count} warm-up requests failed — the dev server is up on the ` +
+      `port but is not answering. First failure: ${failures[0].route} — ${failures[0].error}`;
+  }
+  if (pages > 0 && pagesRedirected * 2 > pages) {
+    return `${pagesRedirected} of ${pages} warm-up page requests were redirected to /login, so the ` +
+      `warm-up compiled almost no pages. The session-cookie name this file sends no longer matches ` +
+      `the one src/proxy.ts checks — re-sync SESSION_COOKIE in e2e/lib/warmup.mjs`;
+  }
+  return null;
+}
+
+/**
+ * Requests every route once, discarding the answers. Returns timing, the routes that failed and
+ * the routes never reached, so the caller can refuse the run (see `warmupRefusal`).
  *
  * `concurrency` is small on purpose: `next dev` compiles a handful of entries in parallel and
  * queues the rest, so piling on more in-flight requests buys nothing and makes each individual
  * one likelier to hit its own timeout — which is the exact failure this is here to remove.
+ *
+ * `budgetMs` bounds the WHOLE phase, not each request: once it passes, the remaining routes are
+ * counted as skipped rather than issued, and each in-flight request's own timeout is clamped to
+ * whatever is left of it — so the phase can never overrun its budget, however many routes there
+ * are. 240s is ~8x the slowest measurement taken on a completely cold `.next` (30.6s), which
+ * leaves real headroom for a CI container without leaving the worst case unbounded.
  */
-export async function warmRoutes(baseURL, appDir, { concurrency = 4, timeoutMs = 120000, log = () => {} } = {}) {
+export async function warmRoutes(baseURL, appDir, {
+  concurrency = 4,
+  timeoutMs = 120000,
+  budgetMs = Number(process.env.E2E_WARMUP_BUDGET_MS ?? 240000),
+  log = () => {},
+} = {}) {
   const started = Date.now();
+  const deadline = started + budgetMs;
   const { pages, apis } = await enumerateRoutes(appDir);
   // Pages first: they are the expensive entries (each pulls in the root layout, the shell, and
   // its whole client component tree) and they are what a flow hits first.
@@ -114,25 +181,42 @@ export async function warmRoutes(baseURL, appDir, { concurrency = 4, timeoutMs =
 
   const results = [];
   let next = 0;
+  let skipped = 0;
   const worker = async () => {
     for (;;) {
       const i = next++;
       if (i >= queue.length) return;
-      results.push(await warmOne(baseURL, queue[i].route, queue[i].isPage, timeoutMs));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) { skipped += 1; continue; }
+      results.push(await warmOne(baseURL, queue[i].route, queue[i].isPage, Math.min(timeoutMs, remaining)));
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
 
   const ms = Date.now() - started;
   const failures = results.filter((r) => r.error);
+  const pagesRedirected = results.filter((r) => r.redirectedToLogin).length;
   const slowest = [...results].sort((a, b) => b.ms - a.ms).slice(0, 5);
 
   log(`  warmed ${results.length} routes (${pages.length} pages, ${apis.length} API) in ${(ms / 1000).toFixed(1)}s`);
-  log(`  slowest: ${slowest.map((r) => `${r.route} ${(r.ms / 1000).toFixed(1)}s`).join(", ")}`);
-  if (failures.length > 0) {
-    log(`  ${failures.length} route(s) did not answer within ${timeoutMs / 1000}s (not fatal): ` +
-      failures.slice(0, 5).map((r) => r.route).join(", "));
+  if (slowest.length > 0) {
+    log(`  slowest: ${slowest.map((r) => `${r.route} ${(r.ms / 1000).toFixed(1)}s`).join(", ")}`);
   }
+  if (failures.length > 0) {
+    log(`  ${failures.length} route(s) did not answer (not fatal on their own): ` +
+      failures.slice(0, 5).map((r) => `${r.route} — ${r.error}`).join(", "));
+  }
+  if (skipped > 0) log(`  ${skipped} route(s) never issued — the ${Math.round(budgetMs / 1000)}s warm-up budget ran out`);
 
-  return { ms, count: results.length, pages: pages.length, apis: apis.length, failures, slowest };
+  return {
+    ms,
+    count: results.length,
+    pages: pages.length,
+    apis: apis.length,
+    pagesRedirected,
+    failures,
+    skipped,
+    budgetMs,
+    slowest,
+  };
 }
