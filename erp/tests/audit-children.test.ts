@@ -273,22 +273,26 @@ const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buse
 const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]/;
 
 /**
- * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment?
+ * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment of either form?
  *
- * `/invalidateHistory\(\)/` on raw source matches inside a comment, so a file that loses its real
- * call but keeps a comment mentioning it stays green: the one place this sweep failed OPEN, while
- * everything else in it is built to fail closed (reviewer-caught).
+ * A raw `/invalidateHistory\(\)/` matches inside a comment, so a file that loses its real call but
+ * keeps a note stays green: the one place this sweep failed OPEN, while everything else in it is
+ * built to fail closed.
  *
- * LINE-SCOPED on purpose. The first attempt stripped block comments first and a `/*` sitting inside
- * a `//` line comment opened a bogus block that swallowed 23,140 characters of a real file — the
- * stricter check was itself wrong, and reported five genuine calls as missing. A per-line rule
- * cannot over-eat: a call is real when it appears on a line before any `//` on that line.
+ * **ORDER MATTERS, and getting it wrong is how the first two attempts failed.** Line comments are
+ * stripped FIRST, block comments SECOND. Reversed, a `/*` sitting inside a `//` comment opens a
+ * block that runs to the next real `*\/` — on one real file that swallowed 23,140 characters and
+ * reported five genuine calls as missing. Stripping `//` first removes that `/*` before it can open
+ * anything. And stripping only `//` (the second attempt, Codex P2 on PR #187) let a docblock
+ * *mentioning* the call read as the call itself.
  */
-function callsInvalidate(src: string): boolean {
-  return src.split("\n").some((line) => {
-    const code = line.slice(0, line.includes("//") ? line.indexOf("//") : undefined);
-    return /invalidateHistory\(\)/.test(code);
-  });
+export function callsInvalidate(src: string): boolean {
+  const withoutLineComments = src
+    .split("\n")
+    .map((line) => line.slice(0, line.includes("//") ? line.indexOf("//") : undefined))
+    .join("\n");
+  const code = withoutLineComments.replace(/\/\*[\s\S]*?\*\//g, " ");
+  return /invalidateHistory\(\)/.test(code);
 }
 
 /**
@@ -397,8 +401,16 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     const unwired: string[] = [];
     for (const file of panelFiles) {
       const src = read(file);
-      if (!MUTATING_TOKEN.test(src)) continue;
       if (Object.hasOwn(NON_MUTATING_PANEL_PAGES, file)) continue; // judged below, not here
+      if (!MUTATING_TOKEN.test(src)) {
+        // NOT a silent skip (Codex P2 on PR #187). The stated design is that a panel page which
+        // genuinely does not mutate is an allowlist ENTRY WITH A REASON, never an absence — and the
+        // first implementation just `continue`d, so a new read-only panel page would drop out of the
+        // census with no review point, and could later start mutating through a shape the detector
+        // does not see with nothing recorded. Non-mutating now MEANS allowlisted.
+        unwired.push(`${file} mutates nothing — add a NON_MUTATING_PANEL_PAGES entry with a reason`);
+        continue;
+      }
       if (!/import \{[^}]*invalidateHistory[^}]*\} from "@\/components\/HistoryPanel"/.test(src)) {
         unwired.push(`${file} must import invalidateHistory`);
       } else if (!callsInvalidate(src)) {
@@ -465,6 +477,23 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
     expect(OPAQUE_METHOD.test(`api(url, { method: "PUT" })`), "the readable form").toBe(false);
     expect(OPAQUE_METHOD.test(`const key = init.method ?? "GET";`), "a property READ").toBe(false);
     expect(OPAQUE_METHOD.test(`// keyed by path+method`), "prose").toBe(false);
+  });
+
+  it("sees a real invalidateHistory call, and no comment that merely mentions one", () => {
+    // Both comment forms, and the ordering trap that broke two earlier attempts at this.
+    expect(callsInvalidate(`await save(); invalidateHistory();`), "a real call").toBe(true);
+    expect(callsInvalidate(`// invalidateHistory();`), "line comment").toBe(false);
+    expect(callsInvalidate(`/* invalidateHistory(); */`), "block comment").toBe(false);
+    expect(callsInvalidate(`/** calls invalidateHistory() on the success path */`), "a docblock")
+      .toBe(false);
+    expect(callsInvalidate(`/**\n * calls invalidateHistory() here\n */\nconst x = 1;`), "multi-line")
+      .toBe(false);
+    // The trap: a `/*` INSIDE a line comment must not open a block that eats the real call below.
+    expect(callsInvalidate(`// see /* the note\ninvalidateHistory();`), "slash-star in a line comment")
+      .toBe(true);
+    // ...and a real call must survive a docblock that also mentions it.
+    expect(callsInvalidate(`/** calls invalidateHistory() */\ninvalidateHistory();`), "both")
+      .toBe(true);
   });
 });
 
