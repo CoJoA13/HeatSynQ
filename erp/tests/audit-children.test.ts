@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import ts from "typescript";
 import { prisma, truncateAll } from "./helpers/db";
 import { signInWith } from "./helpers/auth";
 import { runWithContext } from "@/server/context";
@@ -286,26 +287,54 @@ const OPAQUE_TRANSPORT = /\bsendBeacon\b|\bXMLHttpRequest\b|\bformAction\b|\buse
 const OPAQUE_METHOD = /[{,]\s*method\s*[,}]|\[\s*["']method["']\s*\]|\.method\s*=(?!=)/;
 
 /**
- * Does this file REALLY call `invalidateHistory()` — as code, not inside a comment of either form?
+ * Does this file REALLY call `invalidateHistory()` — as CODE, not as text that spells one?
  *
- * A raw `/invalidateHistory\(\)/` matches inside a comment, so a file that loses its real call but
- * keeps a note stays green: the one place this sweep failed OPEN, while everything else in it is
- * built to fail closed.
+ * **PARSED, NOT PATTERN-MATCHED (#188).** Every earlier attempt stripped comments by hand and
+ * tested the remainder, and every earlier attempt was wrong in a way only running it revealed:
  *
- * **ORDER MATTERS, and getting it wrong is how the first two attempts failed.** Line comments are
- * stripped FIRST, block comments SECOND. Reversed, a `/*` sitting inside a `//` comment opens a
- * block that runs to the next real `*\/` — on one real file that swallowed 23,140 characters and
- * reported five genuine calls as missing. Stripping `//` first removes that `/*` before it can open
- * anything. And stripping only `//` (the second attempt, Codex P2 on PR #187) let a docblock
- * *mentioning* the call read as the call itself.
+ *  - stripping block comments first let a `/*` inside a `//` comment open a block that ran to the
+ *    next real `*\/` — on one real file that swallowed 23,140 characters and reported five genuine
+ *    calls as missing;
+ *  - stripping only `//` let a docblock *mentioning* the call read as the call itself;
+ *  - and the shipped version, which stripped `//` then `/* … *\/`, still counted any text the strip
+ *    did not touch: `const hint = "invalidateHistory()"` read as wired, so a file could lose its
+ *    real call and keep the census green while its mounted panel went stale. It also ate a genuine
+ *    call sitting after a `//` or a `/*` INSIDE a string literal — failing in both directions at
+ *    once.
+ *
+ * A fifth regex would be the same class of change. `ts.createSourceFile` answers the question
+ * exactly: comments, strings, template text, JSX text and regex literals are all handled by the
+ * parser rather than by hand, and every shape nobody has thought of yet comes for free.
+ *
+ * WHAT COUNTS: a `CallExpression` whose callee is the bare IDENTIFIER `invalidateHistory`, anywhere
+ * in the tree. Deliberately NOT a property access (`x.invalidateHistory()`) and not an uncalled
+ * reference — see the self-test below for the reasoning; both exclusions fail CLOSED, which is the
+ * direction the rest of this sweep is built in.
+ *
+ * The source is parsed as TSX because every file this is asked about is a `.tsx` client component.
+ * `createSourceFile` recovers from syntax errors rather than throwing, so an unparseable file
+ * yields a tree in which the call is most likely NOT found — again the closed direction: the sweep
+ * names the file as unwired instead of passing it silently.
  */
 export function callsInvalidate(src: string): boolean {
-  const withoutLineComments = src
-    .split("\n")
-    .map((line) => line.slice(0, line.includes("//") ? line.indexOf("//") : undefined))
-    .join("\n");
-  const code = withoutLineComments.replace(/\/\*[\s\S]*?\*\//g, " ");
-  return /invalidateHistory\(\)/.test(code);
+  const parsed = ts.createSourceFile(
+    "candidate.tsx", src, ts.ScriptTarget.Latest, /* setParentNodes */ false, ts.ScriptKind.TSX,
+  );
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === "invalidateHistory"
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(parsed, visit);
+  return found;
 }
 
 /**
@@ -539,7 +568,11 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
   });
 
   it("sees a real invalidateHistory call, and no comment that merely mentions one", () => {
-    // Both comment forms, and the ordering trap that broke two earlier attempts at this.
+    // THE REGRESSION RECORD (#188). These seven cases predate the parser and are kept verbatim:
+    // they are the shapes two hand-rolled comment strippers got wrong, and they must keep passing
+    // whatever the detector is built from. The parser removes the ORDERING trap as a mechanism —
+    // there is no strip order any more — but the evidence that these shapes are answered correctly
+    // is the point, not the mechanism that answers them.
     expect(callsInvalidate(`await save(); invalidateHistory();`), "a real call").toBe(true);
     expect(callsInvalidate(`// invalidateHistory();`), "line comment").toBe(false);
     expect(callsInvalidate(`/* invalidateHistory(); */`), "block comment").toBe(false);
@@ -552,6 +585,63 @@ describe("#158 — a page with a panel that mutates must invalidate", () => {
       .toBe(true);
     // ...and a real call must survive a docblock that also mentions it.
     expect(callsInvalidate(`/** calls invalidateHistory() */\ninvalidateHistory();`), "both")
+      .toBe(true);
+  });
+
+  it("tells a call from TEXT that spells one — strings, templates, JSX, a regex", () => {
+    // #188's headline defect: the string literal that read as a call. The regex detector stripped
+    // comments and tested the remainder, so ANY text surviving that strip counted — and a literal
+    // is text the strip never touched. A file could lose its only real call, keep a `const hint =
+    // "invalidateHistory()"`, and both sweeps stayed green while the mounted panel went stale.
+    expect(callsInvalidate(`const hint = "invalidateHistory()";`), "a string literal").toBe(false);
+    expect(callsInvalidate(`const hint = 'invalidateHistory()';`), "a single-quoted string")
+      .toBe(false);
+    expect(callsInvalidate(`const hint = \`invalidateHistory()\`;`), "a template literal").toBe(false);
+    expect(callsInvalidate(`const el = <p>invalidateHistory()</p>;`), "JSX text").toBe(false);
+    expect(callsInvalidate(`const re = /invalidateHistory()/;`), "a regex literal").toBe(false);
+
+    // ...and the other direction: a template SUBSTITUTION is code, not text, so the call in it is
+    // real. Nothing textual can draw that line; the parser draws it for free.
+    expect(callsInvalidate(`const s = \`\${invalidateHistory()}\`;`), "a template substitution")
+      .toBe(true);
+  });
+
+  it("counts the imported BINDING called as a function, and nothing else named alike", () => {
+    // DESIGN CALL (#188): `x.invalidateHistory()` does NOT count, and neither does a bare
+    // reference that is never called.
+    //
+    // The sweep above separately asserts the file carries
+    // `import { … invalidateHistory … } from "@/components/HistoryPanel"` — a NAMED import, whose
+    // binding is used as a bare identifier. A property access is therefore some OTHER function
+    // that happens to share the name: a prop, a mock, a namespace object from an import shape the
+    // paired assertion already rejects. Counting it would let an unrelated method satisfy the
+    // census, which is the same fail-OPEN shape as the string literal.
+    //
+    // Both exclusions fail CLOSED — a file wired only that way is reported as unwired, loudly, at
+    // a review point — which is the safe direction for a guard and the direction the regex
+    // detector already took (it required the `()` too). If a wrapper object or a passed-callback
+    // shape ever becomes the real idiom, this is the line to revisit, deliberately.
+    expect(callsInvalidate(`x.invalidateHistory();`), "a property call").toBe(false);
+    expect(callsInvalidate(`this.invalidateHistory();`), "a method call").toBe(false);
+    expect(callsInvalidate(`H.invalidateHistory();`), "a namespace-import call").toBe(false);
+    expect(callsInvalidate(`onSaved={invalidateHistory}`), "a reference, never called").toBe(false);
+
+    // The shapes that DO count: the plain call anywhere in the tree, and the optional call.
+    expect(callsInvalidate(`<button onClick={() => save().then(() => invalidateHistory())} />`),
+      "nested deep inside a handler").toBe(true);
+    expect(callsInvalidate(`invalidateHistory?.();`), "an optional call").toBe(true);
+  });
+
+  it("is not fooled by punctuation inside a string, which the strip-and-test detector was", () => {
+    // Two live FALSE NEGATIVES in the regex detector, kept as cases because they are the other
+    // half of #188: a guard that reports a correctly wired file as broken teaches people to work
+    // around it, and the workaround is an allowlist entry that then hides a real one.
+    //
+    // `//` inside a string ended the line for the line-comment strip, taking the real call with it.
+    expect(callsInvalidate(`const url = "https://x"; invalidateHistory();`), "a URL, then the call")
+      .toBe(true);
+    // `/*` inside a string opened a block that ran to the next real `*/`, eating the call between.
+    expect(callsInvalidate(`const a = "/*"; invalidateHistory(); /* note */`), "slash-star in a string")
       .toBe(true);
   });
 });
