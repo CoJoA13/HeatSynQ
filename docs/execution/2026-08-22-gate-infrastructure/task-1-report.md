@@ -31,12 +31,12 @@ export function callsInvalidate(src: string): boolean {
 }
 ```
 
-**Every line cite in this report is against the file as it stands after the fix round below**
-(the Task 1 commit's own numbers moved when §8 landed): `callsInvalidate` at
-`tests/audit-children.test.ts:432`, docblock at `:396`, `import ts from "typescript"` at `:4`.
-`typescript` was already a devDependency (5.9.3); nothing was installed. The signature is unchanged
-(`(src: string) => boolean`), so both call sites — the entity-keyed sweep at `:203` and the
-page-keyed sweep at `:668` — are untouched.
+**Every line cite in this report is against the file as it stands after the LAST fix round below**
+— round 2, §14 onward (each round moved them; the drift itself was round 1's Finding 4):
+`callsInvalidate` at `tests/audit-children.test.ts:492`, docblock at `:456`,
+`import ts from "typescript"` at `:4`. `typescript` was already a devDependency (5.9.3); nothing was
+installed. The signature is unchanged (`(src: string) => boolean`), so both call sites — the
+entity-keyed sweep at `:203` and the page-keyed sweep at `:783` — are untouched.
 
 (The cite corrected in the fix round: this said the page-keyed call site was `:488`, which was
 `expect(unwired).toEqual([])`. In the Task 1 commit it was `:484`.)
@@ -72,7 +72,7 @@ every shape nobody has thought of yet comes for free.
 ## 2. The decision on property-access calls
 
 **`x.invalidateHistory()` does NOT count. Neither does an uncalled reference
-(`onSaved={invalidateHistory}`).** Recorded in a comment at `tests/audit-children.test.ts:800` and
+(`onSaved={invalidateHistory}`).** Recorded in a comment at `tests/audit-children.test.ts:921` and
 pinned by four assertions.
 
 Reasoning: both sweeps separately assert the file carries
@@ -474,6 +474,12 @@ stands after this fix round**, since the fix-round edits moved all of them:
 The `:567` / `:595` / `:613` inside §3a's pasted output are vitest's own, printed by a transient
 tree that no longer exists; they are left verbatim rather than re-numbered, and §3a now says so.
 
+**Round 2 moved them all again**, and §1–§6 are re-anchored a second time rather than left to rot.
+The table above is the record of round 1's re-anchoring, not the current positions; today's are
+`:492` (`callsInvalidate`), `:456` (its docblock), `:203` (entity-keyed call site, still unmoved),
+`:783` (page-keyed call site), `:921` (the property-access design call), `:881` (the seven kept
+detector cases) and `:201`–`:202` / `:781` (the import assertions, still regexes).
+
 §6's first bullet — which repeated the "no wrapper exists" claim uncritically, and asked the PR to
 decide whether #188 could be closed on part 1 alone — is struck through and withdrawn. Part 2 is
 built; #188 closes whole.
@@ -503,3 +509,196 @@ concurrent run collides on the dev database and port 3100. This change touches n
   go quiet, and it is the honest residual.
 - **`issuesMutatingRequest` / `MUTATING_TOKEN` / `OPAQUE_METHOD` are still regexes**, unchanged from
   §6 and still by instruction.
+
+---
+
+# Task 1 fix round 2 — four minor findings from the second review pass
+
+Two of the four are the same defect one level apart: a comment claiming a limit it had not counted,
+and a walk reporting a case it could have covered. Line cites are against the file as it stands
+after this round.
+
+## 14. Finding 1 — "the one shape this cannot follow" was itself an over-claim
+
+The `resolveToTsx` docblock named ONE specifier shape the resolver drops silently, in the fix round
+whose subject was removing an over-claim. The reviewer measured **four**, and each takes a consumer
+out of the census with no failure at all:
+
+| # | shape | now |
+|---|---|---|
+| 1 | a re-export BARREL written as `.ts` forwarding a `.tsx` | **guard (b)** |
+| 2 | a SECOND tsconfig path alias — only `@/` is hardcoded, anything else reads as a package | **guard (a), the alias half** |
+| 3 | an EXTENSION-CARRYING specifier (`"./CertDetail.js"`), which `moduleResolution: "bundler"` accepts and `tsc` does not red | **guard (a), the resolution half** — and `"./X.tsx"` now RESOLVES rather than dropping |
+| 4 | `require()` or `import(variable)` — no string literal to resolve | stated, unguarded, ESM-only tree (`grep -rn "require(" src` is empty) |
+
+The docblock at `tests/audit-children.test.ts:334` now enumerates all four with which guard covers
+each, and says plainly that #4 has none.
+
+### 14.1 The two guards
+
+**(a) `resolves every local import in the tree, so a new alias cannot go quiet` (`:710`).** Two
+assertions, and the first is what makes the second complete: `tsconfig.json`'s `compilerOptions.paths`
+still holds `@/*` and nothing else — because `isLocalSpecifier` (`:305`) calls every other
+non-relative specifier a package and never asks where it lives — then every `@/`-prefixed or
+relative **value** specifier in every `.ts`/`.tsx` under `src/` resolves to a real file on disk.
+
+**(b) `has no .ts module forwarding a .tsx` (`:733`).** Guard (a) genuinely cannot catch the barrel:
+`index.ts` resolves perfectly well and is then dropped by the `.tsx` filter, so the edge disappears
+with nothing said. This one asks the question directly, over all 369 `.ts` files under `src/`.
+
+Both are green today. `resolveToTsx` was split into `resolveLocal` (`:315`, resolves, no filter) and
+`resolveToTsx` (`:352`, the graph's edge test), so there is exactly one resolution order and the
+guards and the graph cannot disagree about it. `resolveLocal` also tries the specifier **as written**
+as a final candidate, which is what makes shape 3 resolve for a `.tsx`/`.ts` spelling and keeps an
+asset import (`"./x.css"`) from reading as unresolvable.
+
+### 14.2 RED proof, guard (a) — both halves
+
+**The alias half.** A second `paths` entry added to `tsconfig.json`:
+
+```
+   × … > resolves every local import in the tree, so a new alias cannot go quiet
+     → add the new alias to resolveLocal: expected [ '@/*', '~components/*' ] to deeply equal [ '@/*' ]
+```
+
+**The resolution half.** `src/app/certs/[id]/page.tsx`'s `"./CertDetail"` respelled as
+`"./CertDetail.js"` — legal under `moduleResolution: "bundler"`, and `tsc` stays green on it:
+
+```
+   × … > resolves every local import in the tree, so a new alias cannot go quiet
+     → expected [ Array(1) ] to deeply equal []
++   "src/app/certs/[id]/page.tsx → ./CertDetail.js",
+   × … > folds a panel component's CONSUMERS into the census, so a wrapper cannot hide one
+     → expected [ …(5) ] to deeply equal [ …(6) ]
+```
+
+The second failure is the point: **the consumer silently left the census.** It reds three other
+checks here only because that particular file happens to be allowlisted; an unresolvable specifier in
+a NON-allowlisted consumer would have been completely quiet, which is why guard (a) names the
+specifier itself rather than relying on the downstream noise.
+
+Respelled once more as `"./CertDetail.tsx"`, the suite goes **43/43 green** and the consumer stays in
+the census — the trailing-candidate fix for shape 3, verified rather than asserted.
+
+### 14.3 RED proof, guard (b)
+
+A throwaway `src/lib/panel-barrel.ts` holding
+`export { CertDetail } from "@/app/certs/[id]/CertDetail";`:
+
+```
+   × … > has no `.ts` module forwarding a `.tsx`, the shape the graph genuinely cannot follow
+     → expected [ Array(1) ] to deeply equal []
++   "src/lib/panel-barrel.ts → src/app/certs/[id]/CertDetail.tsx: a .ts module carrying a .tsx; teach the graph about it",
+```
+
+**Guard (a) stayed green throughout that run** — 42 of 43 passing, this one failure — which is the
+demonstration that the two guards are not redundant.
+
+## 15. Finding 2 — the walk is now the transitive closure
+
+`panelConsumers` (`:381`) is a five-line fixpoint: seed with the mounts, keep adding any file that
+value-imports something already reached, stop when a round adds nothing. It terminates because
+`reached` only grows and is bounded by the graph, so an import cycle is fine.
+
+**The six real consumers still come out as six** — pinned by name in the unchanged census test, which
+passes. Both walks answer the same set on this tree (nothing imports a `page.tsx`; the router reaches
+route entry points by file convention, which is not an import edge), so promoting the walk changed no
+census member. That was verified from the other side too: with the one-level walk temporarily
+restored, the six-by-name assertion still passed while only the new property test failed.
+
+**The `:616` sufficiency tripwire is gone**, replaced by a positive test that a two-level consumer IS
+found (`:676`) — the property pinned rather than believed. Since this tree cannot exercise it, it
+runs on a synthetic graph, exactly as the allowlist rule and the detector do:
+
+- a four-file chain, mount → level 1 → level 2 → level 3, plus a file reaching no panel at all;
+- a CYCLE that reaches nothing (answers `[]`, does not hang) and the same cycle reaching the panel
+  (both files are consumers);
+- a mount is never listed as its own consumer, however it is reached.
+
+The vacuity guards are untouched: the six consumers by name, and one edge per resolution branch
+(`@/` alias and relative) asserted against the real graph.
+
+**RED proof.** `panelConsumers` reverted to the shipped one-level body, everything else unchanged:
+
+```
+   × … > follows a consumer OF a consumer — the walk is a transitive closure, not one level
+     → expected [ 'src/x/page.tsx' ] to deeply equal [ 'src/x/Outer.tsx', …(2) ]
+-   "src/x/Outer.tsx",
+-   "src/x/Wrapper.tsx",
+```
+
+Levels 2 and 3 dropped, level 1 kept — the exact gap, named.
+
+## 16. Finding 3 — the allowlist's passing case is now a real entry
+
+`expect(allowlistProblems({}, …)).toEqual([])` was vacuous for the same reason the test it sits in
+was written: an empty record iterates nothing. It is now a **valid entry** — `src/app/certs/[id]/page.tsx`,
+a real census member that issues no mutating request, with a reason long enough to be one — so all
+three checks are exercised in the passing direction (`:822`). If that shell ever grows a control,
+this reds beside the real allowlist check with the same message, which is the correct coupling.
+
+## 17. Finding 4 — `CLAUDE.md` gave the mechanism back
+
+The Audit paragraph's fix-round clause ran ~160 words of mechanism (the four injected defects
+re-enumerated, the type-only rationale, "one level plus an assertion"). Replaced with ~55 that keep
+the **contract** and drop the reasoning the test file states better:
+
+> **Both halves of that census are PARSED, never pattern-matched (#188)**: the consumers come from a
+> `.tsx` value-import graph walked to a transitive closure (type-only edges excluded — a child
+> section type-imports its panel-mounting parent, so counting those folds the sections in backwards),
+> and "calls `invalidateHistory()`" is a `CallExpression` on the bare identifier. Do not add a regex
+> back to either.
+
+Net ~-105 words, which puts the paragraph back at roughly its pre-fix-round length. The contract
+sentence above it — *"a client file that mounts a `<HistoryPanel>` — or renders a component that
+does — and issues a mutating request must import and call `invalidateHistory()`"* — is unchanged and
+is now literally true rather than true-to-one-level, which is why it was written once, at the end.
+
+## 18. Found AND fixed, not in the findings: the script kind was assumed
+
+Guard (b) is the first thing to hand a **`.ts`** file to `valueModuleSpecifiers`, which parsed
+everything as `candidate.tsx`. That is not neutral: `const id = <T>(x: T) => x;` is a generic arrow in
+a `.ts` file and an **unclosed JSX element** in a `.tsx` one, and the TSX reading **swallows every
+import below it**. Measured:
+
+```
+generic first     | TS: ["./z"]        | TSX: []
+generic then two  | TS: ["./a","./b"]  | TSX: []
+```
+
+A guard that answers "no specifiers" is a guard that has gone quiet — the failure mode this whole
+sweep is about. So `valueModuleSpecifiers(src, fileName?)` now takes the kind from the filename
+(`:269`) and every real call site passes the file it read. Pinned by two assertions that differ only
+in the extension.
+
+**This fixed no live miss:** all 369 `.ts` files under `src/` parse identically either way today
+(zero specifier-list differences, zero parse diagnostics — measured with a throwaway script against
+the real tree). It closes the shape at the moment the shape became reachable, rather than documenting
+it as a residual, which is Finding 2's lesson applied without being asked.
+
+## 19. Gate results (fix round 2)
+
+| Gate | Result |
+|---|---|
+| `npx vitest run tests/audit-children.test.ts` | **43 passed / 43** (1 file). Was 41; +3 new `it` blocks, -1 (the sufficiency tripwire). |
+| `npx tsc --noEmit` | clean, exit 0 |
+| `npx eslint src tests` | clean, exit 0 |
+
+The full vitest suite and `npm run test:e2e` were **not** run, by instruction — another task in this
+group needs quiet CPU for E2E timing measurements. This round touches one test file and one doc; no
+`src/` file changed. Every injected file (`tsconfig.json`, `src/app/certs/[id]/page.tsx`,
+`tests/audit-children.test.ts`) was restored from a byte copy and the throwaway barrel deleted;
+`git status` was checked clean after each RED run.
+
+## 20. Found and not fixed (fix round 2)
+
+- **Shape 4 — `require()` / `import(variable)` — has no guard**, stated at `:334` rather than
+  covered. There is nothing to resolve: no string literal reaches `resolveLocal`, so the census loses
+  the edge with no specifier to name. A `require(` scan would cover the first half and not the
+  second, and this is an ESM client tree (`grep -rn "require(" src` is empty). This is now the one
+  place the consumer walk can still go quiet, and it is the honest residual — it replaces the
+  `resolveToTsx` residual §13 recorded, which the two new guards have closed.
+- **`issuesMutatingRequest` / `MUTATING_TOKEN` / `OPAQUE_METHOD` are still regexes**, unchanged from
+  §6 and §13, still by instruction.
+- **The census now parses the whole `src/` tree, `.ts` files included** (369 more files, for the two
+  new guards). The suite went 2.67s → 2.88s. Still not worth a cache.
