@@ -11,17 +11,25 @@
 // teardown (killed harder than a SIGTERM, or a bug) doesn't wedge the next one.
 import { chromium } from "playwright";
 import { execFileSync, spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { login } from "./lib/auth.mjs";
+import { warmRoutes } from "./lib/warmup.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ERP_ROOT = path.resolve(__dirname, "..");
+const APP_DIR = path.join(ERP_ROOT, "src", "app");
 const PORT = 3100;
 const BASE_URL = `http://localhost:${PORT}`;
 const ARTIFACTS_DIR = path.join(ERP_ROOT, "e2e-artifacts");
+// #184 fix (b): the dev server's stdout+stderr, written on EVERY run rather than only when
+// startup times out. Both implementers who hit #184 had to reason from a failure screenshot,
+// with no way to see whether the server had logged a slow compile, a stack, or an OOM. Streamed
+// live rather than dumped at the end so a run killed harder than SIGTERM still leaves it behind.
+const DEV_SERVER_LOG = path.join(ARTIFACTS_DIR, "dev-server.log");
 // Phase 8C: the backups flow writes REAL pg_dump archives, so the harness owns a throwaway folder
 // rather than inheriting the developer's BACKUP_DIR (or, worse, writing into erp/backups and
 // leaving archives behind). Created fresh in main(), removed in teardown().
@@ -167,6 +175,11 @@ const state = {
     closeBatchId: null, closePeriodYear: null, closePeriodMonth: null,
   },
   cleanupFailed: null,
+  // #184 fix (c): every dev-DB write a flow makes OUTSIDE the browser. `ctx.lockRevision` is the
+  // only one (revision-cut calls it to stand in for Phase 3's order save), and it is invisible to
+  // the page.on("response") mutation count that decides whether a retry is safe — so it is
+  // counted here instead. runFlow snapshots this before the attempt and diffs it after.
+  outOfBandWrites: 0,
 };
 let teardownPromise = null;
 
@@ -225,9 +238,18 @@ function startDevServer() {
     detached: true,
   });
   let out = "";
-  child.stdout.on("data", (d) => { out += d.toString(); });
-  child.stderr.on("data", (d) => { out += d.toString(); });
+  // #184 fix (b). Two consumers, deliberately: the in-memory string is what waitForServer's
+  // port-fallback detection greps and what the startup-failure path dumps to the console, and the
+  // file is the artifact a reviewer reads afterwards. Appending as the data arrives (rather than
+  // writing `out` once at teardown) means a run that is SIGKILLed, OOM-killed or that hangs still
+  // leaves the log on disk — which is precisely the case #184 left nobody able to diagnose.
+  const logStream = createWriteStream(DEV_SERVER_LOG, { flags: "a" });
+  logStream.on("error", (err) => console.error(`  (could not write ${DEV_SERVER_LOG}: ${err})`));
+  const record = (d) => { const text = d.toString(); out += text; logStream.write(text); };
+  child.stdout.on("data", record);
+  child.stderr.on("data", record);
   child.getOutput = () => out;
+  child.closeLog = () => new Promise((resolve) => logStream.end(resolve));
   return child;
 }
 
@@ -279,7 +301,11 @@ function killDevServer(child, timeoutMs = 5000) {
 function teardown() {
   if (!teardownPromise) {
     teardownPromise = (async () => {
-      if (state.devServer) await killDevServer(state.devServer);
+      if (state.devServer) {
+        await killDevServer(state.devServer);
+        // After the kill, so the log carries the server's own shutdown output too.
+        await state.devServer.closeLog?.();
+      }
       if (state.fixtures) {
         console.log("\nCleaning up dev-DB fixtures (erp)...");
         try {
@@ -320,14 +346,103 @@ function installSignalHandlers() {
   }
 }
 
-async function runFlow(browser, flow, ctx, results) {
-  const flowDir = path.join(ARTIFACTS_DIR, flow.name);
+// #184 fix (c). A `Failed to fetch` with no HTTP status is categorically different from an
+// assertion failure — the app returned NOTHING rather than returning something wrong — and
+// printing the two identically is what made the honest report ("23 of 24, and I cannot show you a
+// clean run") indistinguishable from a careless one.
+//
+// Classification is driven primarily by what the BROWSER observed, not by the thrown error's
+// text, because in all three of #184's recorded signatures the thrown error was an ordinary
+// locator timeout: the page rendered, the client fetch behind a panel got no response, the panel
+// showed "Failed to fetch", and the flow then timed out waiting for content that was never going
+// to arrive. Only a `page.on("requestfailed")` record distinguishes that from a genuine
+// assertion. The error text is a secondary signal for the two shapes that leave no
+// `requestfailed` record: a transport error Playwright raises directly (`net::ERR_*`, a dropped
+// socket), and a NAVIGATION timeout — `page.goto` waiting out its full 60s is the server failing
+// to answer a page request at all, and Playwright cancels the pending request as `ERR_ABORTED`,
+// which the ignore list below (correctly) drops. Anchored on `page.goto:` deliberately: a LOCATOR
+// timeout ("Timeout 45000ms exceeded" waiting for an element, or a flow's own hand-rolled
+// "Timed out waiting for ...") is an assertion failure and must stay one.
+const NETWORK_ERROR_TEXT = /net::ERR_|NS_ERROR_|ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|page\.goto: Timeout \d+ms exceeded/i;
+
+// `net::ERR_ABORTED` is normal traffic, not a fault: Chromium reports it for an in-flight fetch
+// superseded by a navigation, for a cancelled preload, and for a navigation that turns into a
+// download (which the print flows do repeatedly). Counting it would classify healthy flows as
+// network failures and retry them for no reason.
+const IGNORED_REQUEST_FAILURES = /^net::ERR_ABORTED$/;
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+// Measured while fixing #184, and worth naming in the output because it is the one cause anybody
+// has actually caught in the act. Chromium flushes its socket pools and aborts every in-flight
+// request with `net::ERR_NETWORK_CHANGED` whenever the HOST's network configuration changes — and
+// on Linux, every container start or stop creates or destroys a `veth` pair, which is exactly such
+// a change. A machine running any container-churning workload alongside the suite (another
+// project's Testcontainers-style test run is the case that was caught) therefore breaks whatever
+// requests happen to be open at that instant, all of them at once, with nothing wrong on either
+// side of the connection. It has nothing to do with `next dev`: a 90-second probe against a
+// 30-line static Node server on 127.0.0.1 lost 36 of 1380 requests this way, in simultaneous
+// batches — the same "every panel of the page failed at once" shape #184 recorded.
+const NETWORK_CHANGED_HINT =
+  "  net::ERR_NETWORK_CHANGED is a HOST-level event, not an app fault: Chromium aborts every\n" +
+  "  in-flight request when the machine's network configuration changes, and on Linux each\n" +
+  "  container start/stop creates or destroys a veth pair that counts as one. Check whether\n" +
+  "  something else on this machine was starting containers (`docker events`) before looking\n" +
+  "  for a defect in the flow.";
+
+/** The session endpoints, excluded from the mutation count: `login()` POSTs on every attempt and
+ *  re-logging-in is idempotent, and logout only drops the row login just made. */
+function isSessionEndpoint(url) {
+  try {
+    const { pathname } = new URL(url);
+    return pathname === "/api/auth/login" || pathname === "/api/auth/logout";
+  } catch {
+    return false;
+  }
+}
+
+function classifyFailure(error, netFailures) {
+  if (netFailures.length > 0) return "network";
+  return NETWORK_ERROR_TEXT.test(String(error?.message ?? error ?? "")) ? "network" : "assertion";
+}
+
+async function runFlow(browser, flow, ctx, attempt) {
+  // Attempt 1 keeps the historical path so nothing that reads `e2e-artifacts/<flow>/` moves; a
+  // retry gets its OWN directory, because the failed attempt's screenshots and video are the
+  // whole reason the retry is allowed to be reported at all.
+  const flowDir = path.join(ARTIFACTS_DIR, attempt === 1 ? flow.name : `${flow.name}__attempt-${attempt}`);
   await mkdir(flowDir, { recursive: true });
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 900 },
     recordVideo: { dir: flowDir, size: { width: 1280, height: 900 } },
   });
+
+  // Context-level (not page-level) so a popup or a second tab a flow opens is instrumented too.
+  //
+  // `committed` is the count the retry decision turns on: a mutating, non-session request that
+  // came back 2xx definitely changed the dev DB, so re-running the flow from step 1 would
+  // duplicate it. `indeterminate` is the count that must ALSO be zero — a mutating request that
+  // got no response at all may well have committed server-side before the connection dropped, and
+  // an in-flight one at the moment of failure is no better known. `attempted - answered` captures
+  // both without needing to know which.
+  const netFailures = [];
+  let attempted = 0, answered = 0, committed = 0;
+  context.on("request", (request) => {
+    if (MUTATING_METHODS.has(request.method()) && !isSessionEndpoint(request.url())) attempted += 1;
+  });
+  context.on("response", (response) => {
+    const request = response.request();
+    if (!MUTATING_METHODS.has(request.method()) || isSessionEndpoint(request.url())) return;
+    answered += 1;
+    if (response.status() >= 200 && response.status() <= 299) committed += 1;
+  });
+  context.on("requestfailed", (request) => {
+    const errorText = request.failure()?.errorText ?? "unknown";
+    if (IGNORED_REQUEST_FAILURES.test(errorText)) return;
+    netFailures.push(`${request.method()} ${request.url()} — ${errorText}`);
+  });
+  const outOfBandBefore = state.outOfBandWrites;
   // Next dev compiles each route on its first hit; under a loaded machine (this harness itself
   // launches a fresh next dev + Chromium per run) that first compile can occasionally outrun
   // Playwright's 30s default. Generous, not unlimited — a genuinely hung page still times out.
@@ -343,7 +458,7 @@ async function runFlow(browser, flow, ctx, results) {
     return file;
   };
 
-  console.log(`\n=== ${flow.name} (as ${flow.as}) ===`);
+  console.log(`\n=== ${flow.name} (as ${flow.as})${attempt > 1 ? ` [attempt ${attempt}]` : ""} ===`);
   let ok = true;
   let error = null;
   try {
@@ -360,11 +475,18 @@ async function runFlow(browser, flow, ctx, results) {
 
     const mod = await import(flow.module);
     await mod.run(page, shot, ctx);
-    console.log(`  PASS`);
+    console.log(attempt > 1 ? `  RETRIED-PASS (attempt ${attempt})` : `  PASS`);
   } catch (err) {
     ok = false;
     error = err;
-    console.error(`  FAIL: ${err?.stack ?? err}`);
+    console.error(`  FAIL [${classifyFailure(err, netFailures)}]: ${err?.stack ?? err}`);
+    if (netFailures.length > 0) {
+      console.error(`  ${netFailures.length} request(s) got no response — the network-level ` +
+        `evidence for that classification:`);
+      for (const f of netFailures.slice(0, 5)) console.error(`    ${f}`);
+      if (netFailures.length > 5) console.error(`    ... and ${netFailures.length - 5} more`);
+      if (netFailures.some((f) => f.includes("net::ERR_NETWORK_CHANGED"))) console.error(NETWORK_CHANGED_HINT);
+    }
     await shot("failure").catch(() => {});
   } finally {
     const video = page.video();
@@ -380,7 +502,42 @@ async function runFlow(browser, flow, ctx, results) {
       }
     }
   }
-  results.push({ name: flow.name, ok, error });
+  return {
+    ok,
+    error,
+    kind: ok ? null : classifyFailure(error, netFailures),
+    // The dev-DB writes this attempt is known to have made, plus the ones whose outcome it cannot
+    // know. `ctx.lockRevision` writes straight to the DB and never touches the browser, so it is
+    // folded into `committed` here rather than being tracked as a separate concept downstream.
+    committed: committed + (state.outOfBandWrites - outOfBandBefore),
+    indeterminate: attempted - answered,
+    netFailures,
+  };
+}
+
+/**
+ * #184 fix (c), the design call. The issue asked for a blind single retry on a network-level
+ * failure. A blind retry is NOT safe in this harness: the flows create real orders through the
+ * real UI against a real dev database, and `template-build-and-load` leaves behind a template
+ * three later flows consume — so re-running a flow that failed at step 40 would repeat everything
+ * it did in steps 1–39, and the second attempt's failure would then be the harness's own doing.
+ *
+ * The retry is safe exactly when the attempt has not yet successfully changed anything, and that
+ * is observable rather than assumed: zero mutating requests answered 2xx, zero mutating requests
+ * with an unknown outcome, zero out-of-band dev-DB writes. Every signature #184 recorded — a whole
+ * page's panels failing at once, a 5 KB blank screenshot — is a first-load failure, which is
+ * exactly the case this admits and the case that has nothing to undo.
+ *
+ * Returns null when a retry is allowed, or the reason it is being refused.
+ */
+function retryRefusal(result) {
+  if (result.kind !== "network") return `not retried: ${result.kind} failure, not a network-level one`;
+  if (result.committed > 0) return `not retried: ${result.committed} mutating request(s) already committed`;
+  if (result.indeterminate > 0) {
+    return `not retried: ${result.indeterminate} mutating request(s) with an unknown outcome ` +
+      `(no response — they may have committed before the connection dropped)`;
+  }
+  return null;
 }
 
 async function main() {
@@ -416,6 +573,13 @@ async function main() {
     }
     console.log("  dev server is up");
 
+    // #184 fix (a). `waitForServer` above compiled exactly ONE route (`/login`); everything else
+    // used to compile on its first hit inside a flow, under whatever load the machine still
+    // carried. See e2e/lib/warmup.mjs for how the route set is derived (from the filesystem,
+    // never a hand-list) and why every request is a cookie-less GET.
+    console.log("Warming every route so no flow pays for a cold compile...");
+    await warmRoutes(BASE_URL, APP_DIR, { log: (line) => console.log(line) });
+
     // handleSIGINT/handleSIGTERM default to true — Playwright would otherwise install its OWN
     // signal handlers that close the browser (and exit) on Ctrl-C, racing installSignalHandlers()
     // above: whichever handler's process.exit() lands first wins, and Playwright's has no idea
@@ -428,22 +592,53 @@ async function main() {
       baseURL: BASE_URL,
       fixtures: state.fixtures,
       created: state.created,
-      lockRevision: (partId, revisionNumber) => runDbScript("lock-revision", { partId, revisionNumber }),
+      lockRevision: (partId, revisionNumber) => {
+        // Counted (see state.outOfBandWrites): this is a dev-DB write the browser never sees, so
+        // the retry decision would otherwise believe the flow had changed nothing.
+        state.outOfBandWrites += 1;
+        return runDbScript("lock-revision", { partId, revisionNumber });
+      },
     };
 
     // Deliberately sequential, not Promise.all: every flow after the first depends on state an
     // earlier one left in the dev DB (the template template-build-and-load creates, the values
     // typed-fields saves, the revision revision-cut cuts).
     for (const flow of FLOWS) {
-      await runFlow(state.browser, flow, ctx, results);
+      let result = await runFlow(state.browser, flow, ctx, 1);
+      let retried = false;
+      if (!result.ok) {
+        const refusal = retryRefusal(result);
+        if (refusal) {
+          console.error(`  ${refusal}`);
+        } else {
+          console.error(`  network-level failure with nothing committed — retrying once`);
+          retried = true;
+          result = await runFlow(state.browser, flow, ctx, 2);
+        }
+      }
+      results.push({ name: flow.name, retried, ...result });
     }
   } finally {
     await teardown();
   }
 
   console.log("\n=== Results ===");
-  for (const r of results) console.log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.name}`);
+  for (const r of results) {
+    // A retried flow NEVER prints as a plain PASS — the point of the classification is that a run
+    // that needed a retry and a run that did not are visibly different afterwards.
+    const verdict = r.ok ? (r.retried ? "RETRIED" : "PASS   ") : "FAIL   ";
+    const note = r.ok
+      ? (r.retried ? "  (attempt 1 failed network-level; attempt 2 passed)" : "")
+      : `  (${r.kind}-level${r.retried ? ", failed twice" : `; ${retryRefusal(r)}`})`;
+    console.log(`  ${verdict}  ${r.name}${note}`);
+  }
   const failed = results.filter((r) => !r.ok);
+  const retriedOk = results.filter((r) => r.ok && r.retried);
+  if (retriedOk.length > 0) {
+    console.warn(`\n${retriedOk.length} flow(s) only passed on a retry after a network-level ` +
+      `failure: ${retriedOk.map((r) => r.name).join(", ")}. The run is green, but the dev server ` +
+      `dropped a request — see ${DEV_SERVER_LOG} and the __attempt-2 artifact directories.`);
+  }
   if (failed.length > 0 || results.length !== FLOWS.length) {
     console.error(`\n${failed.length} of ${FLOWS.length} flow(s) failed.`);
     process.exitCode = 1;
