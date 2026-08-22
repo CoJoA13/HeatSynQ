@@ -15,6 +15,14 @@ import { PrismaClient, Prisma } from "../../prisma/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "../../src/server/password";
 import { lockRevision } from "../../src/server/part-process-steps";
+import { preliminaryReport } from "../../src/server/close-periods";
+// The APP's client (src/server/db's singleton), which is what the two service functions above run
+// on — a different connection pool from this file's own client below. It has to be disconnected
+// too or the process sits idle for ~10s after the work is done, waiting for node-postgres to time
+// its pool out: `execFileSync` waits for exit, so that idle time is charged to every `lock-revision`
+// call and to the pre-flight refusal that is supposed to take about a second. Measured: 10.4s
+// before, 0.5s after.
+import { prisma as appPrisma } from "../../src/server/db";
 import { ALL_PERMISSIONS } from "../../src/server/permissions";
 
 /**
@@ -1904,11 +1912,46 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
   return { ok: true };
 }
 
+/**
+ * The dev database's ambient state, read BEFORE the run has written anything (#167a). The ONE
+ * command in this file that neither creates nor deletes a row — it exists so `run.mjs` can refuse a
+ * database the suite cannot run against, by name and in about a second, instead of dying on an
+ * opaque number at flow 20. What the harness does with these figures, which three conditions matter
+ * and why "before flow 1" is the correct moment to evaluate them: `e2e/lib/preflight.mjs`.
+ *
+ * The month is `now` in UTC — the SAME derivation `close-month-end.mjs` uses for its target period,
+ * so the two can never disagree about which month is being asked about.
+ *
+ * `preliminaryReport` is the close service's OWN read rather than a re-derivation of it: the numbers
+ * that flow asserts on come from that exact function, so the pre-flight cannot drift from the
+ * assertion it is hoisting. It is a pure read (a Serializable snapshot for consistency, no advisory
+ * lock, no write), so asking it here costs a second and blocks nothing.
+ */
+async function preflight() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth() + 1;
+  // ANY row, not only a CLOSED one — `close-month-end`'s own guard refuses on existence, because a
+  // REOPENED period is equally not this run's to touch.
+  const period = await prisma.closePeriod.findFirst({ where: { year, month }, select: { status: true } });
+  const preliminary = await preliminaryReport(year, month);
+  return {
+    year,
+    month,
+    closePeriodStatus: period?.status ?? null,
+    unpostedBatchCount: preliminary.unpostedBatchCount,
+    variance: preliminary.schedule.variance,
+  };
+}
+
 async function main(): Promise<void> {
   const [, , command, payloadArg] = process.argv;
   const payload: unknown = payloadArg ? JSON.parse(payloadArg) : {};
   let result: unknown;
   switch (command) {
+    case "preflight":
+      result = await preflight();
+      break;
     case "create":
       result = await create();
       break;
@@ -1930,4 +1973,7 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(() => prisma.$disconnect());
+  .finally(async () => {
+    await prisma.$disconnect();
+    await appPrisma.$disconnect();
+  });

@@ -26,6 +26,7 @@ import {
   isSessionEndpoint,
   retryRefusal,
 } from "./lib/failure-classify.mjs";
+import { preflightRefusal } from "./lib/preflight.mjs";
 import { warmRoutes, warmupRefusal } from "./lib/warmup.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -578,6 +579,17 @@ async function main() {
     // Before anything expensive: refuse a flow that mutates where the retry gate cannot see it.
     const flowCount = await assertNoRawApiMutations();
     console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations: none`);
+
+    // #167a: the dev database's own ambient state, read BEFORE a single fixture row is written —
+    // so everything the check sees belongs to somebody else, which is precisely the population
+    // close-month-end refuses to touch. See e2e/lib/preflight.mjs for the three conditions, why
+    // they are the only three, and why "before flow 1" is the correct moment to evaluate them
+    // rather than merely the convenient one.
+    const ambient = runDbScript("preflight");
+    const ambientRefusal = preflightRefusal(ambient);
+    if (ambientRefusal) throw new Error(`Refusing to run the flows: ${ambientRefusal}`);
+    console.log(`Dev DB pre-flight for ${ambient.year}-${String(ambient.month).padStart(2, "0")}: ` +
+      `no close period, ${ambient.unpostedBatchCount} unposted batch(es), variance ${ambient.variance}`);
 
     console.log("Creating dev-DB fixtures (erp)...");
     state.fixtures = runDbScript("create");

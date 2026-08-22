@@ -10,6 +10,7 @@ import {
   findRawApiMutations,
 } from "../e2e/lib/failure-classify.mjs";
 import { enumerateRoutes, warmupRefusal } from "../e2e/lib/warmup.mjs";
+import { preflightRefusal } from "../e2e/lib/preflight.mjs";
 
 /**
  * The E2E harness's decision predicates (#184, gate-infrastructure Task 2 fix round).
@@ -284,5 +285,56 @@ describe("warmupRefusal", () => {
 
   it("tolerates the odd page redirect — only a broad one means the cookie is wrong", () => {
     expect(warmupRefusal({ count: 243, failures: [], skipped: 0, budgetMs, pages: 45, pagesRedirected: 1 })).toBeNull();
+  });
+});
+
+// #167a. The pre-flight decides whether the dev database can host a run at all. Its whole value is
+// being NARROW — a check that refuses a database the suite would in fact have passed on is one
+// people start bypassing — so the clean case and each condition in isolation are pinned separately.
+describe("preflightRefusal", () => {
+  const clean = { year: 2026, month: 8, closePeriodStatus: null, unpostedBatchCount: 0, variance: 0 };
+
+  it("passes a dev database with nothing ambient in the way", () => {
+    expect(preflightRefusal(clean)).toBeNull();
+  });
+
+  it("refuses an OPEN receipt batch dated in the target month, with the count as evidence", () => {
+    const refusal = preflightRefusal({ ...clean, unpostedBatchCount: 1, variance: 1250 });
+    expect(refusal).toMatch(/1 OPEN receipt batch/);
+    expect(refusal).toMatch(/2026-08/);
+    expect(refusal).toMatch(/npm run db:reset/);
+  });
+
+  it("refuses a ClosePeriod already covering the target month, whatever its status", () => {
+    expect(preflightRefusal({ ...clean, closePeriodStatus: "CLOSED" })).toMatch(/ClosePeriod row already covers/);
+    expect(preflightRefusal({ ...clean, closePeriodStatus: "REOPENED" })).toMatch(/REOPENED/);
+  });
+
+  it("refuses a schedule that does not reconcile, and prints the variance", () => {
+    expect(preflightRefusal({ ...clean, variance: -6750 })).toMatch(/variance -6750/);
+  });
+
+  it("collects every reason rather than short-circuiting on the first — they share one fix", () => {
+    const refusal = preflightRefusal({
+      year: 2026, month: 8, closePeriodStatus: "CLOSED", unpostedBatchCount: 2, variance: 1250,
+    });
+    expect(refusal).toMatch(/ClosePeriod/);
+    expect(refusal).toMatch(/2 OPEN receipt batch/);
+    expect(refusal).toMatch(/variance 1250/);
+    expect(refusal!.split("\n  - ")).toHaveLength(4);   // the header plus three reasons
+  });
+
+  // The half that matters most: surcharges were half of #167 and are deliberately NOT a condition
+  // here, because invoice-shipped-order now counts only its own surcharge row. A pre-flight that
+  // over-refuses is a pre-flight people disable.
+  it("says nothing about anything it is not responsible for", () => {
+    const refusal = preflightRefusal(clean);
+    expect(refusal).toBeNull();
+  });
+
+  it("names both directions of the recipe, since the refusal is the only place a developer reads it", () => {
+    const refusal = preflightRefusal({ ...clean, unpostedBatchCount: 1 });
+    expect(refusal).toMatch(/db:reset/);
+    expect(refusal).toMatch(/docs\/manual\/dataset\.md/);
   });
 });
