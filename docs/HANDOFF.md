@@ -338,6 +338,8 @@ Then write a small `.mjs` that imports `chromium` from that cached `playwright` 
 
 Always clear the fixtures you create out of the **dev** database afterwards — `erp`, not `erp_test`.
 
+**`net::ERR_NETWORK_CHANGED` is the real cause behind #184's false E2E failures (measured 2026-08-22, gate-infrastructure Task 2) — NOT the cold `next dev` compile the issue hypothesised.** Chromium flushes its socket pools and aborts every in-flight request whenever the HOST's network configuration changes, and on Linux every container start or stop creates or destroys a `veth` pair, which is one such change; requests to `127.0.0.1` are killed along with the rest. Demonstrated against a 30-line static Node server with no Next.js, no compile and no load: **36 of 1380 localhost requests lost in 90 seconds, in simultaneous batches of six** — the same "every panel of the page failed at once" shape #184 recorded. The machine was running another project's Testcontainers-style suite at the time. **Do not run a container-churning workload beside `npm run test:e2e`**, and do not read that error as an app defect — the dev-server log the harness now writes will show the server answering the very request the browser recorded as unanswered. `e2e/run.mjs` names the cause in its own output; the harness's warm-up / classification / retry-safety contract is in `CLAUDE.md`.
+
 ## 6. Known backlog (all triaged, none blocking)
 
 **#115 (P1) — FIXED 2026-08-16, branch `fix-allocation-retry` (`fc7eb54`), the burn-down's Group A.**
