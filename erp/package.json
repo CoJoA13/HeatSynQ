@@ -15,6 +15,7 @@
     "manual:build": "node scripts/build-manual.mjs",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
+    "db:reset": "tsx scripts/db-reset.ts",
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/demo-seed.ts"
   },
