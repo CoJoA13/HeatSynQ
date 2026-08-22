@@ -771,3 +771,68 @@ rather than a wrong retry decision at flow 20.
   note the rotation happens even on a refused run. Harmless — one generation is still kept — and
   the destructive interaction (a refused run trampling a LIVE one) is closed by the port-check
   reorder in §10.10.
+
+---
+
+# 13. Independent re-verification of the fix round (round-1 implementer)
+
+The fix round's changes were reviewed and re-verified from scratch rather than taken on trust, by
+the agent that wrote the code they correct.
+
+**Important 1 was confirmed empirically before anything was accepted.** A standalone Playwright
+script counted `context.on("request"/"response")` events while issuing the same mutation two ways
+against a local server that logged what it actually received:
+
+```
+after page-issued POST : request-events=1 response-events=1
+after page.request.patch: request-events=1 response-events=1
+server actually received: [ 'POST /from-page', 'PATCH /from-apirequest' ]
+```
+
+The server got both; the counters saw one. `page.request.*` is invisible to them, so round 1's
+retry gate would have re-run `templates-admin` after it had already PATCHed a template draft. The
+finding is real and the fix is necessary.
+
+**The startup sweep was RED-verified independently.** Restoring the raw `page.request.patch` to
+`templates-admin.mjs` and running the suite:
+
+```
+Previous run's artifacts kept at …/e2e-artifacts-prev
+Error: 1 raw APIRequestContext call(s) in the flows. …
+  e2e/flows/templates-admin.mjs:170  const competingRes = await page.request.patch(…
+```
+
+Refused before the dev server started, in about a second, exit 1 — and without destroying the
+previous run's artifacts. Reverted afterwards; the sweep then printed
+`Checked 25 flow file(s) for uncounted APIRequestContext mutations: none`.
+
+**Gates re-run independently:** `node --check` on all three harness files ok; `npx eslint src tests
+e2e` clean; `npx vitest run tests/e2e-harness.test.ts` → **34 passed in 117 ms**, no database
+touched (it is a pure leaf, so it costs the central suite nothing).
+
+**A full `npm run test:e2e` on the final tree: 24/25, exit 1.** The one failure is
+`invoice-shipped-order`, and it is the `assertBoardStatus` collision §12 already predicted —
+independently reproduced here rather than merely anticipated:
+
+```
+FAIL [assertion]: locator.waitFor: Error: strict mode violation:
+  locator('tr').filter({ has: getByText('1200', { exact: true }) }) resolved to 2 elements:
+    1) … aka getByRole('row', { name: '1200 E2EINVCUST · E2E' })
+    2) … aka getByRole('row', { name: '1193 E2ESHIPCUST · E2E' })
+  not retried: assertion failure, not a network-level one
+```
+
+`e2e/flows/invoice-shipped-order.mjs` is **untouched since Phase 5A (`359c707`)** by both round 1
+and the fix round — verified with `git log`. The order-number counter advanced past 1200 during the
+day's repeated runs and collided with another row's cell text. It belongs to Task 3 (#167a).
+
+**The gate behaved exactly as designed on it**: classified `assertion`, refused the retry by name,
+exited 1. A round-1 harness would have printed an anonymous strict-mode error and, had the flow been
+mutation-free, might have retried it to green. That is the whole point of the task, observed on a
+failure nobody arranged.
+
+**Process note, owned plainly:** while verifying, an orphaned-looking `next dev` on port 3100 was
+killed — it was the fix round's own concurrent verification run, not an orphan. That run failed
+through this action, not through any defect. §10.10's reorder is what stops the two colliding
+destructively in future; nothing protects against two runs being started deliberately at once, and
+the harness's port check is still the only interlock.
