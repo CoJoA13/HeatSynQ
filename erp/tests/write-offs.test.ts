@@ -766,11 +766,12 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
   });
 
   // A RESIDUAL write-off is voided from its receipt batch, NOT from the Receivables section — which
-  // is why the ROUTE clause still says nothing about it. But its void is refused by the same
-  // kind-blind `assertPeriodOpen(appliedDate)`, so the PERIOD clause covers it. Before #173 this
-  // test asserted the opposite: the closed month behind the residual row was simply not mentioned,
-  // and the operator was sent to a batch that refused them with no warning it would.
-  it("counts a payment-sourced residual write-off — the period guard is kind-blind", async () => {
+  // is why (since #179) the ROUTE clause is dropped for it: it carries a `paymentId`, so it is not
+  // the standalone kind that route names. But its void is refused by the same kind-blind
+  // `assertPeriodOpen(appliedDate)`, so the PERIOD clause covers it. Before #173 the closed month
+  // behind the residual row was simply not mentioned, and the operator was sent to a batch that
+  // refused them with no warning it would; #179 then removes the route clause that was never theirs.
+  it("counts a payment-sourced residual write-off — period clause yes, route clause no (#179)", async () => {
     const inv = await invoiceFixture({ total: 1000 });
     const paymentId = await payInvoice(inv, 995);
     await prisma.application.create({
@@ -784,8 +785,8 @@ describe("the write-off hint names the route that actually exists (#157)", () =>
     const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
       .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).message).toContain(
-      " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+      " (what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+    expect((err as HttpError).message).not.toContain("Receivables section");
   });
 });
 
@@ -813,9 +814,10 @@ describe("the period clause covers every live application, not only write-offs (
     const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
       .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).status).toBe(400);
+    // #179: cash alone in scope, so the ROUTE clause is dropped — only the period clause remains.
     expect((err as HttpError).message).toContain(
-      " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+      " (what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+    expect((err as HttpError).message).not.toContain("Receivables section");
     // The ROUTE clause must NOT have been re-pointed at the payment on the way past: a payment is
     // voided from its receipt batch, and the sentence never claims otherwise.
     expect((err as HttpError).message).not.toMatch(/payment is voided|batch/i);
@@ -831,9 +833,10 @@ describe("the period clause covers every live application, not only write-offs (
     const err = await asSystem(() => voidOrder(inv.orderId, "entered against the wrong customer"))
       .catch((e: unknown) => e as HttpError);
     expect((err as HttpError).status).toBe(400);
+    // #179: cash alone, so the period clause stands alone — no route clause for a payment.
     expect((err as HttpError).message).toContain(
-      " (a bad-debt write-off is voided from the customer's Receivables section; "
-      + "what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+      " (what is applied in closed period 2026-01 cannot be voided until it is reopened)");
+    expect((err as HttpError).message).not.toContain("Receivables section");
     expect((await prisma.order.findUniqueOrThrow({ where: { id: inv.orderId } })).deletedAt).toBeNull();
   });
 
@@ -859,15 +862,19 @@ describe("the period clause covers every live application, not only write-offs (
   });
 
   // The discriminating negative on the widened scope: cash in an OPEN month must not start widening
-  // the common sentence just because the scope now sees it.
-  it("keeps today's sentence when the payment's own month is open", async () => {
+  // the sentence just because the scope now sees it — and (since #179) cash alone carries no route
+  // clause either, so a payment-only open-month refusal has no parenthetical tail at all.
+  it("carries no tail when the payment's own month is open and no write-off is in scope (#179)", async () => {
     const inv = await invoiceFixture({ total: 1000 });
     await payInvoice(inv, 400);                 // TODAY
     await closeMonthRaw(2026, 1);               // a closed month with nothing of this invoice's in it
 
     const err = await asSystem(() => unlockInvoice(inv.invoiceId, "correct a line"))
       .catch((e: unknown) => e as HttpError);
-    expect((err as HttpError).message).toContain(OPEN_ROUTE);
+    // No standalone write-off and nothing of this invoice's in a closed month → neither clause.
+    expect((err as HttpError).message).toBe(
+      `Invoice #${inv.orderNumber} has payments, credits or write-offs applied — void them before unlocking`);
+    expect((err as HttpError).message).not.toContain("Receivables section");
     expect((err as HttpError).message).not.toMatch(/reopen/);
   });
 

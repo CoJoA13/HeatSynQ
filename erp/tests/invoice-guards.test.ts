@@ -293,6 +293,11 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
   const closedIn = (label: string) =>
     " (a bad-debt write-off is voided from the customer's Receivables section; "
     + `what is applied in closed period ${label} cannot be voided until it is reopened)`;
+  // #179: a refusal with NO standalone write-off in scope drops the route clause. When a closed month
+  // is what blocks such a refusal, only the period clause remains; when nothing is in a closed month
+  // either, the tail is empty.
+  const periodOnly = (label: string) =>
+    ` (what is applied in closed period ${label} cannot be voided until it is reopened)`;
   const forInvoice = (invoiceId: string) => prisma.$transaction((tx) => applicationVoidHint(tx, invoiceId));
   const forOrder = (orderId: string) => prisma.$transaction((tx) => applicationVoidHintForOrder(tx, orderId));
 
@@ -312,12 +317,14 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     });
   }
 
-  it("is today's sentence with no application at all, and with one in an open month", async () => {
+  it("is empty with no application, and the route clause once a standalone write-off is in scope (#179)", async () => {
     const { order, customer } = await savedOrder();
     const inv = await finalizedInvoice(order.id, customer.id);
-    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
-    expect(await forOrder(order.id)).toBe(OPEN_ROUTE);
+    // No application in scope → no route clause (there is no write-off) and no period clause → empty.
+    expect(await forInvoice(inv.id)).toBe("");
+    expect(await forOrder(order.id)).toBe("");
 
+    // A standalone write-off in an open month → the route clause, byte-identical to pre-#179.
     await standaloneWriteOff(inv.id, "2026-08-08");
     expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
     expect(await forOrder(order.id)).toBe(OPEN_ROUTE);
@@ -336,8 +343,9 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
 
   // #173, at the scope level: a PAYMENT is not a write-off, is voided somewhere else entirely, and
   // is refused by the same kind-blind `assertPeriodOpen(appliedDate)`. The period clause has to see
-  // it; the route clause still says only what it always said.
-  it("names the closed period for a PAYMENT, with no write-off in scope at all", async () => {
+  // it; and since #179 the route clause does NOT ride along — a payment is not voided from the
+  // Receivables section, so only the period clause remains.
+  it("names ONLY the closed period for a PAYMENT, with no write-off in scope at all (#179)", async () => {
     const { order, customer } = await savedOrder();
     const inv = await finalizedInvoice(order.id, customer.id);
     const batch = await prisma.receiptBatch.create({
@@ -358,14 +366,15 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     });
     await closedMonth(2026, 8);
 
-    expect(await forInvoice(inv.id)).toBe(closedIn("2026-08"));
-    expect(await forOrder(order.id)).toBe(closedIn("2026-08"));
+    expect(await forInvoice(inv.id)).toBe(periodOnly("2026-08"));
+    expect(await forOrder(order.id)).toBe(periodOnly("2026-08"));
   });
 
   // The SECOND arm of both guards, which the pre-#173 scope could not reach at all: this row is a
   // CREDIT applied against ANOTHER order's invoice. `hasReceivableActivity(credit.id)` is true
   // through `creditInvoiceId`, so the refusal fires — and the hint must be able to say why the
-  // credit's own void is dead, not go quiet.
+  // credit's own void is dead, not go quiet. A CREDIT is not a standalone write-off, so (since #179)
+  // only the period clause speaks, not the route.
   it("reaches the creditInvoiceId arm, on both scopes", async () => {
     const { order, customer } = await savedOrder();
     const credit = await prisma.invoice.create({
@@ -385,11 +394,11 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     await closedMonth(2026, 8);
 
     // Asked about the CREDIT: only the creditInvoiceId arm can find that row.
-    expect(await forInvoice(credit.id)).toBe(closedIn("2026-08"));
-    expect(await forOrder(order.id)).toBe(closedIn("2026-08"));
+    expect(await forInvoice(credit.id)).toBe(periodOnly("2026-08"));
+    expect(await forOrder(order.id)).toBe(periodOnly("2026-08"));
     // And about the target invoice, through the ordinary invoiceId arm.
-    expect(await forInvoice(otherInv.id)).toBe(closedIn("2026-08"));
-    expect(await forOrder(otherOrder.id)).toBe(closedIn("2026-08"));
+    expect(await forInvoice(otherInv.id)).toBe(periodOnly("2026-08"));
+    expect(await forOrder(otherOrder.id)).toBe(periodOnly("2026-08"));
   });
 
   it("ignores a VOIDED application — a soft-deleted row is not a route out of anything", async () => {
@@ -398,7 +407,9 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     const app = await standaloneWriteOff(inv.id, "2026-08-08");
     await closedMonth(2026, 8);
     await prisma.application.update({ where: { id: app.id }, data: { deletedAt: new Date() } });
-    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);
+    // The only row was the now-voided write-off, and the live scope excludes it → nothing in scope,
+    // so neither clause speaks (#179: no live standalone write-off → no route clause).
+    expect(await forInvoice(inv.id)).toBe("");
   });
 
   it("scopes to the invoice / the order asked about", async () => {
@@ -409,8 +420,8 @@ describe("applicationVoidHint / applicationVoidHintForOrder", () => {
     await standaloneWriteOff(otherInv.id, "2026-08-08");
     await closedMonth(2026, 8);
 
-    expect(await forInvoice(inv.id)).toBe(OPEN_ROUTE);        // another invoice's is not this one's
-    expect(await forOrder(order.id)).toBe(OPEN_ROUTE);        // nor another order's
+    expect(await forInvoice(inv.id)).toBe("");        // another invoice's write-off is not this one's
+    expect(await forOrder(order.id)).toBe("");        // nor another order's
     expect(await forInvoice(otherInv.id)).toMatch(/2026-08/);
     expect(await forOrder(other.id)).toMatch(/2026-08/);
   });
