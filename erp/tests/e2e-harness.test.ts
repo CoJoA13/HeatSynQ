@@ -271,8 +271,22 @@ describe("warmupRefusal", () => {
     expect(refusal).toMatch(/240s/);
   });
 
-  it("says nothing about an empty route set", () => {
-    expect(warmupRefusal({ count: 0, failures: [], skipped: 0, budgetMs })).toBeNull();
+  // Was pinned as "says nothing about an empty route set" and returned null. That made it the one
+  // shape where the warm-up did NOTHING and the run proceeded anyway, printing `warmed 0 routes` —
+  // a phase whose entire job is compiling every route before flow 1 compiling none of them, while
+  // every other failure of it refuses. Flipped in the whole-branch review, 2026-08-22.
+  it("refuses an empty route set — the warm-up did nothing, which is not a healthy warm-up", () => {
+    const refusal = warmupRefusal({ count: 0, failures: [], skipped: 0, budgetMs });
+    expect(refusal).toMatch(/no requests at all/);
+    expect(refusal).toMatch(/src\/app/);
+  });
+
+  // ...but a blown budget still reads as a blown budget, not as an empty enumeration: `skipped`
+  // is tested first, and with a zero count the two are otherwise indistinguishable from here.
+  it("reports a budget blow-out that issued nothing as a budget blow-out", () => {
+    const refusal = warmupRefusal({ count: 0, failures: [], skipped: 243, budgetMs });
+    expect(refusal).toMatch(/blew its 240s budget/);
+    expect(refusal).toMatch(/243 of 243/);
   });
 
   // The self-check that replaces "delete the third session-cookie literal" (finding 7). If this

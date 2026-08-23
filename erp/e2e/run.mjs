@@ -583,11 +583,34 @@ async function main() {
       );
     }
 
-    // #184 fix (b), fix round: the previous run's artifacts are ROTATED, not deleted. Wiping them
-    // destroyed dev-server.log and the failing screenshots at the start of the very next run —
-    // i.e. the moment anyone did the thing #184 documents people doing, re-running to see whether
-    // it clears. One generation is kept, so it cannot grow without bound, and the current run
-    // still gets the stable `e2e-artifacts/<flow>/` paths the docs and the issue both name.
+    // Before anything expensive: refuse a flow that mutates where the retry gate cannot see it.
+    const flowCount = await assertNoRawApiMutations();
+    console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations, ambient\n  board-row locators and unchecked absence assertions: none`);
+
+    // #167a: the dev database's own ambient state, read BEFORE a single fixture row is written —
+    // so everything the check sees belongs to somebody else, which is precisely the population
+    // close-month-end refuses to touch. See e2e/lib/preflight.mjs for the four conditions (plus the
+    // fifth reason that is not a condition — the close service refusing to report at all), why they
+    // are the only ones, and why "before flow 1" is the correct moment to evaluate them rather than
+    // merely the convenient one. That file is the authority; do not re-enumerate them here.
+    const ambient = runDbScript("preflight");
+    const ambientRefusal = preflightRefusal(ambient);
+    if (ambientRefusal) throw new Error(`Refusing to run the flows: ${ambientRefusal}`);
+    console.log(`Dev DB pre-flight for ${ambient.year}-${String(ambient.month).padStart(2, "0")}: ` +
+      `no close period, ${ambient.unpostedBatchCount} unposted batch(es), variance ${ambient.variance}, ` +
+      `${ambient.readinessGaps.length} ambient readiness gap(s)`);
+
+    // ONLY NOW is anything on disk touched. #184 fix (b) keeps ONE generation of the previous
+    // run's artifacts by ROTATING rather than deleting them — wiping destroyed dev-server.log and
+    // the failing screenshots at the start of the very next run, i.e. the moment anyone did the
+    // thing #184 documents people doing, re-running to see whether it clears. That guarantee is
+    // exactly one generation deep, so it has to survive a REFUSAL: with the rotation above the two
+    // cheap refusals, two consecutive refused runs (a raw mutation, or a dev DB carrying the
+    // demonstration dataset — both of which a developer hits repeatedly while fixing them) pushed a
+    // real failing run's evidence out of `-prev` and into nothing, having produced no evidence of
+    // their own to replace it. The port check, the flow-lint sweep and the dev-DB pre-flight are
+    // all pure reads; none of them needs a directory. The current run still gets the stable
+    // `e2e-artifacts/<flow>/` paths the docs and the issue both name.
     await rm(PREV_ARTIFACTS_DIR, { recursive: true, force: true });
     let rotated = false;
     try {
@@ -600,22 +623,6 @@ async function main() {
     if (rotated) console.log(`Previous run's artifacts kept at ${PREV_ARTIFACTS_DIR}`);
     await rm(BACKUP_DIR, { recursive: true, force: true });
     await mkdir(BACKUP_DIR, { recursive: true });
-
-    // Before anything expensive: refuse a flow that mutates where the retry gate cannot see it.
-    const flowCount = await assertNoRawApiMutations();
-    console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations, ambient\n  board-row locators and unchecked absence assertions: none`);
-
-    // #167a: the dev database's own ambient state, read BEFORE a single fixture row is written —
-    // so everything the check sees belongs to somebody else, which is precisely the population
-    // close-month-end refuses to touch. See e2e/lib/preflight.mjs for the three conditions, why
-    // they are the only three, and why "before flow 1" is the correct moment to evaluate them
-    // rather than merely the convenient one.
-    const ambient = runDbScript("preflight");
-    const ambientRefusal = preflightRefusal(ambient);
-    if (ambientRefusal) throw new Error(`Refusing to run the flows: ${ambientRefusal}`);
-    console.log(`Dev DB pre-flight for ${ambient.year}-${String(ambient.month).padStart(2, "0")}: ` +
-      `no close period, ${ambient.unpostedBatchCount} unposted batch(es), variance ${ambient.variance}, ` +
-      `${ambient.readinessGaps.length} ambient readiness gap(s)`);
 
     console.log("Creating dev-DB fixtures (erp)...");
     state.fixtures = runDbScript("create");

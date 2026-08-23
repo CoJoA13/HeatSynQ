@@ -1911,8 +1911,9 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
  * The dev database's ambient state, read BEFORE the run has written anything (#167a). The ONE
  * command in this file that neither creates nor deletes a row — it exists so `run.mjs` can refuse a
  * database the suite cannot run against, by name and in about a second, instead of dying on an
- * opaque number at flow 20. What the harness does with these figures, which three conditions matter
- * and why "before flow 1" is the correct moment to evaluate them: `e2e/lib/preflight.mjs`.
+ * opaque number at flow 20. What the harness does with these figures, which conditions matter (four,
+ * plus a fifth reason that is not one) and why "before flow 1" is the correct moment to evaluate
+ * them: `e2e/lib/preflight.mjs`, which is the authority — do not re-enumerate them here.
  *
  * The month is `now` in UTC — the SAME derivation `close-month-end.mjs` uses for its target period,
  * so the two can never disagree about which month is being asked about.

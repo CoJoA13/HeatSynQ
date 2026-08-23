@@ -121,9 +121,16 @@ async function warmOne(baseURL, route, isPage, timeoutMs) {
  * per-request timeout, unbounded in practice, where the phase before it had a 60s budget.
  *
  * Pure, and returns the reason rather than throwing, so `tests/e2e-harness.test.ts` can pin the
- * policy and `run.mjs` owns the refusal. Three refusals, in the order a run hits them:
+ * policy and `run.mjs` owns the refusal. FOUR refusals, in the order a run hits them:
  *
  *  - the budget blew, so routes were never issued at all;
+ *  - NO route was issued and none was skipped either — the enumeration came back empty, so the
+ *    warm-up did nothing whatsoever and said `warmed 0 routes` while the run carried on. That was
+ *    the one silent hole left in this policy (whole-branch review, 2026-08-22): every other shape
+ *    here refuses, and a phase whose entire job is "compile every route before flow 1" compiling
+ *    NOTHING is the most complete failure of it there is. It is not a server fault and must not be
+ *    reported as one — `enumerateRoutes` walks a directory, so an empty answer means `appDir` no
+ *    longer points at `src/app`;
  *  - most requests failed, so the server is not answering;
  *  - most PAGES 3xx'd to /login, which is what a drift in this file's session-cookie literal looks
  *    like from the outside — the warm-up would otherwise report 45 warmed pages having compiled
@@ -139,6 +146,15 @@ export function warmupRefusal({ count, failures, skipped, budgetMs, pages = 0, p
       `${count + skipped} route(s) were never issued. A server that cannot answer a plain GET per ` +
       `route inside that budget will not survive the flows` +
       (failures.length > 0 ? ` (first failure: ${failures[0].route} — ${failures[0].error})` : "");
+  }
+  // `skipped > 0` has already returned above, so reaching here with a zero count means nothing was
+  // enumerated rather than nothing being reached in time.
+  if (count === 0) {
+    return `the warm-up issued no requests at all — \`enumerateRoutes\` found no page or API route ` +
+      `to warm. That is a harness fault, not a server one: it walks the app directory, so an empty ` +
+      `answer means APP_DIR no longer points at src/app (a move, a rename, or a run from the wrong ` +
+      `working directory). Every flow would then pay for its own cold compile, which is the whole ` +
+      `thing this phase exists to prevent`;
   }
   if (count > 0 && failures.length * 2 > count) {
     return `${failures.length} of ${count} warm-up requests failed — the dev server is up on the ` +

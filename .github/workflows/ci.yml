@@ -293,11 +293,16 @@ jobs:
       # own order-entry-gate prerequisites (company identity, GL accounts, arGlAccountId) and
       # restores them at cleanup, and the eight Standard document templates come from the migrations.
       #
-      # It also cannot trip the #167a dev-DB pre-flight, by construction. That refuses on a
-      # ClosePeriod row covering the current month, an OPEN receipt batch carrying a payment dated in
-      # it, or a non-zero continuity variance — and a fresh database has no ClosePeriod, no
-      # PaymentBatch, no Invoice and no Payment, so all three read null/0/0. The refusal exists for a
-      # dev box carrying the demonstration dataset; a CI database is pristine by definition.
+      # It also cannot trip the #167a dev-DB pre-flight, by construction. That refuses on FOUR
+      # ambient conditions — a ClosePeriod row covering the current month, an OPEN receipt batch
+      # carrying a payment dated in it, a non-zero continuity variance, and a GL-export readiness gap
+      # naming a row the run does not own — plus a FIFTH reason that is not a condition at all: the
+      # close service refusing to report on the month, which is what an earlier month closed with the
+      # immediately-prior one left open looks like from here. A fresh database has no ClosePeriod, no
+      # PaymentBatch, no Invoice and no Payment, so the four read null/0/0/[] and the report answers.
+      # (Enumerated from e2e/lib/preflight.mjs, which is the authority — this comment has already
+      # gone stale against it once.) The refusal exists for a dev box carrying the demonstration
+      # dataset; a CI database is pristine by definition.
       - name: Seed the dev database (admin/admin)
         run: npm run db:seed
 
