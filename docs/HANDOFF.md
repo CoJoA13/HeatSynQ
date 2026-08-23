@@ -350,6 +350,25 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**A/R wording group (#178 + #179 FIXED) — branch `fix-ar-wording-178-179`, 2026-08-23.** Two A/R
+refusal-wording residue issues (Round 3 Group A), done together because both compose refusal messages
+in the receivables neighborhood. **#178** — the out-of-window discount refusal now names WHEN the
+window closed: `termsBlockFor` returns the `deadline` it already computes (rather than discarding it),
+threaded through `eligibleDiscountFor` → `discountBlockMessage` so the sentence reads "…early-pay
+discount window, which ran through 2026-08-18" with NO second `addDays` — the #175 one-source rule
+preserved (the deadline arithmetic still lives in `termsBlockFor` alone). **#179 (owner ruling
+2026-08-23, option b)** — `applicationVoidHintFor` includes the bad-debt-write-off ROUTE clause only
+when a STANDALONE write-off (`type WRITE_OFF, paymentId null`) is actually in scope; a refusal blocked
+purely by a payment, a residual (payment-sourced) write-off, or a credit drops it, since none of those
+is voided from the Receivables section. The kind-blind PERIOD clause is unchanged (#173). The
+write-off-in-scope cases stay byte-identical; the payment-only cases lose the clause (empty tail
+outside a closed month, period-clause-only inside one). Re-pinned across `invoice-guards`/`invoices`/
+`write-offs` tests, each verified against its actual scope, with `not.toContain("Receivables section")`
+added to positively pin the drop. Neither message is quoted in the E2E flows; the receivables manual's
+refusal table + its now-obsolete "#178 known gap" note were updated and `manual.html` rebuilt. Gates:
+**3666 tests / 212 files**, `tsc`/`eslint`/`build` clean. Backlog remaining after this: #190 (deferred
+CI flip), #183, #182, #171, #33.
+
 **Group E2E (#193 + #192 FIXED, #190 advanced) — MERGED `5c8973a` (PR #199), 2026-08-23.** The three
 gate-infrastructure whole-branch-review residue issues, all E2E-suite-honesty and all converging on
 `tests/e2e-harness.test.ts`, done on one coordinated branch (they are coupled: #193's `ui.mjs`

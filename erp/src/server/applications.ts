@@ -116,15 +116,22 @@ function issuedTerms(invoice: {
 
 /** The two blockers that live in the TERMS themselves, rather than in this receipt or this
  *  invoice's history — ONE definition, shared by `discountFor` (which only needs to know the answer
- *  is zero) and `discountOffer` (which has to tell the two apart, #155 arm 2). Null means the
+ *  is zero) and `discountOffer` (which has to tell the two apart, #155 arm 2). `block` null means the
  *  early-pay window is open. Splitting them is why this is a named function instead of two inline
- *  guards: a second copy of the deadline arithmetic is exactly how the offer and the save drift. */
+ *  guards: a second copy of the deadline arithmetic is exactly how the offer and the save drift.
+ *
+ *  It also RETURNS the `deadline` it computes (null only when there are no terms, so no window),
+ *  rather than discarding it — so the `window_closed` refusal can NAME when the window ran through
+ *  (#178) from this one computation, never a second `addDays`. That keeps the one-source rule the
+ *  rest of this file rests on: the deadline arithmetic still lives here alone. */
 function termsBlockFor(
   terms: DiscountTerms | null, invoiceDate: Date, receivedDate: Date,
-): "no_terms_discount" | "window_closed" | null {
-  if (!terms || terms.discountPercent === null || terms.discountDays === null) return "no_terms_discount";
+): { block: "no_terms_discount" | "window_closed" | null; deadline: Date | null } {
+  if (!terms || terms.discountPercent === null || terms.discountDays === null) {
+    return { block: "no_terms_discount", deadline: null };
+  }
   const deadline = addDays(invoiceDate, terms.discountDays);
-  return receivedDate.getTime() > deadline.getTime() ? "window_closed" : null;
+  return { block: receivedDate.getTime() > deadline.getTime() ? "window_closed" : null, deadline };
 }
 
 /** Pure over already-read state — one definition shared by the public `discountOffer` (which
@@ -134,7 +141,7 @@ function discountFor(terms: DiscountTerms | null, invoiceDate: Date, receivedDat
   // `percent == null` is redundant with `termsBlockFor`'s `no_terms_discount` arm and is here only
   // to narrow the type — TypeScript cannot carry a narrowing across the call.
   const percent = terms?.discountPercent;
-  if (percent == null || termsBlockFor(terms, invoiceDate, receivedDate) !== null) return 0;
+  if (percent == null || termsBlockFor(terms, invoiceDate, receivedDate).block !== null) return 0;
   // Integer-cent, half-up: percent (2 = 2%) on the open-balance cents, then back to dollars.
   return Math.round((cents(settledOpen) * percent.toNumber()) / 100) / 100;
 }
@@ -265,16 +272,16 @@ type DiscountingInvoice = {
  */
 function eligibleDiscountFor(
   invoice: DiscountingInvoice, receivedDate: Date, apps: ApplicationLite[],
-): { amount: number; blockedBy: PreSettlementBlock | null } {
+): { amount: number; blockedBy: PreSettlementBlock | null; deadline: Date | null } {
   const terms = issuedTerms(invoice);
-  const termsBlock = termsBlockFor(terms, invoice.invoiceDate, receivedDate);
-  if (termsBlock !== null) return { amount: 0, blockedBy: termsBlock };
+  const { block: termsBlock, deadline } = termsBlockFor(terms, invoice.invoiceDate, receivedDate);
+  if (termsBlock !== null) return { amount: 0, blockedBy: termsBlock, deadline };
   const amount = remainingDiscountFor(terms, invoice.invoiceDate, receivedDate, invoice.total.toNumber(), apps);
   // The window is open and the terms carry a percentage, so a zero can only be the entitlement:
   // spent (#81's cap, after a void reopened the invoice), or — degenerately — an open balance too
   // small for the percentage to round to a cent. "Nothing left to take" is true of both.
-  if (amount <= 0) return { amount: 0, blockedBy: "entitlement_spent" };
-  return { amount, blockedBy: null };
+  if (amount <= 0) return { amount: 0, blockedBy: "entitlement_spent", deadline };
+  return { amount, blockedBy: null, deadline };
 }
 
 /**
@@ -318,12 +325,18 @@ function eligibleDiscountFor(
  */
 export function discountBlockMessage(
   block: DiscountBlock, settlement: { coveredCents: number; openCents: number },
+  deadline?: Date | null,
 ): string {
   switch (block) {
     case "no_terms_discount":
       return "this invoice was issued under terms that carry no early-pay discount";
     case "window_closed":
-      return "this payment is dated after the invoice's early-pay discount window";
+      // #178: name WHEN the window ran through, so the operator does not have to open the invoice and
+      // do the arithmetic. `deadline` is `termsBlockFor`'s one computation, threaded here — never a
+      // second `addDays`. Guarded, though `window_closed` always carries one, so a null degrades to
+      // the bare sentence rather than printing "through null".
+      return "this payment is dated after the invoice's early-pay discount window"
+        + (deadline ? `, which ran through ${formatDateOnly(deadline)}` : "");
     case "entitlement_spent":
       return "this invoice has no early-pay discount left to take";
     case "would_not_settle":
@@ -955,10 +968,10 @@ function resolveReason(
     // stops the grid's answer and this refusal from disagreeing about one invoice. It hands back the
     // blocker as well as the figure, so a zero here refuses with the sentence for THAT blocker
     // instead of one flat message covering three unrelated causes (#175).
-    const { amount: elig, blockedBy } = eligibleDiscountFor(
+    const { amount: elig, blockedBy, deadline } = eligibleDiscountFor(
       invoice, receivedDate, invoice.applications.map(toLite));
     if (blockedBy !== null) {
-      throw new HttpError(400, discountBlockMessage(blockedBy, settlement));
+      throw new HttpError(400, discountBlockMessage(blockedBy, settlement, deadline));
     }
     // #69 (owner ruling 2026-08-19): earned only by a payment that SETTLES the invoice. Checked
     // AFTER the window/entitlement test above, so a genuine terms or window problem still reports

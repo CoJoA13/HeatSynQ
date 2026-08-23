@@ -1400,9 +1400,10 @@ describe("unlockInvoice", () => {
     await expect(asSystem(() => unlockInvoice(fx.invoice.id, "correct a line")))
       .rejects.toMatchObject({
         status: 400,
+        // #179: blocked purely by a PAYMENT (no standalone write-off in scope) and no closed month,
+        // so the tail carries no route clause — a payment is not voided from the Receivables section.
         message: `Invoice #${fx.order.orderNumber} has payments, credits or write-offs applied — `
-          + "void them before unlocking (a bad-debt write-off is voided from the customer's "
-          + 'Receivables section)',
+          + "void them before unlocking",
       });
     // Refused, not half-applied: still FINALIZED.
     expect((await getInvoice(fx.invoice.id)).status).toBe("FINALIZED");

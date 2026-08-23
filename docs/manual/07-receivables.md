@@ -165,17 +165,15 @@ discount applies"* — and leave you to work out which:
 | What is wrong | What it says |
 |---|---|
 | The invoice's terms carry no discount | *this invoice was issued under terms that carry no early-pay discount* |
-| The cheque is dated too late | *this payment is dated after the invoice's early-pay discount window* |
+| The cheque is dated too late | *this payment is dated after the invoice's early-pay discount window, which ran through 2026-01-31* |
 | The discount was already taken | *this invoice has no early-pay discount left to take* |
 | The cheque does not settle the invoice | *an early-pay discount is earned only by a payment that settles the invoice — this covers 500 of the 1000 open* |
 
 Each one tells you where to look next: the invoice's terms, the receipt's date, what has already
 been taken, or the cheque itself. The column above stays silent for the first three because there is
 nothing you can do about them from that screen — but once you have *asked* for the discount, you are
-owed the reason.
-
-The out-of-window message does not yet tell you *when* the window closed — you still have to open
-the invoice to work that out. That is [#178](https://github.com/CoJoA13/HeatSynQ/issues/178).
+owed the reason. The out-of-window message names the day the window ran through, so you can see how
+late the cheque is without opening the invoice.
 
 ## Write-offs
 
