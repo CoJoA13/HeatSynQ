@@ -1,17 +1,34 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  attemptDir,
   classifyFailure,
   retryRefusal,
   isSessionEndpoint,
   findRawApiMutations,
+  resultsLine,
 } from "../e2e/lib/failure-classify.mjs";
 import { enumerateRoutes, warmupRefusal } from "../e2e/lib/warmup.mjs";
 import { preflightRefusal } from "../e2e/lib/preflight.mjs";
-import { findAmbientRowLocators, findUncheckedAbsenceAssertions } from "../e2e/lib/flow-lint.mjs";
+import {
+  findAmbientRowLocators,
+  findPlainErrorThrows,
+  findUncheckedAbsenceAssertions,
+} from "../e2e/lib/flow-lint.mjs";
+import { suiteSourcesSync } from "../e2e/lib/suite-sources.mjs";
+
+// #192: the sweeps read the flow files AND the shared lib helpers (minus the two detector modules,
+// which hold the patterns as literals). One list, from suite-sources.mjs, read identically here and
+// in run.mjs so a file can never be swept by one enforcement point and skipped by the other.
+const E2E_DIR = path.join(process.cwd(), "e2e");
+const sweptSources = () => suiteSourcesSync(E2E_DIR);
+const sweep = (find: (src: string) => { line: number; snippet: string }[]) =>
+  sweptSources().flatMap(({ relPath, source }) =>
+    find(source).map((f) => `${relPath}:${f.line} ${f.snippet}`),
+  );
 
 /**
  * The E2E harness's decision predicates (#184, gate-infrastructure Task 2 fix round).
@@ -186,6 +203,35 @@ describe("findRawApiMutations", () => {
     expect(findRawApiMutations("const api = await request.newContext({})")).toHaveLength(1);
   });
 
+  // #192: the literal-`request`-receiver blind spot. The old regex matched only `request.post(`, so
+  // three ways of reaching the very same call slipped past it while producing exactly the state the
+  // refusal exists to prevent — a flow that mutated, counters that read zero, a retry granted on it.
+  it("flags an ALIASED receiver — `const req = page.request; req.post(u)`", () => {
+    expect(findRawApiMutations("const req = page.request;\nawait req.post(u)")).toHaveLength(1);
+  });
+
+  it("flags a DESTRUCTURED method — `const {post} = page.request; post(u)`", () => {
+    expect(findRawApiMutations("const {post} = page.request;\nawait post(u)")).toHaveLength(1);
+  });
+
+  it("flags BRACKET access — `page[\"request\"].post(u)` and its alias", () => {
+    expect(findRawApiMutations('await page["request"].post(u)')).toHaveLength(1);
+    expect(findRawApiMutations('const r = page["request"];\nawait r.delete(u)')).toHaveLength(1);
+  });
+
+  // ...and the two forms it must NOT confuse with the above, both all over the current flows.
+  it("leaves `res.request()` alone — a response's METHOD, not the APIRequestContext property", () => {
+    // ~20 flows read `res.request().method()` off a waited response. `request` there is followed by
+    // `(`, not `.`, and no binding captures it, so neither the mutation pattern nor the alias one fires.
+    expect(findRawApiMutations('res.request().method() === "POST"')).toEqual([]);
+    expect(findRawApiMutations('res.url().includes("/lines") && res.request().method() === "PUT" && res.ok()')).toEqual([]);
+  });
+
+  it("leaves an aliased-looking READ alone when `.request` is an inline access, and `===` is not `=`", () => {
+    expect(findRawApiMutations("const response = await page.request.get(exportUrl)")).toEqual([]);
+    expect(findRawApiMutations("if (a === b.request) doThing()")).toEqual([]);
+  });
+
   it("leaves reads alone — a GET cannot mutate, and the flows read this way constantly", () => {
     expect(findRawApiMutations("const pdf = await page.request.get(url)")).toEqual([]);
     expect(findRawApiMutations("await (await page.request.get(u)).json()")).toEqual([]);
@@ -206,16 +252,11 @@ describe("findRawApiMutations", () => {
     expect(findRawApiMutations(src).map((f) => f.line)).toEqual([2, 5]);
   });
 
-  // The guard itself, run centrally rather than only at harness startup.
-  it("every e2e flow is clean today", () => {
-    const flowsDir = path.join(process.cwd(), "e2e", "flows");
-    const files = readdirSync(flowsDir).filter((f) => f.endsWith(".mjs"));
-    expect(files.length).toBeGreaterThan(0);
-    const offenders = files.flatMap((file) =>
-      findRawApiMutations(readFileSync(path.join(flowsDir, file), "utf8"))
-        .map((f) => `${file}:${f.line} ${f.snippet}`),
-    );
-    expect(offenders).toEqual([]);
+  // The guard itself, run centrally rather than only at harness startup — now over flows AND lib
+  // (#192), the population run.mjs refuses on.
+  it("every swept suite source is clean today", () => {
+    expect(sweptSources().length).toBeGreaterThan(0);
+    expect(sweep(findRawApiMutations)).toEqual([]);
   });
 });
 
@@ -470,15 +511,9 @@ describe("findAmbientRowLocators", () => {
       .toHaveLength(1);
   });
 
-  it("every e2e flow uses boardRow today", () => {
-    const flowsDir = path.join(process.cwd(), "e2e", "flows");
-    const files = readdirSync(flowsDir).filter((f) => f.endsWith(".mjs"));
-    expect(files.length).toBeGreaterThan(0);
-    const offenders = files.flatMap((file) =>
-      findAmbientRowLocators(readFileSync(path.join(flowsDir, file), "utf8"))
-        .map((f) => `${file}:${f.line} ${f.snippet}`),
-    );
-    expect(offenders).toEqual([]);
+  it("every swept suite source uses boardRow today (flows AND the lib helpers, #192)", () => {
+    expect(sweptSources().length).toBeGreaterThan(0);
+    expect(sweep(findAmbientRowLocators)).toEqual([]);
   });
 });
 
@@ -505,14 +540,103 @@ describe("findUncheckedAbsenceAssertions", () => {
       .toHaveLength(1);
   });
 
-  it("every e2e flow states absence through assertNeverVisible today", () => {
-    const flowsDir = path.join(process.cwd(), "e2e", "flows");
-    const files = readdirSync(flowsDir).filter((f) => f.endsWith(".mjs"));
-    expect(files.length).toBeGreaterThan(0);
-    const offenders = files.flatMap((file) =>
-      findUncheckedAbsenceAssertions(readFileSync(path.join(flowsDir, file), "utf8"))
-        .map((f) => `${file}:${f.line} ${f.snippet}`),
-    );
-    expect(offenders).toEqual([]);
+  it("every swept suite source states absence through assertNeverVisible today (flows AND lib, #192)", () => {
+    expect(sweptSources().length).toBeGreaterThan(0);
+    expect(sweep(findUncheckedAbsenceAssertions)).toEqual([]);
+  });
+});
+
+// #193. The third false-green shape: a flow assertion written as `throw new Error(...)` carries no
+// ERR_ASSERTION code, so classifyFailure's hard override (above) does not cover it and a stale
+// netFailure earlier in the flow can launder it into FAIL [network] and a granted retry.
+describe("findPlainErrorThrows", () => {
+  it("finds a throw new Error, with its line number", () => {
+    const src = 'line one\nif (!x) throw new Error("boom");\nline three\n';
+    const found = findPlainErrorThrows(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].line).toBe(2);
+  });
+
+  it("finds any built-in Error subclass, not just Error", () => {
+    expect(findPlainErrorThrows('throw new TypeError("x")')).toHaveLength(1);
+    expect(findPlainErrorThrows('throw new RangeError("x")')).toHaveLength(1);
+  });
+
+  it("leaves a re-throw alone — `throw err` preserves the original classification", () => {
+    // assertNeverVisible re-throws a transport error untouched so the harness still sees it as
+    // itself; only `throw new <...>Error(...)` mints a fresh, code-less error.
+    expect(findPlainErrorThrows("try { a(); } catch (err) { throw err; }")).toEqual([]);
+  });
+
+  it("leaves the sanctioned replacements alone", () => {
+    expect(findPlainErrorThrows('assert.fail("boom")')).toEqual([]);
+    expect(findPlainErrorThrows('assert.ok(match, "could not parse")')).toEqual([]);
+  });
+
+  it("over-matches rather than under-matches: it fails CLOSED on a commented-out throw", () => {
+    expect(findPlainErrorThrows('// throw new Error("disabled for now")')).toHaveLength(1);
+  });
+
+  it("every swept suite source asserts through node:assert today (flows AND lib, #193)", () => {
+    expect(sweptSources().length).toBeGreaterThan(0);
+    expect(sweep(findPlainErrorThrows)).toEqual([]);
+  });
+});
+
+// #192. The file set the sweeps read is the SHARED one from suite-sources.mjs — flows AND lib, minus
+// the two detector modules — so a bad locator/mutation/absence/throw written into a shared helper is
+// caught, and the same population is refused at both enforcement points.
+describe("suiteSourcesSync (the swept file set, #192)", () => {
+  const sources = suiteSourcesSync(E2E_DIR);
+  const rels = sources.map((s) => s.relPath);
+
+  it("includes the flow files AND the lib helpers", () => {
+    expect(rels).toContain("flows/order-entry-full.mjs");
+    // The two homes of the sanctioned helpers a bad edit would slip into — the whole point of #192.
+    expect(rels).toContain("lib/orders.mjs"); // boardRow
+    expect(rels).toContain("lib/ui.mjs"); // assertNeverVisible
+  });
+
+  it("excludes ONLY the two detector modules, which hold the patterns as literals", () => {
+    expect(rels).not.toContain("lib/flow-lint.mjs");
+    expect(rels).not.toContain("lib/failure-classify.mjs");
+    // Nothing else is excluded — e.g. the lister itself is swept.
+    expect(rels).toContain("lib/suite-sources.mjs");
+  });
+
+  it("carries each file's source, keyed by an e2e-relative path a refusal can print", () => {
+    const ui = sources.find((s) => s.relPath === "lib/ui.mjs");
+    expect(ui?.source).toContain("assertNeverVisible");
+  });
+});
+
+// #190. The two harness OUTPUT surfaces the CI `e2e` job's retry gate reads
+// (.github/workflows/ci.yml, "Check for retried flows"). Pinned against the literal shapes CI globs
+// and greps, so a rename in run.mjs reds a test here rather than silently narrowing that gate to the
+// case it happens still to match. Detector 1 globs `e2e-artifacts/*__attempt-*`; detector 2 greps
+// `^  RETRIED `.
+describe("attemptDir / resultsLine (the CI retry-gate surfaces, #190)", () => {
+  it("attempt 1 keeps the bare directory; a retry gets the `__attempt-N` sibling CI globs", () => {
+    expect(attemptDir("void-order", 1)).toBe("void-order");
+    expect(attemptDir("void-order", 2)).toBe("void-order__attempt-2");
+    // The literal CI glob is `e2e-artifacts/*__attempt-*`; this is the segment that must match it.
+    expect(attemptDir("void-order", 2)).toMatch(/__attempt-\d+$/);
+  });
+
+  it("prints a retried flow as `  RETRIED ` — the exact line CI greps as `^  RETRIED `", () => {
+    const line = resultsLine({ name: "close-month-end", ok: true, retried: true });
+    expect(line).toMatch(/^ {2}RETRIED /); // the CI grep, byte for byte
+  });
+
+  it("never prints a retried flow as a plain PASS", () => {
+    const passed = resultsLine({ name: "quotes", ok: true, retried: false });
+    expect(passed.startsWith("  PASS   ")).toBe(true);
+    expect(passed).not.toMatch(/^ {2}RETRIED /);
+  });
+
+  it("prints a failure as FAIL, carrying the classification and retry reason", () => {
+    const failed = resultsLine({ name: "void-order", ok: false, retried: false, kind: "assertion", committed: 0, indeterminate: 0 });
+    expect(failed.startsWith("  FAIL   ")).toBe(true);
+    expect(failed).toMatch(/assertion-level/);
   });
 });

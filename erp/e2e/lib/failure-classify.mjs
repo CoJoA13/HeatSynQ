@@ -152,24 +152,73 @@ export function retryRefusal(result) {
 // Deliberately over-matching, so it fails CLOSED (the `issuesMutatingRequest` precedent in
 // tests/audit-children.test.ts): a commented-out call is reported too, because a sweep a comment
 // can talk its way past is a sweep a real call can talk its way past.
-const RAW_API_MUTATION = /\brequest\s*\.\s*(post|put|patch|delete|fetch)\s*\(/gi;
-// A second APIRequestContext carries its own cookie jar and is equally invisible to the counters.
-const RAW_API_NEW_CONTEXT = /\brequest\s*\.\s*(newContext)\s*\(/gi;
+//
+// A raw, uncounted APIRequestContext MUTATION reached by DOT or BRACKET access on `request` —
+// `page.request.post(`, `page["request"].delete(`, `context.request.newContext(`. The trailing `\.`
+// requires the PROPERTY form, so a response's `res.request()` METHOD call (which ~20 flows use to
+// read `res.request().method()`) never matches: `request` there is followed by `(`, not `.`. A
+// second APIRequestContext (`newContext`) is folded into the same alternation — it carries its own
+// cookie jar and is equally invisible to the counters.
+const RAW_API_MUTATION =
+  /(?:\brequest\s*\.|\[\s*["']request["']\s*\]\s*\.)\s*(post|put|patch|delete|fetch|newContext)\s*\(/gi;
+
+// #192: the receiver-ALIASING that used to smuggle the same call past the literal-`request` pattern
+// above. `const req = page.request; req.post(u)` and `const {post} = page.request; post(u)` and
+// `const r = page["request"]; r.delete(u)` all mutate through a name the pattern above never sees,
+// and the mutation counters cannot see them either — the exact state the refusal exists to prevent
+// (a flow that mutated, a harness that believes it did not, a retry granted on that belief). So the
+// CAPTURE of the context into a binding is what is flagged. It fires only when `.request` (or
+// `["request"]`) ENDS the accessor: a trailing `.` is an inline access — `page.request.get(...)`, a
+// read left alone, or `page.request.post(...)`, already caught above — and a trailing `(` is a
+// `res.request()` method call, not the context. The `=` must be a real assignment, never
+// `==`/`===`/`!=`/`<=`/`>=`. Fail-closed like the rest: a captured read-alias is flagged too, so the
+// escape is to inline `page.request.get(...)` for a read and `ctx.apiMutate` for a write — never an
+// alias, never a comment.
+const RAW_API_ALIAS =
+  /(?<![=!<>])=(?!=)\s*(?:await\s+)?[\w.$[\]"']*?(?:\.\s*request\b|\[\s*["']request["']\s*\])\s*(?![.([])/gi;
 
 /** Every raw, uncounted APIRequestContext mutation in one flow's source, with 1-based line
  *  numbers. Pure: the caller reads the file and raises the refusal. */
 export function findRawApiMutations(source) {
   const found = [];
-  for (const pattern of [RAW_API_MUTATION, RAW_API_NEW_CONTEXT]) {
-    pattern.lastIndex = 0;
+  const scan = (pattern, methodOf) => {
     for (const match of source.matchAll(pattern)) {
       const line = source.slice(0, match.index).split("\n").length;
       found.push({
         line,
-        method: match[1].toLowerCase(),
+        method: methodOf(match),
         snippet: source.split("\n")[line - 1].trim().slice(0, 120),
       });
     }
-  }
+  };
+  scan(RAW_API_MUTATION, (m) => m[1].toLowerCase());
+  scan(RAW_API_ALIAS, () => "alias");
   return found.sort((a, b) => a.line - b.line);
+}
+
+// #190. The two harness OUTPUT surfaces the CI retry gate reads, extracted here so
+// tests/e2e-harness.test.ts can pin them against the literal shapes `.github/workflows/ci.yml`
+// greps and globs — a rename of either then reds a test rather than silently narrowing that gate to
+// the case it happens still to match. `run.mjs` cannot be imported by the test (it starts a dev
+// server and a browser at module scope), which is the same reason the decision predicates above live
+// here; these two are its printing counterparts.
+
+/** The artifact directory one attempt writes to. Attempt 1 keeps the historical bare `<flow>/` path
+ *  so nothing that reads it moves; a granted retry gets its own `<flow>__attempt-N/` sibling — the
+ *  surface CI's retry gate globs as `e2e-artifacts/*__attempt-*` (retry detector 1, which fires for
+ *  EVERY granted retry, passed or failed). */
+export function attemptDir(flowName, attempt) {
+  return attempt === 1 ? flowName : `${flowName}__attempt-${attempt}`;
+}
+
+/** One results-table row. The verdict token is `RETRIED` (never `PASS`) for a green-on-retry flow —
+ *  the exact surface CI greps as `^  RETRIED ` (retry detector 2, the green-on-retry case) — `FAIL   `
+ *  for a failure, `PASS   ` otherwise. The two leading spaces and the token width are part of that
+ *  contract, so this is the whole printed line, not just the token. */
+export function resultsLine(result) {
+  const verdict = result.ok ? (result.retried ? "RETRIED" : "PASS   ") : "FAIL   ";
+  const note = result.ok
+    ? (result.retried ? "  (attempt 1 failed network-level; attempt 2 passed)" : "")
+    : `  (${result.kind}-level${result.retried ? ", failed twice" : `; ${retryRefusal(result)}`})`;
+  return `  ${verdict}  ${result.name}${note}`;
 }
