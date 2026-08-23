@@ -100,10 +100,15 @@ export function findUncheckedAbsenceAssertions(source) {
 // covers. The hand-rolled timeout throws (`if (Date.now() > deadline) ...`) are the sharpest case:
 // they are the shape most likely to fire on a slow or contended machine, i.e. the same machine most
 // likely to carry a stale netFailure.
-const PLAIN_ERROR_THROW = /\bthrow\s+new\s+\w*Error\s*\(/g;
+//
+// `new` is OPTIONAL, deliberately: `throw Error(...)` and `throw new Error(...)` construct the
+// identical code-less Error in JS, so a `new`-required pattern would let the no-`new` idiom walk
+// straight through the sweep and then through classifyFailure — the exact escape this fails CLOSED
+// to prevent.
+const PLAIN_ERROR_THROW = /\bthrow\s+(?:new\s+)?\w*Error\s*\(/g;
 
 /**
- * Every `throw new <...>Error(...)` in one suite source, with 1-based line numbers. A re-throw of a
+ * Every `throw [new] <...>Error(...)` in one suite source, with 1-based line numbers. A re-throw of a
  * caught error (`throw err`) is deliberately NOT matched — re-raising preserves the original
  * classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
  * Pure: the caller reads the file and raises the refusal.

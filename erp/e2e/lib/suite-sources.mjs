@@ -6,9 +6,11 @@
 // read this one list at both points — `run.mjs` before flow 1, `tests/e2e-harness.test.ts` centrally
 // — so a file can never be swept by one and skipped by the other.
 //
-// The two detector modules are the only exclusions: they hold the sweep patterns as regex/string
-// literals, so sweeping them would self-match. Everything else under flows/ and lib/ — including
-// this lister — is swept.
+// The swept set is the `.mjs` suite sources — the in-process flow surface: every `.mjs` under flows/
+// and lib/ EXCEPT the two detector modules, which hold the sweep patterns as regex/string literals
+// and would self-match. The `.ts` subprocess CLIs (lib/db-fixtures.ts, lib/manual-ids.ts) are out of
+// scope by extension and by design: they run as `npx tsx` processes, not inside a flow, so their
+// plain-Error throws are harness/CLI errors classifyFailure never sees — guarding them would be wrong.
 import { readdir, readFile } from "node:fs/promises";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";

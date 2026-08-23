@@ -562,6 +562,15 @@ describe("findPlainErrorThrows", () => {
     expect(findPlainErrorThrows('throw new RangeError("x")')).toHaveLength(1);
   });
 
+  it("finds the no-`new` form too — `throw Error(...)` is the identical code-less Error in JS", () => {
+    // Fails CLOSED on the equivalent idiom: `throw Error(...)` and `throw new Error(...)` construct
+    // the same object, so a `new`-required sweep would let the no-`new` form escape into a green retry.
+    expect(findPlainErrorThrows('if (!x) throw Error("boom")')).toHaveLength(1);
+    expect(findPlainErrorThrows('throw TypeError("x")')).toHaveLength(1);
+    // ...but `throwError(...)` (a function call, no space) is not a throw statement.
+    expect(findPlainErrorThrows("throwError(msg)")).toEqual([]);
+  });
+
   it("leaves a re-throw alone — `throw err` preserves the original classification", () => {
     // assertNeverVisible re-throws a transport error untouched so the harness still sees it as
     // itself; only `throw new <...>Error(...)` mints a fresh, code-less error.

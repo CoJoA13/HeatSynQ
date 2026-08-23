@@ -408,7 +408,7 @@ async function assertNoRawApiMutations() {
   }
   if (raw.length > 0) {
     throw new Error(
-      `${raw.length} raw APIRequestContext call(s) in the flows. Playwright emits NO ` +
+      `${raw.length} raw APIRequestContext call(s) in the suite sources. Playwright emits NO ` +
       `context request/response event for these, so the retry gate's mutation counters cannot ` +
       `see them and would happily re-run a flow that had already written to the dev DB:\n` +
       `${raw.join("\n")}\n` +
