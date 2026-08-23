@@ -11,7 +11,10 @@ The seeded default password (`admin`) is changed by the last step of the seed, b
 `install-readiness.ts` carries a live §5.7 check for it that otherwise keeps a standing warning on
 every screen. The first-run setup checklist is dismissed by the same step.
 
-Built and verified: 2026-08-19.
+Built and verified: 2026-08-19. **Rebuilt from scratch 2026-08-22** for #169's re-capture, by the exact
+sequence below: it reproduced the aging table figure-for-figure — every bucket, every per-customer row,
+the 11,334.96 of unapplied cash and the +13,501.35 Net — and August's 1,250.00 variance, which chapter 8
+quotes. The back-dating is relative to the seed date, so the distribution is stable across rebuild dates.
 
 ---
 
