@@ -12,22 +12,25 @@
 import { chromium } from "playwright";
 import { execFileSync, spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { login } from "./lib/auth.mjs";
 import {
+  attemptDir,
   classifyFailure,
   findRawApiMutations,
   IGNORED_REQUEST_FAILURE,
   MUTATING_METHODS,
   NETWORK_CHANGED_HINT,
   isSessionEndpoint,
+  resultsLine,
   retryRefusal,
 } from "./lib/failure-classify.mjs";
-import { findAmbientRowLocators, findUncheckedAbsenceAssertions } from "./lib/flow-lint.mjs";
+import { findAmbientRowLocators, findPlainErrorFailures, findUncheckedAbsenceAssertions } from "./lib/flow-lint.mjs";
 import { preflightRefusal } from "./lib/preflight.mjs";
+import { suiteSources } from "./lib/suite-sources.mjs";
 import { warmRoutes, warmupRefusal } from "./lib/warmup.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,7 +44,6 @@ const ARTIFACTS_DIR = path.join(ERP_ROOT, "e2e-artifacts");
 // screenshots the moment anyone did the thing #184 documents people doing — re-running to see if
 // it clears. One generation, renamed rather than accumulated, so it can never grow without bound.
 const PREV_ARTIFACTS_DIR = path.join(ERP_ROOT, "e2e-artifacts-prev");
-const FLOWS_DIR = path.join(__dirname, "flows");
 // #184 fix (b): the dev server's stdout+stderr, written on EVERY run rather than only when
 // startup times out. Both implementers who hit #184 had to reason from a failure screenshot,
 // with no way to see whether the server had logged a slow compile, a stack, or an OOM. Streamed
@@ -391,18 +393,22 @@ function installSignalHandlers() {
  * `ctx.apiMutate` is the counted way to make the same call.
  */
 async function assertNoRawApiMutations() {
-  const files = (await readdir(FLOWS_DIR)).filter((f) => f.endsWith(".mjs")).sort();
-  const raw = [], rows = [], absences = [];
-  for (const file of files) {
-    const source = await readFile(path.join(FLOWS_DIR, file), "utf8");
-    const at = (hit) => `  e2e/flows/${file}:${hit.line}  ${hit.snippet}`;
+  // #192: the flow files AND the shared lib helpers, not the flows alone — a bad locator or a raw
+  // mutation in `boardRow`/`assertNeverVisible` (both in e2e/lib/) was invisible to every sweep while
+  // being worse than the same line in one flow. suite-sources.mjs owns the file set and its two
+  // detector-file exclusions, read identically here and in tests/e2e-harness.test.ts.
+  const sources = await suiteSources(__dirname);
+  const raw = [], rows = [], absences = [], throws = [];
+  for (const { relPath, source } of sources) {
+    const at = (hit) => `  e2e/${relPath}:${hit.line}  ${hit.snippet}`;
     for (const hit of findRawApiMutations(source)) raw.push(at(hit));
     for (const hit of findAmbientRowLocators(source)) rows.push(at(hit));
     for (const hit of findUncheckedAbsenceAssertions(source)) absences.push(at(hit));
+    for (const hit of findPlainErrorFailures(source)) throws.push(at(hit));
   }
   if (raw.length > 0) {
     throw new Error(
-      `${raw.length} raw APIRequestContext call(s) in the flows. Playwright emits NO ` +
+      `${raw.length} raw APIRequestContext call(s) in the suite sources. Playwright emits NO ` +
       `context request/response event for these, so the retry gate's mutation counters cannot ` +
       `see them and would happily re-run a flow that had already written to the dev DB:\n` +
       `${raw.join("\n")}\n` +
@@ -433,14 +439,28 @@ async function assertNoRawApiMutations() {
       `the rejection to be the timeout.`,
     );
   }
-  return files.length;
+  // #193: a flow assertion written as `throw new Error(...)` carries no ERR_ASSERTION code, so
+  // classifyFailure's hard override does not cover it — a stale netFailure earlier in the flow can
+  // launder it into FAIL [network] and, in a mutation-free flow, a granted retry.
+  if (throws.length > 0) {
+    throw new Error(
+      `${throws.length} flow failure(s) minted as a code-less Error (thrown or rejected). That carries ` +
+      `no ERR_ASSERTION code, so classifyFailure cannot tell it from a transport failure and a stale ` +
+      `netFailure can launder it into a green retry:\n` +
+      `${throws.join("\n")}\n` +
+      `Use assert.ok / assert.match / assert.fail (node:assert/strict), or for a promise rejection ` +
+      `reject(new assert.AssertionError({ message })) — keep the message text; the AssertionError is ` +
+      `what the override covers.`,
+    );
+  }
+  return sources.length;
 }
 
 async function runFlow(browser, flow, ctx, attempt) {
   // Attempt 1 keeps the historical path so nothing that reads `e2e-artifacts/<flow>/` moves; a
   // retry gets its OWN directory, because the failed attempt's screenshots and video are the
   // whole reason the retry is allowed to be reported at all.
-  const flowDir = path.join(ARTIFACTS_DIR, attempt === 1 ? flow.name : `${flow.name}__attempt-${attempt}`);
+  const flowDir = path.join(ARTIFACTS_DIR, attemptDir(flow.name, attempt));
   await mkdir(flowDir, { recursive: true });
 
   const context = await browser.newContext({
@@ -584,8 +604,8 @@ async function main() {
     }
 
     // Before anything expensive: refuse a flow that mutates where the retry gate cannot see it.
-    const flowCount = await assertNoRawApiMutations();
-    console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations, ambient\n  board-row locators and unchecked absence assertions: none`);
+    const sourceCount = await assertNoRawApiMutations();
+    console.log(`Checked ${sourceCount} suite source file(s) (flows + lib) for uncounted APIRequestContext\n  mutations, ambient board-row locators, unchecked absence assertions and plain-Error throws: none`);
 
     // #167a: the dev database's own ambient state, read BEFORE a single fixture row is written —
     // so everything the check sees belongs to somebody else, which is precisely the population
@@ -717,12 +737,10 @@ async function main() {
   console.log("\n=== Results ===");
   for (const r of results) {
     // A retried flow NEVER prints as a plain PASS — the point of the classification is that a run
-    // that needed a retry and a run that did not are visibly different afterwards.
-    const verdict = r.ok ? (r.retried ? "RETRIED" : "PASS   ") : "FAIL   ";
-    const note = r.ok
-      ? (r.retried ? "  (attempt 1 failed network-level; attempt 2 passed)" : "")
-      : `  (${r.kind}-level${r.retried ? ", failed twice" : `; ${retryRefusal(r)}`})`;
-    console.log(`  ${verdict}  ${r.name}${note}`);
+    // that needed a retry and a run that did not are visibly different afterwards. The line shape
+    // (verdict token + spacing) is resultsLine's, pinned in tests/e2e-harness.test.ts against the
+    // `^  RETRIED ` grep the CI retry gate runs (#190).
+    console.log(resultsLine(r));
   }
   const failed = results.filter((r) => !r.ok);
   const retriedOk = results.filter((r) => r.ok && r.retried);

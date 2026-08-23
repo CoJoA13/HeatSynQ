@@ -81,7 +81,7 @@ export async function waitForValue(locator, expected, timeoutMs = 5000) {
     last = await locator.inputValue().catch(() => undefined);
     if (last === expected) return;
     if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for value ${JSON.stringify(expected)} — last saw ${JSON.stringify(last)}`);
+      assert.fail(`Timed out waiting for value ${JSON.stringify(expected)} — last saw ${JSON.stringify(last)}`);
     }
     await new Promise((r) => { setTimeout(r, 100); });
   }
@@ -95,7 +95,7 @@ export async function waitForChecked(locator, expected, timeoutMs = 5000) {
     last = await locator.isChecked().catch(() => undefined);
     if (last === expected) return;
     if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for checked=${expected} — last saw ${JSON.stringify(last)}`);
+      assert.fail(`Timed out waiting for checked=${expected} — last saw ${JSON.stringify(last)}`);
     }
     await new Promise((r) => { setTimeout(r, 100); });
   }
@@ -128,7 +128,7 @@ export async function fillReliable(locator, value, timeoutMs = 5000) {
       refilled = true;
     }
     if (Date.now() > deadline) {
-      throw new Error(`fillReliable: value would not hold at ${JSON.stringify(value)} — last saw ${JSON.stringify(current)}`);
+      assert.fail(`fillReliable: value would not hold at ${JSON.stringify(value)} — last saw ${JSON.stringify(current)}`);
     }
     await new Promise((r) => { setTimeout(r, 150); });
   }
@@ -147,7 +147,7 @@ export async function checkReliable(locator, checked, timeoutMs = 5000) {
       redone = true;
     }
     if (Date.now() > deadline) {
-      throw new Error(`checkReliable: checked state would not hold at ${checked} — last saw ${JSON.stringify(current)}`);
+      assert.fail(`checkReliable: checked state would not hold at ${checked} — last saw ${JSON.stringify(current)}`);
     }
     await new Promise((r) => { setTimeout(r, 150); });
   }
@@ -174,22 +174,25 @@ export async function waitForSaveSettled(page, liText, timeoutMs = 10000) {
   );
 }
 
-/** Fails loudly with context instead of letting a mismatch surface as a bare assertion trace. */
+/** Fails loudly with context instead of letting a mismatch surface as a bare assertion trace. Thin
+ *  wrappers over `node:assert` deliberately (#193): an `AssertionError` carries `ERR_ASSERTION`,
+ *  which `classifyFailure` hard-overrides on, so a mismatch here can never be laundered into a green
+ *  network retry the way a plain `throw new Error` could. */
 export function expectEqual(actual, expected, label) {
-  if (actual !== expected) {
-    throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-  }
+  assert.strictEqual(actual, expected, `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
 export function expectTrue(condition, label) {
-  if (!condition) throw new Error(`${label}: expected condition to be true`);
+  assert.ok(condition, `${label}: expected condition to be true`);
 }
 
 /**
  * "This element must NOT be on screen" — the one absence assertion the flows are allowed to make
- * (#167a fix round). It replaces `assert.rejects(locator.waitFor(...), "…")`, which was in nine
- * places and is a FALSE-GREEN shape: `assert.rejects` passes on *any* rejection, and Playwright
- * rejects a `waitFor` for two entirely different reasons —
+ * (#167a fix round). It replaces the rejects-wrapped-waitFor shape (the anti-pattern the
+ * `findUncheckedAbsenceAssertions` sweep now refuses across the whole suite, described in prose here
+ * rather than written out so this file — swept since #192 — does not trip its own detector), which
+ * was in nine places and is a FALSE-GREEN shape: that assertion passes on *any* rejection, and
+ * Playwright rejects a `waitFor` for two entirely different reasons —
  *
  *   * the element never appeared        -> "Timeout 1500ms exceeded"      (what we mean)
  *   * SEVERAL elements matched          -> "strict mode violation: … resolved to 2 elements"

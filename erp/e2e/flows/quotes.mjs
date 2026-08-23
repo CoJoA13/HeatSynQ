@@ -100,7 +100,7 @@ async function createQuoteViaUi(page, ctx, firstLine) {
   await heading.waitFor({ state: "visible", timeout: 20000 });
   const text = (await heading.textContent()) ?? "";
   const match = text.match(/#(\d+)/);
-  if (!match) throw new Error(`Could not parse a quote number out of the heading "${text}"`);
+  assert.ok(match, `Could not parse a quote number out of the heading "${text}"`);
   return { id: page.url().split("/").pop(), number: Number(match[1]) };
 }
 
@@ -236,7 +236,7 @@ export async function run(page, shot, ctx) {
   await hubHeading.waitFor({ state: "visible", timeout: 20000 });
   const headingText = (await hubHeading.textContent()) ?? "";
   const orderMatch = headingText.match(/#(\d+)/);
-  if (!orderMatch) throw new Error(`Could not parse an order number out of the hub heading "${headingText}"`);
+  assert.ok(orderMatch, `Could not parse an order number out of the hub heading "${headingText}"`);
   const order = { id: page.url().split("/").pop(), number: Number(orderMatch[1]) };
 
   // The hub's Lines table shows the STORED link (ruling 6) as a link to the quote.

@@ -12,18 +12,17 @@
 // own fallback banner covers the blocked case, and this flow doesn't assert which branch fires
 // (best-effort: capture a popup if one appears, for a bonus screenshot). What IS asserted, either
 // way, is the one thing both branches guarantee: the documents table gains a row with a working
-// `/api/documents/[id]` link, which this flow fetches directly (same session, via `page.request`)
+// `/api/documents/[id]` link, which this flow fetches directly (same session, via the page's request context)
 // to archive `traveler.pdf` alongside the numbered screenshots — the source for the demo doc's
 // "printed traveler PDF page" screenshot (rendered to PNG afterward with a local PDF tool; the
 // flow itself only touches portable Node/Playwright APIs, no new system dependency).
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 export async function run(page, shot, ctx) {
   const { created } = ctx;
-  if (!created.orderId) {
-    throw new Error("loads-after-print requires order-entry-full to have set ctx.created.orderId");
-  }
+  assert.ok(created.orderId, "loads-after-print requires order-entry-full to have set ctx.created.orderId");
 
   await page.goto(`${ctx.baseURL}/orders/${created.orderId}`);
   await page.getByRole("heading", { name: `Order #${created.orderNumber}` }).waitFor({ state: "visible" });
@@ -52,8 +51,8 @@ export async function run(page, shot, ctx) {
     }
   }
 
-  // Archive the actual PDF bytes regardless of the popup outcome — `page.request` shares the
-  // logged-in page's cookies, so this GET is authenticated the same way clicking the link would be.
+  // Archive the actual PDF bytes regardless of the popup outcome — the page's request context shares
+  // the logged-in page's cookies, so this GET is authenticated the same way clicking the link would be.
   const docHref = await travelerLink.getAttribute("href");
   const pdfResp = await page.request.get(new URL(docHref, ctx.baseURL).toString());
   await fs.writeFile(path.join(flowDir, "traveler.pdf"), await pdfResp.body());

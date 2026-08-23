@@ -152,24 +152,112 @@ export function retryRefusal(result) {
 // Deliberately over-matching, so it fails CLOSED (the `issuesMutatingRequest` precedent in
 // tests/audit-children.test.ts): a commented-out call is reported too, because a sweep a comment
 // can talk its way past is a sweep a real call can talk its way past.
-const RAW_API_MUTATION = /\brequest\s*\.\s*(post|put|patch|delete|fetch)\s*\(/gi;
-// A second APIRequestContext carries its own cookie jar and is equally invisible to the counters.
-const RAW_API_NEW_CONTEXT = /\brequest\s*\.\s*(newContext)\s*\(/gi;
+//
+// SCOPE (read before extending). These are fail-closed STATIC heuristics for the forms a flow author
+// writes by ACCIDENT — `page.request.post(...)` instead of `ctx.apiMutate(...)`, and the handful of
+// ways that accident gets aliased. They are NOT and CANNOT be a decision procedure: no static
+// analysis (regex OR a full AST) can decide "does this flow mutate through an uncounted
+// APIRequestContext", because a flow that passes `page` to a lib/ helper which does
+// `page.request.post()` is a cross-function data-flow escape no single-file scan can see. The
+// load-bearing protection is the RUNTIME gate — `ctx.apiMutate`/`ctx.lockRevision` are counted and
+// `retryRefusal` denies a retry unless committed===0 && indeterminate===0 — with code review as the
+// backstop for contrived residuals. So the test for admitting a new pattern is not "is it static?"
+// but "is it a form written by ACCIDENT?" Out of scope, deliberately (each considered and declined):
+//   * DYNAMIC dispatch — a computed/runtime method name, optional chaining, `Reflect`/`apply`.
+//   * a renamed destructured PARAMETER `({ request: req }) => req.post()` — indistinguishable by a
+//     text scan from the legit Playwright route-handler idiom `page.route(u, ({ request }) => ...)`
+//     and from object-literal args `foo({ request: x })` (needs the argument's TYPE / data-flow).
+//   * a renamed promise reject callback `(resolve, fail) => fail(new Error())` — the callback name is
+//     arbitrary; flagging any `foo(new Error())` would false-positive on legitimate error-passing.
+//   * NESTED / arbitrarily-deep destructuring `const { page: { request: req } } = state` — not a slip:
+//     flows receive `run(page, shot, ctx)` and `ctx` carries no `page`, so nothing nests `page` in an
+//     object; an author must first MANUFACTURE the wrapper to destructure it back out. (And balanced
+//     braces are not a regular language, so a regex could only ever chase a fixed depth.)
+// The escape hatch for a real read/write is always the sanctioned helper, never a cleverer spelling.
+//
+// The APIRequestContext, reached as a `.request` property or a `["request"]` index.
+const REQ_CTX = String.raw`(?:\brequest|\[\s*["']request["']\s*\])`;
+// A mutating method — `newContext` (a second cookie jar, equally invisible) folded in — invoked by
+// DOT or by computed `["post"]` access (Codex round 3, P1). A `res.request()` METHOD call is never
+// matched: nothing mutating follows the `(`.
+const MUT = String.raw`(?:post|put|patch|delete|fetch|newContext)`;
+const RAW_API_MUTATION = new RegExp(
+  String.raw`${REQ_CTX}\s*(?:\.\s*(${MUT})|\[\s*["'](${MUT})["']\s*\])\s*\(`,
+  "gi",
+);
+
+// #192: the receiver-ALIASING that would otherwise smuggle the same call past the pattern above.
+// `const req = page.request; req.post(u)`, `const {post} = page.request; post(u)`, the parenthesized
+// `const req = (page.request)`, `return page.request`, `helper(page.request)` — all CAPTURE the
+// context under a name (or hand it off) so the mutation later rides that name, invisible both to the
+// pattern above and to the browser's counters. Rather than enumerate every capture syntax (an
+// assignment-anchored pattern missed parens and returns — Codex P1), this flags the CAPTURE ITSELF: a
+// `.request` (or `["request"]`) NOT continued by an access. The continuation test lives INSIDE the
+// lookahead — `(?!\s*[.([])`, not `\s*(?![.([])` — so a multi-line read `page.request\n  .get(...)`
+// stays an inline access and is not misreported as a capture (Codex round 3, P2: a trailing `\s*`
+// backtracks and defeats the intent, which would make the harness refuse a legitimate wrapped GET).
+// A trailing `.`/`[` is an inline access (`.get(...)` read left alone; `.post(...)`/`["post"](...)`
+// caught above); a trailing `(` is a `res.request()` method call. Fail-closed like the rest — it
+// flags a captured read-alias, and a comment that writes the bare token, too — so the escape is to
+// inline `page.request.get(...)` for a read and `ctx.apiMutate` for a write, and to name the API in
+// prose ("the page's request context") rather than write the bare literal in a swept file.
+const RAW_API_ALIAS =
+  /(?:\.\s*request\b|\[\s*["']request["']\s*\])(?!\s*[.([])/g;
+
+// ...and the single-level DESTRUCTURING capture — `const { request } = page`,
+// `const { request: req } = page` (Codex round 4, P1) — which contains no `.request`/`["request"]`
+// for the alias pattern to see. Flagged when a `{...}` binding `request` is followed by `}=`, which
+// separates a destructuring pattern (LHS) from an object LITERAL (`= {...}`, RHS) and from a parameter
+// destructure (`}) =>`). `\brequest\b` so `requestId` and the like are left alone. `[^}{]` forbids
+// crossing a nested brace — so NESTED destructuring (`const { page: { request: req } } = state`) is
+// NOT matched, and that is deliberate, not an oversight: see the SCOPE note above (a manufactured
+// nested wrapper is a construction, not the accident this catches; and arbitrarily-deep nesting is
+// unreachable by regex regardless).
+const RAW_API_DESTRUCTURE = /\{[^}{]*\brequest\b[^}{]*\}\s*=/g;
 
 /** Every raw, uncounted APIRequestContext mutation in one flow's source, with 1-based line
  *  numbers. Pure: the caller reads the file and raises the refusal. */
 export function findRawApiMutations(source) {
   const found = [];
-  for (const pattern of [RAW_API_MUTATION, RAW_API_NEW_CONTEXT]) {
-    pattern.lastIndex = 0;
+  const scan = (pattern, methodOf) => {
     for (const match of source.matchAll(pattern)) {
       const line = source.slice(0, match.index).split("\n").length;
       found.push({
         line,
-        method: match[1].toLowerCase(),
+        method: methodOf(match),
         snippet: source.split("\n")[line - 1].trim().slice(0, 120),
       });
     }
-  }
+  };
+  scan(RAW_API_MUTATION, (m) => (m[1] || m[2]).toLowerCase());
+  scan(RAW_API_ALIAS, () => "alias");
+  scan(RAW_API_DESTRUCTURE, () => "alias");
   return found.sort((a, b) => a.line - b.line);
+}
+
+// #190. The two harness OUTPUT surfaces the CI retry gate reads, extracted here so
+// tests/e2e-harness.test.ts can pin them against the literal shapes `.github/workflows/ci.yml`
+// greps and globs — a rename of either then reds a test rather than silently narrowing that gate to
+// the case it happens still to match. `run.mjs` cannot be imported by the test (it starts a dev
+// server and a browser at module scope), which is the same reason the decision predicates above live
+// here; these two are its printing counterparts.
+
+/** The artifact directory one attempt writes to. Attempt 1 keeps the historical bare `<flow>/` path
+ *  so nothing that reads it moves; a granted retry gets its own `<flow>__attempt-N/` sibling — the
+ *  surface CI's retry gate globs as `e2e-artifacts/*__attempt-*` (retry detector 1, which fires for
+ *  EVERY granted retry, passed or failed). */
+export function attemptDir(flowName, attempt) {
+  return attempt === 1 ? flowName : `${flowName}__attempt-${attempt}`;
+}
+
+/** One results-table row. The verdict token is `RETRIED` (never `PASS`) for a green-on-retry flow —
+ *  the exact surface CI greps as `^  RETRIED ` (retry detector 2, the green-on-retry case) — `FAIL   `
+ *  for a failure, `PASS   ` otherwise. The two leading spaces and the token width are part of that
+ *  contract, so this is the whole printed line, not just the token. */
+export function resultsLine(result) {
+  const verdict = result.ok ? (result.retried ? "RETRIED" : "PASS   ") : "FAIL   ";
+  const note = result.ok
+    ? (result.retried ? "  (attempt 1 failed network-level; attempt 2 passed)" : "")
+    : `  (${result.kind}-level${result.retried ? ", failed twice" : `; ${retryRefusal(result)}`})`;
+  return `  ${verdict}  ${result.name}${note}`;
 }

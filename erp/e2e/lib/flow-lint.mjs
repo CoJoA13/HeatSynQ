@@ -89,3 +89,42 @@ export function findUncheckedAbsenceAssertions(source) {
   }
   return found;
 }
+
+// A code-less Error minted as a flow FAILURE (#193). The third false-green shape, and the subtlest:
+// `classifyFailure` opens with a hard override that an `ERR_ASSERTION` failure is NEVER a network one,
+// precisely so a stale netFailure earlier in a flow cannot launder a real assertion failure into
+// `FAIL [network]` and — in a flow that mutated nothing — into a granted retry and a green run. A
+// plain `Error` carries no `ERR_ASSERTION` code, so it walks straight through that override. Convert
+// each to `assert.ok`/`assert.match`/`assert.fail`, or — where the failure is delivered through a
+// promise — `reject(new assert.AssertionError({ message }))`; the message text is good, keep it, and
+// the `AssertionError` is what the override covers. The hand-rolled timeout throws
+// (`if (Date.now() > deadline) ...`) are the sharpest case: they are the shape most likely to fire on
+// a slow or contended machine, i.e. the same machine most likely to carry a stale netFailure.
+//
+// TWO delivery verbs are covered — `throw` and a promise `reject(...)` (Codex P2, round 2: a dialog
+// handler that `reject(new Error(...))`s reaches classifyFailure with the identical code-less Error a
+// `throw` would). `new` is OPTIONAL and the constructor may be QUALIFIED (`throw Error(...)`,
+// `throw new globalThis.Error(...)`, `reject(new errors.TimeoutError(...))`), because every one of
+// those mints a code-less error. `AssertionError` is EXCLUDED (the `(?<!Assertion)Error` lookbehind):
+// it carries `ERR_ASSERTION`, which is the whole point, so the sanctioned fix is not flagged. A
+// re-raise of a caught error (`throw err`, `reject(err)`) is NOT matched — it preserves the original
+// classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
+// `throwError(...)` (no space after `throw`) is a function call, not a throw statement, and stays out.
+// A parenthesized delivery — `throw (new Error(...))`, `reject((new TypeError(...)))` — is covered by
+// the leading `\(*\s*` (Codex round 3, P2); like the mutation sweep, a determined dynamic obfuscation
+// (a code-less error routed through a helper or a computed constructor) is out of scope for a text
+// scan, the `assert.*` / `reject(new assert.AssertionError(...))` escape hatch being the real guard.
+const CODELESS_ERROR = String.raw`\(*\s*(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*(?<!Assertion)Error\s*\(`;
+const PLAIN_ERROR_FAILURE = new RegExp(String.raw`\bthrow\s+${CODELESS_ERROR}|\breject\s*\(\s*${CODELESS_ERROR}`, "g");
+
+/**
+ * Every code-less-Error flow failure (`throw`n or `reject`ed) in one suite source, with 1-based line
+ * numbers. Pure: the caller reads the file and raises the refusal.
+ */
+export function findPlainErrorFailures(source) {
+  const found = [];
+  for (const m of source.matchAll(PLAIN_ERROR_FAILURE)) {
+    found.push({ line: lineOf(source, m.index), snippet: snippetOf(source, m.index) });
+  }
+  return found;
+}

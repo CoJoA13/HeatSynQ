@@ -61,7 +61,7 @@ function armPromptOnce(page, responseText) {
         // these four prompts, which is exactly when a clear failure matters most.
         dialog.dismiss()
           .catch(() => {})
-          .finally(() => reject(new Error(`Expected a prompt dialog, got ${dialog.type()}`)));
+          .finally(() => reject(new assert.AssertionError({ message: `Expected a prompt dialog, got ${dialog.type()}` })));
         return;
       }
       const message = dialog.message();
@@ -96,7 +96,7 @@ async function waitForEnabled(locator, what, timeoutMs = 20000) {
   for (;;) {
     if (!(await locator.isDisabled())) return;
     if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${what} to become enabled (title: ${await locator.getAttribute("title")})`);
+      assert.fail(`Timed out waiting for ${what} to become enabled (title: ${await locator.getAttribute("title")})`);
     }
     await new Promise((r) => { setTimeout(r, 200); });
   }

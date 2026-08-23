@@ -112,7 +112,7 @@ export async function run(page, shot, ctx) {
   const deadline = Date.now() + 30000;
   for (;;) {
     if (await page.getByRole("link", { name: "Certification", exact: true }).count() >= 2) break;
-    if (Date.now() > deadline) throw new Error("second print never appeared in the Documents list");
+    if (Date.now() > deadline) assert.fail("second print never appeared in the Documents list");
     await new Promise((r) => setTimeout(r, 250));
   }
   await (await popup2)?.close().catch(() => {});
