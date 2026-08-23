@@ -670,7 +670,10 @@ describe("applyPayment — DISCOUNT line", () => {
       // nothing has been taken, so a message naming either of those would be false here.
     }))).rejects.toMatchObject({
       status: 400,
-      message: "this payment is dated after the invoice's early-pay discount window",
+      // #178: names when the window ran through — invoiceDate 2026-08-08 + 10 days — so the operator
+      // does not have to open the invoice and do the arithmetic. Byte-exact so the deadline can never
+      // silently drop back out of the sentence.
+      message: "this payment is dated after the invoice's early-pay discount window, which ran through 2026-08-18",
     });
   });
 
@@ -1083,9 +1086,12 @@ describe("applyPayment — DISCOUNT line", () => {
     block: DiscountBlock;
     what: string;
     /** `coveredCents`/`openCents` are what the save will compute for the forced line; they reach the
-     *  message only for `would_not_settle`, and are the real figures in every case regardless. */
+     *  message only for `would_not_settle`, and are the real figures in every case regardless.
+     *  `deadline` reaches the message only for `window_closed` (#178) — the date the save names — and
+     *  is omitted by the other three, whose sentences ignore it. */
     build: () => Promise<{
       paymentId: string; invoiceId: string; discount: number; coveredCents: number; openCents: number;
+      deadline?: Date;
     }>;
   }[] = [
     {
@@ -1106,7 +1112,12 @@ describe("applyPayment — DISCOUNT line", () => {
         const inv = await finalizedInvoice({ total: 1000, invoiceDate: "2026-08-08", termsId: terms.id });
         // Big enough to settle outright, so the ONLY thing wrong is the date.
         const payment = await makePayment(inv.customerId, 1000, "2026-08-28");
-        return { paymentId: payment.id, invoiceId: inv.invoiceId, discount: 20, coveredCents: 2000, openCents: 100000 };
+        // invoiceDate 2026-08-08 + 10 days — the deadline the save names (#178). formatDateOnly reads
+        // UTC, so this renders as 2026-08-18 to match the save's threaded `termsBlockFor` deadline.
+        return {
+          paymentId: payment.id, invoiceId: inv.invoiceId, discount: 20, coveredCents: 2000, openCents: 100000,
+          deadline: new Date("2026-08-18T00:00:00.000Z"),
+        };
       },
     },
     {
@@ -1168,7 +1179,7 @@ describe("applyPayment — DISCOUNT line", () => {
         status: 400,
         message: discountBlockMessage(offer.blockedBy!, {
           coveredCents: f.coveredCents, openCents: f.openCents,
-        }),
+        }, f.deadline),
       });
       // Nothing landed: the refusal rolls the whole call back, in every one of the four.
       expect(await prisma.application.count({ where: { deletedAt: null } })).toBe(liveBefore);
