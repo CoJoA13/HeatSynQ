@@ -51,6 +51,7 @@ import "dotenv/config";
 import { prisma } from "../src/server/db";
 import { runWithContext } from "../src/server/context";
 import { HttpError } from "../src/server/errors";
+import { devDbRefusal, hostFromUrl } from "../src/lib/dev-db-guard";
 import { formatDateOnly, todayDateOnly, addDays } from "../src/lib/business-days";
 
 import { createReference } from "../src/server/reference";
@@ -117,26 +118,21 @@ import {
 // thing that gets set once and never unset.
 // ---------------------------------------------------------------------------------------------
 
-const DEV_DB_NAME = "erp";
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
 async function assertDevDatabase(): Promise<void> {
   const [row] = await prisma.$queryRaw<{ name: string }[]>`SELECT current_database() AS name`;
   const name = row?.name ?? "";
 
   const url = process.env.DATABASE_URL;
   if (!url) throw new HttpError(403, "DATABASE_URL is not set.");
-  const host = new URL(url).hostname;
 
-  if (name !== DEV_DB_NAME || !LOCAL_HOSTS.has(host)) {
-    throw new HttpError(
-      403,
-      `The manual dataset only builds on the LOCAL dev database — expected "${DEV_DB_NAME}" on ` +
-        `localhost, got "${name}" on "${host}". Refusing to write: this script creates dozens of ` +
-        `orders, invoices, payments and a CLOSED accounting period, and the production compose ` +
-        `profile uses the database name "${DEV_DB_NAME}" too, so the name on its own proves nothing.`,
-    );
-  }
+  const refusal = devDbRefusal({
+    subject: "The manual dataset",
+    consequence: "this script creates dozens of orders, invoices, payments and a CLOSED "
+      + "accounting period",
+    dbName: name,
+    host: hostFromUrl(url),
+  });
+  if (refusal) throw new HttpError(403, refusal);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -85,15 +85,49 @@ const PASSWORD = process.env.MANUAL_PASS ?? "heatsynq-demo";
  *  determines the layout the manual shows, so it stays fixed. */
 const VIEWPORT = { width: 1440, height: 900 };
 
-/** Captured at 2× so the PNGs stay legible when a manual embeds them and scales them down. The
- *  CSS layout is unchanged — only the raster is denser — so `MAX_SHOT_HEIGHT` below still measures
- *  CSS pixels and means the same thing, while the file it produces is roughly 3–4× the bytes. */
-const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 2);
+/** Captured 1:1 (#169). It was 2× — "so the PNGs stay legible when scaled down" — but the manual
+ *  lays a full-width figure out at 1200 declared px and renders it narrower still, so the extra
+ *  density was never reaching a reader; what it did reach was the file size. A 2× run writes
+ *  ~24 MB of PNGs, and `manual.html` inlines all of them as `data:` URIs against a 16 MB publish
+ *  ceiling, so the page only ever fitted because someone ran ImageMagick over `img/` by hand — a
+ *  step that existed nowhere in this repo, which is the rot `manual:build` was written to end.
+ *
+ *  `scripts/lib/manual-figure-size.mjs` is COUPLED to this: the display rule reads each image's
+ *  own intrinsic width now instead of assuming this constant, which is what makes changing it
+ *  safe. Raising it back to 2 renders identically and just costs bytes; the capture is unaffected
+ *  either way, since the CSS layout does not change — only the raster is denser, so
+ *  `MAX_SHOT_HEIGHT` below still measures CSS pixels and means the same thing. */
+const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 1);
 
 /** Full-page shots of a heavily-seeded list can run to tens of thousands of pixels. Past this
- *  height the capture is clipped to the top of the page — and the clip is RECORDED in sweep.md
- *  for that screen, never silently applied. */
-const MAX_SHOT_HEIGHT = 6000;
+ *  height the capture is clipped to the top MAX_SHOT_HEIGHT px OF THE PAGE — not of the viewport —
+ *  and the clip is RECORDED in sweep.md for that screen, never silently applied.
+ *
+ *  See shoot(): honouring "of the page" needs `fullPage: true` ALONGSIDE the clip. Without it
+ *  Playwright clamps the clip to the viewport, so this constant stopped mattering entirely and the
+ *  sweep's note stated a cap the file did not hold — one viewport, every time (#169 fix round).
+ *  Keep the two in step: this docstring, shoot()'s screenshot options, and the sweep wording are
+ *  one contract in three places.
+ *
+ *  THE NUMBER, from measurement rather than taste (#169, second fix round). It was 6000, chosen
+ *  while the clip was believed to work and therefore never priced. The cap has to clear every
+ *  screen whose height is STRUCTURE and cut the ones whose height is REPETITION, and the
+ *  demonstration dataset puts a clean shelf between the two: 48 of the 50 screens are 3508px or
+ *  shorter (tallest: the template editor), and the only two above it are tall for the same
+ *  reason — /admin/audit at 7627px, and the part record at 5145px, whose bottom 1712px is its own
+ *  History panel. A list of audit rows says nothing new after the first screenful.
+ *
+ *  4000 leaves 492px of margin over the tallest structural screen, keeps every section the parts
+ *  chapter names (Identity … Process steps, and the History panel) plus 12 of that panel's 19
+ *  rows, and shows about 102 of the audit log's 200 rows — neither figure reached the end of its
+ *  page at 6000 either, so the extra height was buying more of the same, not a conclusion. It also
+ *  cuts the part record exactly where its History panel stops being a list and starts printing raw
+ *  step JSON: measured, that block costs 532 B/px against 164 B/px for the rows above it — the
+ *  #170 pathology, on a second screen. Both clipped figures then render 800x2222 in the manual,
+ *  against 800x1949 for the tallest un-clipped one; at 6000 the audit shot rendered 800x3333, 71%
+ *  taller than anything else in the book. Cost for the pair: 1,114 KB at 4000 against 1,997 KB at
+ *  6000, roughly 1.18 MB of the published page. */
+const MAX_SHOT_HEIGHT = 4000;
 
 const CONTENT_TIMEOUT_MS = 30000;
 /** How long the in-flight request count must sit at zero for a page to count as settled. */
@@ -637,7 +671,16 @@ async function shoot(page, name) {
   const height = await page.evaluate(() => document.documentElement.scrollHeight).catch(() => 0);
   const clipped = height > MAX_SHOT_HEIGHT;
   if (clipped) {
-    await page.screenshot({ path: file, clip: { x: 0, y: 0, width: VIEWPORT.width, height: MAX_SHOT_HEIGHT } });
+    // `fullPage: true` is load-bearing, NOT redundant with the clip. A `clip` on its own is
+    // resolved against the VIEWPORT, so this branch used to write a 1440x900 shot of the top of
+    // the screen while sweep.md reported a clip to the top MAX_SHOT_HEIGHT px — a generated
+    // report asserting something untrue. With fullPage the clip is resolved against the whole
+    // scrollable page, which is what MAX_SHOT_HEIGHT has always claimed to mean.
+    await page.screenshot({
+      path: file,
+      fullPage: true,
+      clip: { x: 0, y: 0, width: VIEWPORT.width, height: MAX_SHOT_HEIGHT },
+    });
   } else {
     await page.screenshot({ path: file, fullPage: true });
   }
@@ -1219,7 +1262,10 @@ async function writeSweep(rows, meta) {
   lines.push(`- **Run at:** ${meta.startedAt}`);
   lines.push(`- **Against:** ${meta.baseURL} (${meta.attached ? "attached to a running server" : "a dev server this harness started"})`);
   lines.push(`- **Signed in as:** \`${USERNAME}\``);
-  lines.push(`- **Viewport:** ${VIEWPORT.width}×${VIEWPORT.height}, full-page captures`);
+  // The scale is stated because it is a contract, not an incidental: it decides the intrinsic
+  // width of every PNG here, and tests/manual-artifacts.test.ts pins it FROM those PNGs.
+  lines.push(`- **Viewport:** ${VIEWPORT.width}×${VIEWPORT.height} at deviceScaleFactor ${DEVICE_SCALE} — a full-page shot is ${VIEWPORT.width * DEVICE_SCALE}px wide`);
+  lines.push(`- **Captures:** full page, clipped to the top ${MAX_SHOT_HEIGHT}px of the page when it is taller than that`);
   lines.push(`- **Routes discovered:** ${meta.routeCount} from \`src/app/**/page.tsx\``);
   lines.push(`- **Wall clock:** ${(meta.durationMs / 1000).toFixed(1)}s`);
   lines.push("");

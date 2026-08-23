@@ -158,10 +158,17 @@ export async function run(page, shot, ctx) {
 
   // Read the current server draft and PATCH it back with a real change (flip the page footer),
   // matching its own updatedAt so this competing write succeeds and advances updatedAt past what the
-  // editor loaded. page.request shares the browser context's cookies, so it acts as this same admin.
+  // editor loaded. The read shares the browser context's cookies, so it acts as this same admin.
+  //
+  // The WRITE goes through `ctx.apiMutate` rather than the APIRequestContext directly (#184 fix
+  // round, finding 1): Playwright emits no context request/response event for one, so a raw call
+  // here is a real dev-DB write the retry gate's mutation counters cannot see — it would read
+  // "this flow changed nothing" and re-run the flow from step 1. `run.mjs` refuses the whole run
+  // on a raw one now, so this is enforced rather than remembered.
   const draftBefore = await (await page.request.get(`${ctx.baseURL}/api/templates/${templateId}`)).json();
   const competing = { ...draftBefore.draft.config, pageFooter: !draftBefore.draft.config.pageFooter };
-  const competingRes = await page.request.patch(`${ctx.baseURL}/api/templates/${templateId}/draft`, {
+  const competingRes = await ctx.apiMutate(page, `${ctx.baseURL}/api/templates/${templateId}/draft`, {
+    method: "PATCH",
     data: { config: competing, updatedAt: draftBefore.draft.updatedAt },
   });
   assert.equal(competingRes.ok(), true, "the competing change saved, bumping the draft's updatedAt");

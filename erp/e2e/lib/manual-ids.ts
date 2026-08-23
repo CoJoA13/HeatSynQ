@@ -18,36 +18,33 @@
 import "dotenv/config";
 import { PrismaClient } from "../../prisma/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { devDbRefusal, dbNameFromUrl, hostFromUrl } from "../../src/lib/dev-db-guard";
 
 /** How many rows each picker considers before scoring. Bounded so a large acceptance dataset
  *  can't turn discovery into a table scan of everything; ordered newest-first, because the rich
  *  demo/acceptance rows are the recently seeded ones. */
 const CANDIDATES = 250;
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
-
 /**
- * The dev-DB guard, deliberately RE-DECLARED rather than imported from `db-fixtures.ts`: that
- * module runs its own `main()` at import time (it is a CLI entry point, not a library), so
- * importing it here would execute a fixture command as a side effect of asking for ids. The same
- * hand-kept-in-sync tradeoff `src/proxy.ts` makes with `SESSION_COOKIE`, for the same reason —
- * the import would drag something unwanted along with it.
+ * The dev-DB guard. It used to be a re-declaration rather than an import, because `db-fixtures.ts`
+ * runs its own `main()` at import time (it is a CLI entry point, not a library) and importing IT
+ * would execute a fixture command as a side effect of asking for ids. That reasoning held; the
+ * copy did not — this file's local-host set had silently lost `[::1]`, which the other three
+ * accept. The rule now lives in the pure leaf `src/lib/dev-db-guard.ts`, which drags nothing.
  *
  * This script is read-only, so the stakes are lower than db-fixtures.ts's, but the check stays:
  * pointing a capture run at `erp_test` would silently photograph an empty truncated database and
  * report it as a passing sweep, which is worse than an error.
  */
 function assertDevDb(url: string): void {
-  const parsed = new URL(url);
-  const dbName = parsed.pathname.replace(/^\//, "");
-  const host = parsed.hostname;
-  if (dbName !== "erp" || !LOCAL_HOSTS.has(host)) {
-    throw new Error(
-      `manual capture must run against the LOCAL dev database — expected database "erp" on ` +
-      `localhost, got "${dbName}" on "${host}". Refusing to continue: capturing against ` +
-      `erp_test would photograph a truncated database and report it as a clean sweep.`,
-    );
-  }
+  const refusal = devDbRefusal({
+    subject: "manual capture",
+    consequence: "capturing against the wrong database would photograph the wrong rows — a "
+      + "truncated erp_test, say — and report it as a clean sweep",
+    dbName: dbNameFromUrl(url),
+    host: hostFromUrl(url),
+  });
+  if (refusal) throw new Error(refusal);
 }
 
 const databaseUrl = process.env.DATABASE_URL;

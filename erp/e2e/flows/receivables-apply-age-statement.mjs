@@ -49,7 +49,7 @@
 // Never `page.waitForURL` for a route -> route/[id] hop (the Phase 3/4/5A trap, spec §13,
 // re-armed in invoice-shipped-order.mjs) — every wait below is for post-navigation-ONLY content.
 import assert from "node:assert/strict";
-import { armPrompt, waitForValue } from "../lib/ui.mjs";
+import { armPrompt, assertNeverVisible, waitForValue } from "../lib/ui.mjs";
 import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const WRITE_OFF_REASON =
@@ -277,6 +277,16 @@ export async function run(page, shot, ctx) {
   // `arInvoiceRow`, not `invoiceRow`: that name is already taken at the top of this function by the
   // /invoicing section's row. Same function scope, so the duplicate was a parse error that took the
   // WHOLE flow down (see the fix-round note in task-4-report.md).
+  //
+  // WHY substring + `.first()` IS SAFE HERE, and is not the board shape #167a fixed (this comment
+  // covers the three identical lookups in this section — write-off, written-off, restored). The
+  // board is plant-wide, so any order's row can collide with any other's number; this table is the
+  // open-items list of ONE customer — the fixture's own, freshly created by `create()` — and every
+  // row in it is paper this flow raised. Its columns are document number, dates and money for that
+  // customer alone, so the only digits that could collide are this same fixture's, and the fixture
+  // raises exactly one invoice. `.first()` therefore cannot reach a stranger's row: there are no
+  // strangers in this table. Do NOT copy the shape to a plant-wide table — `.first()` silently
+  // picks a row instead of failing, which is precisely what makes it wrong there.
   const arInvoiceRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
   await arInvoiceRow.waitFor({ state: "visible", timeout: 15000 });
   assert.equal((await arInvoiceRow.locator("td").nth(5).textContent()).trim(), "470.00",
@@ -319,8 +329,8 @@ export async function run(page, shot, ctx) {
   const restoredRow = receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();
   assert.equal((await restoredRow.locator("td").nth(5).textContent()).trim(), "470.00",
     "voiding the write-off must put the whole open balance back");
-  await assert.rejects(
-    restoredRow.getByText("Written off", { exact: true }).waitFor({ state: "visible", timeout: 1500 }),
+  await assertNeverVisible(
+    restoredRow.getByText("Written off", { exact: true }),
     "the written-off flag must be gone once the write-off is voided",
   );
   await shot("write-off-voided");

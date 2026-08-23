@@ -16,7 +16,7 @@ and report everything.
 cd erp
 npm test                 # vitest — full suite against the real erp_test DB (serial; never parallelize)
 npx tsc --noEmit
-npx eslint src tests
+npx eslint src tests e2e scripts prisma   # every directory holding lintable source — keep in step with ci.yml
 npm run build            # the standalone build the Docker image ships
 ```
 
@@ -25,7 +25,7 @@ npm run build            # the standalone build the Docker image ships
 Needs the dev server and the DEV database (`erp`, not `erp_test`):
 
 ```bash
-npm run test:e2e         # 10 Playwright flows, bundled Chromium
+npm run test:e2e         # the whole Playwright flow suite, bundled Chromium
 ```
 
 If flows fail on selectors, remember the §5a traps: React controlled inputs expose no

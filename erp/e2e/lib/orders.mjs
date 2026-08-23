@@ -98,3 +98,45 @@ export async function waitForShipmentPage(page) {
   if (!match) throw new Error(`Could not parse a packing-list number out of "${text}"`);
   return { id: page.url().split("/").pop(), shipperNumber: Number(match[1]) };
 }
+
+/**
+ * ONE order-board row, identified by its ORDER-NUMBER CELL.
+ *
+ * Never `page.locator("tr").filter({ has: page.getByText(String(n), { exact: true }) })` — which is
+ * what all four board call sites did until #167a. That asks "does ANY cell of this row hold exactly
+ * these digits", and the board prints six other bare-number columns beside the order number (PO,
+ * Qty, Weight, Loads, VS #). It went red for real on 2026-08-22: `ship-partial-then-complete`'s
+ * order is 100 x 10 lb + 40 x 5 lb, so its **Weight** cell reads exactly `1200`, and the moment the
+ * order counter reached #1200 the filter resolved to two rows and Playwright's strict mode refused
+ * both. Not a substring match — an exact match against the wrong column. Which digits are on screen
+ * is ambient state; which COLUMN they sit in is not, so that is what this matches on.
+ *
+ * The column INDEX is read from the header rather than assumed to be the first: the board's columns
+ * are user-arrangeable (a saved view reorders and hides them), so a positional guess would be one
+ * more ambient assumption — the exact thing this helper exists to remove. A hidden Order # column
+ * throws by name rather than silently matching nothing.
+ *
+ * Returns the row locator; the caller waits on it (a row that has not rendered yet is the normal
+ * case immediately after a navigation).
+ */
+export async function boardRow(page, orderNumber) {
+  // Anchored on the table that CARRIES the Order # header rather than on "the page's table"
+  // (#167a fix round). `/` renders exactly one table today, so `page.locator("table thead th")`
+  // was correct — and silently so: a second table on the page would have concatenated both
+  // headers into one list and offset the column index, which is the same class of ambient
+  // assumption this helper exists to remove. If two tables ever carry an Order # header the row
+  // locator resolves across both and Playwright's strict mode says so out loud.
+  const board = page.locator("table").filter({ has: page.locator("thead th", { hasText: "Order #" }) });
+  const headers = board.locator("thead th");
+  await headers.first().waitFor({ state: "visible", timeout: 15000 });
+  // The sort indicator is part of the header's own text ("Order # ▲"), so it is stripped before
+  // comparing rather than matched around.
+  const labels = (await headers.allInnerTexts()).map((label) => label.replace(/[▲▼]/g, "").trim());
+  const index = labels.indexOf("Order #");
+  if (index < 0) {
+    throw new Error(`the order board is showing no "Order #" column — headers: ${JSON.stringify(labels)}`);
+  }
+  return board.locator("tbody tr").filter({
+    has: page.locator(`td:nth-child(${index + 1})`, { hasText: new RegExp(`^\\s*${orderNumber}\\s*$`) }),
+  });
+}

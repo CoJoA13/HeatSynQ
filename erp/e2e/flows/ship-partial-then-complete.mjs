@@ -12,19 +12,22 @@
 // regression proof): a container is saved with a Cust Cont Id, then a second save touches ONLY
 // its count, and after a full reload the stored id must still be there.
 import assert from "node:assert/strict";
-import { waitForValue } from "../lib/ui.mjs";
-import { createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
+import { assertNeverVisible, waitForValue } from "../lib/ui.mjs";
+import { boardRow, createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 async function assertBoardStatus(page, ctx, orderNumber, statusText, absentText) {
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
-  const row = page.locator("tr").filter({ has: page.getByText(String(orderNumber), { exact: true }) });
+  // #167a: the ORDER-NUMBER CELL, never "any cell holding these digits" — and this flow's own
+  // order is the one whose Weight cell collided (e2e/lib/orders.mjs's `boardRow`).
+  const row = await boardRow(page, orderNumber);
   await row.waitFor({ state: "visible", timeout: 10000 });
   await row.getByText(statusText, { exact: true }).waitFor({ state: "visible" });
   if (absentText) {
-    await assert.rejects(
-      row.getByText(absentText, { exact: true }).waitFor({ state: "visible", timeout: 500 }),
+    await assertNeverVisible(
+      row.getByText(absentText, { exact: true }),
       `board row for #${orderNumber} should show "${statusText}", not "${absentText}"`,
+      500,
     );
   }
 }
