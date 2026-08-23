@@ -100,8 +100,14 @@ const VIEWPORT = { width: 1440, height: 900 };
 const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 1);
 
 /** Full-page shots of a heavily-seeded list can run to tens of thousands of pixels. Past this
- *  height the capture is clipped to the top of the page — and the clip is RECORDED in sweep.md
- *  for that screen, never silently applied. */
+ *  height the capture is clipped to the top MAX_SHOT_HEIGHT px OF THE PAGE — not of the viewport —
+ *  and the clip is RECORDED in sweep.md for that screen, never silently applied.
+ *
+ *  See shoot(): honouring "of the page" needs `fullPage: true` ALONGSIDE the clip. Without it
+ *  Playwright clamps the clip to the viewport, so this constant stopped mattering entirely and the
+ *  sweep's note said 6000 while the file held 900 (#169 fix round). Keep the two in step: this
+ *  docstring, shoot()'s screenshot options, and the sweep wording are one contract in three
+ *  places. */
 const MAX_SHOT_HEIGHT = 6000;
 
 const CONTENT_TIMEOUT_MS = 30000;
@@ -646,7 +652,16 @@ async function shoot(page, name) {
   const height = await page.evaluate(() => document.documentElement.scrollHeight).catch(() => 0);
   const clipped = height > MAX_SHOT_HEIGHT;
   if (clipped) {
-    await page.screenshot({ path: file, clip: { x: 0, y: 0, width: VIEWPORT.width, height: MAX_SHOT_HEIGHT } });
+    // `fullPage: true` is load-bearing, NOT redundant with the clip. A `clip` on its own is
+    // resolved against the VIEWPORT, so this branch used to write a 1440x900 shot of the top of
+    // the screen while sweep.md reported "clipped to the top 6000px" — a generated report
+    // asserting something untrue. With fullPage the clip is resolved against the whole scrollable
+    // page, which is what MAX_SHOT_HEIGHT has always claimed to mean.
+    await page.screenshot({
+      path: file,
+      fullPage: true,
+      clip: { x: 0, y: 0, width: VIEWPORT.width, height: MAX_SHOT_HEIGHT },
+    });
   } else {
     await page.screenshot({ path: file, fullPage: true });
   }
@@ -1228,7 +1243,10 @@ async function writeSweep(rows, meta) {
   lines.push(`- **Run at:** ${meta.startedAt}`);
   lines.push(`- **Against:** ${meta.baseURL} (${meta.attached ? "attached to a running server" : "a dev server this harness started"})`);
   lines.push(`- **Signed in as:** \`${USERNAME}\``);
-  lines.push(`- **Viewport:** ${VIEWPORT.width}×${VIEWPORT.height}, full-page captures`);
+  // The scale is stated because it is a contract, not an incidental: it decides the intrinsic
+  // width of every PNG here, and tests/manual-artifacts.test.ts pins it FROM those PNGs.
+  lines.push(`- **Viewport:** ${VIEWPORT.width}×${VIEWPORT.height} at deviceScaleFactor ${DEVICE_SCALE} — a full-page shot is ${VIEWPORT.width * DEVICE_SCALE}px wide`);
+  lines.push(`- **Captures:** full page, clipped to the top ${MAX_SHOT_HEIGHT}px of the page when it is taller than that`);
   lines.push(`- **Routes discovered:** ${meta.routeCount} from \`src/app/**/page.tsx\``);
   lines.push(`- **Wall clock:** ${(meta.durationMs / 1000).toFixed(1)}s`);
   lines.push("");
