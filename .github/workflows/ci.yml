@@ -56,6 +56,33 @@ jobs:
       - name: Lint
         run: npx eslint src tests e2e scripts prisma
 
+      # #169 fix round: the manual's generator and its committed output had no guard anywhere —
+      # `grep manual:build .github/workflows/` returned nothing and no test looked at the page.
+      # Its inputs (the NN-*.md chapters and docs/manual/img/) are committed, `manual:build` is
+      # deterministic by design (same inputs -> same bytes, no timestamp), and it runs in 0.18 s,
+      # so a rebuild that produces NO DIFF is a complete proof that the published page and the
+      # figures it embeds still agree. That is precisely the rot the generator was written to end:
+      # the page was hand-built once with no generator and went stale the first time a control was
+      # renamed. The 16 MB ceiling and the capture scale are pinned separately, from the committed
+      # artifact, in tests/manual-artifacts.test.ts.
+      #
+      # WHY THIS JOB and not a new one, given `ci` already runs 12+ minutes against a 15-minute
+      # cap: 0.18 s is 0.02% of that budget and it needs nothing this job does not already have —
+      # no database, no Prisma client, no browser, only the checkout and Node. A separate parallel
+      # job would cost no wall clock at all, which is the better argument on cost and the worse one
+      # on effect: `ci` is the check the branch protection rules actually require, and a docs-rot
+      # guard that cannot block a merge is the rot again.
+      - name: Rebuild the manual and prove it is a no-op
+        run: |
+          npm run manual:build
+          if git diff --quiet -- ../docs/manual/manual.html; then
+            echo "docs/manual/manual.html is up to date with its inputs."
+          else
+            git diff --stat -- ../docs/manual/manual.html
+            echo "::error::docs/manual/manual.html is stale. Run 'npm run manual:build' from erp/ and commit the result."
+            exit 1
+          fi
+
       - name: Build
         run: npm run build
 
