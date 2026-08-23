@@ -40,16 +40,17 @@ function pngSize(buf: Buffer): { width: number; height: number } | null {
 }
 
 /**
- * The one figure allowed to be wider than the capture viewport, with the reason and the issue.
- * This is an EXEMPTION LIST, not a raised bound: a second over-wide figure must be a decision.
- * When #170 lands, `invoicing-detail.png` comes back at 1440 and the "no stale exemption" case
- * below reds until this entry is deleted.
+ * Figures allowed to be wider than the capture viewport, each with its reason and issue. This is an
+ * EXEMPTION LIST, not a raised bound: an over-wide figure must be a decision, not a drift.
+ *
+ * Currently EMPTY, and that is the healthy state. Its one occupant, `invoicing-detail.png`, was the
+ * #170 symptom — the invoice History panel printed raw snapshot JSON unwrapped, so the page
+ * overflowed horizontally. #170 fixed the render (the diff value now wraps and scrolls in its own
+ * box, `src/components/HistoryPanel.tsx`) and added the live capture-time guard pinned below, so the
+ * re-captured figure came back at 1440 and the entry was deleted. An entry here is a standing
+ * over-wide figure waiting to be fixed, not a resting place.
  */
-const OVER_WIDE: Record<string, string> = {
-  "invoicing-detail.png":
-    "#170 — the invoice History panel prints raw snapshot JSON unwrapped, so the page overflows " +
-    "horizontally and its full-page shot is wider than the viewport",
-};
+const OVER_WIDE: Record<string, string> = {};
 
 describe("the committed manual page", () => {
   it("is under the publishing ceiling build-manual.mjs states", () => {
@@ -152,5 +153,32 @@ describe("the committed manual figures", () => {
       /const DEVICE_SCALE = Number\(process\.env\.MANUAL_SCALE \?\? (\d+)\);/,
     );
     expect(scale).toBe("1");
+  });
+
+  /**
+   * The RUNTIME half of the width guard (#170). The two width tests above are the committed-bytes
+   * backstop — they red only once an over-wide PNG has been captured AND committed. This pins the
+   * live gate that stops such a PNG being produced in the first place: `shoot()` measures the page's
+   * scrollWidth, marks the row `overWide` when it exceeds the viewport, and `statusOf` treats that
+   * as a FAIL so the run exits non-zero. #170 (the invoice History panel's unwrapped JSON) reached
+   * the published manual reported PASS precisely because no such live gate existed. A refactor that
+   * drops any of the three pieces reds here, naming the file, rather than silently re-blinding the
+   * capture to horizontal overflow.
+   */
+  it("gates the capture run on horizontal overflow, not just the committed artifact", () => {
+    const src = readFileSync(path.join(ERP_ROOT, "e2e/manual-capture.mjs"), "utf8");
+    // shoot() measures the page's own scroll width (not the viewport's clientWidth).
+    expect(src, "shoot() must measure document scrollWidth").toContain(
+      "width: document.documentElement.scrollWidth",
+    );
+    // The verdict is strict `>` against the same VIEWPORT.width the artifact pins use, so a fitting
+    // page (exactly VIEWPORT.width) never trips it.
+    expect(src, "the over-wide verdict must compare against VIEWPORT.width").toContain(
+      "const overWide = width > VIEWPORT.width;",
+    );
+    // statusOf() must fold overWide into the FAIL condition, or the measurement gates nothing.
+    const statusOf = src.match(/function statusOf\(row\)\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(statusOf, "statusOf() lost its body — the match reshaped").not.toBe("");
+    expect(statusOf, "statusOf() must FAIL on row.overWide").toContain("row.overWide");
   });
 });
