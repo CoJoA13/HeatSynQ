@@ -278,8 +278,14 @@ then (5).
   console-log line shape (`^  RETRIED `) — and **nothing pins either.** `tests/e2e-harness.test.ts`
   is the natural home for an assertion that the summary-table verdict still starts with two spaces
   and the literal `RETRIED`. Not added here: the file belongs to Task 2, another task is live on the
-  shared test DB, and I could not have run vitest to prove the assertion green. Worth a follow-up
-  issue; the OR'd second detector is the mitigation, not a substitute.
+  shared test DB, and I could not have run vitest to prove the assertion green. Filed as part of
+  **#190** in the fix round (§11).
+  *Corrected in the fix round:* the OR'd second detector is **not** a mitigation for the coupling in
+  any strong sense. `runFlow` mkdir's the attempt directory unconditionally at the top of attempt 2,
+  so detector 1 fires for every granted retry, passed or failed — it is already complete on its own,
+  and the `RETRIED` verdict covers a strict subset (green-on-retry). The pair protects against a
+  **rename** of one surface, not against a missed case. The risk is real but lower than stated here
+  originally.
 - **Branch protection still requires only the `ci` check**, so `e2e` will run on every PR but will
   **not block a merge** until the owner adds it to the required checks in repo settings. Recorded in
   HANDOFF §5a under "Still owed by the owner". Until then #167b's claim is honestly "runs in CI", not
@@ -303,3 +309,180 @@ then (5).
   paragraph and Task 3's dataset paragraph, with the estimates flagged as estimates and the
   branch-protection gap flagged as owed by the owner.
 - The spec decision log is **not** touched: this changes no product contract.
+
+---
+
+## 11. Fix round (2026-08-22) — one Important, ten minors
+
+The reviewer's Important finding was correct and would have red every run. Everything below is
+again verified by static analysis, primary-source reading and fixture execution — **this job has
+still never run on a GitHub runner**, and §8 still lists what only a real run settles.
+
+### The Important one: the PGDG step resolved to PostgreSQL 16
+
+The reviewer's evidence chain, re-verified here from the upstream sources rather than taken on
+trust (`pg_wrapper` and `PgCommon.pm`, salsa.debian.org `postgresql/postgresql-common`):
+
+```perl
+# pg_wrapper
+($version, $cluster, $db) = user_cluster_map() unless ($cluster or $explicit_host or $explicit_port);
+...
+if (not $version or $cmdname =~ /^(psql|pg_archivecleanup|pg_isready)$/) {   # pg_dump is NOT on this list
+```
+
+```perl
+# PgCommon.pm, user_cluster_map()
+# if only one cluster exists, use that
+return ($last_version, $last_cluster, undef) if $count == 1;
+```
+
+`/usr/bin/pg_dump` is a `pg_wrapper` symlink, not an alternatives link. `postgresql-client-18`
+creates no cluster; the `ubuntu-24.04` runner image leaves a stopped-but-undropped `postgresql-16`
+cluster at `/etc/postgresql/16/main`. One cluster ⇒ `user_cluster_map()` returns 16 ⇒ `$version` is
+set ⇒ the newest-version override never applies to `pg_dump`. **A bare `pg_dump` on that image is
+PostgreSQL 16's**, and the original step's assertion — faithful to the app's own resolution, which
+is why it was worth keeping — would have failed in step 5 of every run.
+
+**Fix chosen: the explicit `$GITHUB_PATH` prepend, not `pg_dropcluster`.** Both work. The prepend
+was chosen because it removes the question rather than re-answering it: `pg_dropcluster 16 main`
+hardcodes the image's *current* cluster version and name (a runner-image bump to 17 breaks the
+command outright), and it works only by dropping the count to zero so that the newest-version
+*heuristic* takes over — the same heuristic that produced the bug. An absolute path beats the
+wrapper regardless of how many clusters exist or what the image ships next.
+
+Because `$GITHUB_PATH` applies only to **subsequent** steps, the assertion moved into its own step,
+`Verify a bare pg_dump resolves to PostgreSQL 18`. That is strictly better than asserting the
+absolute path in the same step: it invokes a **bare** `pg_dump` under the exported PATH, which is
+the same lookup `src/server/backups.ts`'s `spawn("pg_dump", …)` performs (no `-h`/`-p`,
+`PGHOST`/`PGPORT` unset) — the assertion is the app's resolution, not a proxy for it.
+
+**The wrong comment at the old `ci.yml:181-182` is gone.** It said the step declined to trust "the
+`postgresql-client-common` alternatives wrapper to pick the newest", which is wrong twice. The
+replacement states the mechanism — symlink to `pg_wrapper`, `user_cluster_map()` first, the
+three-command newest-version list `pg_dump` is not on, the runner image's undropped 16 cluster —
+and says why the prepend is the fix rather than a belt-and-braces extra.
+
+Kept as-is, per the review: the ASCII-armored key at `signed-by=`, `$(lsb_release -cs)` → `noble`,
+no `pgdg.list` collision.
+
+### The ten minors
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Cancellation mechanism stated wrongly in three places | Fixed in all three — `ci.yml`, `CLAUDE.md`, `HANDOFF` §5a |
+| 2 | Invariant is `job ≥ step + setup + upload`, not `step < job` | Written as arithmetic in the comment |
+| 3 | 25 min derived from the *fastest* runs | Re-derived from the slowest; **step 30, job 45** |
+| 4 | Warm-up's 240 s aggregate budget refuses the whole run in CI | `E2E_WARMUP_BUDGET_MS: 600000` at job level, with the reasoning |
+| 5 | "a parallel job costs no wall clock" no longer true | Sentence replaced; the decision restated on its real grounds |
+| 6 | `CLAUDE.md` hardcodes 25/35 | Numbers removed; it states the *relation* and the sizing rule |
+| 7 | `pg_dump --version \| grep -q` can SIGPIPE under `pipefail` | No pipe at all — captured to `$ver`, matched with `[[ =~ ]]` |
+| 8 | Early failure ⇒ spurious empty-artifact warning | Fixed twice over — see below |
+| 9 | No forcing function for the `RETRIED` flip | **Issue #190** filed, `ready-for-agent`, referenced in the workflow |
+| 10 | Detector coupling described as stronger than it is | Comment and §9 corrected |
+
+**(1) The cancellation mechanism.** A cancelled job does **not** skip its remaining steps —
+`always()`- and `cancelled()`-conditioned steps are evaluated inside the cancellation window. The
+upload is lost because a JOB timeout *cancels* the job, and for a cancelled job `failure()` is
+FALSE and the suite step's `outcome` is `cancelled`, not `failure`, so the upload's condition never
+becomes true; and a ~65 MB upload inside a short best-effort window is not something to stake the
+evidence on regardless. The step-below-job ordering stays load-bearing; only the reason changed.
+
+**(3) The re-derivation.** The old 25 came from Task 4's own 298/301/317 s. Task 3 ran the *same*
+suite on the *same* box at **~6 min, twice** (report §, runs 1 and 5) — the slowest clean
+measurement available, and the one a cap must be built on. 6 min × the 3–4x runner factor = 18–24
+min, so 25 left one minute of margin against the pessimistic case. **Step 30 / job 45**, sized by
+`job ≥ setup + suite + retry-check + upload` = `8 + 30 + 1 + 3 = 42`, 3 min spare. The comment now
+says "raise the step and the job MUST move with it".
+
+**(4) The warm-up budget.** `e2e/lib/warmup.mjs` defaults `budgetMs` to 240 000 and
+`warmupRefusal` refuses the **whole run** if any route went unissued — a failure mode that looks
+nothing like a timeout and appears only in CI. 240 s is ~8x a 30.6 s local cold compile; at 3–4x
+that margin is ~2x. Set to 600 000 at job level (≈5x the pessimistic 120 s), inside the step's 30
+min, and flagged to be tightened with the timeouts.
+
+**(8) The empty-artifact warning, fixed at both ends.** `mkdir -p e2e-artifacts` moved *inside* the
+`if [ -f … ]` guard, so a run that never reached the suite creates no directory; and the upload's
+condition became
+`always() && (steps.suite.outcome == 'failure' || steps.retries.outputs.retried == 'true')`
+— keyed on the suite step (now `id: suite`) rather than a bare `failure()`, which is true for a
+failure *anywhere* in the job. A skipped step is absent from the `steps` context, so
+`steps.suite.outcome` is null and the comparison is false; the `retries` step is `always()`, so it
+still runs and reports `retried=false`. Net: an `npm ci` or pg-version failure no longer fires an
+upload at all.
+
+**(10) What the two detectors actually buy.** `runFlow` calls `mkdir(flowDir, {recursive:true})`
+unconditionally at the top of attempt 2 (`e2e/run.mjs`), so the `*__attempt-*` glob fires for
+**every** granted retry, passed or failed — detector 1 alone is complete. The `RETRIED` verdict
+fires only on green-on-retry. The pair is therefore redundancy against a **rename** of either
+surface, not extra coverage. The comment and §9 now say that instead of implying the two are
+complementary. Neither is pinned by a test; #190 names that too.
+
+### Verification — what was actually run this round
+
+| Check | Result |
+|---|---|
+| **actionlint 1.7.12** (downloaded, pinned tag) | one finding, the same **pre-existing** `ci.yml:95 SC2034` in the `docker` job's `for i in $(seq 1 60)`. Nothing in `e2e`. |
+| **shellcheck 0.11.0**, via `actionlint -shellcheck` over every `run:` block | same single pre-existing finding |
+| Full YAML parse + step dump (`yaml.safe_load`) | `jobs: ['ci','docker','e2e']`; job timeout 45; job `env.E2E_WARMUP_BUDGET_MS=600000`; `id: suite` / `timeout-minutes: 30`; the three `if:` expressions as intended |
+| `bash -n` on **all 26** `run:` blocks | all OK |
+| `ci`/`docker` jobs unchanged | lines 1–110 byte-identical to the pre-fix file (`md5sum`) |
+
+**The changed scripted steps were executed** under GitHub's real shell invocation
+(`bash --noprofile --norc -eo pipefail`) against synthetic fixtures.
+
+*The new pg_dump assertion, six version strings — the two new rows are 17.x (the next plausible
+wrong answer) and a beta:*
+
+```
+  ACCEPT   pg_dump (PostgreSQL) 18.2 (Ubuntu 18.2-1.pgdg24.04+1)
+  REFUSE   pg_dump (PostgreSQL) 16.10          <- the bug this round fixes, RED-verified
+  ACCEPT   pg_dump (PostgreSQL) 18
+  REFUSE   pg_dump (PostgreSQL) 181.0
+  REFUSE   pg_dump (PostgreSQL) 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
+  ACCEPT   pg_dump (PostgreSQL) 18.0-beta1
+```
+
+plus `pg_dump` absent from PATH entirely → `rc=127`, failing fast under `-e` rather than passing an
+empty version string. No pipe remains in the step, so the SC/141 path from minor 7 is gone by
+construction rather than by test.
+
+*The collect step, both branches, checking the new property:*
+
+```
+  log present : rc=0, e2e-artifacts/console.log written
+  log absent  : rc=0, e2e-artifacts/ NOT created      <- minor 8, first half
+```
+
+*The retry detector, re-run unchanged after the rewrite (5 scenarios):*
+
+```
+A clean run                    -> retried=false, no annotation, no summary
+B retry granted AND passed     -> retried=true,  annotation, 390-byte summary
+C retry granted, failed twice  -> retried=true,  annotation, 390-byte summary
+D RETRIED line only, dir absent-> retried=true,  annotation, 326-byte summary
+E no artifacts and no log      -> retried=false, exit 0 (does not die under set -e)
+```
+
+*The suite step's `pipefail` property, RED-verified again after adding `id:`:*
+
+```
+with    -o pipefail : step exit=1   and the log was still captured
+without -o pipefail : step exit=0   -> the gate would lie
+```
+
+Per the brief, `npm run test:e2e`, the full `npx vitest run` and `npm run db:reset` were **not**
+run — another task holds the dev database and port 3100. The diff is one YAML file and three
+markdown files: no source, no tests, no gate in `CLAUDE.md`'s list is affected.
+
+### Still only a real runner can settle it
+
+§8's list stands, minus item 2, which this round converted from "unverified" to "verified wrong and
+fixed" for the resolution half — the *apt* half (does the PGDG repo add and install cleanly on the
+image?) is still unexercised, and still fails loudly in its own named step before anything
+expensive. Added to that list:
+
+6. **Whether `/usr/lib/postgresql/18/bin` is where the Ubuntu `postgresql-client-18` package puts
+   the binaries.** It is the PGDG layout and it is where `pg_wrapper` itself execs from, but it was
+   not observed on the image. If it is wrong the new verify step reds immediately, by name.
+7. **Whether 8 min of setup and 3 min of upload are the right terms in the job-timeout arithmetic.**
+   Both are estimates; the first green run replaces them with measurements.
