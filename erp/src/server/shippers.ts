@@ -2525,6 +2525,15 @@ export async function printBol(
 async function resolveShipmentCerts(
   db: Db, shipperId: string, orderId?: string,
 ): Promise<{ certs: { id: string; orderNumber: number }[]; warnings: string[] }> {
+  const shipper = await db.shipper.findUnique({
+    where: { id: shipperId }, select: { reversesShipperId: true },
+  });
+  // #183: a REVERSAL cannot carry a SHIPMENT-scope cert — the picker omits it and `createCert`
+  // refuses one. So the SHIPMENT-scope "create it from /orders/N" warning below would name an action
+  // that can never succeed on a reversal; suppress it there. (ORDER/LOAD scope stay warned — those
+  // certs are creatable regardless, and a reversal's order-scope cert exists from order save.)
+  const isReversal = shipper?.reversesShipperId != null;
+
   const shipperOrders = await db.shipperOrder.findMany({
     where: { shipperId, ...(orderId ? { orderId } : {}) },
     orderBy: { position: "asc" },
@@ -2549,7 +2558,7 @@ async function resolveShipmentCerts(
       orderBy: [{ loadNumber: "asc" }, { createdAt: "asc" }],
       select: { id: true },
     });
-    if (certs.length === 0 && so.order.certRequired) {
+    if (certs.length === 0 && so.order.certRequired && !(isReversal && scope === "SHIPMENT")) {
       // The saveNewShipper §5.7 warning's own shape, adapted to the print moment.
       warnings.push(
         `Order #${so.order.orderNumber} requires a certification and none exists to print — ` +

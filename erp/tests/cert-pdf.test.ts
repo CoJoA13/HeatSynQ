@@ -7,7 +7,7 @@ import {
   createCert, printCert, readCertPdfData, certPrintSettings, voidCert, updateCert, type CertDetail,
 } from "@/server/certs";
 import { replaceReadings } from "@/server/cert-results";
-import { createShipper, printShippingTickets } from "@/server/shippers";
+import { createShipper, printShippingTickets, reverseShipper } from "@/server/shippers";
 import { buildCertDefinition, type CertPdfData } from "@/server/pdf/cert";
 import { getDocument, listDocumentsForShipper, VOIDED_PRINT } from "@/server/documents";
 import type { Customer, User } from "../prisma/generated/prisma/client";
@@ -664,6 +664,17 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     expect(printed.certs).toHaveLength(1);
     expect(printed.certs[0].orderNumber).toBe(order.orderNumber);
     expect(printed.warnings).toEqual([]);
+  });
+
+  // #183: a reversal cannot be certified — the picker omits it and `createCert` refuses it — so the
+  // "create it from /orders/N" missing-cert warning would name an action that can never succeed on
+  // one. Printing a reversal's tickets with certs must therefore emit no such warning.
+  it("does not warn about a missing shipment-scope cert when printing a REVERSAL (#183)", async () => {
+    const { shipper } = await shipmentScopeShipment();
+    const { shipper: reversal } = await asSystem(() => reverseShipper(shipper.id, { reason: "returned" }));
+    const printed = await asSystem(() => printShippingTickets(reversal.id, undefined, { withCerts: true }));
+    expect(printed.certs).toEqual([]);      // a reversal carries no cert to print
+    expect(printed.warnings).toEqual([]);   // ...and no unactionable "create it from /orders/N" warning
   });
 
   it("prints the tickets and each covered order's cert, each stored as its own document", async () => {
