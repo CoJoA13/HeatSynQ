@@ -209,6 +209,11 @@ demonstrates it — the answer to "check whether any current figure is affected"
 
 Not fixed here, as instructed. Measured so #170 can carry it.
 
+> **Superseded by §12.5 (fix round).** The arithmetic below reproduces exactly, but it prices every
+> hypothetical at the FLEET density when that figure's own density is 1.61x the fleet, which makes
+> the low end of the range optimistic. §12.5 restates it with the basis named, and the corrected
+> number is the one now on #170.
+
 | | |
 |---|---|
 | Dimensions | **2974 × 2868** — the only figure not 1440 wide, because the invoice page overflows horizontally |
@@ -357,3 +362,184 @@ distribution is stable across rebuild dates rather than being a property of 2026
    does not start a browser, so this is recorded rather than fixed.
 4. **The manual has no element-clip figure**, so the fixed distortion has no live regression guard
    beyond the unit test. If one is ever added, that test is the thing that keeps it honest.
+
+---
+
+# Fix round — the six minors
+
+Six findings, all taken. One of them (Minor 1) changed a figure and therefore the page, so the
+demonstration dataset was rebuilt and the whole manual re-captured; the new byte count is below and
+in `docs/HANDOFF.md`.
+
+## 12.1 Minor 1 — a generated report asserted something untrue
+
+`page.screenshot({ clip })` **without** `fullPage: true` resolves the clip against the **viewport**.
+So the clipped branch wrote the top **900** CSS px while `sweep.md` published *"Screenshot clipped to
+the top 6000px of a 7627px page"* — and `MAX_SHOT_HEIGHT` had, in effect, no meaning beyond deciding
+*when* to abandon a full-page shot. Pre-existing, not a Task 5 regression: the old 2x file was
+2880x1800, which is the same 900 CSS px.
+
+**Taken the preferred way: the code was made true, not the note weaker.** `fullPage: true` alongside
+the clip, so the cap means `min(pageHeight, 6000)` — continuous, and what the docstring always
+claimed. Playwright accepts the pair and produced exactly 1440x6000, verified by probe before the
+change was adopted (`MANUAL_ONLY=/admin/audit` into a scratch `MANUAL_OUT_DIR`, so nothing in
+`docs/manual/` was touched while measuring).
+
+Three places now state one contract: `MAX_SHOT_HEIGHT`'s docstring, `shoot()`'s screenshot options,
+and the sweep's wording. The sweep header also states the capture scale now (`1440x900 at
+deviceScaleFactor 1 — a full-page shot is 1440px wide`), because that is a contract a test pins, not
+an incidental.
+
+### The byte impact, plainly
+
+| | Before | After |
+|---|---:|---:|
+| `admin-audit.png` | 1440x900, 171,132 B | **1440x6000, 996,750 B** |
+| `docs/manual/img/` | 10,013,307 B | 10,877,437 B |
+| `manual.html` | 13,062,687 B (77.9%) | **14,213,844 B (84.7%)** |
+| Headroom to 16 MB | 3.54 MB | **2.44 MB** |
+
+**+1,151,157 B on the page, and it lands 46,789 B under the build's own 85% soft warning** — so the
+build still prints no warning, but the next figure of any size will trip it. That is the warning
+doing its job rather than a problem, and #170 is where the room comes back from (§12.5). Said
+plainly because the reviewer asked for it said plainly: this spends about a third of the headroom
+Task 5 created, on one figure, to make one sentence true.
+
+The figure itself is in family rather than an outlier — declared 1200x5000, rendered 800x3333, where
+`parts-detail.png` already renders 800x2858.
+
+## 12.2 Minor 2 — the leaf header over-stated its own guarantee
+
+"Resolution-independent" and "a future capture-size change is then free" hold only **at or above**
+`DECLARED_WIDTH_PX`. Below it the declared width is the intrinsic *physical* width, so a 600 CSS px
+element clip declares 600 at scale 1 and 1200 at scale 2.
+
+The header now says so, and says why it is inherent rather than a defect in the implementation: **a
+PNG's IHDR carries no device scale factor**, so a build handed only bytes cannot recover the CSS
+size. That is a property of the rule #169 mandated, not of this code. No such figure exists today
+(narrowest intrinsic width: 1440). A test case pins both halves — equal output at 1x and 2x above
+the threshold, unequal below it — so the honest half is asserted rather than only described.
+
+## 12.3 Minor 3 — `MANUAL_COLUMN_PX` was not the column
+
+Renamed to **`DECLARED_WIDTH_PX`** (leaf, test, and both prose sites). The rendered column is **800**
+CSS px; 1200 is the declared-attribute cap whose only job is to fix the aspect ratio and reserve the
+space. No conclusion changes and the density argument gets *stronger*: 1440 shown at 800 is 1.8x
+oversampled, so the retired 2x capture was 3.6x — which is now the line the constant's docstring
+carries, since that is the argument the constant exists inside.
+
+`CLAUDE.md`'s `manual:build` paragraph repeated #169's loose "1200px column" and is fixed;
+its `manual:capture` paragraph already had it right and was left alone.
+
+## 12.4 Minor 4 — nothing guarded the committed page
+
+Three guards, all browser-free.
+
+**(a) CI rebuilds the manual and requires a no-op diff** — `.github/workflows/ci.yml`, in the **`ci`
+job**, between Lint and Build. Why there, given that job runs 12+ minutes against a 15-minute cap:
+`manual:build` is **0.18 s** measured, i.e. 0.02% of the budget, and it needs nothing the job does
+not already have — no database, no Prisma client, no browser, only the checkout and Node. A separate
+parallel job would cost *no* wall clock, which is the better argument on cost and the worse one on
+effect: **`ci` is the check the branch protection rules require, and a docs-rot guard that cannot
+block a merge is the rot again.** The step prints `--stat` rather than the diff itself, because the
+diff is a 13 MB single-line base64 payload.
+
+**(b) and (c) `erp/tests/manual-artifacts.test.ts`** (new, 5 cases) — the artifact half:
+
+- `manual.html` is under the ceiling, with the 16 MB read out of `build-manual.mjs`'s own
+  `PUBLISH_LIMIT` rather than restated, and the remaining margin printed either way (a test that
+  only says "pass" tells whoever is adding a figure nothing).
+- **every PNG's IHDR width is <= the capture viewport width**, with the viewport read out of
+  `manual-capture.mjs`'s own `VIEWPORT`. That **pins `DEVICE_SCALE = 1` from the artifact itself**,
+  with no browser — closing the "untested half of a coupled pair" §11.3 recorded.
+- `invoicing-detail.png` is the one exemption, an **entry with a reason** (#170) rather than a raised
+  bound, plus a staleness case: when #170 lands and the figure comes back at 1440, that case reds
+  until the entry is deleted.
+- a belt on the source: the `MANUAL_SCALE ?? 1` default itself, so changing it reds *before* any
+  re-capture has happened.
+- and a "there are figures at all" case, so the width sweep cannot pass vacuously on an empty glob.
+
+Neither harness can be imported (both run at module scope), so both constants are lifted by regex
+against the real source, and a regex that matches nothing throws by name rather than defaulting.
+
+**RED-verified, every new assertion:** dropping the #170 exemption reds the width sweep with
+`invoicing-detail.png (2974x2868)` and reds the staleness case; putting `MANUAL_SCALE ?? 2` back reds
+the scale belt; moving `PUBLISH_LIMIT` to 12 reds the constant guard, and following it to 12 in the
+test reds the size check with `expected 13062687 to be less than or equal to 12582912`. All restored.
+
+## 12.5 Minor 5 — the #170 estimate's basis
+
+The original arithmetic reproduces exactly, and it is priced at the wrong rate. The fleet is
+**0.0897 B/px** (the other 49 figures, recomputed after the re-capture), but `invoicing-detail.png`'s
+**own** density is **0.1445 B/px — 1.61x the fleet**, because antialiased JSON text compresses badly
+per pixel.
+
+| | Recovered |
+|---|---:|
+| JSON behind a scroller (option 1), page height unchanged — those pixels become ordinary UI, so the fleet rate applies | **~1.09 MB** |
+| JSON still visible, page height unchanged — priced at its own 0.1445 B/px | 0.80 MB |
+| Reflow makes the page 1.5x taller | 0.43 MB |
+| Reflow makes the page ~2x taller (text area preserved) | ~0 — nothing |
+
+Quoted from here on as **"~1 MB in the likely case, less if the reflow makes the page much taller"**,
+with the basis named. §5 above is marked superseded rather than silently edited.
+
+Current figures for the record: 2967x2868 (the re-capture shifted it by 7px), 1,229,354 B on disk,
+**1,639,140 B inlined = 11.5% of the page** — still the single largest line item, now with
+`admin-audit.png` second at 9.35%.
+
+## 12.6 Minor 6 — the number is on the issue
+
+Posted to #170 as a comment:
+<https://github.com/CoJoA13/HeatSynQ/issues/170#issuecomment-5383534566>. Factual, no customer data,
+no account numbers, no names — the repo is public. It leads with the fact that **the dimensions in
+the issue body are pre-#169** (captured at 2x, so every number there halves), carries the table
+above with the density caveat stated, notes the page is at 84.7% of the ceiling, and closes on the
+point that the JSON is unreadable in the manual anyway (2967 intrinsic px shown at 800), which is an
+argument for option 1's shape rather than for capturing the screen differently.
+
+## 12.7 The re-capture, and the dev database
+
+The dataset was rebuilt from a dropped database by `docs/manual/dataset.md`'s exact sequence, the
+full capture run, and `npm run db:reset -- --yes` run afterwards — **the dev database is back to its
+pristine post-reset state**, which is where this round found it.
+
+`npm run manual:capture`: **exit 0, 50 PASS, 0 WARN/FAIL/ERROR/SKIPPED, sweep clean**, no console
+errors, no page errors, no failed requests. The same four standing sparse screens (`/login`,
+`/admin/roles`, `/admin/surcharges`, `/practice`), all four already annotated as reviewed-and-cleared.
+
+**Only 18 of the 50 PNGs changed at all** — the rest are byte-identical to the ones committed
+yesterday, which is a real statement about the seed's determinism, and the 18 are the detail screens
+carrying ids and audit timestamps. `invoicing-detail.png` moved 2974 -> 2967 px wide for the same
+reason.
+
+## 12.8 Gates
+
+| Gate | Result |
+|---|---|
+| `npm run manual:capture` | **exit 0** — 50 PASS, 0 FAIL/ERROR/WARN/SKIPPED |
+| `npm run manual:build` x2 | **exit 0**, byte-identical (sha256 `8a9899a7…`), 14,213,844 B / 16,777,216 B |
+| `git diff` after a second build | **empty** — the committed page is a no-op rebuild |
+| `npx tsc --noEmit` | **clean** |
+| `npx eslint src tests e2e scripts prisma` | **clean** |
+| `node --check` on all three `.mjs` touched | **clean** |
+| `npx vitest run tests/manual-figure-size.test.ts` | **7 passed** (6 + the resolution-independence case) |
+| `npx vitest run tests/manual-artifacts.test.ts` | **5 passed**, each RED-verified |
+| `actionlint` on `ci.yml` | **clean** |
+| `actionlint -shellcheck` on `ci.yml` | one finding, **pre-existing and not mine** — §12.9 |
+| `npm run test:e2e` | **not run** — §12.9 |
+
+## 12.9 Found, not fixed
+
+1. **`shellcheck` reports `SC2034: i appears unused` in the `docker` job's boot loop**
+   (`.github/workflows/ci.yml:122`, `for i in $(seq 1 60)`). Pre-existing, in a job this round did
+   not touch, and a one-character fix (`for _ in`) — left alone rather than reaching into an
+   unrelated job during a fix round. `actionlint` on its own is clean, including the new step.
+2. **`npm run test:e2e` was not run, and nothing this round changed is on its path.** Verified rather
+   than assumed: nothing under `e2e/flows/`, `e2e/run.mjs` or `e2e/lib/` imports `manual-capture.mjs`
+   or the figure leaf, and both `flow-lint` sweeps scope to `e2e/flows/` specifically, so the edits
+   to `e2e/manual-capture.mjs` are outside every sweep and every flow. The suite was run twice during
+   the main round (§9) and the code it exercises has not moved since.
+3. **The page is at 84.7% of the ceiling with 2.44 MB spare.** #191's proposed order-hub figure
+   (~388 KB) would put it near 87% and trip the soft warning. Not a defect; a budget fact that
+   belongs next to both issues.
