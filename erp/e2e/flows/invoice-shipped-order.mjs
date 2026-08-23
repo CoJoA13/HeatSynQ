@@ -22,7 +22,7 @@
 // global `BillingConfig` singleton row — see the comment on `FIXTURE.invCustomerCode` in
 // `e2e/lib/db-fixtures.ts` for why.
 import assert from "node:assert/strict";
-import { armPrompt, waitForValue } from "../lib/ui.mjs";
+import { armPrompt, assertNeverVisible, waitForValue } from "../lib/ui.mjs";
 import { boardRow, createOrderViaUi, startNewShipment, orderPanel, waitForShipmentPage } from "../lib/orders.mjs";
 
 const UNLOCK_REASON =
@@ -37,9 +37,10 @@ async function assertBoardStatus(page, ctx, orderNumber, statusText, absentText)
   await row.waitFor({ state: "visible", timeout: 10000 });
   await row.getByText(statusText, { exact: true }).waitFor({ state: "visible" });
   if (absentText) {
-    await assert.rejects(
-      row.getByText(absentText, { exact: true }).waitFor({ state: "visible", timeout: 500 }),
+    await assertNeverVisible(
+      row.getByText(absentText, { exact: true }),
       `board row for #${orderNumber} should show "${statusText}", not "${absentText}"`,
+      500,
     );
   }
 }

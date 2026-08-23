@@ -120,7 +120,14 @@ export async function waitForShipmentPage(page) {
  * case immediately after a navigation).
  */
 export async function boardRow(page, orderNumber) {
-  const headers = page.locator("table thead th");
+  // Anchored on the table that CARRIES the Order # header rather than on "the page's table"
+  // (#167a fix round). `/` renders exactly one table today, so `page.locator("table thead th")`
+  // was correct — and silently so: a second table on the page would have concatenated both
+  // headers into one list and offset the column index, which is the same class of ambient
+  // assumption this helper exists to remove. If two tables ever carry an Order # header the row
+  // locator resolves across both and Playwright's strict mode says so out loud.
+  const board = page.locator("table").filter({ has: page.locator("thead th", { hasText: "Order #" }) });
+  const headers = board.locator("thead th");
   await headers.first().waitFor({ state: "visible", timeout: 15000 });
   // The sort indicator is part of the header's own text ("Order # ▲"), so it is stripped before
   // comparing rather than matched around.
@@ -129,7 +136,7 @@ export async function boardRow(page, orderNumber) {
   if (index < 0) {
     throw new Error(`the order board is showing no "Order #" column — headers: ${JSON.stringify(labels)}`);
   }
-  return page.locator("tbody tr").filter({
+  return board.locator("tbody tr").filter({
     has: page.locator(`td:nth-child(${index + 1})`, { hasText: new RegExp(`^\\s*${orderNumber}\\s*$`) }),
   });
 }

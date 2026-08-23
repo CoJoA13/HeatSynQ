@@ -26,6 +26,7 @@ import {
   isSessionEndpoint,
   retryRefusal,
 } from "./lib/failure-classify.mjs";
+import { findAmbientRowLocators, findUncheckedAbsenceAssertions } from "./lib/flow-lint.mjs";
 import { preflightRefusal } from "./lib/preflight.mjs";
 import { warmRoutes, warmupRefusal } from "./lib/warmup.mjs";
 
@@ -391,21 +392,45 @@ function installSignalHandlers() {
  */
 async function assertNoRawApiMutations() {
   const files = (await readdir(FLOWS_DIR)).filter((f) => f.endsWith(".mjs")).sort();
-  const offenders = [];
+  const raw = [], rows = [], absences = [];
   for (const file of files) {
     const source = await readFile(path.join(FLOWS_DIR, file), "utf8");
-    for (const hit of findRawApiMutations(source)) {
-      offenders.push(`  e2e/flows/${file}:${hit.line}  ${hit.snippet}`);
-    }
+    const at = (hit) => `  e2e/flows/${file}:${hit.line}  ${hit.snippet}`;
+    for (const hit of findRawApiMutations(source)) raw.push(at(hit));
+    for (const hit of findAmbientRowLocators(source)) rows.push(at(hit));
+    for (const hit of findUncheckedAbsenceAssertions(source)) absences.push(at(hit));
   }
-  if (offenders.length > 0) {
+  if (raw.length > 0) {
     throw new Error(
-      `${offenders.length} raw APIRequestContext call(s) in the flows. Playwright emits NO ` +
+      `${raw.length} raw APIRequestContext call(s) in the flows. Playwright emits NO ` +
       `context request/response event for these, so the retry gate's mutation counters cannot ` +
       `see them and would happily re-run a flow that had already written to the dev DB:\n` +
-      `${offenders.join("\n")}\n` +
+      `${raw.join("\n")}\n` +
       `Route a mutating one through ctx.apiMutate(page, url, { method, data }) — which IS ` +
       `counted — or use page.request.get for a read.`,
+    );
+  }
+  // The two green-run-proving-nothing shapes (#167a fix round, e2e/lib/flow-lint.mjs). Refused
+  // here for the same reason as the one above: a named refusal in the second it takes to read the
+  // flow files beats a flow that passes for the wrong reason and is believed.
+  if (rows.length > 0) {
+    throw new Error(
+      `${rows.length} order-board row locator(s) built straight off \`page\` and filtered by an ` +
+      `order number. The board prints six other bare-number columns beside it (PO, Qty, Weight, ` +
+      `Loads, VS #), so this matches whichever row happens to hold those digits ANYWHERE — it ` +
+      `went red for real once, and inside an assert.rejects it PASSES instead:\n` +
+      `${rows.join("\n")}\n` +
+      `Use boardRow(page, orderNumber) from e2e/lib/orders.mjs — it matches the order-number CELL.`,
+    );
+  }
+  if (absences.length > 0) {
+    throw new Error(
+      `${absences.length} absence assertion(s) written as assert.rejects(...waitFor(...)). That ` +
+      `passes on ANY rejection — including Playwright's strict-mode violation — so the assertion ` +
+      `swearing an element is gone reports SUCCESS the moment the locator matches it twice:\n` +
+      `${absences.join("\n")}\n` +
+      `Use assertNeverVisible(locator, message[, timeoutMs]) from e2e/lib/ui.mjs, which requires ` +
+      `the rejection to be the timeout.`,
     );
   }
   return files.length;
@@ -578,7 +603,7 @@ async function main() {
 
     // Before anything expensive: refuse a flow that mutates where the retry gate cannot see it.
     const flowCount = await assertNoRawApiMutations();
-    console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations: none`);
+    console.log(`Checked ${flowCount} flow file(s) for uncounted APIRequestContext mutations, ambient\n  board-row locators and unchecked absence assertions: none`);
 
     // #167a: the dev database's own ambient state, read BEFORE a single fixture row is written —
     // so everything the check sees belongs to somebody else, which is precisely the population

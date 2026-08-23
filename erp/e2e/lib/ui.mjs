@@ -1,4 +1,5 @@
 // Small shared helpers so the six flow modules don't each reinvent them.
+import assert from "node:assert/strict";
 
 /**
  * Arms a one-shot `page.on("dialog", ...)` listener BEFORE the action that triggers a
@@ -182,4 +183,44 @@ export function expectEqual(actual, expected, label) {
 
 export function expectTrue(condition, label) {
   if (!condition) throw new Error(`${label}: expected condition to be true`);
+}
+
+/**
+ * "This element must NOT be on screen" — the one absence assertion the flows are allowed to make
+ * (#167a fix round). It replaces `assert.rejects(locator.waitFor(...), "…")`, which was in nine
+ * places and is a FALSE-GREEN shape: `assert.rejects` passes on *any* rejection, and Playwright
+ * rejects a `waitFor` for two entirely different reasons —
+ *
+ *   * the element never appeared        -> "Timeout 1500ms exceeded"      (what we mean)
+ *   * SEVERAL elements matched          -> "strict mode violation: … resolved to 2 elements"
+ *
+ * — so the moment ambient data makes a locator match twice, the assertion swearing the element is
+ * gone starts PASSING while it is on screen twice. `void-order.mjs` shipped exactly that: a voided
+ * order still on the board plus one ambient cell holding the same digits, and the flow green.
+ *
+ * So the rejection is checked rather than merely awaited: a timeout is the pass, a strict-mode
+ * violation is a named failure (the locator is too loose, which is a defect in its own right), and
+ * anything else — a closed page, a transport error — is re-thrown untouched so the harness's
+ * network/assertion classifier still sees it as itself.
+ *
+ * `assert.fail` deliberately, not `throw new Error`: an `ERR_ASSERTION` hard-overrides the netFailure
+ * signal in `failure-classify.mjs`, which is what keeps "the element is still there" from being
+ * laundered into a green retry.
+ */
+export async function assertNeverVisible(locator, message, timeoutMs = 1500) {
+  try {
+    await locator.waitFor({ state: "visible", timeout: timeoutMs });
+  } catch (err) {
+    const text = err instanceof Error ? err.message : String(err);
+    if (/strict mode violation/i.test(text)) {
+      assert.fail(
+        `${message} — but the locator is too loose to answer that: it resolved to SEVERAL ` +
+        `elements, so "not visible" could never have been distinguished from "visible twice". ` +
+        `Narrow it (the board's rows: boardRow() in e2e/lib/orders.mjs). Playwright said: ${text}`,
+      );
+    }
+    if (!/Timeout \d+ms exceeded/.test(text)) throw err;
+    return; // timed out waiting for it to appear — genuinely absent, which is the assertion
+  }
+  assert.fail(message);
 }

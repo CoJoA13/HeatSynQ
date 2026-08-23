@@ -12,8 +12,7 @@
 // (board-search-scan, loads-after-print, void-order all operate on THIS SAME order) — the
 // `created.templateIds` precedent (template-build-and-load.mjs), generalized to a single id
 // rather than an array since there is only ever one order across this whole run.
-import assert from "node:assert/strict";
-import { pickCombobox, waitForValue } from "../lib/ui.mjs";
+import { pickCombobox, assertNeverVisible, waitForValue } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
 const MIDDOT = "·";
@@ -51,9 +50,10 @@ export async function run(page, shot, ctx) {
   await addSerialInput.fill("R{001-005}");
   await addSerialInput.press("Enter");
   await waitForValue(page.getByLabel("Line 2 serial 5", { exact: true }), "R005");
-  await assert.rejects(
-    page.getByText("Serialization required — no serials entered yet.").waitFor({ state: "visible", timeout: 500 }),
+  await assertNeverVisible(
+    page.getByText("Serialization required — no serials entered yet."),
     "the serialization warning should clear once 5 serials are entered",
+    500,
   );
   await shot("serials-expanded");
 

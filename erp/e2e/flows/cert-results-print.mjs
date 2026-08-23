@@ -8,6 +8,7 @@
 // re-download (the stored-bytes reprint guarantee; two FRESH renders are never byte-compared —
 // the renderPdf non-determinism rule) plus a second print archiving a second document.
 import assert from "node:assert/strict";
+import { assertNeverVisible } from "../lib/ui.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createOrderViaUi } from "../lib/orders.mjs";
@@ -87,8 +88,8 @@ export async function run(page, shot, ctx) {
   await (await popup)?.close().catch(() => {});
   // The header's Printed fact now carries a date instead of "not yet" (the page reloaded server
   // truth after the print, which is also what arms the §5.16 post-print results gate).
-  await assert.rejects(
-    page.getByText("not yet", { exact: true }).waitFor({ state: "visible", timeout: 1500 }),
+  await assertNeverVisible(
+    page.getByText("not yet", { exact: true }),
     "the Printed header fact should show the first-print date once printed",
   );
   const shotPath = await shot("cert-printed");

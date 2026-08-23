@@ -14,6 +14,7 @@
 // shows the SECOND gate bite once the first is satisfied — the part of this screen a single-gate
 // section can never demonstrate.
 import assert from "node:assert/strict";
+import { assertNeverVisible } from "../lib/ui.mjs";
 import { login } from "../lib/auth.mjs";
 
 const EM_DASH = "—";
@@ -36,9 +37,10 @@ export async function run(page, shot, ctx) {
   await section.waitFor({ state: "visible" });
   // A restricted-but-still-view-holding user sees the real designer, not a "Requires
   // processes.view" placeholder — this is the disabled-with-a-reason path, not the denied one.
-  await assert.rejects(
-    section.getByText("Requires processes.view.").waitFor({ state: "visible", timeout: 1000 }),
+  await assertNeverVisible(
+    section.getByText("Requires processes.view."),
     "view-denied placeholder should not render for a user who holds processes.view",
+    1000,
   );
   await shot("part-designer-visible-to-restricted-user");
 

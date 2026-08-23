@@ -4,7 +4,8 @@
 // order flows on purpose: board-search-scan needs the order live to find it, and once this flow
 // voids it there is nothing left for a later flow to build on.
 import assert from "node:assert/strict";
-import { armPrompt } from "../lib/ui.mjs";
+import { armPrompt, assertNeverVisible } from "../lib/ui.mjs";
+import { boardRow } from "../lib/orders.mjs";
 
 const REASON = "E2E void-order flow: intentional test void, demonstrating the void UX for the demo.";
 
@@ -30,21 +31,28 @@ export async function run(page, shot, ctx) {
   // Board: a voided order leaves the list by default (spec §5c).
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
-  await assert.rejects(
-    page.locator("tr", { hasText: String(created.orderNumber) }).waitFor({ state: "visible", timeout: 1500 }),
+  // #167a fix round: this was the FIFTH board locator and the only one that could pass while
+  // WRONG. `page.locator("tr", { hasText: n })` is a substring match over every cell, and it sat
+  // inside an `assert.rejects` — so a voided row still on the board plus one ambient cell holding
+  // the same digits is two matches, a strict-mode violation, a rejected promise and a PASS. Both
+  // halves are fixed: `boardRow` matches the order-number CELL, and `assertNeverVisible` requires
+  // the rejection to be the timeout rather than accepting any rejection at all.
+  //
+  // `boardRow` is awaited OUTSIDE the absence assertion on purpose: it reads the table header, and
+  // a board rendering no "Order #" column must fail loudly rather than be swallowed as "absent".
+  const hiddenRow = await boardRow(page, created.orderNumber);
+  await assertNeverVisible(
+    hiddenRow,
     "a voided order should not appear on the board while Include voided is off",
   );
   await shot("board-hides-voided");
 
   await page.getByRole("checkbox", { name: "Include voided" }).check();
-  const row = page.locator("tr", { hasText: String(created.orderNumber) });
+  const row = await boardRow(page, created.orderNumber);
   await row.waitFor({ state: "visible", timeout: 10000 });
   // A voided row renders the plain word "Voided" in place of the colored light dot + status —
   // board-search-scan already confirmed the dot for this SAME order while it was still live.
-  await assert.rejects(
-    row.locator("span.rounded-full").waitFor({ state: "visible", timeout: 1000 }),
-    "a voided row should show no colored light",
-  );
+  await assertNeverVisible(row.locator("span.rounded-full"), "a voided row should show no colored light", 1000);
   await row.getByText("Voided", { exact: true }).waitFor({ state: "visible" });
   await shot("board-shows-with-include-voided");
 }

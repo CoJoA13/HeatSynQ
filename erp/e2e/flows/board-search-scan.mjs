@@ -18,9 +18,11 @@ export async function run(page, shot, ctx) {
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });
 
-  // #167a: was `page.locator("tr", { hasText: ... })` — a SUBSTRING match against every cell of
-  // every row, the loosest member of the family that collision belongs to. `boardRow` matches the
-  // order-number cell exactly (e2e/lib/orders.mjs).
+  // #167a: was an unscoped row locator matched by SUBSTRING against every cell of every row, the
+  // loosest member of the family that collision belongs to. `boardRow` matches the order-number
+  // cell exactly (e2e/lib/orders.mjs). Written without the old shape spelled out on purpose:
+  // `findAmbientRowLocators` (e2e/lib/flow-lint.mjs) fails CLOSED and does not read comments,
+  // which is exactly the property that keeps a real call from talking its way past it.
   const row = await boardRow(page, created.orderNumber);
   await row.waitFor({ state: "visible", timeout: 10000 });
   // The light is a colored dot (rounded-full) beside the status word — rendered only for a live

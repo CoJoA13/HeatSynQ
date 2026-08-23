@@ -3,6 +3,7 @@
 // disabled with a tooltip naming processes.create for a user who can view templates but not
 // create them.
 import assert from "node:assert/strict";
+import { assertNeverVisible } from "../lib/ui.mjs";
 
 export async function run(page, shot, ctx) {
   const { fixtures } = ctx;
@@ -15,9 +16,10 @@ export async function run(page, shot, ctx) {
   const search = page.getByPlaceholder("Search name");
   await search.fill("Austemper");
   await page.getByText(fixtures.liveTemplateName, { exact: true }).waitFor({ state: "visible" });
-  await assert.rejects(
-    page.getByText(fixtures.decoyTemplateName, { exact: true }).waitFor({ state: "visible", timeout: 1000 }),
+  await assertNeverVisible(
+    page.getByText(fixtures.decoyTemplateName, { exact: true }),
     "decoy template should be filtered out by the search term",
+    1000,
   );
   await shot("search-narrowed");
 

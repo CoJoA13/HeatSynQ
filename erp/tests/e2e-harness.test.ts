@@ -11,6 +11,7 @@ import {
 } from "../e2e/lib/failure-classify.mjs";
 import { enumerateRoutes, warmupRefusal } from "../e2e/lib/warmup.mjs";
 import { preflightRefusal } from "../e2e/lib/preflight.mjs";
+import { findAmbientRowLocators, findUncheckedAbsenceAssertions } from "../e2e/lib/flow-lint.mjs";
 
 /**
  * The E2E harness's decision predicates (#184, gate-infrastructure Task 2 fix round).
@@ -336,5 +337,99 @@ describe("preflightRefusal", () => {
     const refusal = preflightRefusal({ ...clean, unpostedBatchCount: 1 });
     expect(refusal).toMatch(/db:reset/);
     expect(refusal).toMatch(/docs\/manual\/dataset\.md/);
+  });
+});
+
+// #167a fix round. The two sweeps in `e2e/lib/flow-lint.mjs` answer the question the retry gate
+// does not: can a GREEN run be green while the thing it asserts is broken? Both shapes below were
+// found in code that had already been reviewed, and both PASS rather than fail — which is why
+// neither can be left to a census by hand. Enforced twice, the `findRawApiMutations` precedent:
+// `run.mjs` refuses before flow 1, and the corpus sweeps at the bottom of each block run centrally.
+describe("findAmbientRowLocators", () => {
+  it("finds a board row locator taken off `page` and filtered by an order number", () => {
+    const src = 'a\nconst row = page.locator("tr", { hasText: String(created.orderNumber) });\n';
+    const found = findAmbientRowLocators(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].line).toBe(2);
+  });
+
+  it("finds every unscoped row shape, including the tbody and role forms", () => {
+    expect(findAmbientRowLocators('page.locator("tbody tr").filter({ hasText: String(order.number) });')).toHaveLength(1);
+    expect(findAmbientRowLocators('page.locator("table tbody tr", { hasText: `${orderNumber}` });')).toHaveLength(1);
+    expect(findAmbientRowLocators('page.getByRole("row", { name: String(orderNumber) });')).toHaveLength(1);
+  });
+
+  it("reads the whole STATEMENT, so a chained multi-line locator cannot hide the filter", () => {
+    const src = 'const r = page.locator("tr")\n  .filter({ has: page.getByText(String(order.number), { exact: true }) });\n';
+    expect(findAmbientRowLocators(src)).toHaveLength(1);
+  });
+
+  it("leaves a SCOPED row locator alone — that family is narrower and was left as found-not-fixed", () => {
+    expect(findAmbientRowLocators(
+      'readySection.locator("tr").filter({ has: page.getByText(String(order.number), { exact: true }) });',
+    )).toEqual([]);
+    expect(findAmbientRowLocators('receivables.locator("tbody tr").filter({ hasText: String(order.number) }).first();'))
+      .toEqual([]);
+  });
+
+  it("leaves an unscoped row locator alone when it filters on something no other column prints", () => {
+    // invoice-shipped-order's surcharge row and close-month-end's payment row: correct as written.
+    expect(findAmbientRowLocators('page.locator("tr").filter({ has: page.locator("td", { hasText: "Surcharge" }) });'))
+      .toEqual([]);
+    expect(findAmbientRowLocators('page.locator("tr").filter({ has: page.getByText(fixtures.closePaymentTypeName) });'))
+      .toEqual([]);
+  });
+
+  it("over-matches rather than under-matches: it fails CLOSED on a commented-out locator", () => {
+    // The `findRawApiMutations` rule. The escape hatch is boardRow(), never a comment — which is
+    // why board-search-scan.mjs describes the old shape in prose instead of quoting it.
+    expect(findAmbientRowLocators('// const row = page.locator("tr", { hasText: String(orderNumber) });'))
+      .toHaveLength(1);
+  });
+
+  it("every e2e flow uses boardRow today", () => {
+    const flowsDir = path.join(process.cwd(), "e2e", "flows");
+    const files = readdirSync(flowsDir).filter((f) => f.endsWith(".mjs"));
+    expect(files.length).toBeGreaterThan(0);
+    const offenders = files.flatMap((file) =>
+      findAmbientRowLocators(readFileSync(path.join(flowsDir, file), "utf8"))
+        .map((f) => `${file}:${f.line} ${f.snippet}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("findUncheckedAbsenceAssertions", () => {
+  it("finds assert.rejects wrapped around a waitFor — the false-green absence assertion", () => {
+    const src = 'x\nawait assert.rejects(\n  row.waitFor({ state: "visible", timeout: 1500 }),\n  "gone",\n);\n';
+    const found = findUncheckedAbsenceAssertions(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].line).toBe(2);
+  });
+
+  it("leaves assert.rejects around anything that is not a waitFor alone", () => {
+    // Only the waitFor pairing can launder a strict-mode violation into a pass: "no such element"
+    // and "several such elements" both reject there. A route that must 403 is a different thing.
+    expect(findUncheckedAbsenceAssertions('await assert.rejects(lockRevision(id, 2), /409/);')).toEqual([]);
+  });
+
+  it("leaves the sanctioned helper alone", () => {
+    expect(findUncheckedAbsenceAssertions('await assertNeverVisible(row, "should be gone", 500);')).toEqual([]);
+  });
+
+  it("over-matches rather than under-matches: it fails CLOSED on a commented-out assertion", () => {
+    expect(findUncheckedAbsenceAssertions('// await assert.rejects(row.waitFor({ state: "visible" }));'))
+      .toHaveLength(1);
+  });
+
+  it("every e2e flow states absence through assertNeverVisible today", () => {
+    const flowsDir = path.join(process.cwd(), "e2e", "flows");
+    const files = readdirSync(flowsDir).filter((f) => f.endsWith(".mjs"));
+    expect(files.length).toBeGreaterThan(0);
+    const offenders = files.flatMap((file) =>
+      findUncheckedAbsenceAssertions(readFileSync(path.join(flowsDir, file), "utf8"))
+        .map((f) => `${file}:${f.line} ${f.snippet}`),
+    );
+    expect(offenders).toEqual([]);
   });
 });
