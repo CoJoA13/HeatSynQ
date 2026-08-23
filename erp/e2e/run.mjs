@@ -28,7 +28,7 @@ import {
   resultsLine,
   retryRefusal,
 } from "./lib/failure-classify.mjs";
-import { findAmbientRowLocators, findPlainErrorThrows, findUncheckedAbsenceAssertions } from "./lib/flow-lint.mjs";
+import { findAmbientRowLocators, findPlainErrorFailures, findUncheckedAbsenceAssertions } from "./lib/flow-lint.mjs";
 import { preflightRefusal } from "./lib/preflight.mjs";
 import { suiteSources } from "./lib/suite-sources.mjs";
 import { warmRoutes, warmupRefusal } from "./lib/warmup.mjs";
@@ -404,7 +404,7 @@ async function assertNoRawApiMutations() {
     for (const hit of findRawApiMutations(source)) raw.push(at(hit));
     for (const hit of findAmbientRowLocators(source)) rows.push(at(hit));
     for (const hit of findUncheckedAbsenceAssertions(source)) absences.push(at(hit));
-    for (const hit of findPlainErrorThrows(source)) throws.push(at(hit));
+    for (const hit of findPlainErrorFailures(source)) throws.push(at(hit));
   }
   if (raw.length > 0) {
     throw new Error(
@@ -444,12 +444,13 @@ async function assertNoRawApiMutations() {
   // launder it into FAIL [network] and, in a mutation-free flow, a granted retry.
   if (throws.length > 0) {
     throw new Error(
-      `${throws.length} flow assertion(s) written as \`throw new Error(...)\`. That carries no ` +
-      `ERR_ASSERTION code, so classifyFailure cannot tell it from a transport failure and a stale ` +
+      `${throws.length} flow failure(s) minted as a code-less Error (thrown or rejected). That carries ` +
+      `no ERR_ASSERTION code, so classifyFailure cannot tell it from a transport failure and a stale ` +
       `netFailure can launder it into a green retry:\n` +
       `${throws.join("\n")}\n` +
-      `Use assert.ok / assert.match / assert.fail (node:assert/strict) — keep the message text; the ` +
-      `AssertionError it throws is what the override covers.`,
+      `Use assert.ok / assert.match / assert.fail (node:assert/strict), or for a promise rejection ` +
+      `reject(new assert.AssertionError({ message })) — keep the message text; the AssertionError is ` +
+      `what the override covers.`,
     );
   }
   return sources.length;

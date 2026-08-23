@@ -61,7 +61,7 @@ function armPromptOnce(page, responseText) {
         // these four prompts, which is exactly when a clear failure matters most.
         dialog.dismiss()
           .catch(() => {})
-          .finally(() => reject(new Error(`Expected a prompt dialog, got ${dialog.type()}`)));
+          .finally(() => reject(new assert.AssertionError({ message: `Expected a prompt dialog, got ${dialog.type()}` })));
         return;
       }
       const message = dialog.message();

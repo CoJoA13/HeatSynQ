@@ -15,7 +15,7 @@ import { enumerateRoutes, warmupRefusal } from "../e2e/lib/warmup.mjs";
 import { preflightRefusal } from "../e2e/lib/preflight.mjs";
 import {
   findAmbientRowLocators,
-  findPlainErrorThrows,
+  findPlainErrorFailures,
   findUncheckedAbsenceAssertions,
 } from "../e2e/lib/flow-lint.mjs";
 import { suiteSourcesSync } from "../e2e/lib/suite-sources.mjs";
@@ -555,49 +555,64 @@ describe("findUncheckedAbsenceAssertions", () => {
   });
 });
 
-// #193. The third false-green shape: a flow assertion written as `throw new Error(...)` carries no
+// #193. The third false-green shape: a code-less Error minted as a flow failure carries no
 // ERR_ASSERTION code, so classifyFailure's hard override (above) does not cover it and a stale
 // netFailure earlier in the flow can launder it into FAIL [network] and a granted retry.
-describe("findPlainErrorThrows", () => {
+describe("findPlainErrorFailures", () => {
   it("finds a throw new Error, with its line number", () => {
     const src = 'line one\nif (!x) throw new Error("boom");\nline three\n';
-    const found = findPlainErrorThrows(src);
+    const found = findPlainErrorFailures(src);
     expect(found).toHaveLength(1);
     expect(found[0].line).toBe(2);
   });
 
   it("finds any built-in Error subclass, not just Error", () => {
-    expect(findPlainErrorThrows('throw new TypeError("x")')).toHaveLength(1);
-    expect(findPlainErrorThrows('throw new RangeError("x")')).toHaveLength(1);
+    expect(findPlainErrorFailures('throw new TypeError("x")')).toHaveLength(1);
+    expect(findPlainErrorFailures('throw new RangeError("x")')).toHaveLength(1);
   });
 
-  it("finds the no-`new` form too — `throw Error(...)` is the identical code-less Error in JS", () => {
-    // Fails CLOSED on the equivalent idiom: `throw Error(...)` and `throw new Error(...)` construct
-    // the same object, so a `new`-required sweep would let the no-`new` form escape into a green retry.
-    expect(findPlainErrorThrows('if (!x) throw Error("boom")')).toHaveLength(1);
-    expect(findPlainErrorThrows('throw TypeError("x")')).toHaveLength(1);
+  it("finds the no-`new` and QUALIFIED forms too — all mint the identical code-less Error", () => {
+    // Fails CLOSED on every equivalent idiom (Codex round 1, P1/P2).
+    expect(findPlainErrorFailures('if (!x) throw Error("boom")')).toHaveLength(1);
+    expect(findPlainErrorFailures('throw TypeError("x")')).toHaveLength(1);
+    expect(findPlainErrorFailures('throw new globalThis.Error("x")')).toHaveLength(1);
+    expect(findPlainErrorFailures('throw new errors.TimeoutError("x")')).toHaveLength(1);
     // ...but `throwError(...)` (a function call, no space) is not a throw statement.
-    expect(findPlainErrorThrows("throwError(msg)")).toEqual([]);
+    expect(findPlainErrorFailures("throwError(msg)")).toEqual([]);
   });
 
-  it("leaves a re-throw alone — `throw err` preserves the original classification", () => {
+  it("finds a code-less Error delivered through a promise `reject(...)` (Codex round 2, P2)", () => {
+    // A dialog handler that `reject(new Error(...))`s reaches classifyFailure with the same code-less
+    // Error a throw would — so the sweep covers the reject verb too.
+    expect(findPlainErrorFailures("reject(new Error(`got ${type}`))")).toHaveLength(1);
+    expect(findPlainErrorFailures(".finally(() => reject(new Error(msg)))")).toHaveLength(1);
+    expect(findPlainErrorFailures("Promise.reject(new TypeError(msg))")).toHaveLength(1);
+  });
+
+  it("leaves an AssertionError alone — the sanctioned promise-side fix carries ERR_ASSERTION", () => {
+    expect(findPlainErrorFailures("reject(new assert.AssertionError({ message: msg }))")).toEqual([]);
+    expect(findPlainErrorFailures("throw new AssertionError({ message: msg })")).toEqual([]);
+  });
+
+  it("leaves a re-raise alone — `throw err` / `reject(err)` preserve the original classification", () => {
     // assertNeverVisible re-throws a transport error untouched so the harness still sees it as
-    // itself; only `throw new <...>Error(...)` mints a fresh, code-less error.
-    expect(findPlainErrorThrows("try { a(); } catch (err) { throw err; }")).toEqual([]);
+    // itself; only a freshly minted code-less Error is the problem.
+    expect(findPlainErrorFailures("try { a(); } catch (err) { throw err; }")).toEqual([]);
+    expect(findPlainErrorFailures("dialog.accept().catch((err) => reject(err))")).toEqual([]);
   });
 
   it("leaves the sanctioned replacements alone", () => {
-    expect(findPlainErrorThrows('assert.fail("boom")')).toEqual([]);
-    expect(findPlainErrorThrows('assert.ok(match, "could not parse")')).toEqual([]);
+    expect(findPlainErrorFailures('assert.fail("boom")')).toEqual([]);
+    expect(findPlainErrorFailures('assert.ok(match, "could not parse")')).toEqual([]);
   });
 
   it("over-matches rather than under-matches: it fails CLOSED on a commented-out throw", () => {
-    expect(findPlainErrorThrows('// throw new Error("disabled for now")')).toHaveLength(1);
+    expect(findPlainErrorFailures('// throw new Error("disabled for now")')).toHaveLength(1);
   });
 
-  it("every swept suite source asserts through node:assert today (flows AND lib, #193)", () => {
+  it("every swept suite source delivers failures through node:assert today (flows AND lib, #193)", () => {
     expect(sweptSources().length).toBeGreaterThan(0);
-    expect(sweep(findPlainErrorThrows)).toEqual([]);
+    expect(sweep(findPlainErrorFailures)).toEqual([]);
   });
 });
 

@@ -90,34 +90,36 @@ export function findUncheckedAbsenceAssertions(source) {
   return found;
 }
 
-// `throw new Error(...)` (and any built-in Error subclass) written as a flow assertion (#193). The
-// third false-green shape, and the subtlest: `classifyFailure` opens with a hard override that an
-// `ERR_ASSERTION` failure is NEVER a network one, precisely so a stale netFailure earlier in a flow
-// cannot launder a real assertion failure into `FAIL [network]` and — in a flow that mutated nothing
-// — into a granted retry and a green run. A plain `throw new Error(...)` carries no `ERR_ASSERTION`
-// code, so it walks straight through that override. Convert each to `assert.ok`/`assert.match`/
-// `assert.fail` — the message text is good, keep it; the thrown `AssertionError` is what the override
-// covers. The hand-rolled timeout throws (`if (Date.now() > deadline) ...`) are the sharpest case:
-// they are the shape most likely to fire on a slow or contended machine, i.e. the same machine most
-// likely to carry a stale netFailure.
+// A code-less Error minted as a flow FAILURE (#193). The third false-green shape, and the subtlest:
+// `classifyFailure` opens with a hard override that an `ERR_ASSERTION` failure is NEVER a network one,
+// precisely so a stale netFailure earlier in a flow cannot launder a real assertion failure into
+// `FAIL [network]` and — in a flow that mutated nothing — into a granted retry and a green run. A
+// plain `Error` carries no `ERR_ASSERTION` code, so it walks straight through that override. Convert
+// each to `assert.ok`/`assert.match`/`assert.fail`, or — where the failure is delivered through a
+// promise — `reject(new assert.AssertionError({ message }))`; the message text is good, keep it, and
+// the `AssertionError` is what the override covers. The hand-rolled timeout throws
+// (`if (Date.now() > deadline) ...`) are the sharpest case: they are the shape most likely to fire on
+// a slow or contended machine, i.e. the same machine most likely to carry a stale netFailure.
 //
-// `new` is OPTIONAL and the constructor may be QUALIFIED, deliberately: `throw Error(...)`,
-// `throw new Error(...)`, `throw new globalThis.Error(...)` and `throw new errors.TimeoutError(...)`
-// all construct a code-less error, so a pattern that required `new` or a bare single identifier would
-// let those idioms walk straight through the sweep and then through classifyFailure — the exact
-// escape this fails CLOSED to prevent (Codex P1/P2). `throwError(...)` (no space) is a function call,
-// not a throw statement, and stays unmatched.
-const PLAIN_ERROR_THROW = /\bthrow\s+(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*Error\s*\(/g;
+// TWO delivery verbs are covered — `throw` and a promise `reject(...)` (Codex P2, round 2: a dialog
+// handler that `reject(new Error(...))`s reaches classifyFailure with the identical code-less Error a
+// `throw` would). `new` is OPTIONAL and the constructor may be QUALIFIED (`throw Error(...)`,
+// `throw new globalThis.Error(...)`, `reject(new errors.TimeoutError(...))`), because every one of
+// those mints a code-less error. `AssertionError` is EXCLUDED (the `(?<!Assertion)Error` lookbehind):
+// it carries `ERR_ASSERTION`, which is the whole point, so the sanctioned fix is not flagged. A
+// re-raise of a caught error (`throw err`, `reject(err)`) is NOT matched — it preserves the original
+// classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
+// `throwError(...)` (no space after `throw`) is a function call, not a throw statement, and stays out.
+const CODELESS_ERROR = String.raw`(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*(?<!Assertion)Error\s*\(`;
+const PLAIN_ERROR_FAILURE = new RegExp(String.raw`\bthrow\s+${CODELESS_ERROR}|\breject\s*\(\s*${CODELESS_ERROR}`, "g");
 
 /**
- * Every `throw [new] <...>Error(...)` in one suite source, with 1-based line numbers. A re-throw of a
- * caught error (`throw err`) is deliberately NOT matched — re-raising preserves the original
- * classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
- * Pure: the caller reads the file and raises the refusal.
+ * Every code-less-Error flow failure (`throw`n or `reject`ed) in one suite source, with 1-based line
+ * numbers. Pure: the caller reads the file and raises the refusal.
  */
-export function findPlainErrorThrows(source) {
+export function findPlainErrorFailures(source) {
   const found = [];
-  for (const m of source.matchAll(PLAIN_ERROR_THROW)) {
+  for (const m of source.matchAll(PLAIN_ERROR_FAILURE)) {
     found.push({ line: lineOf(source, m.index), snippet: snippetOf(source, m.index) });
   }
   return found;

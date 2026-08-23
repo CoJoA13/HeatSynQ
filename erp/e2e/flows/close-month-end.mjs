@@ -128,7 +128,7 @@ function armReopenDialogs(page, reason) {
       }
       // The second dialog ends this listener's job either way — detach before resolving/rejecting.
       page.off("dialog", onDialog);
-      if (type !== "prompt") { reject(new Error(`Expected a prompt dialog, got ${type}`)); return; }
+      if (type !== "prompt") { reject(new assert.AssertionError({ message: `Expected a prompt dialog, got ${type}` })); return; }
       dialog.accept(reason).then(resolve).catch(reject);
     };
     page.on("dialog", onDialog);
