@@ -93,6 +93,8 @@ Opening an order gives you every part of it on one screen: the header details, t
 loads, containers, serial numbers, extra charges, the documents printed against it, and the
 **History** panel showing every change made to it — including changes made in its sub-sections.
 
+![An order, with its lines, loads and History panel](img/orders-detail.png)
+
 ### The traveler
 
 **Print traveler** produces the shop paper, with the barcode that brings you back to this order
