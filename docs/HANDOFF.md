@@ -372,8 +372,12 @@ clean-baseline bar (two of those runs failed on the `close-month-end` dialog han
 DEFERRED by owner ruling 2026-08-23 pending that baseline; its two harness surfaces (`attemptDir`,
 `resultsLine`) were extracted to the `failure-classify.mjs` leaf and PINNED in
 `tests/e2e-harness.test.ts` against CI's own `*__attempt-*` glob and `^  RETRIED ` grep, so a rename
-reds a test instead of narrowing the gate. Gates on the branch: **3658 tests / 212 files**,
-`tsc`/`eslint`/`build` clean, E2E TBD. #191 (docs figure) and #171/#33 etc. remain.
+reds a test instead of narrowing the gate. An adversarial 5-lens review (verify pass per finding)
+returned two confirmed items, both fixed: `findPlainErrorThrows` required `new` so `throw Error(...)`
+— the identical code-less Error — escaped the sweep (fixed: `new` optional, fails CLOSED), and
+`suite-sources.mjs`'s docstring overstated coverage (`.mjs` only; the `.ts` subprocess CLIs are out by
+design). Gates on the branch: **3659 tests / 212 files**, `tsc`/`eslint`/`build` clean, **E2E 25/25**.
+#191 (docs figure) and #171/#33 etc. remain.
 
 **#170 — FIXED 2026-08-22, branch `fix-history-panel-overflow`, merged 2223cd4 (PR #196).** The History panel printed
 each changed field as `{JSON.stringify(before)} → {JSON.stringify(after)}` in a plain `<div>` with no
