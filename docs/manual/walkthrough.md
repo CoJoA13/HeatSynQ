@@ -132,8 +132,9 @@ time:
 2. **~~"no early-pay discount applies" covers three distinct causes~~ — fixed
    ([#175](https://github.com/CoJoA13/HeatSynQ/issues/175), 2026-08-20).** Outside the window, no
    terms on the invoice, and entitlement already consumed each name themselves now, off the same
-   composition the offer read uses. What is left is that the out-of-window one does not say when the
-   window closed ([#178](https://github.com/CoJoA13/HeatSynQ/issues/178)).
+   composition the offer read uses. The out-of-window one now also names the day the window ran
+   through ([#178](https://github.com/CoJoA13/HeatSynQ/issues/178), 2026-08-23), off that same
+   single deadline computation.
 3. `process-templates.ts` and `templates.ts` both export `createTemplate` for unrelated
    concepts.
 4. **There is no supported way to seed the demo slice into the dev database.** The guarded
