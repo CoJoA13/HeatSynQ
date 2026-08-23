@@ -244,17 +244,31 @@ That is the whole reason `shell: bash` is in the `defaults` block, demonstrated 
 
 Listed plainly, because a reviewer should not have to infer them.
 
-1. **The two timeouts.** 25 min on the suite step, 35 on the job. Derivation: three clean local runs
+> **Item 1 below was written before the fix round and is SUPERSEDED by §11 on both of its halves —
+> the numbers AND the mechanism.** It is struck through rather than rewritten, this report's
+> convention, because what a round got wrong is part of the record. §11 minor 3 re-derives the
+> timeouts from the *slowest* clean measurement (**step 30 / job 45**, sized by
+> `job ≥ setup + suite + retry-check + upload`), and §11 minor 1 corrects the cancellation mechanism:
+> a cancelled job does **not** blanket-skip its remaining steps. Read §11 before §8.
+
+1. **The two timeouts.** ~~25 min on the suite step, 35 on the job. Derivation: three clean local runs
    at 298/301/317 s on a 16-core box (call the suite 5.3 min), plus ~5–7 min of CI setup — the
    `postgres:18` pull, the pg client install, `npm ci`, `prisma generate` + `migrate deploy`, the
    seed, and `playwright install --with-deps`, which downloads Chromium *and* apt-installs its system
    libraries — and a 3x working / 4x pessimistic runner-speed factor on the suite itself (16–21 min).
-   Pessimistic total ≈ 28 min. **These are estimates.** The comment says so and says to tighten them
-   against the first green runs.
+   Pessimistic total ≈ 28 min.~~ **SUPERSEDED (§11 minor 3): step 30 / job 45**, because 25 was
+   derived from this task's own *fastest* runs while Task 3 had run the same suite on the same box at
+   ~6 min — the slowest clean measurement, and the one a cap must be built on. **These are still
+   estimates.** The comment says so and says to tighten them against the first green runs.
    The *structural* half is not an estimate and is the load-bearing part: **the step number must stay
-   below the job number**, because a JOB timeout cancels the job and a cancelled job skips its
-   remaining steps — including the upload. A hung suite under a job-level-only timeout produces a red
-   run with no screenshots, no video and no `dev-server.log`, i.e. exactly the outcome #167b names.
+   below the job number** ~~because a JOB timeout cancels the job and a cancelled job skips its
+   remaining steps — including the upload~~ — **and the reason above is WRONG (§11 minor 1):**
+   `always()`- and `cancelled()`-conditioned steps ARE evaluated in the cancellation window. What
+   actually loses the upload is that a JOB timeout *cancels* the job, and for a cancelled job
+   `failure()` is FALSE and the suite step's `outcome` reads `cancelled`, not `failure`, so the
+   upload's condition never becomes true. The conclusion is unchanged: a hung suite under a
+   job-level-only timeout produces a red run with no screenshots, no video and no `dev-server.log`,
+   i.e. exactly the outcome #167b names.
 2. **Whether the PGDG install works on the runner image as written.** The commands are the documented
    PGDG-for-Debian/Ubuntu recipe; I could not execute them here. If it fails it fails loudly, in its
    own named step, before anything expensive.
