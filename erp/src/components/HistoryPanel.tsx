@@ -122,7 +122,16 @@ export function HistoryPanel({ entity, entityId }: { entity: string; entityId: s
                 <span className="text-slate-500">{new Date(e.at).toLocaleString()}</span>
               </div>
               {changedFields(e.before, e.after).map((k) => (
-                <div key={k} className="ml-2 text-xs text-slate-600">
+                // #170: a changed field is stringified inline, and for a relation array pulled in by
+                // SNAPSHOT_INCLUDE (e.g. `lines`) that is kilobytes of single-line JSON with almost
+                // no break opportunities. With no wrapping rule it cannot wrap, so it pushed the
+                // whole page wider than the viewport (a CREATE entry, where every key counts as
+                // changed, is the worst case). `break-all` lets it wrap at any character so it can
+                // never resize the page again; `max-h-40 overflow-y-auto` keeps a multi-KB payload
+                // scrolling inside its own box rather than turning one row into a wall. Every byte
+                // stays reachable — this constrains the rendering, it does not truncate. Load-bearing
+                // classes: do not drop them in a "cleanup" (the defect was the ABSENCE of exactly this).
+                <div key={k} className="ml-2 max-h-40 overflow-y-auto break-all text-xs text-slate-600">
                   {k}: <s>{JSON.stringify(e.before?.[k])}</s> → {JSON.stringify(e.after?.[k])}
                 </div>
               ))}

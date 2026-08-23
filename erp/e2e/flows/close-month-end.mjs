@@ -105,20 +105,33 @@ function armConfirmOnce(page) {
 }
 
 /** Reopen (Close.tsx `doReopen`) fires `confirm()` THEN `prompt()` back to back in one click
- *  handler — two chained `page.once` listeners (the `armConfirmOnce` doc comment's own reasoning
- *  for why this flow cannot reuse `armDialog`/`armPrompt` as-is), so neither lingers to intercept
- *  the void-application `armPrompt` call later in this same flow. */
+ *  handler. Both dialogs are caught by a SINGLE persistent `page.on("dialog")` listener, registered
+ *  once before the click and removed the instant the prompt is handled.
+ *
+ *  It was two CHAINED `page.once` listeners, and that raced: the prompt listener was registered
+ *  inside the confirm's `accept().then(...)` microtask, so once the confirm is accepted the browser
+ *  runs straight on to `prompt()` and the second dialog could arrive BEFORE that listener existed.
+ *  With no listener the prompt is left unhandled, the page blocks on `prompt()`, and this Promise —
+ *  which has no timeout — never resolves, hanging the flow until the CI job's 30-minute cap.
+ *  Measured on CI twice (the `close-month-end` timeout on #196); it passes locally because the race
+ *  is timing-sensitive. One persistent listener has no re-registration gap to lose. It is removed
+ *  the moment the prompt is handled, so it does not linger to intercept the void-application
+ *  `armPrompt` call later in this same flow — the reason this flow avoids `armDialog`/`armPrompt`. */
 function armReopenDialogs(page, reason) {
   return new Promise((resolve, reject) => {
-    page.once("dialog", (dialog) => {
-      if (dialog.type() !== "confirm") { reject(new Error(`Expected a confirm dialog, got ${dialog.type()}`)); return; }
-      dialog.accept().then(() => {
-        page.once("dialog", (dialog2) => {
-          if (dialog2.type() !== "prompt") { reject(new Error(`Expected a prompt dialog, got ${dialog2.type()}`)); return; }
-          dialog2.accept(reason).then(resolve).catch(reject);
-        });
-      }).catch(reject);
-    });
+    const onDialog = (dialog) => {
+      const type = dialog.type();
+      // The confirm is accepted while the SAME listener stays attached for the prompt that follows.
+      if (type === "confirm") {
+        dialog.accept().catch((err) => { page.off("dialog", onDialog); reject(err); });
+        return;
+      }
+      // The second dialog ends this listener's job either way — detach before resolving/rejecting.
+      page.off("dialog", onDialog);
+      if (type !== "prompt") { reject(new Error(`Expected a prompt dialog, got ${type}`)); return; }
+      dialog.accept(reason).then(resolve).catch(reject);
+    };
+    page.on("dialog", onDialog);
   });
 }
 

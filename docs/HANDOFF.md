@@ -350,6 +350,25 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**#170 — FIXED 2026-08-22, branch `fix-history-panel-overflow` (PR open).** The History panel printed
+each changed field as `{JSON.stringify(before)} → {JSON.stringify(after)}` in a plain `<div>` with no
+wrap rule, so a relation array pulled in by `SNAPSHOT_INCLUDE` (e.g. `lines`) rendered as kilobytes of
+unbreakable single-line JSON and pushed the whole page wider than the viewport — a CREATE entry, where
+every key counts as changed, being the worst case. The fix is `option 1` (the owner's recommendation):
+the diff value now carries `break-all max-h-40 overflow-y-auto`, so it wraps at any character and a
+multi-KB payload scrolls inside its own box, never resizing the page. It is the shared `HistoryPanel`,
+so the one render-site fix covers **all ~12 mounts**, not just the invoice and part pages the issue
+measured. **Option 2 (summarise collections) was deferred by owner ruling** — a separate readability
+issue, not this one. `manual:capture` gained the guard the issue asked for: `shoot()` measures
+`scrollWidth` and `statusOf` FAILs any screen past the viewport, so this layout class — invisible to the
+health probe, which is how it reached the published manual reported PASS — now gates the run and is named
+in `sweep.md`; `tests/manual-artifacts.test.ts` pins the runtime guard and the committed-bytes backstop
+with the same strict comparison. The manual was re-captured (`invoicing-detail.png` 2974×2868 → 1440×2196,
+`parts-detail` 5145→4777px still clipped at the 4000 cap; all 50 PNGs re-captured from a fresh dataset
+instance), `manual.html` rebuilt to **11.09 MB** (was 12.99 MB, now 66% of the ceiling), and the stale
+`OVER_WIDE` exemption deleted. Gates on the branch: **3640 tests / 212 files**, `tsc`/`eslint`/`build`
+clean, E2E **25/25**, capture 50 PASS / 0 over-wide.
+
 **#115 (P1) — FIXED 2026-08-16, branch `fix-allocation-retry` (`fc7eb54`), the burn-down's Group A.**
 Concurrent `allocateNumber` aborted with 40001 under Serializable with no retry on any caller, so
 concurrent creation of every numbered entity (order, shipper, BOL, credit, receipt batch, quote, GL

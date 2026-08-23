@@ -668,7 +668,21 @@ const DEV_CHROME_CSS = "nextjs-portal, #__next-build-watcher, [data-nextjs-toast
 async function shoot(page, name) {
   const file = path.join(IMG_DIR, `${name}.png`);
   await page.addStyleTag({ content: DEV_CHROME_CSS }).catch(() => {});
-  const height = await page.evaluate(() => document.documentElement.scrollHeight).catch(() => 0);
+  const { height, width } = await page
+    .evaluate(() => ({
+      height: document.documentElement.scrollHeight,
+      width: document.documentElement.scrollWidth,
+    }))
+    .catch(() => ({ height: 0, width: 0 }));
+  // Horizontal overflow is a LAYOUT fault the health probe cannot see: a page can be twice as wide
+  // as its window and still be clean by every console/request/content signal, which is exactly how
+  // #170 (the invoice History panel's unwrapped JSON) reached the published manual reported PASS.
+  // The viewport WIDTH is fixed (full-page shots only extend the height), so a scrollWidth past it
+  // means content is forcing the page wider — flagged here so it gates the run and is named in the
+  // sweep. Strict `>` on the SAME viewport width the committed-artifact pin uses
+  // (tests/manual-artifacts.test.ts): a fitting page is exactly VIEWPORT.width, so this fires only
+  // on genuine overflow. This is the live gate; the artifact test is the committed-bytes backstop.
+  const overWide = width > VIEWPORT.width;
   const clipped = height > MAX_SHOT_HEIGHT;
   if (clipped) {
     // `fullPage: true` is load-bearing, NOT redundant with the clip. A `clip` on its own is
@@ -685,7 +699,7 @@ async function shoot(page, name) {
     await page.screenshot({ path: file, fullPage: true });
   }
   const bytes = await stat(file).then((s) => s.size).catch(() => 0);
-  return { image: path.posix.join("img", `${name}.png`), clipped, height, bytes };
+  return { image: path.posix.join("img", `${name}.png`), clipped, height, width, overWide, bytes };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -755,8 +769,9 @@ async function capture(page, probe, { name, url, label, ready = [], kind = "scre
   }
 
   const bad = row.consoleErrors.length + row.pageErrors.length + row.failedRequests.length;
-  const mark = row.error ? "ERROR" : bad > 0 ? "FAIL " : row.ready ? "ok   " : "warn ";
-  console.log(`  ${mark} ${name.padEnd(34)} ${String(row.loadMs).padStart(6)}ms  ${row.content ?? ""}`);
+  const mark = row.error ? "ERROR" : (bad > 0 || row.overWide) ? "FAIL " : row.ready ? "ok   " : "warn ";
+  const overWideNote = row.overWide ? `  ⟷ ${row.width}px wide (viewport ${VIEWPORT.width})` : "";
+  console.log(`  ${mark} ${name.padEnd(34)} ${String(row.loadMs).padStart(6)}ms  ${row.content ?? ""}${overWideNote}`);
   return row;
 }
 
@@ -1210,7 +1225,11 @@ async function captureFilteredReport(page, probe, rows) {
 function statusOf(row) {
   if (row.skipped) return "SKIPPED";
   if (row.error) return "ERROR";
-  if (row.pageErrors.length || row.consoleErrors.length || row.failedRequests.length) return "FAIL";
+  // `overWide` joins the health faults: a horizontally-overflowing screen is a real defect the
+  // health probe is blind to (#170), so it gates the run exactly like a console/request error.
+  if (row.pageErrors.length || row.consoleErrors.length || row.failedRequests.length || row.overWide) {
+    return "FAIL";
+  }
   if (!row.ready) return "WARN";
   return "PASS";
 }
@@ -1275,7 +1294,7 @@ async function writeSweep(rows, meta) {
   lines.push("|---|---:|---|");
   lines.push(`| PASS | ${counts.PASS ?? 0} | rendered real content, clean console, no failed requests |`);
   lines.push(`| WARN | ${counts.WARN ?? 0} | captured, but never fully settled within the timeout |`);
-  lines.push(`| FAIL | ${counts.FAIL ?? 0} | a console error, an uncaught page error, or a failed request |`);
+  lines.push(`| FAIL | ${counts.FAIL ?? 0} | a console error, an uncaught page error, a failed request, or a page wider than the viewport |`);
   lines.push(`| ERROR | ${counts.ERROR ?? 0} | the capture itself threw — the screen could not be driven |`);
   lines.push(`| SKIPPED | ${counts.SKIPPED ?? 0} | no data in the database to show this screen, or a refused mutation |`);
   lines.push("");
@@ -1311,6 +1330,10 @@ async function writeSweep(rows, meta) {
         r.pageErrors.length ? `${r.pageErrors.length} uncaught page error(s)` : null,
         r.consoleErrors.length ? `${r.consoleErrors.length} console error(s)` : null,
         r.failedRequests.length ? `${r.failedRequests.length} failed request(s)` : null,
+        // A layout fault, not a health one (#170): the page is wider than the capture viewport, so
+        // its figure overflows horizontally and drags every element on it. Named here with the
+        // measured width because nothing the health probe records would explain the FAIL otherwise.
+        r.overWide ? `overflows horizontally — ${r.width}px wide, past the ${VIEWPORT.width}px viewport` : null,
       ].filter(Boolean).join("; ")}`);
       if (known) {
         lines.push(`  - **KNOWN-EXPECTED — ${known.issue}. Do not re-investigate.** ${known.why}`);
@@ -1644,11 +1667,13 @@ async function main() {
   console.log(`Report:      ${SWEEP_FILE}`);
 
   if (failing.length) {
-    console.error(`\n${failing.length} screen(s) produced a console error, page error or failed request:`);
-    for (const r of failing) console.error(`  ${r.name}  (${r.url ?? "—"})`);
+    console.error(`\n${failing.length} screen(s) produced a console error, page error, failed request, or horizontal overflow:`);
+    for (const r of failing) {
+      console.error(`  ${r.name}  (${r.url ?? "—"})${r.overWide ? `  — ${r.width}px wide, past the ${VIEWPORT.width}px viewport` : ""}`);
+    }
     process.exitCode = 1;
   } else {
-    console.log("\nNo console errors, page errors or failed requests. Sweep is clean.");
+    console.log("\nNo console errors, page errors, failed requests, or over-wide pages. Sweep is clean.");
   }
 }
 
