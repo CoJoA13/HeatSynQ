@@ -614,7 +614,8 @@ async function main() {
     const ambientRefusal = preflightRefusal(ambient);
     if (ambientRefusal) throw new Error(`Refusing to run the flows: ${ambientRefusal}`);
     console.log(`Dev DB pre-flight for ${ambient.year}-${String(ambient.month).padStart(2, "0")}: ` +
-      `no close period, ${ambient.unpostedBatchCount} unposted batch(es), variance ${ambient.variance}`);
+      `no close period, ${ambient.unpostedBatchCount} unposted batch(es), variance ${ambient.variance}, ` +
+      `${ambient.readinessGaps.length} ambient readiness gap(s)`);
 
     console.log("Creating dev-DB fixtures (erp)...");
     state.fixtures = runDbScript("create");

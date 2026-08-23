@@ -45,11 +45,27 @@
 //     the window is minutes wide once a month, and the failure mode is the pre-existing one (flow
 //     20 fails on its own assertion) rather than a wrong pass.
 //
-// The recipe every refusal prints has to exist, which is what `npm run db:reset` is for.
+// FOUR CONDITIONS SINCE THE FIX ROUND, not three, and the fourth is `close-month-end`'s FOURTH
+// plant-wide assertion rather than a new idea: `readinessGaps.length === 0` (its line 399) is as
+// global as the other two — `resolveReadiness` scans every FINALIZED invoice in the month with no
+// customer scope, which is exactly why `db-fixtures.ts` backfills GL accounts onto a STRANGER
+// flow's rows. Leaving it out meant an ambient account-less invoice line redded flow 20 while the
+// pre-flight stayed silent. `db-fixtures.ts`'s `preflight` command filters the gap list to the ones
+// naming a specific ambient row before it gets here; its comment says why.
+//
+// A FIFTH reason exists that is not a condition at all: `preliminaryReport` REFUSING to answer.
+// See `preliminaryError` below — it is a refusal wearing a stack trace, and turning it back into a
+// reason is the whole point of this file.
+//
+// The recipe every refusal prints has to exist, which is what `npm run db:reset` is for — and it
+// has to WORK in the session that reads it, which is why the non-interactive form is spelled out.
+// `db:reset` confirms before it truncates (scripts/db-reset.ts, barrier 4): a terminal is asked to
+// type the database name, and everything else must pass `--yes`.
 
 const RECIPE =
   "The E2E suite and the demonstration dataset cannot share a database (docs/manual/dataset.md).\n" +
-  "  To run the suite:      npm run db:reset      (back to migrate-deploy + db:seed state, ~1s)\n" +
+  "  To run the suite:      npm run db:reset              (asks you to confirm; ~1s)\n" +
+  "                         npm run db:reset -- --yes     (same, from a script or an agent session)\n" +
   "  To rebuild the demo:   docs/manual/dataset.md, \"Rebuilding it\"\n" +
   "  Neither is destructive to anything but the LOCAL dev database (`erp` on localhost).";
 
@@ -58,9 +74,38 @@ const RECIPE =
  * and the recipe. All reasons are collected rather than short-circuited: they share one fix, and a
  * developer should not have to re-run to discover the second one.
  */
-export function preflightRefusal({ year, month, closePeriodStatus, unpostedBatchCount, variance }) {
+export function preflightRefusal(ambient) {
+  // The probe's answer is one line of JSON parsed out of a child process's stdout, so "no readable
+  // answer" is a state that exists — `runDbScript` returns null when the script exits 0 having
+  // printed nothing. Destructuring it straight away turned that into a TypeError inside the
+  // harness rather than a diagnosis, which is the same class of defect as everything else here.
+  if (!ambient || typeof ambient !== "object") {
+    return `the dev-DB pre-flight probe produced no readable answer (got ${JSON.stringify(ambient) ?? "undefined"}). ` +
+      `That is a harness fault, not a database one: e2e/lib/db-fixtures.ts's \`preflight\` command ` +
+      `is expected to print exactly one line of JSON on stdout. Run it directly to see what it ` +
+      `said:\n  npx tsx e2e/lib/db-fixtures.ts preflight`;
+  }
+  const {
+    year, month, closePeriodStatus, unpostedBatchCount, variance,
+    preliminaryError = null, readinessGaps = [],
+  } = ambient;
   const period = `${year}-${String(month).padStart(2, "0")}`;
   const reasons = [];
+  // FIRST, because it means the two figures below were never computed: when the close service
+  // refuses to report at all, `unpostedBatchCount` and `variance` are the probe's zero defaults and
+  // say nothing. Reporting them as clean beside this would be a lie of exactly the shape this file
+  // exists to remove.
+  if (preliminaryError) {
+    reasons.push(
+      `the close service refuses to report on ${period} at all: "${preliminaryError}". ` +
+      `close-month-end reads that same report and would fail the same way, after ~8 minutes of ` +
+      `flows. The usual cause is a ClosePeriod for an EARLIER month with the immediately-prior ` +
+      `month left open — a skipped month, which breaks the roll-forward chain — and the ` +
+      `demonstration dataset produces it by design: it closes the month BEFORE its seed date, so a ` +
+      `dataset seeded in one month and still present in the next makes this throw. The unposted-` +
+      `batch and variance figures below were NOT computed and are not being reported.`,
+    );
+  }
   if (closePeriodStatus) {
     reasons.push(
       `a ClosePeriod row already covers ${period} (status ${closePeriodStatus}). The close-month-end ` +
@@ -82,6 +127,17 @@ export function preflightRefusal({ year, month, closePeriodStatus, unpostedBatch
       `${period}'s continuity schedule does not reconcile (variance ${variance}). close-month-end ` +
       `asserts a variance of 0 for the whole month, and nothing the run itself does can move it — ` +
       `every invoice and payment it raises lands on both sides of the schedule.`,
+    );
+  }
+  if (readinessGaps.length > 0) {
+    const shown = readinessGaps.slice(0, 5);
+    const rest = readinessGaps.length - shown.length;
+    reasons.push(
+      `${readinessGaps.length} GL-export readiness gap(s) in ${period} name rows this run does not ` +
+      `own: ${shown.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}. close-month-end asserts a ` +
+      `plant-wide gap list of ZERO before it exports — readiness scans every FINALIZED invoice in ` +
+      `the month, not just its own — and it cannot repair somebody else's paper (a frozen ` +
+      `account-less line is only fixed by unlocking and re-finalizing that invoice).`,
     );
   }
   if (reasons.length === 0) return null;

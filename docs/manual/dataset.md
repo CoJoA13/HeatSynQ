@@ -76,13 +76,18 @@ surcharge row, so the three plant-wide surcharges here are no longer a problem f
 **Going from this dataset to a suite-passing database:**
 
 ```bash
-cd erp && npm run db:reset      # truncate + restore the singletons + db:seed. ~1s.
+cd erp && npm run db:reset             # truncate + restore the singletons + db:seed. ~1s.
+#          npm run db:reset -- --yes   # same, from a script or an agent session
 npm run test:e2e
 ```
 
 `db:reset` reaches exactly the state a fresh `migrate deploy && npm run db:seed` leaves behind, and
 refuses any database that is not `erp` on localhost — twice, once on the URL shape and once on the
-database's own `current_database()` answer.
+database's own `current_database()` answer. **Neither of those can tell a developer's machine from
+the production host**, because production's database is called `erp` too and compose publishes it on
+`127.0.0.1:5432`. So it also refuses `NODE_ENV=production` outright, and it **asks before it
+truncates**: type the database name at a terminal, or pass `--yes` (or `DB_RESET_CONFIRM=yes`) where
+there is no terminal to ask at. The script's own header states that residual in full.
 
 **Going the other way** — from a pristine or E2E-run database back to this dataset — is the
 "Rebuilding it" sequence above, unchanged. It drops the database itself, so it does not care what
@@ -90,10 +95,19 @@ was there before.
 
 **You do not have to remember this.** `npm run test:e2e` reads the dev database's ambient state
 before it starts anything and refuses the run by name, in about a second, listing what it found and
-printing the `db:reset` recipe (`e2e/lib/preflight.mjs`). The three conditions it checks are the
-three that `close-month-end` itself asserts about the whole plant: a `ClosePeriod` already covering
-the current month, an OPEN receipt batch carrying a payment dated in it, and a non-zero continuity
-variance.
+printing the `db:reset` recipe (`e2e/lib/preflight.mjs`). The four conditions it checks are the four
+that `close-month-end` itself asserts about the whole plant: a `ClosePeriod` already covering the
+current month, an OPEN receipt batch carrying a payment dated in it, a non-zero continuity variance,
+and a GL-export readiness gap naming a row the run does not own.
+
+There is a fifth refusal, and this dataset is what produces it. **Once the calendar rolls past the
+month this dataset was seeded in, the close service stops answering at all**: the dataset closes the
+month *before* its seed date, so from the following month onwards the immediately-prior month is
+open while an earlier one is closed — a skipped month, which breaks the roll-forward chain, and
+`preliminaryReport` refuses with *"The prior period YYYY-MM is not closed"* rather than returning
+figures. The harness reports that as a named reason with the same recipe. Nothing is wrong with the
+dataset when this happens; it simply means the demonstration data has outlived its month, and the
+fix is the same `db:reset` (or a rebuild, which re-dates everything).
 
 ---
 

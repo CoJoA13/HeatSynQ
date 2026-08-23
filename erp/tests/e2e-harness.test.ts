@@ -293,7 +293,10 @@ describe("warmupRefusal", () => {
 // being NARROW — a check that refuses a database the suite would in fact have passed on is one
 // people start bypassing — so the clean case and each condition in isolation are pinned separately.
 describe("preflightRefusal", () => {
-  const clean = { year: 2026, month: 8, closePeriodStatus: null, unpostedBatchCount: 0, variance: 0 };
+  const clean = {
+    year: 2026, month: 8, closePeriodStatus: null,
+    preliminaryError: null, unpostedBatchCount: 0, variance: 0, readinessGaps: [],
+  };
 
   it("passes a dev database with nothing ambient in the way", () => {
     expect(preflightRefusal(clean)).toBeNull();
@@ -337,6 +340,72 @@ describe("preflightRefusal", () => {
     const refusal = preflightRefusal({ ...clean, unpostedBatchCount: 1 });
     expect(refusal).toMatch(/db:reset/);
     expect(refusal).toMatch(/docs\/manual\/dataset\.md/);
+  });
+
+  // The recipe has to WORK in the session that reads it. `db:reset` confirms before it truncates,
+  // and a non-interactive shell (an agent, CI, a script) cannot be asked — so the flag form is
+  // printed beside the bare one rather than left for the reader to discover from a second refusal.
+  it("prints the non-interactive form of the recipe too, because db:reset now confirms", () => {
+    const refusal = preflightRefusal({ ...clean, unpostedBatchCount: 1 });
+    expect(refusal).toMatch(/npm run db:reset -- --yes/);
+  });
+
+  // --- Fix round. ---
+
+  // #167a fix round, finding 3. `preliminaryReport` does not always ANSWER: `priorEndingAr` throws
+  // 409 when an earlier month is closed and the immediately-prior one is not. The demonstration
+  // dataset closes the month before its seed date, so it produces exactly that the moment the
+  // calendar rolls over. Unwrapped it surfaced as an execFileSync "Command failed" and a raw stack.
+  it("turns the close service REFUSING to report into a reason, not a stack trace", () => {
+    const refusal = preflightRefusal({
+      ...clean, preliminaryError: "The prior period 2026-08 is not closed",
+    });
+    expect(refusal).toMatch(/refuses to report on 2026-08 at all/);
+    expect(refusal).toMatch(/The prior period 2026-08 is not closed/);
+    expect(refusal).toMatch(/npm run db:reset/);
+  });
+
+  it("says the batch and variance figures were not computed rather than reporting them as clean", () => {
+    // They are the probe's zero defaults in this state. Printing "0 unposted, variance 0" beside a
+    // refusal to report would be the same lie in a smaller font.
+    const refusal = preflightRefusal({ ...clean, preliminaryError: "The prior period 2026-07 is not closed" });
+    expect(refusal).toMatch(/were NOT computed and are not being reported/);
+    expect(refusal!.split("\n  - ")).toHaveLength(2);   // the header plus exactly one reason
+  });
+
+  // Finding 1 (minor). `readinessGaps.length === 0` is close-month-end's FOURTH plant-wide
+  // assertion and was the one the pre-flight did not hoist.
+  it("refuses ambient GL-export readiness gaps, and names them", () => {
+    const refusal = preflightRefusal({
+      ...clean,
+      readinessGaps: ["Invoice 1042 has a line with no GL account — unlock and re-finalize it"],
+    });
+    expect(refusal).toMatch(/1 GL-export readiness gap/);
+    expect(refusal).toMatch(/Invoice 1042/);
+  });
+
+  it("caps the named gaps rather than printing a hundred of them, and says how many it hid", () => {
+    const gaps = Array.from({ length: 8 }, (_, i) => `Invoice ${1000 + i} has a line with no GL account`);
+    const refusal = preflightRefusal({ ...clean, readinessGaps: gaps });
+    expect(refusal).toMatch(/8 GL-export readiness gap/);
+    expect(refusal).toMatch(/and 3 more/);
+  });
+
+  // Finding 4 (minor). `runDbScript` returns null when the probe printed nothing, and the old
+  // signature destructured it — a TypeError inside the harness instead of a diagnosis.
+  it("diagnoses a probe that answered with nothing instead of throwing a TypeError", () => {
+    for (const bad of [null, undefined]) {
+      const refusal = preflightRefusal(bad);
+      expect(refusal).toMatch(/produced no readable answer/);
+      expect(refusal).toMatch(/npx tsx e2e\/lib\/db-fixtures\.ts preflight/);
+    }
+  });
+
+  it("still passes a clean probe that predates the two new fields", () => {
+    // The probe and the policy ship together, but the policy must not depend on that: both new
+    // fields default, so an older answer reads as clean rather than as a crash.
+    expect(preflightRefusal({ year: 2026, month: 8, closePeriodStatus: null, unpostedBatchCount: 0, variance: 0 }))
+      .toBeNull();
   });
 });
 

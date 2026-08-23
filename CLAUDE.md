@@ -31,6 +31,7 @@ npx prisma migrate deploy          # dev DB
 DATABASE_URL="postgresql://erp:erp_local_dev@localhost:5432/erp_test" npx prisma migrate deploy
 npm run db:seed                   # admin/admin
 npm run db:reset                  # truncate + restore singletons + db:seed — back to the line above
+npm run db:reset -- --yes         #   ...it CONFIRMS first; this is the form for a non-TTY session
 npm run dev                       # http://localhost:3000
 ```
 
@@ -50,14 +51,40 @@ scoped to the flow's own fixtures — `invoice-shipped-order` counts only ITS su
 these digits" (an order whose Weight cell read `1200` collided with order #1200 for real). But
 `close-month-end`'s figures are global by definition — a month-end close IS a plant-wide
 reconciliation — so `run.mjs` reads the dev DB's ambient state BEFORE flow 1 and refuses the whole
-run by name in about a second: a `ClosePeriod` already covering the current month, an OPEN receipt
-batch carrying a payment dated in it, or a non-zero continuity variance. The policy is the pure leaf
-`e2e/lib/preflight.mjs` (the `warmupRefusal` shape, pinned in `tests/e2e-harness.test.ts`); the
-evidence comes from `db-fixtures.ts`'s read-only `preflight` command, which calls the close service's
-OWN `preliminaryReport` so the check can never drift from the assertion it hoists. **Do not widen it**
-— a pre-flight that over-refuses is one people disable. The recipe it prints is `npm run db:reset`
-(guarded twice: URL shape, then the database's own `current_database()`); the way back to the dataset
-is `docs/manual/dataset.md`.
+run by name in about a second. **FOUR conditions, each one an assertion that flow itself makes about
+the whole plant**: a `ClosePeriod` already covering the current month, an OPEN receipt batch carrying
+a payment dated in it, a non-zero continuity variance, and a GL-export readiness gap naming a row the
+run does not own (only those — the `plant-default` gaps are the run's own to fix, and an unfiltered
+list refuses every pristine dev DB, where `arGlAccountId` is null by definition). A FIFTH reason is
+`preliminaryReport` REFUSING to answer: it throws 409 on a skipped month, which the demonstration
+dataset produces the moment the calendar rolls past its seed month, and unwrapped that surfaced as an
+`execFileSync` "Command failed" — the opaque failure this exists to delete, one step earlier. The
+policy is the pure leaf `e2e/lib/preflight.mjs` (the `warmupRefusal` shape, pinned in
+`tests/e2e-harness.test.ts`); the evidence comes from `db-fixtures.ts`'s read-only `preflight`
+command, which calls the close/export services' OWN reads so the check can never drift from the
+assertions it hoists. **Do not widen it** — a pre-flight that over-refuses is one people disable. The
+recipe it prints is `npm run db:reset`; the way back to the dataset is `docs/manual/dataset.md`.
+
+**`db:reset` CANNOT prove it is not pointed at production, and says so instead of pretending.**
+`current_database()` cannot discriminate the case that matters — production's database is also named
+`erp`, which is exactly why `practice-mode.ts`'s mirror of this guard works and this one does not —
+and compose publishes the db service on `127.0.0.1:5432`, so on the production host the production
+database IS `localhost:5432/erp`. So beyond the two identity checks it refuses `NODE_ENV=production`
+outright and **confirms before it truncates**: the database name typed back at a TTY, `--yes` (or
+`DB_RESET_CONFIRM=yes`) where there is no terminal to ask at, which is why the harness's recipe prints
+both forms. No "looks like production" heuristic was shipped and none should be: every candidate
+refuses a well-used dev database, which is the database people reset. The URL-shape half is the pure
+leaf `src/lib/dev-db-guard.ts`, shared by all four destructive/read scripts (it was four hand copies
+and they had drifted); it has no override flag, deliberately.
+
+**A green flow must be green for the right reason, and two sweeps enforce that** (`e2e/lib/flow-lint.mjs`,
+run in `run.mjs` before flow 1 and swept centrally in `tests/e2e-harness.test.ts`). An order-board row
+locator must be `boardRow`, never one built off `page` and filtered by an order number. And absence is
+asserted with `assertNeverVisible` (`e2e/lib/ui.mjs`), never `assert.rejects(...waitFor(...))`: that
+passes on ANY rejection, so a strict-mode violation — two matching elements — makes "this must not be
+on screen" report SUCCESS while it is on screen twice, which `void-order` shipped for real. Both
+detectors over-match and fail CLOSED, the `findRawApiMutations` rule: the escape hatch is the helper,
+never a comment.
 
 Single test file or single case:
 
