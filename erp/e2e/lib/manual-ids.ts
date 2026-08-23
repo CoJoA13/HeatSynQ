@@ -39,8 +39,8 @@ const CANDIDATES = 250;
 function assertDevDb(url: string): void {
   const refusal = devDbRefusal({
     subject: "manual capture",
-    consequence: "capturing against erp_test would photograph a truncated database and report it "
-      + "as a clean sweep",
+    consequence: "capturing against the wrong database would photograph the wrong rows — a "
+      + "truncated erp_test, say — and report it as a clean sweep",
     dbName: dbNameFromUrl(url),
     host: hostFromUrl(url),
   });
