@@ -350,34 +350,46 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
-**Group E2E (#193 + #192 FIXED, #190 partially) — branch `group-e2e-honesty`, 2026-08-23.** The three
+**Group E2E (#193 + #192 FIXED, #190 advanced) — MERGED `5c8973a` (PR #199), 2026-08-23.** The three
 gate-infrastructure whole-branch-review residue issues, all E2E-suite-honesty and all converging on
 `tests/e2e-harness.test.ts`, done on one coordinated branch (they are coupled: #193's `ui.mjs`
-conversion had to land before #192 could sweep `e2e/lib/` clean). **#193** — every flow assertion
-written as `throw new Error(...)` (10 flow sites + `ui.mjs`'s four hand-rolled timeout helpers and its
-two `expect*` wrappers + `orders.mjs`'s three parse/header throws) is now `node:assert`, so an
-`ERR_ASSERTION` code makes `classifyFailure`'s override cover it and a stale netFailure can no longer
-launder it into a green retry; a new `findPlainErrorThrows` sweep (`flow-lint.mjs`) keeps the next one
-loud. **#192** — the static sweeps read `e2e/flows/**` AND `e2e/lib/**` now (minus the two detector
-modules), the file set living once in the new `e2e/lib/suite-sources.mjs` leaf read at both
-enforcement points, so a bad locator/mutation/absence/throw in a shared helper (`boardRow`,
-`assertNeverVisible`) is caught; and `RAW_API_MUTATION` was broadened past the literal `request`
-receiver to catch aliased/destructured/bracket forms (`const req = page.request; req.post(…)`) while
-still leaving a `res.request()` method call and a `page.request.get` read alone — hand-verified
-against every form in the suite. `ui.mjs`'s `assertNeverVisible` docstring was prose-ified so the
-lib-widened absence sweep does not trip its own detector (the `board-search-scan` precedent). **#190**
-— MEASURED 0 retry annotations across the first e2e-job CI runs, but below the issue's ~20-run
-clean-baseline bar (two of those runs failed on the `close-month-end` dialog hang fixed only in
-2223cd4, and a retry fired on a local pristine run in gate-infra), so the `exit 0`→`exit 1` flip is
-DEFERRED by owner ruling 2026-08-23 pending that baseline; its two harness surfaces (`attemptDir`,
-`resultsLine`) were extracted to the `failure-classify.mjs` leaf and PINNED in
-`tests/e2e-harness.test.ts` against CI's own `*__attempt-*` glob and `^  RETRIED ` grep, so a rename
-reds a test instead of narrowing the gate. An adversarial 5-lens review (verify pass per finding)
-returned two confirmed items, both fixed: `findPlainErrorThrows` required `new` so `throw Error(...)`
-— the identical code-less Error — escaped the sweep (fixed: `new` optional, fails CLOSED), and
-`suite-sources.mjs`'s docstring overstated coverage (`.mjs` only; the `.ts` subprocess CLIs are out by
-design). Gates on the branch: **3659 tests / 212 files**, `tsc`/`eslint`/`build` clean, **E2E 25/25**.
-#191 (docs figure) and #171/#33 etc. remain.
+conversion had to land before #192 could sweep `e2e/lib/` clean). **#193** — every flow FAILURE minted
+as a code-less Error (10 flow `throw new Error` sites + `ui.mjs`'s four hand-rolled timeout helpers and
+its two `expect*` wrappers + `orders.mjs`'s three parse/header throws + two dialog-handler
+`reject(new Error(...))`s) now delivers through `node:assert` (`assert.*` or
+`reject(new assert.AssertionError({ message }))`), so an `ERR_ASSERTION` code makes `classifyFailure`'s
+override cover it and a stale netFailure can no longer launder it into a green retry; the new
+`findPlainErrorFailures` sweep (`flow-lint.mjs`) keeps the next one loud, covering `throw`/`reject`,
+optional `new`, and qualified constructors, excluding `AssertionError`. **#192** — the static sweeps
+read `e2e/flows/**` AND `e2e/lib/**` now (minus the two detector modules), the file set living once in
+the new `e2e/lib/suite-sources.mjs` leaf (recursive) read at both enforcement points, so a bad
+locator/mutation/absence/throw in a shared helper (`boardRow`, `assertNeverVisible`) is caught; and the
+raw-mutation detector was broadened past the literal `request` receiver to catch aliased/destructured
+(single-level)/parenthesized/bracket/computed-method forms while still leaving `res.request()` and a
+`page.request.get` read alone. `ui.mjs`'s docstring was prose-ified so the lib-widened absence sweep
+does not trip its own detector (the `board-search-scan` precedent). **#190 (stays OPEN)** — MEASURED 0
+retry annotations across the e2e-job CI runs (every run across PR #199's commits passed with 0
+retries, adding to the baseline), but still below the issue's ~20-run bar, so the `exit 0`→`exit 1`
+flip is DEFERRED by owner ruling 2026-08-23; its two surfaces (`attemptDir`/`resultsLine`) were
+extracted to the `failure-classify.mjs` leaf and PINNED in `tests/e2e-harness.test.ts` against CI's own
+glob and grep (the pin reads `ci.yml` and probes several flow names, so workflow-side drift reds too).
+**Review: a 5-lens adversarial workflow + SIX rounds of Codex PR review, all 13 threads resolved.**
+Real fixes it added: the throw-sweep's no-`new`/qualified/`reject`-delivered coverage, computed
+`page.request["post"]`, single-level destructure, a genuine multi-line-read FALSE POSITIVE (a greedy
+`\s*` backtracked past the lookahead, which would have refused a legit wrapped GET), the `suite-sources`
+recursion + docstring, and the retry-pin reading `ci.yml`/probing multiple names. **Declined, with a
+documented SCOPE boundary in `failure-classify.mjs`:** a renamed destructured PARAMETER
+(`({ request: req }) => …`, indistinguishable by text scan from Playwright's `page.route(u, ({ request }) => …)`
+and object-literal args), a renamed promise reject callback, and NESTED/deep destructuring
+(`const { page: { request: req } } = state` — not an accident: flows get `run(page, shot, ctx)` and
+`ctx` carries no `page`). The charter is **accident-plausibility, not every static permutation**: no
+static analysis (regex OR AST) can be a complete decision procedure — a flow passing `page` to a
+`lib/` helper that mutates is a cross-function data-flow escape — so the load-bearing guard for the
+APIRequestContext case stays the runtime counted `ctx.apiMutate`/`retryRefusal`, with code review as
+the backstop; an AST rewrite was weighed (via a decision workflow) and rejected as a dependency +
+failure surface in a pure leaf that still would not reach completeness. Gates: **3659 tests / 212
+files**, `tsc`/`eslint`/`build` clean, **E2E 25/25**, CI green (ci/e2e/docker). #191 (docs figure) and
+#171/#33 etc. remain.
 
 **#170 — FIXED 2026-08-22, branch `fix-history-panel-overflow`, merged 2223cd4 (PR #196).** The History panel printed
 each changed field as `{JSON.stringify(before)} → {JSON.stringify(after)}` in a plain `<div>` with no
