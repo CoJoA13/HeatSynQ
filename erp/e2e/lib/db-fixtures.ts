@@ -16,6 +16,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { hashPassword } from "../../src/server/password";
 import { lockRevision } from "../../src/server/part-process-steps";
 import { preliminaryReport } from "../../src/server/close-periods";
+import { readinessForExport } from "../../src/server/gl-export";
 // The APP's client (src/server/db's singleton), which is what the two service functions above run
 // on — a different connection pool from this file's own client below. It has to be disconnected
 // too or the process sits idle for ~10s after the work is done, waiting for node-postgres to time
@@ -24,6 +25,7 @@ import { preliminaryReport } from "../../src/server/close-periods";
 // before, 0.5s after.
 import { prisma as appPrisma } from "../../src/server/db";
 import { ALL_PERMISSIONS } from "../../src/server/permissions";
+import { devDbRefusal, dbNameFromUrl, hostFromUrl } from "../../src/lib/dev-db-guard";
 
 /**
  * Every natural key this harness ever writes to the dev DB, in one place. `reapLeftovers` looks
@@ -215,21 +217,14 @@ const FIXTURE = {
  * non-local dev database is refused rather than given an escape hatch — an override on a
  * destructive guard is the kind of thing that gets set once and never unset.
  */
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
 function assertDevDb(url: string): void {
-  const parsed = new URL(url);
-  const dbName = parsed.pathname.replace(/^\//, "");
-  const host = parsed.hostname;
-  if (dbName !== "erp" || !LOCAL_HOSTS.has(host)) {
-    throw new Error(
-      `e2e fixtures must run against the LOCAL dev database — expected database "erp" on ` +
-      `localhost, got "${dbName}" on "${host}". Refusing to touch it: this script hard-deletes ` +
-      `fixture rows and then writes more, and the production compose profile uses the database ` +
-      `name "erp" too, so the name on its own proves nothing. Point DATABASE_URL at your local ` +
-      `dev database and re-run.`,
-    );
-  }
+  const refusal = devDbRefusal({
+    subject: "e2e fixtures",
+    consequence: "this script hard-deletes fixture rows and then writes more",
+    dbName: dbNameFromUrl(url),
+    host: hostFromUrl(url),
+  });
+  if (refusal) throw new Error(refusal);
 }
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -1922,10 +1917,32 @@ async function cleanup(payload: CleanupPayload): Promise<{ ok: true }> {
  * The month is `now` in UTC — the SAME derivation `close-month-end.mjs` uses for its target period,
  * so the two can never disagree about which month is being asked about.
  *
- * `preliminaryReport` is the close service's OWN read rather than a re-derivation of it: the numbers
- * that flow asserts on come from that exact function, so the pre-flight cannot drift from the
- * assertion it is hoisting. It is a pure read (a Serializable snapshot for consistency, no advisory
- * lock, no write), so asking it here costs a second and blocks nothing.
+ * `preliminaryReport` and `readinessForExport` are the close/export services' OWN reads rather than
+ * re-derivations of them: the numbers that flow asserts on come from those exact functions, so the
+ * pre-flight cannot drift from the assertions it is hoisting. Both are pure reads (a Serializable
+ * snapshot for consistency, no advisory lock, no write), so asking here costs a second and blocks
+ * nothing.
+ *
+ * `preliminaryReport` can REFUSE rather than answer, which is the fourth condition (fix round).
+ * `priorEndingAr` throws `HttpError(409, "The prior period … is not closed")` when an EARLIER month
+ * is closed but the immediately-prior one is not — a month is being skipped and the chain would
+ * break. The demonstration dataset closes the month before its seed date, so a dataset seeded in
+ * August and still sitting in the dev DB in September makes this throw. Unwrapped, that surfaced
+ * through `execFileSync` as "Command failed" plus a raw stack: no named reason and no recipe, i.e.
+ * exactly the opaque failure this pre-flight exists to delete, arriving one step earlier. So it is
+ * caught and handed on as a REASON.
+ *
+ * `readinessForExport` is the fourth of `close-month-end`'s four plant-wide assertions
+ * (`readinessGaps.length === 0`, its line 399) and is here for symmetry with the other three: it
+ * scans every FINALIZED invoice in the month with no customer scope, so a stranger's account-less
+ * invoice line reds flow 20 exactly the way a stranger's open batch does. Only the gaps naming a
+ * SPECIFIC ambient row are reported: `plant-default` gaps are the run's own to fix and it does fix
+ * them (`seedOrderGateForE2E` sets `arGlAccountId`, and close-month-end sets the discount /
+ * write-off / sales-tax defaults through the real UI), so refusing on those would refuse a pristine
+ * dev database — where `arGlAccountId` is null by definition and always reads as one gap. Nothing
+ * is lost by the filter: every account-less line also names its OWNING INVOICE unconditionally
+ * (`resolveReadiness`, #89), so a stranger's paper always surfaces as an `invoice` gap whatever
+ * plant default it also implicates.
  */
 async function preflight() {
   const now = new Date();
@@ -1934,13 +1951,30 @@ async function preflight() {
   // ANY row, not only a CLOSED one — `close-month-end`'s own guard refuses on existence, because a
   // REOPENED period is equally not this run's to touch.
   const period = await prisma.closePeriod.findFirst({ where: { year, month }, select: { status: true } });
-  const preliminary = await preliminaryReport(year, month);
+
+  let unpostedBatchCount = 0;
+  let variance = 0;
+  let preliminaryError: string | null = null;
+  try {
+    const preliminary = await preliminaryReport(year, month);
+    unpostedBatchCount = preliminary.unpostedBatchCount;
+    variance = preliminary.schedule.variance;
+  } catch (err) {
+    preliminaryError = err instanceof Error ? err.message : String(err);
+  }
+
+  // `Date.UTC(year, month, 0)` is day 0 of the next month = this month's last day (month is
+  // 1-based here) — the period end both readiness routes and `exportClose` scope on.
+  const gaps = await readinessForExport(new Date(Date.UTC(year, month, 0)));
+
   return {
     year,
     month,
     closePeriodStatus: period?.status ?? null,
-    unpostedBatchCount: preliminary.unpostedBatchCount,
-    variance: preliminary.schedule.variance,
+    preliminaryError,
+    unpostedBatchCount,
+    variance,
+    readinessGaps: gaps.filter((g) => g.kind !== "plant-default").map((g) => g.label),
   };
 }
 
