@@ -186,11 +186,11 @@ That second sentence is the correction cycle, spelled out: **void the reversal, 
 original, reverse again.** Voiding a reversal is the blessed undo — the original's own Void is
 refused while the reversal is live, the reversal's is not.
 
-**With one caveat the banner does not mention: if the order still carries a finalized invoice,
-neither document can be voided yet.** Void checks the invoice before it checks the pair, on both
-pieces of paper, so both buttons name the invoice instead — unlock it or raise a credit first, and
-the correction cycle above starts after that. The buttons are right and the banner is one step
-short; that is [#182](https://github.com/CoJoA13/HeatSynQ/issues/182).
+**With one caveat: if the order still carries a finalized invoice, neither document can be voided
+yet.** Void checks the invoice before it checks the pair, so on an invoiced pair the original's Void
+button and its freeze banner both name the invoice first — unlock it or raise a credit, and the
+correction cycle above starts after that
+([#182](https://github.com/CoJoA13/HeatSynQ/issues/182), fixed 2026-08-23).
 
 A shipment can only be reversed once while the reversal is live, a reversal cannot itself be
 reversed, and a reversal that would drive a line's shipped-to-date below zero is refused by name.
