@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MANUAL_COLUMN_PX, figureDisplaySize } from "../scripts/lib/manual-figure-size.mjs";
+import { DECLARED_WIDTH_PX, figureDisplaySize } from "../scripts/lib/manual-figure-size.mjs";
 
 /**
  * The manual's figure-sizing rule (#169, gate-infrastructure Task 5).
@@ -11,14 +11,19 @@ import { MANUAL_COLUMN_PX, figureDisplaySize } from "../scripts/lib/manual-figur
  * anything narrower than a full-width shot (a 600 CSS px element clip captured at 2× is 1200
  * physical px and was declared at 500, where 1:1 is 600).
  *
- * The replacement rule is resolution-independent: **the column width when the image is at least
- * that wide, else its intrinsic width**, height scaled by the same ratio. It lives in its own
- * leaf so it can be tested — `build-manual.mjs` runs `build()` at module scope and cannot be
- * imported (the `e2e/lib/failure-classify.mjs` precedent from Task 2).
+ * The replacement rule reads the image's own intrinsic width: **the declared width when the image
+ * is at least that wide, else its intrinsic width**, height scaled by the same ratio. It lives in
+ * its own leaf so it can be tested — `build-manual.mjs` runs `build()` at module scope and cannot
+ * be imported (the `e2e/lib/failure-classify.mjs` precedent from Task 2).
+ *
+ * `DECLARED_WIDTH_PX` is NOT the rendered column: the page lays figures out in an 800 CSS px
+ * column (`.content` is `max-width:50rem`) and 1200 is only the declared-attribute cap that
+ * reserves the space. The constant was called `MANUAL_COLUMN_PX` for one round and renamed once
+ * that was measured.
  */
 
 describe("figureDisplaySize", () => {
-  it("caps a full-width capture at the column width, whatever the capture scale was", () => {
+  it("caps a full-width capture at the declared width, whatever the capture scale was", () => {
     // 1440px viewport at deviceScaleFactor 2 — every figure in the manual before this change.
     expect(figureDisplaySize({ width: 2880, height: 1800 })).toEqual({ width: 1200, height: 750 });
     // The same screen at deviceScaleFactor 1, which is what capture writes now. Identical output:
@@ -26,15 +31,27 @@ describe("figureDisplaySize", () => {
     expect(figureDisplaySize({ width: 1440, height: 900 })).toEqual({ width: 1200, height: 750 });
   });
 
-  it("leaves an image NARROWER than the column at its intrinsic size", () => {
+  it("leaves an image NARROWER than the declared width at its intrinsic size", () => {
     // A 600 CSS px element clip at 1×. The old rule declared this at 250×150.
     expect(figureDisplaySize({ width: 600, height: 360 })).toEqual({ width: 600, height: 360 });
     expect(figureDisplaySize({ width: 1, height: 1 })).toEqual({ width: 1, height: 1 });
   });
 
-  it("treats an image exactly the column width as neither scaled up nor down", () => {
-    expect(figureDisplaySize({ width: MANUAL_COLUMN_PX, height: 700 })).toEqual({
-      width: MANUAL_COLUMN_PX,
+  it("is resolution-independent only AT OR ABOVE the declared width — the honest half", () => {
+    // Above it: the same screen at 1× and 2× declares the same size. This is the property the
+    // rule was written for, and it covers every figure in docs/manual/img/ (narrowest: 1440).
+    expect(figureDisplaySize({ width: 1440, height: 900 }))
+      .toEqual(figureDisplaySize({ width: 2880, height: 1800 }));
+    // Below it: it is NOT scale-independent, and the leaf header says so rather than claiming
+    // otherwise. A 600 CSS px element clip declares 600 at 1× and 1200 at 2× — a PNG's IHDR
+    // carries no device scale factor, so a build handed only bytes cannot recover the CSS size.
+    expect(figureDisplaySize({ width: 600, height: 360 })).toEqual({ width: 600, height: 360 });
+    expect(figureDisplaySize({ width: 1200, height: 720 })).toEqual({ width: 1200, height: 720 });
+  });
+
+  it("treats an image exactly the declared width as neither scaled up nor down", () => {
+    expect(figureDisplaySize({ width: DECLARED_WIDTH_PX, height: 700 })).toEqual({
+      width: DECLARED_WIDTH_PX,
       height: 700,
     });
   });
