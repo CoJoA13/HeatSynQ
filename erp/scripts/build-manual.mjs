@@ -8,7 +8,13 @@
  * app — silently rotted it. This script makes it reproducible: the markdown is the source, the
  * HTML is output, and a stale page is now a one-command fix rather than a re-typing job.
  *
- * ZERO DEPENDENCIES, ON PURPOSE. Node built-ins only. The markdown subset below is hand-rolled
+ * ZERO DEPENDENCIES, ON PURPOSE. Node built-ins only — the sole non-builtin import is
+ * `./lib/manual-figure-size.mjs`, a local pure leaf split out purely so a test can reach it
+ * (#169). No image encoder, no markdown library, no system binary: shelling out to ImageMagick to
+ * shrink figures was considered and rejected in #169, because it buys a system dependency and a
+ * determinism risk to solve a problem the capture scale solves for free.
+ *
+ * The markdown subset below is hand-rolled
  * and covers exactly what the chapters actually contain (see MARKDOWN SUBSET). Adding a markdown
  * library to a docs tool is not wanted; if a chapter starts using a construct this parser does
  * not know, the parser is where the fix goes.
@@ -45,6 +51,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { figureDisplaySize } from "./lib/manual-figure-size.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MANUAL_DIR = path.resolve(HERE, "../../docs/manual");
@@ -53,18 +60,6 @@ const OUT_FILE = path.join(MANUAL_DIR, "manual.html");
 const README = "README.md";
 
 const PAGE_TITLE = "HeatSynQ Manual";
-
-/**
- * Screenshots are captured by `manual:capture` at deviceScaleFactor 2 on a 1440px-wide viewport
- * (so 2880 physical px), and the manual lays a full-width screen out at 1200 CSS px — a further
- * 1.2 reduction. 2 × 1.2 = 2.4 physical pixels per rendered pixel. Declaring width/height keeps
- * the page from reflowing as 6 MB of inline images decode; `max-width:100%` still caps them.
- * Expressed as 10/24 rather than /2.4 so the halves land on exact binary fractions and rounding
- * is stable across platforms.
- */
-const IMG_SCALE_NUM = 10;
-const IMG_SCALE_DEN = 24;
-const displayPx = (px) => Math.round((px * IMG_SCALE_NUM) / IMG_SCALE_DEN);
 
 const MIME_BY_EXT = {
   ".png": "image/png",
@@ -277,6 +272,11 @@ const imageCache = new Map();
  * Inline one image as a `data:` URI. A reference that does not resolve is a BUILD ERROR, not a
  * broken `<img>`: two dead figure references were found by hand earlier in this project, and
  * catching the third automatically is the reason this script exists.
+ *
+ * The declared `width`/`height` keep the page from reflowing as megabytes of inline images
+ * decode; `max-width:100%` still caps them to the rendered column. What those two numbers should
+ * BE is `figureDisplaySize`'s question — see scripts/lib/manual-figure-size.mjs, which carries
+ * why it is no longer a capture-scale-shaped constant (#169).
  */
 function renderImage(alt, src, ctx) {
   if (/^(https?:)?\/\//i.test(src)) {
@@ -320,9 +320,11 @@ function renderImage(alt, src, ctx) {
   }
   ctx.usedImages.add(entry.rel);
 
-  const dims = entry.size
-    ? ` width="${displayPx(entry.size.width)}" height="${displayPx(entry.size.height)}"`
-    : "";
+  let dims = "";
+  if (entry.size) {
+    const shown = figureDisplaySize(entry.size);
+    dims = ` width="${shown.width}" height="${shown.height}"`;
+  }
   return `<img src="${entry.uri}" alt="${escapeAttr(alt)}"${dims} loading="lazy" decoding="async">`;
 }
 
@@ -1248,10 +1250,12 @@ for (const w of warnings) console.log(`  warning: ${w}`);
 // shareable artifact at all, and the failure is invisible from here — you find out at publish
 // time, with no clue why. So the build states it.
 //
-// This is a REAL cliff today, not a theoretical one: `manual:capture` writes 2x PNGs (~24 MB of
-// screenshots), and the committed `img/` is roughly half that only because it was compressed by
-// hand with an external `magick` call that exists nowhere in this repository. Follow the
-// documented capture -> build workflow on a fresh checkout and the output lands near 28 MB.
+// This WAS a real cliff: `manual:capture` wrote 2x PNGs (~24 MB of screenshots) and `img/` only
+// fitted because it had been compressed by hand with an external `magick` call that existed
+// nowhere in this repository — so `manual:capture && manual:build` on a fresh checkout landed
+// near 28 MB, unpublishable, with nothing saying why. Capture is 1:1 now and the whole workflow
+// runs with no hand step. The check stays: it is what would catch the next drift, and the margin
+// it reports is the number to spend when adding figures.
 //
 // It WARNS at the soft threshold rather than only failing at the hard one, because the useful
 // moment to hear about this is while there is still headroom to spend, not after a chapter has
@@ -1266,9 +1270,9 @@ if (bytes > PUBLISH_LIMIT) {
   console.error(`ERROR: ${asMb(bytes)} exceeds the ${asMb(PUBLISH_LIMIT)} publishing ceiling.`);
   console.error("The page was still written, but it cannot be published as a shareable artifact.");
   console.error("");
-  console.error("Almost certainly the screenshots: `manual:capture` writes 2x PNGs and the");
-  console.error("committed ones were reduced by an external step that is not in this repo (#169).");
-  console.error("Shrink docs/manual/img/ — or fix the capture scale, which is the real fix.");
+  console.error("Almost certainly the screenshots. `manual:capture` writes them 1:1 (#169), so");
+  console.error("check MANUAL_SCALE is not set above 1 and re-capture. Do NOT reach for an");
+  console.error("external `magick` pass: that undocumented hand step is what #169 removed.");
   console.error("");
   process.exit(1);
 }

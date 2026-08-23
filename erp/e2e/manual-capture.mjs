@@ -85,10 +85,19 @@ const PASSWORD = process.env.MANUAL_PASS ?? "heatsynq-demo";
  *  determines the layout the manual shows, so it stays fixed. */
 const VIEWPORT = { width: 1440, height: 900 };
 
-/** Captured at 2× so the PNGs stay legible when a manual embeds them and scales them down. The
- *  CSS layout is unchanged — only the raster is denser — so `MAX_SHOT_HEIGHT` below still measures
- *  CSS pixels and means the same thing, while the file it produces is roughly 3–4× the bytes. */
-const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 2);
+/** Captured 1:1 (#169). It was 2× — "so the PNGs stay legible when scaled down" — but the manual
+ *  lays a full-width figure out at 1200 declared px and renders it narrower still, so the extra
+ *  density was never reaching a reader; what it did reach was the file size. A 2× run writes
+ *  ~24 MB of PNGs, and `manual.html` inlines all of them as `data:` URIs against a 16 MB publish
+ *  ceiling, so the page only ever fitted because someone ran ImageMagick over `img/` by hand — a
+ *  step that existed nowhere in this repo, which is the rot `manual:build` was written to end.
+ *
+ *  `scripts/lib/manual-figure-size.mjs` is COUPLED to this: the display rule reads each image's
+ *  own intrinsic width now instead of assuming this constant, which is what makes changing it
+ *  safe. Raising it back to 2 renders identically and just costs bytes; the capture is unaffected
+ *  either way, since the CSS layout does not change — only the raster is denser, so
+ *  `MAX_SHOT_HEIGHT` below still measures CSS pixels and means the same thing. */
+const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 1);
 
 /** Full-page shots of a heavily-seeded list can run to tens of thousands of pixels. Past this
  *  height the capture is clipped to the top of the page — and the clip is RECORDED in sweep.md
