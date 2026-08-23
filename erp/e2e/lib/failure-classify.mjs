@@ -155,12 +155,25 @@ export function retryRefusal(result) {
 //
 // SCOPE (read before extending). These are fail-closed STATIC heuristics for the forms a flow author
 // writes by ACCIDENT — `page.request.post(...)` instead of `ctx.apiMutate(...)`, and the handful of
-// ways that accident gets aliased. They are defense-in-depth, not a decision procedure: the primary
-// protection against an uncounted mutation earning a retry is the runtime gate (the counted
-// `ctx.apiMutate`/`ctx.lockRevision` writes plus `retryRefusal`). A determined DYNAMIC-dispatch
-// obfuscation — a computed method name, optional chaining, `Reflect`/`apply` — cannot be caught by a
-// text scan and is out of scope on purpose; the escape hatch for a real read/write is always the
-// sanctioned helper, never a cleverer spelling. The patterns cover the literal forms that occur.
+// ways that accident gets aliased. They are NOT and CANNOT be a decision procedure: no static
+// analysis (regex OR a full AST) can decide "does this flow mutate through an uncounted
+// APIRequestContext", because a flow that passes `page` to a lib/ helper which does
+// `page.request.post()` is a cross-function data-flow escape no single-file scan can see. The
+// load-bearing protection is the RUNTIME gate — `ctx.apiMutate`/`ctx.lockRevision` are counted and
+// `retryRefusal` denies a retry unless committed===0 && indeterminate===0 — with code review as the
+// backstop for contrived residuals. So the test for admitting a new pattern is not "is it static?"
+// but "is it a form written by ACCIDENT?" Out of scope, deliberately (each considered and declined):
+//   * DYNAMIC dispatch — a computed/runtime method name, optional chaining, `Reflect`/`apply`.
+//   * a renamed destructured PARAMETER `({ request: req }) => req.post()` — indistinguishable by a
+//     text scan from the legit Playwright route-handler idiom `page.route(u, ({ request }) => ...)`
+//     and from object-literal args `foo({ request: x })` (needs the argument's TYPE / data-flow).
+//   * a renamed promise reject callback `(resolve, fail) => fail(new Error())` — the callback name is
+//     arbitrary; flagging any `foo(new Error())` would false-positive on legitimate error-passing.
+//   * NESTED / arbitrarily-deep destructuring `const { page: { request: req } } = state` — not a slip:
+//     flows receive `run(page, shot, ctx)` and `ctx` carries no `page`, so nothing nests `page` in an
+//     object; an author must first MANUFACTURE the wrapper to destructure it back out. (And balanced
+//     braces are not a regular language, so a regex could only ever chase a fixed depth.)
+// The escape hatch for a real read/write is always the sanctioned helper, never a cleverer spelling.
 //
 // The APIRequestContext, reached as a `.request` property or a `["request"]` index.
 const REQ_CTX = String.raw`(?:\brequest|\[\s*["']request["']\s*\])`;
@@ -191,12 +204,15 @@ const RAW_API_MUTATION = new RegExp(
 const RAW_API_ALIAS =
   /(?:\.\s*request\b|\[\s*["']request["']\s*\])(?!\s*[.([])/g;
 
-// ...and the DESTRUCTURING capture — `const { request } = page`, `const { request: req } = page`
-// (Codex round 4, P1) — which contains no `.request`/`["request"]` for the alias pattern to see. A
-// destructuring is STATIC, so it is in scope (only DYNAMIC dispatch is not): flagged when a `{...}`
-// binding `request` is followed by `}=`, which separates a destructuring pattern (LHS) from an object
-// LITERAL (`= {...}`, RHS) and from a parameter destructure (`}) =>`). `\brequest\b` so `requestId`
-// and the like are left alone. `[^}{]` forbids crossing a nested brace.
+// ...and the single-level DESTRUCTURING capture — `const { request } = page`,
+// `const { request: req } = page` (Codex round 4, P1) — which contains no `.request`/`["request"]`
+// for the alias pattern to see. Flagged when a `{...}` binding `request` is followed by `}=`, which
+// separates a destructuring pattern (LHS) from an object LITERAL (`= {...}`, RHS) and from a parameter
+// destructure (`}) =>`). `\brequest\b` so `requestId` and the like are left alone. `[^}{]` forbids
+// crossing a nested brace — so NESTED destructuring (`const { page: { request: req } } = state`) is
+// NOT matched, and that is deliberate, not an oversight: see the SCOPE note above (a manufactured
+// nested wrapper is a construction, not the accident this catches; and arbitrarily-deep nesting is
+// unreachable by regex regardless).
 const RAW_API_DESTRUCTURE = /\{[^}{]*\brequest\b[^}{]*\}\s*=/g;
 
 /** Every raw, uncounted APIRequestContext mutation in one flow's source, with 1-based line
