@@ -119,6 +119,31 @@ describe("the committed manual figures", () => {
     }
   });
 
+  /**
+   * The height-cap pin, the same shape as the width pin above and for the same reason: nothing
+   * else checks that `MAX_SHOT_HEIGHT` is honoured. It was silently NOT honoured for phases — a
+   * bare `clip` resolves against the viewport — and when the fix landed, the number itself had
+   * never been priced (#169). Re-sizing it is now a decision that shows up here: lower it and this
+   * stays green only after a re-capture, raise it and the figures it lets through are the ones
+   * whoever raised it chose to pay for.
+   */
+  it("respects the capture harness's MAX_SHOT_HEIGHT", () => {
+    const cap = Number(sourceConstant("e2e/manual-capture.mjs", /const MAX_SHOT_HEIGHT = (\d+);/));
+    expect(cap).toBeGreaterThan(0);
+
+    const tooTall: string[] = [];
+    for (const f of files) {
+      const size = pngSize(readFileSync(path.join(IMG_DIR, f)));
+      expect(size, `${f} is not a readable PNG`).not.toBeNull();
+      if (size!.height > cap) tooTall.push(`${f} (${size!.width}×${size!.height})`);
+    }
+    expect(
+      tooTall,
+      `taller than MAX_SHOT_HEIGHT (${cap}) — re-run npm run manual:capture, or change the ` +
+        `constant deliberately and price it (its docstring carries the measurement)`,
+    ).toEqual([]);
+  });
+
   it("is captured by a harness whose scale default is still 1", () => {
     // Belt to the artifact's braces: this reds the moment someone changes the DEFAULT, before any
     // re-capture has happened, and names the file to look at.

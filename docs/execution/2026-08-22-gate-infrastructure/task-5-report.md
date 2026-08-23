@@ -545,3 +545,196 @@ reason.
 3. **The page is at 84.7% of the ceiling with 2.44 MB spare.** #191's proposed order-hub figure
    (~388 KB) would put it near 87% and trip the soft warning. Not a defect; a budget fact that
    belongs next to both issues.
+
+---
+
+# Second fix round — right-sizing `MAX_SHOT_HEIGHT` (owner ruling, 2026-08-22)
+
+The owner reversed his own "prefer making the code true, there is headroom" instruction from
+§12.1. **The correctness fix stays** (`fullPage: true` alongside the clip); the *number* was the
+part chosen blind, and honouring it spent about a third of the headroom §2 had just won on one
+screenshot of an audit log. This round prices the constant and changes it.
+
+**`MAX_SHOT_HEIGHT = 6000` → `4000`. `manual.html` 14,213,844 → 12,995,012 B (84.7% → 77.5%),
+headroom 2.44 MB → 3.61 MB.**
+
+## 13.1 The measurement
+
+Every number below is a real Playwright capture at that cap, taken with `MANUAL_ONLY` +
+`MANUAL_OUT_DIR` into a scratch tree so `docs/manual/` was never touched while measuring. The cap
+was made env-driven for the probe runs only and the file restored with `git checkout` afterwards.
+
+### There is a shelf in the data, and it is not where 6000 sits
+
+The cap is fleet-wide, so it cannot say "lists get one number, records get another". What it *can*
+do is clear every screen whose height is **structure** and cut the ones whose height is
+**repetition**. Measured on the demonstration dataset, that line is sharp:
+
+| Screens | Height |
+|---|---|
+| 48 of 50 | ≤ **3508 px** — tallest is the template editor (`admin-templates-edit`, `interaction-template-editor`) |
+| `/parts/[id]` | **5145 px**, of which the bottom **1712 px** is its own History panel |
+| `/admin/audit` | **7627 px** — 200 rows of 37 px |
+
+So exactly **two** screens exceed the shelf, and both exceed it for the same reason: they end in a
+list of audit rows. Any cap in `[3508, 5145]` clips those two and nothing else. Below 3508 the
+template editor starts losing structure; above 5145 only the audit log is clipped at all.
+
+### What each candidate costs
+
+Disk bytes for the only two figures a cap in that band touches:
+
+| Cap | `admin-audit.png` | `parts-detail.png` | Pair total | vs 6000 | ≈ page (×4/3) |
+|---:|---:|---:|---:|---:|---:|
+| 3600 | 606,149 | 306,913 | 913,062 | −1,083,596 | −1.38 MB |
+| 3800 | 634,561 | 339,648 | 974,209 | −1,022,449 | −1.30 MB |
+| **4000** | **667,784** | **446,044** | **1,113,828** | **−882,830** | **−1.12 MB** |
+| 4200 | 696,053 | 557,305 | 1,253,358 | −743,300 | −0.94 MB |
+| 5000 | 826,277 | 1,003,150 | 1,829,427 | −167,231 | −0.21 MB |
+| 6000 | 979,333 | 1,017,325 *(5145, unclipped)* | 1,996,658 | — | — |
+
+The audit shot is almost perfectly linear at **163 B/px** of clip height. The part record is not,
+and the non-linearity is the whole argument — see §13.3.
+
+## 13.2 Why 4000 and not one of its neighbours
+
+**Against 5000–5150 ("match the tallest un-clipped figure").** This is the anchor the brief
+offered, and priced it recovers only **~0.21 MB of page** — it barely moves. It is also the wrong
+anchor on inspection: `parts-detail.png` is not a clean ceiling, because **40% of its height and
+over half its bytes are its own History panel**, which is the same repeating audit content the cap
+exists to bound. Anchoring the cap to it means letting one un-priced figure justify another.
+
+**Against 3600–3800 (the cheapest options in the band).** 3600 leaves **92 px** of margin over the
+tallest structural screen — the template editor's height is data-dependent, and 92 px is one row.
+3800 leaves 292 px. Both are cheaper, and 3600 would save a further 0.26 MB, but the margin is not
+worth 0.26 MB of a page that now has 3.6 MB spare.
+
+**4000 leaves 492 px (14%) of margin over the tallest structural screen**, which is the number that
+made the choice.
+
+## 13.3 What 4000 actually keeps — and the second #170
+
+The part record's History panel is 19 rows. Measured in the DOM:
+
+- rows 1–12 (y 3362→3822) are compact **37 px** rows — one per entity: custom field, inspection,
+  specification, pricing, price break, process steps
+- rows 13–17 (y 3822→4999) are **357, 309, 261, 181 and 69 px** of raw `steps: [{"id":"c…` JSON
+
+The byte curve says the same thing independently: **3600→3800 costs 164 B/px; 3800→4000 costs
+532 B/px.** That is the `invoicing-detail.png` pathology (#170) on a second screen — antialiased
+JSON text compresses badly per pixel, and it is displayed at 800 CSS px where it is unreadable
+anyway.
+
+**4000 cuts the part record exactly at the top of that JSON block.** The figure keeps every section
+`10-parts-and-processes.md` names in prose — *"Identity, Specifications, Inspections, Pricing,
+Active quotes, Custom fields, Attachments, Process steps, and the History panel"* — plus 12 of the
+panel's 19 rows, so the chapter's sentence stays true of its own picture.
+
+For `/admin/audit`, 4000 shows **~102 of 200 rows** where 6000 showed ~156. **Neither reaches the
+end of the page**, which is the point: the extra 2000 px was buying more of the same, not a
+conclusion.
+
+Rendered in the manual (declared 1200 wide, `.content` renders at 800): both clipped figures are
+**800×2222**, against **800×1949** for the tallest un-clipped figure. At 6000 the audit shot
+rendered **800×3333** — 71% taller than anything else in the book, to show that an audit list has
+many rows.
+
+## 13.4 The re-capture — and what actually moved
+
+`npm run manual:capture` against the demonstration dataset (rebuilt from a dropped database by
+`docs/manual/dataset.md`'s exact sequence, as §12.7): **exit 0, 50 PASS, 0 WARN/FAIL/ERROR/SKIPPED,
+sweep clean**, no console errors, no page errors, no failed requests, the same four standing sparse
+screens.
+
+**17 of the 50 PNGs moved; exactly 2 changed HEIGHT.** The brief asked for "only the clipped screens
+should change" — confirmed the strict way, by dimension rather than by digest:
+
+| | Before | After |
+|---|---|---|
+| `admin-audit.png` | 1440×**6000**, 996,750 B | 1440×**4000**, 667,784 B |
+| `parts-detail.png` | 1440×**5129**, 1,024,243 B | 1440×**4000**, 446,044 B |
+
+The other 15 kept their dimensions **to the pixel** and drifted only in content — new cuids, new
+audit timestamps — because the dataset was rebuilt for the capture. (`invoicing-detail.png` moved
+2967→2974 px wide for the same reason, back to what the pre-fix-round capture had; a cap cannot
+change a width.) The probe runs prove the cap is inert for anything shorter than it: `home`,
+`orders-detail`, `customers-detail`, `invoicing-detail` and `admin-templates-edit` are byte-identical
+at caps 3600, 4200, 5000 and 9000, and diverge only at 3000 — where three of them are genuinely
+clipped, which is the reason the band's floor is 3508 and not lower.
+
+## 13.5 The final numbers
+
+```
+docs/manual/manual.html   12,995,012 bytes
+publish ceiling           16,777,216 bytes
+                          77.5% — 3,782,204 bytes (3.61 MB) of headroom
+docs/manual/img/           9,962,505 bytes
+```
+
+**−1,218,832 B against the 14,213,844 this round started from.** The build's 85% soft warning is at
+14,260,633 B: the page was 46,789 B under it and is now **1,265,621 B clear**. #191's proposed
+order-hub figure (~388 KB inlined) lands near **80%**, not the ~87% §12.9 warned about.
+
+For the record, the largest line items now: `invoicing-detail.png` at 1,627,796 B inlined (12.5% of
+the page, still #170's), then `admin-audit.png` at 890,380 B (6.9%) and `parts-detail.png` at
+594,728 B (4.6%).
+
+## 13.6 The three places that state the cap, and the doc that named it
+
+The brief's original finding was that code, report and doc must agree. They do:
+
+- **`MAX_SHOT_HEIGHT`'s docstring** now carries the measurement — the shelf, the margin, the
+  532-vs-164 B/px cut, and what each figure retains — so the number is defensible from the code.
+- **`shoot()`'s inline comment** no longer quotes a literal `6000` in its account of the old bug; it
+  refers to the constant, so the anecdote cannot go stale again.
+- **`sweep.md`'s two mentions are generated from the constant** and now read *"clipped to the top
+  4000px"* in the header and *"…of a 7627px page"* / *"…of a 5145px page"* per screen.
+- **`CLAUDE.md`** stated the literal `6000` in its account of the bug. Rewritten to state the rule
+  without a number (per this file's own "no counts that ordinary commits move") and to point at the
+  docstring for the pricing.
+- **`docs/HANDOFF.md`** carries the ruling, the shelf, the new byte count and the new headroom.
+
+## 13.7 A guard, so the number stays a decision
+
+`erp/tests/manual-artifacts.test.ts` gains a sixth case: **every committed PNG's IHDR height is
+≤ `MAX_SHOT_HEIGHT`**, with the cap lifted by regex from `manual-capture.mjs` — the exact shape of
+the width case that pins `DEVICE_SCALE`. Nothing checked this constant at all, which is how it went
+phases unhonoured (§12.1) and then, once honoured, unpriced.
+
+**RED-verified before the re-capture**: against the committed 6000-px figures it failed naming
+`admin-audit.png (1440×6000)` and `parts-detail.png (1440×5129)` — precisely the two screens the
+analysis predicted, arrived at independently.
+
+## 13.8 `SC2034` — fixed, as instructed
+
+The `docker` job's boot loop in `.github/workflows/ci.yml` — line 127, which `actionlint` reports
+at its step (`122:9`) — went `for i in $(seq 1 60)` → `for _ in`. The loop variable was never read.
+
+Verified both directions rather than asserted: with `for i` restored, `actionlint -shellcheck`
+exits 1 with `SC2034:warning:5:1: i appears unused`; with `for _` it exits **0**. Plain `actionlint`
+was and remains clean.
+
+## 13.9 Gates
+
+| Gate | Result |
+|---|---|
+| `npm run manual:capture` | **exit 0** — 50 PASS, 0 WARN/FAIL/ERROR/SKIPPED, sweep clean |
+| `npm run manual:build` ×2 | **exit 0**, byte-identical (sha256 `562b936a…`), 12,995,012 B / 16,777,216 B |
+| `git diff` after a rebuild of the committed page | **empty** |
+| `npx vitest run tests/manual-artifacts.test.ts tests/manual-figure-size.test.ts` | **13 passed** (6 + 7); the new height case RED-verified |
+| `npx eslint src tests e2e scripts prisma` | **clean** |
+| `npx tsc --noEmit` | **clean** |
+| `node --check erp/e2e/manual-capture.mjs` | **clean** |
+| `actionlint` / `actionlint -shellcheck` on `ci.yml` | **both clean** — §13.8 |
+| `npm run db:reset -- --yes` | run — the dev database is left pristine |
+| full `npx vitest run`, `npm run test:e2e` | **not run**, by instruction |
+
+## 13.10 Found, not fixed
+
+1. **`/parts/[id]`'s History panel prints raw process-step JSON unwrapped**, at 532 B/px — the same
+   defect as #170, on a second screen, and now the reason the part figure is clipped rather than
+   whole. #170 is scoped to the invoice page; whoever fixes it should look at `HistoryPanel`'s diff
+   rendering generally rather than at one route.
+2. **The cap is fleet-wide and the two screens it clips are clipped for a content reason.** If the
+   JSON above is ever wrapped, `parts-detail` drops well under 4000 on its own and the cap stops
+   touching it — no code change needed, which is the right shape.

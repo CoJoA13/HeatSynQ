@@ -105,10 +105,29 @@ const DEVICE_SCALE = Number(process.env.MANUAL_SCALE ?? 1);
  *
  *  See shoot(): honouring "of the page" needs `fullPage: true` ALONGSIDE the clip. Without it
  *  Playwright clamps the clip to the viewport, so this constant stopped mattering entirely and the
- *  sweep's note said 6000 while the file held 900 (#169 fix round). Keep the two in step: this
- *  docstring, shoot()'s screenshot options, and the sweep wording are one contract in three
- *  places. */
-const MAX_SHOT_HEIGHT = 6000;
+ *  sweep's note stated a cap the file did not hold — one viewport, every time (#169 fix round).
+ *  Keep the two in step: this docstring, shoot()'s screenshot options, and the sweep wording are
+ *  one contract in three places.
+ *
+ *  THE NUMBER, from measurement rather than taste (#169, second fix round). It was 6000, chosen
+ *  while the clip was believed to work and therefore never priced. The cap has to clear every
+ *  screen whose height is STRUCTURE and cut the ones whose height is REPETITION, and the
+ *  demonstration dataset puts a clean shelf between the two: 48 of the 50 screens are 3508px or
+ *  shorter (tallest: the template editor), and the only two above it are tall for the same
+ *  reason — /admin/audit at 7627px, and the part record at 5145px, whose bottom 1712px is its own
+ *  History panel. A list of audit rows says nothing new after the first screenful.
+ *
+ *  4000 leaves 492px of margin over the tallest structural screen, keeps every section the parts
+ *  chapter names (Identity … Process steps, and the History panel) plus 12 of that panel's 19
+ *  rows, and shows about 102 of the audit log's 200 rows — neither figure reached the end of its
+ *  page at 6000 either, so the extra height was buying more of the same, not a conclusion. It also
+ *  cuts the part record exactly where its History panel stops being a list and starts printing raw
+ *  step JSON: measured, that block costs 532 B/px against 164 B/px for the rows above it — the
+ *  #170 pathology, on a second screen. Both clipped figures then render 800x2222 in the manual,
+ *  against 800x1949 for the tallest un-clipped one; at 6000 the audit shot rendered 800x3333, 71%
+ *  taller than anything else in the book. Cost for the pair: 1,114 KB at 4000 against 1,997 KB at
+ *  6000, roughly 1.18 MB of the published page. */
+const MAX_SHOT_HEIGHT = 4000;
 
 const CONTENT_TIMEOUT_MS = 30000;
 /** How long the in-flight request count must sit at zero for a page to count as settled. */
@@ -654,9 +673,9 @@ async function shoot(page, name) {
   if (clipped) {
     // `fullPage: true` is load-bearing, NOT redundant with the clip. A `clip` on its own is
     // resolved against the VIEWPORT, so this branch used to write a 1440x900 shot of the top of
-    // the screen while sweep.md reported "clipped to the top 6000px" — a generated report
-    // asserting something untrue. With fullPage the clip is resolved against the whole scrollable
-    // page, which is what MAX_SHOT_HEIGHT has always claimed to mean.
+    // the screen while sweep.md reported a clip to the top MAX_SHOT_HEIGHT px — a generated
+    // report asserting something untrue. With fullPage the clip is resolved against the whole
+    // scrollable page, which is what MAX_SHOT_HEIGHT has always claimed to mean.
     await page.screenshot({
       path: file,
       fullPage: true,
