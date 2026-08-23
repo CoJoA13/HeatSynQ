@@ -19,7 +19,12 @@ export type CertRow = {
 
 /** Local mirror of `ShipperRow` (src/server/shippers.ts) narrowed to what the scope picker needs
  *  — the ShipmentsSection.tsx precedent, same endpoint. */
-type ShipmentOption = { id: string; shipperNumber: number; deletedAt: string | null };
+type ShipmentOption = {
+  id: string; shipperNumber: number; deletedAt: string | null;
+  /** Set when this shipment is a REVERSAL (§5.6): its lines carry negative quantities. #183 keeps it
+   *  out of the picker — `createCert` refuses a shipment-scope cert on one. */
+  reversesShipperNumber: number | null;
+};
 
 /**
  * One scope INSTANCE a certification can be raised for (#165) — the thing the picker picks and
@@ -201,11 +206,11 @@ export function CertificationsSection({
     let stale = false;
     api<ShipmentOption[]>(`/api/orders/${orderId}/shipments`).then((data) => {
       if (stale) return;
-      // Live shipments only. A voided one is refused by `createCert` itself ("that shipment does
-      // not exist or has been voided"), so listing it would offer a choice that cannot succeed —
-      // that is a liveness fact off the shipment's own row, not a uniqueness judgement, which
-      // this component never makes.
-      setShipments(data.filter((s) => s.deletedAt === null));
+      // Live, NON-REVERSAL shipments only. A voided one is refused by `createCert` ("that shipment
+      // does not exist or has been voided") and a reversal by #183 ("a reversing shipment cannot be
+      // certified"), so listing either would offer a choice that cannot succeed. Both are facts off
+      // the shipment's own row, not uniqueness judgements, which this component never makes.
+      setShipments(data.filter((s) => s.deletedAt === null && s.reversesShipperNumber === null));
       setShipmentsError(null);
     }).catch((e) => {
       if (!stale) setShipmentsError((e as Error).message);

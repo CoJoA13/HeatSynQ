@@ -263,6 +263,22 @@ describe("createCert", () => {
       .rejects.toThrow(/shipperId.*(does not exist|voided)/i);
   });
 
+  // #183 (owner ruling 2026-08-23): a REVERSAL is machine-generated mirror paper whose lines carry
+  // NEGATIVE quantities — certifying it would print a record of un-shipping. It DOES carry the order
+  // (its own negated ShipperOrder), so it passes the #165 pairing guard; the refusal is by reversal,
+  // beside that guard, under the same claim, reading the immutable `reversesShipperId`.
+  it("refuses a reversing shipment for SHIPMENT scope (#183)", async () => {
+    const { order, customer } = await savedOrder();
+    const original = await makeShipment(customer.id, order.id, 1);
+    const reversal = await makeShipment(customer.id, order.id, 2);
+    await prisma.shipper.update({ where: { id: reversal.id }, data: { reversesShipperId: original.id } });
+    await expect(createCert({ orderId: order.id, scope: "SHIPMENT", shipperId: reversal.id }))
+      .rejects.toThrow(/revers/i);
+    // The original is unaffected — a real shipment is still certifiable.
+    await expect(createCert({ orderId: order.id, scope: "SHIPMENT", shipperId: original.id }))
+      .resolves.toBeTruthy();
+  });
+
   describe("per-scope shape", () => {
     it("requires a load number for LOAD scope", async () => {
       const { order } = await savedOrder();

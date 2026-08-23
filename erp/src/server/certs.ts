@@ -211,7 +211,9 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
   if (data.scope === "SHIPMENT") {
     const shipperId = data.shipperId;
     if (shipperId === null) throw new HttpError(400, "shipperId: shipment scope requires a shipper");
-    const shipper = await tx.shipper.findFirst({ where: { id: shipperId, deletedAt: null }, select: { id: true } });
+    const shipper = await tx.shipper.findFirst({
+      where: { id: shipperId, deletedAt: null }, select: { id: true, reversesShipperId: true },
+    });
     if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
 
     // #165: and it must actually CARRY this order. Until the SHIPMENT-scope route existed, the
@@ -227,6 +229,17 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
       where: { shipperId, orderId: data.orderId }, select: { id: true },
     });
     if (!pairing) throw new HttpError(400, "orderId: that shipment does not carry this order");
+
+    // #183 (owner ruling 2026-08-23): and it must not be a REVERSAL. A reversing shipment is
+    // machine-generated mirror paper whose `ShipperLine`s carry NEGATIVE quantities, and it DOES
+    // carry the order (its own negated `ShipperOrder`), so it sails past the pairing guard above and
+    // `readCertPdfData`'s SHIPMENT branch would print a certification of negative quantities — a
+    // record of un-shipping, meaningless as a cert (which attests to parts PROCESSED). Refused here,
+    // beside the pairing guard and for the same "printable record of nothing" reason. `reversesShipperId`
+    // is frozen at reversal creation, so reading it off the row already fetched needs no extra lock.
+    if (shipper.reversesShipperId !== null) {
+      throw new HttpError(400, "shipperId: a reversing shipment cannot be certified — a reversal un-ships its parts");
+    }
   }
 
   // LOAD scope must name a load the order CURRENTLY has — checked under the claim above, so a
