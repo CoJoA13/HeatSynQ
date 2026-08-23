@@ -685,15 +685,21 @@ describe("attemptDir / resultsLine (the CI retry-gate surfaces, #190)", () => {
   // OR change the workflow's glob/grep, and this reds.
   const ci = readFileSync(path.join(process.cwd(), "..", ".github", "workflows", "ci.yml"), "utf8");
 
-  it("the workflow's retry glob still matches the directory attemptDir mints for a retry", () => {
+  it("the workflow's retry glob matches EVERY flow's retry dir, not just one (Codex round 5, P2)", () => {
     // Detector 1: `granted=(e2e-artifacts/<glob>)`. Extract <glob> from the workflow.
     const m = ci.match(/granted=\(e2e-artifacts\/([^)\s]+)\)/);
     expect(m, "ci.yml no longer has the `granted=(e2e-artifacts/...)` retry glob").toBeTruthy();
     const glob = m![1]; // e.g. *__attempt-*
     const asRegex = new RegExp("^" + glob.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-    expect(attemptDir("void-order", 2)).toMatch(asRegex);
-    // ...and a first attempt (the bare dir) must NOT match it, or every clean run would look retried.
-    expect(attemptDir("void-order", 1)).not.toMatch(asRegex);
+    // Probe SEVERAL unrelated flow names, not just one: a glob accidentally narrowed to
+    // `void-order__attempt-*` would still match `void-order` while silently dropping every other
+    // flow's retry directory — and detector 1 is documented in ci.yml as the complete signal for
+    // every granted retry, so that drift would corrupt the retry-rate measurement invisibly.
+    for (const name of ["void-order", "close-month-end", "backups", "zzz-unrelated-flow"]) {
+      expect(attemptDir(name, 2), `retry glob must match every flow's dir — failed for ${name}`).toMatch(asRegex);
+      // ...and a first attempt (the bare dir) must NOT match it, or every clean run would look retried.
+      expect(attemptDir(name, 1)).not.toMatch(asRegex);
+    }
   });
 
   it("the workflow's RETRIED grep still matches the line resultsLine prints for a retry", () => {
