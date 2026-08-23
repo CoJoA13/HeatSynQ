@@ -228,6 +228,21 @@ describe("findRawApiMutations", () => {
     expect(findRawApiMutations("archive(page.request, url)")).toHaveLength(1);
   });
 
+  it("flags COMPUTED method access — `page.request[\"post\"](u)` (Codex round 3, P1)", () => {
+    expect(findRawApiMutations('await page.request["post"](u)')).toHaveLength(1);
+    expect(findRawApiMutations('await page["request"]["delete"](u)')).toHaveLength(1);
+    expect(findRawApiMutations('await context.request["patch"](u)')).toHaveLength(1);
+  });
+
+  it("does NOT misread a multi-line inline read as a capture (Codex round 3, P2 — the FP that would refuse a legit wrapped GET)", () => {
+    // The continuation test lives INSIDE the lookahead, so the trailing whitespace cannot backtrack
+    // the match into a false capture.
+    expect(findRawApiMutations("const x = await page.request\n  .get(u)")).toEqual([]);
+    expect(findRawApiMutations("page.request .get(u)")).toEqual([]);
+    // ...but a multi-line MUTATION is still caught.
+    expect(findRawApiMutations("await page.request\n  .post(u)")).toHaveLength(1);
+  });
+
   // ...and the two forms it must NOT confuse with a capture, both all over the current flows.
   it("leaves `res.request()` alone — a response's METHOD, not the APIRequestContext property", () => {
     // ~20 flows read `res.request().method()` off a waited response. `request` there is followed by
@@ -587,6 +602,11 @@ describe("findPlainErrorFailures", () => {
     expect(findPlainErrorFailures("reject(new Error(`got ${type}`))")).toHaveLength(1);
     expect(findPlainErrorFailures(".finally(() => reject(new Error(msg)))")).toHaveLength(1);
     expect(findPlainErrorFailures("Promise.reject(new TypeError(msg))")).toHaveLength(1);
+  });
+
+  it("finds a PARENTHESIZED delivery — `throw (new Error())` / `reject((new TypeError()))` (Codex round 3, P2)", () => {
+    expect(findPlainErrorFailures('throw (new Error("boom"))')).toHaveLength(1);
+    expect(findPlainErrorFailures('reject((new TypeError("boom")))')).toHaveLength(1);
   });
 
   it("leaves an AssertionError alone — the sanctioned promise-side fix carries ERR_ASSERTION", () => {

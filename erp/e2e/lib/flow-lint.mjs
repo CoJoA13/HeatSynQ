@@ -110,7 +110,11 @@ export function findUncheckedAbsenceAssertions(source) {
 // re-raise of a caught error (`throw err`, `reject(err)`) is NOT matched — it preserves the original
 // classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
 // `throwError(...)` (no space after `throw`) is a function call, not a throw statement, and stays out.
-const CODELESS_ERROR = String.raw`(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*(?<!Assertion)Error\s*\(`;
+// A parenthesized delivery — `throw (new Error(...))`, `reject((new TypeError(...)))` — is covered by
+// the leading `\(*\s*` (Codex round 3, P2); like the mutation sweep, a determined dynamic obfuscation
+// (a code-less error routed through a helper or a computed constructor) is out of scope for a text
+// scan, the `assert.*` / `reject(new assert.AssertionError(...))` escape hatch being the real guard.
+const CODELESS_ERROR = String.raw`\(*\s*(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*(?<!Assertion)Error\s*\(`;
 const PLAIN_ERROR_FAILURE = new RegExp(String.raw`\bthrow\s+${CODELESS_ERROR}|\breject\s*\(\s*${CODELESS_ERROR}`, "g");
 
 /**
