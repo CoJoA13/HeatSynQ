@@ -350,7 +350,7 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
-**#170 — FIXED 2026-08-22, branch `fix-history-panel-overflow` (PR open).** The History panel printed
+**#170 — FIXED 2026-08-22, branch `fix-history-panel-overflow`, merged 2223cd4 (PR #196).** The History panel printed
 each changed field as `{JSON.stringify(before)} → {JSON.stringify(after)}` in a plain `<div>` with no
 wrap rule, so a relation array pulled in by `SNAPSHOT_INCLUDE` (e.g. `lines`) rendered as kilobytes of
 unbreakable single-line JSON and pushed the whole page wider than the viewport — a CREATE entry, where
@@ -367,7 +367,12 @@ with the same strict comparison. The manual was re-captured (`invoicing-detail.p
 `parts-detail` 5145→4777px still clipped at the 4000 cap; all 50 PNGs re-captured from a fresh dataset
 instance), `manual.html` rebuilt to **11.09 MB** (was 12.99 MB, now 66% of the ceiling), and the stale
 `OVER_WIDE` exemption deleted. Gates on the branch: **3640 tests / 212 files**, `tsc`/`eslint`/`build`
-clean, E2E **25/25**, capture 50 PASS / 0 over-wide.
+clean, E2E **25/25**, capture 50 PASS / 0 over-wide. **A rider fix shipped in the same squash:**
+`close-month-end`'s `armReopenDialogs` was rewritten from two chained `page.once` handlers to a single
+persistent `page.on("dialog")` listener, closing a dialog-registration race (the prompt listener was
+registered inside the accepted confirm's microtask, so the second dialog could arrive before it existed)
+that left `prompt()` unhandled and hung that flow to the CI job's 30-minute cap — measured on CI twice,
+green locally because the race is timing-sensitive.
 
 **#115 (P1) — FIXED 2026-08-16, branch `fix-allocation-retry` (`fc7eb54`), the burn-down's Group A.**
 Concurrent `allocateNumber` aborted with 40001 under Serializable with no retry on any caller, so
