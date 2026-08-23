@@ -243,7 +243,7 @@ export async function run(page, shot, ctx) {
   // --- Task 20: the customer-page template-assignment picker (§5.2, §5.15, §5.16) ---
   // Still as admin. Assign the just-published "E2E Doc Template" (a Traveler template) to a real
   // customer through the picker, watch the resolved state reflect it, then clear back to the type's
-  // default. page.request shares the browser cookies, so it reads /api/customers as this admin.
+  // default. The page's request context shares the browser cookies, so it reads /api/customers as this admin.
   const customers = await (await page.request.get(`${ctx.baseURL}/api/customers`)).json();
   assert.ok(Array.isArray(customers) && customers.length > 0, "at least one customer exists to assign a template to");
   await page.goto(`${ctx.baseURL}/customers/${customers[0].id}`);

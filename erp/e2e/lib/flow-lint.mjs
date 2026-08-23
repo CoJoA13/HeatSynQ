@@ -101,11 +101,13 @@ export function findUncheckedAbsenceAssertions(source) {
 // they are the shape most likely to fire on a slow or contended machine, i.e. the same machine most
 // likely to carry a stale netFailure.
 //
-// `new` is OPTIONAL, deliberately: `throw Error(...)` and `throw new Error(...)` construct the
-// identical code-less Error in JS, so a `new`-required pattern would let the no-`new` idiom walk
-// straight through the sweep and then through classifyFailure — the exact escape this fails CLOSED
-// to prevent.
-const PLAIN_ERROR_THROW = /\bthrow\s+(?:new\s+)?\w*Error\s*\(/g;
+// `new` is OPTIONAL and the constructor may be QUALIFIED, deliberately: `throw Error(...)`,
+// `throw new Error(...)`, `throw new globalThis.Error(...)` and `throw new errors.TimeoutError(...)`
+// all construct a code-less error, so a pattern that required `new` or a bare single identifier would
+// let those idioms walk straight through the sweep and then through classifyFailure — the exact
+// escape this fails CLOSED to prevent (Codex P1/P2). `throwError(...)` (no space) is a function call,
+// not a throw statement, and stays unmatched.
+const PLAIN_ERROR_THROW = /\bthrow\s+(?:new\s+)?(?:[\w$]+\s*\.\s*)*\w*Error\s*\(/g;
 
 /**
  * Every `throw [new] <...>Error(...)` in one suite source, with 1-based line numbers. A re-throw of a

@@ -163,19 +163,20 @@ const RAW_API_MUTATION =
   /(?:\brequest\s*\.|\[\s*["']request["']\s*\]\s*\.)\s*(post|put|patch|delete|fetch|newContext)\s*\(/gi;
 
 // #192: the receiver-ALIASING that used to smuggle the same call past the literal-`request` pattern
-// above. `const req = page.request; req.post(u)` and `const {post} = page.request; post(u)` and
-// `const r = page["request"]; r.delete(u)` all mutate through a name the pattern above never sees,
-// and the mutation counters cannot see them either — the exact state the refusal exists to prevent
-// (a flow that mutated, a harness that believes it did not, a retry granted on that belief). So the
-// CAPTURE of the context into a binding is what is flagged. It fires only when `.request` (or
-// `["request"]`) ENDS the accessor: a trailing `.` is an inline access — `page.request.get(...)`, a
-// read left alone, or `page.request.post(...)`, already caught above — and a trailing `(` is a
-// `res.request()` method call, not the context. The `=` must be a real assignment, never
-// `==`/`===`/`!=`/`<=`/`>=`. Fail-closed like the rest: a captured read-alias is flagged too, so the
-// escape is to inline `page.request.get(...)` for a read and `ctx.apiMutate` for a write — never an
-// alias, never a comment.
+// above. `const req = page.request; req.post(u)`, `const {post} = page.request; post(u)`, the
+// parenthesized `const req = (page.request)`, `return page.request`, `helper(page.request)` — all
+// CAPTURE the context under a name (or hand it off) so the mutation later rides that name, invisible
+// both to the pattern above and to the browser's request/response counters: the exact state the
+// refusal exists to prevent. Rather than enumerate every capture syntax — an assignment-anchored
+// pattern missed parens and returns (Codex P1) — this flags the CAPTURE ITSELF: a bare `.request`
+// (or `["request"]`) property access NOT continued by `.`, `(`, or `[`. A trailing `.` is an inline
+// access (`page.request.get(...)`, a read left alone; `page.request.post(...)`, already caught above);
+// a trailing `(` is a `res.request()` method call on a response, not the context. Fail-closed like
+// the rest — it flags a captured read-alias, and a comment that writes the bare token, too — so the
+// escape is to inline `page.request.get(...)` for a read and `ctx.apiMutate` for a write, and to name
+// the API in prose ("the page's request context") rather than write the bare literal in a swept file.
 const RAW_API_ALIAS =
-  /(?<![=!<>])=(?!=)\s*(?:await\s+)?[\w.$[\]"']*?(?:\.\s*request\b|\[\s*["']request["']\s*\])\s*(?![.([])/gi;
+  /(?:\.\s*request\b|\[\s*["']request["']\s*\])\s*(?![.([])/g;
 
 /** Every raw, uncounted APIRequestContext mutation in one flow's source, with 1-based line
  *  numbers. Pure: the caller reads the file and raises the refusal. */

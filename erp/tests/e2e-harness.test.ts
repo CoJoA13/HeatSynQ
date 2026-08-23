@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -219,17 +219,26 @@ describe("findRawApiMutations", () => {
     expect(findRawApiMutations('const r = page["request"];\nawait r.delete(u)')).toHaveLength(1);
   });
 
-  // ...and the two forms it must NOT confuse with the above, both all over the current flows.
+  // Codex P1: the capture detector flags the CAPTURE itself, not a fixed assignment shape, so the
+  // parenthesized alias, a return, and an argument hand-off — all ways of smuggling the context out —
+  // are caught, where an assignment-anchored pattern missed them.
+  it("flags a PARENTHESIZED alias, a return, and an argument hand-off", () => {
+    expect(findRawApiMutations("const req = (page.request);\nawait req.post(u)")).toHaveLength(1);
+    expect(findRawApiMutations("return page.request")).toHaveLength(1);
+    expect(findRawApiMutations("archive(page.request, url)")).toHaveLength(1);
+  });
+
+  // ...and the two forms it must NOT confuse with a capture, both all over the current flows.
   it("leaves `res.request()` alone — a response's METHOD, not the APIRequestContext property", () => {
     // ~20 flows read `res.request().method()` off a waited response. `request` there is followed by
-    // `(`, not `.`, and no binding captures it, so neither the mutation pattern nor the alias one fires.
+    // `(`, not `.`, so it is a method call, never a captured context.
     expect(findRawApiMutations('res.request().method() === "POST"')).toEqual([]);
     expect(findRawApiMutations('res.url().includes("/lines") && res.request().method() === "PUT" && res.ok()')).toEqual([]);
   });
 
-  it("leaves an aliased-looking READ alone when `.request` is an inline access, and `===` is not `=`", () => {
+  it("leaves an inline `.request.get(...)` read alone — a trailing `.` is an access, not a capture", () => {
     expect(findRawApiMutations("const response = await page.request.get(exportUrl)")).toEqual([]);
-    expect(findRawApiMutations("if (a === b.request) doThing()")).toEqual([]);
+    expect(findRawApiMutations("await (await page.request.get(u)).json()")).toEqual([]);
   });
 
   it("leaves reads alone — a GET cannot mutate, and the flows read this way constantly", () => {
@@ -625,25 +634,41 @@ describe("suiteSourcesSync (the swept file set, #192)", () => {
 // case it happens still to match. Detector 1 globs `e2e-artifacts/*__attempt-*`; detector 2 greps
 // `^  RETRIED `.
 describe("attemptDir / resultsLine (the CI retry-gate surfaces, #190)", () => {
-  it("attempt 1 keeps the bare directory; a retry gets the `__attempt-N` sibling CI globs", () => {
+  // Read the WORKFLOW itself and validate the helpers against IT (Codex P2), not against separately
+  // hard-coded copies of its glob/grep — otherwise a change to ci.yml's retry detection would leave
+  // these green while silently disabling the gate. The pin is now bidirectional: rename the helper
+  // OR change the workflow's glob/grep, and this reds.
+  const ci = readFileSync(path.join(process.cwd(), "..", ".github", "workflows", "ci.yml"), "utf8");
+
+  it("the workflow's retry glob still matches the directory attemptDir mints for a retry", () => {
+    // Detector 1: `granted=(e2e-artifacts/<glob>)`. Extract <glob> from the workflow.
+    const m = ci.match(/granted=\(e2e-artifacts\/([^)\s]+)\)/);
+    expect(m, "ci.yml no longer has the `granted=(e2e-artifacts/...)` retry glob").toBeTruthy();
+    const glob = m![1]; // e.g. *__attempt-*
+    const asRegex = new RegExp("^" + glob.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
+    expect(attemptDir("void-order", 2)).toMatch(asRegex);
+    // ...and a first attempt (the bare dir) must NOT match it, or every clean run would look retried.
+    expect(attemptDir("void-order", 1)).not.toMatch(asRegex);
+  });
+
+  it("the workflow's RETRIED grep still matches the line resultsLine prints for a retry", () => {
+    // Detector 2: `grep -qE '<pattern>'`. Extract the pattern that mentions RETRIED.
+    const m = ci.match(/grep -qE '([^']*RETRIED[^']*)'/);
+    expect(m, "ci.yml no longer greps for a RETRIED line").toBeTruthy();
+    const grep = new RegExp(m![1]);
+    expect(resultsLine({ name: "close-month-end", ok: true, retried: true })).toMatch(grep);
+    // A plain PASS and a FAIL must NOT match that grep, or the gate would fire on every run.
+    expect(resultsLine({ name: "quotes", ok: true, retried: false })).not.toMatch(grep);
+    expect(resultsLine({ name: "void-order", ok: false, retried: false, kind: "assertion", committed: 0, indeterminate: 0 })).not.toMatch(grep);
+  });
+
+  it("attempt 1 keeps the bare directory; a retry gets its own sibling", () => {
     expect(attemptDir("void-order", 1)).toBe("void-order");
     expect(attemptDir("void-order", 2)).toBe("void-order__attempt-2");
-    // The literal CI glob is `e2e-artifacts/*__attempt-*`; this is the segment that must match it.
-    expect(attemptDir("void-order", 2)).toMatch(/__attempt-\d+$/);
   });
 
-  it("prints a retried flow as `  RETRIED ` — the exact line CI greps as `^  RETRIED `", () => {
-    const line = resultsLine({ name: "close-month-end", ok: true, retried: true });
-    expect(line).toMatch(/^ {2}RETRIED /); // the CI grep, byte for byte
-  });
-
-  it("never prints a retried flow as a plain PASS", () => {
-    const passed = resultsLine({ name: "quotes", ok: true, retried: false });
-    expect(passed.startsWith("  PASS   ")).toBe(true);
-    expect(passed).not.toMatch(/^ {2}RETRIED /);
-  });
-
-  it("prints a failure as FAIL, carrying the classification and retry reason", () => {
+  it("never prints a retried flow as a plain PASS, and a failure reads FAIL with its reason", () => {
+    expect(resultsLine({ name: "quotes", ok: true, retried: false }).startsWith("  PASS   ")).toBe(true);
     const failed = resultsLine({ name: "void-order", ok: false, retried: false, kind: "assertion", committed: 0, indeterminate: 0 });
     expect(failed.startsWith("  FAIL   ")).toBe(true);
     expect(failed).toMatch(/assertion-level/);
