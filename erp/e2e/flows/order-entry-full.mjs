@@ -12,6 +12,7 @@
 // (board-search-scan, loads-after-print, void-order all operate on THIS SAME order) — the
 // `created.templateIds` precedent (template-build-and-load.mjs), generalized to a single id
 // rather than an array since there is only ever one order across this whole run.
+import assert from "node:assert/strict";
 import { pickCombobox, assertNeverVisible, waitForValue } from "../lib/ui.mjs";
 
 const EM_DASH = "—";
@@ -82,7 +83,7 @@ export async function run(page, shot, ctx) {
   await savedHeading.waitFor({ state: "visible", timeout: 15000 });
   const savedText = (await savedHeading.textContent()) ?? "";
   const match = savedText.match(/#(\d+)/);
-  if (!match) throw new Error(`Could not parse an order number out of "${savedText}"`);
+  assert.ok(match, `Could not parse an order number out of "${savedText}"`);
   await page.getByText("is on credit hold").waitFor({ state: "visible" });
   await shot("save-warnings-panel");
 

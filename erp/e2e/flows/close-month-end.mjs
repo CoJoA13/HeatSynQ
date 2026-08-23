@@ -71,7 +71,7 @@ async function waitForCount(locator, min, timeoutMs = 15000) {
   for (;;) {
     const n = await locator.count();
     if (n >= min) return n;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for at least ${min} item(s) — last saw ${n}`);
+    if (Date.now() > deadline) assert.fail(`Timed out waiting for at least ${min} item(s) — last saw ${n}`);
     await new Promise((r) => { setTimeout(r, 200); });
   }
 }
@@ -166,7 +166,7 @@ function parseCsvLine(line) {
 
 function sumCsv(text) {
   const lines = text.split("\n").filter((l) => l.length > 0);
-  if (lines.length === 0) throw new Error("Empty CSV — expected at least a header row");
+  assert.ok(lines.length > 0, "Empty CSV — expected at least a header row");
   const rows = lines.slice(1).map(parseCsvLine);
   let debitCents = 0;
   let creditCents = 0;

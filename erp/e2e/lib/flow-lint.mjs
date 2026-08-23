@@ -89,3 +89,29 @@ export function findUncheckedAbsenceAssertions(source) {
   }
   return found;
 }
+
+// `throw new Error(...)` (and any built-in Error subclass) written as a flow assertion (#193). The
+// third false-green shape, and the subtlest: `classifyFailure` opens with a hard override that an
+// `ERR_ASSERTION` failure is NEVER a network one, precisely so a stale netFailure earlier in a flow
+// cannot launder a real assertion failure into `FAIL [network]` and — in a flow that mutated nothing
+// — into a granted retry and a green run. A plain `throw new Error(...)` carries no `ERR_ASSERTION`
+// code, so it walks straight through that override. Convert each to `assert.ok`/`assert.match`/
+// `assert.fail` — the message text is good, keep it; the thrown `AssertionError` is what the override
+// covers. The hand-rolled timeout throws (`if (Date.now() > deadline) ...`) are the sharpest case:
+// they are the shape most likely to fire on a slow or contended machine, i.e. the same machine most
+// likely to carry a stale netFailure.
+const PLAIN_ERROR_THROW = /\bthrow\s+new\s+\w*Error\s*\(/g;
+
+/**
+ * Every `throw new <...>Error(...)` in one suite source, with 1-based line numbers. A re-throw of a
+ * caught error (`throw err`) is deliberately NOT matched — re-raising preserves the original
+ * classification (`assertNeverVisible` does exactly this for a transport error), which is correct.
+ * Pure: the caller reads the file and raises the refusal.
+ */
+export function findPlainErrorThrows(source) {
+  const found = [];
+  for (const m of source.matchAll(PLAIN_ERROR_THROW)) {
+    found.push({ line: lineOf(source, m.index), snippet: snippetOf(source, m.index) });
+  }
+  return found;
+}

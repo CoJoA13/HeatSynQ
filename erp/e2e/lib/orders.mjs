@@ -4,6 +4,7 @@
 // being copy-pasted five times. Deliberately thin: customer + N part lines + quantities and Save
 // — the entry page's own richer behaviours (drafts, serial ranges, warnings panel) are
 // order-entry-full.mjs's job to demonstrate, not this helper's.
+import assert from "node:assert/strict";
 import { pickCombobox } from "./ui.mjs";
 
 const EM_DASH = "—";
@@ -58,7 +59,7 @@ export async function createOrderViaUi(page, ctx, { customerCode, lines, expectW
   await hubHeading.waitFor({ state: "visible", timeout: 20000 });
   const headingText = (await hubHeading.textContent()) ?? "";
   const match = headingText.match(/#(\d+)/);
-  if (!match) throw new Error(`Could not parse an order number out of the hub heading "${headingText}"`);
+  assert.ok(match, `Could not parse an order number out of the hub heading "${headingText}"`);
   return { id: page.url().split("/").pop(), number: Number(match[1]) };
 }
 
@@ -95,7 +96,7 @@ export async function waitForShipmentPage(page) {
   await heading.waitFor({ state: "visible", timeout: 20000 });
   const text = (await heading.textContent()) ?? "";
   const match = text.match(/Packing List (\d+)/);
-  if (!match) throw new Error(`Could not parse a packing-list number out of "${text}"`);
+  assert.ok(match, `Could not parse a packing-list number out of "${text}"`);
   return { id: page.url().split("/").pop(), shipperNumber: Number(match[1]) };
 }
 
@@ -133,9 +134,7 @@ export async function boardRow(page, orderNumber) {
   // comparing rather than matched around.
   const labels = (await headers.allInnerTexts()).map((label) => label.replace(/[▲▼]/g, "").trim());
   const index = labels.indexOf("Order #");
-  if (index < 0) {
-    throw new Error(`the order board is showing no "Order #" column — headers: ${JSON.stringify(labels)}`);
-  }
+  assert.ok(index >= 0, `the order board is showing no "Order #" column — headers: ${JSON.stringify(labels)}`);
   return board.locator("tbody tr").filter({
     has: page.locator(`td:nth-child(${index + 1})`, { hasText: new RegExp(`^\\s*${orderNumber}\\s*$`) }),
   });

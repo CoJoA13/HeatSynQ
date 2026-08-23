@@ -11,9 +11,10 @@ const REASON = "E2E void-order flow: intentional test void, demonstrating the vo
 
 export async function run(page, shot, ctx) {
   const { created } = ctx;
-  if (!created.orderId || !created.orderNumber) {
-    throw new Error("void-order requires order-entry-full to have set ctx.created.orderId/orderNumber");
-  }
+  assert.ok(
+    created.orderId && created.orderNumber,
+    "void-order requires order-entry-full to have set ctx.created.orderId/orderNumber",
+  );
 
   await page.goto(`${ctx.baseURL}/orders/${created.orderId}`);
   await page.getByRole("heading", { name: `Order #${created.orderNumber}` }).waitFor({ state: "visible" });

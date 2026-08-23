@@ -16,14 +16,13 @@
 // to archive `traveler.pdf` alongside the numbered screenshots — the source for the demo doc's
 // "printed traveler PDF page" screenshot (rendered to PNG afterward with a local PDF tool; the
 // flow itself only touches portable Node/Playwright APIs, no new system dependency).
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 
 export async function run(page, shot, ctx) {
   const { created } = ctx;
-  if (!created.orderId) {
-    throw new Error("loads-after-print requires order-entry-full to have set ctx.created.orderId");
-  }
+  assert.ok(created.orderId, "loads-after-print requires order-entry-full to have set ctx.created.orderId");
 
   await page.goto(`${ctx.baseURL}/orders/${created.orderId}`);
   await page.getByRole("heading", { name: `Order #${created.orderNumber}` }).waitFor({ state: "visible" });

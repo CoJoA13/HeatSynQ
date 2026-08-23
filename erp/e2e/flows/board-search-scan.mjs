@@ -9,11 +9,10 @@ import { boardRow } from "../lib/orders.mjs";
 
 export async function run(page, shot, ctx) {
   const { created } = ctx;
-  if (!created.orderId || !created.orderNumber) {
-    throw new Error(
-      "board-search-scan requires order-entry-full to have run first and set ctx.created.orderId/orderNumber",
-    );
-  }
+  assert.ok(
+    created.orderId && created.orderNumber,
+    "board-search-scan requires order-entry-full to have run first and set ctx.created.orderId/orderNumber",
+  );
 
   await page.goto(`${ctx.baseURL}/`);
   await page.getByRole("heading", { name: "Orders" }).waitFor({ state: "visible" });

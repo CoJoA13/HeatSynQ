@@ -96,7 +96,7 @@ async function waitForEnabled(locator, what, timeoutMs = 20000) {
   for (;;) {
     if (!(await locator.isDisabled())) return;
     if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${what} to become enabled (title: ${await locator.getAttribute("title")})`);
+      assert.fail(`Timed out waiting for ${what} to become enabled (title: ${await locator.getAttribute("title")})`);
     }
     await new Promise((r) => { setTimeout(r, 200); });
   }
