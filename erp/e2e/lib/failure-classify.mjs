@@ -191,6 +191,14 @@ const RAW_API_MUTATION = new RegExp(
 const RAW_API_ALIAS =
   /(?:\.\s*request\b|\[\s*["']request["']\s*\])(?!\s*[.([])/g;
 
+// ...and the DESTRUCTURING capture — `const { request } = page`, `const { request: req } = page`
+// (Codex round 4, P1) — which contains no `.request`/`["request"]` for the alias pattern to see. A
+// destructuring is STATIC, so it is in scope (only DYNAMIC dispatch is not): flagged when a `{...}`
+// binding `request` is followed by `}=`, which separates a destructuring pattern (LHS) from an object
+// LITERAL (`= {...}`, RHS) and from a parameter destructure (`}) =>`). `\brequest\b` so `requestId`
+// and the like are left alone. `[^}{]` forbids crossing a nested brace.
+const RAW_API_DESTRUCTURE = /\{[^}{]*\brequest\b[^}{]*\}\s*=/g;
+
 /** Every raw, uncounted APIRequestContext mutation in one flow's source, with 1-based line
  *  numbers. Pure: the caller reads the file and raises the refusal. */
 export function findRawApiMutations(source) {
@@ -207,6 +215,7 @@ export function findRawApiMutations(source) {
   };
   scan(RAW_API_MUTATION, (m) => (m[1] || m[2]).toLowerCase());
   scan(RAW_API_ALIAS, () => "alias");
+  scan(RAW_API_DESTRUCTURE, () => "alias");
   return found.sort((a, b) => a.line - b.line);
 }
 

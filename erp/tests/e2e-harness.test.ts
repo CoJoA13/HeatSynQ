@@ -234,6 +234,16 @@ describe("findRawApiMutations", () => {
     expect(findRawApiMutations('await context.request["patch"](u)')).toHaveLength(1);
   });
 
+  it("flags a DESTRUCTURING capture — `const { request: req } = page` (Codex round 4, P1)", () => {
+    expect(findRawApiMutations("const { request: req } = page;\nawait req.post(u)")).toHaveLength(1);
+    expect(findRawApiMutations("const { a, request: req, b } = page;")).toHaveLength(1);
+    // ...but an object LITERAL (RHS) and a PARAMETER destructure are not captures.
+    expect(findRawApiMutations("const config = { request: foo };")).toEqual([]);
+    expect(findRawApiMutations('page.route("**", ({ request }) => request.continue());')).toEqual([]);
+    // ...and `requestId` is a different identifier.
+    expect(findRawApiMutations("const { requestId } = x;")).toEqual([]);
+  });
+
   it("does NOT misread a multi-line inline read as a capture (Codex round 3, P2 — the FP that would refuse a legit wrapped GET)", () => {
     // The continuation test lives INSIDE the lookahead, so the trailing whitespace cannot backtrack
     // the match into a false capture.
