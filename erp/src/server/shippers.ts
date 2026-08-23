@@ -2582,12 +2582,19 @@ export type ShipperRow = {
   shipDate: string; orderCount: number; orderLabels: string[]; orders: ShipperRowOrder[];
   carrierName: string | null;
   totalQty: number; totalWeight: number; freightAmount: number | null; deletedAt: string | null;
+  /** Set when this shipment IS a reversal (§5.6) — its lines carry negative quantities. Carried on
+   *  the row so `shipmentsForOrder` consumers can tell a reversal apart: #183 keeps it out of the
+   *  cert scope picker, where a reversal-scope cert would print negative quantities and is refused. */
+  reversesShipperNumber: number | null;
 };
 
 const ROW_SELECT = {
   id: true, shipperNumber: true, bolNumber: true, shipDate: true, freightAmount: true, deletedAt: true,
   customer: { select: { code: true, name: true } },
   carrier: { select: { name: true } },
+  // #183: the original this document reverses, for `reversesShipperNumber` — the DETAIL_INCLUDE
+  // `reverses` select, mirrored onto the row path so the list/`shipmentsForOrder` shape carries it too.
+  reverses: { select: { shipperNumber: true } },
   orders: {
     // Deterministic order for `orderLabels` (and `orders`) — the issue #24 lesson applied here
     // too: an unordered collection makes a multi-order shipment's label list depend on Postgres's
@@ -2640,6 +2647,7 @@ function toShipperRow(row: ShipperRowShape): ShipperRow {
     carrierName: row.carrier?.name ?? null,
     totalQty, totalWeight: weightCents / 100,
     freightAmount: num(row.freightAmount), deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+    reversesShipperNumber: row.reverses?.shipperNumber ?? null,
   };
 }
 
