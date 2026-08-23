@@ -36,7 +36,9 @@ embeds them and scales them down"* — measurement says the density was never re
 `1200/2880`: it hardcoded "captured at deviceScaleFactor 2 on a 1440px viewport". Landing (a)
 without it renders every figure at half size.
 
-The replacement is resolution-independent, exactly as the issue words it:
+The replacement is resolution-independent, exactly as the issue words it (the constant was renamed
+to `DECLARED_WIDTH_PX` in the fix round — see §12.3 — so this snippet is as it landed here, not as
+it stands):
 
 ```js
 export const MANUAL_COLUMN_PX = 1200;
