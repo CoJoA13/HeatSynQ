@@ -350,6 +350,26 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**Reversals group (#182 + #183 FIXED) — branch `fix-reversals-182-183`, 2026-08-23.** Two
+reversal-interaction issues surfaced by Round 3 Group B (#161's Reverse control + #165's cert
+picker), done together because both turn on reversal identity. **#183 (owner ruling 2026-08-23,
+refuse)** — the cert scope picker offered a reversing shipment as a SHIPMENT-scope target, unlabelled;
+a reversal carries the order (its own negated `ShipperOrder`) so it passed the #165 pairing guard, and
+`readCertPdfData`'s SHIPMENT branch printed its negative lines — a cert of negative quantities.
+`createCert` now REFUSES a SHIPMENT cert on a reversal, beside the pairing guard, under the same order
+claim, reading the immutable `reversesShipperId`; `CertificationsSection` filters reversals out of the
+picker so it is never offered. Auto-mint is unaffected (a reversal mints no cert; `addOrderToShipper`
+refuses a reversal via `claimLiveShipper`'s #139 freeze before its own mint). **#182** — the
+edit-freeze BANNER on a reversed original said "void the reversal first" unconditionally while the Void
+button correctly led with the invoice sentence (`voidShipper` runs `refuseIfInvoiced` before the #65
+reversal blocker, so on an invoiced pair "void the reversal first" names a step the server also
+refuses). The invoice-before-reversal precedence is now a single `reversedOriginalObstacle` helper
+consumed by BOTH the banner and the Void button, so they cannot drift; on an invoiced pair the banner
+leads with the invoice sentence, and once unlocked it becomes the reversal step. The `reverse-shipment`
+E2E flow (which pinned the bug) now pins the fixed transition. Gates: **3667 tests / 212 files**,
+`tsc`/`eslint`/`build` clean, E2E 25/25. Backlog remaining after this: #190 (deferred CI flip), #171,
+#33.
+
 **A/R wording group (#178 + #179 FIXED) — branch `fix-ar-wording-178-179`, 2026-08-23.** Two A/R
 refusal-wording residue issues (Round 3 Group A), done together because both compose refusal messages
 in the receivables neighborhood. **#178** — the out-of-window discount refusal now names WHEN the
