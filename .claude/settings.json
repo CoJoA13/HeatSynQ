@@ -3,7 +3,7 @@
     "allow": [
       "Bash(npx tsc --noEmit)",
       "Bash(npm test)",
-      "Bash(npx eslint src tests)",
+      "Bash(npx eslint src tests e2e scripts prisma)",
       "Bash(npx vitest run *)",
       "Bash(npx prisma generate)",
       "Bash(npx prisma validate)",
@@ -11,6 +11,7 @@
       "Bash(npx prisma migrate status)",
       "Bash(npm view *)",
       "Bash(npm run build)",
+      "Bash(npm run manual:build)",
       "Bash(npm run test:e2e)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
