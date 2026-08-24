@@ -696,6 +696,11 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     const signer = await makeSigner("png");
     await expect(asSystem(() => printCert(legacy.id, signer.id)))
       .rejects.toMatchObject({ status: 400, message: /reversing shipment/ });
+    // ...and the SHARED PDF-data seam refuses it too — the path template-preview.ts takes directly,
+    // so the CERT template editor cannot render a legacy reversal cert's negative lines (Codex round 4).
+    const settings = await certPrintSettings();
+    await expect(readCertPdfData(prisma, legacy.id, settings, signer, "2026-08-06"))
+      .rejects.toMatchObject({ status: 400, message: /reversing shipment/ });
     expect((await prisma.cert.findUniqueOrThrow({ where: { id: legacy.id } })).deletedAt).toBeNull();
   });
 
