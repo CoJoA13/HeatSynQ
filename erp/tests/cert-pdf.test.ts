@@ -666,15 +666,37 @@ describe("POST /api/shippers/[id]/print?doc=ticket&cert=1", () => {
     expect(printed.warnings).toEqual([]);
   });
 
-  // #183: a reversal cannot be certified — the picker omits it and `createCert` refuses it — so the
-  // "create it from /orders/N" missing-cert warning would name an action that can never succeed on
-  // one. Printing a reversal's tickets with certs must therefore emit no such warning.
-  it("does not warn about a missing shipment-scope cert when printing a REVERSAL (#183)", async () => {
-    const { shipper } = await shipmentScopeShipment();
-    const { shipper: reversal } = await asSystem(() => reverseShipper(shipper.id, { reason: "returned" }));
-    const printed = await asSystem(() => printShippingTickets(reversal.id, undefined, { withCerts: true }));
-    expect(printed.certs).toEqual([]);      // a reversal carries no cert to print
-    expect(printed.warnings).toEqual([]);   // ...and no unactionable "create it from /orders/N" warning
+  // #183: a reversal cannot be certified — createCert refuses it and the picker omits it — so every
+  // surface that would tell the operator "create a cert" is unactionable on a reversal, and any
+  // PRE-EXISTING invalid reversal cert (hand-raised before the guard) must never print. The fix
+  // refuses at print/read time rather than voiding audited state (Codex round 3), so a legacy cert
+  // is left LIVE but never produces paper.
+  it("never surfaces or prints a SHIPMENT cert on a REVERSAL, and voids none (#183, Codex rounds 1-3)", async () => {
+    const { shipper, order } = await shipmentScopeShipment();
+    const { shipper: reversal, warnings: reversalWarnings } =
+      await asSystem(() => reverseShipper(shipper.id, { reason: "returned" }));
+
+    // Page view (shipmentWarnings): no "requires a certification ... see /orders/N" on the reversal.
+    expect(reversalWarnings.join(" ")).not.toMatch(/requires a certification/i);
+
+    // Combined print (resolveShipmentCerts) with no reversal cert: nothing to print, no warning.
+    const clean = await asSystem(() => printShippingTickets(reversal.id, undefined, { withCerts: true }));
+    expect(clean.certs).toEqual([]);
+    expect(clean.warnings).toEqual([]);
+
+    // A PRE-EXISTING invalid reversal cert (raw-inserted, as the old buggy picker allowed): still
+    // never printed — not in the ticket bundle, and refused by the direct print — and left LIVE.
+    const legacy = await prisma.cert.create({
+      data: { orderId: order.id, scope: "SHIPMENT", shipperId: reversal.id },
+    });
+    const withLegacy = await asSystem(() => printShippingTickets(reversal.id, undefined, { withCerts: true }));
+    expect(withLegacy.certs.map((c) => c.id)).not.toContain(legacy.id);
+    expect(withLegacy.warnings).toEqual([]);
+
+    const signer = await makeSigner("png");
+    await expect(asSystem(() => printCert(legacy.id, signer.id)))
+      .rejects.toMatchObject({ status: 400, message: /reversing shipment/ });
+    expect((await prisma.cert.findUniqueOrThrow({ where: { id: legacy.id } })).deletedAt).toBeNull();
   });
 
   it("prints the tickets and each covered order's cert, each stored as its own document", async () => {

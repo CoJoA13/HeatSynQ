@@ -735,6 +735,21 @@ export async function printCert(
     const cert = await tx.cert.findFirst({ where: { id: certId } });
     if (!cert) throw new HttpError(404, "Certification not found");
     assertPrintable(cert);
+    // #183: refuse the DIRECT print of a SHIPMENT-scope cert on a REVERSAL. createCert now refuses
+    // creating one, but a PRE-EXISTING invalid cert (hand-raised before the guard) must not still
+    // print negative quantities here. Read under the order claim just taken; `reversesShipperId` is
+    // frozen at reversal creation, so no extra lock is needed. (The combined-print path,
+    // resolveShipmentCerts, skips it too.) This standing refusal replaced a data migration that would
+    // have voided such certs without an audit entry (Codex round 3).
+    if (cert.scope === "SHIPMENT" && cert.shipperId !== null) {
+      const revShipper = await tx.shipper.findUnique({
+        where: { id: cert.shipperId }, select: { reversesShipperId: true },
+      });
+      if (revShipper?.reversesShipperId != null) {
+        throw new HttpError(400,
+          "This certification is on a reversing shipment and cannot be printed — a reversal un-ships its parts");
+      }
+    }
     // The OWNING ORDER's void refuses new paper too (spec §5.6): `voidOrder` leaves ORDER/LOAD
     // certs live, so the cert's own `deletedAt` alone cannot carry the rule. Read fresh under
     // the claim just taken — the house rule's whole point. `customerId` also drives the §5.2

@@ -1292,9 +1292,15 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
   );
 
   const warnings: string[] = [];
+  const isReversal = detail.reversesShipperId !== null;
   for (const so of detail.orders) {
     const order = orderById.get(so.orderId);
-    if (order?.certRequired && !certSatisfied.has(so.orderId)) {
+    // #183: on a REVERSAL, a SHIPMENT-scope order can never carry a cert (createCert refuses it, the
+    // picker omits it), so "requires a certification ... see /orders/N" would be a permanently
+    // unactionable warning on every reversal page load — suppress it there (the resolveShipmentCerts
+    // print-path exemption's page-view twin). ORDER/LOAD scope still warn (creatable regardless).
+    const certUnreachable = isReversal && order?.certScope === "SHIPMENT";
+    if (order?.certRequired && !certSatisfied.has(so.orderId) && !certUnreachable) {
       warnings.push(
         `Order #${so.orderNumber} requires a certification and none exists yet — see /orders/${so.orderId}`);
     }
@@ -2550,6 +2556,12 @@ async function resolveShipmentCerts(
   const warnings: string[] = [];
   for (const so of shipperOrders) {
     const scope = so.order.certScope as CertScopeValue;
+    // #183: a reversal cannot be certified — skip its SHIPMENT scope entirely. There is no cert to
+    // print, the "create it from /orders/N" warning would be unactionable (createCert refuses it and
+    // the picker omits it), and any PRE-EXISTING invalid reversal cert (hand-raised before the guard)
+    // is thereby never printed — the standing, mutation-free refusal that replaced a data migration
+    // (Codex round 3: voiding legacy certs in SQL would strip their audit History).
+    if (isReversal && scope === "SHIPMENT") continue;
     const certs = await db.cert.findMany({
       where: {
         orderId: so.orderId, scope, deletedAt: null,
@@ -2558,7 +2570,7 @@ async function resolveShipmentCerts(
       orderBy: [{ loadNumber: "asc" }, { createdAt: "asc" }],
       select: { id: true },
     });
-    if (certs.length === 0 && so.order.certRequired && !(isReversal && scope === "SHIPMENT")) {
+    if (certs.length === 0 && so.order.certRequired) {
       // The saveNewShipper §5.7 warning's own shape, adapted to the print moment.
       warnings.push(
         `Order #${so.order.orderNumber} requires a certification and none exists to print — ` +

@@ -359,7 +359,14 @@ a reversal carries the order (its own negated `ShipperOrder`) so it passed the #
 `createCert` now REFUSES a SHIPMENT cert on a reversal, beside the pairing guard, under the same order
 claim, reading the immutable `reversesShipperId`; `CertificationsSection` filters reversals out of the
 picker so it is never offered. Auto-mint is unaffected (a reversal mints no cert; `addOrderToShipper`
-refuses a reversal via `claimLiveShipper`'s #139 freeze before its own mint). **#182** — the
+refuses a reversal via `claimLiveShipper`'s #139 freeze before its own mint). **The refusal is also
+enforced at PRINT/READ time** (Codex rounds), so a PRE-EXISTING invalid reversal cert (hand-raised
+before the guard, or on an upgraded install) never produces paper and no surface tells the operator to
+create an impossible one: `printCert` refuses a reversal SHIPMENT cert directly, `resolveShipmentCerts`
+skips it in the combined ticket bundle, and both the print-time and page-view (`shipmentWarnings`)
+missing-cert warnings are suppressed for a reversal's SHIPMENT scope. This is a STANDING, mutation-free
+guard — a data migration to void such certs was tried and reverted because voiding in SQL strips the
+`Cert.deletedAt` audit History the contract requires. **#182** — the
 edit-freeze BANNER on a reversed original said "void the reversal first" unconditionally while the Void
 button correctly led with the invoice sentence (`voidShipper` runs `refuseIfInvoiced` before the #65
 reversal blocker, so on an invoiced pair "void the reversal first" names a step the server also
