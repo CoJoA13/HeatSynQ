@@ -211,7 +211,9 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
   if (data.scope === "SHIPMENT") {
     const shipperId = data.shipperId;
     if (shipperId === null) throw new HttpError(400, "shipperId: shipment scope requires a shipper");
-    const shipper = await tx.shipper.findFirst({ where: { id: shipperId, deletedAt: null }, select: { id: true } });
+    const shipper = await tx.shipper.findFirst({
+      where: { id: shipperId, deletedAt: null }, select: { id: true, reversesShipperId: true },
+    });
     if (!shipper) throw new HttpError(400, "shipperId: that shipment does not exist or has been voided");
 
     // #165: and it must actually CARRY this order. Until the SHIPMENT-scope route existed, the
@@ -227,6 +229,17 @@ async function createCertInTx(tx: Db, data: CreateCertInput): Promise<CertDetail
       where: { shipperId, orderId: data.orderId }, select: { id: true },
     });
     if (!pairing) throw new HttpError(400, "orderId: that shipment does not carry this order");
+
+    // #183 (owner ruling 2026-08-23): and it must not be a REVERSAL. A reversing shipment is
+    // machine-generated mirror paper whose `ShipperLine`s carry NEGATIVE quantities, and it DOES
+    // carry the order (its own negated `ShipperOrder`), so it sails past the pairing guard above and
+    // `readCertPdfData`'s SHIPMENT branch would print a certification of negative quantities — a
+    // record of un-shipping, meaningless as a cert (which attests to parts PROCESSED). Refused here,
+    // beside the pairing guard and for the same "printable record of nothing" reason. `reversesShipperId`
+    // is frozen at reversal creation, so reading it off the row already fetched needs no extra lock.
+    if (shipper.reversesShipperId !== null) {
+      throw new HttpError(400, "shipperId: a reversing shipment cannot be certified — a reversal un-ships its parts");
+    }
   }
 
   // LOAD scope must name a load the order CURRENTLY has — checked under the claim above, so a
@@ -562,6 +575,19 @@ export async function readCertPdfData(
   // Scope-appropriate quantities (§10.3) — see the doc comment above.
   let shippedByLineId = new Map<string, { qty: number; weight: number }>();
   if (detail.scope === "SHIPMENT" && detail.shipperId !== null) {
+    // #183, the SHARED refusal seam. A reversal cannot be certified; a SHIPMENT cert on one renders
+    // this reversal's NEGATIVE lines. Refusing HERE — the one PDF-data reader EVERY render path
+    // funnels through: `printCert` (direct), the ticket bundle, AND `template-preview.ts` (which calls
+    // this directly, so a guard only in `printCert` let the CERT template editor render a legacy
+    // reversal cert) — closes every path at once. `reversesShipperId` is frozen; read under the
+    // caller's claim. (createCert refuses new ones; resolveShipmentCerts skips them in the bundle.)
+    const revShipper = await db.shipper.findUnique({
+      where: { id: detail.shipperId }, select: { reversesShipperId: true },
+    });
+    if (revShipper?.reversesShipperId != null) {
+      throw new HttpError(400,
+        "This certification is on a reversing shipment and cannot be printed — a reversal un-ships its parts");
+    }
     const so = await db.shipperOrder.findFirst({
       where: { shipperId: detail.shipperId, orderId: detail.orderId }, select: { id: true },
     });
@@ -722,6 +748,9 @@ export async function printCert(
     const cert = await tx.cert.findFirst({ where: { id: certId } });
     if (!cert) throw new HttpError(404, "Certification not found");
     assertPrintable(cert);
+    // #183: the reversal-cert refusal lives at the shared `readCertPdfData` seam below (called on this
+    // same `tx`), so printCert, the ticket bundle, and the template-preview path are all covered by
+    // ONE guard rather than a copy here — no separate check needed.
     // The OWNING ORDER's void refuses new paper too (spec §5.6): `voidOrder` leaves ORDER/LOAD
     // certs live, so the cert's own `deletedAt` alone cannot carry the rule. Read fresh under
     // the claim just taken — the house rule's whole point. `customerId` also drives the §5.2

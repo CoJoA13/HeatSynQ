@@ -86,11 +86,10 @@ The control appears on every order, including ones whose section reads *"None �
 require a certification."* That is deliberate: the whole reason it exists is for the case where
 automatic creation did not happen, and that includes an order whose requirement was set late.
 
-> **A cert raised on a reversal shipment will print negative quantities.** A reversal is mirror
-> paper, and its shipment entry currently looks like any other in the picker. Whether the app should
-> label those or refuse them outright is
-> [#183](https://github.com/CoJoA13/HeatSynQ/issues/183) — until it is settled, check the packing
-> list number against the shipment list if an order has a reversal on it.
+> **A reversal shipment cannot be certified.** A reversal is mirror paper — its lines are negated,
+> so a cert raised on one would print negative quantities. The picker leaves reversals out of its
+> shipment options, and the server refuses a shipment-scope certification on one
+> ([#183](https://github.com/CoJoA13/HeatSynQ/issues/183), fixed 2026-08-23).
 
 ## Requirements come from the part
 

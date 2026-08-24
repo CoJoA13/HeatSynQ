@@ -332,15 +332,25 @@ export function ShipmentDetail({ id }: { id: string }) {
   const auditGate = gate(perms, "admin.view");
   const docsGate = gate(perms, "shipping.view");
   const voided = (shipper?.deletedAt ?? null) !== null;
+  // #182 / Codex PR #141: on an original carrying a live reversal, the §5.7 invoice freeze OUTRANKS
+  // the #65 reversal blocker — `voidShipper` runs `refuseIfInvoiced` before the reversal guard, so on
+  // an invoiced pair "void the reversal first" names a step the server ALSO refuses. The first
+  // obstacle is therefore the invoice sentence (unlock / raise a credit) when the pair is invoiced,
+  // and the reversal step otherwise. Encoded ONCE here and consumed by BOTH the edit-freeze banner
+  // and the Void button below, so the two surfaces cannot drift (which is exactly #182); each passes
+  // the reversal-step phrasing it wants.
+  const reversedOriginalObstacle = (reversalStep: string): string =>
+    shipper?.invoiceVoidBlock ?? reversalStep;
   // #139: the pair freeze, worded exactly as `claimLiveShipper`'s refusals so title and server
-  // sentence cannot drift. The reversal side freezes whenever `reversesShipperId` is set (the
-  // server refuses ALWAYS — mirror paper); the original's side follows `reversedByShipperNumber`,
-  // which is live-filtered, so a void + reload clears the freeze for free.
+  // sentence cannot drift. The reversal side freezes whenever `reversesShipperId` is set (the server
+  // refuses ALWAYS — mirror paper); the original's side follows `reversedByShipperNumber`, which is
+  // live-filtered, so a void + reload clears the freeze for free — and (since #182) it leads with the
+  // invoice sentence on an invoiced pair, deferring to `reversedOriginalObstacle` above.
   const pairFreeze = shipper === null ? null
     : shipper.reversesShipperId !== null
       ? `This is a reversal of Packing List ${shipper.reversesShipperNumber ?? "?"} — a reversal is machine-generated mirror paper; void it and re-reverse instead of editing it`
       : shipper.reversedByShipperNumber !== null
-        ? `This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first, then edit, then re-reverse`
+        ? reversedOriginalObstacle(`This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first, then edit, then re-reverse`)
         : null;
   const editGate = voidLocked(pairLocked(gate(perms, "shipping.edit"), pairFreeze), voided);
   // §5.4 extended to shipment extension (owner ruling 2026-08-06): adding orders and replacing
@@ -355,18 +365,19 @@ export function ShipmentDetail({ id }: { id: string }) {
   // #65: an original with a live reversal cannot void (the server refuses, naming the reversal) —
   // the button says so up front (§5.16, disabled with the blocker as its title, never hidden). A
   // reversal document's own `reversedByShipperNumber` is always null, so its Void stays enabled:
-  // voiding a reversal is the blessed undo. PRECEDENCE (Codex PR #141 review): the §5.7 invoice
-  // freeze is checked FIRST, mirroring `voidShipper`'s own guard order (`refuseIfInvoiced` before
-  // the reversal blocker) — on an invoiced pair, "void the reversal first" would send the operator
-  // at an action the server also refuses; the invoice sentence (unlock / raise a credit) is the
-  // authoritative correction, pre-worded server-side so title and refusal cannot drift.
+  // voiding a reversal is the blessed undo. PRECEDENCE (Codex PR #141 review): on a reversed original
+  // the §5.7 invoice freeze wins — `reversedOriginalObstacle` above returns the invoice sentence
+  // (unlock / raise a credit) when the pair is invoiced, mirroring `voidShipper`'s own guard order
+  // (`refuseIfInvoiced` before the reversal blocker). That one helper is shared with the edit-freeze
+  // banner (#182), so the two can never disagree. A non-reversed invoiced shipment still gets the
+  // bare invoice sentence from the arm below.
   const voidGate = voided
     ? { allowed: false, disabled: true, title: "Already voided" }
-    : shipper != null && shipper.invoiceVoidBlock !== null
-      ? { allowed: false, disabled: true, title: shipper.invoiceVoidBlock }
-      : shipper != null && shipper.reversedByShipperNumber !== null
-        ? { allowed: false, disabled: true,
-            title: `This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first` }
+    : shipper != null && shipper.reversedByShipperNumber !== null
+      ? { allowed: false, disabled: true,
+          title: reversedOriginalObstacle(`This shipment has been reversed by Packing List ${shipper.reversedByShipperNumber} — void the reversal first`) }
+      : shipper != null && shipper.invoiceVoidBlock !== null
+        ? { allowed: false, disabled: true, title: shipper.invoiceVoidBlock }
         : gateDo(perms, "void_shipper");
   // #161: the Reverse control's own ladder — see `reverseGate` above for why it is NOT `voidGate`
   // with a different label (the §5.7 invoice block is deliberately absent).

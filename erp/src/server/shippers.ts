@@ -1292,9 +1292,15 @@ export async function shipmentWarnings(db: Db, detail: ShipperDetail): Promise<s
   );
 
   const warnings: string[] = [];
+  const isReversal = detail.reversesShipperId !== null;
   for (const so of detail.orders) {
     const order = orderById.get(so.orderId);
-    if (order?.certRequired && !certSatisfied.has(so.orderId)) {
+    // #183: on a REVERSAL, a SHIPMENT-scope order can never carry a cert (createCert refuses it, the
+    // picker omits it), so "requires a certification ... see /orders/N" would be a permanently
+    // unactionable warning on every reversal page load — suppress it there (the resolveShipmentCerts
+    // print-path exemption's page-view twin). ORDER/LOAD scope still warn (creatable regardless).
+    const certUnreachable = isReversal && order?.certScope === "SHIPMENT";
+    if (order?.certRequired && !certSatisfied.has(so.orderId) && !certUnreachable) {
       warnings.push(
         `Order #${so.orderNumber} requires a certification and none exists yet — see /orders/${so.orderId}`);
     }
@@ -2525,6 +2531,15 @@ export async function printBol(
 async function resolveShipmentCerts(
   db: Db, shipperId: string, orderId?: string,
 ): Promise<{ certs: { id: string; orderNumber: number }[]; warnings: string[] }> {
+  const shipper = await db.shipper.findUnique({
+    where: { id: shipperId }, select: { reversesShipperId: true },
+  });
+  // #183: a REVERSAL cannot carry a SHIPMENT-scope cert — the picker omits it and `createCert`
+  // refuses one. So the SHIPMENT-scope "create it from /orders/N" warning below would name an action
+  // that can never succeed on a reversal; suppress it there. (ORDER/LOAD scope stay warned — those
+  // certs are creatable regardless, and a reversal's order-scope cert exists from order save.)
+  const isReversal = shipper?.reversesShipperId != null;
+
   const shipperOrders = await db.shipperOrder.findMany({
     where: { shipperId, ...(orderId ? { orderId } : {}) },
     orderBy: { position: "asc" },
@@ -2541,6 +2556,12 @@ async function resolveShipmentCerts(
   const warnings: string[] = [];
   for (const so of shipperOrders) {
     const scope = so.order.certScope as CertScopeValue;
+    // #183: a reversal cannot be certified — skip its SHIPMENT scope entirely. There is no cert to
+    // print, the "create it from /orders/N" warning would be unactionable (createCert refuses it and
+    // the picker omits it), and any PRE-EXISTING invalid reversal cert (hand-raised before the guard)
+    // is thereby never printed — the standing, mutation-free refusal that replaced a data migration
+    // (Codex round 3: voiding legacy certs in SQL would strip their audit History).
+    if (isReversal && scope === "SHIPMENT") continue;
     const certs = await db.cert.findMany({
       where: {
         orderId: so.orderId, scope, deletedAt: null,
@@ -2582,12 +2603,19 @@ export type ShipperRow = {
   shipDate: string; orderCount: number; orderLabels: string[]; orders: ShipperRowOrder[];
   carrierName: string | null;
   totalQty: number; totalWeight: number; freightAmount: number | null; deletedAt: string | null;
+  /** Set when this shipment IS a reversal (§5.6) — its lines carry negative quantities. Carried on
+   *  the row so `shipmentsForOrder` consumers can tell a reversal apart: #183 keeps it out of the
+   *  cert scope picker, where a reversal-scope cert would print negative quantities and is refused. */
+  reversesShipperNumber: number | null;
 };
 
 const ROW_SELECT = {
   id: true, shipperNumber: true, bolNumber: true, shipDate: true, freightAmount: true, deletedAt: true,
   customer: { select: { code: true, name: true } },
   carrier: { select: { name: true } },
+  // #183: the original this document reverses, for `reversesShipperNumber` — the DETAIL_INCLUDE
+  // `reverses` select, mirrored onto the row path so the list/`shipmentsForOrder` shape carries it too.
+  reverses: { select: { shipperNumber: true } },
   orders: {
     // Deterministic order for `orderLabels` (and `orders`) — the issue #24 lesson applied here
     // too: an unordered collection makes a multi-order shipment's label list depend on Postgres's
@@ -2640,6 +2668,7 @@ function toShipperRow(row: ShipperRowShape): ShipperRow {
     carrierName: row.carrier?.name ?? null,
     totalQty, totalWeight: weightCents / 100,
     freightAmount: num(row.freightAmount), deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+    reversesShipperNumber: row.reverses?.shipperNumber ?? null,
   };
 }
 

@@ -227,11 +227,10 @@ export async function run(page, shot, ctx) {
   // `refuseIfInvoiced` over the pair's orders BEFORE its #65 blocker, and a reversal's orders are
   // its original's — so the invoice sentence wins here too, and "voiding a reversal is the blessed
   // undo" is true only once the invoice is out of the way (step 7 does that, and step 9 then voids
-  // it for real). This is the half that makes #182 concrete: the pair-freeze BANNER says "void the
-  // reversal first" unconditionally, while both Void buttons correctly say "unlock the invoice
-  // first". Pinned here so the follow-up changes a state this flow already describes.
+  // it for real). Since #182 the pair-freeze BANNER on the ORIGINAL defers to that same precedence
+  // (the invoice sentence first, not "void the reversal first") — asserted at step 6 below.
   assert.match(await voidButton(page).getAttribute("title"), /^This shipment cannot be voided — Invoice /,
-    "the reversal's own Void must name the invoice too while it is finalized — the banner's 'void the reversal first' is one step short here (#182)");
+    "the reversal's own Void must name the invoice while it is finalized");
   await shot("reversal-created");
 
   // --- 5. `OrderStatus.REOPENED`, reachable from a screen for the first time — and the board's
@@ -247,14 +246,18 @@ export async function run(page, shot, ctx) {
   await page.getByLabel("Open", { exact: true }).uncheck();
 
   // --- 6. Back on the ORIGINAL: the pair is frozen, Reverse names the reversal to void first, and
-  // Void still names the INVOICE — `voidShipper` checks `refuseIfInvoiced` BEFORE its reversal
-  // blocker, so sending the operator at "void the reversal first" here would be an action the
-  // server also refuses (the Codex PR #141 precedence). ---
+  // both the Void button AND (since #182) the edit-freeze BANNER name the INVOICE — `voidShipper`
+  // checks `refuseIfInvoiced` BEFORE its reversal blocker, so "void the reversal first" here would be
+  // an action the server also refuses (the Codex PR #141 precedence, now shared by the banner). ---
   await page.goto(`${ctx.baseURL}/shipping/${shipment.id}`);
   await waitForShipmentPage(page);
-  await page.getByText(
-    `This shipment has been reversed by Packing List ${reversal.shipperNumber} — void the reversal first, then edit, then re-reverse`,
-    { exact: true }).waitFor({ state: "visible", timeout: 15000 });
+  // #182: on the invoiced pair the banner leads with the invoice sentence, not "void the reversal
+  // first" — the same precedence the Void button uses. (After the unlock at step 7 it becomes the
+  // reversal step; pinned at step 8.)
+  await page.getByText(/^This shipment cannot be voided — Invoice .* is finalized/).first()
+    .waitFor({ state: "visible", timeout: 15000 });
+  assert.equal(await page.getByText(/void the reversal first, then edit, then re-reverse/).count(), 0,
+    "#182: while the invoice is finalized the banner must NOT lead with 'void the reversal first'");
   assert.equal(await reverseButton(page).isDisabled(), true, "an already-reversed original cannot be reversed again");
   assert.equal(
     await reverseButton(page).getAttribute("title"),
@@ -279,6 +282,12 @@ export async function run(page, shot, ctx) {
   // rung of the same ladder, now reachable. ---
   await page.goto(`${ctx.baseURL}/shipping/${shipment.id}`);
   await waitForShipmentPage(page);
+  // #182: with the invoice out of the way, the banner now leads with the reversal step — the same
+  // transition the Void button makes. The invoice-first precedence has cleared, so this is where
+  // "void the reversal first, then edit, then re-reverse" finally belongs.
+  await page.getByText(
+    `This shipment has been reversed by Packing List ${reversal.shipperNumber} — void the reversal first, then edit, then re-reverse`,
+    { exact: true }).waitFor({ state: "visible", timeout: 15000 });
   assert.equal(await voidButton(page).isDisabled(), true, "an original with a live reversal cannot be voided");
   assert.equal(
     await voidButton(page).getAttribute("title"),
