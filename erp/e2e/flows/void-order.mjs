@@ -26,7 +26,18 @@ export async function run(page, shot, ctx) {
   assert.match(message, new RegExp(`Void order #${created.orderNumber}\\?`));
   assert.match(message, /Reason for voiding \(recorded in the audit history\):/);
 
-  await page.getByText(`Voided — ${REASON}`).waitFor({ state: "visible", timeout: 10000 });
+  // The voided banner surfaces in TWO stages, three sequential requests deep: the DELETE commits the
+  // void, then load() reflips `voided` and the banner appears reading "Voided — see History for the
+  // reason", then a SEPARATE admin-audit read (the page effect keyed on `voided`) resolves the
+  // recorded reason and the banner becomes "Voided — <reason>". So the exact-reason text is gated on
+  // the whole chain landing, and on a loaded CI runner the audit leg alone can push it past a few
+  // seconds. Wait for the banner to appear at all first (the void itself committed and reloaded), then
+  // for the reason to resolve — two checkpoints so a genuine void regression reports distinctly from a
+  // slow/absent audit read. Both inherit the context-wide 45s budget (run.mjs setDefaultTimeout); the
+  // prior single wait pinned an explicit 10s cap TIGHTER than that default and occasionally tripped it
+  // on a void that had in fact fully succeeded (#190 — the recurring void-order flake).
+  await page.getByText("Voided —").waitFor({ state: "visible" });
+  await page.getByText(`Voided — ${REASON}`).waitFor({ state: "visible" });
   await shot("hub-voided");
 
   // Board: a voided order leaves the list by default (spec §5c).
@@ -50,7 +61,9 @@ export async function run(page, shot, ctx) {
 
   await page.getByRole("checkbox", { name: "Include voided" }).check();
   const row = await boardRow(page, created.orderNumber);
-  await row.waitFor({ state: "visible", timeout: 10000 });
+  // Inherit the 45s context default (run.mjs) rather than a tighter explicit cap — same reasoning as
+  // the void banner above: this waits out a fresh navigation plus a board re-render on a shared runner.
+  await row.waitFor({ state: "visible" });
   // A voided row renders the plain word "Voided" in place of the colored light dot + status —
   // board-search-scan already confirmed the dot for this SAME order while it was still live.
   await assertNeverVisible(row.locator("span.rounded-full"), "a voided row should show no colored light", 1000);

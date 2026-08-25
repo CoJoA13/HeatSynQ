@@ -350,6 +350,25 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**void-order E2E wait hardening (#190 baseline) — 2026-08-25, branch `test/harden-void-order-wait`.**
+`void-order.mjs`'s post-void banner wait pinned an explicit `timeout: 10000` — TIGHTER than the suite's
+own `context.setDefaultTimeout(45000)` (`run.mjs`) that every other wait in the flow inherits. The exact
+`Voided — <reason>` banner is gated on a THREE-request chain — the void `DELETE`, `load()`'s refetch that
+flips `voided` and paints the FALLBACK banner (`Voided — see History for the reason`), then the SEPARATE
+`/api/admin/audit` read the `voided`-keyed page effect fires to resolve the recorded reason — so a loaded
+CI runner occasionally exceeded 10s on a void that had in fact fully committed. That is the assertion-level
+`void-order.mjs:29:46` timeout that hard-failed PR #204's (#171) e2e attempt 1 (the re-run passed): a
+non-clean run that RESET #190's ~20-consecutive-clean baseline, though NOT a `RETRIED` the flip would ever
+have caught (it fails as an assertion, not a network retry). Split into two checkpoints, both inheriting the
+45s default — banner appears (void committed + reloaded), then the exact reason resolves — so a genuine void
+regression now reports DISTINCTLY from a slow/absent audit read; the sibling include-voided board-row wait
+(`:53`) lost its matching 10s cap for the same reason. Neither new locator is ambiguous: the HistoryPanel
+renders reasons as `{actor} — {action} (reason)`, which starts with the actor, so `getByText("Voided —")`
+matches only the banner. **This is NOT the CI flip** (`exit 0`→`exit 1` stays DEFERRED, owner ruling
+2026-08-23, §5a·3): it removes a recurring RESET of the baseline the flip is gated on, it does not arm it.
+Gates: **3687 tests / 213 files**, `tsc`/`eslint` clean, **E2E 25/25** (0 RETRIED). Backlog remaining after
+this: **#190 (deferred CI flip)** only.
+
 **#33 — FIXED 2026-08-25, branch `refactor/33-orders-create-edit-split`.** The ~1550-line
 `src/server/orders.ts` service module was decomposed at the create/edit seam (the scope deferred
 2026-08-19 past the acceptance month), by VERBATIM code moves behind a re-exporting barrel — the
