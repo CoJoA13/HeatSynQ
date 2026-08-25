@@ -350,6 +350,32 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**#33 — FIXED 2026-08-25, branch `refactor/33-orders-create-edit-split`.** The ~1550-line
+`src/server/orders.ts` service module was decomposed at the create/edit seam (the scope deferred
+2026-08-19 past the acceptance month), by VERBATIM code moves behind a re-exporting barrel — the
+accepted Group H method, byte-parity verified by a reconstruction diff AND a positional re-check of
+each assembled module. Four files: **`order-internals.ts`** (shared DTO types, the LINE-family zod
+schemas, and the shared helpers — `resolveLineParts`, `resolveQuoteLinks` carrying the §5.14
+SSI-pairing CANONICAL doc now referenced by both sides, `createSerials`, `readDetail`/`toDetail`,
+`lineTotals`, `runSplitLoads`, `loadsMismatchWarnings`, `parseDate`, `lineLabel`, …);
+**`order-create.ts`** (`CREATE`/`CreateInput`, `buildWarnings`, `auditPayload`,
+`createOrder`/`saveNewOrder` — the #115 retry nesting + idempotent replay — `defaultRequestDate`);
+**`order-edit.ts`** (the `UPDATE_*`/`REPLACE_*` schemas, the edit mutators, `void`/`link`/`unlink`,
+the existing-order reads `getOrder`/`getLockedRevision`, and the `shippers.shipmentBlockers` import +
+its one-directional-edge comment); and **`orders.ts`** now a thin BARREL re-exporting the EXACT
+historical public surface. Every `@/server/orders` import site (13 routes, order-loads.ts,
+traveler.ts, 42 test files) is untouched. **One non-verbatim change:** `LineInput` redefined as
+`z.infer<typeof LINE>` (provably identical to the original `CreateInput["lines"][number]` since
+`CREATE.lines = z.array(LINE)`), so internals carries no dependency on create's `CREATE`. **No cycle**
+(internals never imports create/edit; the orders→shippers edge stays runtime-only + hoisted-only with
+no return edge; order-board is a leaf). **The one module-boundary-pinning test** — `permissions-sweep`'s
+file-level "mutates-but-doesn't-audit" proxy — now excepts `order-internals.ts` (its lone mutation
+`createSerials`.`orderSerial.createMany` is always part of an order create/update the CALLER audits;
+the proxy can't follow the cross-file call — the `order-drafts.ts` documented-exception precedent).
+Adversarial 5-lens review (barrel surface, cycles, comment integrity, LineInput equivalence, logic
+parity): **0 findings**. Gates: **3687 tests / 213 files**, `tsc`/`eslint`/`build` clean, **E2E 25/25**,
+`manual.html` unchanged. Backlog remaining after this: **#190 (deferred CI flip)** only.
+
 **#171 — FIXED 2026-08-25, branch `fix/171-signature-server-revision`.** `UserSignatureControl`
 suppressed a failed signature preview by remembering the exact URL that failed (`brokenSrc`), but the
 URL moved only via a LOCAL `version` counter bumped on THIS browser's upload — so after a
