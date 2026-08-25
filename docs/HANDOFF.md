@@ -350,6 +350,28 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**Dependency hygiene — #198 pared to its 3 safe PATCH bumps; `pdfmake` 0.3 AND `next` 16.3 both held
+(2026-08-25, branch `chore/198-deps-minor-patch-drop-pdfmake`, PR #207, SUPERSEDES #198).** Dependabot's
+grouped `minor-and-patch` bump (#198) red every CI job. TWO of its six members are unsafe, found in
+sequence:
+- **`pdfmake` 0.2.23→0.3.11 removed `pdfmake/src/printer.js`** — the Node entry `src/server/pdf/render.ts`
+  imports (CLAUDE.md's documented fragile import) — so `render.ts` failed to load and took **63 test
+  suites** with it. Held at `^0.2.23`; **0.3 is a tracked migration** (the `PdfPrinter`/vfs path changed —
+  do it as its own change, never a bump).
+- **`next` 16.2.12→16.3.1 OOMs the E2E dev-server warm-up.** With 16.3.1 the `test:e2e` warm-up (the
+  243-route in-memory `next dev` compile) is KILLED mid-warm-up — exit 143 (SIGTERM) at ~60 s, no
+  completion line — on BOTH a 32 GB laptop and a clean CI runner (TWO CI attempts on the same commit,
+  deterministic), where the identical warm-up passed on 16.2.12 (PR #206, 11m23s green). Held at 16.2.12,
+  `eslint-config-next` in lockstep. Empirical only (e2e OOM present on 16.3.1, absent on 16.2.12) — root
+  cause NOT yet isolated; a tracked follow-up before retrying the `next` minor.
+
+What LANDED is the three trivial PATCH bumps only — `bwip-js` ^4.11.4, `tsx` ^4.23.12, `@types/node`
+→26.3.0 (in-range, lockfile-only); the lockfile delta vs `main` is exactly those three. Gates:
+`tsc`/`eslint`/`build` clean, **vitest 3687 / 213 files**; **E2E is CI's required `e2e` job** — the local
+warm-up OOM-crashed this laptop regardless of the bump (cumulative session memory pressure alongside
+Docker Desktop's ~6.3 GB VM; the dev-env memory carries the detail). Backlog after this: **#190 (deferred
+CI flip)** + **pdfmake 0.3 migration** + **`next` 16.3 e2e-OOM investigation** (the last two new).
+
 **void-order E2E wait hardening (#190 baseline) — 2026-08-25, branch `test/harden-void-order-wait`.**
 `void-order.mjs`'s post-void banner wait pinned an explicit `timeout: 10000` — TIGHTER than the suite's
 own `context.setDefaultTimeout(45000)` (`run.mjs`) that every other wait in the flow inherits. The exact
