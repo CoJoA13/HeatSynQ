@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
-import PdfPrinter from "pdfmake/js/Printer.js";
+import PdfPrinterModule from "pdfmake/js/Printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
 import { toBuffer } from "bwip-js/node";
 // pdf-lib is imported ONLY here (plan Global Constraints), for its TWO sanctioned jobs: merging the
@@ -16,6 +16,18 @@ import { toBuffer } from "bwip-js/node";
 // confines pdfmake and bwip-js to this file.
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { practiceMode } from "../practice-mode";
+
+/**
+ * pdfmake 0.3's `js/Printer.js` is a CommonJS module shaped `{ __esModule: true, default: PdfPrinter }`.
+ * Loaders that honor `__esModule` (Vite/vitest and SWC/Next's build) hand back the class directly, but
+ * Node's own CJS interop — which `tsx` uses when the e2e preflight loads this module transitively —
+ * hands back the whole namespace object, so a bare `new PdfPrinterModule()` is `new { default: … }()`
+ * ("PdfPrinter is not a constructor"). Unwrap defensively so the constructor is correct under EVERY
+ * loader: the default import is the class where `__esModule` is honored (its own `.default` is
+ * undefined → fall through) and the namespace object otherwise (`.default` is the class).
+ */
+const PdfPrinter =
+  (PdfPrinterModule as unknown as { default?: typeof PdfPrinterModule }).default ?? PdfPrinterModule;
 
 /**
  * The font BYTES for the four contract-enumerated families (Phase 7 spec §6.2, owner ruling 5),

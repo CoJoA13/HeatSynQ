@@ -388,9 +388,14 @@ descriptor filename drifts from `FONT_FILES`. The type shim `pdfmake-node.d.ts` 
 needed NO change — `serverExternalPackages` is by package name, and the standalone tracer was verified to
 copy `js/Printer.js`, `js/PDFDocument.js`, `build/vfs_fonts.js`, mainline `pdfkit`, and the vendored
 `.ttf`. Gates: `tsc`/`eslint`/`build` clean, **vitest 3687 / 213 files** green (all 16 PDF suites — the
-`/Count` marker, two-pass overflow probe, per-group merge, `Buffer.compare` reprint, all 4 families). E2E
-deferred to CI's required `e2e` job (per the this-machine OOM note). A 5-lens adversarial review found
-**zero code/type/build/render-behavior findings** — only the two doc updates now applied.
+`/Count` marker, two-pass overflow probe, per-group merge, `Buffer.compare` reprint, all 4 families). A
+5-lens adversarial review found **zero code/type/build/render-behavior findings** — only the two doc updates.
+**CI's `e2e` job then caught the one thing three green loaders could not**: the e2e preflight
+(`e2e/lib/db-fixtures.ts`) loads `render.ts` transitively under **`tsx`**, whose Node CJS interop returns the
+module NAMESPACE for a default import of 0.3's `{ __esModule: true, default: PdfPrinter }` — so
+`new PdfPrinter()` threw "not a constructor" while vitest (Vite), `tsc`, and the SWC build all passed. Fixed
+by unwrapping the import with `.default ?? module` (reproduced and re-verified under tsx AND vitest;
+CLAUDE.md's pdfmake bullet carries the standing warning).
 
 **void-order E2E wait hardening (#190 baseline) — 2026-08-25, branch `test/harden-void-order-wait`.**
 `void-order.mjs`'s post-void banner wait pinned an explicit `timeout: 10000` — TIGHTER than the suite's
