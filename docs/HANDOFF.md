@@ -356,8 +356,8 @@ grouped `minor-and-patch` bump (#198) red every CI job. TWO of its six members a
 sequence:
 - **`pdfmake` 0.2.23→0.3.11 removed `pdfmake/src/printer.js`** — the Node entry `src/server/pdf/render.ts`
   imports (CLAUDE.md's documented fragile import) — so `render.ts` failed to load and took **63 test
-  suites** with it. Held at `^0.2.23`; **0.3 is a tracked migration** (the `PdfPrinter`/vfs path changed —
-  do it as its own change, never a bump).
+  suites** with it. Held out of #207 as its own migration; **DONE 2026-08-25** on branch
+  `chore/pdfmake-0.3-migration` (see the migration entry below). No longer backlog.
 - **`next` 16.2.12→16.3.1 OOMs the E2E dev-server warm-up.** With 16.3.1 the `test:e2e` warm-up (the
   243-route in-memory `next dev` compile) is KILLED mid-warm-up — exit 143 (SIGTERM) at ~60 s, no
   completion line — on BOTH a 32 GB laptop and a clean CI runner (TWO CI attempts on the same commit,
@@ -370,7 +370,27 @@ What LANDED is the three trivial PATCH bumps only — `bwip-js` ^4.11.4, `tsx` ^
 `tsc`/`eslint`/`build` clean, **vitest 3687 / 213 files**; **E2E is CI's required `e2e` job** — the local
 warm-up OOM-crashed this laptop regardless of the bump (cumulative session memory pressure alongside
 Docker Desktop's ~6.3 GB VM; the dev-env memory carries the detail). Backlog after this: **#190 (deferred
-CI flip)** + **pdfmake 0.3 migration** + **`next` 16.3 e2e-OOM investigation** (the last two new).
+CI flip)** + **`next` 16.3 e2e-OOM investigation** (#209); **the pdfmake 0.3 migration (#208) is DONE** —
+see the next entry.
+
+**pdfmake 0.2.23 → 0.3.11 migration (#208) — DONE 2026-08-25, branch `chore/pdfmake-0.3-migration`.**
+0.3 relocated the Node entry (`pdfmake/src/printer.js` → `pdfmake/js/Printer.js`, now an ES-default
+export), made `createPdfKitDocument` **async**, and stopped accepting raw font `Buffer` descriptors — its
+`resolveUrls` pass treats each descriptor as a URL/vfs path, so a Buffer no longer survives it. The sole
+import site `src/server/pdf/render.ts` now: imports `pdfmake/js/Printer.js`; builds `PdfPrinter` with an
+**in-process virtual filesystem** (`fontVfs`, backed by a `FONT_FILES` byte map read eagerly at module
+load — Roboto still decoded from the bundled `build/vfs_fonts.js`, curated families from the vendored
+`.ttf`) and a **no-op URL resolver** (`resolve`/`resolved`, since no font is ever a URL); references font
+faces as vfs FILENAMES; and `await`s the now-async render. A module-load guard fails at BOOT if a
+descriptor filename drifts from `FONT_FILES`. The type shim `pdfmake-node.d.ts` was updated to match
+(relocated `export default`, async return, vfs/resolver constructor params). 0.3.11 pulls **mainline
+`pdfkit@0.19.1`** (0.2 used `@foliojs-fork/pdfkit`); `@types/pdfmake` was already `^0.3.3`. `next.config.ts`
+needed NO change — `serverExternalPackages` is by package name, and the standalone tracer was verified to
+copy `js/Printer.js`, `js/PDFDocument.js`, `build/vfs_fonts.js`, mainline `pdfkit`, and the vendored
+`.ttf`. Gates: `tsc`/`eslint`/`build` clean, **vitest 3687 / 213 files** green (all 16 PDF suites — the
+`/Count` marker, two-pass overflow probe, per-group merge, `Buffer.compare` reprint, all 4 families). E2E
+deferred to CI's required `e2e` job (per the this-machine OOM note). A 5-lens adversarial review found
+**zero code/type/build/render-behavior findings** — only the two doc updates now applied.
 
 **void-order E2E wait hardening (#190 baseline) — 2026-08-25, branch `test/harden-void-order-wait`.**
 `void-order.mjs`'s post-void banner wait pinned an explicit `timeout: 10000` — TIGHTER than the suite's

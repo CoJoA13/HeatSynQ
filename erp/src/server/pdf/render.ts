@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
-import PdfPrinter from "pdfmake/src/printer.js";
+import PdfPrinter from "pdfmake/js/Printer.js";
 import vfs from "pdfmake/build/vfs_fonts.js";
 import { toBuffer } from "bwip-js/node";
 // pdf-lib is imported ONLY here (plan Global Constraints), for its TWO sanctioned jobs: merging the
@@ -18,59 +18,128 @@ import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 import { practiceMode } from "../practice-mode";
 
 /**
- * The font map — the four contract-enumerated families (Phase 7 spec §6.2, owner ruling 5),
- * every family fed to `PdfPrinter` as BUFFERS built once at module load. ONE mechanism per
- * family, and each family keeps its own:
+ * The font BYTES for the four contract-enumerated families (Phase 7 spec §6.2, owner ruling 5),
+ * keyed by the virtual-filesystem filename each face is registered under. Built once at module
+ * load, and the SINGLE SOURCE OF TRUTH for both `fontVfs` (which serves the bytes) and `FONTS`
+ * (whose descriptors name these keys) — so a descriptor can never point at a file the vfs lacks.
+ * Two mechanisms feed it:
  *
- * - **Roboto** stays decoded out of pdfmake's own bundled vfs — the pre-Phase-7 mechanism,
- *   under the exact same map key, so every unconverted builder and the posting register render
- *   byte-for-byte the paths they always have. The browser build's `pdfMake.createPdf(...)` was
- *   tried first (Phase 3) and is the wrong tool under Node: it wants a global `window`, and its
- *   vfs plumbing exists to fetch fonts the browser cannot read off disk. `PdfPrinter` is
- *   pdfmake's documented server entry point.
- * - **Liberation Sans / Liberation Serif / Roboto Mono** are `.ttf` assets vendored in
- *   `fonts/` beside this file (provenance + sha256 per file: `fonts/PROVENANCE.md`), read from
- *   an app-root-resolved path. `PdfPrinter` normally takes .ttf FILE PATHS — deliberately not
- *   used for either mechanism, because a path handed to pdfkit at render time would have to
- *   survive `output: "standalone"`'s file tracing into the Docker image unverified; reading the
- *   bytes eagerly at module load fails loudly at boot instead of at the first print, and
- *   `next.config.ts`'s `outputFileTracingIncludes` carries the files into the standalone output
- *   (physically verified, Task 6 report).
+ * - **Roboto** stays decoded out of pdfmake's own bundled vfs (`build/vfs_fonts.js`, base64) —
+ *   the pre-Phase-7 source, so every unconverted builder and the posting register keep rendering
+ *   in Roboto through the same font data they always have.
+ * - **Liberation Sans / Liberation Serif / Roboto Mono** are `.ttf` assets vendored in `fonts/`
+ *   beside this file (provenance + sha256 per file: `fonts/PROVENANCE.md`), read from an
+ *   app-root-resolved path. `next.config.ts`'s `outputFileTracingIncludes` carries them into the
+ *   standalone output (physically verified, Task 6 report).
  *
- * Built once rather than per render: the printer is stateless across `createPdfKitDocument`
- * calls, and a traveler for a 14-load order is one call, not fourteen.
+ * In every case the bytes are read EAGERLY here, at module load, and held in memory — never handed
+ * to pdfkit as a FILE PATH at render time. That is deliberate: a path resolved at print time would
+ * have to survive `output: "standalone"`'s file tracing into the Docker image unverified, whereas
+ * eager reads fail loudly at boot instead of at the first print.
+ *
+ * (pdfmake 0.3 note: 0.2 let us hand `PdfPrinter` these Buffers DIRECTLY. 0.3 runs a `resolveUrls`
+ * pass over the descriptors first — treating each as a URL/vfs path — which a raw Buffer no longer
+ * survives, so the bytes now travel through `fontVfs` and the descriptors are filenames. The design
+ * intent above is unchanged; only the plumbing moved.)
  */
 const FONT_DIR = path.join(process.cwd(), "src", "server", "pdf", "fonts");
 const ttf = (rel: string): Buffer => readFileSync(path.join(FONT_DIR, rel));
+const roboto = (name: string): Buffer => Buffer.from(vfs[name], "base64");
 
-const FONTS = {
-  Roboto: {
-    normal: Buffer.from(vfs["Roboto-Regular.ttf"], "base64"),
-    bold: Buffer.from(vfs["Roboto-Medium.ttf"], "base64"),
-    italics: Buffer.from(vfs["Roboto-Italic.ttf"], "base64"),
-    bolditalics: Buffer.from(vfs["Roboto-MediumItalic.ttf"], "base64"),
-  },
-  "Liberation Sans": {
-    normal: ttf("liberation-sans/LiberationSans-Regular.ttf"),
-    bold: ttf("liberation-sans/LiberationSans-Bold.ttf"),
-    italics: ttf("liberation-sans/LiberationSans-Italic.ttf"),
-    bolditalics: ttf("liberation-sans/LiberationSans-BoldItalic.ttf"),
-  },
-  "Liberation Serif": {
-    normal: ttf("liberation-serif/LiberationSerif-Regular.ttf"),
-    bold: ttf("liberation-serif/LiberationSerif-Bold.ttf"),
-    italics: ttf("liberation-serif/LiberationSerif-Italic.ttf"),
-    bolditalics: ttf("liberation-serif/LiberationSerif-BoldItalic.ttf"),
-  },
-  "Roboto Mono": {
-    normal: ttf("roboto-mono/RobotoMono-Regular.ttf"),
-    bold: ttf("roboto-mono/RobotoMono-Bold.ttf"),
-    italics: ttf("roboto-mono/RobotoMono-Italic.ttf"),
-    bolditalics: ttf("roboto-mono/RobotoMono-BoldItalic.ttf"),
+const FONT_FILES: Record<string, Buffer> = {
+  "Roboto-Regular.ttf": roboto("Roboto-Regular.ttf"),
+  "Roboto-Medium.ttf": roboto("Roboto-Medium.ttf"),
+  "Roboto-Italic.ttf": roboto("Roboto-Italic.ttf"),
+  "Roboto-MediumItalic.ttf": roboto("Roboto-MediumItalic.ttf"),
+  "LiberationSans-Regular.ttf": ttf("liberation-sans/LiberationSans-Regular.ttf"),
+  "LiberationSans-Bold.ttf": ttf("liberation-sans/LiberationSans-Bold.ttf"),
+  "LiberationSans-Italic.ttf": ttf("liberation-sans/LiberationSans-Italic.ttf"),
+  "LiberationSans-BoldItalic.ttf": ttf("liberation-sans/LiberationSans-BoldItalic.ttf"),
+  "LiberationSerif-Regular.ttf": ttf("liberation-serif/LiberationSerif-Regular.ttf"),
+  "LiberationSerif-Bold.ttf": ttf("liberation-serif/LiberationSerif-Bold.ttf"),
+  "LiberationSerif-Italic.ttf": ttf("liberation-serif/LiberationSerif-Italic.ttf"),
+  "LiberationSerif-BoldItalic.ttf": ttf("liberation-serif/LiberationSerif-BoldItalic.ttf"),
+  "RobotoMono-Regular.ttf": ttf("roboto-mono/RobotoMono-Regular.ttf"),
+  "RobotoMono-Bold.ttf": ttf("roboto-mono/RobotoMono-Bold.ttf"),
+  "RobotoMono-Italic.ttf": ttf("roboto-mono/RobotoMono-Italic.ttf"),
+  "RobotoMono-BoldItalic.ttf": ttf("roboto-mono/RobotoMono-BoldItalic.ttf"),
+};
+
+/**
+ * pdfmake 0.3's in-process virtual filesystem. `PdfPrinter`'s `PDFDocument.provideFont` resolves a
+ * font descriptor (a filename) to its bytes through here — `existsSync` then `readFileSync`. Backed
+ * directly by `FONT_FILES`, so the fonts live in memory and no path is read at render time (see the
+ * eager-load rationale above). Only the two members the font path calls are provided; the
+ * URL-download path that would `writeFileSync` is never taken (see `noopUrlResolver`).
+ */
+const fontVfs = {
+  existsSync: (name: string): boolean => Object.hasOwn(FONT_FILES, name),
+  readFileSync: (name: string): Buffer => {
+    const buf = FONT_FILES[name];
+    if (buf === undefined) {
+      throw new Error(`Font file "${name}" is not present in the PDF renderer's virtual filesystem`);
+    }
+    return buf;
   },
 };
 
-const printer = new PdfPrinter(FONTS);
+/**
+ * pdfmake 0.3's `Printer.resolveUrls` calls `resolve()` once per font descriptor and awaits
+ * `resolved()` once. Our descriptors are `fontVfs` filenames, never `http(s)` URLs, so there is
+ * nothing to fetch and both are no-ops — but 0.3 dereferences the resolver unconditionally, so it
+ * must exist. (This is what keeps template PDF rendering fully offline: no font is ever a URL.)
+ */
+const noopUrlResolver = {
+  resolve: (): void => {},
+  resolved: (): Promise<void> => Promise.resolve(),
+};
+
+/**
+ * The four families, each face naming a `FONT_FILES` / `fontVfs` entry. Every descriptor must
+ * resolve to bytes the vfs holds — asserted at module load so a typo'd or drifted filename fails at
+ * BOOT (matching the eager-load philosophy) rather than at the first print of the family that uses
+ * it.
+ */
+const FONTS = {
+  Roboto: {
+    normal: "Roboto-Regular.ttf",
+    bold: "Roboto-Medium.ttf",
+    italics: "Roboto-Italic.ttf",
+    bolditalics: "Roboto-MediumItalic.ttf",
+  },
+  "Liberation Sans": {
+    normal: "LiberationSans-Regular.ttf",
+    bold: "LiberationSans-Bold.ttf",
+    italics: "LiberationSans-Italic.ttf",
+    bolditalics: "LiberationSans-BoldItalic.ttf",
+  },
+  "Liberation Serif": {
+    normal: "LiberationSerif-Regular.ttf",
+    bold: "LiberationSerif-Bold.ttf",
+    italics: "LiberationSerif-Italic.ttf",
+    bolditalics: "LiberationSerif-BoldItalic.ttf",
+  },
+  "Roboto Mono": {
+    normal: "RobotoMono-Regular.ttf",
+    bold: "RobotoMono-Bold.ttf",
+    italics: "RobotoMono-Italic.ttf",
+    bolditalics: "RobotoMono-BoldItalic.ttf",
+  },
+};
+
+for (const [family, faces] of Object.entries(FONTS)) {
+  for (const file of Object.values(faces)) {
+    if (!Object.hasOwn(FONT_FILES, file)) {
+      throw new Error(
+        `PDF font family "${family}" names "${file}", which is not in FONT_FILES — ` +
+        `the descriptor and the byte map have drifted`);
+    }
+  }
+}
+
+// Built once rather than per render: the printer is stateless across `createPdfKitDocument` calls,
+// and a traveler for a 14-load order is one call, not fourteen.
+const printer = new PdfPrinter(FONTS, fontVfs, noopUrlResolver, undefined);
 
 /**
  * Custom table layouts, registered by NAME.
@@ -217,9 +286,11 @@ function assertFontsRegistered(def: RenderableDefinition): void {
   walk(def);
 }
 
-/** The single-pass pdfmake render — bytes out of a definition that is already pdfmake-shaped. */
-function renderBytes(def: TDocumentDefinitions): Promise<Buffer> {
-  const doc = printer.createPdfKitDocument(def, { tableLayouts: TABLE_LAYOUTS });
+/** The single-pass pdfmake render — bytes out of a definition that is already pdfmake-shaped.
+ *  `createPdfKitDocument` is async as of pdfmake 0.3 (it resolves font URLs before laying out),
+ *  so it is awaited before the pdfkit stream is drained. */
+async function renderBytes(def: TDocumentDefinitions): Promise<Buffer> {
+  const doc = await printer.createPdfKitDocument(def, { tableLayouts: TABLE_LAYOUTS });
   const chunks: Buffer[] = [];
   return new Promise<Buffer>((resolve, reject) => {
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
