@@ -123,6 +123,15 @@ describe("permission sweep", () => {
       // acknowledged history (§5.3 states this explicitly); it is the non-test-only home of exactly
       // the re-seed truncateAll always performed unaudited.
       "practice-seed.ts",
+      // order-internals.ts (#33) — the SHARED support layer of the order services. Its only mutation
+      // is `createSerials`' `tx.orderSerial.createMany`, and it is ALWAYS part of an order create or
+      // update that the CALLER audits: `saveNewOrder` (order-create.ts) captures the serials in its
+      // `auditedCreate` payload, and `addLine` (order-edit.ts) calls it INSIDE its `auditedUpdate`
+      // callback. This file-level proxy cannot follow that cross-file call, so it would false-flag a
+      // helper module that holds no `audited*` call of its own — the mutation IS audited, just not in
+      // this file. (Before #33 the same write lived in orders.ts beside the audit wrappers, so the
+      // proxy passed; the decomposition moved the shared writer out, not the audit discipline.)
+      "order-internals.ts",
     ]);
     const offenders = readdirSync(join(process.cwd(), "src/server"))
       .filter((f) => f.endsWith(".ts") && !EXCEPT.has(f))

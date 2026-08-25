@@ -15,7 +15,7 @@ process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
  * Measured threshold (.superpowers/sdd/task-4-report.md §9.1): inside a transaction, an `include`
  * with 1-2 sibling relations stays clean and 5+ warns; the identical query outside a transaction
  * never warns (separate pool connections). This suite crosses the threshold from `readDetail`'s
- * 6-relation order graph (src/server/orders.ts, DETAIL_INCLUDE) and `SNAPSHOT_INCLUDE.order`'s
+ * 6-relation order graph (src/server/order-internals.ts, DETAIL_INCLUDE — #33) and `SNAPSHOT_INCLUDE.order`'s
  * 5-relation graph (src/server/audit.ts) — a property of the order schema under Prisma 7 + pg 8,
  * not of any one query.
  *
