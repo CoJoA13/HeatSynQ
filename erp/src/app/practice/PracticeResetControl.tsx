@@ -31,10 +31,6 @@ export function PracticeResetControl() {
       // reset credentials (Codex). A full navigation, since the session no longer exists server-side.
       setMessage("Practice data was reset. Signing you out — sign back in with admin / admin.");
       setTimeout(() => {
-        // Intentional FULL navigation (see the comment above): the reset wiped the server session, so a
-        // soft router.push would keep stale auth and 401 on the next request; a document load
-        // re-initializes against the recreated admin/admin. Rule added by the eslint-config-next 16.3 bump.
-        // eslint-disable-next-line @next/next/no-location-assign-relative-destination
         window.location.href = "/login";
       }, 1500);
     } catch (e) {
