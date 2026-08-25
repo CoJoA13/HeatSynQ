@@ -350,6 +350,25 @@ Always clear the fixtures you create out of the **dev** database afterwards — 
 
 ## 6. Known backlog (all triaged, none blocking)
 
+**Dependency hygiene — #198's safe bumps taken, `pdfmake` 0.3 held for migration (2026-08-25, branch
+`chore/198-deps-minor-patch-drop-pdfmake`).** Dependabot's grouped `minor-and-patch` bump (#198) red
+EVERY CI job because **`pdfmake` 0.2.23→0.3.11 removed `pdfmake/src/printer.js`** — the Node entry
+`src/server/pdf/render.ts` imports (CLAUDE.md's documented fragile import) — so `render.ts` failed to
+load and took **63 test suites** with it. The five other bumps are safe; taken onto a fresh branch off
+`main`, `pdfmake` held at `^0.2.23`: `next`/`eslint-config-next` 16.2.12→16.3.1 (+ the `@swc/helpers`
+and swc-binary transitives), `bwip-js` ^4.11.4, `tsx` ^4.23.12, `@types/node` →26.3.0 (in-range,
+lockfile-only). The lockfile delta is exactly those 18 entries, `pdfmake` absent. **One bump fallout:**
+`eslint-config-next` 16.3 added `no-location-assign-relative-destination`, which flags the INTENTIONAL
+full-navigation `window.location.href = "/login"` after a practice reset (a soft `router.push` keeps the
+wiped session's stale auth and 401s) — resolved with a justified line-disable, behavior unchanged.
+**#198 is SUPERSEDED (close it).** Gates: `tsc`/`eslint` (0 warn)/`build` (next 16.3.1, every route)
+clean, **vitest 3687 / 213 files** (the formerly-broken traveler/cert-pdf/traveler-templates suites
+load again). **E2E deferred to CI's required `e2e` job** — the local dev-server warm-up (243-route
+in-memory compile) OOM-crashed this laptop TWICE alongside Docker Desktop's ~6.3 GB VM; the change
+touches no flow logic, and CI runs `e2e` on a clean runner with the 600 s warm-up budget. **`pdfmake`
+0.3 is now a tracked migration** — the `PdfPrinter`/vfs import path changed; do it as its own change,
+never a version bump. Backlog after this: **#190 (deferred CI flip)** + **pdfmake 0.3 migration** (new).
+
 **void-order E2E wait hardening (#190 baseline) — 2026-08-25, branch `test/harden-void-order-wait`.**
 `void-order.mjs`'s post-void banner wait pinned an explicit `timeout: 10000` — TIGHTER than the suite's
 own `context.setDefaultTimeout(45000)` (`run.mjs`) that every other wait in the flow inherits. The exact
