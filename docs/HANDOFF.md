@@ -373,7 +373,7 @@ Docker Desktop's ~6.3 GB VM; the dev-env memory carries the detail). Backlog aft
 CI flip)** + **`next` 16.3 e2e-OOM investigation** (#209); **the pdfmake 0.3 migration (#208) is DONE** —
 see the next entry.
 
-**pdfmake 0.2.23 → 0.3.11 migration (#208) — DONE 2026-08-25, branch `chore/pdfmake-0.3-migration`.**
+**pdfmake 0.2.23 → 0.3.11 migration (#208) — DONE 2026-08-25, branch `chore/pdfmake-0.3-migration`, PR #210.**
 0.3 relocated the Node entry (`pdfmake/src/printer.js` → `pdfmake/js/Printer.js`, now an ES-default
 export), made `createPdfKitDocument` **async**, and stopped accepting raw font `Buffer` descriptors — its
 `resolveUrls` pass treats each descriptor as a URL/vfs path, so a Buffer no longer survives it. The sole
