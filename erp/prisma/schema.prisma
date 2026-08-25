@@ -25,6 +25,11 @@ model User {
   // Persisted alongside signatureImage so GET can stream it back with its real Content-Type —
   // the upload is constrained to SIGNATURE_MIME (users.ts), never inferred or defaulted.
   signatureMimeType         String?
+  // Moves whenever signatureImage does — stamped by setSignature AND clearSignature (users.ts).
+  // listUsers surfaces it as `signatureRev`, the cache-bust token in the preview <img> URL, so a
+  // stale failed preview retries by construction on ANY change — this browser's OR another admin's
+  // (#171). NEVER the bytes: it stands proxy for them the way signatureMimeType does (#160).
+  signatureUpdatedAt        DateTime?
   /// Prints on the quote and certification signature blocks beside the display name (Phase 6
   /// ruling 14 — also closes Phase 4 ping #4). Blank prints nothing.
   title                     String                    @default("")

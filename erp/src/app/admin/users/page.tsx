@@ -14,6 +14,9 @@ type Role = { id: string; name: string };
 type User = {
   id: string; username: string; displayName: string; title: string; roleId: string | null;
   roleName: string | null; active: boolean; hasSignature: boolean;
+  // Epoch millis of the stored signature's last change (#171), or null. The preview URL cache-busts
+  // on it, so another admin's clear-and-replace retries here by construction. Never the bytes (#160).
+  signatureRev: number | null;
   overrides: { permission: string; mode: "GRANT" | "DENY" }[];
 };
 
@@ -32,6 +35,22 @@ function TitleCell({ user, gate, onSave }: { user: User; gate: Gate; onSave: (ti
            onBlur={() => { if (draft !== user.title) onSave(draft); }}
            className="w-36 rounded border px-1 py-0.5" />
   );
+}
+
+/**
+ * The optimistic row update the signature control drives on a successful mutation (#171). Flip the
+ * existence flag AND — on an UPLOAD — advance `signatureRev` to `now`, so the preview URL cache-busts
+ * IMMEDIATELY, independent of whether the trailing list reload lands: a PUT that commits while its
+ * follow-up list GET fails must not strand a just-replaced preview as "Preview unavailable" (the
+ * review's one confirmed finding). The reload then reconciles `signatureRev` to the server's true
+ * stamp. A CLEAR leaves the rev untouched — no preview renders while the flag is false. The PAGE is
+ * the single owner of both fields (the control keeps neither), so this is NOT the per-session counter
+ * #171 retired; it is the same optimistic-apply-then-reload discipline the rest of this page uses.
+ */
+export function applySignatureMutation<T extends { hasSignature: boolean; signatureRev: number | null }>(
+  row: T, next: boolean, now: number,
+): T {
+  return { ...row, hasSignature: next, signatureRev: next ? now : row.signatureRev };
 }
 
 export default function UsersPage() {
@@ -135,7 +154,8 @@ export default function UsersPage() {
                     would also throw away the control's error, busy and cache-bust state, which are
                     genuinely its own. */}
                 <UserSignatureControl
-                  userId={u.id} hasSignature={u.hasSignature} gate={manageUsersGate}
+                  userId={u.id} hasSignature={u.hasSignature} signatureRev={u.signatureRev}
+                  gate={manageUsersGate}
                   onSignatureChange={(next) => {
                     // Apply optimistically, then RELOAD — do not merely cancel (#3/#15 class,
                     // Codex rounds 3 and 4). The signature route has already committed, so this
@@ -152,8 +172,11 @@ export default function UsersPage() {
                     // An earlier fix called `latest.next()` alone. That closed the clobber and
                     // opened a quieter hole — the shared refresh was thrown away while only
                     // `hasSignature` was written, so a just-saved role could sit visibly stale.
+                    //
+                    // `applySignatureMutation` also advances `signatureRev` on an upload, so the
+                    // preview URL cache-busts at once even if the reload below fails (#171 review).
                     setUsers((prev) => prev.map(
-                      (row) => (row.id === u.id ? { ...row, hasSignature: next } : row),
+                      (row) => (row.id === u.id ? applySignatureMutation(row, next, Date.now()) : row),
                     ));
                     load().catch((e) => setError(e.message));
                   }} />

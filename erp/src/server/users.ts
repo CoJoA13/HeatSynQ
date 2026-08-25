@@ -38,19 +38,20 @@ export async function listUsers() {
   // avoid for the attachment tables; this is the same fix applied at the query that actually feeds
   // this screen. `passwordHash` drops out too, for free.
   //
-  // `signatureMimeType` (#160) is the ONE signature column this read may touch, and it is here to
-  // stand proxy for the bytes exactly as `hasLogo` does in templates.ts's `toVersionSummary` —
-  // never `signatureImage: true`, which would undo the narrowing this comment exists to protect.
-  // Fidelity: `setSignature`/`clearSignature` below always write the two columns together, and
-  // `getSignature` returns null unless BOTH are non-null, so only a hand-written database row
-  // could desync them — and in that direction the flag reads "no signature" while GET 404s, which
-  // is the harmless side: UserSignatureControl's `onError` belt still lands right.
-  // `tests/user-signature.test.ts`'s "#160" block pins the select shape, not just the payload.
+  // Two signature columns this read may touch, and ONLY these two — `signatureMimeType` (#160) and,
+  // since #171, `signatureUpdatedAt`. Both stand proxy for the bytes exactly as `hasLogo` does in
+  // templates.ts's `toVersionSummary`; NEVER `signatureImage: true`, which would undo the narrowing
+  // these comments exist to protect. Fidelity: `setSignature`/`clearSignature` below always write
+  // all three columns together, and `getSignature` returns null unless image AND mime are non-null,
+  // so only a hand-written database row could desync them — and in that direction the flag reads
+  // "no signature" while GET 404s, the harmless side: UserSignatureControl's `onError` belt still
+  // lands right. `tests/user-signature.test.ts`'s "#160" block pins the select shape, not just the
+  // payload.
   const users = await prisma.user.findMany({
     where: { deletedAt: null },
     select: {
       id: true, username: true, displayName: true, title: true, roleId: true, active: true,
-      signatureMimeType: true,
+      signatureMimeType: true, signatureUpdatedAt: true,
       role: { select: { name: true } },
       overrides: { select: { permission: true, mode: true } },
     },
@@ -64,10 +65,14 @@ export async function listUsers() {
     roleName: u.role?.name ?? null,
     roleId: u.roleId,
     active: u.active,
-    // A boolean is the whole payload: the screen renders a preview `<img>` or the "No signature"
-    // placeholder, and neither needs the mime type. Shipping the flag alone is what stops one
-    // 404 per signature-less user on every /admin/users load (#160).
+    // A boolean is the whole existence payload: the screen renders a preview `<img>` or the "No
+    // signature" placeholder, and neither needs the mime type. Shipping the flag alone is what stops
+    // one 404 per signature-less user on every /admin/users load (#160).
     hasSignature: u.signatureMimeType !== null,
+    // The revision the preview URL cache-busts on (#171) — epoch millis of `signatureUpdatedAt`, or
+    // null before the image has ever been written. It MOVES on every set/clear, so a stale failed
+    // preview retries by construction on ANY change; still bytes-free, the whole point of #160.
+    signatureRev: u.signatureUpdatedAt?.getTime() ?? null,
     overrides: u.overrides.map((o) => ({ permission: o.permission, mode: o.mode })),
   }));
 }
@@ -197,7 +202,14 @@ export async function setSignature(userId: string, data: Buffer, mimeType: strin
     prisma.$transaction((tx) =>
       auditedUpdate("user", userId, () =>
         tx.user.update({
-          where: { id: userId }, data: { signatureImage: new Uint8Array(data), signatureMimeType: mimeType },
+          where: { id: userId },
+          // `signatureUpdatedAt` moves with the bytes so listUsers can cache-bust the preview URL
+          // on ANY change (#171). Set here AND in clearSignature — never inferred from `updatedAt`,
+          // which also moves on a name/role/password edit.
+          data: {
+            signatureImage: new Uint8Array(data), signatureMimeType: mimeType,
+            signatureUpdatedAt: new Date(),
+          },
         }),
       { tx })));
 }
@@ -206,7 +218,13 @@ export async function clearSignature(userId: string): Promise<void> {
   await withDbErrors({ entity: "User" }, () =>
     prisma.$transaction((tx) =>
       auditedUpdate("user", userId, () =>
-        tx.user.update({ where: { id: userId }, data: { signatureImage: null, signatureMimeType: null } }),
+        // `signatureUpdatedAt` moves on the clear too (#171): a preview that failed before the clear
+        // must not be suppressed by an identical URL after a later re-upload — the revision advances
+        // here, so the URL does.
+        tx.user.update({
+          where: { id: userId },
+          data: { signatureImage: null, signatureMimeType: null, signatureUpdatedAt: new Date() },
+        }),
       { tx })));
 }
 

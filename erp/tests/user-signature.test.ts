@@ -312,4 +312,77 @@ describe("per-user signature image (Task 12)", () => {
       expect(row).not.toHaveProperty("signatureMimeType");
     });
   });
+
+  /**
+   * #171 — the users list carries a REVISION that moves whenever the stored image does, so the
+   * preview URL cache-busts on ANY change (this browser's OR another admin's) and a failed preview
+   * retries by construction. `signatureRev` is epoch millis of `signatureUpdatedAt`, still bytes-free
+   * (#160). The render decision that consumes it is pinned in `user-signature-control.test.tsx`; this
+   * pins that the server actually MOVES the token on every write.
+   */
+  describe("listUsers exposes a signature revision that moves with the image (#171)", () => {
+    const revOf = async (userId: string) =>
+      (await listUsers()).find((u) => u.id === userId)?.signatureRev;
+    const AGED = new Date("2000-01-01T00:00:00.000Z");
+    const ageRevision = (userId: string) =>
+      prisma.user.update({ where: { id: userId }, data: { signatureUpdatedAt: AGED } });
+
+    it("is null on a fresh user, non-null after setSignature, and equals signatureUpdatedAt", async () => {
+      const userId = await makeUser("rev-basic");
+      expect(await revOf(userId)).toBeNull();
+
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+      const stamped = await prisma.user.findUniqueOrThrow({
+        where: { id: userId }, select: { signatureUpdatedAt: true },
+      });
+      expect(stamped.signatureUpdatedAt).not.toBeNull();
+      expect(await revOf(userId)).toBe(stamped.signatureUpdatedAt!.getTime());
+    });
+
+    it("surfaces exactly the stored timestamp — the cache-bust token IS that value", async () => {
+      const userId = await makeUser("rev-exact");
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+      const fixed = new Date("2026-08-20T12:00:00.000Z");
+      await prisma.user.update({ where: { id: userId }, data: { signatureUpdatedAt: fixed } });
+      expect(await revOf(userId)).toBe(fixed.getTime());
+    });
+
+    it("advances on clear AND on a replace — every write moves it (the round-trip #171 case)", async () => {
+      const userId = await makeUser("rev-moves");
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+
+      // Clear stamps the revision even though the flag goes false — the corrupt-preview-then-clear
+      // leg of #171. Age the row first so "moved forward" is deterministic, not a same-ms race.
+      await ageRevision(userId);
+      await asSystem(() => clearSignature(userId));
+      expect((await revOf(userId))!).toBeGreaterThan(AGED.getTime());
+      expect(await revOf(userId)).not.toBeNull(); // moved, even with hasSignature now false
+
+      // The replace leg: re-age, re-upload, the revision advances — a new URL, so the render-failure
+      // key that mirrors it moves too. The old per-session counter never saw this.
+      await ageRevision(userId);
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+      expect((await revOf(userId))!).toBeGreaterThan(AGED.getTime());
+    });
+
+    it("keeps the listUsers SELECT bytes-free while adding the revision column (#160 holds)", async () => {
+      const userId = await makeUser("rev-select");
+      await asSystem(() => setSignature(userId, REAL_PNG, "image/png"));
+
+      const originalFindMany = prisma.user.findMany.bind(prisma.user);
+      const selects: Record<string, unknown>[] = [];
+      prisma.user.findMany = ((args: { select?: Record<string, unknown> }) => {
+        if (args?.select) selects.push(args.select);
+        return originalFindMany(args as Parameters<typeof originalFindMany>[0]);
+      }) as unknown as typeof prisma.user.findMany;
+      try {
+        await listUsers();
+      } finally {
+        prisma.user.findMany = originalFindMany;
+      }
+      expect(selects).toHaveLength(1);
+      expect(selects[0]).toHaveProperty("signatureUpdatedAt", true);
+      expect(selects[0]).not.toHaveProperty("signatureImage");
+    });
+  });
 });
